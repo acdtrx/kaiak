@@ -1,0 +1,7 @@
+Dockerfile
+.dockerignore
+kaiak
+data
+e2e
+**/*_test.go
+**/testdata

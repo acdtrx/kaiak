@@ -1,0 +1,11 @@
+{
+  "revision": {
+    "control_plane": "9f86d081884c7d659a2feaa0c55ad015",
+    "sequence": 17
+  },
+  "config_epoch": "C0FFEE00C0FFEE00C0FFEE00C0FFEE00",
+  "config_version": 1,
+  "live_gateways": 0,
+  "counted_through": null,
+  "windows": []
+}

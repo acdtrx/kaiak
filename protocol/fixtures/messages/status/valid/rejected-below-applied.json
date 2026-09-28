@@ -1,0 +1,56 @@
+{
+  "instance": "gw-1",
+  "protocol_version": 2,
+  "state": "ready",
+  "started_at": "2026-09-24T09:58:12.5Z",
+  "applied_config_version": 42,
+  "applied_config_epoch": "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+  "last_rejection": {
+    "version": 3,
+    "codes": [
+      "schema"
+    ]
+  },
+  "backends": {
+    "vllm-a": {
+      "in_flight": 3,
+      "max_in_flight": 4,
+      "deployments": {
+        "Qwen/Qwen3-32B": {
+          "circuit": "closed"
+        }
+      }
+    },
+    "vllm-b": {
+      "in_flight": 0,
+      "deployments": {
+        "Qwen/Qwen3-32B": {
+          "circuit": "open",
+          "opened_at": "2026-09-24T10:01:02.25Z"
+        },
+        "BAAI/bge-m3": {
+          "circuit": "closed"
+        }
+      }
+    },
+    "azure-westeurope": {
+      "in_flight": 1,
+      "deployments": {
+        "gpt-4.1-prod": {
+          "circuit": "closed"
+        }
+      }
+    }
+  },
+  "models": {
+    "qwen3-32b": {
+      "queued": 2
+    },
+    "gpt-4.1": {
+      "queued": 0
+    },
+    "bge-m3": {
+      "queued": 0
+    }
+  }
+}

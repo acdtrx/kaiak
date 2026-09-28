@@ -1,0 +1,494 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kaiak.invalid/protocol/schema/config.schema.json",
+  "title": "kaiak config document",
+  "description": "Everything a gateway needs to serve: backends, models, the group tree, keys and limits. Used by file mode, by the control plane's config snapshot and by the sample control plane's config file. Cross-reference rules this schema cannot express are listed in docs/specs/CONTROL-PROTOCOL.md (Config) and checked by code in both halves.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format_version", "global", "backends", "models", "keys"],
+  "properties": {
+    "format_version": {
+      "description": "Version of this document format. A different version is rejected, never migrated.",
+      "const": 2
+    },
+    "global": { "$ref": "#/$defs/global" },
+    "backends": {
+      "description": "Serving endpoints, keyed by backend ID.",
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/id" },
+      "additionalProperties": { "$ref": "#/$defs/backend" }
+    },
+    "models": {
+      "description": "Models, keyed by the public model name clients send.",
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/public_model_name" },
+      "additionalProperties": { "$ref": "#/$defs/model" }
+    },
+    "groups": {
+      "description": "The group tree, keyed by group ID: every group names its parent, a group without one is top-level; global is the implicit root above them all. At most 8 levels (a top-level group is level 1). Omitted = none.",
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/id" },
+      "additionalProperties": { "$ref": "#/$defs/group" }
+    },
+    "keys": {
+      "description": "Client keys, keyed by key ID. Only the hash of the key is present.",
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/id" },
+      "additionalProperties": { "$ref": "#/$defs/key" }
+    }
+  },
+  "$defs": {
+    "id": {
+      "description": "ID of a backend, group or key.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$"
+    },
+    "model_name": {
+      "description": "The shape of a public model name. Slashes are allowed (Hugging Face style names).",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"
+    },
+    "backend_model_name": {
+      "description": "A model name on a backend (a deployment's model; for Azure the deployment name), in the backend's own naming: 1 to 512 printable ASCII characters, no spaces — e.g. llama-server's path-style ids (/models/qwen3-embedding-0.6b-q8_0.gguf). A name outside it: give the model an alias on the backend (llama-server --alias).",
+      "type": "string",
+      "pattern": "^[!-~]{1,512}$"
+    },
+    "public_model_name": {
+      "description": "A public model name: a model_name that does not end in /props, which would collide with the GET /v1/models/{id}/props endpoint.",
+      "$ref": "#/$defs/model_name",
+      "not": { "type": "string", "pattern": "/props$" }
+    },
+    "date": {
+      "description": "A calendar date, YYYY-MM-DD, read as UTC. Must be a real date.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "timestamp": {
+      "description": "An RFC 3339 timestamp in UTC (Z suffix), optional fractional seconds. Must be a real instant.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$"
+    },
+    "global": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "limits": {
+          "description": "Limits across all traffic.",
+          "$ref": "#/$defs/limits"
+        },
+        "max_request_body_bytes": {
+          "description": "Largest client request body accepted.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "default": 4194304
+        },
+        "control_outage_grace_ms": {
+          "description": "Control-plane mode: how long a gateway keeps serving priced models covered by a usd_per_month limit while their spend cannot be known — no contact with the control plane (no open config stream, no snapshot, stream bytes or usage ack), usage batches waiting that long for an answer, or the control plane's newest totals being for another config; past it, requests to them are refused (503 budget_unavailable) until that ends. Unpriced models and models no USD limit covers keep serving. Ignored in file mode.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "default": 900000
+        },
+        "max_n": {
+          "description": "The most sequences one request may ask for per prompt: n and best_of (chat and completions). A request above it is refused (400 n_too_large). The gateway reserves the output limit once per sequence.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "default": 8
+        },
+        "max_sequences_per_request": {
+          "description": "The most sequences one chat or completions request may ask the backend to generate: n (or best_of, when larger) per prompt, times a completion's prompts. A request above it is refused (400 invalid_value, param prompt, n or best_of). A backend takes such a request as one request, one slot of its max_in_flight, however many sequences it holds.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "default": 16
+        },
+        "max_embedding_inputs": {
+          "description": "The most inputs one embeddings request may carry (a list of strings or of token-ID lists holds one per element). A request above it is refused (400 invalid_value, param input). The default is OpenAI's own limit.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "default": 2048
+        },
+        "max_concurrent_requests_per_key": {
+          "description": "The most requests one key may have in flight on one gateway at once, counted from authentication (before the body is read) to the end of the response. A request above it is refused (429 concurrency_limit_exceeded, Retry-After: 1). Per gateway: not split across gateways.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "default": 16
+        },
+        "queue": {
+          "description": "Every model's queue (one per model; docs/specs/GATEWAY.md, Routing and reliability): where requests wait while every deployment's backend is at its max_in_flight. A model's queue overrides it field by field.",
+          "$ref": "#/$defs/queue_settings"
+        },
+        "retries": {
+          "description": "Attempts per client request, before anything reached the client. A model's retries override it.",
+          "$ref": "#/$defs/retry_settings"
+        },
+        "circuit": {
+          "description": "The circuit breaker every deployment has: consecutive failures on real traffic open it; while open, the backend's models list is probed on an interval, a successful probe makes it half-open, and one real request (the trial) decides: its first data event (or first body bytes) closes it, its failure opens it again.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "failure_threshold": {
+              "description": "Consecutive failures that open a deployment's circuit: connect errors, a stream's first-event and stall timeouts, backend 5xx, 401/403 and 404 naming the model, responses broken off or ended incomplete; non-stream response timeouts only from the 3rd in a row (docs/specs/GATEWAY.md, outcome classes). Backend 429 and caller 4xx do not count.",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991,
+              "default": 5
+            },
+            "probe_interval_ms": {
+              "description": "How often an open deployment's backend is probed.",
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 9007199254740991,
+              "default": 10000
+            }
+          }
+        },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "key_id_label": {
+              "description": "Label usage metrics with the key ID. Each key multiplies the usage series (docs/specs/GATEWAY.md, Observability: cardinality); switch off when the estimate grows past what the metrics store should hold.",
+              "type": "boolean",
+              "default": true
+            },
+            "group_label": {
+              "description": "Label usage metrics with the key's group (key_group). Each group that owns keys multiplies the usage series; switch off with many of them. Off, the top-level group (root_group) still labels them.",
+              "type": "boolean",
+              "default": true
+            }
+          }
+        }
+      }
+    },
+    "queue_settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "size": {
+          "description": "Most requests waiting in the queue; a request finding it full is refused at once (429 queue_full). 0 = never queue: a request finding no free slot is refused at once.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "default": 100
+        },
+        "timeout_ms": {
+          "description": "Longest a request waits in the queue before it is refused (429 queue_timeout).",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "default": 30000
+        }
+      }
+    },
+    "retry_settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_attempts": {
+          "description": "Attempts in total for one client request, the first included; 1 = no retries.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 3
+        }
+      }
+    },
+    "backend": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "base_url"],
+      "properties": {
+        "type": {
+          "description": "openai-compatible: vLLM, llama-server, SGLang, OpenAI. azure-openai: Azure's OpenAI-compatible /openai/v1/ API.",
+          "enum": ["openai-compatible", "azure-openai"]
+        },
+        "base_url": {
+          "description": "openai-compatible: the base URL an OpenAI client would use, API version path included (e.g. http://vllm:8000/v1); the gateway appends the endpoint path (/chat/completions). azure-openai: the resource endpoint (e.g. https://my-resource.openai.azure.com); the gateway appends /openai/v1/. No credentials (user:password@ — provider secrets travel only through api_key_env), trailing slash, query or fragment.",
+          "type": "string",
+          "pattern": "^https?://[^/\\s?#@]+(/[^\\s?#]*[^/\\s?#])?$"
+        },
+        "api_key_env": {
+          "description": "Name of the environment variable holding the backend's API key. Omitted = unauthenticated (self-hosted backends only; required for azure-openai). Names starting with KAIAK_ are refused: they hold the gateway's own settings and tokens, which must never be sent to a backend.",
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "not": { "type": "string", "pattern": "^KAIAK_" }
+        },
+        "connect_timeout_ms": {
+          "description": "Time allowed to open a connection to the backend.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "default": 5000
+        },
+        "first_event_timeout_ms": {
+          "description": "Streaming requests: time allowed from sending the request to the stream's first event (prefill included). Running out is retried and counts as a circuit failure.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "default": 60000
+        },
+        "response_timeout_ms": {
+          "description": "Non-streaming requests: time allowed for the whole response, from sending the request to the body's end. A non-streaming response arrives whole, so this bounds a full generation. Running out is not retried and is not a circuit failure: the backend was working.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "default": 1800000
+        },
+        "stall_timeout_ms": {
+          "description": "Streaming requests: longest silence allowed between events once the first arrived. Running out ends the relay as a backend failure (a circuit failure; never retried: part of the answer reached the client).",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "default": 120000
+        },
+        "max_in_flight": {
+          "description": "Most requests in flight on the backend at once, shared by every deployment on it (for llama-server: its slot count), across all gateways: in control-plane mode each gateway enforces its share, ceil(max_in_flight / live_gateways), at least 1. Omitted = no cap.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "if": {
+        "properties": { "type": { "const": "azure-openai" } },
+        "required": ["type"]
+      },
+      "then": { "required": ["api_key_env"] }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deployments", "metadata"],
+      "properties": {
+        "deployments": {
+          "description": "Where the model is served. Requests are balanced across all of them.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["backend", "model"],
+            "properties": {
+              "backend": { "$ref": "#/$defs/id" },
+              "model": {
+                "description": "The model name on that backend (for Azure: the deployment name).",
+                "$ref": "#/$defs/backend_model_name"
+              }
+            }
+          }
+        },
+        "metadata": {
+          "description": "Declared model metadata, served on /v1/models and /v1/models/{id}/props.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["context_length", "capabilities"],
+          "properties": {
+            "context_length": {
+              "description": "Maximum tokens of input plus output.",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "capabilities": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["streaming", "tools", "vision", "reasoning"],
+              "properties": {
+                "streaming": { "type": "boolean" },
+                "tools": { "type": "boolean" },
+                "vision": { "type": "boolean" },
+                "reasoning": { "type": "boolean" }
+              }
+            },
+            "reasoning_efforts": {
+              "description": "Supported reasoning_effort values, e.g. low, medium, high.",
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" }
+            }
+          }
+        },
+        "defaults": {
+          "description": "Request parameters the gateway fills in when a request omits them. Deliberately open: backends accept parameters the gateway does not know (vLLM top_k, min_p, chat_template_kwargs, ...) and passthrough preserves them, so any parameter name is accepted. Values are any JSON value except null (objects included, e.g. chat_template_kwargs: {\"enable_thinking\": false}); a default replaces an unset parameter whole, never merged. Fields the gateway owns or that carry request content are not allowed; the output limit is set through output_limit.",
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "not": {
+              "enum": [
+                "model",
+                "messages",
+                "prompt",
+                "input",
+                "stream",
+                "stream_options",
+                "max_tokens",
+                "max_completion_tokens",
+                "n",
+                "best_of"
+              ]
+            }
+          },
+          "additionalProperties": { "$ref": "#/$defs/default_value" }
+        },
+        "output_limit": {
+          "description": "default: applied when a request sets no output limit. ceiling: larger requested limits are lowered to it. Omitted (e.g. embedding models): the gateway sets and lowers nothing.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["default", "ceiling"],
+          "properties": {
+            "default": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+            "ceiling": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }
+          }
+        },
+        "queue": {
+          "description": "Overrides global.queue for this model's queue; a field left out keeps the global value.",
+          "type": "object",
+          "$ref": "#/$defs/queue_settings",
+          "minProperties": 1
+        },
+        "retries": {
+          "description": "Overrides global.retries for this model.",
+          "type": "object",
+          "$ref": "#/$defs/retry_settings",
+          "required": ["max_attempts"]
+        },
+        "prices": {
+          "description": "Price table, entries in strictly increasing effective_from order. The entry in force is the latest one effective on or before the request's UTC date. Omitted or empty = unpriced (cost 0). Priced units are disjoint: tokens_in is uncached input, tokens_cached cached input, tokens_out all output including reasoning; reasoning tokens are recorded but never priced on their own.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["effective_from", "usd_per_million"],
+            "properties": {
+              "effective_from": { "$ref": "#/$defs/date" },
+              "usd_per_million": {
+                "description": "USD per million units. tokens_cached left out is charged at the tokens_in price; tokens_in or tokens_out left out costs 0.",
+                "type": "object",
+                "additionalProperties": false,
+                "minProperties": 1,
+                "properties": {
+                  "tokens_in": { "type": "number", "minimum": 0 },
+                  "tokens_cached": { "type": "number", "minimum": 0 },
+                  "tokens_out": { "type": "number", "minimum": 0 }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "default_value": {
+      "description": "A model default's value: any JSON value but null. Numbers must be finite as JavaScript reads them (a number past the double range, such as 1e400, is refused at any depth); kaiak-control holds every number as a JavaScript number.",
+      "type": ["string", "number", "boolean", "array", "object"],
+      "items": { "$ref": "#/$defs/json_value" },
+      "additionalProperties": { "$ref": "#/$defs/json_value" }
+    },
+    "json_value": {
+      "description": "Any JSON value inside a model default, null included; numbers finite as for default_value.",
+      "type": ["null", "string", "number", "boolean", "array", "object"],
+      "items": { "$ref": "#/$defs/json_value" },
+      "additionalProperties": { "$ref": "#/$defs/json_value" }
+    },
+    "group": {
+      "description": "A node of the group tree. Its limits apply to every request of a key in it or below it; the gateway gives levels no meaning.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "parent": {
+          "description": "The parent group's ID. Omitted = a top-level group. Never changes once published: a move is a delete and a create.",
+          "$ref": "#/$defs/id"
+        },
+        "labels": {
+          "description": "Free-form labels for the control plane (UI, reports). The gateway checks their shape and ignores them.",
+          "$ref": "#/$defs/labels"
+        },
+        "allowed_models": {
+          "description": "The models this group's level allows; replaces the parent's child_defaults.allowed_models. Levels intersect down the path. Omitted (and no parent default) = this level restricts nothing.",
+          "$ref": "#/$defs/allowed_models"
+        },
+        "limits": {
+          "description": "This group's limits. Each replaces the parent's child_defaults limit with the same type and model set; defaults not replaced still apply.",
+          "$ref": "#/$defs/limits"
+        },
+        "child_defaults": {
+          "description": "What each direct child gets unless the child's own entry overrides it: its allowed_models when the child lists none, and its limits merged under the child's.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "allowed_models": { "$ref": "#/$defs/allowed_models" },
+            "limits": { "$ref": "#/$defs/limits" }
+          }
+        }
+      }
+    },
+    "labels": {
+      "description": "At most 16 labels. Keys: a lowercase letter, then up to 62 lowercase letters, digits, _, . or -. Values: 1 to 256 characters, no control characters (U+0000-U+001F, U+007F-U+009F).",
+      "type": "object",
+      "maxProperties": 16,
+      "propertyNames": { "type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,62}$" },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]{1,256}$"
+      }
+    },
+    "key": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hash", "group"],
+      "properties": {
+        "hash": {
+          "description": "SHA-256 of the full key, lowercase hex.",
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "group": {
+          "description": "The group the key belongs to (any group, leaf or not). Its usage counts toward that group, every ancestor and global.",
+          "$ref": "#/$defs/id"
+        },
+        "expires_at": { "$ref": "#/$defs/timestamp" },
+        "disabled": { "type": "boolean", "default": false }
+      }
+    },
+    "allowed_models": {
+      "description": "Public model names a level of the group tree allows; [\"*\"] alone means this level restricts nothing, [] allows none.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "anyOf": [{ "const": "*" }, { "$ref": "#/$defs/public_model_name" }]
+      }
+    },
+    "limits": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/limit" }
+    },
+    "limit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "value"],
+      "properties": {
+        "type": {
+          "description": "Per-minute windows slide; hours are fixed UTC hours; months are calendar months, UTC.",
+          "enum": ["requests_per_minute", "tokens_per_minute", "tokens_per_hour", "usd_per_month"]
+        },
+        "value": { "type": "number", "minimum": 0, "maximum": 9007199254740991 },
+        "models": {
+          "description": "Public model names the limit covers, counted together. Omitted = all models.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/public_model_name" }
+        }
+      },
+      "if": {
+        "properties": { "type": { "enum": ["requests_per_minute", "tokens_per_minute", "tokens_per_hour"] } },
+        "required": ["type"]
+      },
+      "then": { "properties": { "value": { "type": "integer" } } }
+    }
+  }
+}

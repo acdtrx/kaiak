@@ -1,0 +1,153 @@
+package control
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"mime"
+	"net/http"
+	"net/url"
+	"strconv"
+)
+
+// Header names and the protocol version as it travels in the header
+// (CONTROL-PROTOCOL.md, Shape and Request checks).
+const (
+	headerProtocol = "Kaiak-Protocol"
+	headerInstance = "Kaiak-Instance"
+)
+
+var protocolHeaderValue = strconv.Itoa(ProtocolVersion)
+
+// maxMessageBytes bounds a snapshot body and one stream event: a config document is
+// far smaller.
+const maxMessageBytes = 16 << 20
+
+// errProtocolMismatch: the control plane answered without the protocol version this
+// gateway speaks. Retrying cannot fix it until one side is upgraded, so it is logged
+// at error level; the client still retries on its backoff and the gateway keeps
+// serving what it has.
+var errProtocolMismatch = errors.New("protocol version mismatch")
+
+// statusError is an answer other than the one the endpoint succeeds with, carrying
+// the protocol's error code when the body had one.
+type statusError struct {
+	status int
+	code   string
+}
+
+func (e *statusError) Error() string {
+	if e.code == "" {
+		return fmt.Sprintf("control plane answered %d", e.status)
+	}
+	return fmt.Sprintf("control plane answered %d %s", e.status, e.code)
+}
+
+// get sends one GET to the control plane with the headers every request carries,
+// and checks the answer's protocol version before anything else is read. An answer
+// other than 200 is a *statusError.
+func (c *Client) get(ctx context.Context, path string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.send(req, c.opts.Instance)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		return nil, &statusError{status: resp.StatusCode, code: errorCode(resp.Body)}
+	}
+	return resp, nil
+}
+
+// post sends one JSON body to the control plane as instance, with the headers every
+// request carries, and checks the answer's protocol version before anything else is
+// read. An answer other than want is a *statusError.
+func (c *Client) post(ctx context.Context, path, instance string, body []byte, want int) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.send(req, instance)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != want {
+		defer resp.Body.Close()
+		return nil, &statusError{status: resp.StatusCode, code: errorCode(resp.Body)}
+	}
+	return resp, nil
+}
+
+// send adds the token, the protocol version and the instance to req, sends it, and
+// refuses an answer that does not carry the protocol version this gateway speaks.
+func (c *Client) send(req *http.Request, instance string) (*http.Response, error) {
+	req.Header.Set("Authorization", "Bearer "+c.opts.Token)
+	req.Header.Set(headerProtocol, protocolHeaderValue)
+	req.Header.Set(headerInstance, instance)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if got := resp.Header.Values(headerProtocol); len(got) != 1 || got[0] != protocolHeaderValue {
+		resp.Body.Close()
+		return nil, fmt.Errorf("%w: control plane answered %d with %s %q, gateway speaks %s",
+			errProtocolMismatch, resp.StatusCode, headerProtocol, got, protocolHeaderValue)
+	}
+	return resp, nil
+}
+
+// errorCode reads the { error, detail? } body's code; "" when the body is not one.
+func errorCode(body io.Reader) string {
+	var e struct {
+		Error string `json:"error"`
+	}
+	data, err := io.ReadAll(io.LimitReader(body, 64<<10))
+	if err != nil || json.Unmarshal(data, &e) != nil {
+		return ""
+	}
+	return e.Error
+}
+
+// fetchSnapshot gets GET /v1/config: the current config and its version. The config
+// inside is validated by the apply path, not here.
+func (c *Client) fetchSnapshot(ctx context.Context) (ConfigSnapshot, error) {
+	resp, err := c.get(ctx, "/config")
+	if err != nil {
+		return ConfigSnapshot{}, fmt.Errorf("fetch config snapshot: %w", err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxMessageBytes+1))
+	if err != nil {
+		return ConfigSnapshot{}, fmt.Errorf("read config snapshot: %w", err)
+	}
+	if len(data) > maxMessageBytes {
+		return ConfigSnapshot{}, fmt.Errorf("config snapshot exceeds %d bytes", maxMessageBytes)
+	}
+	snapshot, err := DecodeConfigSnapshot(data)
+	if err == nil {
+		c.touch()
+	}
+	return snapshot, err
+}
+
+// openStream opens GET /v1/stream resuming after since: its version, and the epoch the
+// version counts in.
+func (c *Client) openStream(ctx context.Context, since configPosition) (*http.Response, error) {
+	query := url.Values{"since": {strconv.FormatInt(since.version, 10)}, "config_epoch": {since.epoch}}
+	resp, err := c.get(ctx, "/stream?"+query.Encode())
+	if err != nil {
+		return nil, fmt.Errorf("open config stream: %w", err)
+	}
+	if mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type")); mediaType != "text/event-stream" {
+		resp.Body.Close()
+		return nil, fmt.Errorf("open config stream: answer is %q, not text/event-stream", mediaType)
+	}
+	return resp, nil
+}

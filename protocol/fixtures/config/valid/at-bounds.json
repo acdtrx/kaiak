@@ -1,0 +1,74 @@
+{
+  "format_version": 2,
+  "global": {
+    "max_request_body_bytes": 9007199254740991,
+    "control_outage_grace_ms": 9007199254740991,
+    "max_n": 9007199254740991,
+    "max_sequences_per_request": 9007199254740991,
+    "max_embedding_inputs": 9007199254740991,
+    "max_concurrent_requests_per_key": 9007199254740991,
+    "queue": { "size": 9007199254740991, "timeout_ms": 9007199254740991 },
+    "circuit": { "failure_threshold": 9007199254740991, "probe_interval_ms": 9007199254740991 },
+    "limits": [
+      { "type": "tokens_per_hour", "value": 9007199254740991 },
+      { "type": "usd_per_month", "value": 9007199254740991 }
+    ]
+  },
+  "backends": {
+    "local": {
+      "type": "openai-compatible",
+      "base_url": "http://localhost:8080/v1",
+      "connect_timeout_ms": 9007199254740991,
+      "first_event_timeout_ms": 9007199254740991,
+      "response_timeout_ms": 9007199254740991,
+      "stall_timeout_ms": 9007199254740991,
+      "max_in_flight": 9007199254740991
+    }
+  },
+  "models": {
+    "llama": {
+      "deployments": [{ "backend": "local", "model": "llama" }],
+      "metadata": {
+        "context_length": 9007199254740991,
+        "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }
+      },
+      "output_limit": { "default": 9007199254740991, "ceiling": 9007199254740991 }
+    }
+  },
+  "groups": {
+    "level1": {},
+    "level2": { "parent": "level1" },
+    "level3": { "parent": "level2" },
+    "level4": { "parent": "level3" },
+    "level5": { "parent": "level4" },
+    "level6": { "parent": "level5" },
+    "level7": { "parent": "level6" },
+    "uxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx": {
+      "parent": "level7",
+      "labels": {
+        "k00000000000000000000000000000000000000000000000000000000000000": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv",
+        "astral": "𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞𝄞",
+        "accented": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+        "a": "x",
+        "l0": "value 0",
+        "l1": "value 1",
+        "l2": "value 2",
+        "l3": "value 3",
+        "l4": "value 4",
+        "l5": "value 5",
+        "l6": "value 6",
+        "l7": "value 7",
+        "l8": "value 8",
+        "l9": "value 9",
+        "l10": "value 10",
+        "l11": "value 11"
+      }
+    }
+  },
+  "keys": {
+    "kyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy": {
+      "hash": "sha256:59f8f6709d858b919a10541cd215a0de7b4299bbc6c11a2e0bf4ca03ec6df717",
+      "group": "uxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    }
+  }
+}

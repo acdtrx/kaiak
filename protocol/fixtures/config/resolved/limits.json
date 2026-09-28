@@ -1,0 +1,103 @@
+{
+  "reason": "child_defaults limits merge under each direct child's own: a child's limit replaces the default with the same type and model set (order ignored) in place, the rest are appended; grandchildren get nothing from it",
+  "config": {
+    "format_version": 2,
+    "global": {},
+    "backends": { "local": { "type": "openai-compatible", "base_url": "http://localhost:8000/v1" } },
+    "models": {
+      "a": {
+        "deployments": [{ "backend": "local", "model": "a" }],
+        "metadata": {
+          "context_length": 4096,
+          "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }
+        }
+      },
+      "b": {
+        "deployments": [{ "backend": "local", "model": "b" }],
+        "metadata": {
+          "context_length": 4096,
+          "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }
+        }
+      },
+      "c": {
+        "deployments": [{ "backend": "local", "model": "c" }],
+        "metadata": {
+          "context_length": 4096,
+          "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }
+        }
+      }
+    },
+    "groups": {
+      "parent": {
+        "limits": [{ "type": "usd_per_month", "value": 100 }],
+        "child_defaults": {
+          "limits": [
+            { "type": "requests_per_minute", "value": 10 },
+            { "type": "requests_per_minute", "value": 5, "models": ["a"] },
+            { "type": "tokens_per_hour", "value": 1000, "models": ["a", "b"] }
+          ]
+        }
+      },
+      "defaults-only": { "parent": "parent" },
+      "override-reordered": {
+        "parent": "parent",
+        "limits": [
+          { "type": "tokens_per_hour", "value": 2000, "models": ["b", "a"] },
+          { "type": "requests_per_minute", "value": 7, "models": ["b"] }
+        ]
+      },
+      "override-all-models": {
+        "parent": "parent",
+        "limits": [
+          { "type": "tokens_per_minute", "value": 500 },
+          { "type": "requests_per_minute", "value": 20 }
+        ]
+      },
+      "grandchild": { "parent": "defaults-only" }
+    },
+    "keys": {}
+  },
+  "expected": {
+    "groups": {
+      "parent": {
+        "path": ["parent"],
+        "allowed_models": "all",
+        "limits": [{ "type": "usd_per_month", "value": 100 }]
+      },
+      "defaults-only": {
+        "path": ["parent", "defaults-only"],
+        "allowed_models": "all",
+        "limits": [
+          { "type": "requests_per_minute", "value": 10 },
+          { "type": "requests_per_minute", "value": 5, "models": ["a"] },
+          { "type": "tokens_per_hour", "value": 1000, "models": ["a", "b"] }
+        ]
+      },
+      "override-reordered": {
+        "path": ["parent", "override-reordered"],
+        "allowed_models": "all",
+        "limits": [
+          { "type": "requests_per_minute", "value": 10 },
+          { "type": "requests_per_minute", "value": 5, "models": ["a"] },
+          { "type": "tokens_per_hour", "value": 2000, "models": ["b", "a"] },
+          { "type": "requests_per_minute", "value": 7, "models": ["b"] }
+        ]
+      },
+      "override-all-models": {
+        "path": ["parent", "override-all-models"],
+        "allowed_models": "all",
+        "limits": [
+          { "type": "requests_per_minute", "value": 20 },
+          { "type": "requests_per_minute", "value": 5, "models": ["a"] },
+          { "type": "tokens_per_hour", "value": 1000, "models": ["a", "b"] },
+          { "type": "tokens_per_minute", "value": 500 }
+        ]
+      },
+      "grandchild": {
+        "path": ["parent", "defaults-only", "grandchild"],
+        "allowed_models": "all",
+        "limits": []
+      }
+    }
+  }
+}

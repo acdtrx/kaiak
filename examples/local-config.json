@@ -1,0 +1,46 @@
+{
+  "format_version": 2,
+  "global": {
+    "limits": [{ "type": "requests_per_minute", "value": 600 }]
+  },
+  "backends": {
+    "fake": { "type": "openai-compatible", "base_url": "http://127.0.0.1:8000/v1" }
+  },
+  "models": {
+    "demo": {
+      "deployments": [{ "backend": "fake", "model": "demo" }],
+      "metadata": {
+        "context_length": 8192,
+        "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }
+      },
+      "output_limit": { "default": 256, "ceiling": 1024 },
+      "prices": [
+        { "effective_from": "2026-01-01", "usd_per_million": { "tokens_in": 1.0, "tokens_out": 4.0 } }
+      ]
+    }
+  },
+  "groups": {
+    "demo-team": {
+      "labels": { "kind": "team" },
+      "limits": [{ "type": "tokens_per_hour", "value": 1000000 }]
+    },
+    "demo-app": {
+      "parent": "demo-team",
+      "labels": { "kind": "workload" },
+      "allowed_models": ["demo"],
+      "limits": [{ "type": "requests_per_minute", "value": 120 }]
+    },
+    "users": {
+      "labels": { "kind": "people" },
+      "child_defaults": {
+        "allowed_models": ["demo"],
+        "limits": [
+          { "type": "requests_per_minute", "value": 30 },
+          { "type": "usd_per_month", "value": 5 }
+        ]
+      }
+    },
+    "me": { "parent": "users" }
+  },
+  "keys": {}
+}

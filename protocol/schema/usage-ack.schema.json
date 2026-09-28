@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kaiak.invalid/protocol/schema/usage-ack.schema.json",
+  "title": "kaiak usage ack",
+  "description": "The answer to POST /v1/usage: the batch ID it acknowledges (counted now or before) and the fresh totals.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "batch",
+    "totals"
+  ],
+  "properties": {
+    "batch": {
+      "$ref": "usage-batch.schema.json#/$defs/batch_id"
+    },
+    "totals": {
+      "$ref": "totals.schema.json"
+    }
+  }
+}

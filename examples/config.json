@@ -1,0 +1,186 @@
+{
+  "format_version": 2,
+  "global": {
+    "limits": [
+      { "type": "requests_per_minute", "value": 1200 },
+      { "type": "usd_per_month", "value": 2000, "models": ["gpt-4.1", "gpt-4.1-mini"] }
+    ]
+  },
+  "backends": {
+    "vllm-gpu-1": {
+      "type": "openai-compatible",
+      "base_url": "http://vllm-gpu-1.internal:8000/v1",
+      "first_event_timeout_ms": 120000
+    },
+    "vllm-gpu-2": {
+      "type": "openai-compatible",
+      "base_url": "http://vllm-gpu-2.internal:8000/v1",
+      "first_event_timeout_ms": 120000
+    },
+    "vllm-embed": {
+      "type": "openai-compatible",
+      "base_url": "http://vllm-embed.internal:8000/v1",
+      "api_key_env": "VLLM_EMBED_API_KEY"
+    },
+    "azure-swedencentral": {
+      "type": "azure-openai",
+      "base_url": "https://acme-swedencentral.openai.azure.com",
+      "api_key_env": "AZURE_SWEDENCENTRAL_API_KEY"
+    }
+  },
+  "models": {
+    "qwen3-32b": {
+      "deployments": [
+        { "backend": "vllm-gpu-1", "model": "Qwen/Qwen3-32B" },
+        { "backend": "vllm-gpu-2", "model": "Qwen/Qwen3-32B" }
+      ],
+      "metadata": {
+        "context_length": 32768,
+        "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": true }
+      },
+      "defaults": {
+        "temperature": 0.7,
+        "top_p": 0.8,
+        "top_k": 20,
+        "min_p": 0,
+        "chat_template_kwargs": { "enable_thinking": false }
+      },
+      "output_limit": { "default": 2048, "ceiling": 8192 }
+    },
+    "qwen3-32b-thinking": {
+      "deployments": [
+        { "backend": "vllm-gpu-1", "model": "Qwen/Qwen3-32B" },
+        { "backend": "vllm-gpu-2", "model": "Qwen/Qwen3-32B" }
+      ],
+      "metadata": {
+        "context_length": 32768,
+        "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": true }
+      },
+      "defaults": { "temperature": 0.6, "top_p": 0.95, "top_k": 20, "min_p": 0 },
+      "output_limit": { "default": 8192, "ceiling": 16384 }
+    },
+    "bge-m3": {
+      "deployments": [{ "backend": "vllm-embed", "model": "BAAI/bge-m3" }],
+      "metadata": {
+        "context_length": 8192,
+        "capabilities": { "streaming": false, "tools": false, "vision": false, "reasoning": false }
+      }
+    },
+    "gpt-4.1": {
+      "deployments": [{ "backend": "azure-swedencentral", "model": "gpt-4.1-prod" }],
+      "metadata": {
+        "context_length": 1047576,
+        "capabilities": { "streaming": true, "tools": true, "vision": true, "reasoning": false }
+      },
+      "output_limit": { "default": 4096, "ceiling": 32768 },
+      "prices": [
+        {
+          "effective_from": "2025-04-14",
+          "usd_per_million": { "tokens_in": 2.0, "tokens_cached": 0.5, "tokens_out": 8.0 }
+        }
+      ]
+    },
+    "gpt-4.1-mini": {
+      "deployments": [{ "backend": "azure-swedencentral", "model": "gpt-4.1-mini-prod" }],
+      "metadata": {
+        "context_length": 1047576,
+        "capabilities": { "streaming": true, "tools": true, "vision": true, "reasoning": false }
+      },
+      "output_limit": { "default": 4096, "ceiling": 32768 },
+      "prices": [
+        {
+          "effective_from": "2025-04-14",
+          "usd_per_million": { "tokens_in": 0.4, "tokens_cached": 0.1, "tokens_out": 1.6 }
+        }
+      ]
+    }
+  },
+  "groups": {
+    "search": {
+      "labels": { "kind": "team", "cost_center": "CC-2210" },
+      "limits": [{ "type": "usd_per_month", "value": 500 }]
+    },
+    "search-rag": {
+      "parent": "search",
+      "labels": { "kind": "project" },
+      "allowed_models": ["qwen3-32b", "gpt-4.1-mini", "bge-m3"],
+      "limits": [{ "type": "tokens_per_minute", "value": 200000 }]
+    },
+    "search-rag-prod": {
+      "parent": "search-rag",
+      "labels": { "kind": "env", "env": "prod" },
+      "limits": [{ "type": "requests_per_minute", "value": 300 }]
+    },
+    "rag-service": {
+      "parent": "search-rag-prod",
+      "labels": { "kind": "workload" }
+    },
+    "search-rag-dev": {
+      "parent": "search-rag",
+      "labels": { "kind": "env", "env": "dev" },
+      "allowed_models": ["qwen3-32b", "bge-m3"],
+      "limits": [
+        { "type": "requests_per_minute", "value": 60 },
+        { "type": "tokens_per_hour", "value": 1000000 }
+      ]
+    },
+    "rag-service-dev": {
+      "parent": "search-rag-dev",
+      "labels": { "kind": "workload" }
+    },
+    "research": {
+      "labels": { "kind": "team", "cost_center": "CC-3105" },
+      "limits": [{ "type": "tokens_per_minute", "value": 400000 }]
+    },
+    "research-eval": {
+      "parent": "research",
+      "labels": { "kind": "project" },
+      "limits": [{ "type": "usd_per_month", "value": 300, "models": ["gpt-4.1", "gpt-4.1-mini"] }]
+    },
+    "eval-batch": {
+      "parent": "research-eval",
+      "labels": { "kind": "workload" },
+      "limits": [{ "type": "requests_per_minute", "value": 120 }]
+    },
+    "users": {
+      "labels": { "kind": "people" },
+      "child_defaults": {
+        "allowed_models": ["qwen3-32b", "gpt-4.1-mini", "bge-m3"],
+        "limits": [
+          { "type": "requests_per_minute", "value": 30 },
+          { "type": "tokens_per_hour", "value": 500000 },
+          { "type": "usd_per_month", "value": 25 }
+        ]
+      }
+    },
+    "alice": {
+      "parent": "users",
+      "allowed_models": ["*"],
+      "limits": [{ "type": "usd_per_month", "value": 100 }]
+    },
+    "bob": { "parent": "users" }
+  },
+  "keys": {
+    "k-rag-service": {
+      "hash": "sha256:b093fd0ca4825b0130fb980af4b724083fe8dab09ef621e421646cd6df9c58e8",
+      "group": "rag-service"
+    },
+    "k-rag-service-dev": {
+      "hash": "sha256:5f6cbe143cdd7efe7e76ebfac4200b143f6e4e479c91dc228396fa2c6cfd60d2",
+      "group": "rag-service-dev"
+    },
+    "k-eval-batch": {
+      "hash": "sha256:eec2dba99483b8e742baa16eff8d49f5015306984d257b868375776e6c605f48",
+      "group": "eval-batch",
+      "expires_at": "2027-06-30T23:59:59Z"
+    },
+    "k-alice": {
+      "hash": "sha256:b53dbd0764b0a403be8be06e6603324b6e1982de27c6f52b5110cf0dc604087e",
+      "group": "alice"
+    },
+    "k-bob": {
+      "hash": "sha256:2fa918493bab458d0e2f410524fd234e6f628dbc84e296353a0595ea9e6f0d10",
+      "group": "bob"
+    }
+  }
+}

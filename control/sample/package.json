@@ -1,0 +1,21 @@
+{
+  "name": "kaiak-sample",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": {
+    "dev": "KAIAK_LOG_FORMAT=${KAIAK_LOG_FORMAT:-text} node src/main.ts",
+    "start": "node src/main.ts",
+    "keygen": "node src/keygen-cli.ts",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "fastify": "5.12.5",
+    "kaiak-control": "0.0.0"
+  },
+  "devDependencies": {
+    "pino-pretty": "13.1.3"
+  }
+}

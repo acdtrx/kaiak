@@ -1,0 +1,120 @@
+{
+  "applied-epoch-missing.json": {
+    "kind": "schema",
+    "reason": "the applied epoch is explicit, null before the first apply"
+  },
+  "applied-epoch-shape.json": {
+    "kind": "schema",
+    "reason": "a config epoch is 32 lowercase hex digits"
+  },
+  "applied-epoch-without-version.json": {
+    "kind": "schema",
+    "reason": "the applied epoch is null exactly when the applied version is"
+  },
+  "applied-version-missing.json": {
+    "kind": "schema",
+    "reason": "the applied version is explicit, null before the first apply"
+  },
+  "applied-version-without-epoch.json": {
+    "kind": "schema",
+    "reason": "an applied version names the epoch it counts in"
+  },
+  "backend-health.json": {
+    "kind": "schema",
+    "reason": "a backend entry holds in_flight, max_in_flight and deployments only; unknown fields are refused"
+  },
+  "backend-id-invalid.json": {
+    "kind": "schema",
+    "reason": "backends are keyed by backend ID"
+  },
+  "circuit-closed-with-opened-at.json": {
+    "kind": "schema",
+    "reason": "a closed circuit carries no opened_at"
+  },
+  "circuit-half-open-without-opened-at.json": {
+    "kind": "schema",
+    "reason": "a half-open circuit keeps when it opened"
+  },
+  "circuit-open-without-opened-at.json": {
+    "kind": "schema",
+    "reason": "an open circuit says when it opened"
+  },
+  "circuit-unknown.json": {
+    "kind": "schema",
+    "reason": "a circuit is closed, open or half_open"
+  },
+  "deployment-model-name-invalid.json": {
+    "kind": "schema",
+    "reason": "deployments are keyed by the model name on the backend: printable ASCII, no spaces"
+  },
+  "deployments-missing.json": {
+    "kind": "schema",
+    "reason": "every backend entry lists its deployments, possibly none"
+  },
+  "in-flight-map.json": {
+    "kind": "schema",
+    "reason": "the top-level in_flight map is gone: in-flight counts live under backends"
+  },
+  "in-flight-missing.json": {
+    "kind": "schema",
+    "reason": "every backend entry states its in-flight count"
+  },
+  "in-flight-negative.json": {
+    "kind": "schema",
+    "reason": "in-flight counts are 0 or more"
+  },
+  "instance-254.json": {
+    "kind": "schema",
+    "reason": "an instance ID is at most 253 characters"
+  },
+  "max-in-flight-zero.json": {
+    "kind": "schema",
+    "reason": "a reported cap is at least 1; no cap is an absent max_in_flight"
+  },
+  "model-name-props-suffix.json": {
+    "kind": "schema",
+    "reason": "models are keyed by public model name"
+  },
+  "models-missing.json": {
+    "kind": "schema",
+    "reason": "models is required, empty before the first config is applied"
+  },
+  "opened-at-not-a-day.json": {
+    "kind": "semantic",
+    "code": "timestamp-invalid",
+    "reason": "opened_at names a real instant"
+  },
+  "protocol-version-1.json": {
+    "kind": "schema",
+    "reason": "the protocol version is 2"
+  },
+  "queued-negative.json": {
+    "kind": "schema",
+    "reason": "queued counts are 0 or more"
+  },
+  "queued-per-backend.json": {
+    "kind": "schema",
+    "reason": "queues belong to models, not backends"
+  },
+  "rejection-code-shape.json": {
+    "kind": "schema",
+    "reason": "codes are lowercase words joined by hyphens"
+  },
+  "rejection-codes-duplicate.json": {
+    "kind": "schema",
+    "reason": "a rejection lists each code once"
+  },
+  "rejection-codes-empty.json": {
+    "kind": "schema",
+    "reason": "a rejection names at least one code"
+  },
+  "started-at-not-a-day.json": {
+    "kind": "semantic",
+    "code": "timestamp-invalid",
+    "reason": "started_at names a real instant"
+  },
+  "state-unknown.json": {
+    "kind": "schema",
+    "reason": "state is starting, ready or draining"
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kaiak.invalid/protocol/schema/common.schema.json",
+  "title": "kaiak protocol: shared definitions",
+  "description": "Definitions the control-protocol messages share (docs/specs/CONTROL-PROTOCOL.md, Messages). IDs, model names and timestamps come from config.schema.json.",
+  "$defs": {
+    "instance": {
+      "description": "A gateway's instance ID (KAIAK_INSTANCE_ID, default the hostname). Also sent in the Kaiak-Instance header, so it is header-safe.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$"
+    },
+    "config_epoch": {
+      "description": "The control-plane store's config epoch: 32 random lowercase hex digits, created with the store and kept for its life. Config versions count within an epoch, so a version number alone never compares across stores.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "config_version": {
+      "description": "A config version: assigned by the control plane, increasing with every config change.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "count": {
+      "description": "A non-negative integer a JavaScript number holds exactly (at most 2^53 - 1).",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "amount": {
+      "description": "A used amount in a limit window, as a string of decimal digits (at most 18, so below 10^18): requests, tokens, or nano-USD for USD limits. A string, not a number, because a month of spend in nano-USD can pass 2^53, where a JavaScript number stops being exact.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,17})$"
+    }
+  }
+}

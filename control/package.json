@@ -1,0 +1,19 @@
+{
+  "name": "kaiak-control-workspace",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "workspaces": [
+    "kaiak-control",
+    "sample"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "lint": "tsc -p . && node scripts/check-boundaries.ts",
+    "sync-schemas": "node scripts/sync-schemas.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "typescript": "^7.0.2"
+  }
+}

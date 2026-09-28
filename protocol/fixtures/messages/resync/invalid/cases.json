@@ -1,0 +1,10 @@
+{
+  "array.json": {
+    "kind": "schema",
+    "reason": "the data is a JSON object"
+  },
+  "with-version.json": {
+    "kind": "schema",
+    "reason": "a resync event carries nothing"
+  }
+}

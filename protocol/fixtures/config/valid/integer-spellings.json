@@ -1,0 +1,25 @@
+{
+  "format_version": 2,
+  "global": { "max_request_body_bytes": 1e6, "queue": { "size": 1E2, "timeout_ms": 30000.0 } },
+  "backends": { "local": { "type": "openai-compatible", "base_url": "http://localhost:8080/v1" } },
+  "models": {
+    "llama": {
+      "deployments": [{ "backend": "local", "model": "llama" }],
+      "metadata": {
+        "context_length": 8192.0,
+        "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }
+      },
+      "output_limit": { "default": 1.024e3, "ceiling": 4096.0 }
+    }
+  },
+  "groups": {
+    "users": { "child_defaults": { "limits": [{ "type": "tokens_per_minute", "value": 1e3 }] } },
+    "me": { "parent": "users" }
+  },
+  "keys": {
+    "k-me": {
+      "hash": "sha256:59f8f6709d858b919a10541cd215a0de7b4299bbc6c11a2e0bf4ca03ec6df717",
+      "group": "me"
+    }
+  }
+}

@@ -1,0 +1,133 @@
+// The config document as TypeScript sees it once it has passed the schema.
+// protocol/schema/config.schema.json is the source of truth; these types follow it.
+
+export type BackendType = "openai-compatible" | "azure-openai";
+
+export type LimitType = "requests_per_minute" | "tokens_per_minute" | "tokens_per_hour" | "usd_per_month";
+
+// Usage units a usage record counts. tokens_in is uncached input, tokens_cached cached
+// input, tokens_out all output including reasoning; tokens_reasoning is the reasoning
+// share of tokens_out, recorded for visibility and never priced.
+export type UsageUnit = "tokens_in" | "tokens_cached" | "tokens_out" | "tokens_reasoning";
+
+// Units a price entry may name.
+export type PriceUnit = Exclude<UsageUnit, "tokens_reasoning">;
+
+// A JSON value other than null: what a model's defaults may hold.
+export type DefaultValue = string | number | boolean | unknown[] | { [key: string]: unknown };
+
+export interface Limit {
+  type: LimitType;
+  value: number;
+  models?: string[];
+}
+
+export interface Backend {
+  type: BackendType;
+  base_url: string;
+  api_key_env?: string;
+  connect_timeout_ms?: number;
+  // Streams: until the first event. Non-stream: the whole response. Streams: the
+  // longest gap between events after the first.
+  first_event_timeout_ms?: number;
+  response_timeout_ms?: number;
+  stall_timeout_ms?: number;
+  // Absent = no cap.
+  max_in_flight?: number;
+}
+
+export interface Deployment {
+  backend: string;
+  model: string;
+}
+
+export interface ModelMetadata {
+  context_length: number;
+  capabilities: {
+    streaming: boolean;
+    tools: boolean;
+    vision: boolean;
+    reasoning: boolean;
+  };
+  reasoning_efforts?: string[];
+}
+
+export interface Price {
+  effective_from: string;
+  // tokens_cached left out is charged at the tokens_in price; tokens_in or tokens_out
+  // left out costs 0.
+  usd_per_million: Partial<Record<PriceUnit, number>>;
+}
+
+// A model's queue, or global.queue; a model's override leaves out what it keeps.
+export interface QueueSettings {
+  size?: number;
+  timeout_ms?: number;
+}
+
+export interface RetrySettings {
+  max_attempts?: number;
+}
+
+export interface CircuitSettings {
+  failure_threshold?: number;
+  probe_interval_ms?: number;
+}
+
+export interface Model {
+  deployments: Deployment[];
+  metadata: ModelMetadata;
+  defaults?: Record<string, DefaultValue>;
+  output_limit?: { default: number; ceiling: number };
+  queue?: QueueSettings;
+  retries?: Required<RetrySettings>;
+  prices?: Price[];
+}
+
+// What a group gives each direct child unless the child's own entry overrides it.
+export interface ChildDefaults {
+  allowed_models?: string[];
+  limits?: Limit[];
+}
+
+// A node of the group tree. No parent = a top-level group; global is the implicit
+// root above every top-level group.
+export interface Group {
+  parent?: string;
+  // For the control plane only; the gateway checks their shape and ignores them.
+  labels?: Record<string, string>;
+  allowed_models?: string[];
+  limits?: Limit[];
+  child_defaults?: ChildDefaults;
+}
+
+export interface Key {
+  hash: string;
+  // Any group, leaf or not.
+  group: string;
+  expires_at?: string;
+  disabled?: boolean;
+}
+
+export interface Global {
+  limits?: Limit[];
+  max_request_body_bytes?: number;
+  control_outage_grace_ms?: number;
+  max_n?: number;
+  max_sequences_per_request?: number;
+  max_embedding_inputs?: number;
+  max_concurrent_requests_per_key?: number;
+  queue?: QueueSettings;
+  retries?: RetrySettings;
+  circuit?: CircuitSettings;
+  metrics?: { key_id_label?: boolean; group_label?: boolean };
+}
+
+export interface Config {
+  format_version: 2;
+  global: Global;
+  backends: Record<string, Backend>;
+  models: Record<string, Model>;
+  groups?: Record<string, Group>;
+  keys: Record<string, Key>;
+}

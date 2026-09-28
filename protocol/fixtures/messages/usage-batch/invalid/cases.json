@@ -1,0 +1,44 @@
+{
+  "epoch-short.json": {
+    "kind": "schema",
+    "reason": "epochs are 32 lowercase hex digits"
+  },
+  "epoch-uppercase.json": {
+    "kind": "schema",
+    "reason": "epochs are lowercase hex"
+  },
+  "instance-missing.json": {
+    "kind": "schema",
+    "reason": "the batch ID names its instance"
+  },
+  "no-records.json": {
+    "kind": "schema",
+    "reason": "a batch holds at least one record; the gateway sends none when it has nothing"
+  },
+  "record-id-duplicate.json": {
+    "kind": "semantic",
+    "code": "record-id-duplicate",
+    "reason": "record IDs are unique within a batch"
+  },
+  "record-instance-mismatch.json": {
+    "kind": "semantic",
+    "code": "record-instance-mismatch",
+    "reason": "every record comes from the batch's instance"
+  },
+  "record-missing-field.json": {
+    "kind": "schema",
+    "reason": "every record is a complete usage record"
+  },
+  "sequence-fractional.json": {
+    "kind": "schema",
+    "reason": "sequences are integers"
+  },
+  "sequence-zero.json": {
+    "kind": "schema",
+    "reason": "sequences start at 1"
+  },
+  "too-many-records.json": {
+    "kind": "schema",
+    "reason": "a batch holds at most 500 records"
+  }
+}

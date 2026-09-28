@@ -1,0 +1,19 @@
+{
+  "batch-sequence-zero.json": {
+    "kind": "schema",
+    "reason": "the ack names a valid batch ID"
+  },
+  "counted-field.json": {
+    "kind": "schema",
+    "reason": "unknown fields are refused"
+  },
+  "totals-missing.json": {
+    "kind": "schema",
+    "reason": "every ack carries the fresh totals"
+  },
+  "totals-window-duplicate.json": {
+    "kind": "semantic",
+    "code": "totals-window-duplicate",
+    "reason": "the totals rules hold inside an ack"
+  }
+}

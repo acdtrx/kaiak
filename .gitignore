@@ -1,0 +1,5 @@
+.claude/worktrees/
+data/
+node_modules/
+/gateway/kaiak
+/local/

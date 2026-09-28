@@ -1,0 +1,27 @@
+{
+  "format_version": 2,
+  "global": {},
+  "backends": { "vllm": { "type": "openai-compatible", "base_url": "http://vllm:8000/v1" } },
+  "models": {
+    "chat": {
+      "deployments": [{ "backend": "vllm", "model": "org/chat-model" }],
+      "metadata": {
+        "context_length": 32768,
+        "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": false }
+      },
+      "output_limit": { "default": 1024, "ceiling": 8192 },
+      "prices": [
+        {
+          "effective_from": "2026-01-01",
+          "usd_per_million": { "tokens_in": 0.5, "tokens_out": 1.5 }
+        }
+      ]
+    }
+  },
+  "groups": {
+    "team1": {},
+    "app": { "parent": "team1", "allowed_models": ["chat"] },
+    "users": { "child_defaults": { "allowed_models": ["chat"] } },
+    "alice": { "parent": "users" }
+  }
+}

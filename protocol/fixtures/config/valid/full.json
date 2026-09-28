@@ -1,0 +1,180 @@
+{
+  "format_version": 2,
+  "global": {
+    "limits": [
+      { "type": "requests_per_minute", "value": 3000 },
+      { "type": "usd_per_month", "value": 5000, "models": ["gpt-4.1", "gpt-4.1-mini"] }
+    ],
+    "max_request_body_bytes": 8388608,
+    "control_outage_grace_ms": 600000,
+    "max_n": 4,
+    "max_sequences_per_request": 32,
+    "max_embedding_inputs": 512,
+    "max_concurrent_requests_per_key": 32,
+    "queue": { "size": 200, "timeout_ms": 60000 },
+    "retries": { "max_attempts": 2 },
+    "circuit": { "failure_threshold": 3, "probe_interval_ms": 5000 },
+    "metrics": { "key_id_label": true, "group_label": false }
+  },
+  "backends": {
+    "vllm-a": {
+      "type": "openai-compatible",
+      "base_url": "http://vllm-a.internal:8000/v1",
+      "connect_timeout_ms": 2000,
+      "first_event_timeout_ms": 120000,
+      "stall_timeout_ms": 90000,
+      "max_in_flight": 8
+    },
+    "vllm-b": {
+      "type": "openai-compatible",
+      "base_url": "http://vllm-b.internal:8000/v1",
+      "api_key_env": "VLLM_B_API_KEY"
+    },
+    "azure-westeurope": {
+      "type": "azure-openai",
+      "base_url": "https://acme-westeurope.openai.azure.com",
+      "api_key_env": "AZURE_WESTEUROPE_API_KEY",
+      "response_timeout_ms": 600000
+    }
+  },
+  "models": {
+    "qwen3-32b": {
+      "deployments": [
+        { "backend": "vllm-a", "model": "Qwen/Qwen3-32B" },
+        { "backend": "vllm-b", "model": "Qwen/Qwen3-32B" }
+      ],
+      "metadata": {
+        "context_length": 32768,
+        "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": true },
+        "reasoning_efforts": ["low", "medium", "high"]
+      },
+      "defaults": {
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0,
+        "stop": ["<|im_end|>"],
+        "chat_template_kwargs": { "enable_thinking": false }
+      },
+      "output_limit": { "default": 4096, "ceiling": 16384 },
+      "queue": { "size": 20 }
+    },
+    "gpt-4.1": {
+      "deployments": [{ "backend": "azure-westeurope", "model": "gpt-4.1-prod" }],
+      "metadata": {
+        "context_length": 1047576,
+        "capabilities": { "streaming": true, "tools": true, "vision": true, "reasoning": false }
+      },
+      "output_limit": { "default": 8192, "ceiling": 32768 },
+      "queue": { "size": 0, "timeout_ms": 5000 },
+      "retries": { "max_attempts": 1 },
+      "prices": [
+        {
+          "effective_from": "2025-04-14",
+          "usd_per_million": { "tokens_in": 2.0, "tokens_cached": 0.5, "tokens_out": 8.0 }
+        },
+        {
+          "effective_from": "2026-10-01",
+          "usd_per_million": { "tokens_in": 1.8, "tokens_cached": 0.45, "tokens_out": 7.2 }
+        }
+      ]
+    },
+    "gpt-4.1-mini": {
+      "deployments": [{ "backend": "azure-westeurope", "model": "gpt-4.1-mini" }],
+      "metadata": {
+        "context_length": 1047576,
+        "capabilities": { "streaming": true, "tools": true, "vision": true, "reasoning": false }
+      },
+      "output_limit": { "default": 4096, "ceiling": 32768 },
+      "prices": [
+        {
+          "effective_from": "2025-04-14",
+          "usd_per_million": { "tokens_in": 0.4, "tokens_cached": 0.1, "tokens_out": 1.6 }
+        }
+      ]
+    },
+    "bge-m3": {
+      "deployments": [{ "backend": "vllm-b", "model": "BAAI/bge-m3" }],
+      "metadata": {
+        "context_length": 8192,
+        "capabilities": { "streaming": false, "tools": false, "vision": false, "reasoning": false }
+      }
+    }
+  },
+  "groups": {
+    "research": {
+      "labels": { "kind": "team", "owner": "research-leads@example.com" },
+      "limits": [
+        { "type": "tokens_per_minute", "value": 400000 },
+        { "type": "usd_per_month", "value": 1500 }
+      ]
+    },
+    "support": { "labels": { "kind": "team" } },
+    "eval-pipeline": {
+      "parent": "research",
+      "allowed_models": ["*"],
+      "limits": [
+        { "type": "requests_per_minute", "value": 600 },
+        { "type": "tokens_per_hour", "value": 20000000, "models": ["qwen3-32b"] },
+        { "type": "usd_per_month", "value": 1000, "models": ["gpt-4.1", "gpt-4.1-mini"] }
+      ]
+    },
+    "support-bot": {
+      "parent": "support",
+      "allowed_models": ["gpt-4.1-mini", "bge-m3"],
+      "limits": [
+        { "type": "requests_per_minute", "value": 120 },
+        { "type": "tokens_per_minute", "value": 200000 },
+        { "type": "usd_per_month", "value": 250.5 }
+      ]
+    },
+    "users": {
+      "labels": { "kind": "people" },
+      "child_defaults": {
+        "allowed_models": ["qwen3-32b", "gpt-4.1-mini", "bge-m3"],
+        "limits": [
+          { "type": "requests_per_minute", "value": 30 },
+          { "type": "tokens_per_hour", "value": 500000 },
+          { "type": "usd_per_month", "value": 20 }
+        ]
+      }
+    },
+    "alice": {
+      "parent": "users",
+      "allowed_models": ["*"],
+      "limits": [{ "type": "usd_per_month", "value": 200 }]
+    },
+    "bob": { "parent": "users", "limits": [{ "type": "tokens_per_hour", "value": 2000000 }] },
+    "carol": { "parent": "users" }
+  },
+  "keys": {
+    "k-eval-ci": {
+      "hash": "sha256:22fa736e91c8338c4df0abb065d36b2b6680c56a6a870dbd310cb10b5c8cdc09",
+      "group": "eval-pipeline"
+    },
+    "k-support-bot": {
+      "hash": "sha256:f256ba1b01a5a25759658ea228c77040e681593f15f8b4b48f184a811741c514",
+      "group": "support-bot",
+      "expires_at": "2027-03-31T23:59:59Z"
+    },
+    "k-alice-laptop": {
+      "hash": "sha256:59f8f6709d858b919a10541cd215a0de7b4299bbc6c11a2e0bf4ca03ec6df717",
+      "group": "alice"
+    },
+    "k-bob": {
+      "hash": "sha256:caa32f96ff6009dfa680f8f85bfe87cf698ea2999e5676aaee65a2b5eb62cddd",
+      "group": "bob",
+      "expires_at": "2026-12-31T12:00:00.5Z"
+    },
+    "k-bob-old": {
+      "hash": "sha256:63e40536c95622c5e768300e6a9030385f72f1ce4d5bf7a249cb2dd49d1615ef",
+      "group": "bob",
+      "disabled": true
+    },
+    "k-carol": {
+      "hash": "sha256:20f1f18329063ffd7e88cab48ad8668780ecd660d73da83df20f04773484b4fd",
+      "group": "carol",
+      "disabled": false
+    }
+  }
+}

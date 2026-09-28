@@ -1,0 +1,169 @@
+{
+  "reason": "a four-level tree (team, project, env, workload) with labels, a key on a group that has children and a leaf's child_defaults that reach no one",
+  "config": {
+    "format_version": 2,
+    "global": {
+      "limits": [
+        { "type": "requests_per_minute", "value": 3000 },
+        { "type": "usd_per_month", "value": 5000 }
+      ]
+    },
+    "backends": {
+      "vllm": { "type": "openai-compatible", "base_url": "http://vllm:8000/v1" },
+      "openai": {
+        "type": "openai-compatible",
+        "base_url": "https://api.openai.com/v1",
+        "api_key_env": "OPENAI_API_KEY"
+      }
+    },
+    "models": {
+      "qwen3-32b": {
+        "deployments": [{ "backend": "vllm", "model": "Qwen/Qwen3-32B" }],
+        "metadata": {
+          "context_length": 32768,
+          "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }
+        }
+      },
+      "bge-m3": {
+        "deployments": [{ "backend": "vllm", "model": "BAAI/bge-m3" }],
+        "metadata": {
+          "context_length": 8192,
+          "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }
+        }
+      },
+      "gpt-4.1": {
+        "deployments": [{ "backend": "openai", "model": "gpt-4.1" }],
+        "metadata": {
+          "context_length": 1047576,
+          "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }
+        },
+        "prices": [
+          {
+            "effective_from": "2026-01-01",
+            "usd_per_million": { "tokens_in": 2.0, "tokens_out": 8.0 }
+          }
+        ]
+      },
+      "gpt-4.1-mini": {
+        "deployments": [{ "backend": "openai", "model": "gpt-4.1-mini" }],
+        "metadata": {
+          "context_length": 1047576,
+          "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }
+        },
+        "prices": [
+          {
+            "effective_from": "2026-01-01",
+            "usd_per_million": { "tokens_in": 0.4, "tokens_out": 1.6 }
+          }
+        ]
+      }
+    },
+    "groups": {
+      "research": {
+        "labels": { "kind": "team", "cost_center": "R&D 4711" },
+        "allowed_models": ["qwen3-32b", "gpt-4.1-mini", "bge-m3"],
+        "limits": [{ "type": "usd_per_month", "value": 1500 }],
+        "child_defaults": { "limits": [{ "type": "tokens_per_hour", "value": 5000000 }] }
+      },
+      "rag": {
+        "parent": "research",
+        "labels": { "kind": "project" },
+        "limits": [{ "type": "usd_per_month", "value": 800 }],
+        "child_defaults": {
+          "allowed_models": ["qwen3-32b", "bge-m3"],
+          "limits": [{ "type": "requests_per_minute", "value": 300 }]
+        }
+      },
+      "rag-prod": {
+        "parent": "rag",
+        "labels": { "kind": "env", "env": "prod" },
+        "allowed_models": ["*"],
+        "limits": [{ "type": "requests_per_minute", "value": 600 }],
+        "child_defaults": { "limits": [{ "type": "tokens_per_minute", "value": 100000 }] }
+      },
+      "rag-prod-indexer": {
+        "parent": "rag-prod",
+        "labels": { "kind": "workload" },
+        "allowed_models": ["bge-m3"],
+        "limits": [{ "type": "requests_per_minute", "value": 120 }]
+      },
+      "rag-prod-chat": { "parent": "rag-prod", "labels": { "kind": "workload" } },
+      "rag-dev": { "parent": "rag", "labels": { "kind": "env", "env": "dev" } },
+      "rag-dev-sandbox": {
+        "parent": "rag-dev",
+        "labels": { "kind": "workload" },
+        "limits": [{ "type": "usd_per_month", "value": 10 }],
+        "child_defaults": { "limits": [{ "type": "requests_per_minute", "value": 1 }] }
+      },
+      "playground": {}
+    },
+    "keys": {
+      "k-rag-indexer": {
+        "hash": "sha256:22fa736e91c8338c4df0abb065d36b2b6680c56a6a870dbd310cb10b5c8cdc09",
+        "group": "rag-prod-indexer"
+      },
+      "k-rag-chat": {
+        "hash": "sha256:59f8f6709d858b919a10541cd215a0de7b4299bbc6c11a2e0bf4ca03ec6df717",
+        "group": "rag-prod-chat"
+      },
+      "k-rag-sandbox": {
+        "hash": "sha256:caa32f96ff6009dfa680f8f85bfe87cf698ea2999e5676aaee65a2b5eb62cddd",
+        "group": "rag-dev-sandbox"
+      },
+      "k-rag-dev-shared": {
+        "hash": "sha256:f256ba1b01a5a25759658ea228c77040e681593f15f8b4b48f184a811741c514",
+        "group": "rag-dev"
+      },
+      "k-playground": {
+        "hash": "sha256:63e40536c95622c5e768300e6a9030385f72f1ce4d5bf7a249cb2dd49d1615ef",
+        "group": "playground"
+      }
+    }
+  },
+  "expected": {
+    "groups": {
+      "research": {
+        "path": ["research"],
+        "allowed_models": ["bge-m3", "gpt-4.1-mini", "qwen3-32b"],
+        "limits": [{ "type": "usd_per_month", "value": 1500 }]
+      },
+      "rag": {
+        "path": ["research", "rag"],
+        "allowed_models": ["bge-m3", "gpt-4.1-mini", "qwen3-32b"],
+        "limits": [
+          { "type": "tokens_per_hour", "value": 5000000 },
+          { "type": "usd_per_month", "value": 800 }
+        ]
+      },
+      "rag-prod": {
+        "path": ["research", "rag", "rag-prod"],
+        "allowed_models": ["bge-m3", "gpt-4.1-mini", "qwen3-32b"],
+        "limits": [{ "type": "requests_per_minute", "value": 600 }]
+      },
+      "rag-prod-indexer": {
+        "path": ["research", "rag", "rag-prod", "rag-prod-indexer"],
+        "allowed_models": ["bge-m3"],
+        "limits": [
+          { "type": "tokens_per_minute", "value": 100000 },
+          { "type": "requests_per_minute", "value": 120 }
+        ]
+      },
+      "rag-prod-chat": {
+        "path": ["research", "rag", "rag-prod", "rag-prod-chat"],
+        "allowed_models": ["bge-m3", "gpt-4.1-mini", "qwen3-32b"],
+        "limits": [{ "type": "tokens_per_minute", "value": 100000 }]
+      },
+      "rag-dev": {
+        "path": ["research", "rag", "rag-dev"],
+        "allowed_models": ["bge-m3", "qwen3-32b"],
+        "limits": [{ "type": "requests_per_minute", "value": 300 }]
+      },
+      "rag-dev-sandbox": {
+        "path": ["research", "rag", "rag-dev", "rag-dev-sandbox"],
+        "allowed_models": ["bge-m3", "qwen3-32b"],
+        "limits": [{ "type": "usd_per_month", "value": 10 }]
+      },
+      "playground": { "path": ["playground"], "allowed_models": "all", "limits": [] }
+    }
+  }
+}

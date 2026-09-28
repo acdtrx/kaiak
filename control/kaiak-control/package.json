@@ -1,0 +1,21 @@
+{
+  "name": "kaiak-control",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "exports": "./src/index.ts",
+  "files": [
+    "src",
+    "!src/**/*.test.ts",
+    "schema",
+    "GUIDE.md"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "ajv": "8.20.0",
+    "fastify": "5.12.5"
+  }
+}

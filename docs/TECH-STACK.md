@@ -1,0 +1,233 @@
+# Tech Stack
+
+> Decisions and the reasoning behind them. Specs reference this file for anything
+> deployment- or stack-concrete. When the project deviates, edit the section in place
+> and date the ruling (`(settled YYYY-MM-DD)`, see `AGENTS.md`, Documentation) — this
+> file describes the project's actual stack, not a menu.
+>
+> This is the **only** doc that names libraries and frameworks — no spec file names a
+> specific technology unless it is inherent to the domain (the OpenAI API, SSE, the
+> Prometheus text format are). As dependencies accumulate, grow the dependency inventory
+> at the end: every dependency, what it is for, why it was chosen.
+
+## Repo layout
+
+- `gateway/` — Go module. `cmd/kaiak` is the binary; subsystems are packages under
+  `internal/`, a flat list (settled in `docs/ARCHITECTURE.md` as the project takes
+  shape). A subsystem that needs private sub-packages nests them under its own
+  `internal/`, so the compiler enforces entry-only access.
+- `control/` — npm workspaces: `control/kaiak-control` (package of the same name) and
+  `control/sample`.
+- `protocol/` — JSON Schemas for the config document and every protocol message, plus
+  shared fixtures (valid and invalid configs, usage batches, stream sequences). Both
+  halves run the fixtures in their test suites.
+
+## Gateway: Go, standard library only (settled 2026-09-24)
+
+- **Why Go**: the gateway is a proxy on the hot path holding many long-lived streams. Go
+  gives one static binary (~18 MB image on a static distroless base), millisecond
+  startup, cheap concurrency (a goroutine per stream, `context` for cancellation and
+  back-pressure) and a standard library that covers HTTP server and client, SSE, JSON,
+  crypto and TLS. Rejected: Node (the control plane's language — viable for an
+  I/O-bound proxy, but a ~150 MB image and no path to zero dependencies with a real
+  HTTP framework); Rust (more effort than the problem needs).
+- **Zero third-party dependencies** is a hard constraint, not a preference: the
+  self-contained requirement is the product. Anything the standard library lacks is
+  written in-repo (SSE parsing, Prometheus text exposition, AWS SigV4 when Bedrock
+  arrives). An exception needs a dated ruling here.
+- **HTTP**: `net/http` server and client. Two listeners: the API port (client traffic)
+  and the admin port (`/metrics`, `/healthz`, `/readyz`) — the admin port is never
+  exposed through an ingress.
+- **Config format: JSON** (settled 2026-09-24). Standard library, same encoding as the
+  protocol, one JSON Schema serves the gateway, `kaiak-control` and any UI. YAML rejected: it
+  needs a dependency, and hand-editing comfort is the only gain.
+- **Validation**: Go has no built-in JSON Schema validator, so the gateway decodes into
+  typed structs with unknown fields rejected (`DisallowUnknownFields`) and runs
+  explicit validation functions after decoding. The shared fixtures in `protocol/` keep
+  this in agreement with the schemas `kaiak-control` validates against.
+- **Logging**: `log/slog` — JSON in production, text handler in development; one line
+  per request with request ID, key ID, model, backend, status, latency, tokens.
+- **Persistence: plain files, no SQLite** (settled 2026-09-24; an opt-in: the
+  gateway is stateless by default, settled 2026-09-25 — with no `KAIAK_DATA_DIR` it
+  writes nothing). The gateway's state is small, in its data directory, every file
+  one JSON document in a format-versioned envelope written atomically (temporary
+  file + rename): the last-known-good config (`last-known-good.json`); the unsent usage spool — one file per sealed batch
+  (`usage-batch-<epoch>-<seq>.json`, `usage-rejected-…` once refused) plus its index
+  (`usage-spool.json`); the file-mode limits snapshot (`limits.json`, periodic);
+  control-plane mode's totals cache (`totals.json`, the last applied totals); and the
+  lock file (`kaiak.lock`, one gateway per directory). Details in
+  `docs/specs/GATEWAY.md` (Configuration sources: `KAIAK_DATA_DIR`). SQLite would
+  cost the only dependency; revisit if something needs real queries.
+- **Metrics**: Prometheus text exposition written by hand on the admin port.
+- **Build & image**: `CGO_ENABLED=0` static build; multi-stage container build ending on
+  a static distroless non-root base holding only the binary. Kubernetes manifests are
+  out of scope (settled 2026-09-24 — operators own their cluster setup).
+- **Container images** (settled 2026-09-25):
+  - Gateway (`gateway/Dockerfile`, context `gateway/`): builder `golang:<go.mod
+    version>` (the build script passes go.mod's `go` line), `go build -trimpath
+    -ldflags "-s -w -X kaiak/internal/metrics.version=<version>"`; final
+    `gcr.io/distroless/static-debian13:nonroot` holding only `/kaiak`, `USER
+    65532:65532`, ports 8080 and 9090, no config, no data directory and no volume:
+    the gateway writes nothing by default, so it runs on a read-only root filesystem
+    (the smoke test runs it `--read-only`). About 19 MB unpacked.
+  - **Numeric users** (settled 2026-09-25, the follow-up audit's N-O2): `USER
+    65532:65532` (gateway, the base image's `nonroot`) and `USER 1000:1000` (sample,
+    `node:26-slim`'s `node`). Kubernetes checks `runAsNonRoot` against the image's
+    user only when it is numeric; a name fails the restricted Pod Security Standard
+    unless every pod sets `runAsUser`.
+  - **Version stamping** (settled 2026-09-25, N-O7): `kaiak_build_info{version}`
+    reports the `git describe` version `scripts/build-images.sh` passes as the
+    `VERSION` build argument, linked into a package-level `version` string in
+    `internal/metrics` with `-ldflags -X`; unstamped builds fall back to Go's module
+    version (a VCS pseudo-version for `go build` in a checkout), else `(devel)`
+    (`go run`). This does not break "no package-level mutable state": the linker
+    sets the variable before the program starts and no code assigns it — a build
+    constant, like the Go version. Rejected: Go's own VCS stamping alone — the build
+    context has no `.git`, so the image reported `(devel)`; a constant generated
+    into the source — a generated file to keep out of commits for one string.
+  - Sample control plane (`control/sample/Dockerfile`, context the repo root):
+    `node:26-slim` (major pinned, patches follow), `npm ci --omit=dev` for the
+    workspace, sources run by Node's type stripping, `USER 1000:1000` (runs with a
+    read-only root filesystem too),
+    `KAIAK_SAMPLE_LISTEN=0.0.0.0:8090`; `kaiak-control` brings its own schema copy.
+    Logs are JSON only: pino-pretty is a development dependency and stays out of the
+    image. About 370 MB unpacked.
+  - `linux/amd64` only; built with buildx on any Docker context, local or remote
+    (`scripts/build-images.sh`: the current context and its default builder unless
+    set). Rejected for now: multi-arch — no arm64 target needs the image yet.
+  - Registry naming: `<registry>/<namespace>/kaiak` and `…/kaiak-sample` (the
+    registry and namespace are always given: `--repo` or `KAIAK_IMAGE_REPO`), tagged from `git describe --tags` — the tag
+    itself on a tagged commit, otherwise `<tag>-<short sha>` and `<short sha>` — plus
+    `latest`. A push runs `scripts/smoke-images.sh` first (both images on a test
+    network with the fake backend, file mode and control-plane mode, the gateways
+    read-only with no volume, the reported version checked) and pushes only if it
+    passes; the fake backend is a Dockerfile target for that test, never pushed.
+- **Testing**: `go test -race`; `net/http/httptest` for servers; an in-repo **fake
+  OpenAI-compatible backend** that can stream, stall, fail, hang, and omit usage on
+  demand — the tool for retries, fallbacks, circuit breaking, draining and accounting
+  tests. Integration runs against a real llama-server/vLLM are opt-in, never required
+  for green.
+- **Cross-half e2e** (settled 2026-09-24): `TestAcrossHalves` in `gateway/e2e`
+  behind the build tag `crosshalf` — the Go harness (building `kaiak`, log waits, the
+  in-process fake backend) drives the real sample control plane as a Node process.
+  The tag keeps Node out of `go test ./...` and `scripts/check-gateway.sh` (whose vet
+  and staticcheck still cover the tagged files); `scripts/check-all.sh` runs it, and
+  it fails, never skips, without Node or `control/`'s dependencies. Rejected: a Node
+  test driving Go binaries (it would rebuild the harness and the fake backend) and a
+  third module (the fake backend is `internal` to the gateway).
+- **Lint**: `gofmt`, `go vet` and **staticcheck** (settled 2026-09-24). staticcheck runs
+  as `go run honnef.co/go/tools/cmd/staticcheck@<pinned version>` from a script: fetched
+  once into the module cache, never listed in `go.mod`, never in the binary — the
+  zero-dependency rule holds literally.
+
+### Go rules (apply in `gateway/`)
+
+- `gofmt`-clean, `go vet`-clean.
+- Errors are values: wrap with `%w` and context (`fmt.Errorf("load config %s: %w", …)`),
+  inspect with `errors.Is` / `errors.As`. Errors that cross the API boundary are typed,
+  carrying a stable code and a message (CODING-RULES §5).
+- `context.Context` is the first parameter of anything that does I/O or may block, and
+  is the cancellation primitive (CODING-RULES §6) — a client disconnect cancels the
+  upstream call through it.
+- Every goroutine has an owner that can stop it and waits for it; no fire-and-forget
+  goroutines.
+- No package-level mutable state; dependencies are passed in (`cmd/kaiak` builds the
+  graph). A string set only by the linker (`-ldflags -X`, the build version) is a
+  build constant, not state (Container images: version stamping).
+- The live config is an immutable snapshot swapped atomically; a request holds the
+  snapshot it started with.
+
+## Control plane: `kaiak-control` and the sample (settled 2026-09-24)
+
+- **Why Node**: the real control plane (with the UI) will be a Node project; `kaiak-control`
+  is the reusable core it imports, so the protocol logic — config serving, usage intake
+  with idempotency, aggregation per group and global, budget decisions, gateway
+  status — is written once. The sample is a thin app on it.
+- **Node.js current stable, ESM, native TypeScript** — type stripping runs the source
+  directly; erasable syntax only (no enums, namespaces, parameter properties);
+  `tsc --noEmit` does the type checking.
+- **The `kaiak-control` core is HTTP-framework-agnostic**; storage sits behind an interface (the sample
+  uses an in-memory implementation; the real control plane plugs in its database). The
+  library ships a **Fastify plugin** as its HTTP adapter, matching the default Node stack
+  the real control plane will start from.
+- **Validation: JSON Schema via ajv** against the schemas in `protocol/` — the same
+  files the gateway's fixtures are checked against. No zod: one schema language.
+- **`kaiak-control` carries a copy of `protocol/schema/`** in `kaiak-control/schema/`
+  and reads only that (settled 2026-09-25): the package and the sample image work
+  without the repository around them. `protocol/schema/` stays the source of truth;
+  `npm run sync-schemas` refreshes the copy and `npm test` fails while a byte differs.
+  Rejected: reading the repo-relative path (breaks any extracted package or image
+  layout); generating the copy only at pack time (the repo would then need a second
+  read path).
+- **Sample control plane**: Fastify app using the `kaiak-control` plugin. Reads a config file,
+  watches it and pushes changes; holds usage and status in memory; serves one
+  read-only page — server-rendered HTML updated live over SSE, no build step, no
+  frontend framework.
+- **Logging: pino** (Fastify's own). Dev uses `pino-pretty` compact single-line
+  (`translateTime: 'SYS:HH:MM:ss.l'` — local time, `singleLine: true`, ignore
+  `pid,hostname,reqId,req.host,req.remoteAddress,req.remotePort`); per-request logging
+  stays on; production is plain JSON, no transport. The sample switches with
+  `KAIAK_LOG_FORMAT` — `json` (default) or `text` — the gateway's variable and values,
+  so one environment serves both locally (settled 2026-09-24).
+- **Boundaries**: entry-point-only imports with an acyclic graph, enforced by an in-repo
+  script that reads imports with the TypeScript compiler's parser (settled 2026-09-24).
+  Rejected: eslint plugins / dependency-cruiser — they add dependencies for import
+  resolution the script does not need. General hygiene comes from `tsc` strict mode with
+  `noUnusedLocals` and `noUnusedParameters`; no eslint.
+- **The boundary lint uses TypeScript 7's `typescript/unstable/sync` API** (settled
+  2026-09-24). TypeScript 7 is the native compiler; its parser is reachable from
+  JavaScript only through the `unstable/*` entries (the package root exports the version
+  alone), so the lint spawns the bundled compiler and reads each file's parsed import
+  list. The script is the one place tied to that API — a breaking change is fixed
+  there. Rejected: pinning TypeScript 6 for its classic `ts.preProcessFile` — a pin
+  below latest stable (CODING-RULES §3).
+- **Testing**: built-in `node:test` runner; the shared fixtures in `protocol/`.
+
+### TypeScript rules (apply in `control/`)
+
+- `strict` is on, including `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`.
+- Avoid `any`. Use `unknown` and narrow at the boundary, or define a proper type.
+- Avoid non-null assertions (`x!`). Either narrow with a guard, or fail loudly with a
+  thrown error that explains the invariant.
+- Async functions return Promises; errors are thrown as structured objects with at
+  least a `code` and a `message` (CODING-RULES §5).
+- Prefer `const`; `let` only for genuine reassignment; never `var`.
+
+## Transport
+
+- **Gateway ↔ control plane**: plain HTTP plus one SSE stream per gateway, shaped as
+  **snapshot + subscribe** — a GET snapshot carries a version cursor, the stream resumes
+  from it, a gateway too far behind re-fetches the snapshot. Contract in
+  `docs/specs/CONTROL-PROTOCOL.md`.
+- **Client ↔ gateway**: the OpenAI HTTP API; SSE for streaming responses.
+- **Sample page**: one SSE connection per browser, same snapshot + subscribe shape.
+
+## Dependency inventory
+
+- Gateway: none. Toolchain: Go 1.27.1 (`go.mod`).
+- `control/` (root `package.json`, dev): **typescript 7.0.2** — type checking
+  (`tsc --noEmit`) and the parser the boundary lint reads imports with. Its platform
+  binary (`@typescript/typescript-<platform>`) arrives as its own optional dependency.
+- `control/` (root `package.json`, dev): **@types/node 26.6.2** — Node's built-in
+  module types (`node:test`, `node:fs`, `process`, …) for `tsc`; tracks the Node major.
+- `control/kaiak-control` (runtime): **ajv 8.20.0** — JSON Schema validation of the
+  config document and the protocol messages (its draft 2020-12 build,
+  `ajv/dist/2020`), against the package's copy of `protocol/schema/`, read at
+  runtime. No `ajv-formats`: date and timestamp
+  shapes are schema `pattern`s, real-date checks are semantic rules. Brings four small
+  transitive packages (`fast-deep-equal`, `fast-uri`, `json-schema-traverse`,
+  `require-from-string`).
+- `control/kaiak-control` (runtime): **fastify 5.12.5** — the HTTP framework the
+  library's plugin (`controlProtocolPlugin`) adapts the core to, and what its tests run
+  a real server with. The plugin imports only Fastify's types and runs on the host's
+  instance; the core never touches it. Brings **pino 10.3.1** (Fastify's logger — the
+  host configures it) and 43 further small transitive packages (Fastify's router,
+  serializers, `light-my-request`, …).
+- `control/sample` (runtime): **fastify 5.12.5** — the same pin as `kaiak-control`'s (one
+  copy installed): the sample creates the Fastify instance the kit's plugin runs on.
+- `control/sample` (dev): **pino-pretty 13.1.3** — the development log format
+  (`KAIAK_LOG_FORMAT=text`, the `dev` script's default). Brings 12 small transitive
+  packages (`colorette`, `dateformat`, `fast-copy`, `help-me`, `pump`, …). `npm start`
+  logs plain JSON and never loads it.
+- Go dev tools (not dependencies): **staticcheck 2026.2.1** (module v0.8.1), pinned in
+  `scripts/check-gateway.sh`.

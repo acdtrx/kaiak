@@ -1,0 +1,761 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kaiak gateway internals</title>
+<meta name="description" content="How the kaiak gateway binary is built: packages, the request pipeline, routing, limits, config and lifecycle.">
+<style>
+:root {
+  --bg: #fbfaf7; --fg: #1d2127; --muted: #5d6570; --line: #d9d6cf; --panel: #f1efe9;
+  --accent: #0f766e; --accent-soft: #d8efeb; --warn: #b45309; --code-bg: #efece5;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #15181c; --fg: #e4e6e9; --muted: #9aa3ad; --line: #343a42; --panel: #1e2227;
+    --accent: #2dd4bf; --accent-soft: #163a36; --warn: #f59e0b; --code-bg: #23282e;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #15181c; --fg: #e4e6e9; --muted: #9aa3ad; --line: #343a42; --panel: #1e2227;
+  --accent: #2dd4bf; --accent-soft: #163a36; --warn: #f59e0b; --code-bg: #23282e;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+main { max-width: 1040px; margin: 0 auto; padding: 40px 16px 80px; }
+header { border-bottom: 1px solid var(--line); padding-bottom: 20px; margin-bottom: 28px; }
+.eyebrow { font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); font-weight: 600; margin: 0 0 6px; }
+h1 { font-size: 34px; line-height: 1.2; margin: 0 0 10px; }
+h2 { font-size: 23px; margin: 48px 0 12px; padding-top: 8px; }
+h3 { font-size: 17px; margin: 26px 0 8px; }
+p, li { max-width: 72ch; }
+.lede { font-size: 18px; color: var(--muted); margin: 0; }
+a { color: var(--accent); }
+code { font: 0.88em ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+nav.toc { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 14px; margin-top: 16px; }
+nav.toc a { color: var(--muted); text-decoration: none; }
+nav.toc a:hover { color: var(--accent); }
+figure { margin: 22px 0 26px; padding: 18px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); overflow-x: auto; }
+figure svg { display: block; width: 100%; height: auto; min-width: 640px; color: var(--fg); }
+figcaption { font-size: 14px; color: var(--muted); margin-top: 12px; max-width: 80ch; }
+table { border-collapse: collapse; width: 100%; font-size: 14.5px; margin: 14px 0 20px; }
+.table-wrap { overflow-x: auto; }
+th, td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+th { font-weight: 600; color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: .04em; }
+.callout { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 16px 0; max-width: 80ch; }
+.callout p { margin: 4px 0; }
+footer { margin-top: 56px; border-top: 1px solid var(--line); padding-top: 16px; font-size: 14px; color: var(--muted); }
+
+/* diagram classes */
+svg text { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; fill: currentColor; }
+svg .box { fill: var(--bg); stroke: currentColor; stroke-width: 1.2; }
+svg .ext { fill: var(--panel); stroke: var(--muted); stroke-width: 1.2; stroke-dasharray: 5 4; }
+svg .hot { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.6; }
+svg .frame { fill: none; stroke: var(--accent); stroke-width: 1.4; stroke-dasharray: 6 4; }
+svg .edge { fill: none; stroke: currentColor; stroke-width: 1.3; }
+svg .edge-hot { fill: none; stroke: var(--accent); stroke-width: 1.8; }
+svg .edge-dash { fill: none; stroke: var(--muted); stroke-width: 1.2; stroke-dasharray: 4 4; }
+svg .t { font-size: 13px; font-weight: 600; }
+svg .s { font-size: 11.5px; fill: var(--muted); }
+svg .l { font-size: 11.5px; }
+svg .la { font-size: 11.5px; fill: var(--accent); font-weight: 600; }
+svg .lw { font-size: 11px; fill: var(--warn); }
+svg .head { fill: currentColor; }
+svg .head-hot { fill: var(--accent); }
+svg .head-muted { fill: var(--muted); }
+svg .band { stroke: none; }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <p class="eyebrow">kaiak · architecture overview 1 of 2</p>
+  <h1>Gateway internals</h1>
+  <p class="lede">What happens inside the <code>kaiak</code> binary: the packages it is made of, the path a request takes through them, and how the gateway boots, reloads config and shuts down.</p>
+  <nav class="toc">
+    <a href="#glance">At a glance</a>
+    <a href="#packages">Packages</a>
+    <a href="#pipeline">Request pipeline</a>
+    <a href="#routing">Routing and reliability</a>
+    <a href="#limits">Limits and accounting</a>
+    <a href="#config">Config</a>
+    <a href="#lifecycle">Lifecycle</a>
+    <a href="#extension">Extension points</a>
+    <a href="#observability">Observability</a>
+    <a href="control-plane.html">Next: gateway ↔ control plane →</a>
+  </nav>
+</header>
+
+<section id="glance">
+<h2>At a glance</h2>
+<ul>
+  <li><strong>One static Go binary, standard library only.</strong> No third-party code, no external services. <code>gateway/cmd/kaiak</code> builds the dependency graph and owns shutdown; every subsystem is a package under <code>gateway/internal/</code>, and Go's <code>internal/</code> visibility plus its ban on import cycles keep the boundaries.</li>
+  <li><strong>Two listeners.</strong> API on <code>:8080</code> (OpenAI format: chat completions, completions, embeddings, models) and admin on <code>:9090</code> (<code>/healthz</code>, <code>/readyz</code>, <code>/metrics</code>). Only the API port faces clients.</li>
+  <li><strong>Two config modes.</strong> <em>File mode</em> (<code>KAIAK_CONFIG_FILE</code>, reload on SIGHUP, limits kept locally) or <em>control-plane mode</em> (<code>KAIAK_CONTROL_URL</code> + <code>KAIAK_CONTROL_TOKEN</code>, config pushed live, usage and status reported back). The second is covered in <a href="control-plane.html">the integration page</a>.</li>
+  <li><strong>Stateless by default.</strong> It writes nothing to disk unless <code>KAIAK_DATA_DIR</code> is set. Usage not yet delivered waits in memory; the drain delivers it.</li>
+  <li><strong>Two hard fences.</strong> Only <code>provider</code> opens connections to model backends; only <code>control</code> talks to the control plane.</li>
+</ul>
+</section>
+
+<section id="packages">
+<h2>Packages and how they connect</h2>
+<p>The <code>server</code> package owns the listeners and the request pipeline; it calls the stage packages in a fixed order. Everything that talks to the outside world is behind one of two packages.</p>
+
+<figure>
+<svg viewBox="0 0 960 510" role="img" aria-label="Package map: clients reach server, which calls auth, limits, routing, accounting and provider in order. Provider is the only path to backends; control is the only path to the control plane, feeding config and totals in and sending usage out.">
+  <defs>
+    <marker id="g-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker>
+    <marker id="g-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-hot"/></marker>
+    <marker id="g-am" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-muted"/></marker>
+  </defs>
+
+  <!-- external actors -->
+  <rect x="10" y="215" width="100" height="56" rx="8" class="ext"/>
+  <text x="60" y="239" text-anchor="middle" class="t">Clients</text>
+  <text x="60" y="256" text-anchor="middle" class="s">OpenAI API</text>
+
+  <rect x="830" y="150" width="120" height="70" rx="8" class="ext"/>
+  <text x="890" y="180" text-anchor="middle" class="t">Control plane</text>
+  <text x="890" y="197" text-anchor="middle" class="s">kaiak-control</text>
+
+  <rect x="830" y="358" width="120" height="56" rx="8" class="ext"/>
+  <text x="890" y="382" text-anchor="middle" class="t">Backends</text>
+  <text x="890" y="399" text-anchor="middle" class="s">self-hosted · cloud</text>
+
+  <rect x="830" y="440" width="120" height="50" rx="8" class="ext"/>
+  <text x="890" y="470" text-anchor="middle" class="t">Prometheus</text>
+
+  <!-- server -->
+  <rect x="140" y="150" width="180" height="230" rx="10" class="hot"/>
+  <text x="230" y="176" text-anchor="middle" class="t">server</text>
+  <text x="230" y="200" text-anchor="middle" class="s">API :8080 · admin :9090</text>
+  <text x="230" y="220" text-anchor="middle" class="s">admission · drain</text>
+  <text x="230" y="240" text-anchor="middle" class="s">pipeline stages, in order</text>
+  <text x="230" y="260" text-anchor="middle" class="s">attempt loop · retries</text>
+  <text x="230" y="280" text-anchor="middle" class="s">request finishers</text>
+  <text x="230" y="300" text-anchor="middle" class="s">model endpoints</text>
+
+  <!-- stage column -->
+  <rect x="380" y="100" width="170" height="45" rx="8" class="box"/>
+  <text x="465" y="120" text-anchor="middle" class="t">auth</text>
+  <text x="465" y="136" text-anchor="middle" class="s">key hash → key ID, group</text>
+
+  <rect x="380" y="165" width="170" height="45" rx="8" class="box"/>
+  <text x="465" y="185" text-anchor="middle" class="t">limits</text>
+  <text x="465" y="201" text-anchor="middle" class="s">windows · reserve · settle</text>
+
+  <rect x="380" y="230" width="170" height="45" rx="8" class="box"/>
+  <text x="465" y="250" text-anchor="middle" class="t">routing</text>
+  <text x="465" y="266" text-anchor="middle" class="s">slots · queues · circuits</text>
+
+  <rect x="380" y="295" width="170" height="45" rx="8" class="box"/>
+  <text x="465" y="315" text-anchor="middle" class="t">accounting</text>
+  <text x="465" y="331" text-anchor="middle" class="s">meter · usage records · cost</text>
+
+  <rect x="380" y="360" width="170" height="45" rx="8" class="hot"/>
+  <text x="465" y="380" text-anchor="middle" class="t">provider</text>
+  <text x="465" y="396" text-anchor="middle" class="s">passthrough · pools</text>
+
+  <!-- right column -->
+  <rect x="620" y="20" width="170" height="45" rx="8" class="box"/>
+  <text x="705" y="40" text-anchor="middle" class="t">config</text>
+  <text x="705" y="56" text-anchor="middle" class="s">validate · atomic swap</text>
+
+  <rect x="620" y="165" width="170" height="45" rx="8" class="hot"/>
+  <text x="705" y="185" text-anchor="middle" class="t">control</text>
+  <text x="705" y="201" text-anchor="middle" class="s">config · usage · status</text>
+
+  <rect x="640" y="275" width="150" height="40" rx="8" class="ext"/>
+  <text x="715" y="293" text-anchor="middle" class="t">state</text>
+  <text x="715" y="308" text-anchor="middle" class="s">opt-in data directory</text>
+
+  <rect x="620" y="440" width="170" height="50" rx="8" class="box"/>
+  <text x="705" y="462" text-anchor="middle" class="t">metrics</text>
+  <text x="705" y="478" text-anchor="middle" class="s">registry · text exposition</text>
+
+  <!-- edges -->
+  <line x1="110" y1="243" x2="138" y2="243" class="edge" marker-end="url(#g-a)"/>
+
+  <path d="M320,190 C350,190 350,122 378,122" class="edge" marker-end="url(#g-a)"/>
+  <path d="M320,210 C350,210 350,187 378,187" class="edge" marker-end="url(#g-a)"/>
+  <path d="M320,245 L378,252" class="edge" marker-end="url(#g-a)"/>
+  <path d="M320,285 C350,285 350,317 378,317" class="edge" marker-end="url(#g-a)"/>
+  <path d="M320,320 C350,320 350,382 378,382" class="edge" marker-end="url(#g-a)"/>
+
+  <line x1="550" y1="382" x2="828" y2="382" class="edge-hot" marker-end="url(#g-ah)"/>
+  <text x="690" y="374" text-anchor="middle" class="la">HTTP · SSE — the only path to backends</text>
+
+  <line x1="790" y1="180" x2="828" y2="180" class="edge-hot" marker-end="url(#g-ah)"/>
+  <line x1="828" y1="200" x2="792" y2="200" class="edge-hot" marker-end="url(#g-ah)"/>
+  <text x="810" y="143" text-anchor="middle" class="la">usage, status</text>
+  <text x="810" y="235" text-anchor="middle" class="la">config, totals</text>
+
+  <line x1="705" y1="165" x2="705" y2="67" class="edge" marker-end="url(#g-a)"/>
+  <text x="712" y="118" class="l">apply</text>
+
+  <path d="M620,42 L230,42 L230,148" class="edge" marker-end="url(#g-a)"/>
+  <text x="420" y="34" text-anchor="middle" class="l">immutable snapshot, taken per request</text>
+
+  <line x1="620" y1="187" x2="552" y2="187" class="edge" marker-end="url(#g-a)"/>
+  <text x="586" y="160" text-anchor="middle" class="l">totals,</text>
+  <text x="586" y="174" text-anchor="middle" class="l">live count</text>
+
+  <path d="M550,308 L640,212" class="edge" marker-end="url(#g-a)"/>
+  <text x="610" y="262" class="l">records</text>
+
+  <line x1="740" y1="210" x2="740" y2="273" class="edge-dash" marker-end="url(#g-am)"/>
+  <text x="746" y="248" class="s">spool, LKG</text>
+
+  <path d="M230,380 L230,465 L618,465" class="edge" marker-end="url(#g-a)"/>
+  <text x="420" y="457" text-anchor="middle" class="l">ops + usage metrics</text>
+  <line x1="828" y1="465" x2="792" y2="465" class="edge" marker-end="url(#g-a)"/>
+  <text x="810" y="432" text-anchor="middle" class="l">scrape</text>
+</svg>
+<figcaption>The stage packages never call each other's I/O: <code>server</code> drives them in order. <code>provider</code> and <code>control</code> are capability fences — nothing else opens a socket to a backend or to the control plane. <code>cmd/kaiak</code> (not drawn) wires the edges: it converts the control client's totals for <code>limits</code>, hooks routing changes into status reports, and hands every applied config to routing and the provider's connection pools.</figcaption>
+</figure>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Package</th><th>Owns</th></tr></thead>
+  <tbody>
+    <tr><td><code>server</code></td><td>Both listeners, admission and the drain, the pipeline (a fixed ordered list of stages over one per-request struct), the attempt loop, request finishers, the <code>/v1/models</code> answers.</td></tr>
+    <tr><td><code>auth</code></td><td>Key hash lookup (key → key ID, its group and that group's path) and the one model-access check.</td></tr>
+    <tr><td><code>limits</code></td><td>One window counter per limit of global and of each group (sliding minute, UTC hour, UTC month); a request is checked against global and every group on its key's path; check-and-reserve before routing, settle from usage records after. In control-plane mode: pushed totals + own uncounted usage, per-minute shares, the outage refusal.</td></tr>
+    <tr><td><code>routing</code></td><td>Model → deployment choice, in-flight counts, per-backend caps, one FIFO queue per model with a single dispatcher, per-deployment circuit breakers and their probers. State outlives config reloads that keep the deployment.</td></tr>
+    <tr><td><code>accounting</code></td><td>Meters each attempt's response as it is relayed; settles usage and cost into records, each naming the key's group path; hands them to the control client's batcher and the usage-metrics sink.</td></tr>
+    <tr><td><code>provider</code></td><td>OpenAI-compatible and Azure OpenAI (one implementation), passthrough body edits, per-backend connection pools, the circuit probe (<code>GET …/models</code>).</td></tr>
+    <tr><td><code>config</code></td><td>Strict decoding, validation, resolution into an immutable snapshot (each group's path, allowed models and effective limits), the holder that swaps it atomically, the one apply path, the file loader.</td></tr>
+    <tr><td><code>control</code></td><td>Boot (snapshot → last-known-good → seed), the config stream with reconnect and resync, the usage batch sender, the status reporter, contact tracking.</td></tr>
+    <tr><td><code>metrics</code></td><td>Small registry (counters, gauges, fixed-bucket histograms) and Prometheus text exposition.</td></tr>
+    <tr><td><code>state</code></td><td>The optional data directory: versioned files, atomic writes, a <code>flock</code> so one gateway owns it.</td></tr>
+    <tr><td><code>sse</code>, <code>clip</code>, <code>schemacheck</code></td><td>Shared parts: SSE reader (backend streams and the config stream), bounding client strings before they are logged, strict JSON and schema-mirroring checks.</td></tr>
+    <tr><td><code>fakebackend</code>, <code>fakecontrol</code></td><td>Test doubles only; used by unit tests and the e2e suite in <code>gateway/e2e</code>.</td></tr>
+  </tbody>
+</table>
+</div>
+</section>
+
+<section id="pipeline">
+<h2>The request pipeline</h2>
+<p>Every client request passes the same ordered stages — no endpoint or fast path skips one. New cross-cutting behavior (caching, guardrails, prompt logging) arrives as a new stage, not as a special case inside a provider.</p>
+
+<figure>
+<svg viewBox="0 0 960 360" role="img" aria-label="Request pipeline: admission, auth, inbound and limits run once per request; routing, accounting and provider run once per attempt and are retried on another deployment only while nothing has reached the client; finishers run however the request ends.">
+  <defs>
+    <marker id="p-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker>
+    <marker id="p-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-hot"/></marker>
+  </defs>
+
+  <text x="10" y="24" class="s">ONCE PER CLIENT REQUEST</text>
+  <text x="560" y="24" class="la">ONCE PER ATTEMPT (≤ 3, each on a new deployment)</text>
+
+  <rect x="10" y="50" width="120" height="62" rx="8" class="box"/>
+  <text x="70" y="75" text-anchor="middle" class="t">0 · Admission</text>
+  <text x="70" y="93" text-anchor="middle" class="s">drain? config?</text>
+
+  <rect x="145" y="50" width="120" height="62" rx="8" class="box"/>
+  <text x="205" y="75" text-anchor="middle" class="t">1 · Auth</text>
+  <text x="205" y="93" text-anchor="middle" class="s">key → group</text>
+
+  <rect x="280" y="50" width="120" height="62" rx="8" class="box"/>
+  <text x="340" y="75" text-anchor="middle" class="t">2 · Inbound</text>
+  <text x="340" y="93" text-anchor="middle" class="s">body · model</text>
+
+  <rect x="415" y="50" width="120" height="62" rx="8" class="box"/>
+  <text x="475" y="75" text-anchor="middle" class="t">3 · Limits</text>
+  <text x="475" y="93" text-anchor="middle" class="s">check + reserve</text>
+
+  <rect x="550" y="36" width="400" height="176" rx="12" class="frame"/>
+  <rect x="565" y="50" width="115" height="62" rx="8" class="hot"/>
+  <text x="622" y="75" text-anchor="middle" class="t">4 · Routing</text>
+  <text x="622" y="93" text-anchor="middle" class="s">slot or queue</text>
+
+  <rect x="695" y="50" width="115" height="62" rx="8" class="hot"/>
+  <text x="752" y="75" text-anchor="middle" class="t">5 · Accounting</text>
+  <text x="752" y="93" text-anchor="middle" class="s">open the meter</text>
+
+  <rect x="825" y="50" width="115" height="62" rx="8" class="hot"/>
+  <text x="882" y="75" text-anchor="middle" class="t">6 · Provider</text>
+  <text x="882" y="93" text-anchor="middle" class="s">send · relay</text>
+
+  <line x1="130" y1="81" x2="143" y2="81" class="edge" marker-end="url(#p-a)"/>
+  <line x1="265" y1="81" x2="278" y2="81" class="edge" marker-end="url(#p-a)"/>
+  <line x1="400" y1="81" x2="413" y2="81" class="edge" marker-end="url(#p-a)"/>
+  <line x1="535" y1="81" x2="563" y2="81" class="edge" marker-end="url(#p-a)"/>
+  <line x1="680" y1="81" x2="693" y2="81" class="edge" marker-end="url(#p-a)"/>
+  <line x1="810" y1="81" x2="823" y2="81" class="edge" marker-end="url(#p-a)"/>
+
+  <path d="M882,112 L882,140 L622,140 L622,114" class="edge-hot" marker-end="url(#p-ah)"/>
+  <text x="752" y="166" text-anchor="middle" class="la">retry only if nothing reached the client yet</text>
+  <text x="752" y="186" text-anchor="middle" class="s">connect error · first-event timeout · 5xx · 429</text>
+  <text x="752" y="202" text-anchor="middle" class="s">401/403 · model 404</text>
+
+  <!-- refusals -->
+  <text x="70" y="134" text-anchor="middle" class="lw">503 shutting_down</text>
+  <text x="70" y="150" text-anchor="middle" class="lw">503 no config</text>
+  <text x="205" y="134" text-anchor="middle" class="lw">401 bad key</text>
+  <text x="205" y="150" text-anchor="middle" class="lw">429 key concurrency</text>
+  <text x="340" y="134" text-anchor="middle" class="lw">400 · 413 · 404</text>
+  <text x="340" y="150" text-anchor="middle" class="lw">503 server_busy</text>
+  <text x="475" y="134" text-anchor="middle" class="lw">429 rate / budget</text>
+  <text x="475" y="150" text-anchor="middle" class="lw">503 budget_unavailable</text>
+  <text x="565" y="232" class="lw">4 · 429 queue_full / queue_timeout · 503 no_healthy_deployment</text>
+
+  <!-- finishers -->
+  <rect x="280" y="262" width="670" height="82" rx="10" class="box"/>
+  <text x="296" y="286" class="t">Request finishers — run however the request ends</text>
+  <text x="296" y="308" class="l">release the last slot · report the attempt to its circuit · settle the usage record</text>
+  <text x="296" y="328" class="l">limits settle the stage-3 reservation from that record · ops metrics · the log line</text>
+  <line x1="935" y1="212" x2="935" y2="260" class="edge" marker-end="url(#p-a)"/>
+
+  <text x="10" y="190" class="s">Stages 0–1 run on headers</text>
+  <text x="10" y="208" class="s">alone: an unauthenticated</text>
+  <text x="10" y="226" class="s">client never makes the</text>
+  <text x="10" y="244" class="s">gateway read a body.</text>
+</svg>
+<figcaption>Stages 0–3 run once per client request, so there is exactly one limits reservation however many attempts follow. Stages 4–6 form the attempt loop. A retry never goes back to a deployment the request already tried; with none left, the last attempt's answer goes to the client. Anything after the first event relayed is final.</figcaption>
+</figure>
+
+<h3>What each stage does</h3>
+<ul>
+  <li><strong>Admission</strong> — refuses during a drain and while no config is in force, before anything is read.</li>
+  <li><strong>Auth</strong> — hashes the bearer key, looks up key ID and its group (with the group's path up the tree), then counts the request against the key's concurrency limit.</li>
+  <li><strong>Inbound</strong> — reads the body under the per-request cap and the gateway-wide body budget, parses only the fields the gateway owns and keeps the raw bytes for passthrough; then the model-access check and the model's defaults and output limit.</li>
+  <li><strong>Limits</strong> — checks every scope on the key's path (global › each ancestor group › the key's group) and reserves input estimate + output limit.</li>
+  <li><strong>Routing</strong> — picks the deployment with the fewest requests in flight among those with a closed circuit and a free backend slot; otherwise waits in the model's FIFO queue.</li>
+  <li><strong>Accounting</strong> — opens the attempt's meter; the relay feeds it every event.</li>
+  <li><strong>Provider</strong> — edits only what the gateway owns (model name, output limit, usage flags) and forwards everything else untouched; returns events in the client's format for <code>server</code> to relay.</li>
+</ul>
+</section>
+
+<section id="routing">
+<h2>Routing and reliability</h2>
+<p>A public model name maps to one or more <em>deployments</em> (backend + the model's name on that backend) — identical copies. There is no fallback to another model.</p>
+
+<figure>
+<svg viewBox="0 0 960 250" role="img" aria-label="Circuit breaker states: closed opens after five consecutive failures from real traffic; open becomes half-open when a probe lists the model; half-open closes on the trial request's first data event or re-opens if the trial or a probe fails.">
+  <defs>
+    <marker id="c-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker>
+    <marker id="c-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-hot"/></marker>
+  </defs>
+  <rect x="60" y="95" width="170" height="64" rx="32" class="hot"/>
+  <text x="145" y="122" text-anchor="middle" class="t">closed</text>
+  <text x="145" y="140" text-anchor="middle" class="s">takes traffic</text>
+
+  <rect x="395" y="95" width="170" height="64" rx="32" class="box"/>
+  <text x="480" y="122" text-anchor="middle" class="t">open</text>
+  <text x="480" y="140" text-anchor="middle" class="s">skipped · prober runs</text>
+
+  <rect x="730" y="95" width="170" height="64" rx="32" class="box"/>
+  <text x="815" y="122" text-anchor="middle" class="t">half-open</text>
+  <text x="815" y="140" text-anchor="middle" class="s">admits one trial</text>
+
+  <line x1="230" y1="115" x2="393" y2="115" class="edge" marker-end="url(#c-a)"/>
+  <text x="312" y="105" text-anchor="middle" class="l">5 consecutive failures</text>
+
+  <line x1="565" y1="115" x2="728" y2="115" class="edge" marker-end="url(#c-a)"/>
+  <text x="646" y="105" text-anchor="middle" class="l">probe lists the model</text>
+
+  <path d="M815,159 C815,215 480,215 480,161" class="edge" marker-end="url(#c-a)"/>
+  <text x="648" y="226" text-anchor="middle" class="l">trial fails first · a probe fails</text>
+
+  <path d="M815,95 C815,44 145,44 145,93" class="edge-hot" marker-end="url(#c-ah)"/>
+  <text x="480" y="40" text-anchor="middle" class="la">trial request's first data event</text>
+</svg>
+<figcaption>Circuits are driven by real traffic; probing (<code>GET …/models</code> through <code>provider</code>, every 10 s by default) happens only while a circuit is open or half-open. Neutral outcomes — a backend 429, a caller's 4xx, a client that left — neither count as failures nor reset the count.</figcaption>
+</figure>
+
+<ul>
+  <li><strong>Concurrency cap per backend</strong> (<code>max_in_flight</code>), split among live gateways in control-plane mode (cap ÷ live count, rounded up). A request that finds no free slot waits in its model's queue (default 100 deep, 30 s): full → <code>429 queue_full</code>, timed out → <code>429 queue_timeout</code>.</li>
+  <li><strong>One dispatcher</strong> under routing's lock hands each freed slot to the longest-waiting request that can use it; a waiting request blocks on its own channel — no goroutine per waiter.</li>
+  <li><strong>429 cooldown</strong>: a deployment that answered 429 is avoided for a while, and the request retries elsewhere.</li>
+  <li><strong>Model check</strong>: every applied config's backends are listed once in the background; a deployment whose model is not listed is logged as a warning.</li>
+</ul>
+</section>
+
+<section id="limits">
+<h2>Limits and accounting</h2>
+<p>Keys belong to a <strong>group</strong> in one generic tree (up to 8 levels, shaped per deployment: team › project › env › workload, a <code>users</code> group whose children are people, …); <code>global</code> is the root above the top-level groups. A request's <strong>scopes</strong> are global plus every group on its key's path. It must pass every limit of each scope, and its usage counts toward each. Keys have no limits of their own. Allowed models intersect down the path, and no list anywhere on the path means every model. A group's <code>child_defaults</code> give each direct child default models and limits — defaults, not ceilings: a child's own list or limit replaces them, so hard restrictions for a subtree go on the parent's own lists and limits. Every effective limit is a counter on every gateway (about 1.4 KB), so a config holds at most 50 000 of them. Refusals say <code>group limit</code> or <code>global limit</code> — never a group ID or label; the log line names the group.</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Window</th><th>Enforced where</th><th>How far it can drift</th></tr></thead>
+  <tbody>
+    <tr><td>requests/min, tokens/min (sliding)</td><td>Locally, on a share: limit ÷ live gateways (file mode: the full limit)</td><td>Skew of traffic across replicas within the minute</td></tr>
+    <tr><td>tokens/hour (UTC hour)</td><td>Pushed totals + own usage not yet counted by the control plane</td><td>In-flight requests + about one batch interval (5 s) of each other gateway's usage</td></tr>
+    <tr><td>USD/month (UTC month)</td><td>Same as tokens/hour; refused with <code>503 budget_unavailable</code> when the spend is unknown too long</td><td>Same</td></tr>
+  </tbody>
+</table>
+</div>
+
+<figure>
+<svg viewBox="0 0 960 190" role="img" aria-label="What one gateway counts against an hourly or monthly limit: the control plane's pushed total, plus its own settled usage the control plane has not counted yet, plus the reservations of requests in flight.">
+  <rect x="40" y="60" width="480" height="44" class="band" style="fill: var(--muted); opacity: .35"/>
+  <rect x="520" y="60" width="150" height="44" class="band" style="fill: var(--accent); opacity: .55"/>
+  <rect x="670" y="60" width="110" height="44" class="band" style="fill: var(--accent); opacity: .25"/>
+  <rect x="40" y="60" width="880" height="44" rx="4" fill="none" stroke="currentColor" stroke-width="1.2"/>
+  <line x1="920" y1="44" x2="920" y2="120" stroke="var(--warn)" stroke-width="2"/>
+  <text x="920" y="36" text-anchor="end" class="lw">limit</text>
+  <text x="280" y="87" text-anchor="middle" class="t">pushed total (all gateways, counted)</text>
+  <text x="595" y="87" text-anchor="middle" class="t">own, uncounted</text>
+  <text x="725" y="87" text-anchor="middle" class="t">in flight</text>
+  <text x="280" y="140" text-anchor="middle" class="s">from the stream's totals event or a usage ack</text>
+  <text x="595" y="140" text-anchor="middle" class="s">batches above counted_through</text>
+  <text x="725" y="158" text-anchor="middle" class="s">reservations</text>
+  <text x="40" y="174" class="l">A request is admitted when the three together, plus its own reservation, stay within the limit.</text>
+</svg>
+<figcaption>Totals, not allowances: the control plane pushes what each scope (global, or a group) has used, and every gateway adds what only it knows. Once a totals message shows a batch as counted (<code>counted_through</code>), the gateway stops counting it as its own — nothing is counted twice or missed in between.</figcaption>
+</figure>
+
+<ul>
+  <li><strong>Before the request runs</strong>: input tokens are estimated from the body (about 4 bytes per token; each image or audio item a flat 1000). The reservation is that estimate plus the output limit.</li>
+  <li><strong>Output limit</strong>: each model has a default (injected when the client sets none) and a ceiling (requests above it are lowered).</li>
+  <li><strong>Accounting</strong> reads the backend's usage report from the relayed response (the usage chunk is read even when withheld from a client that did not ask for it). Missing report → the record is flagged <code>estimated</code>; a response that stopped early → <code>partial</code>, billed for what was relayed.</li>
+  <li><strong>One record per routed request</strong>, plus one per retried attempt that reached the backend and got no answer. Each carries the key's group path (<code>groups</code>, top-level first), so the control plane counts it toward every group on it. Requests refused before routing produce none.</li>
+  <li><strong>Units</strong>: <code>tokens_in</code> (uncached), <code>tokens_cached</code>, <code>tokens_out</code> (reasoning included), <code>tokens_reasoning</code> (visibility only). Cost is in nano-USD from the price table in force on the request's UTC date.</li>
+  <li><strong>Metrics and usage records are separate paths.</strong> Metrics are cheap and approximate for dashboards; records are exact and idempotent for billing. Neither is derived from the other.</li>
+</ul>
+</section>
+
+<section id="config">
+<h2>Config: one apply path</h2>
+<figure>
+<svg viewBox="0 0 960 250" role="img" aria-label="Every config source — file with SIGHUP, control-plane snapshot or stream, last-known-good copy, seed file — goes through one apply path: strict validation, then an atomic swap of an immutable snapshot, then log and count. A rejected config leaves the running one in force.">
+  <defs>
+    <marker id="f-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker>
+    <marker id="f-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-hot"/></marker>
+  </defs>
+  <rect x="20" y="20" width="200" height="40" rx="8" class="ext"/>
+  <text x="120" y="45" text-anchor="middle" class="l">file · startup, SIGHUP</text>
+  <rect x="20" y="75" width="200" height="40" rx="8" class="ext"/>
+  <text x="120" y="100" text-anchor="middle" class="l">control plane · snapshot, stream</text>
+  <rect x="20" y="130" width="200" height="40" rx="8" class="ext"/>
+  <text x="120" y="155" text-anchor="middle" class="l">last-known-good (data dir)</text>
+  <rect x="20" y="185" width="200" height="40" rx="8" class="ext"/>
+  <text x="120" y="210" text-anchor="middle" class="l">seed file · free models only</text>
+
+  <path d="M220,40 C260,40 260,122 298,122" class="edge" marker-end="url(#f-a)"/>
+  <path d="M220,95 C260,95 260,122 298,122" class="edge" marker-end="url(#f-a)"/>
+  <path d="M220,150 C260,150 260,122 298,122" class="edge" marker-end="url(#f-a)"/>
+  <path d="M220,205 C260,205 260,122 298,122" class="edge" marker-end="url(#f-a)"/>
+
+  <rect x="300" y="92" width="170" height="60" rx="8" class="box"/>
+  <text x="385" y="117" text-anchor="middle" class="t">validate</text>
+  <text x="385" y="135" text-anchor="middle" class="s">schema · rules · env vars</text>
+
+  <rect x="520" y="92" width="170" height="60" rx="8" class="hot"/>
+  <text x="605" y="117" text-anchor="middle" class="t">atomic swap</text>
+  <text x="605" y="135" text-anchor="middle" class="s">immutable snapshot</text>
+
+  <rect x="740" y="92" width="190" height="60" rx="8" class="box"/>
+  <text x="835" y="117" text-anchor="middle" class="t">routing, pools, limits</text>
+  <text x="835" y="135" text-anchor="middle" class="s">follow the new snapshot</text>
+
+  <line x1="470" y1="122" x2="518" y2="122" class="edge-hot" marker-end="url(#f-ah)"/>
+  <text x="494" y="112" text-anchor="middle" class="la">ok</text>
+  <line x1="690" y1="122" x2="738" y2="122" class="edge" marker-end="url(#f-a)"/>
+
+  <path d="M385,152 L385,200 L520,200" class="edge" marker-end="url(#f-a)"/>
+  <text x="530" y="196" class="lw">rejected: running config kept, issue codes logged</text>
+  <text x="530" y="213" class="lw">(control-plane mode: reported as last_rejection in status)</text>
+</svg>
+<figcaption>Strict everywhere: unknown fields, wrong types and repeated JSON members fail loudly. A request finishes under the snapshot it started with; routing state (in-flight counts, circuits, queues) survives a reload for every deployment the new config keeps.</figcaption>
+</figure>
+</section>
+
+<section id="lifecycle">
+<h2>Lifecycle</h2>
+<h3>Boot</h3>
+<ul>
+  <li><strong>File mode</strong>: load the file; failure exits. Listeners bind once the config is in force.</li>
+  <li><strong>Control-plane mode</strong>: fetch the snapshot, retrying for up to <code>KAIAK_CONTROL_BOOT_WAIT_MS</code> (60 s); if the control plane stays unavailable, use the last-known-good copy (with a data dir), then the seed config, else exit so the supervisor restarts it. Readiness also waits for the first totals (normally milliseconds — they follow the config on the stream). Details on <a href="control-plane.html#boot">the integration page</a>.</li>
+  <li>Listeners bind only when ready, so probes see a closed port during boot — size the startup probe for the boot wait.</li>
+</ul>
+
+<h3>Drain (SIGTERM or SIGINT)</h3>
+<figure>
+<svg viewBox="0 0 960 200" role="img" aria-label="Drain timeline: readiness fails at once; new requests are accepted for the 5 second grace; then new connections are refused while in-flight requests finish until the drain timeout minus the flush reserve; the last 10 seconds deliver usage and the final status.">
+  <rect x="40" y="70" width="120" height="40" class="band" style="fill: var(--accent); opacity: .45"/>
+  <rect x="160" y="70" width="620" height="40" class="band" style="fill: var(--muted); opacity: .3"/>
+  <rect x="780" y="70" width="140" height="40" class="band" style="fill: var(--warn); opacity: .35"/>
+  <text x="100" y="95" text-anchor="middle" class="t">grace 5 s</text>
+  <text x="470" y="95" text-anchor="middle" class="t">in-flight requests finish (timeout 60 s, less the reserve)</text>
+  <text x="850" y="95" text-anchor="middle" class="t">flush 10 s</text>
+
+  <line x1="40" y1="60" x2="40" y2="120" stroke="currentColor" stroke-width="1.5"/>
+  <text x="40" y="48" class="l">SIGTERM · /readyz fails · status draining</text>
+  <line x1="160" y1="110" x2="160" y2="140" stroke="currentColor" stroke-width="1.2"/>
+  <text x="160" y="156" class="s">new connections refused</text>
+  <text x="160" y="172" class="s">idle keep-alive: 503 + close</text>
+  <line x1="780" y1="110" x2="780" y2="140" stroke="currentColor" stroke-width="1.2"/>
+  <text x="776" y="156" text-anchor="end" class="s">still running? cut: partial records</text>
+  <text x="920" y="156" text-anchor="end" class="s">last batch sealed, sent</text>
+  <text x="920" y="172" text-anchor="end" class="s">final status · exit 0</text>
+</svg>
+<figcaption>The reserve comes out of the timeout, not after it, so the whole shutdown fits in grace + timeout; set <code>terminationGracePeriodSeconds</code> above that plus about 10 s (75 s with the defaults). A second signal skips the waiting. Undelivered usage stays in the spool with a data directory, or is lost (and logged) without one.</figcaption>
+</figure>
+
+<ul>
+  <li><strong>Client timeouts</strong> bound a client's progress, never a whole response: headers 30 s, body read 60 s, each write 60 s, idle keep-alive 120 s. A stream runs as long as the backend generates and the client reads.</li>
+  <li><strong>Optional connection cap</strong> (<code>KAIAK_MAX_CONNECTIONS</code>) closes excess connections before reading a byte; the admin listener is never capped.</li>
+</ul>
+</section>
+
+<section id="extension">
+<h2>Extension points and the road ahead</h2>
+<p>The gateway is built around <strong>seams, not features</strong> (<code>docs/kaiak.md</code>, principle 5): v1 fills each seam with the minimum. New APIs, new backends, caching, guardrails and non-token models are meant to arrive as new plugs in an existing seam, not as rewrites. Two project rules constrain every future plug:</p>
+<ul>
+  <li><strong>One pipeline, no side doors.</strong> New cross-cutting behavior is a new pipeline stage, never a special case inside a provider or a fast path around a stage.</li>
+  <li><strong>Features earn their place.</strong> Nothing below is scheduled. Each item waits in <code>docs/BACKLOG.md</code> with a <em>revisit trigger</em>: the observed need that would justify building it.</li>
+</ul>
+
+<figure>
+<svg viewBox="0 0 960 380" role="img" aria-label="Where future plugs attach on the request path: inbound formats at the entrance, new pipeline stages in slots before limits and before routing, new providers at the exit to backends, new usage units in the accounting meter, and new consumers on the record fan-out.">
+  <defs>
+    <marker id="x-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker>
+    <marker id="x-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-hot"/></marker>
+    <marker id="x-am" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-muted"/></marker>
+  </defs>
+
+  <!-- response path along the top -->
+  <path d="M875,110 L875,56 L55,56 L55,108" class="edge" marker-end="url(#x-a)"/>
+  <text x="465" y="48" text-anchor="middle" class="l">events relayed to the client, in the client's format</text>
+
+  <!-- clients -->
+  <rect x="10" y="110" width="90" height="70" rx="8" class="ext"/>
+  <text x="55" y="135" text-anchor="middle" class="t">Clients</text>
+  <text x="55" y="153" text-anchor="middle" class="s">OpenAI today</text>
+  <text x="55" y="169" text-anchor="middle" class="s">+ Anthropic</text>
+
+  <!-- 1 inbound -->
+  <rect x="120" y="110" width="110" height="70" rx="8" class="hot"/>
+  <text x="175" y="133" text-anchor="middle" class="la">① inbound</text>
+  <text x="175" y="152" text-anchor="middle" class="s">format parser</text>
+  <text x="175" y="168" text-anchor="middle" class="s">auth header</text>
+
+  <rect x="250" y="110" width="90" height="70" rx="8" class="box"/>
+  <text x="295" y="140" text-anchor="middle" class="t">auth ·</text>
+  <text x="295" y="158" text-anchor="middle" class="t">access</text>
+
+  <!-- slot A -->
+  <rect x="358" y="110" width="110" height="70" rx="8" class="frame"/>
+  <text x="413" y="131" text-anchor="middle" class="la">② new stages</text>
+  <text x="413" y="150" text-anchor="middle" class="s">templating</text>
+  <text x="413" y="166" text-anchor="middle" class="s">input guardrails</text>
+
+  <rect x="486" y="110" width="80" height="70" rx="8" class="box"/>
+  <text x="526" y="150" text-anchor="middle" class="t">limits</text>
+
+  <!-- slot B -->
+  <rect x="584" y="110" width="100" height="70" rx="8" class="frame"/>
+  <text x="634" y="131" text-anchor="middle" class="la">② new stage</text>
+  <text x="634" y="150" text-anchor="middle" class="s">response</text>
+  <text x="634" y="166" text-anchor="middle" class="s">cache</text>
+
+  <rect x="702" y="110" width="80" height="70" rx="8" class="box"/>
+  <text x="742" y="140" text-anchor="middle" class="t">routing</text>
+  <text x="742" y="158" text-anchor="middle" class="s">⑥ policy</text>
+
+  <!-- 3 provider -->
+  <rect x="800" y="110" width="150" height="70" rx="8" class="hot"/>
+  <text x="875" y="133" text-anchor="middle" class="la">③ providers</text>
+  <text x="875" y="152" text-anchor="middle" class="s">passthrough or</text>
+  <text x="875" y="168" text-anchor="middle" class="s">translate</text>
+
+  <line x1="100" y1="145" x2="118" y2="145" class="edge" marker-end="url(#x-a)"/>
+  <line x1="230" y1="145" x2="248" y2="145" class="edge" marker-end="url(#x-a)"/>
+  <line x1="340" y1="145" x2="356" y2="145" class="edge" marker-end="url(#x-a)"/>
+  <line x1="468" y1="145" x2="484" y2="145" class="edge" marker-end="url(#x-a)"/>
+  <line x1="566" y1="145" x2="582" y2="145" class="edge" marker-end="url(#x-a)"/>
+  <line x1="684" y1="145" x2="700" y2="145" class="edge" marker-end="url(#x-a)"/>
+  <line x1="782" y1="145" x2="798" y2="145" class="edge" marker-end="url(#x-a)"/>
+
+  <!-- backends -->
+  <rect x="800" y="240" width="150" height="46" rx="8" class="ext"/>
+  <text x="875" y="260" text-anchor="middle" class="l">OpenAI-compatible</text>
+  <text x="875" y="276" text-anchor="middle" class="s">vLLM · SGLang · Azure</text>
+  <rect x="800" y="300" width="150" height="46" rx="8" class="frame"/>
+  <text x="875" y="320" text-anchor="middle" class="l">Anthropic API</text>
+  <text x="875" y="336" text-anchor="middle" class="s">Bedrock (Converse)</text>
+  <line x1="875" y1="180" x2="875" y2="238" class="edge" marker-end="url(#x-a)"/>
+  <text x="883" y="214" class="s">by type</text>
+
+  <!-- 4 meter, 5 sinks -->
+  <rect x="560" y="240" width="200" height="60" rx="8" class="hot"/>
+  <text x="660" y="263" text-anchor="middle" class="la">④ accounting meter</text>
+  <text x="660" y="283" text-anchor="middle" class="s">usage units map · prices per unit</text>
+  <path d="M800,200 L700,200 L700,238" class="edge" marker-end="url(#x-a)"/>
+  <text x="750" y="194" text-anchor="middle" class="s">events</text>
+
+  <rect x="300" y="240" width="220" height="60" rx="8" class="hot"/>
+  <text x="410" y="263" text-anchor="middle" class="la">⑤ record fan-out · observers</text>
+  <text x="410" y="283" text-anchor="middle" class="s">control batcher · usage metrics</text>
+  <line x1="560" y1="270" x2="522" y2="270" class="edge" marker-end="url(#x-a)"/>
+  <text x="541" y="232" text-anchor="middle" class="s">records</text>
+
+  <rect x="300" y="316" width="220" height="44" rx="8" class="frame"/>
+  <text x="410" y="336" text-anchor="middle" class="l">prompt / response log</text>
+  <text x="410" y="352" text-anchor="middle" class="s">opt-in, own channel — not records</text>
+  <path d="M780,200 L780,338 L522,338" class="edge-dash" marker-end="url(#x-am)"/>
+
+  <text x="10" y="232" class="t">Legend</text>
+  <rect x="10" y="244" width="26" height="16" rx="3" class="hot"/>
+  <text x="44" y="257" class="s">seam, in code today</text>
+  <rect x="10" y="270" width="26" height="16" rx="3" class="frame"/>
+  <text x="44" y="283" class="s">future plug (backlog)</text>
+  <text x="10" y="310" class="s">⑦ limits and ⑧ the control-</text>
+  <text x="10" y="326" class="s">plane side: in the table</text>
+</svg>
+<figcaption>The same pipeline as above, drawn to show where future plugs attach. Positions for stages that do not exist yet (templating, guardrails, cache) are where the current contracts point, not settled decisions — each gets its own design when its trigger fires. Prompt logging would read relayed content, so it is a separate, opt-in channel. It never goes into usage records, metrics or logs, all of which stay free of prompt and response content.</figcaption>
+</figure>
+
+<h3>The seams</h3>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Seam</th><th>Where, today</th><th>Filled with, v1</th><th>Next plugs</th><th>What a new plug has to supply</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>① Inbound formats</td>
+      <td><code>server/inbound.go</code> (owned fields, input estimate), <code>provider.Endpoint</code>, the auth header read. <strong>A seam in design, not yet an interface</strong>: this code is OpenAI-specific.</td>
+      <td>OpenAI: chat completions, completions, embeddings, models</td>
+      <td>Anthropic Messages (<code>/v1/messages</code>, <code>x-api-key</code>); OpenAI Responses (<code>/v1/responses</code>)</td>
+      <td>Parser for the owned fields (model, stream, output limit), the input estimate, errors in that API's shape, the auth header it uses, and the meter reading that format's usage. Responses also needs sticky routing: <code>previous_response_id</code> state lives on one backend.</td>
+    </tr>
+    <tr>
+      <td>② Pipeline stages</td>
+      <td><code>server/pipeline.go</code>, <code>newPipeline</code>: an ordered list; "a new stage is a new entry"; finishers for anything that must run however a request ends</td>
+      <td>admission, auth, key concurrency, inbound, model access, model params, limits, attempts, models</td>
+      <td>Response cache, guardrails (input/output), prompt templating, prompt/response logging</td>
+      <td>Its position and what it reads or edits in the per-request struct. How it keeps the one-pipeline rule: for a cache, whether a hit is counted against limits and accounted is its first design question.</td>
+    </tr>
+    <tr>
+      <td>③ Providers</td>
+      <td><code>provider.Provider</code>: <code>Send(ctx, req) → Response</code> of events <em>already in the client's format</em>; <code>Registry.For</code> picks by backend <code>type</code></td>
+      <td><code>openai-compatible</code>, <code>azure-openai</code> (one implementation)</td>
+      <td>Bedrock (Converse API, binary stream framing, SigV4 written in-repo), Anthropic API, llama-server specifics (cap from slot count), cloud workload identity (IRSA / managed identity instead of static keys)</td>
+      <td>A backend <code>type</code> in the config schema (a protocol change on both halves), request conversion, stream decoding and signing behind <code>Send</code>, and its failures mapped to the provider error codes. The pipeline does not change.</td>
+    </tr>
+    <tr>
+      <td>④ Usage units</td>
+      <td><code>accounting.Units</code> (a map), <code>usd_per_million</code> per unit in config, the meter per endpoint</td>
+      <td><code>tokens_in</code>, <code>tokens_cached</code>, <code>tokens_out</code>, <code>tokens_reasoning</code></td>
+      <td><code>images</code>, <code>audio_seconds</code>, <code>characters</code> for <code>/v1/images/generations</code>, <code>/v1/audio/*</code></td>
+      <td>New price units in the schema, the meter's reading of those responses, and limit types that count them. Job-queue image APIs (ComfyUI-style) need a separate adapter.</td>
+    </tr>
+    <tr>
+      <td>⑤ Record consumers</td>
+      <td><code>accounting.Sink</code> / <code>Fanout</code>; observer interfaces (<code>routing.Observer</code>, <code>control.UsageObserver</code>, <code>metrics.ControlState</code>)</td>
+      <td>control batcher, usage metrics, ops metrics</td>
+      <td>Any new consumer of usage records or routing events, such as an external billing export</td>
+      <td>A <code>Sink</code> or an observer. It must not modify the record. It must stay out of the request path's blocking I/O.</td>
+    </tr>
+    <tr>
+      <td>⑥ Routing policy</td>
+      <td><code>routing</code>: the choice (least in-flight, round-robin ties), the probe function given in, the single dispatcher</td>
+      <td>models-list probe on open circuits, strict FIFO per model, no weights</td>
+      <td>Completion probe (1-token request), always-on health checks, fair dispatch across keys and groups, weights, sticky routing for Responses</td>
+      <td>A change inside <code>routing</code> only. Probes still go through <code>provider</code>, so routing never talks to a backend.</td>
+    </tr>
+    <tr>
+      <td>⑦ Limits</td>
+      <td><code>limits</code>: limit types (config enum), window kinds, scopes (global and each group on the key's path), the live-count shares</td>
+      <td>requests/min, tokens/min, tokens/hour, USD/month; a single-parent group tree; even shares</td>
+      <td>Demand-weighted shares, interim usage records for long streams, output limit from remaining budget, per-key limit split across gateways, temporary key suspension, cut-across group memberships</td>
+      <td>For anything that shares state across gateways, a protocol change on both halves (e.g. per-gateway shares in the totals message).</td>
+    </tr>
+    <tr>
+      <td>⑧ Control-plane side</td>
+      <td><code>ControlPlaneStore</code>; the core is HTTP-agnostic with Fastify as one adapter; protocol version header</td>
+      <td>in-memory store, Fastify plugin, one shared token</td>
+      <td>A database store (the real control plane), other HTTP adapters, per-instance gateway tokens, leaving draining gateways out of the live count</td>
+      <td>Store: the interface contract (<code>control/kaiak-control/GUIDE.md</code>). Tokens and live count: protocol changes on both halves.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h3>Anthropic at both ends</h3>
+<p>Anthropic can arrive at either end: as a client API (inbound ①) and as a backend (provider ③). The rule deciding the work is <strong>passthrough first</strong> (principle 4). When both sides speak the same API, forward it with the few edits the gateway owns. Translate only when they differ, because translation loses backend-specific fields.</p>
+<figure>
+<svg viewBox="0 0 960 250" role="img" aria-label="Client API against backend API: OpenAI to OpenAI-compatible is passthrough today; Anthropic Messages to the Anthropic API would be passthrough; the crossed pairs and Bedrock need translation.">
+  <text x="190" y="30" class="s">CLIENT SPEAKS ↓ · BACKEND SPEAKS →</text>
+  <text x="440" y="60" text-anchor="middle" class="t">OpenAI-compatible</text>
+  <text x="660" y="60" text-anchor="middle" class="t">Anthropic API</text>
+  <text x="860" y="60" text-anchor="middle" class="t">Bedrock (Converse)</text>
+
+  <text x="310" y="112" text-anchor="end" class="t">OpenAI</text>
+  <text x="310" y="130" text-anchor="end" class="s">chat · completions · embeddings</text>
+  <text x="310" y="192" text-anchor="end" class="t">Anthropic Messages</text>
+  <text x="310" y="210" text-anchor="end" class="s">/v1/messages · x-api-key</text>
+
+  <rect x="340" y="80" width="200" height="66" rx="8" class="hot"/>
+  <text x="440" y="108" text-anchor="middle" class="la">passthrough</text>
+  <text x="440" y="128" text-anchor="middle" class="s">built today</text>
+
+  <rect x="560" y="80" width="200" height="66" rx="8" class="frame"/>
+  <text x="660" y="108" text-anchor="middle" class="l">translate</text>
+  <text x="660" y="128" text-anchor="middle" class="s">OpenAI ⇄ Messages</text>
+
+  <rect x="780" y="80" width="160" height="66" rx="8" class="frame"/>
+  <text x="860" y="108" text-anchor="middle" class="l">translate</text>
+  <text x="860" y="128" text-anchor="middle" class="s">+ SigV4, binary stream</text>
+
+  <rect x="340" y="160" width="200" height="66" rx="8" class="frame"/>
+  <text x="440" y="188" text-anchor="middle" class="l">translate</text>
+  <text x="440" y="208" text-anchor="middle" class="s">Messages ⇄ OpenAI</text>
+
+  <rect x="560" y="160" width="200" height="66" rx="8" class="frame"/>
+  <text x="660" y="188" text-anchor="middle" class="la">passthrough</text>
+  <text x="660" y="208" text-anchor="middle" class="s">same rules as OpenAI today</text>
+
+  <rect x="780" y="160" width="160" height="66" rx="8" class="frame"/>
+  <text x="860" y="188" text-anchor="middle" class="l">translate</text>
+  <text x="860" y="208" text-anchor="middle" class="s">+ SigV4, binary stream</text>
+</svg>
+<figcaption>Only the top-left cell exists. A provider already returns events in the client's format, so a translating provider converts on both sides and the pipeline stays the same. What each new client format adds everywhere: its owned-field parser, its input estimate, its usage reading in the meter, and its error shape. The diagonal (same API at both ends) is the cheap, lossless case to build first when a trigger fires.</figcaption>
+</figure>
+
+<h3>Deferred improvements</h3>
+<p>These fix known limits of today's behavior rather than add plugs. Each waits for its trigger. <code>docs/BACKLOG.md</code> is the current list; this table is a snapshot from 2026-09-27.</p>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Area</th><th>Improvement</th><th>Revisit when</th></tr></thead>
+  <tbody>
+    <tr><td>Routing</td><td>Completion probe for open circuits</td><td>A circuit closes on a good models probe while the model still fails</td></tr>
+    <tr><td>Routing</td><td>Always-on active health checks</td><td>Failures show on real traffic that a periodic probe would have caught</td></tr>
+    <tr><td>Limits</td><td>Fair dispatch across keys and groups (replacing per-key concurrency caps)</td><td>One key or group crowds others into <code>queue_full</code> / <code>queue_timeout</code></td></tr>
+    <tr><td>Limits</td><td>Demand-weighted per-minute shares and backend caps</td><td>A scope refused well below its limit, or queueing while fleet-wide in-flight is under the caps</td></tr>
+    <tr><td>Limits</td><td>Cut-across memberships (a group also counting toward a second parent)</td><td>A team needs a hard cap on a project across its environments and team-wide environment budgets at once</td></tr>
+    <tr><td>Limits</td><td>Live count leaves out draining gateways</td><td>Rollout-time queueing or per-minute refusals</td></tr>
+    <tr><td>Limits</td><td>Interim usage records for long streams; output limit from remaining budget</td><td>Budget overshoot from long streams or single long requests</td></tr>
+    <tr><td>Limits</td><td>Per-key limit split across gateways; temporary key suspension</td><td>A key reaches N × its limit; the per-key limit and body deadline prove insufficient against a misbehaving client</td></tr>
+    <tr><td>Edge cases</td><td>Body budget per model; slow readers holding slots; live count during outages; spool order by age; removed backends' pools</td><td>Each one's symptom seen in practice (listed per entry in the backlog)</td></tr>
+    <tr><td>Control plane</td><td>Per-instance gateway tokens</td><td>Gateways run where their token cannot be held as tightly as the control plane's secrets</td></tr>
+    <tr><td>Providers</td><td>Model metadata discovery from backends</td><td>Keeping declared metadata in step with backends becomes a chore</td></tr>
+  </tbody>
+</table>
+</div>
+<p>Out of scope for good: the OpenAI Batch and Assistants APIs.</p>
+</section>
+
+<section id="observability">
+<h2>Observability</h2>
+<ul>
+  <li><strong>Logs</strong>: one line per request (JSON by default, <code>KAIAK_LOG_FORMAT=text</code> for development); config loads log their trigger and result. Never a client key, provider secret, prompt or response.</li>
+  <li><strong>Metrics</strong> on the admin port (optionally behind <code>KAIAK_METRICS_TOKEN</code>): ops metrics from the pipeline, usage metrics from accounting (labelled <code>key_group</code> — the key's group; not <code>group</code>, a common scrape target label —, <code>root_group</code> — its top-level group —, <code>key_id</code>, <code>model</code>, <code>status</code>; <code>global.metrics.group_label</code> and <code>key_id_label</code> switch the first and third off to bound series), control-plane connection state (<code>kaiak_control_outage</code>, <code>kaiak_control_config_mismatch</code>), delivery metrics from the batch sender. Every series with config-bounded labels exists at 0 from startup; usage series appear with traffic.</li>
+  <li><strong>Limit refusals</strong> carry <code>Retry-After</code> and rate-limit headers; <code>X-Request-Id</code> ties a response to its log line and usage record.</li>
+</ul>
+</section>
+
+<footer>
+  Overview only — the contracts are in <code>docs/specs/GATEWAY.md</code> and <code>docs/specs/CONTROL-PROTOCOL.md</code>, the package-level detail in <code>docs/ARCHITECTURE.md</code>, operations in <code>docs/DEPLOYMENT.md</code>. Written 2026-09-26 against 0.6.0; describes the group tree with the 2026-09-27 review's fixes (after 0.7.1). Continue with <a href="control-plane.html">gateway ↔ control plane</a>.
+</footer>
+</main>
+</body>
+</html>

@@ -1,0 +1,37 @@
+{
+  "config-backends-twice.json": {
+    "kind": "config",
+    "path": "/backends",
+    "reason": "a first backends member holds a backend the last one lacks (the independent audit's finding 1: the typed decode merged both, the schema walker saw only the last)"
+  },
+  "config-nested-member-twice.json": {
+    "kind": "config",
+    "path": "/models/llama/metadata/context_length",
+    "reason": "a member repeated deep in the document"
+  },
+  "config-escaped-name-twice.json": {
+    "kind": "config",
+    "path": "/global/max_n",
+    "reason": "names compare after decoding: max\\u005fn is max_n"
+  },
+  "config-snapshot-version-twice.json": {
+    "kind": "config-snapshot",
+    "path": "/version",
+    "reason": "a repeated envelope member"
+  },
+  "config-snapshot-inner-config-member-twice.json": {
+    "kind": "config-snapshot",
+    "path": "/config/keys/k-me/group",
+    "reason": "a repeated member inside the config the snapshot carries"
+  },
+  "totals-window-used-twice.json": {
+    "kind": "totals",
+    "path": "/windows/0/used",
+    "reason": "a repeated member inside an array item"
+  },
+  "usage-ack-batch-sequence-twice.json": {
+    "kind": "usage-ack",
+    "path": "/batch/sequence",
+    "reason": "a repeated member in the batch the ack retires"
+  }
+}

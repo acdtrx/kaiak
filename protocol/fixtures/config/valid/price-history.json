@@ -1,0 +1,47 @@
+{
+  "format_version": 2,
+  "global": {},
+  "backends": {
+    "openai": {
+      "type": "openai-compatible",
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY"
+    }
+  },
+  "models": {
+    "o4-mini": {
+      "deployments": [{ "backend": "openai", "model": "o4-mini" }],
+      "metadata": {
+        "context_length": 200000,
+        "capabilities": { "streaming": true, "tools": true, "vision": true, "reasoning": true },
+        "reasoning_efforts": ["low", "medium", "high"]
+      },
+      "defaults": { "reasoning_effort": "medium" },
+      "output_limit": { "default": 16384, "ceiling": 100000 },
+      "prices": [
+        {
+          "effective_from": "2025-04-16",
+          "usd_per_million": { "tokens_in": 1.1, "tokens_out": 4.4 }
+        },
+        {
+          "effective_from": "2025-06-01",
+          "usd_per_million": { "tokens_in": 1.1, "tokens_cached": 0.275, "tokens_out": 4.4 }
+        },
+        {
+          "effective_from": "2028-02-29",
+          "usd_per_million": { "tokens_in": 1, "tokens_cached": 0.25, "tokens_out": 4 }
+        }
+      ]
+    },
+    "free-model": {
+      "deployments": [{ "backend": "openai", "model": "free-model" }],
+      "metadata": {
+        "context_length": 8192,
+        "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }
+      },
+      "prices": []
+    }
+  },
+  "groups": { "u": {} },
+  "keys": {}
+}

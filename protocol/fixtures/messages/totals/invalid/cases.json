@@ -1,0 +1,96 @@
+{
+  "config-epoch-missing.json": {
+    "kind": "schema",
+    "reason": "totals name the config epoch their config version counts in"
+  },
+  "config-epoch-uppercase.json": {
+    "kind": "schema",
+    "reason": "a config epoch is 32 lowercase hex digits"
+  },
+  "config-version-missing.json": {
+    "kind": "schema",
+    "reason": "totals name the config version they were computed under"
+  },
+  "counted-through-instance.json": {
+    "kind": "schema",
+    "reason": "counted_through is the recipient's own: epoch and sequence, no instance"
+  },
+  "counted-through-missing.json": {
+    "kind": "schema",
+    "reason": "totals say which of the recipient's batches they include (null before its first)"
+  },
+  "counted-through-sequence-zero.json": {
+    "kind": "schema",
+    "reason": "batch sequences start at 1"
+  },
+  "group-invalid.json": {
+    "kind": "schema",
+    "reason": "a window's group is a group ID"
+  },
+  "hour-window-misaligned.json": {
+    "kind": "schema",
+    "reason": "an hour window starts at the top of the hour"
+  },
+  "live-gateways-missing.json": {
+    "kind": "schema",
+    "reason": "totals carry the live-gateway count"
+  },
+  "models-empty.json": {
+    "kind": "schema",
+    "reason": "a model set names at least one model; all models is models omitted"
+  },
+  "month-window-not-first.json": {
+    "kind": "schema",
+    "reason": "a month window starts on the first at midnight"
+  },
+  "per-minute-type.json": {
+    "kind": "schema",
+    "reason": "per-minute limits stay local to each gateway and are never pushed"
+  },
+  "revision-control-plane-uppercase.json": {
+    "kind": "schema",
+    "reason": "the control-plane ID is 32 lowercase hex digits"
+  },
+  "revision-missing.json": {
+    "kind": "schema",
+    "reason": "totals carry a revision, so a gateway can order them"
+  },
+  "revision-sequence-negative.json": {
+    "kind": "schema",
+    "reason": "the revision sequence is 0 or more"
+  },
+  "used-19-digits.json": {
+    "kind": "schema",
+    "reason": "amounts have at most 18 digits"
+  },
+  "used-leading-zero.json": {
+    "kind": "schema",
+    "reason": "amounts have no leading zeros"
+  },
+  "used-negative.json": {
+    "kind": "schema",
+    "reason": "amounts are 0 or more"
+  },
+  "used-number.json": {
+    "kind": "schema",
+    "reason": "amounts are strings of digits"
+  },
+  "window-duplicate.json": {
+    "kind": "semantic",
+    "code": "totals-window-duplicate",
+    "reason": "one window per limit: same group (or global), type and model set (order ignored)"
+  },
+  "window-models-duplicate.json": {
+    "kind": "schema",
+    "reason": "a window's model set lists each model once"
+  },
+  "window-scope-field.json": {
+    "kind": "schema",
+    "reason": "a window names its group, not a scope: scope is an unknown field"
+  },
+  "window-start-not-a-month.json": {
+    "kind": "semantic",
+    "code": "timestamp-invalid",
+    "reason": "window_start names a real instant"
+  }
+}

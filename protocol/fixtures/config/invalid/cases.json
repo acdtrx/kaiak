@@ -1,0 +1,543 @@
+{
+  "allowed-model-unknown-child-defaults.json": {
+    "kind": "semantic",
+    "code": "allowed-model-unknown",
+    "reason": "a group's child_defaults allow a model that does not exist"
+  },
+  "allowed-model-unknown-group.json": {
+    "kind": "semantic",
+    "code": "allowed-model-unknown",
+    "reason": "a group allows a model that does not exist"
+  },
+  "allowed-models-duplicate.json": {
+    "kind": "schema",
+    "reason": "allowed model names are unique"
+  },
+  "allowed-models-wildcard-mixed-child-defaults.json": {
+    "kind": "semantic",
+    "code": "allowed-models-wildcard-mixed",
+    "reason": "\"*\" is listed alongside model names in child_defaults"
+  },
+  "allowed-models-wildcard-mixed.json": {
+    "kind": "semantic",
+    "code": "allowed-models-wildcard-mixed",
+    "reason": "\"*\" is listed alongside model names"
+  },
+  "api-key-env-invalid.json": {
+    "kind": "schema",
+    "reason": "api_key_env must be an environment variable name"
+  },
+  "api-key-env-kaiak-prefix.json": {
+    "kind": "schema",
+    "reason": "api_key_env must not name one of the gateway's own KAIAK_ variables (its tokens would reach the backend's URL)"
+  },
+  "azure-without-api-key-env.json": {
+    "kind": "schema",
+    "reason": "azure-openai backends need api_key_env"
+  },
+  "backend-id-invalid.json": {
+    "kind": "schema",
+    "reason": "IDs start with a letter or digit and hold no spaces"
+  },
+  "backend-inline-api-key.json": {
+    "kind": "schema",
+    "reason": "credentials are env-var names only; an inline key is an unknown field"
+  },
+  "backend-type-unknown.json": {
+    "kind": "schema",
+    "reason": "backend type must be openai-compatible or azure-openai"
+  },
+  "backends-as-array.json": {
+    "kind": "schema",
+    "reason": "collections are objects keyed by ID"
+  },
+  "base-url-no-scheme.json": {
+    "kind": "schema",
+    "reason": "base_url must be http or https"
+  },
+  "base-url-query.json": {
+    "kind": "schema",
+    "reason": "base_url carries no query string"
+  },
+  "base-url-trailing-slash.json": {
+    "kind": "schema",
+    "reason": "base_url has no trailing slash"
+  },
+  "base-url-user-only.json": {
+    "kind": "schema",
+    "reason": "a base URL carries no user name either (a bare token before @ is a credential)"
+  },
+  "base-url-userinfo.json": {
+    "kind": "schema",
+    "reason": "a base URL carries no credentials: provider secrets travel only as api_key_env"
+  },
+  "capability-missing.json": {
+    "kind": "schema",
+    "reason": "all four capabilities are declared"
+  },
+  "child-defaults-unknown-field.json": {
+    "kind": "schema",
+    "reason": "child_defaults holds allowed_models and limits only"
+  },
+  "circuit-per-model.json": {
+    "kind": "schema",
+    "reason": "circuit settings are global only"
+  },
+  "circuit-probe-interval-below-100.json": {
+    "kind": "schema",
+    "reason": "probe_interval_ms is at least 100"
+  },
+  "circuit-threshold-zero.json": {
+    "kind": "schema",
+    "reason": "failure_threshold is at least 1"
+  },
+  "context-length-zero.json": {
+    "kind": "schema",
+    "reason": "context_length is a positive integer"
+  },
+  "control-outage-grace-fractional.json": {
+    "kind": "schema",
+    "reason": "control_outage_grace_ms is whole milliseconds"
+  },
+  "control-outage-grace-negative.json": {
+    "kind": "schema",
+    "reason": "control_outage_grace_ms is 0 or more"
+  },
+  "control-outage-grace-string.json": {
+    "kind": "schema",
+    "reason": "control_outage_grace_ms is a number of milliseconds, not a duration string"
+  },
+  "defaults-best-of.json": {
+    "kind": "schema",
+    "reason": "best_of is owned by the gateway (it multiplies the output reservation), not a default"
+  },
+  "defaults-n.json": {
+    "kind": "schema",
+    "reason": "n is owned by the gateway (it multiplies the output reservation), not a default"
+  },
+  "defaults-nested-number-out-of-range.json": {
+    "kind": "schema",
+    "reason": "numbers inside a default's objects and arrays must be finite too"
+  },
+  "defaults-null-value.json": {
+    "kind": "schema",
+    "reason": "a null default means nothing; rejected"
+  },
+  "defaults-number-out-of-range.json": {
+    "kind": "schema",
+    "reason": "a default's number must be finite as JavaScript reads it (1e400 would become Infinity)"
+  },
+  "defaults-owned-field.json": {
+    "kind": "schema",
+    "reason": "the output limit is set through output_limit, not defaults"
+  },
+  "defaults-stream.json": {
+    "kind": "schema",
+    "reason": "stream is the client's choice, not a default"
+  },
+  "deployment-backend-unknown.json": {
+    "kind": "semantic",
+    "code": "deployment-backend-unknown",
+    "reason": "the deployment's backend does not exist"
+  },
+  "deployment-duplicate.json": {
+    "kind": "schema",
+    "reason": "the same deployment is listed once"
+  },
+  "deployment-model-513.json": {
+    "kind": "schema",
+    "reason": "a backend model name is at most 512 characters"
+  },
+  "deployment-model-non-ascii.json": {
+    "kind": "schema",
+    "reason": "a backend model name is printable ASCII (give the model an alias on the backend)"
+  },
+  "deployment-model-space.json": {
+    "kind": "schema",
+    "reason": "a backend model name holds no spaces"
+  },
+  "deployments-empty.json": {
+    "kind": "schema",
+    "reason": "a model needs at least one deployment"
+  },
+  "effective-limits-exceeded.json": {
+    "kind": "semantic",
+    "code": "effective-limits-exceeded",
+    "reason": "50 001 effective limits, one over the 50 000 bound: 50 global, 50 of the users group's own, and 100 child_defaults limits on each of its 499 children — one child overrides a default (still 100), one adds a limit of its own (101)"
+  },
+  "expires-at-date-only.json": {
+    "kind": "schema",
+    "reason": "expires_at is a full timestamp"
+  },
+  "expires-at-hour-24.json": {
+    "kind": "semantic",
+    "code": "timestamp-invalid",
+    "reason": "expires_at has hour 24"
+  },
+  "expires-at-leap-second.json": {
+    "kind": "semantic",
+    "code": "timestamp-invalid",
+    "reason": "expires_at uses a leap second, which neither side accepts"
+  },
+  "expires-at-not-a-day.json": {
+    "kind": "semantic",
+    "code": "timestamp-invalid",
+    "reason": "expires_at names a day that does not exist"
+  },
+  "expires-at-offset.json": {
+    "kind": "schema",
+    "reason": "timestamps are UTC with a Z suffix"
+  },
+  "first-event-timeout-zero.json": {
+    "kind": "schema",
+    "reason": "the first-event timeout is a positive integer"
+  },
+  "format-version-1.json": {
+    "kind": "schema",
+    "reason": "format_version must be 2"
+  },
+  "format-version-missing.json": {
+    "kind": "schema",
+    "reason": "format_version is required"
+  },
+  "global-default-user.json": {
+    "kind": "schema",
+    "reason": "defaults for a group's children live in its child_defaults; global.default_user is an unknown field"
+  },
+  "global-missing.json": {
+    "kind": "schema",
+    "reason": "global is required"
+  },
+  "group-cycle-self.json": {
+    "kind": "semantic",
+    "code": "group-cycle",
+    "reason": "a group names itself as its parent"
+  },
+  "group-cycle.json": {
+    "kind": "semantic",
+    "code": "group-cycle",
+    "reason": "two groups name each other as parent: a path must end at a top-level group"
+  },
+  "group-depth-exceeded-two-levels.json": {
+    "kind": "semantic",
+    "code": "group-depth-exceeded",
+    "reason": "a chain of 10 levels: levels 9 and 10 each report their depth (the issue is per group, not per chain)"
+  },
+  "group-depth-exceeded.json": {
+    "kind": "semantic",
+    "code": "group-depth-exceeded",
+    "reason": "a group at level 9: a top-level group is level 1, and the tree holds at most 8 levels"
+  },
+  "group-id-invalid.json": {
+    "kind": "schema",
+    "reason": "group IDs start with a letter or digit and hold no spaces"
+  },
+  "group-label-string.json": {
+    "kind": "schema",
+    "reason": "metrics switches are booleans"
+  },
+  "group-parent-unknown.json": {
+    "kind": "semantic",
+    "code": "group-parent-unknown",
+    "reason": "a group's parent does not exist"
+  },
+  "group-unknown-field.json": {
+    "kind": "schema",
+    "reason": "a group has no kind (labels carry what the control plane needs); unknown fields are invalid"
+  },
+  "groups-as-array.json": {
+    "kind": "schema",
+    "reason": "groups is an object keyed by group ID"
+  },
+  "id-too-long.json": {
+    "kind": "schema",
+    "reason": "IDs are at most 128 characters"
+  },
+  "integer-above-int64.json": {
+    "kind": "schema",
+    "reason": "an integer past what any half holds is refused, not clamped"
+  },
+  "integer-above-safe.json": {
+    "kind": "schema",
+    "reason": "config integers stay at or below 2^53 - 1, so both halves read them exactly"
+  },
+  "key-group-unknown.json": {
+    "kind": "semantic",
+    "code": "key-group-unknown",
+    "reason": "a key names a group that does not exist"
+  },
+  "key-hash-duplicate.json": {
+    "kind": "semantic",
+    "code": "key-hash-duplicate",
+    "reason": "two keys share one hash"
+  },
+  "key-hash-no-prefix.json": {
+    "kind": "schema",
+    "reason": "the hash carries the sha256: prefix"
+  },
+  "key-hash-uppercase.json": {
+    "kind": "schema",
+    "reason": "the hash is lowercase hex"
+  },
+  "key-no-group.json": {
+    "kind": "schema",
+    "reason": "a key names its group"
+  },
+  "key-user-field.json": {
+    "kind": "schema",
+    "reason": "a key names its group only; user is an unknown field"
+  },
+  "key-with-allowed-models.json": {
+    "kind": "schema",
+    "reason": "keys carry no allowed models of their own"
+  },
+  "key-with-limits.json": {
+    "kind": "schema",
+    "reason": "keys carry no limits of their own"
+  },
+  "keys-missing.json": {
+    "kind": "schema",
+    "reason": "keys is required"
+  },
+  "label-key-too-long.json": {
+    "kind": "schema",
+    "reason": "label keys are at most 63 characters"
+  },
+  "label-key-uppercase.json": {
+    "kind": "schema",
+    "reason": "label keys are lowercase"
+  },
+  "label-value-control-char.json": {
+    "kind": "schema",
+    "reason": "label values hold no control characters"
+  },
+  "label-value-empty.json": {
+    "kind": "schema",
+    "reason": "label values hold at least one character"
+  },
+  "label-value-number.json": {
+    "kind": "schema",
+    "reason": "label values are strings"
+  },
+  "label-value-too-long.json": {
+    "kind": "schema",
+    "reason": "label values are at most 256 characters"
+  },
+  "labels-too-many.json": {
+    "kind": "schema",
+    "reason": "a group has at most 16 labels"
+  },
+  "limit-duplicate-all-models.json": {
+    "kind": "semantic",
+    "code": "limit-duplicate",
+    "reason": "two all-model limits of one type in the global scope"
+  },
+  "limit-duplicate-child-defaults.json": {
+    "kind": "semantic",
+    "code": "limit-duplicate",
+    "reason": "two child_defaults limits share type and model set"
+  },
+  "limit-duplicate-group.json": {
+    "kind": "semantic",
+    "code": "limit-duplicate",
+    "reason": "two of a group's own limits share type and model set (limits the group overrides from its parent's child_defaults do not count)"
+  },
+  "limit-duplicate-reordered-models.json": {
+    "kind": "semantic",
+    "code": "limit-duplicate",
+    "reason": "two limits in one scope share type and model set (order ignored)"
+  },
+  "limit-model-unknown-child-defaults.json": {
+    "kind": "semantic",
+    "code": "limit-model-unknown",
+    "reason": "a child_defaults limit names a model that does not exist"
+  },
+  "limit-model-unknown.json": {
+    "kind": "semantic",
+    "code": "limit-model-unknown",
+    "reason": "a limit names a model that does not exist"
+  },
+  "limit-models-empty.json": {
+    "kind": "schema",
+    "reason": "a limit's model list is omitted for all models, never empty"
+  },
+  "limit-models-wildcard.json": {
+    "kind": "schema",
+    "reason": "a limit covers all models by omitting models, not with \"*\""
+  },
+  "limit-negative.json": {
+    "kind": "schema",
+    "reason": "limit values are not negative"
+  },
+  "limit-requests-fractional.json": {
+    "kind": "schema",
+    "reason": "request and token limits are integers"
+  },
+  "limit-type-unknown.json": {
+    "kind": "schema",
+    "reason": "limit types are the four v1 types"
+  },
+  "limit-value-above-safe.json": {
+    "kind": "schema",
+    "reason": "a limit value stays at or below 2^53 - 1"
+  },
+  "max-concurrent-per-key-fractional.json": {
+    "kind": "schema",
+    "reason": "max_concurrent_requests_per_key is an integer"
+  },
+  "max-concurrent-per-key-zero.json": {
+    "kind": "schema",
+    "reason": "max_concurrent_requests_per_key is 1 or more"
+  },
+  "max-embedding-inputs-zero.json": {
+    "kind": "schema",
+    "reason": "max_embedding_inputs is 1 or more"
+  },
+  "max-in-flight-fractional.json": {
+    "kind": "schema",
+    "reason": "max_in_flight is an integer"
+  },
+  "max-in-flight-zero.json": {
+    "kind": "schema",
+    "reason": "a backend's max_in_flight is at least 1; no cap is an omitted max_in_flight"
+  },
+  "max-n-zero.json": {
+    "kind": "schema",
+    "reason": "max_n is 1 or more"
+  },
+  "max-request-body-zero.json": {
+    "kind": "schema",
+    "reason": "max_request_body_bytes is positive"
+  },
+  "max-sequences-per-request-zero.json": {
+    "kind": "schema",
+    "reason": "max_sequences_per_request is 1 or more"
+  },
+  "metadata-missing.json": {
+    "kind": "schema",
+    "reason": "model metadata is required"
+  },
+  "metrics-unknown-field.json": {
+    "kind": "schema",
+    "reason": "global.metrics holds only key_id_label and group_label"
+  },
+  "model-name-props-suffix.json": {
+    "kind": "schema",
+    "reason": "a model name ending in /props collides with the props endpoint"
+  },
+  "model-name-wildcard.json": {
+    "kind": "schema",
+    "reason": "\"*\" is not a model name"
+  },
+  "model-queue-empty.json": {
+    "kind": "schema",
+    "reason": "a model's queue override sets at least one field"
+  },
+  "model-queue-size-string.json": {
+    "kind": "schema",
+    "reason": "a model's queue size is an integer"
+  },
+  "model-retries-empty.json": {
+    "kind": "schema",
+    "reason": "a model's retries override sets max_attempts"
+  },
+  "output-limit-above-context.json": {
+    "kind": "semantic",
+    "code": "output-limit-above-context",
+    "reason": "the output-limit ceiling exceeds the context length"
+  },
+  "output-limit-default-above-ceiling.json": {
+    "kind": "semantic",
+    "code": "output-limit-default-above-ceiling",
+    "reason": "the output-limit default exceeds its ceiling"
+  },
+  "output-limit-missing-ceiling.json": {
+    "kind": "schema",
+    "reason": "output_limit needs both default and ceiling"
+  },
+  "price-date-month-13.json": {
+    "kind": "semantic",
+    "code": "date-invalid",
+    "reason": "effective_from names month 13"
+  },
+  "price-date-not-a-day.json": {
+    "kind": "semantic",
+    "code": "date-invalid",
+    "reason": "effective_from names a day that does not exist"
+  },
+  "price-date-shape.json": {
+    "kind": "schema",
+    "reason": "effective_from is YYYY-MM-DD"
+  },
+  "price-dates-decreasing.json": {
+    "kind": "semantic",
+    "code": "price-dates-not-increasing",
+    "reason": "price entries go back in time"
+  },
+  "price-dates-equal.json": {
+    "kind": "semantic",
+    "code": "price-dates-not-increasing",
+    "reason": "two price entries share an effective date"
+  },
+  "price-empty.json": {
+    "kind": "schema",
+    "reason": "a price entry names at least one unit"
+  },
+  "price-negative.json": {
+    "kind": "schema",
+    "reason": "prices are not negative"
+  },
+  "price-reasoning-unit.json": {
+    "kind": "schema",
+    "reason": "reasoning tokens are part of tokens_out and never priced on their own"
+  },
+  "price-unknown-unit.json": {
+    "kind": "schema",
+    "reason": "price units are tokens_in, tokens_cached, tokens_out"
+  },
+  "queue-size-negative.json": {
+    "kind": "schema",
+    "reason": "a queue size is 0 or more"
+  },
+  "queue-timeout-zero.json": {
+    "kind": "schema",
+    "reason": "a queue timeout is at least 1 ms"
+  },
+  "queue-unknown-field.json": {
+    "kind": "schema",
+    "reason": "queue settings hold size and timeout_ms only"
+  },
+  "reasoning-efforts-without-reasoning.json": {
+    "kind": "semantic",
+    "code": "reasoning-efforts-without-reasoning",
+    "reason": "reasoning efforts listed for a model without the reasoning capability"
+  },
+  "response-timeout-string.json": {
+    "kind": "schema",
+    "reason": "the response timeout is integer milliseconds, not a string"
+  },
+  "retries-max-attempts-above-10.json": {
+    "kind": "schema",
+    "reason": "max_attempts is at most 10"
+  },
+  "retries-max-attempts-zero.json": {
+    "kind": "schema",
+    "reason": "max_attempts is at least 1 (the first attempt)"
+  },
+  "timeout-string.json": {
+    "kind": "schema",
+    "reason": "durations are integer milliseconds, not strings"
+  },
+  "timeout-zero.json": {
+    "kind": "schema",
+    "reason": "timeouts are positive integers"
+  },
+  "unknown-backend-field.json": {
+    "kind": "schema",
+    "reason": "unknown fields are rejected inside objects"
+  },
+  "unknown-top-level-field.json": {
+    "kind": "schema",
+    "reason": "unknown fields are rejected at the top level"
+  }
+}

@@ -1,0 +1,74 @@
+{
+  "reason": "allowed_models intersect down the path: a level is the group's own list, else its parent's child_defaults list, else unrestricted; [\"*\"] is an explicit unrestricted level; an empty child_defaults list allows a child no model unless the child lists its own; no restricting level anywhere = every model; child_defaults reach direct children only",
+  "config": {
+    "format_version": 2,
+    "global": {},
+    "backends": { "local": { "type": "openai-compatible", "base_url": "http://localhost:8000/v1" } },
+    "models": {
+      "a": {
+        "deployments": [{ "backend": "local", "model": "a" }],
+        "metadata": {
+          "context_length": 4096,
+          "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }
+        }
+      },
+      "b": {
+        "deployments": [{ "backend": "local", "model": "b" }],
+        "metadata": {
+          "context_length": 4096,
+          "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }
+        }
+      },
+      "c": {
+        "deployments": [{ "backend": "local", "model": "c" }],
+        "metadata": {
+          "context_length": 4096,
+          "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }
+        }
+      }
+    },
+    "groups": {
+      "open": {},
+      "open-child": { "parent": "open" },
+      "none": { "allowed_models": [] },
+      "none-child": { "parent": "none", "allowed_models": ["*"] },
+      "ab": { "allowed_models": ["a", "b"], "child_defaults": { "allowed_models": ["b", "c"] } },
+      "ab-default": { "parent": "ab" },
+      "ab-default-child": { "parent": "ab-default" },
+      "ab-own-star": { "parent": "ab", "allowed_models": ["*"] },
+      "ab-own-c": { "parent": "ab", "allowed_models": ["c"] },
+      "star-default": { "allowed_models": ["a"], "child_defaults": { "allowed_models": ["*"] } },
+      "star-default-child": { "parent": "star-default" },
+      "empty-default": { "child_defaults": { "allowed_models": [] } },
+      "empty-default-child": { "parent": "empty-default" },
+      "empty-default-own": { "parent": "empty-default", "allowed_models": ["b"] }
+    },
+    "keys": {}
+  },
+  "expected": {
+    "groups": {
+      "open": { "path": ["open"], "allowed_models": "all", "limits": [] },
+      "open-child": { "path": ["open", "open-child"], "allowed_models": "all", "limits": [] },
+      "none": { "path": ["none"], "allowed_models": [], "limits": [] },
+      "none-child": { "path": ["none", "none-child"], "allowed_models": [], "limits": [] },
+      "ab": { "path": ["ab"], "allowed_models": ["a", "b"], "limits": [] },
+      "ab-default": { "path": ["ab", "ab-default"], "allowed_models": ["b"], "limits": [] },
+      "ab-default-child": {
+        "path": ["ab", "ab-default", "ab-default-child"],
+        "allowed_models": ["b"],
+        "limits": []
+      },
+      "ab-own-star": { "path": ["ab", "ab-own-star"], "allowed_models": ["a", "b"], "limits": [] },
+      "ab-own-c": { "path": ["ab", "ab-own-c"], "allowed_models": [], "limits": [] },
+      "star-default": { "path": ["star-default"], "allowed_models": ["a"], "limits": [] },
+      "star-default-child": {
+        "path": ["star-default", "star-default-child"],
+        "allowed_models": ["a"],
+        "limits": []
+      },
+      "empty-default": { "path": ["empty-default"], "allowed_models": "all", "limits": [] },
+      "empty-default-child": { "path": ["empty-default", "empty-default-child"], "allowed_models": [], "limits": [] },
+      "empty-default-own": { "path": ["empty-default", "empty-default-own"], "allowed_models": ["b"], "limits": [] }
+    }
+  }
+}

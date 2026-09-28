@@ -1,0 +1,74 @@
+{
+  "reason": "a users group whose child_defaults give each user its models and limits, with per-user overrides",
+  "config": {
+    "format_version": 2,
+    "global": {},
+    "backends": { "local": { "type": "openai-compatible", "base_url": "http://localhost:8000/v1" } },
+    "models": {
+      "small": {
+        "deployments": [{ "backend": "local", "model": "small" }],
+        "metadata": {
+          "context_length": 4096,
+          "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }
+        },
+        "output_limit": { "default": 4096, "ceiling": 4096 }
+      },
+      "large": {
+        "deployments": [{ "backend": "local", "model": "large" }],
+        "metadata": {
+          "context_length": 131072,
+          "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": false }
+        }
+      }
+    },
+    "groups": {
+      "users": {
+        "child_defaults": {
+          "allowed_models": ["small"],
+          "limits": [
+            { "type": "requests_per_minute", "value": 10 },
+            { "type": "tokens_per_hour", "value": 100000, "models": ["small"] }
+          ]
+        }
+      },
+      "power-user@example.com": {
+        "parent": "users",
+        "allowed_models": ["small", "large"],
+        "limits": [{ "type": "requests_per_minute", "value": 100 }]
+      },
+      "locked-out": { "parent": "users", "allowed_models": [] }
+    },
+    "keys": {
+      "k-power": {
+        "hash": "sha256:59f8f6709d858b919a10541cd215a0de7b4299bbc6c11a2e0bf4ca03ec6df717",
+        "group": "power-user@example.com"
+      },
+      "k-locked": {
+        "hash": "sha256:caa32f96ff6009dfa680f8f85bfe87cf698ea2999e5676aaee65a2b5eb62cddd",
+        "group": "locked-out",
+        "expires_at": "2028-02-29T00:00:00.123456789Z"
+      }
+    }
+  },
+  "expected": {
+    "groups": {
+      "users": { "path": ["users"], "allowed_models": "all", "limits": [] },
+      "power-user@example.com": {
+        "path": ["users", "power-user@example.com"],
+        "allowed_models": ["large", "small"],
+        "limits": [
+          { "type": "requests_per_minute", "value": 100 },
+          { "type": "tokens_per_hour", "value": 100000, "models": ["small"] }
+        ]
+      },
+      "locked-out": {
+        "path": ["users", "locked-out"],
+        "allowed_models": [],
+        "limits": [
+          { "type": "requests_per_minute", "value": 10 },
+          { "type": "tokens_per_hour", "value": 100000, "models": ["small"] }
+        ]
+      }
+    }
+  }
+}

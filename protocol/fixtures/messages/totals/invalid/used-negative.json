@@ -1,0 +1,55 @@
+{
+  "revision": {
+    "control_plane": "9f86d081884c7d659a2feaa0c55ad015",
+    "sequence": 17
+  },
+  "config_epoch": "c0ffee00c0ffee00c0ffee00c0ffee00",
+  "config_version": 42,
+  "live_gateways": 2,
+  "counted_through": {
+    "epoch": "5d41402abc4b2a76b9719d911017c592",
+    "sequence": 1
+  },
+  "windows": [
+    {
+      "type": "usd_per_month",
+      "models": [
+        "gpt-4.1",
+        "gpt-4.1-mini"
+      ],
+      "window_start": "2026-09-01T00:00:00Z",
+      "used": "123456789012345678"
+    },
+    {
+      "group": "research",
+      "type": "usd_per_month",
+      "window_start": "2026-09-01T00:00:00Z",
+      "used": "-5"
+    },
+    {
+      "group": "eval-pipeline",
+      "type": "tokens_per_hour",
+      "models": [
+        "qwen3-32b"
+      ],
+      "window_start": "2026-09-24T10:00:00Z",
+      "used": "1048576"
+    },
+    {
+      "group": "eval-pipeline",
+      "type": "usd_per_month",
+      "models": [
+        "gpt-4.1-mini",
+        "gpt-4.1"
+      ],
+      "window_start": "2026-09-01T00:00:00Z",
+      "used": "0"
+    },
+    {
+      "group": "bob",
+      "type": "tokens_per_hour",
+      "window_start": "2026-09-24T10:00:00Z",
+      "used": "52000"
+    }
+  ]
+}

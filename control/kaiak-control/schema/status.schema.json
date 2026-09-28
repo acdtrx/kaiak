@@ -1,0 +1,218 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kaiak.invalid/protocol/schema/status.schema.json",
+  "title": "kaiak gateway status",
+  "description": "The body of POST /v1/status (docs/specs/CONTROL-PROTOCOL.md, Gateway status).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "instance",
+    "protocol_version",
+    "state",
+    "started_at",
+    "applied_config_version",
+    "applied_config_epoch",
+    "last_rejection",
+    "backends",
+    "models"
+  ],
+  "if": {
+    "properties": {
+      "applied_config_version": {
+        "type": "null"
+      }
+    }
+  },
+  "then": {
+    "properties": {
+      "applied_config_epoch": {
+        "type": "null"
+      }
+    }
+  },
+  "else": {
+    "properties": {
+      "applied_config_epoch": {
+        "type": "string"
+      }
+    }
+  },
+  "properties": {
+    "instance": {
+      "$ref": "common.schema.json#/$defs/instance"
+    },
+    "protocol_version": {
+      "description": "The protocol version the gateway speaks.",
+      "const": 2
+    },
+    "state": {
+      "enum": [
+        "starting",
+        "ready",
+        "draining"
+      ]
+    },
+    "started_at": {
+      "description": "When the gateway process started.",
+      "$ref": "config.schema.json#/$defs/timestamp"
+    },
+    "applied_config_version": {
+      "description": "The config version in force; null before the first config is applied, and while the seed config (which carries no version) is in force. Null exactly when applied_config_epoch is.",
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "common.schema.json#/$defs/config_version"
+        }
+      ]
+    },
+    "applied_config_epoch": {
+      "description": "The config epoch applied_config_version counts in: a version compares with the control plane's only within its epoch. Null exactly when applied_config_version is.",
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "common.schema.json#/$defs/config_epoch"
+        }
+      ]
+    },
+    "last_rejection": {
+      "description": "The latest config received from the control plane, when the gateway rejected it; null once a later config is applied (whatever the versions: a restarted control plane counts from 1 again), and before any rejection.",
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "version",
+            "codes"
+          ],
+          "properties": {
+            "version": {
+              "$ref": "common.schema.json#/$defs/config_version"
+            },
+            "codes": {
+              "description": "The rejection's issue codes: syntax, schema, a semantic rule code, or a gateway-only code.",
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*$"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "backends": {
+      "description": "Every backend of the applied config, and any other backend with requests still in flight (dropped by a reload); empty before the first config is applied.",
+      "type": "object",
+      "propertyNames": {
+        "$ref": "config.schema.json#/$defs/id"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "in_flight",
+          "deployments"
+        ],
+        "properties": {
+          "in_flight": {
+            "description": "Requests in flight on the backend.",
+            "$ref": "common.schema.json#/$defs/count"
+          },
+          "max_in_flight": {
+            "description": "The backend's cap from the applied config, as configured (the fleet-wide cap, not this gateway's share); absent = no cap.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "deployments": {
+            "description": "The circuit of each of the applied config's deployments on this backend, keyed by the model name on the backend.",
+            "type": "object",
+            "propertyNames": {
+              "$ref": "config.schema.json#/$defs/backend_model_name"
+            },
+            "additionalProperties": {
+              "$ref": "#/$defs/deployment"
+            }
+          }
+        }
+      }
+    },
+    "models": {
+      "description": "Every model of the applied config; empty before the first config is applied.",
+      "type": "object",
+      "propertyNames": {
+        "$ref": "config.schema.json#/$defs/public_model_name"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "queued"
+        ],
+        "properties": {
+          "queued": {
+            "description": "Requests waiting in the model's queue.",
+            "$ref": "common.schema.json#/$defs/count"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "deployment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "circuit"
+      ],
+      "properties": {
+        "circuit": {
+          "description": "closed: serving. open: out of rotation, waiting for a probe. half_open: a probe succeeded; the next request is the trial that closes or re-opens it.",
+          "enum": [
+            "closed",
+            "open",
+            "half_open"
+          ]
+        },
+        "opened_at": {
+          "description": "When the circuit opened; present exactly when it is open or half-open (a half-open circuit keeps its opening time).",
+          "$ref": "config.schema.json#/$defs/timestamp"
+        }
+      },
+      "if": {
+        "properties": {
+          "circuit": {
+            "enum": [
+              "open",
+              "half_open"
+            ]
+          }
+        },
+        "required": [
+          "circuit"
+        ]
+      },
+      "then": {
+        "required": [
+          "opened_at"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "opened_at"
+          ]
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,99 @@
+{
+  "cost-above-safe-integer.json": {
+    "kind": "schema",
+    "reason": "integers stay within what a JavaScript number holds exactly"
+  },
+  "cost-fractional.json": {
+    "kind": "schema",
+    "reason": "cost is a whole number of nano-dollars"
+  },
+  "cost-missing.json": {
+    "kind": "schema",
+    "reason": "every record field is required"
+  },
+  "deployment-model-513.json": {
+    "kind": "schema",
+    "reason": "a backend model name is at most 512 characters"
+  },
+  "deployment-model-space.json": {
+    "kind": "schema",
+    "reason": "the deployment's model is a backend model name: no spaces"
+  },
+  "estimated-string.json": {
+    "kind": "schema",
+    "reason": "flags are booleans"
+  },
+  "gateway-time-not-a-day.json": {
+    "kind": "semantic",
+    "code": "timestamp-invalid",
+    "reason": "gateway_time names a real instant"
+  },
+  "gateway-time-offset.json": {
+    "kind": "schema",
+    "reason": "timestamps are UTC with a Z suffix"
+  },
+  "groups-empty.json": {
+    "kind": "schema",
+    "reason": "a record names at least one group (the key's own)"
+  },
+  "groups-id-invalid.json": {
+    "kind": "schema",
+    "reason": "every path entry is a group ID"
+  },
+  "groups-repeated.json": {
+    "kind": "schema",
+    "reason": "a group appears once in a path"
+  },
+  "groups-too-deep.json": {
+    "kind": "schema",
+    "reason": "a group path holds at most 8 groups"
+  },
+  "instance-254.json": {
+    "kind": "schema",
+    "reason": "an instance ID is at most 253 characters"
+  },
+  "instance-space.json": {
+    "kind": "schema",
+    "reason": "instance IDs are header-safe"
+  },
+  "key-field.json": {
+    "kind": "schema",
+    "reason": "a record never carries a key; unknown fields are refused"
+  },
+  "key-id-129.json": {
+    "kind": "schema",
+    "reason": "a key ID is at most 128 characters"
+  },
+  "model-props-suffix.json": {
+    "kind": "schema",
+    "reason": "model is a public model name"
+  },
+  "owner-field.json": {
+    "kind": "schema",
+    "reason": "a record names its group path in groups; owner is an unknown field"
+  },
+  "record-id-uppercase.json": {
+    "kind": "schema",
+    "reason": "record IDs are 32 lowercase hex digits"
+  },
+  "request-id-129.json": {
+    "kind": "schema",
+    "reason": "a request ID is at most 128 characters"
+  },
+  "request-id-space.json": {
+    "kind": "schema",
+    "reason": "request IDs hold no spaces"
+  },
+  "units-missing-reasoning.json": {
+    "kind": "schema",
+    "reason": "the four token units are always present, zeros included"
+  },
+  "units-negative.json": {
+    "kind": "schema",
+    "reason": "unit amounts are 0 or more"
+  },
+  "units-unknown.json": {
+    "kind": "schema",
+    "reason": "units the protocol does not define are refused"
+  }
+}

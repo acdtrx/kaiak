@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kaiak.invalid/protocol/schema/resync.schema.json",
+  "title": "kaiak resync event",
+  "description": "The data of a resync event on the stream: the gateway is too far behind to resume and fetches the snapshot again. It carries nothing.",
+  "type": "object",
+  "additionalProperties": false
+}

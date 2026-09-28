@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kaiak.invalid/protocol/schema/usage-batch.schema.json",
+  "title": "kaiak usage batch",
+  "description": "The body of POST /v1/usage: one batch of usage records under its batch ID (docs/specs/CONTROL-PROTOCOL.md, Usage batches).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "batch",
+    "records"
+  ],
+  "properties": {
+    "batch": {
+      "$ref": "#/$defs/batch_id"
+    },
+    "records": {
+      "description": "1 to 500 records, each from this batch's instance, record IDs unique.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 500,
+      "items": {
+        "$ref": "usage-record.schema.json"
+      }
+    }
+  },
+  "$defs": {
+    "batch_id": {
+      "description": "Identifies a batch: the control plane counts each batch once per instance.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "instance",
+        "epoch",
+        "sequence"
+      ],
+      "properties": {
+        "instance": {
+          "$ref": "common.schema.json#/$defs/instance"
+        },
+        "epoch": {
+          "description": "Random, 128 bits, lowercase hex; created with a fresh spool.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "sequence": {
+          "description": "Increases by one per batch within the epoch, from 1.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    }
+  }
+}

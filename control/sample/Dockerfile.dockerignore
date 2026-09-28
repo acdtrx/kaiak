@@ -1,0 +1,10 @@
+# Build context: the repository root; only what the image copies.
+*
+!control/package.json
+!control/package-lock.json
+!control/kaiak-control/package.json
+!control/kaiak-control/src
+!control/kaiak-control/schema
+!control/sample/package.json
+!control/sample/src
+**/*.test.ts

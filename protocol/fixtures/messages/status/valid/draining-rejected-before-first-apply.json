@@ -1,0 +1,16 @@
+{
+  "instance": "gw-1",
+  "protocol_version": 2,
+  "state": "draining",
+  "started_at": "2026-09-24T09:58:12.5Z",
+  "applied_config_version": null,
+  "applied_config_epoch": null,
+  "last_rejection": {
+    "version": 1,
+    "codes": [
+      "schema"
+    ]
+  },
+  "backends": {},
+  "models": {}
+}
