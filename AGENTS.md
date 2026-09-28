@@ -207,10 +207,13 @@ history-narrating comment you meet up to this rule.
 - Small work gets done on main directly.
 - Commit at step boundaries; the suite is green at phase boundaries (see Plans).
 - Never push, force-push, or rewrite history without being asked.
-- **Tags are anchors.** Annotated semver tags on main (`0.5.1`), tagged after notable
-  merges and **always immediately before a large plan's implementation begins** — the
-  tag names the world the plan started from, for diffing and for bailing out. The
-  message says what the anchor holds in one line. Push only when asked. `[PROJECT]`
+- **Tags are anchors.** Annotated semver tags on main, `v`-prefixed from `v0.7.4` on
+  (`v0.7.4`; earlier tags have no `v`), tagged after notable merges and **always
+  immediately before a large plan's implementation begins** — the tag names the world
+  the plan started from, for diffing and for bailing out. The message says what the
+  anchor holds in one line; for a release it becomes the GitHub Release's notes.
+  Pushing a `vX.Y.Z` tag to `github` **is a release** (the `release` workflow builds,
+  smoke-tests and publishes the images): push only when asked. `[PROJECT]`
 - **Remotes** `[PROJECT]`: `origin` (private) holds `main`, every tag, and the
   `private` branch — the development history before the first public release (0.7.3).
   `github` (public) gets `main` and release tags from 0.7.3 on, nothing else: never

@@ -14,8 +14,8 @@
 # registry and namespace the images are tagged for. Images: <repo>/kaiak and
 # <repo>/kaiak-sample.
 #
-# Tags come from `git describe --tags`: on a tag, <tag>; otherwise <tag>-<short sha> and
-# <short sha>; always latest. A tree with uncommitted changes builds under
+# Tags come from `git describe --tags`, a release tag's leading "v" dropped (v0.7.4 →
+# 0.7.4): on a tag, <tag>; otherwise <tag>-<short sha> and <short sha>; always latest. A tree with uncommitted changes builds under
 # <describe>-dirty and cannot be pushed. The version (the first tag) is also linked into
 # the gateway binary, where kaiak_build_info reports it, and set as both images'
 # org.opencontainers.image.version label. Registry login is the Docker context's own.
@@ -56,6 +56,7 @@ builder_args=()
 cd "$root"
 
 describe="$(git describe --tags --dirty)"
+describe="${describe#v}"
 sha="$(git rev-parse --short HEAD)"
 tags=()
 if [[ "$describe" == *-dirty ]]; then
@@ -69,7 +70,8 @@ elif git describe --tags --exact-match >/dev/null 2>&1; then
 	version="$describe"
 	tags=("$version" latest)
 else
-	version="$(git describe --tags --abbrev=0)-$sha"
+	version="$(git describe --tags --abbrev=0)"
+	version="${version#v}-$sha"
 	tags=("$version" "$sha" latest)
 fi
 

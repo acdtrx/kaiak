@@ -92,16 +92,31 @@
     `KAIAK_SAMPLE_LISTEN=0.0.0.0:8090`; `kaiak-control` brings its own schema copy.
     Logs are JSON only: pino-pretty is a development dependency and stays out of the
     image. About 370 MB unpacked.
-  - `linux/amd64` only; built with buildx on any Docker context, local or remote
-    (`scripts/build-images.sh`: the current context and its default builder unless
-    set). Rejected for now: multi-arch — no arm64 target needs the image yet.
+  - **Releases are multi-arch** (`linux/amd64`, `linux/arm64`; settled 2026-09-28):
+    the `release` workflow (`.github/workflows/release.yml`), on a `vX.Y.Z` tag,
+    builds each architecture natively on its own GitHub runner, smoke-tests it there,
+    pushes `<version>-<arch>`, then joins both into `<version>` (and `latest` for a
+    plain `X.Y.Z`; a suffixed tag is a pre-release and leaves `latest`) on GHCR, and
+    creates the GitHub Release. Rejected: emulated arm64 builds (QEMU) — the Node
+    image builds slowly under emulation, and native runners let the smoke test run
+    on the architecture it tests.
+  - Local builds (`scripts/build-images.sh`) are `linux/amd64` only, on any Docker
+    context, local or remote (the current context and its default builder unless
+    set).
   - Registry naming: `<registry>/<namespace>/kaiak` and `…/kaiak-sample` (the
-    registry and namespace are always given: `--repo` or `KAIAK_IMAGE_REPO`), tagged from `git describe --tags` — the tag
-    itself on a tagged commit, otherwise `<tag>-<short sha>` and `<short sha>` — plus
+    registry and namespace are always given: `--repo` or `KAIAK_IMAGE_REPO`; releases
+    publish to `ghcr.io/acdtrx`), tagged from `git describe --tags` without a release
+    tag's leading `v` — the tag itself on a tagged commit, otherwise `<tag>-<short sha>` and `<short sha>` — plus
     `latest`. A push runs `scripts/smoke-images.sh` first (both images on a test
     network with the fake backend, file mode and control-plane mode, the gateways
     read-only with no volume, the reported version checked) and pushes only if it
     passes; the fake backend is a Dockerfile target for that test, never pushed.
+- **CI** (settled 2026-09-28): GitHub Actions. `checks` runs `scripts/check-all.sh` on
+  pushes to `main` and on pull requests; `release` publishes images on `vX.Y.Z` tags
+  (Container images). Actions are GitHub's own (`actions/checkout`, `setup-go`,
+  `setup-node`), pinned to a commit hash with the version in a comment; builds,
+  pushes and releases use the runner's `docker` and `gh` directly — no third-party
+  actions. `actionlint` checks the workflows (run with `go run`, never in `go.mod`).
 - **Testing**: `go test -race`; `net/http/httptest` for servers; an in-repo **fake
   OpenAI-compatible backend** that can stream, stall, fail, hang, and omit usage on
   demand — the tool for retries, fallbacks, circuit breaking, draining and accounting

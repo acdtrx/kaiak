@@ -725,11 +725,15 @@ directory's owner must be the gateway's user:
 
 ## Images
 
-- **Build and push**: `scripts/build-images.sh --repo <registry/namespace> --push` builds
-  `<registry/namespace>/kaiak` and `…/kaiak-sample` (`linux/amd64`),
-  runs `scripts/smoke-images.sh` against them — both gateways with a read-only root
-  and no volume — and pushes only if it passes; tags from `git describe --tags` plus
-  `latest`. Pin images by tag or digest in the cluster, not `latest`.
+- **Released images**: `ghcr.io/acdtrx/kaiak` and `ghcr.io/acdtrx/kaiak-sample`,
+  multi-arch (`linux/amd64`, `linux/arm64`), tagged `X.Y.Z` per release and `latest`
+  for the newest stable one; each release is smoke-tested on both architectures
+  before it is published. Pin images by tag or digest in the cluster, not `latest`.
+- **Your own build**: `scripts/build-images.sh --repo <registry/namespace> --push`
+  builds `<registry/namespace>/kaiak` and `…/kaiak-sample` (`linux/amd64`), runs
+  `scripts/smoke-images.sh` against them — both gateways with a read-only root and no
+  volume — and pushes only if it passes; tags from `git describe --tags` plus
+  `latest`.
 - **Gateway image**: distroless static, `USER 65532:65532`, `/kaiak`, ports 8080 and
   9090, no config inside, no shell, no volume, no data directory set; the version
   linked in (`kaiak_build_info`) and in the `org.opencontainers.image.version`

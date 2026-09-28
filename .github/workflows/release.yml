@@ -1,0 +1,139 @@
+# Releases on a vX.Y.Z tag: both images built natively on amd64 and arm64 runners,
+# smoke-tested (scripts/smoke-images.sh) on their own architecture, pushed to GHCR,
+# joined into multi-arch images, and a GitHub Release created. A tag with a suffix
+# (v0.8.0-rc1) is a pre-release: its own image tag only, `latest` stays.
+# Run by hand (workflow_dispatch), it builds and smoke-tests the current commit on both
+# architectures and pushes nothing.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+
+env:
+  REGISTRY: ghcr.io/${{ github.repository_owner }}
+  SOURCE: https://github.com/${{ github.repository }}
+
+jobs:
+  images:
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::release tags look like v1.2.3 or v1.2.3-rc1, got $GITHUB_REF_NAME"
+              exit 1
+            fi
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="0.0.0-${GITHUB_SHA::7}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          go_version="$(awk '$1 == "go" { print $2; exit }' gateway/go.mod)"
+          docker buildx build --platform "linux/$ARCH" --load \
+            --build-arg VERSION="$VERSION" --build-arg GO_VERSION="$go_version" \
+            --label org.opencontainers.image.source="$SOURCE" \
+            -t "$REGISTRY/kaiak:$VERSION-$ARCH" gateway
+          docker buildx build --platform "linux/$ARCH" --load \
+            --build-arg VERSION="$VERSION" \
+            --label org.opencontainers.image.source="$SOURCE" \
+            -t "$REGISTRY/kaiak-sample:$VERSION-$ARCH" -f control/sample/Dockerfile .
+
+      - name: Smoke test
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          scripts/smoke-images.sh --platform "linux/$ARCH" \
+            --gateway "$REGISTRY/kaiak:$VERSION-$ARCH" \
+            --sample "$REGISTRY/kaiak-sample:$VERSION-$ARCH"
+
+      - name: Push
+        if: github.event_name == 'push'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker push --quiet "$REGISTRY/kaiak:$VERSION-$ARCH"
+          docker push --quiet "$REGISTRY/kaiak-sample:$VERSION-$ARCH"
+
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+  publish:
+    needs: images
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Multi-arch images
+        id: images
+        env:
+          VERSION: ${{ needs.images.outputs.version }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          stable=false
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && stable=true
+          for image in kaiak kaiak-sample; do
+            tags=(-t "$REGISTRY/$image:$VERSION")
+            if $stable; then tags+=(-t "$REGISTRY/$image:latest"); fi
+            docker buildx imagetools create "${tags[@]}" \
+              "$REGISTRY/$image:$VERSION-amd64" "$REGISTRY/$image:$VERSION-arm64"
+          done
+          echo "stable=$stable" >> "$GITHUB_OUTPUT"
+
+      - name: GitHub Release
+        env:
+          VERSION: ${{ needs.images.outputs.version }}
+          STABLE: ${{ steps.images.outputs.stable }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          {
+            git tag -l --format='%(contents)' "$GITHUB_REF_NAME"
+            echo
+            echo "## Images (linux/amd64, linux/arm64)"
+            echo
+            echo '```'
+            echo "$REGISTRY/kaiak:$VERSION"
+            echo "$REGISTRY/kaiak-sample:$VERSION"
+            echo '```'
+          } > release-notes.md
+          flags=()
+          [[ "$STABLE" == true ]] || flags+=(--prerelease)
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" \
+            --notes-file release-notes.md ${flags[@]+"${flags[@]}"}

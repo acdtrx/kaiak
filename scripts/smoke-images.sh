@@ -13,6 +13,10 @@
 #
 #   scripts/smoke-images.sh --gateway <image> --sample <image>
 #                           [--context <docker-context>] [--builder <buildx-builder>]
+#                           [--platform <os/arch>]
+#
+# The platform (default linux/amd64) is the images' and the test backend's: the images
+# run on the daemon's own architecture, so it matches the daemon.
 #
 # Context and builder default as in scripts/build-images.sh (KAIAK_DOCKER_CONTEXT,
 # else the current Docker context; KAIAK_BUILDX_BUILDER, else the context's default
@@ -23,11 +27,12 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 context="${KAIAK_DOCKER_CONTEXT:-$(docker context show)}"
 builder="${KAIAK_BUILDX_BUILDER:-}"
+platform=linux/amd64
 gateway_image=""
 sample_image=""
 
 usage() {
-	echo "usage: scripts/smoke-images.sh --gateway <image> --sample <image> [--context <docker-context>] [--builder <buildx-builder>]" >&2
+	echo "usage: scripts/smoke-images.sh --gateway <image> --sample <image> [--context <docker-context>] [--builder <buildx-builder>] [--platform <os/arch>]" >&2
 	exit 2
 }
 
@@ -37,6 +42,7 @@ while [[ $# -gt 0 ]]; do
 	--sample) sample_image="${2:?}"; shift ;;
 	--context) context="${2:?}"; shift ;;
 	--builder) builder="${2:?}"; shift ;;
+	--platform) platform="${2:?}"; shift ;;
 	-h | --help) usage ;;
 	*) echo "smoke-images: unknown argument $1" >&2; usage ;;
 	esac
@@ -136,7 +142,7 @@ echo "    sample  $sample_image"
 echo "==> build the fake backend (test only)"
 builder_args=()
 [[ -n "$builder" ]] && builder_args=(--builder "$builder")
-"${docker[@]}" buildx build ${builder_args[@]+"${builder_args[@]}"} --platform linux/amd64 --load --quiet \
+"${docker[@]}" buildx build ${builder_args[@]+"${builder_args[@]}"} --platform "$platform" --load --quiet \
 	--build-arg GO_VERSION="$(awk '$1 == "go" { print $2; exit }' "$root/gateway/go.mod")" \
 	--target fakebackend -t "$fake_image" "$root/gateway" >/dev/null
 
