@@ -24,6 +24,8 @@ env:
 jobs:
   images:
     strategy:
+      # Both architectures run to the end, so a failure on one shows the other's result.
+      fail-fast: false
       matrix:
         include:
           - arch: amd64

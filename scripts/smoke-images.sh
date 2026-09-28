@@ -130,7 +130,11 @@ stopped_cleanly() {
 	local code
 	code="$("${docker[@]}" inspect --format '{{.State.ExitCode}}' "$1")"
 	[[ "$code" == 0 ]] || { echo "smoke-images: $1 exited $code" >&2; exit 1; }
-	"${docker[@]}" logs "$1" 2>&1 | grep -q "\"msg\":\"$2\"" ||
+	# The whole log is read before matching: grep -q stops reading at its match, and a
+	# log line after it would then fail the pipeline (SIGPIPE under pipefail).
+	local log
+	log="$("${docker[@]}" logs "$1" 2>&1)"
+	grep -q "\"msg\":\"$2\"" <<<"$log" ||
 		{ echo "smoke-images: no \"$2\" in the log of $1" >&2; exit 1; }
 	echo "$1: exit 0, logged \"$2\""
 }
