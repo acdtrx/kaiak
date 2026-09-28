@@ -34,6 +34,9 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
+// Quiet time after a change before the app reloads its config file.
+const CONFIG_DEBOUNCE_MS = 20;
+
 function setUp(initial: string): Fixture {
   const dir = mkdtempSync(path.join(tmpdir(), "kaiak-sample-app-"));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
@@ -56,25 +59,30 @@ function setUp(initial: string): Fixture {
       done();
     },
   });
-  const sample = createSampleApp({ configFile: file, token: TOKEN, logger: { level: "info", stream }, configDebounceMs: 20 });
+  const sample = createSampleApp({ configFile: file, token: TOKEN, logger: { level: "info", stream }, configDebounceMs: CONFIG_DEBOUNCE_MS });
   cleanups.push(() => sample.app.close());
   const nextLog = (match: (line: LogLine) => boolean) =>
     new Promise<LogLine>((resolve) => waiters.push({ match, resolve }));
   return { ...sample, file, logs, nextLog };
 }
 
-const WATCH_PROBE_INTERVAL_MS = 10;
+// The rewrites that probe the watch must leave the debounce room to fire: every change
+// restarts it, and where each write is reported (Linux inotify) rewrites closer than the
+// debounce would hold the reload off for good.
+const WATCH_PROBE_INTERVAL_MS = CONFIG_DEBOUNCE_MS + 30;
 
 // Returns once the app's config watch is live. fs.watch gives no signal that it is: on
 // macOS FSEvents starts a moment after watch() returns and a change made before then
 // is never reported. The watch is live once a watch run is logged, so the file is
-// rewritten as it is until one is; the runs it causes change nothing.
+// rewritten as it is until one is; the runs it causes change nothing. The rewriting also
+// stops at the test's cleanup, so a test that times out leaves no timer running.
 async function watchLive(fixture: Fixture): Promise<void> {
   await fixture.app.ready();
   const logged = fixture.nextLog((line) => line["trigger"] === "file-changed");
   const content = readFileSync(fixture.file);
   writeFileSync(fixture.file, content);
   const rewrite = setInterval(() => writeFileSync(fixture.file, content), WATCH_PROBE_INTERVAL_MS);
+  cleanups.push(() => clearInterval(rewrite));
   try {
     await logged;
   } finally {
