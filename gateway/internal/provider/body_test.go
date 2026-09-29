@@ -113,7 +113,7 @@ func TestEditObjectRejectsNonObjects(t *testing.T) {
 }
 
 func TestPassthroughBodyEdits(t *testing.T) {
-	deployment := config.Deployment{Model: `org/m"q`}
+	deployment := config.Deployment{Backend: &config.Backend{Type: config.BackendOpenAICompatible}, Model: `org/m"q`}
 	cases := []struct {
 		name       string
 		req        Request
@@ -131,6 +131,11 @@ func TestPassthroughBodyEdits(t *testing.T) {
 			Body:   []byte(`{"model":"pub","max_tokens":9000,"x":1}`),
 			Params: []Param{{"max_tokens", []byte("1024")}, {"top_k", []byte("[1,2]")}, {"temperature", []byte("0.2")}}},
 			`{"model":"org/m\"q","max_tokens":1024,"x":1,"top_k":[1,2],"temperature":0.2}`, false},
+		{"client service tier: set to default", Request{Body: []byte(`{"model":"pub","service_tier":"priority","x":1}`)},
+			`{"model":"org/m\"q","service_tier":"default","x":1}`, false},
+		{"client service tier on embeddings: set to default", Request{Endpoint: Embeddings,
+			Body: []byte(`{"model":"pub","input":"a","service_tier":"flex"}`)},
+			`{"model":"org/m\"q","input":"a","service_tier":"default"}`, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -143,6 +148,32 @@ func TestPassthroughBodyEdits(t *testing.T) {
 				t.Errorf("got %s strip=%v, want %s strip=%v", got, strip, c.want, c.stripUsage)
 			}
 		})
+	}
+}
+
+// Azure applies the deployment's own tier to a chat request that names none, so the
+// gateway names the standard one; its other endpoints, like every other backend, are
+// sent no tier the client did not send.
+func TestPassthroughBodyServiceTierOnAzure(t *testing.T) {
+	deployment := config.Deployment{Backend: &config.Backend{Type: config.BackendAzureOpenAI}, Model: "d"}
+	cases := []struct {
+		endpoint Endpoint
+		body     string
+		want     string
+	}{
+		{ChatCompletions, `{"model":"pub","messages":[]}`, `{"model":"d","messages":[],"service_tier":"default"}`},
+		{ChatCompletions, `{"model":"pub","service_tier":"auto","messages":[]}`, `{"model":"d","service_tier":"default","messages":[]}`},
+		{Completions, `{"model":"pub","prompt":"a"}`, `{"model":"d","prompt":"a"}`},
+		{Embeddings, `{"model":"pub","input":"a"}`, `{"model":"d","input":"a"}`},
+	}
+	for _, c := range cases {
+		got, _, err := passthroughBody(&Request{Endpoint: c.endpoint, Deployment: deployment, Body: []byte(c.body)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != c.want {
+			t.Errorf("endpoint %d: got %s, want %s", c.endpoint, got, c.want)
+		}
 	}
 }
 
@@ -171,7 +202,7 @@ func TestIsUsageOnlyChunk(t *testing.T) {
 // owned field.
 func TestPassthroughRefusesARepeatedOwnedKey(t *testing.T) {
 	raw := []byte(`{` + strings.Repeat(`"model":"m",`, 10000) + `"messages":[]}`)
-	req := &Request{Body: raw, Deployment: config.Deployment{Model: strings.Repeat("x", 512)}}
+	req := &Request{Body: raw, Deployment: config.Deployment{Backend: &config.Backend{Type: config.BackendAzureOpenAI}, Model: strings.Repeat("x", 512)}}
 	if edited, _, err := passthroughBody(req); err == nil {
 		t.Fatalf("accepted: %d client bytes became %d", len(raw), len(edited))
 	}
@@ -187,7 +218,7 @@ func TestRewrittenBodyIsBoundedByOneEditPerOwnedField(t *testing.T) {
 		`{"model":"m","max_tokens":1,"top_k":0,"temperature":1,"stream":true,"stream_options":{"include_usage":false}}`,
 		`{"messages":[{"role":"user","content":"hi"}],"stream":true}`,
 	} {
-		req := &Request{Body: []byte(body), Deployment: config.Deployment{Model: longModel}, Params: params,
+		req := &Request{Body: []byte(body), Deployment: config.Deployment{Backend: &config.Backend{Type: config.BackendAzureOpenAI}, Model: longModel}, Params: params,
 			Stream: strings.Contains(body, `"stream":true`)}
 		edited, _, err := passthroughBody(req)
 		if err != nil {
@@ -195,7 +226,8 @@ func TestRewrittenBodyIsBoundedByOneEditPerOwnedField(t *testing.T) {
 		}
 		// Each edit adds at most `,"key":value` — and include_usage at most a new
 		// stream_options object.
-		bound := len(body) + len(`,"model":""`) + len(longModel) + len(`,"stream_options":{"include_usage":true}`)
+		bound := len(body) + len(`,"model":""`) + len(longModel) + len(`,"service_tier":"default"`) +
+			len(`,"stream_options":{"include_usage":true}`)
 		for _, p := range params {
 			bound += len(`,"":`) + len(p.Key) + len(p.Value)
 		}

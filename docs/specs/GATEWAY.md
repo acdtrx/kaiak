@@ -248,7 +248,8 @@ own, and a client sending repeats is broken either way.
   events already in the client's format; relaying and observing those events is the
   pipeline's job, the same for every provider.
 - **Passthrough edits** (settled 2026-09-24) are the only changes to the client's
-  body: `model` becomes the deployment's model name; a stream whose client did not set
+  body: `model` becomes the deployment's model name; `service_tier` becomes
+  `"default"` (Service tier, below); a stream whose client did not set
   `stream_options.include_usage: true` gets it set (other `stream_options` members
   kept); declared defaults and the output limit are set as the Model metadata and
   Limits sections say. Edits splice the owned
@@ -257,6 +258,22 @@ own, and a client sending repeats is broken either way.
   body repeating a top-level member never gets here (Request pipeline → duplicate
   members), and the editor refuses a repeated key it edits as a gateway fault
   (settled 2026-09-25).
+- **Service tier** (settled 2026-09-29): every request runs on the backend's
+  standard tier. Prices are standard-tier rates, and OpenAI and Azure bill priority
+  processing at about twice that (flex at half), so a client choosing its tier would
+  spend budgets at a rate its records do not show. A `service_tier` the client sent
+  becomes `"default"`, on every backend and endpoint. An azure-openai chat
+  completions request without one gets `"service_tier": "default"` added: there an
+  absent tier (`auto`) means the deployment's own setting, which may be priority.
+  Other requests without one are left without one — `auto` on OpenAI is standard
+  unless the project is configured otherwise, and servers that do not know the field
+  (vLLM, llama-server) are not sent it. `service_tier` cannot be a model default.
+  Rejected: removing the client's field (on Azure, `auto` again); sending it on
+  every request (a strict server could refuse the unknown field); Azure's
+  `x-ms-service-tier` header (one body edit covers both backends; client headers are
+  never forwarded, so a client cannot send it either); pricing the tier the response
+  reports — per-tier price tables and a rule for who may ask for priority, not built
+  until a deployment needs priority or flex.
 - **Usage chunk** (settled 2026-09-24): when the gateway set `include_usage` for a
   client that did not ask, the usage-only chunk (`choices: []`, non-null `usage`) is
   withheld from the client; accounting still sees it. Other chunks may carry

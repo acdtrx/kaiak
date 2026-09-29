@@ -524,8 +524,11 @@ the document (a script, or the control plane) rather than editing it by hand.
   `Retry-After-Ms`, beside `Retry-After`.
 - **Body size**: vision and long-context requests outgrow the 4 MiB default body
   cap — Config for many hosts: body size.
-- **Prices**: give every Azure model a `prices` entry; USD limits apply only to
-  priced models. Priced models under a USD limit are the ones refused (`503
+- **Prices**: give every Azure model a `prices` entry at the **standard** rates of its
+  deployments' type (Global, Data Zone, Regional — they differ); USD limits apply only
+  to priced models. The gateway keeps every request on standard processing (a
+  deployment with Priority processing switched on included), so priority and flex
+  rates never apply (`docs/specs/GATEWAY.md`, Providers → Service tier). Priced models under a USD limit are the ones refused (`503
   budget_unavailable`) once a control-plane outage passes
   `global.control_outage_grace_ms` (default 15 min) — keep the control plane up, and
   alert before the grace ends (Observability).

@@ -329,7 +329,8 @@
                 "max_tokens",
                 "max_completion_tokens",
                 "n",
-                "best_of"
+                "best_of",
+                "service_tier"
               ]
             }
           },

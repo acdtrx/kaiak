@@ -254,13 +254,13 @@ func setCredential(h http.Header, b *config.Backend, credential string) {
 }
 
 // passthroughBody applies the gateway's owned edits to the client's body: the model
-// name becomes the deployment's, the pipeline's parameters are set, and a stream gets
-// stream_options.include_usage so the backend reports usage. stripUsage is true when
-// the client did not ask for usage, so the usage-only chunk that edit adds must not
-// reach it.
+// name becomes the deployment's, the service tier standard, the pipeline's parameters
+// are set, and a stream gets stream_options.include_usage so the backend reports
+// usage. stripUsage is true when the client did not ask for usage, so the usage-only
+// chunk that edit adds must not reach it.
 func passthroughBody(req *Request) (body []byte, stripUsage bool, err error) {
 	model, _ := json.Marshal(req.Deployment.Model) // a string always encodes
-	edits := []memberEdit{setValue("model", model)}
+	edits := []memberEdit{setValue("model", model), {key: "service_tier", set: standardServiceTier(req)}}
 	for _, p := range req.Params {
 		edits = append(edits, setValue(p.Key, p.Value))
 	}
@@ -270,6 +270,22 @@ func passthroughBody(req *Request) (body []byte, stripUsage bool, err error) {
 	}
 	body, err = editObject(req.Body, edits...)
 	return body, stripUsage, err
+}
+
+// standardServiceTier returns the edit that keeps a request on standard processing
+// (docs/specs/GATEWAY.md, Providers → Service tier): prices are standard-tier rates,
+// and a priority request would be billed about twice what its record says. A client's
+// service_tier becomes "default" on every backend. Azure chat completions also get it
+// when the client sent none: there an absent tier means the deployment's own setting,
+// which may be priority. Elsewhere an absent tier stays absent — backends that do not
+// know the field (vLLM, llama-server, ...) are not sent it.
+func standardServiceTier(req *Request) func([]byte) ([]byte, error) {
+	return func(current []byte) ([]byte, error) {
+		if current == nil && (req.Endpoint != ChatCompletions || req.Deployment.Backend.Type != config.BackendAzureOpenAI) {
+			return nil, nil
+		}
+		return []byte(`"default"`), nil
+	}
 }
 
 // clientHeaders are the backend response headers relayed to the client. The list is

@@ -235,6 +235,41 @@ edit which group or mint keys in it is your app's business, never config.
   gateway against the config it applied before — they differ for a while when a
   gateway skipped versions; the totals computed under the new config settle it.
 
+**Prices** (`CONTROL-PROTOCOL.md` → Config → Prices, Units and price units): a
+model's `prices` is a list of `{ effective_from, usd_per_million }` in increasing date
+order; the gateway prices each request with the entry in force on its UTC date, and
+a model without `prices` is free (no USD limit refuses it). Keep old entries when a
+price changes — add a new one dated from the change — so records re-priced later
+use the price of their day.
+
+- Three units take a price: `tokens_in` (uncached input), `tokens_cached` (cached
+  input) and `tokens_out` (all output, reasoning included). `tokens_reasoning` is
+  never priced — it is inside `tokens_out`. An entry without `tokens_cached` charges
+  cached input at the `tokens_in` price, never free.
+- **Prices are standard-tier rates.** The gateway keeps every request on standard
+  processing: a client's `service_tier` becomes `"default"`, and Azure chat requests
+  get it even when the client sent none, since Azure's default follows the
+  deployment's setting, which may be Priority (`GATEWAY.md` → Providers → Service
+  tier). Priority, flex and batch rates never apply, and `service_tier` cannot be a
+  model default.
+- **Azure deployment types price differently**: Data Zone (EU/US) is about 10%
+  above Global for the same model. Price a model at the rate of the deployment type
+  its deployments use.
+- **Importing a price list is your app's job.** LiteLLM publishes one
+  (`model_prices_and_context_window.json` in the BerriAI/litellm repository, keys
+  such as `azure/gpt-5`, `azure/eu/gpt-5`); its per-token USD fields map to
+  per-million prices as: `input_cost_per_token` × 10⁶ → `tokens_in`,
+  `cache_read_input_token_cost` × 10⁶ → `tokens_cached`, `output_cost_per_token` ×
+  10⁶ → `tokens_out`. The other fields are not priced by kaiak: the `_priority`,
+  `_flex` and `_batches` variants (tiers the gateway never uses), `_above_<N>k_tokens`
+  (long-context rates), `cache_creation_input_token_cost` (cache writes), audio,
+  image and per-second rates (endpoints the gateway does not serve), and
+  `search_context_cost_per_query` (a per-search fee). Azure deployment names are
+  yours, so the mapping from a model to its LiteLLM key is a setting in your app, not
+  something to guess from names. The list carries no dates and is community-kept:
+  add an entry dated today only when a price changed, and let a person review it
+  before publishing.
+
 Typical flow for a UI edit:
 
 1. Load your domain model (DB rows) and build a complete `Config` from it. The

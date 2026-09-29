@@ -383,9 +383,11 @@ the `{ error, detail }` body, `error` being the stable code:
   reasoning is switched off; a default fills an unset parameter whole and is never
   merged into one the client sent. Fields the gateway owns or that carry request
   content (`model`, `messages`, `prompt`, `input`, `stream`, `stream_options`,
-  `max_tokens`, `max_completion_tokens`, `n`, `best_of`) are refused there — the
-  output limit is set through `output_limit`, and `n`/`best_of` multiply the output
-  reservation, so only the client sets them (settled 2026-09-25, H10). **Numbers in `defaults` must fit a JavaScript number**
+  `max_tokens`, `max_completion_tokens`, `n`, `best_of`, `service_tier`) are refused
+  there — the output limit is set through `output_limit`, `n`/`best_of` multiply the
+  output reservation, so only the client sets them (settled 2026-09-25, H10), and the
+  service tier is always standard (`GATEWAY.md`, Providers → Service tier; settled
+  2026-09-29). **Numbers in `defaults` must fit a JavaScript number**
   (settled 2026-09-25): `kaiak-control` holds the document as JavaScript values, so a
   number past the double range (`1e400`, at any depth) is refused by both halves — it
   would become `Infinity`, which JSON cannot carry back — and a number with more

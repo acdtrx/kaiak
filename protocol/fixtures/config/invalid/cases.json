@@ -131,6 +131,10 @@
     "kind": "schema",
     "reason": "the output limit is set through output_limit, not defaults"
   },
+  "defaults-service-tier.json": {
+    "kind": "schema",
+    "reason": "service_tier is owned by the gateway (it keeps every request on standard processing), not a default"
+  },
   "defaults-stream.json": {
     "kind": "schema",
     "reason": "stream is the client's choice, not a default"

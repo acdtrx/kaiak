@@ -62,7 +62,8 @@ func indexObject(data []byte) (objectIndex, error) {
 }
 
 // memberEdit changes one member of an object: set returns the member's new value
-// given its current one (nil when the object has no such member).
+// given its current one (nil when the object has no such member). A nil value for an
+// absent member leaves it absent.
 type memberEdit struct {
 	key string
 	set func(current []byte) ([]byte, error)
@@ -111,6 +112,9 @@ func editObject(data []byte, edits ...memberEdit) ([]byte, error) {
 		value, err := e.set(nil)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", e.key, err)
+		}
+		if value == nil {
+			continue
 		}
 		key, _ := json.Marshal(e.key) // a string always encodes
 		text := slices.Concat(key, []byte(":"), value)

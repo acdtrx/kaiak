@@ -82,7 +82,7 @@ func IsPublicModelName(s string) bool {
 // carry request content.
 var refusedDefaults = []string{
 	"model", "messages", "prompt", "input", "stream", "stream_options", "max_tokens", "max_completion_tokens",
-	"n", "best_of",
+	"n", "best_of", "service_tier",
 }
 
 var (
