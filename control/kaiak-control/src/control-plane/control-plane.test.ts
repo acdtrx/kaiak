@@ -41,7 +41,7 @@ test("the core's history size bounds resuming", async () => {
 
 test("the core checks gateway requests against its token", () => {
   const controlPlane = createControlPlane({ store: createMemoryStore(), token: "right" });
-  const headers = { "kaiak-protocol": "2", "kaiak-instance": "gw-1" };
+  const headers = { "kaiak-protocol": "3", "kaiak-instance": "gw-1" };
   assert.deepEqual(controlPlane.checkGatewayRequest({ ...headers, authorization: "Bearer right" }), {
     ok: true,
     instance: "gw-1",

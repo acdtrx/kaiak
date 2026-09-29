@@ -154,7 +154,7 @@ test("each failure kind is rejected, kept, and cleared by the next good run", as
   const badJson = await configFile.reload("manual");
   assert.ok(!badJson.ok && badJson.error.code === "json-invalid");
 
-  writeFileSync(file, JSON.stringify({ format_version: 2 }));
+  writeFileSync(file, JSON.stringify({ format_version: 3 }));
   const invalid = await configFile.reload("manual");
   assert.ok(!invalid.ok && invalid.error.code === "config-invalid");
   assert.ok(invalid.error.code === "config-invalid" && invalid.error.issues.length > 0);

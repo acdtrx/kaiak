@@ -195,7 +195,7 @@ and `partial`, `gateway_time`. Raw units travel beside the cost, so you can re-p
 The config document is the one format everything shares:
 `schema/config.schema.json` in the package, `examples/config.json` in the kaiak repo,
 field meanings in `docs/specs/CONTROL-PROTOCOL.md` → Config. Top level:
-`format_version: 2`, `global`, `backends`, `models`, `keys`, and optional `groups` —
+`format_version: 3`, `global`, `backends`, `models`, `keys`, and optional `groups` —
 each collection an object keyed by ID.
 
 **The group tree** (`CONTROL-PROTOCOL.md` → Config → The group tree): each group is
@@ -235,17 +235,24 @@ edit which group or mint keys in it is your app's business, never config.
   gateway against the config it applied before — they differ for a while when a
   gateway skipped versions; the totals computed under the new config settle it.
 
-**Prices** (`CONTROL-PROTOCOL.md` → Config → Prices, Units and price units): a
-model's `prices` is a list of `{ effective_from, usd_per_million }` in increasing date
+**Prices** (`CONTROL-PROTOCOL.md` → Config → Prices, Tiered prices, Units and price
+units): a model's `prices` is a list of `{ effective_from, tiers }` in increasing date
 order; the gateway prices each request with the entry in force on its UTC date, and
 a model without `prices` is free (no USD limit refuses it). Keep old entries when a
 price changes — add a new one dated from the change — so records re-priced later
 use the price of their day.
 
+- **Tiers** carry the rates: `tiers` lists 1 to 8 `{ above_input_tokens,
+  usd_per_million }`, the first at 0 and each later one higher. A request is priced
+  whole — input, cached input and output — at the last tier whose
+  `above_input_tokens` is below its input size (`tokens_in` + `tokens_cached`). A
+  model without long-context pricing has one tier at 0; one billed at about twice
+  the rates above 272k input tokens has a second tier at 272000. Each tier lists all
+  its own prices: nothing is inherited from the tier below.
 - Three units take a price: `tokens_in` (uncached input), `tokens_cached` (cached
   input) and `tokens_out` (all output, reasoning included). `tokens_reasoning` is
-  never priced — it is inside `tokens_out`. An entry without `tokens_cached` charges
-  cached input at the `tokens_in` price, never free.
+  never priced — it is inside `tokens_out`. A tier without `tokens_cached` charges
+  cached input at that tier's `tokens_in` price, never free.
 - **Prices are standard-tier rates.** The gateway keeps every request on standard
   processing: a client's `service_tier` becomes `"default"`, and Azure chat requests
   get it even when the client sent none, since Azure's default follows the
@@ -260,11 +267,16 @@ use the price of their day.
   such as `azure/gpt-5`, `azure/eu/gpt-5`); its per-token USD fields map to
   per-million prices as: `input_cost_per_token` × 10⁶ → `tokens_in`,
   `cache_read_input_token_cost` × 10⁶ → `tokens_cached`, `output_cost_per_token` ×
-  10⁶ → `tokens_out`. The other fields are not priced by kaiak: the `_priority`,
-  `_flex` and `_batches` variants (tiers the gateway never uses), `_above_<N>k_tokens`
-  (long-context rates), `cache_creation_input_token_cost` (cache writes), audio,
-  image and per-second rates (endpoints the gateway does not serve), and
-  `search_context_cost_per_query` (a per-search fee). Azure deployment names are
+  10⁶ → `tokens_out`, all in the tier at 0. A field ending in `_above_<N>k_tokens`
+  is a long-context rate and goes to the tier at N × 1000:
+  `input_cost_per_token_above_272k_tokens` → the 272000 tier's `tokens_in`, and the
+  same for `cache_read_input_token_cost_…` and `output_cost_per_token_…`. That tier
+  lists every unit itself, so copy any unit the list gives no long-context rate for
+  from the tier at 0 (leaving `tokens_out` out would make its output free). The other
+  fields are not priced by kaiak: the `_priority`, `_flex` and `_batches` variants
+  (service tiers the gateway never uses), `cache_creation_input_token_cost` (cache
+  writes), audio, image and per-second rates (endpoints the gateway does not serve),
+  and `search_context_cost_per_query` (a per-search fee). Azure deployment names are
   yours, so the mapping from a model to its LiteLLM key is a setting in your app, not
   something to guess from names. The list carries no dates and is community-kept:
   add an entry dated today only when a price changed, and let a person review it

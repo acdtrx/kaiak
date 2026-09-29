@@ -105,7 +105,7 @@ export interface ConfigRejection {
 // POST /v1/status.
 export interface GatewayStatus {
   instance: string;
-  protocol_version: 2;
+  protocol_version: 3;
   state: GatewayState;
   started_at: string;
   // The config in force: its version and the store epoch it counts in, both null

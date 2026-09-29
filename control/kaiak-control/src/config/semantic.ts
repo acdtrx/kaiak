@@ -27,6 +27,8 @@ export type SemanticRuleCode =
   | "output-limit-above-context"
   | "reasoning-efforts-without-reasoning"
   | "price-dates-not-increasing"
+  | "price-tier-first-not-zero"
+  | "price-tiers-not-increasing"
   | "date-invalid"
   | "timestamp-invalid";
 
@@ -213,6 +215,18 @@ function checkModel(config: Config, name: string, model: Model, report: Report):
 
   let previous: string | undefined;
   (model.prices ?? []).forEach((price, index) => {
+    let below: number | undefined;
+    price.tiers.forEach((tier, tierIndex) => {
+      const threshold = tier.above_input_tokens;
+      const thresholdPath = pointer(path, "prices", index, "tiers", tierIndex, "above_input_tokens");
+      if (below === undefined && threshold !== 0) {
+        report("price-tier-first-not-zero", thresholdPath, `the first tier's above_input_tokens is ${threshold}, not 0`);
+      }
+      if (below !== undefined && threshold <= below) {
+        report("price-tiers-not-increasing", thresholdPath, `${threshold} is not above the previous tier's ${below}`);
+      }
+      below = threshold;
+    });
     const datePath = pointer(path, "prices", index, "effective_from");
     if (!isRealDate(price.effective_from)) {
       report("date-invalid", datePath, `"${price.effective_from}" is not a real date`);

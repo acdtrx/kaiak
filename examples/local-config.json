@@ -1,5 +1,5 @@
 {
-  "format_version": 2,
+  "format_version": 3,
   "global": {
     "limits": [{ "type": "requests_per_minute", "value": 600 }]
   },
@@ -15,7 +15,10 @@
       },
       "output_limit": { "default": 256, "ceiling": 1024 },
       "prices": [
-        { "effective_from": "2026-01-01", "usd_per_million": { "tokens_in": 1.0, "tokens_out": 4.0 } }
+        {
+          "effective_from": "2026-01-01",
+          "tiers": [{ "above_input_tokens": 0, "usd_per_million": { "tokens_in": 1.0, "tokens_out": 4.0 } }]
+        }
       ]
     }
   },

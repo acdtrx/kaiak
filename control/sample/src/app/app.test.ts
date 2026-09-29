@@ -10,7 +10,7 @@ import type { SampleApp } from "./index.ts";
 
 const MINIMAL = path.resolve(import.meta.dirname, "../../../../protocol/fixtures/config/valid/minimal.json");
 const TOKEN = "sample-token";
-const GATEWAY_HEADERS = { authorization: `Bearer ${TOKEN}`, "kaiak-protocol": "2", "kaiak-instance": "gw-1" };
+const GATEWAY_HEADERS = { authorization: `Bearer ${TOKEN}`, "kaiak-protocol": "3", "kaiak-instance": "gw-1" };
 
 // A valid config document distinguishable by its context length.
 function configText(n: number): string {
@@ -102,7 +102,7 @@ test("the app serves the config file to gateways through kaiak-control's plugin"
   const { app } = setUp(configText(1));
   const response = await app.inject({ method: "GET", url: "/v1/config", headers: GATEWAY_HEADERS });
   assert.equal(response.statusCode, 200);
-  assert.equal(response.headers["kaiak-protocol"], "2");
+  assert.equal(response.headers["kaiak-protocol"], "3");
   const snapshot = response.json<{ version: number; config: { models: { llama: { metadata: { context_length: number } } } } }>();
   assert.equal(snapshot.version, 1);
   assert.equal(snapshot.config.models.llama.metadata.context_length, 1001);

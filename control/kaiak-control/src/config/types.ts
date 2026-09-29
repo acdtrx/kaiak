@@ -52,10 +52,18 @@ export interface ModelMetadata {
   reasoning_efforts?: string[];
 }
 
+// A price entry's tiers start at 0 and rise strictly; a record is priced whole at the
+// last tier whose above_input_tokens is below its input (tokens_in + tokens_cached).
 export interface Price {
   effective_from: string;
-  // tokens_cached left out is charged at the tokens_in price; tokens_in or tokens_out
-  // left out costs 0.
+  tiers: PriceTier[];
+}
+
+// Complete in itself: nothing is inherited from the tier below.
+export interface PriceTier {
+  above_input_tokens: number;
+  // tokens_cached left out is charged at this tier's tokens_in price; tokens_in or
+  // tokens_out left out costs 0.
   usd_per_million: Partial<Record<PriceUnit, number>>;
 }
 
@@ -124,7 +132,7 @@ export interface Global {
 }
 
 export interface Config {
-  format_version: 2;
+  format_version: 3;
   global: Global;
   backends: Record<string, Backend>;
   models: Record<string, Model>;

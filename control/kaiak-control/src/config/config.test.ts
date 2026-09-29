@@ -147,3 +147,55 @@ describe("group tree rules", () => {
     assert.deepEqual(issuesOf(cycle), [{ code: "group-cycle", path: "/groups/loop/parent" }, exceeded]);
   });
 });
+
+describe("price tier rules", () => {
+  // minimal.json with prices on its model.
+  const withPrices = (prices: { effective_from: string; tiers: number[] }[]): unknown => {
+    const config = readJson(path.join(VALID_DIR, "minimal.json")) as { models: { llama: Record<string, unknown> } };
+    config.models.llama["prices"] = prices.map(({ effective_from, tiers }) => ({
+      effective_from,
+      tiers: tiers.map((above) => ({ above_input_tokens: above, usd_per_million: { tokens_in: 1, tokens_out: 2 } })),
+    }));
+    return config;
+  };
+  const issuesOf = (doc: unknown): { code: string; path: string }[] => {
+    const result = validateConfig(doc);
+    return result.ok ? [] : result.issues.map(({ code, path: at }) => ({ code, path: at }));
+  };
+  const at = (entry: number, tier: number): string => `/models/llama/prices/${entry}/tiers/${tier}/above_input_tokens`;
+
+  test("tiers from 0, each above the one before, pass", () => {
+    assert.deepEqual(issuesOf(withPrices([{ effective_from: "2026-01-01", tiers: [0, 32000, 128000] }])), []);
+  });
+
+  test("a first tier above 0 is reported at that tier, in any entry", () => {
+    const doc = withPrices([
+      { effective_from: "2026-01-01", tiers: [0] },
+      { effective_from: "2026-02-01", tiers: [1000, 272000] },
+    ]);
+    assert.deepEqual(issuesOf(doc), [{ code: "price-tier-first-not-zero", path: at(1, 0) }]);
+  });
+
+  test("each tier not above the one before is reported at that tier", () => {
+    const doc = withPrices([{ effective_from: "2026-01-01", tiers: [0, 200000, 200000, 100000, 272000] }]);
+    assert.deepEqual(issuesOf(doc), [
+      { code: "price-tiers-not-increasing", path: at(0, 2) },
+      { code: "price-tiers-not-increasing", path: at(0, 3) },
+    ]);
+  });
+
+  test("the tier rules run beside the date rules", () => {
+    const doc = withPrices([
+      { effective_from: "2026-02-01", tiers: [0] },
+      { effective_from: "2026-01-01", tiers: [5, 0] },
+      { effective_from: "2026-02-30", tiers: [0, 0] },
+    ]);
+    assert.deepEqual(issuesOf(doc), [
+      { code: "price-tier-first-not-zero", path: at(1, 0) },
+      { code: "price-tiers-not-increasing", path: at(1, 1) },
+      { code: "price-dates-not-increasing", path: "/models/llama/prices/1/effective_from" },
+      { code: "price-tiers-not-increasing", path: at(2, 1) },
+      { code: "date-invalid", path: "/models/llama/prices/2/effective_from" },
+    ]);
+  });
+});
