@@ -1,8 +1,8 @@
 // Runs the raw-byte fixtures in protocol/fixtures/duplicate-members/: documents that
 // name an object member twice. The gateway refuses each one (duplicate-member) before
 // any decoder reads it. kaiak-control does not detect repeats: JSON.parse keeps the
-// last occurrence, and everything the kit sends is written by JSON.stringify, which
-// cannot repeat a member. This suite checks what the kit's reading of each fixture
+// last occurrence, and everything kaiak-control sends is written by JSON.stringify, which
+// cannot repeat a member. This suite checks what kaiak-control's reading of each fixture
 // is — valid — so a repeat is each fixture's only defect, and the gateway's refusal
 // is the only difference between the halves.
 

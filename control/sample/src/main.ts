@@ -26,7 +26,7 @@ const close = (signal: NodeJS.Signals): void => {
   if (closing) return;
   closing = true;
   app.log.info({ signal }, "closing");
-  // The kit's hooks end the gateway streams and stop the expiry sweep; the app's stop
+  // kaiak-control's hooks end the gateway streams and stop the expiry sweep; the app's stop
   // the config file watcher.
   app.close().then(
     () => process.exit(0),

@@ -346,13 +346,13 @@ the `{ error, detail }` body, `error` being the stable code:
   repeated member's path (a config rejection for a config, the decode error for a
   message). JSON leaves a repeat's meaning open and decoders disagree on it; the
   gateway's schema check and typed decode did. kaiak-control does not detect
-  repeats: `JSON.parse` keeps the last occurrence, and everything the kit sends is
+  repeats: `JSON.parse` keeps the last occurrence, and everything kaiak-control sends is
   written by `JSON.stringify`, which cannot repeat a member — so a repeat can only
   come from a hand-written or tampered document. Rejected: a repeat-detecting JSON
-  reader in the kit — a hand-written tokenizer or a dependency, for documents the
-  kit never produces. Raw-byte fixtures in `protocol/fixtures/duplicate-members/`
+  reader in kaiak-control — a hand-written tokenizer or a dependency, for documents
+  kaiak-control never produces. Raw-byte fixtures in `protocol/fixtures/duplicate-members/`
   (`cases.json`: kind, path, reason) hold both halves to this: the gateway refuses
-  each file at its path, the kit's reading of each (the last occurrence) is valid,
+  each file at its path, kaiak-control's reading of each (the last occurrence) is valid,
   so the repeat is each file's only defect.
 
 ## Config

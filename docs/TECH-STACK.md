@@ -239,7 +239,7 @@
   host configures it) and 43 further small transitive packages (Fastify's router,
   serializers, `light-my-request`, …).
 - `control/sample` (runtime): **fastify 5.12.5** — the same pin as `kaiak-control`'s (one
-  copy installed): the sample creates the Fastify instance the kit's plugin runs on.
+  copy installed): the sample creates the Fastify instance kaiak-control's plugin runs on.
 - `control/sample` (dev): **pino-pretty 13.1.3** — the development log format
   (`KAIAK_LOG_FORMAT=text`, the `dev` script's default). Brings 12 small transitive
   packages (`colorette`, `dateformat`, `fast-copy`, `help-me`, `pump`, …). `npm start`

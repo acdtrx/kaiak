@@ -364,9 +364,9 @@ flowchart LR
     app --> logging
     app --> page
     page --> cf
-    page --> kit
+    page --> kc
     logging --> settings
-    app --> kit[kaiak-control]
-    cf --> kit
-    keygen --> kit
+    app --> kc[kaiak-control]
+    cf --> kc
+    keygen --> kc
 ```

@@ -98,7 +98,7 @@ test("the app warns at startup that its state lives in memory and resets on rest
   assert.match(String(warning["msg"]), /budgets, usage totals and usage batch de-duplication reset when this process restarts — the sample is not a billing system/);
 });
 
-test("the app serves the config file to gateways through the kit's plugin", async () => {
+test("the app serves the config file to gateways through kaiak-control's plugin", async () => {
   const { app } = setUp(configText(1));
   const response = await app.inject({ method: "GET", url: "/v1/config", headers: GATEWAY_HEADERS });
   assert.equal(response.statusCode, 200);
