@@ -228,7 +228,8 @@
 - `control/kaiak-control` (runtime): **ajv 8.20.0** — JSON Schema validation of the
   config document and the protocol messages (its draft 2020-12 build,
   `ajv/dist/2020`), against the package's copy of `protocol/schema/`, read at
-  runtime. No `ajv-formats`: date and timestamp
+  runtime; and `backend-verify`'s lenient checks of backend answers, against schemas
+  of its own. No `ajv-formats`: date and timestamp
   shapes are schema `pattern`s, real-date checks are semantic rules. Brings four small
   transitive packages (`fast-deep-equal`, `fast-uri`, `json-schema-traverse`,
   `require-from-string`).

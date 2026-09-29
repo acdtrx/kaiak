@@ -36,5 +36,8 @@ export type * from "./keys/index.ts";
 export { INSTANCE_HEADER, PROTOCOL_HEADER, PROTOCOL_VERSION, errorBody } from "./protocol/index.ts";
 export type * from "./protocol/index.ts";
 
+export { verifyBackend } from "./backend-verify/index.ts";
+export type * from "./backend-verify/index.ts";
+
 export { controlProtocolPlugin } from "./fastify/index.ts";
 export type * from "./fastify/index.ts";

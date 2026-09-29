@@ -55,10 +55,10 @@
   copy of `protocol/schema/`): `type` from the backend `type` enum, `baseUrl` against
   the backend `base_url` pattern (so no userinfo, trailing slash, query or fragment),
   `model` against `backend_model_name`. `credential` is a non-empty string without
-  CR, LF or NUL (a valid header value); `timeoutMs` a positive integer. Invalid input
-  **throws** `{ code: "verify-input-invalid", message }` and sends nothing — it is
-  the caller's error, not the backend's answer. The message never includes the
-  credential.
+  CR, LF or NUL (a valid header value); `timeoutMs` a positive integer up to
+  2147483647 (the platform's timer limit). Invalid input **throws**
+  `{ code: "verify-input-invalid", message }` and sends nothing — it is the caller's
+  error, not the backend's answer. The message never includes the credential.
 
 ## Requests
 
@@ -72,7 +72,9 @@ way by the gateway:
 | `azure-openai` | `GET <baseUrl>/openai/v1/models` | `api-key: <credential>` |
 
 - Every request sends `Accept: application/json`, `User-Agent: kaiak-control` and the
-  credential header when a credential was given; nothing else.
+  credential header when a credential was given; nothing else of its own (Node's
+  `fetch` adds its fixed defaults: `Host`, `Connection`, `Accept-Encoding`,
+  `Accept-Language: *`, `Sec-Fetch-Mode`).
 - **At most two requests, in order**: the models list, then `GET <root>/props` only
   when the list says llama-server (Server recognition) and `<root>` exists (below).
   Nothing runs in parallel.

@@ -26,6 +26,7 @@ flowchart LR
     gw -->|passthrough or translated| be[Backends<br/>vLLM, llama-server, SGLang,<br/>OpenAI, Azure OpenAI]
     cp[Control plane<br/>kaiak-control] -->|config snapshot + SSE stream<br/>config, usage totals, live count| gw
     gw -->|usage records, status| cp
+    cp -.->|backend verify: GETs,<br/>when the app calls it| be
     file[(Config file)] -.->|file mode| gw
     prom[Prometheus] -->|scrape admin port| gw
 ```
@@ -35,6 +36,9 @@ flowchart LR
   plane reachable keeps serving (file mode; in control-plane mode once booted, or
   from the seed config at boot) — except models under a USD limit, refused once the
   outage passes its grace.
+- The control plane reaches a backend only when the app verifies one
+  (`verifyBackend`, `docs/specs/BACKEND-VERIFY.md`): a few `GET`s to read what it
+  reports about its models, off the request path, never on a schedule.
 - Budgets are shared through totals, not allowances: each gateway enforces the
   control plane's pushed totals plus its own usage not yet counted, and divides
   per-minute limits by the live-gateway count (`docs/specs/CONTROL-PROTOCOL.md`,
@@ -276,6 +280,12 @@ Test tooling outside the binary:
     cursors past their retention (7 days by default); a subscription to
     changes, telling whether the live count moved.
   - `keys` — key generation and hashing (Config, key format).
+  - `backend-verify` — `verifyBackend`, the only code in `control/` that talks to a
+    backend (`docs/specs/BACKEND-VERIFY.md`): checks that it answers and accepts the
+    credential, and reads what it reports about its models (vLLM's list, llama-server's
+    `/props`) into a report the app turns into declared config. Input checked with the
+    config schema's rules; answers with lenient schemas of its own. Called by the app
+    only — not by `control-plane` or `fastify`.
   - `protocol` — the checks every gateway request passes (token, protocol version,
     instance) as framework-agnostic functions returning structured errors with the
     status an adapter answers with; the protocol version and header names.
@@ -315,6 +325,8 @@ flowchart LR
     cv --> storage
     storage --> config
     keys --> schemas
+    bv[backend-verify] --> config
+    bv --> schemas
     protocol --> schemas
     config --> schemas
     config --> calendar
