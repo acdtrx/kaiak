@@ -190,9 +190,9 @@ func NewRegistry(lookupEnv func(string) (string, bool)) *Registry {
 }
 
 // For returns the provider for backend b. Both v1 backend types speak the OpenAI wire
-// format and share one implementation.
+// format and share one implementation; their differences are b's dialect.
 func (r *Registry) For(b *config.Backend) Provider {
-	return &openAIFormat{backend: b, client: r.client(b), credential: r.credential(b)}
+	return &openAIFormat{backend: b, dialect: dialectOf(b), client: r.client(b), credential: r.credential(b)}
 }
 
 // credential is the gateway's credential for b; "" when it has none. A reserved
@@ -228,13 +228,14 @@ const maxProbeBody = 1 << 20
 func (r *Registry) Probe(ctx context.Context, b *config.Backend) (serves func(model string) bool, err error) {
 	ctx, cancel := context.WithTimeout(ctx, b.ConnectTimeout+probeReadTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL(b, "models"), nil)
+	d := dialectOf(b)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.url(b.BaseURL, "models"), nil)
 	if err != nil {
 		return nil, fmt.Errorf("backend %s: build probe: %w", b.ID, err)
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "kaiak")
-	setCredential(req.Header, b, r.credential(b))
+	d.setCredential(req.Header, r.credential(b))
 	resp, err := r.client(b).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("backend %s: %w", b.ID, err)
@@ -247,7 +248,7 @@ func (r *Registry) Probe(ctx context.Context, b *config.Backend) (serves func(mo
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return nil, fmt.Errorf("backend %s: models list answered %d", b.ID, resp.StatusCode)
 	}
-	if b.Type == config.BackendAzureOpenAI {
+	if !d.listsDeployments {
 		return func(string) bool { return true }, nil
 	}
 	var list struct {

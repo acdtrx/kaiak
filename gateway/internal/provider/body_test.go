@@ -113,7 +113,7 @@ func TestEditObjectRejectsNonObjects(t *testing.T) {
 }
 
 func TestPassthroughBodyEdits(t *testing.T) {
-	deployment := config.Deployment{Backend: &config.Backend{Type: config.BackendOpenAICompatible}, Model: `org/m"q`}
+	deployment := config.Deployment{Model: `org/m"q`}
 	cases := []struct {
 		name       string
 		req        Request
@@ -140,7 +140,7 @@ func TestPassthroughBodyEdits(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			c.req.Deployment = deployment
-			got, strip, err := passthroughBody(&c.req)
+			got, strip, err := passthroughBody(&c.req, dialects[config.BackendOpenAICompatible])
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -155,7 +155,7 @@ func TestPassthroughBodyEdits(t *testing.T) {
 // gateway names the standard one; its other endpoints, like every other backend, are
 // sent no tier the client did not send.
 func TestPassthroughBodyServiceTierOnAzure(t *testing.T) {
-	deployment := config.Deployment{Backend: &config.Backend{Type: config.BackendAzureOpenAI}, Model: "d"}
+	deployment := config.Deployment{Model: "d"}
 	cases := []struct {
 		endpoint Endpoint
 		body     string
@@ -167,7 +167,8 @@ func TestPassthroughBodyServiceTierOnAzure(t *testing.T) {
 		{Embeddings, `{"model":"pub","input":"a"}`, `{"model":"d","input":"a"}`},
 	}
 	for _, c := range cases {
-		got, _, err := passthroughBody(&Request{Endpoint: c.endpoint, Deployment: deployment, Body: []byte(c.body)})
+		got, _, err := passthroughBody(&Request{Endpoint: c.endpoint, Deployment: deployment, Body: []byte(c.body)},
+			dialects[config.BackendAzureOpenAI])
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -202,8 +203,8 @@ func TestIsUsageOnlyChunk(t *testing.T) {
 // owned field.
 func TestPassthroughRefusesARepeatedOwnedKey(t *testing.T) {
 	raw := []byte(`{` + strings.Repeat(`"model":"m",`, 10000) + `"messages":[]}`)
-	req := &Request{Body: raw, Deployment: config.Deployment{Backend: &config.Backend{Type: config.BackendAzureOpenAI}, Model: strings.Repeat("x", 512)}}
-	if edited, _, err := passthroughBody(req); err == nil {
+	req := &Request{Body: raw, Deployment: config.Deployment{Model: strings.Repeat("x", 512)}}
+	if edited, _, err := passthroughBody(req, dialects[config.BackendAzureOpenAI]); err == nil {
 		t.Fatalf("accepted: %d client bytes became %d", len(raw), len(edited))
 	}
 }
@@ -218,9 +219,9 @@ func TestRewrittenBodyIsBoundedByOneEditPerOwnedField(t *testing.T) {
 		`{"model":"m","max_tokens":1,"top_k":0,"temperature":1,"stream":true,"stream_options":{"include_usage":false}}`,
 		`{"messages":[{"role":"user","content":"hi"}],"stream":true}`,
 	} {
-		req := &Request{Body: []byte(body), Deployment: config.Deployment{Backend: &config.Backend{Type: config.BackendAzureOpenAI}, Model: longModel}, Params: params,
+		req := &Request{Body: []byte(body), Deployment: config.Deployment{Model: longModel}, Params: params,
 			Stream: strings.Contains(body, `"stream":true`)}
-		edited, _, err := passthroughBody(req)
+		edited, _, err := passthroughBody(req, dialects[config.BackendAzureOpenAI])
 		if err != nil {
 			t.Fatalf("%s: %v", body, err)
 		}

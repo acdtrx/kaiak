@@ -22,27 +22,18 @@ import (
 // /openai/v1/ API). The two differ only in URL layout and credential header.
 type openAIFormat struct {
 	backend    *config.Backend
+	dialect    dialect
 	client     *http.Client
 	credential string
 }
 
-// apiURL joins b's base URL and path, a path below the OpenAI API's version prefix
-// (docs/specs/GATEWAY.md, Base URLs): an openai-compatible base URL already ends in
-// the API version path; an azure-openai one is the resource endpoint.
-func apiURL(b *config.Backend, path string) string {
-	if b.Type == config.BackendAzureOpenAI {
-		return b.BaseURL + "/openai/v1/" + path
-	}
-	return b.BaseURL + "/" + path
-}
-
-func (p *openAIFormat) url(e Endpoint) string { return apiURL(p.backend, e.path()) }
+func (p *openAIFormat) url(e Endpoint) string { return p.dialect.url(p.backend.BaseURL, e.path()) }
 
 // Send implements Provider. Besides *Error and the context's error, it returns a plain
 // error when the upstream request cannot be built from req — a gateway fault, since
 // the inbound stage has validated the body.
 func (p *openAIFormat) Send(ctx context.Context, req *Request) (Response, error) {
-	body, stripUsage, err := passthroughBody(req)
+	body, stripUsage, err := passthroughBody(req, p.dialect)
 	if err != nil {
 		return nil, fmt.Errorf("edit request body: %w", err)
 	}
@@ -238,19 +229,7 @@ func (p *openAIFormat) setHeaders(h http.Header, req *Request) {
 	}
 	h.Set("User-Agent", "kaiak")
 	h.Set("X-Request-Id", req.RequestID)
-	setCredential(h, p.backend, p.credential)
-}
-
-// setCredential sets the gateway's credential for backend b, if it has one.
-func setCredential(h http.Header, b *config.Backend, credential string) {
-	if credential == "" {
-		return
-	}
-	if b.Type == config.BackendAzureOpenAI {
-		h.Set("Api-Key", credential)
-	} else {
-		h.Set("Authorization", "Bearer "+credential)
-	}
+	p.dialect.setCredential(h, p.credential)
 }
 
 // passthroughBody applies the gateway's owned edits to the client's body: the model
@@ -258,9 +237,9 @@ func setCredential(h http.Header, b *config.Backend, credential string) {
 // are set, and a stream gets stream_options.include_usage so the backend reports
 // usage. stripUsage is true when the client did not ask for usage, so the usage-only
 // chunk that edit adds must not reach it.
-func passthroughBody(req *Request) (body []byte, stripUsage bool, err error) {
+func passthroughBody(req *Request, d dialect) (body []byte, stripUsage bool, err error) {
 	model, _ := json.Marshal(req.Deployment.Model) // a string always encodes
-	edits := []memberEdit{setValue("model", model), {key: "service_tier", set: standardServiceTier(req)}}
+	edits := []memberEdit{setValue("model", model), {key: "service_tier", set: standardServiceTier(req.Endpoint, d)}}
 	for _, p := range req.Params {
 		edits = append(edits, setValue(p.Key, p.Value))
 	}
@@ -275,13 +254,13 @@ func passthroughBody(req *Request) (body []byte, stripUsage bool, err error) {
 // standardServiceTier returns the edit that keeps a request on standard processing
 // (docs/specs/GATEWAY.md, Providers → Service tier): prices are standard-tier rates,
 // and a priority request would be billed about twice what its record says. A client's
-// service_tier becomes "default" on every backend. Azure chat completions also get it
-// when the client sent none: there an absent tier means the deployment's own setting,
-// which may be priority. Elsewhere an absent tier stays absent — backends that do not
-// know the field (vLLM, llama-server, ...) are not sent it.
-func standardServiceTier(req *Request) func([]byte) ([]byte, error) {
+// service_tier becomes "default" on every backend. A chat completions request without
+// one gets it where an absent tier follows the deployment's own setting (Azure), which
+// may be priority. Elsewhere an absent tier stays absent — backends that do not know
+// the field (vLLM, llama-server, ...) are not sent it.
+func standardServiceTier(e Endpoint, d dialect) func([]byte) ([]byte, error) {
 	return func(current []byte) ([]byte, error) {
-		if current == nil && (req.Endpoint != ChatCompletions || req.Deployment.Backend.Type != config.BackendAzureOpenAI) {
+		if current == nil && (e != ChatCompletions || !d.absentTierFollowsDeployment) {
 			return nil, nil
 		}
 		return []byte(`"default"`), nil

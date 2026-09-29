@@ -17,8 +17,9 @@ import (
 )
 
 func TestURLJoining(t *testing.T) {
-	compat := &openAIFormat{backend: &config.Backend{Type: config.BackendOpenAICompatible, BaseURL: "http://vllm:8000/v1"}}
-	azure := &openAIFormat{backend: &config.Backend{Type: config.BackendAzureOpenAI, BaseURL: "https://res.openai.azure.com"}}
+	r := NewRegistry(func(string) (string, bool) { return "", false })
+	compat := r.For(&config.Backend{ID: "vllm", Type: config.BackendOpenAICompatible, BaseURL: "http://vllm:8000/v1"}).(*openAIFormat)
+	azure := r.For(&config.Backend{ID: "azure", Type: config.BackendAzureOpenAI, BaseURL: "https://res.openai.azure.com"}).(*openAIFormat)
 	for _, c := range []struct {
 		p    *openAIFormat
 		e    Endpoint

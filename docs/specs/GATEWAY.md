@@ -216,6 +216,14 @@ own, and a client sending repeats is broken either way.
 - **azure-openai** — Azure's OpenAI-compatible `/openai/v1/` API: the same wire format
   and model naming, `api-key` header auth, no `api-version`. The classic
   deployment-in-URL API is not supported.
+- **One wire-format provider, per-type dialects** (settled 2026-09-29): both types
+  share one provider (request editing, streaming, usage, timeouts, errors); what a
+  type does differently — URL layout, credential header, whether its models list
+  names deployments, what an absent service tier means — is a small per-type
+  description the provider reads, never a type check inside the shared code. A new
+  backend type (a separate `openai` or `vllm`) is added only when a real difference
+  needs one: a type is a config and protocol change. Rejected: a provider per type —
+  it would copy the shared code, where nearly all the complexity is.
 - **Base URLs** (settled 2026-09-24): an openai-compatible `base_url` is what an
   OpenAI client would use, API version path included (`http://vllm:8000/v1`); the
   gateway appends the endpoint path (`/chat/completions`, …). An azure-openai
