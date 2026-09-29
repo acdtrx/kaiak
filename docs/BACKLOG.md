@@ -23,14 +23,49 @@ Group entries under headings as themes emerge.
   `/v1/audio/speech`, `/v1/audio/transcriptions`; new usage units (`images`,
   `audio_seconds`, `characters`). Job-queue APIs (ComfyUI-style) need a separate adapter
   or gateway. Revisit trigger: a self-hosted image or speech model is deployed.
-- **Model metadata discovery** — read context length, default sampling parameters and
-  reasoning support from backends (llama-server `/props`, vLLM `/v1/models`) and merge
-  under declared values, each marked with its source. Revisit trigger: keeping declared
-  metadata in step with the backends becomes a real chore. (ruled 2026-09-24: deferred
-  from v1.)
-- **llama-server specifics** — concurrency cap from its slot count, its own metadata.
-  It works today as a plain OpenAI-compatible backend. Revisit trigger: the smaller
+- **Reasoning-effort discovery** — read the supported `reasoning_efforts` from backends
+  instead of declaring them. No backend reports the list today: llama-server's `/props`
+  has only a yes/no (`chat_template_caps.supports_reasoning_effort`), vLLM and cloud
+  APIs nothing. Efforts stay declared and remain the control plane's responsibility;
+  `verifyBackend` (`docs/plans/backend-verify/`) reports only that yes/no, as a hint.
+  A heuristic over the chat template (`reasoning_effort`, `enable_thinking`, `<think>`)
+  could guess more. Revisit trigger: a backend starts reporting its supported effort
+  values, or operators keep getting efforts wrong at add time. (ruled 2026-09-29.)
+- **Numeric reasoning efforts** — some newer models take a number (a thinking budget
+  or level) instead of `low`/`medium`/`high`. A per-model mapping from effort names to
+  the backend's numbers (or a numeric pass-through) would let clients keep sending the
+  OpenAI names. Revisit trigger: a deployed model needs a numeric effort that clients
+  cannot send as it is. (ruled 2026-09-29.)
+- **llama-server specifics** — concurrency cap from its slot count (`/props`
+  `total_slots`; `verifyBackend` reads its metadata already). It works today as a plain OpenAI-compatible backend. Revisit trigger: the smaller
   llama-server deployment goes ahead.
+- **Backend credentials in config** — the key value in config instead of an
+  `api_key_env` naming a gateway environment variable. Gains: one place to manage
+  keys, rotation by config push instead of a gateway rollout, gateways need only the
+  control URL and token. Costs: every copy of the config becomes a secret —
+  control-plane config versions (old keys after rotation), the gateway's
+  last-known-good cache and seed file, the control stream (TLS mandatory), and every
+  place config is shown, diffed, echoed in errors or used as a fixture needs masking;
+  it reverses the settled "secrets never in config" (`docs/DEPLOYMENT.md` → Secrets
+  and trust). Revisit trigger: the user decides (under consideration 2026-09-29), or
+  keeping gateway Secrets in step with config becomes a real burden.
+- **Active capability probes in `verifyBackend`** — opt-in requests of about one
+  token to observe what no backend reports passively. Checked live on vLLM 0.30.0
+  (2026-09-29, Qwen3.8-27B-NVFP4 started with vision on, then off): `/v1/models`,
+  `/tokenize`, `/version` and `/metrics` are identical either way; a chat with a 1×1
+  image answers `200` with vision and `400 "At most 0 image(s) may be provided in one
+  prompt"` without; a reasoning parser shows as a `reasoning` field on the reply;
+  `tool_choice: "auto"` should be refused without `--enable-auto-tool-choice`
+  (untested). Works on any OpenAI-compatible server; results would be labelled
+  observed, not reported. Revisit trigger: operators keep declaring vLLM
+  capabilities wrong. (ruled 2026-09-29: the helper stays passive.)
+- **Metadata drift warning in the gateway** — the gateway's background model check
+  already fetches each backend's models list on config apply; comparing vLLM's
+  `max_model_len` in that answer with the declared `context_length` would warn about a
+  backend restarted with other flags at no extra request (llama-server would need
+  `/props`, an extra request). Revisit trigger: a stale declared context length causes
+  failed requests in practice. (ruled 2026-09-29: metadata is filled at add time by
+  `verifyBackend`; the gateway does no extra backend work.)
 - **Cloud workload identity** — AWS IRSA / Pod Identity, Azure managed identity instead
   of static keys. Revisit trigger: static credentials are not allowed in the target
   cluster.
