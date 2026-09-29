@@ -80,8 +80,10 @@ The name reads the same both ways (the gateway carries traffic in both direction
 - **Model** — the public name clients use; one or more **deployments** (backend +
   backend-side model name), identical copies load-balanced among; metadata (context
   length, default sampling parameters, supported reasoning efforts, capabilities) —
-  declared in config (discovery from backends is deferred); output-limit default and ceiling; prices (per usage unit, with an effective
-  date); which limit types apply.
+  declared in config (`kaiak-control`'s `verifyBackend` fills it in from what the
+  backend reports when the model is added; the gateway discovers nothing);
+  output-limit default and ceiling; prices (per usage unit, with an effective date);
+  which limit types apply.
 - **Key** — belongs to one **group**; hashed; can expire or be disabled. Keys are
   created by the control plane and reach the gateway as hashes in config. A key has
   **no limits of its own**: its usage counts toward its group and every ancestor.
@@ -125,6 +127,6 @@ The name reads the same both ways (the gateway carries traffic in both direction
 Bedrock; Anthropic Messages inbound; OpenAI Responses API; image and audio models;
 response caching, guardrails, prompt templating, prompt logging; output limit derived
 from remaining budget; cloud workload identity (AWS IRSA / Azure managed identity);
-model metadata discovery; interim usage reports for long streams; always-on active
+reasoning-effort discovery; interim usage reports for long streams; always-on active
 health checks; demand-weighted per-minute limit shares.
 Never planned: OpenAI Batch API, Assistants API.

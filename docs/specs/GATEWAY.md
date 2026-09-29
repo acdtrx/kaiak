@@ -106,8 +106,11 @@
 
 ## Model metadata
 
-- **Declared** in config; v1 does no discovery from backends (deferred — vLLM reports
-  little beyond context length and cloud APIs nothing; see `docs/BACKLOG.md`).
+- **Declared** in config; the gateway does no discovery from backends and serves what
+  config says. Filling the declaration in is the control plane's job:
+  `kaiak-control`'s `verifyBackend` (`docs/specs/BACKEND-VERIFY.md`) reads what a
+  backend reports when an operator adds it or a model (settled 2026-09-29).
+  Gateway-side discovery is not planned.
 - **The gateway applies declared defaults**: parameters a request omits are filled in
   from the model's declared defaults, so `props` describes what actually runs. Defaults
   are top-level request parameters, any name, any non-null JSON value (the config

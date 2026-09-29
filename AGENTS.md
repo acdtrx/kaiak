@@ -49,7 +49,8 @@ english.
   control — from `control/`: `npm test` · `npm run lint` (`tsc` + boundary lint) ·
   sample control plane `KAIAK_SAMPLE_CONFIG=<file> KAIAK_CONTROL_TOKEN=<token> npm run dev -w sample`
   (`npm start -w sample` for JSON logs) · keygen
-  `npm run keygen -w sample -- --id <key-id> --group <id>`;
+  `npm run keygen -w sample -- --id <key-id> --group <id>` · verify a backend
+  `npm run verify -w sample -- --base-url <url> [--api-key-env <NAME>] [--model <name>]`;
   images (linux/amd64, on any Docker context; any cwd) — build
   `scripts/build-images.sh --repo <registry/namespace> [--context <ctx>] [--builder <builder>]`,
   smoke `scripts/smoke-images.sh --gateway <image> --sample <image>`, push

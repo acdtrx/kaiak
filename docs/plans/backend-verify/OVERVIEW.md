@@ -129,7 +129,24 @@ Decisions made while planning (confirm in review):
     so.
 - `scripts/check-all.sh` green 3×.
 
-**Verification status:** not started.
+**Verification status:** done (2026-09-29), with one live check not run:
+
+- [x] kaiak-control tests against fake vLLM, llama-server (chat and embedding),
+  OpenAI-style and Azure-style servers: each source, `401`/`403`, timeout, non-JSON,
+  missing fields, `base_url` without `/v1` (STEP-2, 22 tests).
+- [x] Sample `verify` command: arguments, env, errors, exit status, output streams
+  (STEP-3, 8 tests against an in-process fake llama-server).
+- [ ] **Live DGX llama-server `dgx.local:11434` (qwen3.8-27b) — not run.** The DGX
+  was serving `qwen38-27b-nvfp4` (vLLM) on that port, started outside this plan; it
+  was left untouched. Still covered by the fake built from the 2026-09-29 capture of
+  that server's answers. Run `npm run verify -w sample -- --base-url
+  http://dgx.local:11434/v1 --model unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL` when it is
+  up (expect 262144, vision true, tools and reasoning hints true).
+- [x] Live embedding llama-server `llama-embed.local:11435`: context 32768, vision
+  false, tools true as a hint kept out of `metadata`, no reasoning (STEP-3).
+- [x] Live vLLM 0.30.0 on the DGX (the one running that day): context 262144 from
+  `max_model_len`, no capabilities; `model-not-listed` with exit 1 (STEP-3).
+- [x] `scripts/check-all.sh` green 3× in a row (STEP-3).
 
 ## Git
 

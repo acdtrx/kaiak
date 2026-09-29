@@ -23,11 +23,12 @@ the **whole protocol side** of that; your app supplies the rest.
 | Usage intake: de-duplication, exactly-once counting, hour/month totals per limit, totals pushes | Long-term usage storage, reports, invoices (fed from the store — §6) |
 | Gateway status, the live set, expiry, conflict flags | Showing them; alerting on them |
 | Key generation and hashing (`createKey`) | Showing the plaintext key once; mapping keys to people |
+| Checking a backend and reading its model metadata (`verifyBackend`, §8) | Calling it when a backend or model is added, admins only; deciding what goes into config |
 | The storage interface + an in-memory reference store | A durable store implementing that interface (§5) |
 
 Never re-implement a protocol piece in the app — no hand-rolled `/v1/usage` route, no
 own totals arithmetic sent to gateways, no own config validator. If the library lacks
-something the protocol needs, the change belongs in the kaiak repo (§10).
+something the protocol needs, the change belongs in the kaiak repo (§11).
 
 ## 2. Hard rules
 
@@ -260,7 +261,51 @@ or an `expires_at`, and publishing. Keys have no limits of their own: a request
 passes the limits of its key's group, every ancestor and global, and its usage
 counts toward each of them.
 
-## 8. Reading state for the UI
+## 8. Verifying a backend when it is added
+
+Model metadata is declared in config: the gateway serves what config says and asks
+backends nothing. `verifyBackend` fills the declaration in for you. The contract,
+field by field, is `docs/specs/BACKEND-VERIFY.md`.
+
+- **When**: when an operator adds a backend, and when they add a model (a deployment's
+  backend-side name) — the moment your form is about to write a `base_url` or a
+  `metadata` block. Never on a schedule, never from a request.
+- **Call**: `verifyBackend({ type, baseUrl, credential?, model?, timeoutMs?, signal? })`
+  with `type` and `baseUrl` exactly as config will hold them, and the credential
+  **value** your app has (config names an env variable; the helper needs the key
+  itself). Invalid input throws `verify-input-invalid` and sends nothing.
+- **The report** (`BackendReport`, plain JSON — show it or store it as it is):
+  - `ok`, and `failure: { code, message }` when not: `unreachable`, `timeout`,
+    `credential-refused`, `not-a-models-list`, `model-not-listed`. Branch on the code;
+    `message` and the `notes` are for people.
+  - `server`: `vllm`, `llama-server` or `unknown` (OpenAI, Azure, anything else — only
+    reachability, the credential and the listed ids are checked there).
+  - `models[]`: every listed model, with what the server reports (`context_length`;
+    for llama-server also `capabilities.vision`, `tools`, `reasoning`) and a `sources`
+    entry per value: the URL and field it came from, and `hint`.
+  - `metadata`, when `model` was given and the check passed: the reported values under
+    their config names.
+- **`metadata` is partial.** Merge it into the model's `metadata`, then have the
+  operator complete the rest: `capabilities.streaming` always, every capability not
+  reported, `reasoning_efforts`. A value the backend does not report is absent, never
+  guessed — do not default it in your form either; leave it for the operator to
+  decide, and publishing refuses the config until they do.
+- **Hints stay out of `metadata`.** `tools` and `reasoning` from llama-server are read
+  from its chat template's capabilities and can be wrong (an embedding model reports
+  `tools: true`); they are in `models[]` with `hint: true`. Prefill a form from them
+  if you like, labelled as unconfirmed — never copy them into config silently.
+- **Admin-only.** The helper fetches a URL the caller supplies and sends a credential
+  to it, and private addresses are allowed (backends live there). Expose it only to
+  people allowed to configure backends, behind your app's own authentication (hard
+  rule 5); anyone else could use it to probe your network or send a key elsewhere.
+- **Nothing is saved.** A backend restarted with another context size leaves config
+  stale until someone verifies again.
+
+The sample's `verify` command wraps it for a config file:
+`npm run verify -w sample -- --base-url <url> [--api-key-env <NAME>] [--model <name>]`
+(`control/sample/src/verify/`).
+
+## 9. Reading state for the UI
 
 | Need | Call |
 | --- | --- |
@@ -295,7 +340,7 @@ if (current && totals) {
 - A listener that throws goes to `onListenerError`; by default that rethrows and
   crashes the process — keep listeners total, or log in `onListenerError`.
 
-## 9. Operating it
+## 10. Operating it
 
 - **TLS** in front of the control plane outside local runs; the token is a bearer
   secret. Tokens never go in URLs.
@@ -318,7 +363,7 @@ if (current && totals) {
   `ignore: 'pid,hostname,reqId,req.host,req.remoteAddress,req.remotePort'`
   (the sample's `src/logging/`).
 
-## 10. Testing
+## 11. Testing
 
 - Unit-test your store against the contract (§5): port `memory.test.ts`, then drive the
   core with it — the kaiak-control tests (`src/**/**.test.ts`) show how to call
@@ -331,7 +376,7 @@ if (current && totals) {
   a control-plane restart loses nothing. The kaiak repo's cross-half e2e
   (`gateway/e2e/sample_test.go`, build tag `crosshalf`) does this against the sample.
 
-## 11. Things that look reasonable and are wrong
+## 12. Things that look reasonable and are wrong
 
 - Running two replicas "for availability" — refused by the lease, by design.
 - Sending gateways a remaining *allowance* per scope — they must get totals; the
