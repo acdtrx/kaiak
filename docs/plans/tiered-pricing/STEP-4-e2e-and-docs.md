@@ -12,7 +12,9 @@ shape. This step ends the phase: the full suite is green.
 - `gateway/e2e/e2e_test.go`: a two-tier model; a request below and one above the
   threshold settle at their tiers' costs (the fake backend reports the usage).
 - The cross-half e2e configs.
-- `examples/config.json`, `examples/local-config.json`, `scripts/live/config.go`.
+- Examples and the live-kit configs moved in steps 2 and 3; check nothing else
+  builds a config in the old shape.
+- `docs/architecture/control-plane.html` shows `Kaiak-Protocol: 2`: now 3.
 - `docs/DEPLOYMENT.md`: the Azure → Prices bullet with a two-tier example for
   models with long-context pricing.
 - `docs/architecture/gateway.html` and anything else that shows a price.

@@ -16,6 +16,10 @@ tells app authors how to write them.
   `price-dates-not-increasing`.
 - The config format version and protocol version constants.
 - `control/sample`: its configs and anything that builds a price.
+- `examples/config.json`, `examples/local-config.json`: moved to format 3 here, not
+  in step 4 — kaiak-control's example-configs test and the sample's keygen test read
+  them (found in step 1). The gateway's `TestExampleConfigs` reads them too; it stays
+  red with the rest of the gateway until step 3.
 - `control/kaiak-control/GUIDE.md` → §7 Prices: the tiers shape; the LiteLLM mapping
   gains `_above_<N>k_tokens` → a tier at N×1000 (no longer "not priced").
 
@@ -29,4 +33,5 @@ tells app authors how to write them.
 - kaiak-control passes every shared config fixture with the codes `cases.json` names.
 - Unit tests for both rules, including their paths.
 - `npm test` and `npm run lint` from `control/`: kaiak-control and sample green.
-  Suite recorded; expected reds: gateway (step 3), cross-half e2e (step 4).
+  Suite recorded; expected reds: gateway, including `TestExampleConfigs` (step 3);
+  cross-half e2e (step 4) unless it already passes once both halves read format 3.

@@ -18,6 +18,8 @@ selects.
   unchanged.
 - The protocol version constant; the last-known-good config file's format version in
   `gateway/internal/state` (or wherever it lives).
+- `scripts/live/config.go`: the live-test kit builds configs in Go, and
+  `check-gateway.sh` self-tests it (moved here from step 4).
 - Tests that build configs with prices (`limits_test.go`, `server_test.go`,
   `stateless_test.go`, …).
 
