@@ -281,8 +281,8 @@ Replace this section with a compatibility policy when the project graduates.
   `backend-verify` does, and only when the app calls it (`docs/specs/BACKEND-VERIFY.md`).
 - **Passthrough preserves what it doesn't understand.** OpenAI-format requests going to
   an OpenAI-compatible backend are forwarded with the minimal edits the gateway owns
-  (model name, output-limit defaults/ceiling, usage reporting flags); unknown fields
-  survive untouched.
+  (model name, output-limit defaults/ceiling, usage reporting flags, service tier);
+  unknown fields survive untouched.
 - **No blocking control-plane I/O on the request path.** Usage and status reports are
   queued and sent in the background.
 - **Nothing sensitive in logs, metrics or usage records**: no client keys (key IDs

@@ -131,16 +131,11 @@ func TestPassthroughBodyEdits(t *testing.T) {
 			Body:   []byte(`{"model":"pub","max_tokens":9000,"x":1}`),
 			Params: []Param{{"max_tokens", []byte("1024")}, {"top_k", []byte("[1,2]")}, {"temperature", []byte("0.2")}}},
 			`{"model":"org/m\"q","max_tokens":1024,"x":1,"top_k":[1,2],"temperature":0.2}`, false},
-		{"client service tier: set to default", Request{Body: []byte(`{"model":"pub","service_tier":"priority","x":1}`)},
-			`{"model":"org/m\"q","service_tier":"default","x":1}`, false},
-		{"client service tier on embeddings: set to default", Request{Endpoint: Embeddings,
-			Body: []byte(`{"model":"pub","input":"a","service_tier":"flex"}`)},
-			`{"model":"org/m\"q","input":"a","service_tier":"default"}`, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			c.req.Deployment = deployment
-			got, strip, err := passthroughBody(&c.req, dialects[config.BackendOpenAICompatible])
+			got, strip, err := passthroughBody(&c.req)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -151,24 +146,25 @@ func TestPassthroughBodyEdits(t *testing.T) {
 	}
 }
 
-// Azure applies the deployment's own tier to a chat request that names none, so the
-// gateway names the standard one; its other endpoints, like every other backend, are
-// sent no tier the client did not send.
-func TestPassthroughBodyServiceTierOnAzure(t *testing.T) {
-	deployment := config.Deployment{Model: "d"}
+// A chat request always names the standard tier: an absent one is "auto", the
+// deployment's or project's own setting. Other endpoints get "default" only in place
+// of a tier the client sent: OpenAI refuses parameters an endpoint does not define.
+func TestStandardServiceTier(t *testing.T) {
 	cases := []struct {
 		endpoint Endpoint
 		body     string
 		want     string
 	}{
 		{ChatCompletions, `{"model":"pub","messages":[]}`, `{"model":"d","messages":[],"service_tier":"default"}`},
-		{ChatCompletions, `{"model":"pub","service_tier":"auto","messages":[]}`, `{"model":"d","service_tier":"default","messages":[]}`},
+		{ChatCompletions, `{"model":"pub","service_tier":"priority","messages":[]}`, `{"model":"d","service_tier":"default","messages":[]}`},
 		{Completions, `{"model":"pub","prompt":"a"}`, `{"model":"d","prompt":"a"}`},
+		{Completions, `{"model":"pub","prompt":"a","service_tier":"auto"}`, `{"model":"d","prompt":"a","service_tier":"default"}`},
 		{Embeddings, `{"model":"pub","input":"a"}`, `{"model":"d","input":"a"}`},
+		{Embeddings, `{"model":"pub","input":"a","service_tier":"flex"}`, `{"model":"d","input":"a","service_tier":"default"}`},
 	}
 	for _, c := range cases {
-		got, _, err := passthroughBody(&Request{Endpoint: c.endpoint, Deployment: deployment, Body: []byte(c.body)},
-			dialects[config.BackendAzureOpenAI])
+		req := &Request{Endpoint: c.endpoint, Deployment: config.Deployment{Model: "d"}, Body: []byte(c.body)}
+		got, _, err := passthroughBody(req, standardServiceTier(c.endpoint))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -204,7 +200,7 @@ func TestIsUsageOnlyChunk(t *testing.T) {
 func TestPassthroughRefusesARepeatedOwnedKey(t *testing.T) {
 	raw := []byte(`{` + strings.Repeat(`"model":"m",`, 10000) + `"messages":[]}`)
 	req := &Request{Body: raw, Deployment: config.Deployment{Model: strings.Repeat("x", 512)}}
-	if edited, _, err := passthroughBody(req, dialects[config.BackendAzureOpenAI]); err == nil {
+	if edited, _, err := passthroughBody(req, standardServiceTier(req.Endpoint)); err == nil {
 		t.Fatalf("accepted: %d client bytes became %d", len(raw), len(edited))
 	}
 }
@@ -221,7 +217,7 @@ func TestRewrittenBodyIsBoundedByOneEditPerOwnedField(t *testing.T) {
 	} {
 		req := &Request{Body: []byte(body), Deployment: config.Deployment{Model: longModel}, Params: params,
 			Stream: strings.Contains(body, `"stream":true`)}
-		edited, _, err := passthroughBody(req, dialects[config.BackendAzureOpenAI])
+		edited, _, err := passthroughBody(req, standardServiceTier(req.Endpoint))
 		if err != nil {
 			t.Fatalf("%s: %v", body, err)
 		}

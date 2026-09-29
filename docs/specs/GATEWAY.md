@@ -216,14 +216,18 @@ own, and a client sending repeats is broken either way.
 - **azure-openai** — Azure's OpenAI-compatible `/openai/v1/` API: the same wire format
   and model naming, `api-key` header auth, no `api-version`. The classic
   deployment-in-URL API is not supported.
-- **One wire-format provider, per-type dialects** (settled 2026-09-29): both types
-  share one provider (request editing, streaming, usage, timeouts, errors); what a
-  type does differently — URL layout, credential header, whether its models list
-  names deployments, what an absent service tier means — is a small per-type
-  description the provider reads, never a type check inside the shared code. A new
-  backend type (a separate `openai` or `vllm`) is added only when a real difference
-  needs one: a type is a config and protocol change. Rejected: a provider per type —
-  it would copy the shared code, where nearly all the complexity is.
+- **A module per backend type over one OpenAI wire core** (settled 2026-09-29): each
+  backend type is a module that is the provider for that type — its URL layout,
+  credential, body edits, what its models list says, which error code means a
+  missing model. The modules build on a shared core of helpers for what the OpenAI
+  format has in common: body editing, sending, streaming, usage, timeouts, error
+  mapping, reading a models list. The core is not a provider, knows no backend type
+  and reads no per-type flags; the registry's choice of module is the one place a
+  type is named. A new backend type (a separate `openai` or `vllm`) is added only
+  when a real difference needs one: a type is a config and protocol change. Rejected:
+  one provider reading a per-type description — the shared code still branched on
+  flags that were one type's behavior; a full provider per type — it would copy the
+  core, where nearly all the complexity is.
 - **Base URLs** (settled 2026-09-24): an openai-compatible `base_url` is what an
   OpenAI client would use, API version path included (`http://vllm:8000/v1`); the
   gateway appends the endpoint path (`/chat/completions`, …). An azure-openai
@@ -270,14 +274,15 @@ own, and a client sending repeats is broken either way.
   standard tier. Prices are standard-tier rates, and OpenAI and Azure bill priority
   processing at about twice that (flex at half), so a client choosing its tier would
   spend budgets at a rate its records do not show. A `service_tier` the client sent
-  becomes `"default"`, on every backend and endpoint. An azure-openai chat
-  completions request without one gets `"service_tier": "default"` added: there an
-  absent tier (`auto`) means the deployment's own setting, which may be priority.
-  Other requests without one are left without one — `auto` on OpenAI is standard
-  unless the project is configured otherwise, and servers that do not know the field
-  (vLLM, llama-server) are not sent it. `service_tier` cannot be a model default.
-  Rejected: removing the client's field (on Azure, `auto` again); sending it on
-  every request (a strict server could refuse the unknown field); Azure's
+  becomes `"default"`, on every backend and endpoint, and every chat completions
+  request carries `"service_tier": "default"` even when the client sent none: an
+  absent tier (`auto`) means the deployment's own setting on Azure (which may be
+  priority) and the project's on OpenAI. Servers that do not define the field
+  (vLLM, llama-server) ignore it. Completions and embeddings requests without one are
+  left without one: OpenAI refuses a parameter an endpoint does not define.
+  `service_tier` cannot be a model default. Rejected: removing the client's field
+  (`auto` again); adding it on every endpoint (OpenAI's completions and embeddings
+  would refuse it); Azure's
   `x-ms-service-tier` header (one body edit covers both backends; client headers are
   never forwarded, so a client cannot send it either); pricing the tier the response
   reports — per-tier price tables and a rule for who may ask for priority, not built
@@ -359,7 +364,9 @@ own, and a client sending repeats is broken either way.
   (`{"error": {"message", "code"}}` — OpenAI, vLLM; `{"message", "code"}` — older
   vLLM; `{"error": "<text>"}` — Ollama): the message names the deployment's
   backend-side model as a whole word (vLLM: ``The model `…` does not exist.``), or
-  the code is `model_not_found` (OpenAI) or `DeploymentNotFound` (Azure). Any other
+  the code is the backend module's: `model_not_found` (openai-compatible), or
+  `DeploymentNotFound` or `model_not_found` (azure-openai, whose v1 API is OpenAI's
+  shape). Any other
   `404` stays the caller's and is relayed as it came. The probe checks the model too
   (Routing and reliability → Circuit mechanics), and every applied config is checked
   once in the background: each backend's models list is fetched (up to 8 backends at

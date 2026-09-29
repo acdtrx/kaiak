@@ -114,10 +114,10 @@ enforce the boundaries.
   serving-change hook (queue empty/non-empty, circuit open/closed) to the status
   reporter, and its circuit events to `metrics` through an observer interface
   `routing` defines.
-- `provider` — the only code that talks to backends: openai-compatible and
-  azure-openai (one implementation), passthrough body edits, per-backend connection
-  pools, the circuit breaker's probe (`GET …/models`); it reads backend streams with
-  `sse`. It returns response events in the client's format; `server`
+- `provider` — the only code that talks to backends: a module per backend type
+  (openai-compatible, azure-openai) over a shared OpenAI wire core, passthrough body
+  edits, per-backend connection pools, the circuit breaker's probe (`GET …/models`);
+  it reads backend streams with `sse`. It returns response events in the client's format; `server`
   relays them to the client, and observers (accounting) read them on the way.
 - `accounting` — meters each attempt's response as it is relayed, settles usage and
   cost into usage records (each naming the key's group path) — one per routed

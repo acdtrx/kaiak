@@ -6,10 +6,8 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"sync"
@@ -189,10 +187,30 @@ func NewRegistry(lookupEnv func(string) (string, bool)) *Registry {
 	return &Registry{lookupEnv: lookupEnv, transports: make(map[string]*backendTransport)}
 }
 
-// For returns the provider for backend b. Both v1 backend types speak the OpenAI wire
-// format and share one implementation; their differences are b's dialect.
+// backendModule is one backend type's provider: what that type does differently
+// lives in its module, which builds on the OpenAI wire core (wire.go) for what the
+// types share.
+type backendModule interface {
+	Provider
+	// probe checks whether the backend answers (Registry.Probe).
+	probe(ctx context.Context) (serves func(model string) bool, err error)
+}
+
+// For returns the provider for backend b: its type's module.
 func (r *Registry) For(b *config.Backend) Provider {
-	return &openAIFormat{backend: b, dialect: dialectOf(b), client: r.client(b), credential: r.credential(b)}
+	return r.module(b)
+}
+
+// module returns backend b's module, over b's connection pool and with its credential.
+// The config schema admits only the types listed here, so another is a gateway fault.
+func (r *Registry) module(b *config.Backend) backendModule {
+	switch b.Type {
+	case config.BackendOpenAICompatible:
+		return &openAICompatible{backend: b, client: r.client(b), credential: r.credential(b)}
+	case config.BackendAzureOpenAI:
+		return &azureOpenAI{backend: b, client: r.client(b), credential: r.credential(b)}
+	}
+	panic(fmt.Sprintf("provider: no module for backend type %q", b.Type))
 }
 
 // credential is the gateway's credential for b; "" when it has none. A reserved
@@ -208,62 +226,14 @@ func (r *Registry) credential(b *config.Backend) string {
 	return credential
 }
 
-// probeReadTimeout bounds a probe's wait for the answer once connected; the
-// backend's connect timeout bounds the connection before it. The models list is
-// cheap: a backend that takes longer is not ready for traffic.
-const probeReadTimeout = 5 * time.Second
-
-// maxProbeBody is the most of a probe's answer read, so the connection returns to
-// the pool; a longer answer closes it (and is not a models list the probe reads).
-const maxProbeBody = 1 << 20
-
 // Probe checks whether backend b answers (docs/specs/GATEWAY.md, Routing and
-// reliability): GET on its models list with the gateway's credential, over b's
-// connection pool, bounded by b's connect timeout plus probeReadTimeout. A 2xx answer
-// carrying an OpenAI models list succeeds; serves reports whether a backend-side
-// model name is one of its data[*].id. An azure-openai list names models, not the
-// deployment names requests carry, so serves is true for every name there. The error
-// may name the backend's address, never the credential. Both v1 backend types serve
-// the list at <API prefix>/models.
+// reliability): its module asks for its models list with the gateway's credential,
+// over b's connection pool, bounded by b's connect timeout plus probeReadTimeout. A
+// 2xx answer succeeds; serves reports whether a backend-side model name is served
+// there, as far as the backend's list says. The error may name the backend's address,
+// never the credential.
 func (r *Registry) Probe(ctx context.Context, b *config.Backend) (serves func(model string) bool, err error) {
-	ctx, cancel := context.WithTimeout(ctx, b.ConnectTimeout+probeReadTimeout)
-	defer cancel()
-	d := dialectOf(b)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.url(b.BaseURL, "models"), nil)
-	if err != nil {
-		return nil, fmt.Errorf("backend %s: build probe: %w", b.ID, err)
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "kaiak")
-	d.setCredential(req.Header, r.credential(b))
-	resp, err := r.client(b).Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("backend %s: %w", b.ID, err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxProbeBody))
-	if err != nil {
-		return nil, fmt.Errorf("backend %s: read models list: %w", b.ID, err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, fmt.Errorf("backend %s: models list answered %d", b.ID, resp.StatusCode)
-	}
-	if !d.listsDeployments {
-		return func(string) bool { return true }, nil
-	}
-	var list struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if json.Unmarshal(body, &list) != nil || list.Data == nil {
-		return nil, fmt.Errorf("backend %s: the answer is not a models list", b.ID)
-	}
-	ids := make(map[string]bool, len(list.Data))
-	for _, m := range list.Data {
-		ids[m.ID] = true
-	}
-	return func(model string) bool { return ids[model] }, nil
+	return r.module(b).probe(ctx)
 }
 
 // client returns b's HTTP client, creating its pool on first use or when the connect

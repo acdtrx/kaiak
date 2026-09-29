@@ -39,7 +39,7 @@ func TestSendKeepsNoRequestBodyOnceTheFirstEventIsIn(t *testing.T) {
 	b := &config.Backend{ID: "local", Type: config.BackendOpenAICompatible, BaseURL: fb.URL() + "/v1",
 		ConnectTimeout: time.Second, FirstEventTimeout: 10 * time.Second, StallTimeout: time.Hour}
 	transport := &capturingTransport{next: newClient(time.Second).Transport}
-	p := &openAIFormat{backend: b, dialect: dialectOf(b), client: &http.Client{Transport: transport}}
+	p := &openAICompatible{backend: b, client: &http.Client{Transport: transport}}
 
 	// The client's body is reachable only through the provider once send returns.
 	send := func() (Response, weak.Pointer[byte]) {

@@ -255,10 +255,10 @@ use the price of their day.
   never priced — it is inside `tokens_out`. A tier without `tokens_cached` charges
   cached input at that tier's `tokens_in` price, never free.
 - **Prices are standard-tier rates.** The gateway keeps every request on standard
-  processing: a client's `service_tier` becomes `"default"`, and Azure chat requests
-  get it even when the client sent none, since Azure's default follows the
-  deployment's setting, which may be Priority (`GATEWAY.md` → Providers → Service
-  tier). Priority, flex and batch rates never apply, and `service_tier` cannot be a
+  processing: a client's `service_tier` becomes `"default"`, and every chat request
+  carries it even when the client sent none, since the default (`auto`) follows the
+  Azure deployment's or OpenAI project's setting, which may be Priority (`GATEWAY.md`
+  → Providers → Service tier). Priority, flex and batch rates never apply, and `service_tier` cannot be a
   model default.
 - **Azure deployment types price differently**: Data Zone (EU/US) is about 10%
   above Global for the same model. Price a model at the rate of the deployment type

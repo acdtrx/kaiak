@@ -18,10 +18,11 @@ import (
 
 func TestURLJoining(t *testing.T) {
 	r := NewRegistry(func(string) (string, bool) { return "", false })
-	compat := r.For(&config.Backend{ID: "vllm", Type: config.BackendOpenAICompatible, BaseURL: "http://vllm:8000/v1"}).(*openAIFormat)
-	azure := r.For(&config.Backend{ID: "azure", Type: config.BackendAzureOpenAI, BaseURL: "https://res.openai.azure.com"}).(*openAIFormat)
+	type urlJoiner interface{ url(path string) string }
+	compat := r.For(&config.Backend{ID: "vllm", Type: config.BackendOpenAICompatible, BaseURL: "http://vllm:8000/v1"}).(urlJoiner)
+	azure := r.For(&config.Backend{ID: "azure", Type: config.BackendAzureOpenAI, BaseURL: "https://res.openai.azure.com"}).(urlJoiner)
 	for _, c := range []struct {
-		p    *openAIFormat
+		m    urlJoiner
 		e    Endpoint
 		want string
 	}{
@@ -31,7 +32,7 @@ func TestURLJoining(t *testing.T) {
 		{azure, ChatCompletions, "https://res.openai.azure.com/openai/v1/chat/completions"},
 		{azure, Embeddings, "https://res.openai.azure.com/openai/v1/embeddings"},
 	} {
-		if got := c.p.url(c.e); got != c.want {
+		if got := c.m.url(c.e.path()); got != c.want {
 			t.Errorf("got %s, want %s", got, c.want)
 		}
 	}
@@ -197,6 +198,43 @@ func TestModelMissingAnswerIsAnError(t *testing.T) {
 		if resp.Status() != http.StatusNotFound || string(got) != body {
 			t.Errorf("relayed %d %q, want 404 %q", resp.Status(), got, body)
 		}
+	}
+}
+
+// Each module reads a missing model by its own API's error code: Azure's
+// DeploymentNotFound means the deployment does not exist there; an openai-compatible
+// server answering it is not naming the model, so the answer is relayed.
+func TestMissingModelCodesArePerModule(t *testing.T) {
+	const answer = `{"error":{"code":"DeploymentNotFound","message":"The API deployment for this resource does not exist."}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(answer))
+	}))
+	defer srv.Close()
+	send := func(b *config.Backend) (Response, error) {
+		return NewRegistry(func(string) (string, bool) { return "", false }).For(b).Send(context.Background(),
+			&Request{Endpoint: ChatCompletions, Deployment: config.Deployment{Backend: b, Model: "gpt-deploy"},
+				Body: []byte(`{"model":"public"}`), RequestID: "r", PublicModel: "public"})
+	}
+	timeouts := func(b *config.Backend) *config.Backend {
+		b.ConnectTimeout, b.FirstEventTimeout, b.ResponseTimeout, b.StallTimeout = time.Second, time.Minute, time.Minute, time.Minute
+		return b
+	}
+
+	_, err := send(timeouts(&config.Backend{ID: "azure", Type: config.BackendAzureOpenAI, BaseURL: srv.URL}))
+	var perr *Error
+	if !errors.As(err, &perr) || perr.Code != CodeModelMissing {
+		t.Errorf("azure DeploymentNotFound = %v, want upstream_model_missing", err)
+	}
+
+	resp, err := send(timeouts(&config.Backend{ID: "compat", Type: config.BackendOpenAICompatible, BaseURL: srv.URL + "/v1"}))
+	if err != nil {
+		t.Fatalf("openai-compatible DeploymentNotFound = %v, want the answer relayed", err)
+	}
+	defer resp.Close()
+	if resp.Status() != http.StatusNotFound {
+		t.Errorf("relayed %d, want 404", resp.Status())
 	}
 }
 

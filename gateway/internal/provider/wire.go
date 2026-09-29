@@ -10,6 +10,7 @@ import (
 	"mime"
 	"net/http"
 	"net/http/httptrace"
+	"slices"
 	"strings"
 	"time"
 
@@ -17,33 +18,39 @@ import (
 	"kaiak/internal/sse"
 )
 
-// openAIFormat is the provider for backends speaking the OpenAI wire format:
-// openai-compatible (vLLM, llama-server, SGLang, OpenAI) and azure-openai (Azure's
-// /openai/v1/ API). The two differ only in URL layout and credential header.
-type openAIFormat struct {
-	backend    *config.Backend
-	dialect    dialect
-	client     *http.Client
-	credential string
+// The OpenAI wire core: the request, response and error handling every backend module
+// speaking the OpenAI format shares (openai_compatible.go, azure_openai.go). The core is
+// not a provider and knows no backend type: a module prepares the upstream request —
+// URL, credential, body edits, the error codes that mean a missing model — and hands
+// it to sendWire; its probe reads the models list with fetchModelsList.
+
+// wireCall is one upstream request a backend module prepared.
+type wireCall struct {
+	backend *config.Backend
+	client  *http.Client
+	url     string
+	// header holds the module's credential; sendWire adds the headers every request
+	// carries (wireHeaders).
+	header http.Header
+	// body is the edited client body (passthroughBody); stripUsage marks the
+	// usage-only chunk that edit asked for as hidden.
+	body       []byte
+	stripUsage bool
+	// missingModelCodes are the error codes by which the backend says, in a 404, that
+	// the model does not exist there.
+	missingModelCodes []string
 }
 
-func (p *openAIFormat) url(e Endpoint) string { return p.dialect.url(p.backend.BaseURL, e.path()) }
-
-// Send implements Provider. Besides *Error and the context's error, it returns a plain
-// error when the upstream request cannot be built from req — a gateway fault, since
-// the inbound stage has validated the body.
-func (p *openAIFormat) Send(ctx context.Context, req *Request) (Response, error) {
-	body, stripUsage, err := passthroughBody(req, p.dialect)
-	if err != nil {
-		return nil, fmt.Errorf("edit request body: %w", err)
-	}
-
-	// The edited body is dropped once Send returns: the first event is in, so the
+// sendWire sends call upstream for req and waits for the first event of the response,
+// as Provider.Send says. Besides *Error and the context's error, it returns a plain
+// error when the upstream request cannot be built — a gateway fault.
+func sendWire(ctx context.Context, req *Request, call wireCall) (Response, error) {
+	// The edited body is dropped once sendWire returns: the first event is in, so the
 	// transport will not send it again. req is not captured by anything that outlives
-	// Send (the trace below lives as long as the response), so the client's body is
+	// the send (the trace below lives as long as the response), so the client's body is
 	// released with the pipeline's copy.
-	upstreamBody := newUpstreamBody(body)
-	body = nil
+	upstreamBody := newUpstreamBody(call.body)
+	call.body = nil
 	defer upstreamBody.release()
 
 	upstreamCtx, cancel := context.WithCancelCause(ctx)
@@ -58,9 +65,9 @@ func (p *openAIFormat) Send(ctx context.Context, req *Request) (Response, error)
 	}
 	// A stream's first-event timer stops at the first event, where the stall timer
 	// takes over; a non-stream request's response timer runs until the body ends.
-	limit, limitCause := p.backend.FirstEventTimeout, errFirstEventTimeout
+	limit, limitCause := call.backend.FirstEventTimeout, errFirstEventTimeout
 	if !req.Stream {
-		limit, limitCause = p.backend.ResponseTimeout, errResponseTimeout
+		limit, limitCause = call.backend.ResponseTimeout, errResponseTimeout
 	}
 	timer := time.AfterFunc(limit, func() { cancel(limitCause) })
 	// fail classifies an error seen before the first event and releases the request.
@@ -72,14 +79,14 @@ func (p *openAIFormat) Send(ctx context.Context, req *Request) (Response, error)
 		case ctx.Err() != nil:
 			return ctx.Err()
 		case errors.Is(cause, errFirstEventTimeout):
-			return &Error{Code: CodeTimeout, Err: fmt.Errorf("backend %s: no first event within %s", p.backend.ID, limit)}
+			return &Error{Code: CodeTimeout, Err: fmt.Errorf("backend %s: no first event within %s", call.backend.ID, limit)}
 		case errors.Is(cause, errResponseTimeout):
-			return &Error{Code: CodeResponseTimeout, Err: fmt.Errorf("backend %s: no response within %s", p.backend.ID, limit)}
+			return &Error{Code: CodeResponseTimeout, Err: fmt.Errorf("backend %s: no response within %s", call.backend.ID, limit)}
 		}
-		return &Error{Code: CodeUnavailable, Err: fmt.Errorf("backend %s: %w", p.backend.ID, err)}
+		return &Error{Code: CodeUnavailable, Err: fmt.Errorf("backend %s: %w", call.backend.ID, err)}
 	}
 
-	upstream, err := http.NewRequestWithContext(upstreamCtx, http.MethodPost, p.url(req.Endpoint), upstreamBody.reader())
+	upstream, err := http.NewRequestWithContext(upstreamCtx, http.MethodPost, call.url, upstreamBody.reader())
 	if err != nil {
 		timer.Stop()
 		cancel(nil)
@@ -87,9 +94,10 @@ func (p *openAIFormat) Send(ctx context.Context, req *Request) (Response, error)
 	}
 	upstream.ContentLength = upstreamBody.size
 	upstream.GetBody = upstreamBody.getBody
-	p.setHeaders(upstream.Header, req)
+	upstream.Header = call.header.Clone()
+	wireHeaders(upstream.Header, req)
 
-	resp, err := p.client.Do(upstream)
+	resp, err := call.client.Do(upstream)
 	if err != nil {
 		return nil, fail(err)
 	}
@@ -97,21 +105,21 @@ func (p *openAIFormat) Send(ctx context.Context, req *Request) (Response, error)
 		_ = resp.Body.Close() // the backend's refusal body is not relayed
 		timer.Stop()
 		cancel(nil)
-		return nil, &Error{Code: CodeAuthFailed, Err: fmt.Errorf("backend %s answered %d", p.backend.ID, resp.StatusCode)}
+		return nil, &Error{Code: CodeAuthFailed, Err: fmt.Errorf("backend %s answered %d", call.backend.ID, resp.StatusCode)}
 	}
 	if resp.StatusCode == http.StatusNotFound {
-		if modelMissing(resp, req.Deployment.Model) {
+		if modelMissing(resp, req.Deployment.Model, call.missingModelCodes) {
 			_ = resp.Body.Close() // the backend's answer names its model: not relayed
 			timer.Stop()
 			cancel(nil)
 			return nil, &Error{Code: CodeModelMissing, Err: fmt.Errorf("backend %s answered 404: model %q does not exist there",
-				p.backend.ID, req.Deployment.Model)}
+				call.backend.ID, req.Deployment.Model)}
 		}
 	}
 
 	publicModel, _ := json.Marshal(req.PublicModel) // a string always encodes
-	r := newUpstreamResponse(upstreamCtx, cancel, resp, stripUsage, publicModel)
-	r.backendID = p.backend.ID
+	r := newUpstreamResponse(upstreamCtx, cancel, resp, call.stripUsage, publicModel)
+	r.backendID = call.backend.ID
 	first, err := r.read()
 	if err != nil && !errors.Is(err, io.EOF) {
 		if !r.succeeded() && ctx.Err() == nil {
@@ -134,7 +142,7 @@ func (p *openAIFormat) Send(ctx context.Context, req *Request) (Response, error)
 			r.Close()
 			return nil, err
 		}
-		r.stallTimeout = p.backend.StallTimeout
+		r.stallTimeout = call.backend.StallTimeout
 		r.stall = time.AfterFunc(r.stallTimeout, func() { cancel(errStalled) })
 		r.stall.Stop()
 	} else {
@@ -148,19 +156,75 @@ func (p *openAIFormat) Send(ctx context.Context, req *Request) (Response, error)
 	return r, nil
 }
 
+// probeReadTimeout bounds a probe's wait for the answer once connected; the
+// backend's connect timeout bounds the connection before it. The models list is
+// cheap: a backend that takes longer is not ready for traffic.
+const probeReadTimeout = 5 * time.Second
+
+// maxProbeBody is the most of a probe's answer read, so the connection returns to
+// the pool; a longer answer closes it (and is not a models list the probe reads).
+const maxProbeBody = 1 << 20
+
+// fetchModelsList asks backend b for its models list at url, with header (the
+// module's credential), bounded by b's connect timeout plus probeReadTimeout, and
+// returns the answer's body when the status is 2xx. The error may name the backend's
+// address, never the credential.
+func fetchModelsList(ctx context.Context, b *config.Backend, client *http.Client, url string, header http.Header) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, b.ConnectTimeout+probeReadTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("backend %s: build probe: %w", b.ID, err)
+	}
+	req.Header = header.Clone()
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "kaiak")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("backend %s: %w", b.ID, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxProbeBody))
+	if err != nil {
+		return nil, fmt.Errorf("backend %s: read models list: %w", b.ID, err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, fmt.Errorf("backend %s: models list answered %d", b.ID, resp.StatusCode)
+	}
+	return body, nil
+}
+
+// listedModels reads an OpenAI models list and reports, through serves, whether a
+// backend-side model name is one of its data[*].id.
+func listedModels(b *config.Backend, body []byte) (serves func(model string) bool, err error) {
+	var list struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(body, &list) != nil || list.Data == nil {
+		return nil, fmt.Errorf("backend %s: the answer is not a models list", b.ID)
+	}
+	ids := make(map[string]bool, len(list.Data))
+	for _, m := range list.Data {
+		ids[m.ID] = true
+	}
+	return func(model string) bool { return ids[model] }, nil
+}
+
 // maxNotFoundBody is the most of a 404 answer read to tell a missing model from a
 // caller's 404; error answers are small.
 const maxNotFoundBody = 64 << 10
 
 // modelMissing reads a 404 answer and reports whether it says the deployment's model
 // does not exist on the backend: its error message names model as a whole word, or
-// its error code is model_not_found (OpenAI) or DeploymentNotFound (Azure). The
+// its error code is one of codes, the module's. The
 // answer's shapes vary by server — {"error": {"message", "code"}} (OpenAI, vLLM),
 // {"message", "code"} at the top level (older vLLM), {"error": "<message>"}
 // (Ollama). What was read is put back in front of the body, so an answer that is not
 // about the model is relayed whole — and a read error is not the model's: the body
 // returns it again after what was read.
-func modelMissing(resp *http.Response, model string) bool {
+func modelMissing(resp *http.Response, model string, codes []string) bool {
 	head, err := io.ReadAll(io.LimitReader(resp.Body, maxNotFoundBody))
 	resp.Body = struct {
 		io.Reader
@@ -188,7 +252,7 @@ func modelMissing(resp *http.Response, model string) bool {
 		message, code = nested.Message, nested.Code
 	}
 	var codeName string
-	if json.Unmarshal(code, &codeName) == nil && (codeName == "model_not_found" || codeName == "DeploymentNotFound") {
+	if json.Unmarshal(code, &codeName) == nil && slices.Contains(codes, codeName) {
 		return true
 	}
 	return namesWord(message, model)
@@ -216,11 +280,15 @@ func namesWord(text, word string) bool {
 	}
 }
 
-// setHeaders builds the upstream request's headers. Nothing from the client's headers
-// is forwarded except the request ID, so the client's Authorization (its kaiak key),
-// cookies and anything else never reach a backend; the gateway's own credential for
-// the backend is set instead.
-func (p *openAIFormat) setHeaders(h http.Header, req *Request) {
+// editError is the error for a client body the core cannot edit: a gateway fault,
+// since the inbound stage validated the body.
+func editError(err error) error { return fmt.Errorf("edit request body: %w", err) }
+
+// wireHeaders sets the headers every upstream request carries beside the module's
+// credential. Nothing from the client's headers is forwarded except the request ID,
+// so the client's Authorization (its kaiak key), cookies and anything else never reach
+// a backend.
+func wireHeaders(h http.Header, req *Request) {
 	h.Set("Content-Type", "application/json")
 	if req.Stream {
 		h.Set("Accept", "text/event-stream")
@@ -229,17 +297,16 @@ func (p *openAIFormat) setHeaders(h http.Header, req *Request) {
 	}
 	h.Set("User-Agent", "kaiak")
 	h.Set("X-Request-Id", req.RequestID)
-	p.dialect.setCredential(h, p.credential)
 }
 
 // passthroughBody applies the gateway's owned edits to the client's body: the model
-// name becomes the deployment's, the service tier standard, the pipeline's parameters
-// are set, and a stream gets stream_options.include_usage so the backend reports
-// usage. stripUsage is true when the client did not ask for usage, so the usage-only
-// chunk that edit adds must not reach it.
-func passthroughBody(req *Request, d dialect) (body []byte, stripUsage bool, err error) {
+// name becomes the deployment's, the module's own edits (extra) and the pipeline's
+// parameters are set, and a stream gets stream_options.include_usage so the backend
+// reports usage. stripUsage is true when the client did not ask for usage, so the
+// usage-only chunk that edit adds must not reach it.
+func passthroughBody(req *Request, extra ...memberEdit) (body []byte, stripUsage bool, err error) {
 	model, _ := json.Marshal(req.Deployment.Model) // a string always encodes
-	edits := []memberEdit{setValue("model", model), {key: "service_tier", set: standardServiceTier(req.Endpoint, d)}}
+	edits := append([]memberEdit{setValue("model", model)}, extra...)
 	for _, p := range req.Params {
 		edits = append(edits, setValue(p.Key, p.Value))
 	}
@@ -251,20 +318,20 @@ func passthroughBody(req *Request, d dialect) (body []byte, stripUsage bool, err
 	return body, stripUsage, err
 }
 
-// standardServiceTier returns the edit that keeps a request on standard processing
+// standardServiceTier is the edit that keeps a request on standard processing
 // (docs/specs/GATEWAY.md, Providers → Service tier): prices are standard-tier rates,
-// and a priority request would be billed about twice what its record says. A client's
-// service_tier becomes "default" on every backend. A chat completions request without
-// one gets it where an absent tier follows the deployment's own setting (Azure), which
-// may be priority. Elsewhere an absent tier stays absent — backends that do not know
-// the field (vLLM, llama-server, ...) are not sent it.
-func standardServiceTier(e Endpoint, d dialect) func([]byte) ([]byte, error) {
-	return func(current []byte) ([]byte, error) {
-		if current == nil && (e != ChatCompletions || !d.absentTierFollowsDeployment) {
+// and a priority request is billed about twice what its record would say. A chat
+// completions request always carries service_tier "default" — an absent tier means
+// "auto", which follows the deployment's or project's own setting. On the other
+// endpoints a client's tier becomes "default" and an absent one stays absent: OpenAI
+// refuses parameters an endpoint does not define.
+func standardServiceTier(e Endpoint) memberEdit {
+	return memberEdit{key: "service_tier", set: func(current []byte) ([]byte, error) {
+		if current == nil && e != ChatCompletions {
 			return nil, nil
 		}
 		return []byte(`"default"`), nil
-	}
+	}}
 }
 
 // clientHeaders are the backend response headers relayed to the client. The list is
@@ -273,7 +340,7 @@ func standardServiceTier(e Endpoint, d dialect) func([]byte) ([]byte, error) {
 // rate-limit headers stay behind. Retry-After-Ms is Azure's finer Retry-After.
 var clientHeaders = []string{"Content-Type", "Retry-After", "Retry-After-Ms"}
 
-// upstreamResponse is an openAIFormat response.
+// upstreamResponse is a response read through the wire core.
 type upstreamResponse struct {
 	status int
 	header http.Header
