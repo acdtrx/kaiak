@@ -98,7 +98,7 @@ Made while planning (confirm in review):
 ## Tag
 
 Tag `main` right before step 1 begins (AGENTS.md → Git: tags are anchors), for
-example `v0.7.4`, with a one-line message saying it is the world before tiered
+example `v0.7.5` (the next tag after `v0.7.4`), with a one-line message saying it is the world before tiered
 prices.
 
 ## Phases and steps
