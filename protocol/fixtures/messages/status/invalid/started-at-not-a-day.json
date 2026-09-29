@@ -1,6 +1,6 @@
 {
   "instance": "gw-1",
-  "protocol_version": 2,
+  "protocol_version": 3,
   "state": "ready",
   "started_at": "2026-04-31T00:00:00Z",
   "applied_config_version": 42,

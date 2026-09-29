@@ -1,5 +1,5 @@
 {
-  "format_version": 2,
+  "format_version": 3,
   "global": {},
   "backends": { "local": { "type": "openai-compatible", "base_url": "http://localhost:8000/v1" } },
   "models": {

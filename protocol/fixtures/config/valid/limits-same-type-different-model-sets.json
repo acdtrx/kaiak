@@ -1,5 +1,5 @@
 {
-  "format_version": 2,
+  "format_version": 3,
   "global": {
     "limits": [
       { "type": "tokens_per_minute", "value": 100000 },

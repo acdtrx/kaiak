@@ -1,0 +1,58 @@
+{
+  "format_version": 3,
+  "global": {},
+  "backends": {
+    "qwen": {
+      "type": "openai-compatible",
+      "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+      "api_key_env": "DASHSCOPE_API_KEY"
+    }
+  },
+  "models": {
+    "qwen-plus": {
+      "deployments": [{ "backend": "qwen", "model": "qwen-plus" }],
+      "metadata": {
+        "context_length": 1000000,
+        "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": false }
+      },
+      "output_limit": { "default": 8192, "ceiling": 32768 },
+      "prices": [
+        {
+          "effective_from": "2026-01-01",
+          "tiers": [
+            { "above_input_tokens": 0, "usd_per_million": { "tokens_in": 0.4, "tokens_out": 1.2 } },
+            { "above_input_tokens": 32000, "usd_per_million": { "tokens_in": 0.8, "tokens_out": 2.4 } },
+            { "above_input_tokens": 128000, "usd_per_million": { "tokens_in": 1.2, "tokens_out": 3.6 } }
+          ]
+        }
+      ]
+    },
+    "eight-brackets": {
+      "deployments": [{ "backend": "qwen", "model": "eight-brackets" }],
+      "metadata": {
+        "context_length": 1000000,
+        "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }
+      },
+      "prices": [
+        {
+          "effective_from": "2026-01-01",
+          "tiers": [
+            { "above_input_tokens": 0, "usd_per_million": { "tokens_in": 1 } },
+            { "above_input_tokens": 1, "usd_per_million": { "tokens_out": 1 } },
+            { "above_input_tokens": 32000, "usd_per_million": { "tokens_cached": 0 } },
+            { "above_input_tokens": 64000, "usd_per_million": { "tokens_in": 2, "tokens_out": 2 } },
+            { "above_input_tokens": 128000, "usd_per_million": { "tokens_in": 3, "tokens_out": 3 } },
+            { "above_input_tokens": 256000, "usd_per_million": { "tokens_in": 4, "tokens_out": 4 } },
+            { "above_input_tokens": 512000, "usd_per_million": { "tokens_in": 5, "tokens_out": 5 } },
+            {
+              "above_input_tokens": 9007199254740991,
+              "usd_per_million": { "tokens_in": 6, "tokens_out": 6 }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "groups": { "u": {} },
+  "keys": {}
+}

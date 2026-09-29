@@ -1,5 +1,5 @@
 {
-  "format_version": 2,
+  "format_version": 3,
   "global": {
     "limits": [
       { "type": "requests_per_minute", "value": 3000 },
@@ -38,7 +38,9 @@
       "prices": [
         {
           "effective_from": "2026-01-01",
-          "usd_per_million": { "tokens_in": 2.0, "tokens_out": 8.0 }
+          "tiers": [
+            { "above_input_tokens": 0, "usd_per_million": { "tokens_in": 2.0, "tokens_out": 8.0 } }
+          ]
         }
       ]
     },
@@ -51,7 +53,9 @@
       "prices": [
         {
           "effective_from": "2026-01-01",
-          "usd_per_million": { "tokens_in": 0.4, "tokens_out": 1.6 }
+          "tiers": [
+            { "above_input_tokens": 0, "usd_per_million": { "tokens_in": 0.4, "tokens_out": 1.6 } }
+          ]
         }
       ]
     }

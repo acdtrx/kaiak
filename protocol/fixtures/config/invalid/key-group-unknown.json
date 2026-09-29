@@ -1,5 +1,5 @@
 {
-  "format_version": 2,
+  "format_version": 3,
   "global": {},
   "backends": { "vllm": { "type": "openai-compatible", "base_url": "http://vllm:8000/v1" } },
   "models": {
@@ -13,7 +13,9 @@
       "prices": [
         {
           "effective_from": "2026-01-01",
-          "usd_per_million": { "tokens_in": 0.5, "tokens_out": 1.5 }
+          "tiers": [
+            { "above_input_tokens": 0, "usd_per_million": { "tokens_in": 0.5, "tokens_out": 1.5 } }
+          ]
         }
       ]
     }

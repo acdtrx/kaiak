@@ -3,7 +3,7 @@
   "version": 99,
   "version": 1,
   "config": {
-    "format_version": 2,
+    "format_version": 3,
     "global": {},
     "backends": {
       "local": {

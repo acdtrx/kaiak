@@ -2,7 +2,7 @@
   "config_epoch": "3b2c9d8e7f6a5b4c3d2e1f0a9b8c7d6e",
   "version": 1,
   "config": {
-    "format_version": 2,
+    "format_version": 3,
     "global": {},
     "backends": { "local": { "type": "openai-compatible", "base_url": "http://localhost:8080/v1" } },
     "models": {

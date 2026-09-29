@@ -9,7 +9,7 @@
   "properties": {
     "format_version": {
       "description": "Version of this document format. A different version is rejected, never migrated.",
-      "const": 2
+      "const": 3
     },
     "global": { "$ref": "#/$defs/global" },
     "backends": {
@@ -364,18 +364,37 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["effective_from", "usd_per_million"],
+            "required": ["effective_from", "tiers"],
             "properties": {
               "effective_from": { "$ref": "#/$defs/date" },
-              "usd_per_million": {
-                "description": "USD per million units. tokens_cached left out is charged at the tokens_in price; tokens_in or tokens_out left out costs 0.",
-                "type": "object",
-                "additionalProperties": false,
-                "minProperties": 1,
-                "properties": {
-                  "tokens_in": { "type": "number", "minimum": 0 },
-                  "tokens_cached": { "type": "number", "minimum": 0 },
-                  "tokens_out": { "type": "number", "minimum": 0 }
+              "tiers": {
+                "description": "Prices by the request's input size (tokens_in + tokens_cached), thresholds strictly increasing from 0. A record is priced whole at the last tier whose above_input_tokens is below its input size, or at the first tier. Each tier lists its own prices; nothing is inherited from the tier below.",
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 8,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["above_input_tokens", "usd_per_million"],
+                  "properties": {
+                    "above_input_tokens": {
+                      "description": "The tier applies to requests whose input size is above this many tokens. The first tier's is 0, and it applies to every request no later tier takes (an input of 0 included).",
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "usd_per_million": {
+                      "description": "USD per million units. tokens_cached left out is charged at the tier's tokens_in price; tokens_in or tokens_out left out costs 0.",
+                      "type": "object",
+                      "additionalProperties": false,
+                      "minProperties": 1,
+                      "properties": {
+                        "tokens_in": { "type": "number", "minimum": 0 },
+                        "tokens_cached": { "type": "number", "minimum": 0 },
+                        "tokens_out": { "type": "number", "minimum": 0 }
+                      }
+                    }
+                  }
                 }
               }
             }

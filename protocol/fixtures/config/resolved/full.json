@@ -1,7 +1,7 @@
 {
   "reason": "the full valid fixture's groups",
   "config": {
-    "format_version": 2,
+    "format_version": 3,
     "global": {
       "limits": [
         { "type": "requests_per_minute", "value": 3000 },
@@ -73,11 +73,21 @@
         "prices": [
           {
             "effective_from": "2025-04-14",
-            "usd_per_million": { "tokens_in": 2.0, "tokens_cached": 0.5, "tokens_out": 8.0 }
+            "tiers": [
+              {
+                "above_input_tokens": 0,
+                "usd_per_million": { "tokens_in": 2.0, "tokens_cached": 0.5, "tokens_out": 8.0 }
+              }
+            ]
           },
           {
             "effective_from": "2026-10-01",
-            "usd_per_million": { "tokens_in": 1.8, "tokens_cached": 0.45, "tokens_out": 7.2 }
+            "tiers": [
+              {
+                "above_input_tokens": 0,
+                "usd_per_million": { "tokens_in": 1.8, "tokens_cached": 0.45, "tokens_out": 7.2 }
+              }
+            ]
           }
         ]
       },
@@ -91,7 +101,12 @@
         "prices": [
           {
             "effective_from": "2025-04-14",
-            "usd_per_million": { "tokens_in": 0.4, "tokens_cached": 0.1, "tokens_out": 1.6 }
+            "tiers": [
+              {
+                "above_input_tokens": 0,
+                "usd_per_million": { "tokens_in": 0.4, "tokens_cached": 0.1, "tokens_out": 1.6 }
+              }
+            ]
           }
         ]
       },

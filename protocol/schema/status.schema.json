@@ -43,7 +43,7 @@
     },
     "protocol_version": {
       "description": "The protocol version the gateway speaks.",
-      "const": 2
+      "const": 3
     },
     "state": {
       "enum": [

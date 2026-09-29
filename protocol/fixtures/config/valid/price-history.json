@@ -1,5 +1,5 @@
 {
-  "format_version": 2,
+  "format_version": 3,
   "global": {},
   "backends": {
     "openai": {
@@ -21,15 +21,27 @@
       "prices": [
         {
           "effective_from": "2025-04-16",
-          "usd_per_million": { "tokens_in": 1.1, "tokens_out": 4.4 }
+          "tiers": [
+            { "above_input_tokens": 0, "usd_per_million": { "tokens_in": 1.1, "tokens_out": 4.4 } }
+          ]
         },
         {
           "effective_from": "2025-06-01",
-          "usd_per_million": { "tokens_in": 1.1, "tokens_cached": 0.275, "tokens_out": 4.4 }
+          "tiers": [
+            {
+              "above_input_tokens": 0,
+              "usd_per_million": { "tokens_in": 1.1, "tokens_cached": 0.275, "tokens_out": 4.4 }
+            }
+          ]
         },
         {
           "effective_from": "2028-02-29",
-          "usd_per_million": { "tokens_in": 1, "tokens_cached": 0.25, "tokens_out": 4 }
+          "tiers": [
+            {
+              "above_input_tokens": 0,
+              "usd_per_million": { "tokens_in": 1, "tokens_cached": 0.25, "tokens_out": 4 }
+            }
+          ]
         }
       ]
     },

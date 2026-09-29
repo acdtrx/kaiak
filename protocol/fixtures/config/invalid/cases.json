@@ -196,9 +196,9 @@
     "kind": "schema",
     "reason": "the first-event timeout is a positive integer"
   },
-  "format-version-1.json": {
+  "format-version-2.json": {
     "kind": "schema",
-    "reason": "format_version must be 2"
+    "reason": "format_version must be 3"
   },
   "format-version-missing.json": {
     "kind": "schema",
@@ -487,6 +487,10 @@
     "kind": "schema",
     "reason": "a price entry names at least one unit"
   },
+  "price-entry-usd-per-million.json": {
+    "kind": "schema",
+    "reason": "a price entry lists its prices in tiers; usd_per_million at the entry level is an unknown field"
+  },
   "price-negative.json": {
     "kind": "schema",
     "reason": "prices are not negative"
@@ -494,6 +498,49 @@
   "price-reasoning-unit.json": {
     "kind": "schema",
     "reason": "reasoning tokens are part of tokens_out and never priced on their own"
+  },
+  "price-tier-first-not-zero.json": {
+    "kind": "semantic",
+    "code": "price-tier-first-not-zero",
+    "reason": "the first tier starts above 0 tokens, so smaller requests would have no price"
+  },
+  "price-tier-prices-missing.json": {
+    "kind": "schema",
+    "reason": "every tier lists its own prices; nothing is inherited from the tier below"
+  },
+  "price-tier-threshold-above-safe.json": {
+    "kind": "schema",
+    "reason": "a tier threshold stays at or below 2^53 - 1, as every config integer"
+  },
+  "price-tier-threshold-fractional.json": {
+    "kind": "schema",
+    "reason": "a tier threshold is a whole number of tokens"
+  },
+  "price-tier-threshold-missing.json": {
+    "kind": "schema",
+    "reason": "every tier names its threshold"
+  },
+  "price-tier-threshold-negative.json": {
+    "kind": "schema",
+    "reason": "a tier threshold is 0 or more"
+  },
+  "price-tiers-decreasing.json": {
+    "kind": "semantic",
+    "code": "price-tiers-not-increasing",
+    "reason": "a tier's threshold is below the one before"
+  },
+  "price-tiers-empty.json": {
+    "kind": "schema",
+    "reason": "a price entry has at least one tier"
+  },
+  "price-tiers-equal.json": {
+    "kind": "semantic",
+    "code": "price-tiers-not-increasing",
+    "reason": "two tiers share a threshold"
+  },
+  "price-tiers-too-many.json": {
+    "kind": "schema",
+    "reason": "a price entry has at most 8 tiers"
   },
   "price-unknown-unit.json": {
     "kind": "schema",

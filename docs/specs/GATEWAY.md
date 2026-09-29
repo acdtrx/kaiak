@@ -1217,9 +1217,14 @@ own, and a client sending repeats is broken either way.
   any budget it touches) instead of making its whole batch unacceptable to the
   control plane. Each clamp is logged at warning level with the request ID and
   counted (`kaiak_usage_clamped_records_total`); the record's flags are unchanged.
-- **Cost** = units × the model's price table entry in force at request time (the
-  latest `effective_from` on or before the request's start, UTC). Providers report
-  tokens, not money, so the table is required for any priced model. Arithmetic
+- **Cost** = units × the prices of one tier of the model's price table entry in force
+  at request time (the latest `effective_from` on or before the request's start,
+  UTC). The tier is picked from the record's input size, `tokens_in + tokens_cached`
+  (an estimated record's is its estimated input): the last tier whose
+  `above_input_tokens` is below it, else the first; the whole record is priced at
+  that tier (settled 2026-09-29; `CONTROL-PROTOCOL.md`, Config → Tiered prices).
+  Providers report tokens, not money, so the table is required for any priced
+  model. Arithmetic
   (settled 2026-09-24): each record's cost is computed once in floating point from the
   per-million prices and rounded to a whole **nano-dollar** (`cost_nano_usd`, an
   integer): records add up exactly downstream, at most half a nano-dollar of rounding
@@ -1492,7 +1497,7 @@ own, and a client sending repeats is broken either way.
     (`version`, `codes`) is kept for the status report until a later config from the
     control plane is applied (`CONTROL-PROTOCOL.md`, Messages → Status).
   - **Last-known-good** (with a data directory only; `last-known-good.json`, format
-    version 3 — settled 2026-09-27, the config format 2 inside): the config
+    version 4 — settled 2026-09-29, the config format 3 inside): the config
     document exactly as the control plane sent it, its version and config epoch
     (so the stream after a last-known-good boot resumes in that epoch, and a control
     plane on another store answers `resync`), written after each

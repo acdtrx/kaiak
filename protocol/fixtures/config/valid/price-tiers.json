@@ -1,0 +1,48 @@
+{
+  "format_version": 3,
+  "global": {},
+  "backends": {
+    "openai": {
+      "type": "openai-compatible",
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY"
+    }
+  },
+  "models": {
+    "gpt-5.4": {
+      "deployments": [{ "backend": "openai", "model": "gpt-5.4" }],
+      "metadata": {
+        "context_length": 1050000,
+        "capabilities": { "streaming": true, "tools": true, "vision": true, "reasoning": true },
+        "reasoning_efforts": ["low", "medium", "high"]
+      },
+      "output_limit": { "default": 16384, "ceiling": 128000 },
+      "prices": [
+        {
+          "effective_from": "2026-03-01",
+          "tiers": [
+            {
+              "above_input_tokens": 0,
+              "usd_per_million": { "tokens_in": 2.5, "tokens_cached": 0.25, "tokens_out": 15 }
+            }
+          ]
+        },
+        {
+          "effective_from": "2026-10-01",
+          "tiers": [
+            {
+              "above_input_tokens": 0,
+              "usd_per_million": { "tokens_in": 2.5, "tokens_cached": 0.25, "tokens_out": 15 }
+            },
+            {
+              "above_input_tokens": 272000,
+              "usd_per_million": { "tokens_in": 5, "tokens_cached": 0.5, "tokens_out": 22.5 }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "groups": { "u": {} },
+  "keys": {}
+}

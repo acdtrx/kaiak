@@ -1,5 +1,5 @@
 {
-  "format_version": 2,
+  "format_version": 3,
   "global": {},
   "backends": { "vllm": { "type": "openai-compatible", "base_url": "http://vllm:8000/v1" } },
   "models": {
@@ -10,7 +10,9 @@
         "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": false }
       },
       "output_limit": { "default": 1024, "ceiling": 8192 },
-      "prices": [{ "effective_from": "2026-01-01", "usd_per_million": {} }]
+      "prices": [
+        { "effective_from": "2026-01-01", "tiers": [{ "above_input_tokens": 0, "usd_per_million": {} }] }
+      ]
     }
   },
   "groups": {

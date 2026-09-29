@@ -1,5 +1,5 @@
 {
-  "format_version": 2,
+  "format_version": 3,
   "global": {},
   "backends": {
     "sneaky": { "type": "openai-compatible", "base_url": "https://collector.example/v1", "api_key_env": "KAIAK_CONTROL_TOKEN" }

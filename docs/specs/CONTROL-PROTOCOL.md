@@ -23,8 +23,8 @@
   expected outside local runs; tokens never go in URLs. What a token holder can do:
   Control-plane processes → Trust model.
 - **Protocol version** travels as a `Kaiak-Protocol` header on every request and
-  response (the SSE stream's response included); the current version is `2`
-  (settled 2026-09-27, with the group tree).
+  response (the SSE stream's response included); the current version is `3`
+  (settled 2026-09-29, with tiered prices).
 
 ## Endpoints (provisional)
 
@@ -55,11 +55,11 @@ the `{ error, detail }` body, `error` being the stable code:
 | Check | Code | Status |
 | --- | --- | --- |
 | `Authorization: Bearer <token>` carries the token (missing, not a bearer token, or wrong) | `unauthorized` | 401 |
-| `Kaiak-Protocol` is the current version, `2` (other or missing) | `protocol-version-mismatch` | 400 |
+| `Kaiak-Protocol` is the current version, `3` (other or missing) | `protocol-version-mismatch` | 400 |
 | `Kaiak-Instance` is an instance ID (Messages; missing or malformed) | `instance-invalid` | 400 |
 
 - **Repeated headers** (settled 2026-09-25): Node's HTTP layer joins a repeated
-  `Kaiak-Protocol` or `Kaiak-Instance` into one value (`2, 2`), which fails its check
+  `Kaiak-Protocol` or `Kaiak-Instance` into one value (`3, 3`), which fails its check
   as any other wrong value does, and keeps only the first of repeated `Authorization`
   headers — so the checks see one value per header and have no "repeated" case of
   their own.
@@ -367,8 +367,8 @@ the `{ error, detail }` body, `error` being the stable code:
   `protocol/fixtures/config/` (settled 2026-09-24): `valid/`, `invalid/` (with
   `cases.json`: kind, code, reason) and `resolved/` (The group tree → Resolution
   fixtures).
-- **Top-level shape**: `format_version` (the integer `2`; settled 2026-09-27, with
-  the group tree), `global`, `backends`, `models`, `keys` (required), `groups`
+- **Top-level shape**: `format_version` (the integer `3`; settled 2026-09-29, with
+  tiered prices), `global`, `backends`, `models`, `keys` (required), `groups`
   (optional, omitted = none).
   Collections are **objects keyed by ID** — uniqueness comes for free; the model key is
   the public model name clients send.
@@ -485,9 +485,33 @@ the `{ error, detail }` body, `error` being the stable code:
     when no level on the path restricts; `limits` the group's effective limits
     (merge order above, each limit as written in config). Both halves check that
     their resolution produces exactly this.
-- **Prices**: `prices` lists `{ effective_from, usd_per_million: { <unit>: number } }`
-  in strictly increasing date order; the entry in force is the latest one effective on
-  or before the request's UTC date. No prices = unpriced, cost 0.
+- **Prices**: `prices` lists `{ effective_from, tiers }` entries in strictly
+  increasing date order; the entry in force is the latest one effective on or before
+  the request's UTC date. No prices = unpriced, cost 0.
+- **Tiered prices** (settled 2026-09-29). Providers bill a request whose prompt passes
+  a size threshold at that threshold's rates — OpenAI and Azure above 272k input
+  tokens, Claude on Azure AI Foundry above 200k, Qwen's hosted APIs in brackets — so
+  an entry's `tiers` lists `{ above_input_tokens, usd_per_million: { <unit>: number } }`:
+  - **Bounds**: 1 to 8 tiers; `above_input_tokens` is an integer from 0 to 2^53 − 1.
+    The first tier's is 0 (`price-tier-first-not-zero`) and each later one is above
+    the one before (`price-tiers-not-increasing`). A model without long-context
+    pricing has one tier, so every model is priced by the same rule.
+  - **Input size** is `tokens_in + tokens_cached` — the backend's `prompt_tokens`.
+    An estimated record (`GATEWAY.md`, Accounting → Estimation) uses its estimated
+    input, the figure limits reserved.
+  - **Which tier applies**: the last tier whose `above_input_tokens` is strictly less
+    than the input size; the first tier applies to every other record, an input of
+    0 included. "Above 272000" matches the providers' ">272K".
+  - **The whole record** is priced at that tier — input, cached input and output
+    alike — as the providers bill it, not only the tokens past the threshold.
+  - **Each tier is complete in itself**: it lists its own prices, nothing is inherited
+    from the tier below; the price-unit rules (below) hold within each tier.
+  - Usage records do not change: they carry `tokens_in` and `tokens_cached`, so the
+    control plane can re-price by the same rule. USD limits are unaffected: they
+    reserve nothing before a request runs, and cost is known only when it settles.
+  - Rejected: a base price plus a separate long-context block (`usd_per_million` +
+    `usd_per_million_large` + one threshold) and any fixed two-tier shape — flat, but
+    capped at two tiers, so bracketed pricing (Qwen) would need another format change.
 - **Units and price units** (settled 2026-09-24). Usage units are disjoint where they
   are priced, so a cost is a plain sum of units × price:
   - `tokens_in` — uncached input: the backend's prompt tokens minus cached ones;
@@ -498,9 +522,9 @@ the `{ error, detail }` body, `error` being the stable code:
 
   `usd_per_million` accepts only `tokens_in`, `tokens_cached` and `tokens_out`;
   `tokens_reasoning` is never priced (it is already inside `tokens_out`, and pricing
-  it would charge reasoning twice). In a priced entry, an unpriced `tokens_cached` is
-  charged at the `tokens_in` price — leaving it out must never make cached input free;
-  an unpriced `tokens_in` or `tokens_out` costs 0 for that unit.
+  it would charge reasoning twice). Within a tier, an unpriced `tokens_cached` is
+  charged at that tier's `tokens_in` price — leaving it out must never make cached
+  input free; an unpriced `tokens_in` or `tokens_out` costs 0 for that unit.
 - **Semantic rules** — what the schema cannot express, checked by code in both halves,
   each with a stable code that both halves report for the same fixture:
   - `key-group-unknown` — a key's `group` has no entry.
@@ -532,6 +556,12 @@ the `{ error, detail }` body, `error` being the stable code:
   - `reasoning-efforts-without-reasoning` — `reasoning_efforts` listed while
     `capabilities.reasoning` is false.
   - `price-dates-not-increasing` — a price's `effective_from` is not after the previous.
+  - `price-tier-first-not-zero` — a price entry's first tier has an
+    `above_input_tokens` other than 0. Path: that tier's `above_input_tokens`
+    (`/models/<model>/prices/<i>/tiers/0/above_input_tokens`).
+  - `price-tiers-not-increasing` — a tier's `above_input_tokens` is not above the
+    previous tier's. Path: the offending tier's `above_input_tokens`
+    (`/models/<model>/prices/<i>/tiers/<j>/above_input_tokens`).
   - `date-invalid` — a `YYYY-MM-DD` that names no real day.
   - `timestamp-invalid` — a timestamp with a field out of range (leap seconds included).
   Schema violations have no per-rule code: each half reports its own validator's

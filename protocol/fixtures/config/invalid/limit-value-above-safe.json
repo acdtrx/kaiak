@@ -1,5 +1,5 @@
 {
-  "format_version": 2,
+  "format_version": 3,
   "global": { "limits": [{ "type": "usd_per_month", "value": 9007199254740993.5 }] },
   "backends": { "local": { "type": "openai-compatible", "base_url": "http://localhost:8080/v1" } },
   "models": {

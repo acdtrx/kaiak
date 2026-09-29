@@ -1,0 +1,40 @@
+{
+  "format_version": 3,
+  "global": {},
+  "backends": { "vllm": { "type": "openai-compatible", "base_url": "http://vllm:8000/v1" } },
+  "models": {
+    "chat": {
+      "deployments": [{ "backend": "vllm", "model": "org/chat-model" }],
+      "metadata": {
+        "context_length": 32768,
+        "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": false }
+      },
+      "output_limit": { "default": 1024, "ceiling": 8192 },
+      "prices": [
+        {
+          "effective_from": "2026-01-01",
+          "tiers": [
+            { "above_input_tokens": 0, "usd_per_million": { "tokens_in": 0.5, "tokens_out": 1.5 } },
+            { "above_input_tokens": 16000.5, "usd_per_million": { "tokens_in": 1, "tokens_out": 3 } }
+          ]
+        }
+      ]
+    }
+  },
+  "groups": {
+    "team1": {},
+    "app": { "parent": "team1", "allowed_models": ["chat"] },
+    "users": { "child_defaults": { "allowed_models": ["chat"] } },
+    "alice": { "parent": "users" }
+  },
+  "keys": {
+    "k-app": {
+      "hash": "sha256:22fa736e91c8338c4df0abb065d36b2b6680c56a6a870dbd310cb10b5c8cdc09",
+      "group": "app"
+    },
+    "k-alice": {
+      "hash": "sha256:59f8f6709d858b919a10541cd215a0de7b4299bbc6c11a2e0bf4ca03ec6df717",
+      "group": "alice"
+    }
+  }
+}
