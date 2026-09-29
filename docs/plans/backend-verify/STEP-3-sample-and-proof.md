@@ -1,7 +1,6 @@
 # Step 3 — sample CLI, docs, live proof
 
-**Status:** done (2026-09-29), except the live llama-server chat check on the DGX
-(not run: the DGX was busy — see Result)
+**Status:** done (2026-09-29)
 
 ## Intent
 
@@ -86,6 +85,14 @@ Live, read-only, 2026-09-29, from the worktree's `control/`:
   it needs the vLLM stopped. The same server code path is covered live by the
   embedding host below, and the chat values by the fake built from the 2026-09-29
   capture (step 2).
+- **DGX llama-server, run afterwards by the main session** (the user approved the
+  swap): the vLLM (picks context=256k mtp=2 vision=on) was stopped, `qwen38-27b`
+  started (cache=q8 context=256k mtp=3 vision=on), checked, stopped, and the vLLM
+  restarted with the same picks. `--model unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL` →
+  exit 0: server `llama-server`; context 262144 from
+  `default_generation_settings.n_ctx`; capabilities vision true (hint false), tools
+  true and reasoning true (hints); `metadata`
+  `{"context_length":262144,"capabilities":{"vision":true}}`; no notes.
 - vLLM `dgx.local:11434`, `--model unsloth/Qwen3.8-27B-NVFP4` → exit 0:
 
   ```text

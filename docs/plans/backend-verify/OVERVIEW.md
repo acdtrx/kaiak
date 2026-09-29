@@ -136,12 +136,11 @@ Decisions made while planning (confirm in review):
   missing fields, `base_url` without `/v1` (STEP-2, 22 tests).
 - [x] Sample `verify` command: arguments, env, errors, exit status, output streams
   (STEP-3, 8 tests against an in-process fake llama-server).
-- [ ] **Live DGX llama-server `dgx.local:11434` (qwen3.8-27b) — not run.** The DGX
-  was serving `qwen38-27b-nvfp4` (vLLM) on that port, started outside this plan; it
-  was left untouched. Still covered by the fake built from the 2026-09-29 capture of
-  that server's answers. Run `npm run verify -w sample -- --base-url
-  http://dgx.local:11434/v1 --model unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL` when it is
-  up (expect 262144, vision true, tools and reasoning hints true).
+- [x] Live DGX llama-server `dgx.local:11434` (qwen3.8-27b, picks cache=q8
+  context=256k mtp=3 vision=on): server `llama-server`, context 262144 from
+  `default_generation_settings.n_ctx`, vision true, tools and reasoning true as hints,
+  `metadata` `{"context_length":262144,"capabilities":{"vision":true}}`, exit 0
+  (STEP-3; run after step 3 by swapping out the vLLM, which was restored).
 - [x] Live embedding llama-server `llama-embed.local:11435`: context 32768, vision
   false, tools true as a hint kept out of `metadata`, no reasoning (STEP-3).
 - [x] Live vLLM 0.30.0 on the DGX (the one running that day): context 262144 from
