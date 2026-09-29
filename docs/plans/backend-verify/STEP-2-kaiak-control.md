@@ -21,6 +21,8 @@ package entry.
   a models list and from `/props`. Or local to the subsystem if that is the pattern;
   follow what's there.
 - `control/kaiak-control/src/index.ts`: export `verifyBackend` and its types.
+- `docs/ARCHITECTURE.md`: the new subsystem in the `kaiak-control` graph, and a
+  control plane → backends arrow (called by the app only, off the request path).
 
 ## Decisions made during planning
 

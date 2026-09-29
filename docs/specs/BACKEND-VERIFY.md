@@ -229,14 +229,14 @@ Only the models-list request decides `ok`. The first failure ends the call.
 ### Example
 
 llama-server b9917, one model, `baseUrl` `http://dgx.local:11434/v1`, `model`
-`qwen3.8-27b`, abridged:
+`unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL` (the id it lists), abridged:
 
 ```json
 {
   "ok": true,
   "server": "llama-server",
   "models": [{
-    "id": "qwen3.8-27b",
+    "id": "unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL",
     "context_length": 262144,
     "capabilities": { "vision": true, "tools": true, "reasoning": true },
     "sources": {
