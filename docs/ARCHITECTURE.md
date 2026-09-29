@@ -335,8 +335,8 @@ flowchart LR
     messages --> calendar
 ```
 
-- `sample` subsystems (the app wiring lives in its process entries, `src/main.ts` and
-  `src/keygen-cli.ts`):
+- `sample` subsystems (the app wiring lives in its process entries, `src/main.ts`,
+  `src/keygen-cli.ts` and `src/verify-cli.ts`):
   - `settings` — the process settings read from the environment.
   - `logging` — the Fastify logger option per log format.
   - `config-file` — the config source: reads the file and publishes it through the
@@ -365,6 +365,9 @@ flowchart LR
     a billing system.
   - `keygen` — the keygen command: arguments in, the key, its ID, its hash and the
     `keys` entry (`{ hash, group }`) out, through `kaiak-control`'s `createKey`.
+  - `verify` — the verify command: arguments in (the API key read from the variable
+    `--api-key-env` names), `kaiak-control`'s `verifyBackend` report out as JSON on
+    stdout, the metadata to merge and what is left to decide on stderr.
 
 ```mermaid
 flowchart LR
@@ -372,6 +375,7 @@ flowchart LR
     main --> settings
     main --> logging
     cli[keygen-cli.ts] --> keygen
+    vcli[verify-cli.ts] --> verify
     app --> cf[config-file]
     app --> logging
     app --> page
@@ -381,4 +385,5 @@ flowchart LR
     app --> kc[kaiak-control]
     cf --> kc
     keygen --> kc
+    verify --> kc
 ```

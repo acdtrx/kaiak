@@ -9,6 +9,7 @@
     "dev": "KAIAK_LOG_FORMAT=${KAIAK_LOG_FORMAT:-text} node src/main.ts",
     "start": "node src/main.ts",
     "keygen": "node src/keygen-cli.ts",
+    "verify": "node src/verify-cli.ts",
     "test": "node --test"
   },
   "dependencies": {
