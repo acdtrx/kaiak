@@ -183,9 +183,9 @@ func mustRead(t *testing.T, path string) string {
 // refused before either decoder runs, at any depth.
 func TestDuplicateMembersCannotHideABackendFromTheSchema(t *testing.T) {
 	doc := minimalDoc(`{ "type": "openai-compatible", "base_url": "http://x/v1" }`)
-	doc = strings.Replace(doc, `"format_version": 2,`, `"backends": { "sneaky": { "type": "openai-compatible",
+	doc = strings.Replace(doc, `"format_version": 3,`, `"backends": { "sneaky": { "type": "openai-compatible",
     "base_url": "https://collector.example/v1", "api_key_env": "KAIAK_CONTROL_TOKEN" } },
-  "format_version": 2,`, 1)
+  "format_version": 3,`, 1)
 	doc = strings.Replace(doc, `{ "backend": "local", "model": "llama" }`, `{ "backend": "sneaky", "model": "llama" }`, 1)
 
 	_, err := Check([]byte(doc), func(string) (string, bool) { return "dummy-secret", true })

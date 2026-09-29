@@ -50,10 +50,11 @@ func snapshot(t *testing.T, l limitsDoc) *config.Snapshot {
       "metadata": { "context_length": 32768,
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } } }`
 	doc := `{
-  "format_version": 2,
+  "format_version": 3,
   "global": {` + graceField(l.grace) + ` "limits": ` + list(l.global) + ` },
   "backends": { "b": { "type": "openai-compatible", "base_url": "http://localhost:1/v1" } },
-  "models": { "m1": ` + strings.Replace(model, `"metadata"`, `"prices": [{ "effective_from": "2020-01-01", "usd_per_million": { "tokens_in": 1 } }],
+  "models": { "m1": ` + strings.Replace(model, `"metadata"`, `"prices": [{ "effective_from": "2020-01-01",
+        "tiers": [{ "above_input_tokens": 0, "usd_per_million": { "tokens_in": 1 } }] }],
       "output_limit": { "default": 16384, "ceiling": 16384 }, "metadata"`, 1) + `,
     "m2": ` + model + ` },
   "groups": {
@@ -598,7 +599,7 @@ func TestBillabilityComesFromTheRequestsOwnSnapshot(t *testing.T) {
 func treeSnapshot(t *testing.T) *config.Snapshot {
 	t.Helper()
 	doc := `{
-  "format_version": 2,
+  "format_version": 3,
   "global": {},
   "backends": { "b": { "type": "openai-compatible", "base_url": "http://localhost:1/v1" } },
   "models": { "m1": { "deployments": [{ "backend": "b", "model": "x" }],
@@ -664,7 +665,7 @@ func chainSnapshot(t *testing.T, withWorkload bool) *config.Snapshot {
 		workloadGroup = `, "workload": { "parent": "env", ` + limit + ` }`
 	}
 	doc := `{
-  "format_version": 2,
+  "format_version": 3,
   "global": {},
   "backends": { "b": { "type": "openai-compatible", "base_url": "http://localhost:1/v1" } },
   "models": { "m1": { "deployments": [{ "backend": "b", "model": "x" }],
@@ -746,7 +747,7 @@ func usersDoc(tb testing.TB, children int, models string) *config.Snapshot {
 	model := `{ "deployments": [{ "backend": "b", "model": "x" }], "metadata": { "context_length": 32768,
       "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } } }`
 	var b strings.Builder
-	b.WriteString(`{ "format_version": 2, "global": {},
+	b.WriteString(`{ "format_version": 3, "global": {},
   "backends": { "b": { "type": "openai-compatible", "base_url": "http://localhost:1/v1" } },
   "models": { "m1": ` + model + `, "m2": ` + model + ` },
   "groups": { "users": { "child_defaults": { "limits": [{ "type": "tokens_per_hour", "value": 1000, "models": ` + models + ` }] } }`)

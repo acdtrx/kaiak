@@ -78,7 +78,7 @@ func TestSeriesStartAtZero(t *testing.T) {
 	want(`kaiak_retries_total{model="chat",backend="a",reason="server_error"}`, 1)
 
 	// A rejected reload: 0, then 1.
-	if err := os.WriteFile(configFile, []byte(`{"format_version": 2,`), 0o600); err != nil {
+	if err := os.WriteFile(configFile, []byte(`{"format_version": 3,`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	g.signal(t, syscall.SIGHUP)

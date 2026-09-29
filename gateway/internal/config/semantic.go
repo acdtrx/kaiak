@@ -100,6 +100,7 @@ func (c *semanticCheck) model(name string, model modelDoc) {
 
 	previous := ""
 	for i, price := range model.Prices {
+		c.priceTiers(price.Tiers, schemacheck.Pointer(path, "prices", i, "tiers"))
 		datePath := schemacheck.Pointer(path, "prices", i, "effective_from")
 		if !schemacheck.IsRealDate(price.EffectiveFrom) {
 			c.report(CodeDateInvalid, datePath, fmt.Sprintf("%q is not a real date", price.EffectiveFrom))
@@ -110,6 +111,24 @@ func (c *semanticCheck) model(name string, model modelDoc) {
 			c.report(CodePriceDatesNotIncreasing, datePath, fmt.Sprintf("%s does not follow %s", price.EffectiveFrom, previous))
 		}
 		previous = price.EffectiveFrom
+	}
+}
+
+// priceTiers checks a price entry's tiers start at 0 and their thresholds increase.
+func (c *semanticCheck) priceTiers(tiers []priceTierDoc, path string) {
+	for j, tier := range tiers {
+		thresholdPath := schemacheck.Pointer(path, j, "above_input_tokens")
+		if j == 0 {
+			if tier.AboveInputTokens != 0 {
+				c.report(CodePriceTierFirstNotZero, thresholdPath,
+					fmt.Sprintf("the first tier starts above %d tokens, not 0", int64(tier.AboveInputTokens)))
+			}
+			continue
+		}
+		if previous := tiers[j-1].AboveInputTokens; tier.AboveInputTokens <= previous {
+			c.report(CodePriceTiersNotIncreasing, thresholdPath,
+				fmt.Sprintf("%d is not above the previous tier's %d", int64(tier.AboveInputTokens), int64(previous)))
+		}
 	}
 }
 

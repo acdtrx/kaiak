@@ -13,7 +13,7 @@ import (
 const LastKnownGoodFile = "last-known-good.json"
 
 // lastKnownGoodFormat is the file's format version; a file with another is discarded.
-const lastKnownGoodFormat = 3
+const lastKnownGoodFormat = 4
 
 // lastKnownGood is the file's data: the config document as the control plane sent it,
 // its version and the epoch the version counts in.

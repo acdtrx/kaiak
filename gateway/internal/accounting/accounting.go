@@ -194,11 +194,37 @@ func PriceAt(prices []config.Price, t time.Time) (config.Price, bool) {
 	return config.Price{}, false
 }
 
+// tierFor returns the tier of price that prices a record whose input size is input:
+// the last tier whose AboveInputTokens is strictly less than input, else the first
+// (docs/specs/CONTROL-PROTOCOL.md, Config → Tiered prices). price has at least one
+// tier, the first at 0, thresholds strictly increasing.
+func tierFor(price config.Price, input int64) config.PriceTier {
+	for i := len(price.Tiers) - 1; i > 0; i-- {
+		if price.Tiers[i].AboveInputTokens < input {
+			return price.Tiers[i]
+		}
+	}
+	return price.Tiers[0]
+}
+
+// inputSize is the record's input size, the figure a tier is picked by: tokens_in +
+// tokens_cached, saturating at the int64 bound (units are clamped to the protocol's
+// bound only after pricing, and are never negative).
+func inputSize(units Units) int64 {
+	in, cached := units[config.UnitTokensIn], units[config.UnitTokensCached]
+	if cached > math.MaxInt64-in {
+		return math.MaxInt64
+	}
+	return in + cached
+}
+
 // Cost prices units under the entry in force at t, in nano-USD
-// (docs/specs/CONTROL-PROTOCOL.md, Units and price units). The priced units are
-// disjoint, so the cost is a sum; tokens_cached without a price of its own is charged
-// at the tokens_in price; tokens_reasoning is inside tokens_out and never priced. An
-// unpriced model, or a date before its first entry, costs 0.
+// (docs/specs/CONTROL-PROTOCOL.md, Units and price units): at the one tier the
+// record's input size picks, the whole record — input, cached input and output — at
+// that tier's prices. The priced units are disjoint, so the cost is a sum;
+// tokens_cached without a price of its own is charged at the tier's tokens_in price;
+// tokens_reasoning is inside tokens_out and never priced. An unpriced model, or a date
+// before its first entry, costs 0.
 //
 // Each record's cost is rounded to a whole nano-dollar once, here: records are summed
 // as integers downstream, so totals over any number of records carry no floating-point
@@ -208,12 +234,13 @@ func Cost(prices []config.Price, t time.Time, units Units) int64 {
 	if !ok {
 		return 0
 	}
-	in := price.USDPerMillion[config.UnitTokensIn]
-	cached, ok := price.USDPerMillion[config.UnitTokensCached]
+	tier := tierFor(price, inputSize(units))
+	in := tier.USDPerMillion[config.UnitTokensIn]
+	cached, ok := tier.USDPerMillion[config.UnitTokensCached]
 	if !ok {
 		cached = in
 	}
-	out := price.USDPerMillion[config.UnitTokensOut]
+	out := tier.USDPerMillion[config.UnitTokensOut]
 	// USD per million tokens × tokens = micro-dollars; × 1000 = nano-dollars.
 	nano := 1000 * (float64(units[config.UnitTokensIn])*in +
 		float64(units[config.UnitTokensCached])*cached +

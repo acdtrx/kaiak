@@ -1,10 +1,10 @@
 // Package fakecontrol is a control plane for tests: it serves the config snapshot and
-// the config stream of docs/specs/CONTROL-PROTOCOL.md (protocol version 1) from
-// configs the test publishes, takes usage batches (de-duplicated by batch ID as the
-// protocol settles, so a test can check exactly-once counting) and status reports,
-// runs the request checks, records every request, and lets the test script stream
-// events, go down, restart, answer with another protocol version, or fail usage
-// batches (an error answer, or an ack dropped after counting). Its totals are
+// the config stream of docs/specs/CONTROL-PROTOCOL.md from configs the test
+// publishes, takes usage batches (de-duplicated by batch ID as the protocol settles, so
+// a test can check exactly-once counting) and status reports, runs the request checks,
+// records every request, and lets the test script stream events, go down, restart,
+// answer with another protocol version, or fail usage batches (an error answer, or an
+// ack dropped after counting). Its totals are
 // scripted: the test sets the windows and the live-gateway count, and the server
 // keeps the revision (a random control-plane ID, new on Restart, and a sequence
 // bumped by every change) and each instance's counted_through, as kaiak-control
@@ -145,7 +145,7 @@ type Stream struct {
 
 // protocolVersion is the Kaiak-Protocol value the fake speaks
 // (docs/specs/CONTROL-PROTOCOL.md).
-const protocolVersion = "2"
+const protocolVersion = "3"
 
 // connectedBuffer bounds the streams Connected holds for a test that does not read
 // them; further ones are not announced.

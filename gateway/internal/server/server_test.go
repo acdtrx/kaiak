@@ -82,7 +82,7 @@ func testDocWith(backendURL string, edit func(doc string) string) string {
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } } }`
 	}
 	doc := `{
-  "format_version": 2,
+  "format_version": 3,
   "global": { "max_request_body_bytes": 1024 },
   "backends": {
     "local": { "type": "openai-compatible", "base_url": "` + backendURL + `/v1", "api_key_env": "LOCAL_KEY" },
@@ -102,8 +102,10 @@ func testDocWith(backendURL string, edit func(doc string) string) string {
       "defaults": { "top_k": [1, 2], "temperature": 0.2, "chat_template_kwargs": { "enable_thinking": false } },
       "output_limit": { "default": 256, "ceiling": 1024 },
       "prices": [
-        { "effective_from": "2020-01-01", "usd_per_million": { "tokens_in": 1, "tokens_out": 2 } },
-        { "effective_from": "2999-01-01", "usd_per_million": { "tokens_in": 100, "tokens_out": 200 } } ] } },
+        { "effective_from": "2020-01-01",
+          "tiers": [{ "above_input_tokens": 0, "usd_per_million": { "tokens_in": 1, "tokens_out": 2 } }] },
+        { "effective_from": "2999-01-01",
+          "tiers": [{ "above_input_tokens": 0, "usd_per_million": { "tokens_in": 100, "tokens_out": 200 } }] } ] } },
   "groups": {
     "research": {},
     "eval": { "parent": "research", "allowed_models": ["*"] },

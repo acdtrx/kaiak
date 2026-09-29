@@ -42,8 +42,8 @@ func testConfig(backendURL, evalHash, annHash, extraModel string) map[string]any
 		return m
 	}
 	price := func(in, out float64) []any {
-		return []any{map[string]any{"effective_from": "2026-01-01",
-			"usd_per_million": map[string]any{"tokens_in": in, "tokens_out": out}}}
+		return []any{map[string]any{"effective_from": "2026-01-01", "tiers": []any{map[string]any{
+			"above_input_tokens": 0, "usd_per_million": map[string]any{"tokens_in": in, "tokens_out": out}}}}}
 	}
 	models := map[string]any{
 		"chat": chatModel(price(1, 2)),
@@ -60,7 +60,7 @@ func testConfig(backendURL, evalHash, annHash, extraModel string) map[string]any
 		models[extraModel] = chatModel(nil)
 	}
 	return map[string]any{
-		"format_version": 2,
+		"format_version": 3,
 		"global": map[string]any{
 			"limits": []any{map[string]any{"type": "usd_per_month", "value": 0.0001, "models": []any{"priced"}}},
 		},
@@ -286,7 +286,7 @@ func TestGatewayEndToEnd(t *testing.T) {
 	})
 
 	t.Run("SIGHUP reload keeps a bad config out and applies a good one", func(t *testing.T) {
-		if err := os.WriteFile(configFile, []byte(`{"format_version": 2,`), 0o600); err != nil {
+		if err := os.WriteFile(configFile, []byte(`{"format_version": 3,`), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		g.signal(t, syscall.SIGHUP)

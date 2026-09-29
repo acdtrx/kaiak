@@ -284,7 +284,7 @@ func TestBootAppliesTheSnapshotAndSendsTheProtocolHeaders(t *testing.T) {
 	if len(reqs) != 1 || reqs[0].Path != "/v1/config" {
 		t.Fatalf("requests %+v", reqs)
 	}
-	for name, want := range map[string]string{"Authorization": "Bearer " + testToken, "Kaiak-Protocol": "2",
+	for name, want := range map[string]string{"Authorization": "Bearer " + testToken, "Kaiak-Protocol": "3",
 		"Kaiak-Instance": testInstance} {
 		if got := reqs[0].Header.Values(name); len(got) != 1 || got[0] != want {
 			t.Errorf("%s = %q, want %q", name, got, want)
@@ -983,14 +983,14 @@ func TestControlPlaneAnswersHaveAHeaderTimeout(t *testing.T) {
 func TestProtocolMismatchIsLoggedAsAnErrorAndRetried(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))
-	h.cp.SetProtocol("1")
+	h.cp.SetProtocol("2")
 	c := h.client(nil)
 	if err := c.Boot(context.Background()); err == nil {
 		t.Fatal("Boot applied a config from a control plane speaking another version")
 	}
 	out := h.logs.String()
 	if !strings.Contains(out, "level=ERROR") || !strings.Contains(out, "protocol version mismatch") ||
-		!strings.Contains(out, "gateway speaks 2") {
+		!strings.Contains(out, "gateway speaks 3") {
 		t.Errorf("mismatch not logged as an error:\n%s", out)
 	}
 
@@ -999,7 +999,7 @@ func TestProtocolMismatchIsLoggedAsAnErrorAndRetried(t *testing.T) {
 	h.mu.Unlock()
 	h.run(c)
 	<-h.delayed // retried and failed again, still waiting
-	h.cp.SetProtocol("2")
+	h.cp.SetProtocol("3")
 	h.wantLoad(load{TriggerControl, true})
 	if n := len(h.cp.Gets()); n < 3 {
 		t.Errorf("%d requests, want the boot fetch and at least two retries", n)

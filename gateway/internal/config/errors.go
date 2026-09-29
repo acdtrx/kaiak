@@ -41,6 +41,8 @@ const (
 	CodeOutputLimitAboveContext          = "output-limit-above-context"
 	CodeReasoningEffortsWithoutReasoning = "reasoning-efforts-without-reasoning"
 	CodePriceDatesNotIncreasing          = "price-dates-not-increasing"
+	CodePriceTierFirstNotZero            = "price-tier-first-not-zero"
+	CodePriceTiersNotIncreasing          = "price-tiers-not-increasing"
 	CodeDateInvalid                      = "date-invalid"
 	CodeTimestampInvalid                 = "timestamp-invalid"
 )

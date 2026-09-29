@@ -24,6 +24,25 @@ func parseFixture(t *testing.T, name string) *Snapshot {
 	return s
 }
 
+// Tiers resolve in order, each with its own units; the largest threshold the schema
+// allows resolves exactly.
+func TestPriceTiersResolve(t *testing.T) {
+	s := parseFixture(t, "price-tiers.json")
+	tiers := s.Models["gpt-5.4"].Prices[1].Tiers
+	if len(tiers) != 2 || tiers[0].AboveInputTokens != 0 || tiers[1].AboveInputTokens != 272000 ||
+		tiers[1].USDPerMillion[UnitTokensIn] != 5 || tiers[1].USDPerMillion[UnitTokensOut] != 22.5 {
+		t.Errorf("gpt-5.4 tiers = %+v", tiers)
+	}
+	s = parseFixture(t, "price-brackets.json")
+	eight := s.Models["eight-brackets"].Prices[0].Tiers
+	if len(eight) != 8 || eight[7].AboveInputTokens != 1<<53-1 {
+		t.Fatalf("eight-brackets tiers = %+v", eight)
+	}
+	if units := eight[2].USDPerMillion; len(units) != 1 || units[UnitTokensCached] != 0 {
+		t.Errorf("third tier units = %v, want tokens_cached alone", units)
+	}
+}
+
 func mustReject(t *testing.T, doc string) *ValidationError {
 	t.Helper()
 	_, err := Parse([]byte(doc))
@@ -37,7 +56,7 @@ func mustReject(t *testing.T, doc string) *ValidationError {
 // minimalDoc is protocol/fixtures/config/valid/minimal.json with one field replaceable.
 func minimalDoc(backend string) string {
 	return `{
-  "format_version": 2,
+  "format_version": 3,
   "global": {},
   "backends": { "local": ` + backend + ` },
   "models": {
@@ -200,7 +219,10 @@ func TestModelResolution(t *testing.T) {
 	if want := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC); !g.Prices[1].EffectiveFrom.Equal(want) {
 		t.Errorf("effective_from = %v, want %v", g.Prices[1].EffectiveFrom, want)
 	}
-	if got := g.Prices[0].USDPerMillion[UnitTokensCached]; got != 0.5 {
+	if len(g.Prices[0].Tiers) != 1 || g.Prices[0].Tiers[0].AboveInputTokens != 0 {
+		t.Fatalf("tiers = %+v, want one at 0", g.Prices[0].Tiers)
+	}
+	if got := g.Prices[0].Tiers[0].USDPerMillion[UnitTokensCached]; got != 0.5 {
 		t.Errorf("tokens_cached price = %v", got)
 	}
 }
@@ -405,6 +427,35 @@ func TestGroupTreeIssues(t *testing.T) {
 		"group-depth-exceeded /groups/l10",
 		"group-depth-exceeded /groups/l9",
 		"group-parent-unknown /groups/orphan/parent",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("issues\n %v\nwant\n %v", got, want)
+	}
+}
+
+// The tier rules report each offending threshold where it is, in every price entry: a
+// first tier above 0, and each tier not above the one before (equal or lower).
+func TestPriceTierIssues(t *testing.T) {
+	doc := strings.Replace(minimalDoc(`{ "type": "openai-compatible", "base_url": "http://x/v1" }`),
+		`"metadata": {`, `"prices": [
+        { "effective_from": "2026-01-01", "tiers": [
+          { "above_input_tokens": 0, "usd_per_million": { "tokens_in": 1 } },
+          { "above_input_tokens": 1000, "usd_per_million": { "tokens_in": 2 } },
+          { "above_input_tokens": 1000, "usd_per_million": { "tokens_in": 3 } },
+          { "above_input_tokens": 999, "usd_per_million": { "tokens_in": 4 } } ] },
+        { "effective_from": "2026-02-01", "tiers": [
+          { "above_input_tokens": 5, "usd_per_million": { "tokens_in": 1 } } ] } ],
+      "metadata": {`, 1)
+	invalid := mustReject(t, doc)
+	var got []string
+	for _, issue := range invalid.Issues {
+		got = append(got, issue.Code+" "+issue.Path)
+	}
+	slices.Sort(got)
+	want := []string{
+		"price-tier-first-not-zero /models/llama/prices/1/tiers/0/above_input_tokens",
+		"price-tiers-not-increasing /models/llama/prices/0/tiers/2/above_input_tokens",
+		"price-tiers-not-increasing /models/llama/prices/0/tiers/3/above_input_tokens",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("issues\n %v\nwant\n %v", got, want)

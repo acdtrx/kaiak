@@ -33,7 +33,7 @@ func TestRunRefusesADataDirectoryInUse(t *testing.T) {
 func TestSeedConfigSetting(t *testing.T) {
 	dir := t.TempDir()
 	invalid := filepath.Join(dir, "invalid.json")
-	if err := os.WriteFile(invalid, []byte(`{"format_version": 2}`), 0o600); err != nil {
+	if err := os.WriteFile(invalid, []byte(`{"format_version": 3}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	control := map[string]string{"KAIAK_CONTROL_URL": "http://cp.example", "KAIAK_CONTROL_TOKEN": "t0ken",

@@ -135,7 +135,7 @@ func TestRunExitsWithNoConfigAtBoot(t *testing.T) {
 func writeSeed(t *testing.T, model, backend map[string]any) string {
 	t.Helper()
 	doc := map[string]any{
-		"format_version": 2,
+		"format_version": 3,
 		"global":         map[string]any{},
 		"backends":       map[string]any{"local": merged(map[string]any{"type": "openai-compatible", "base_url": "http://localhost:8080/v1"}, backend)},
 		"models": map[string]any{"llama": merged(map[string]any{
@@ -180,7 +180,8 @@ func TestSeedIsCheckedAtStartup(t *testing.T) {
 		t.Errorf("free seed refused: %v", err)
 	}
 	priced := writeSeed(t, map[string]any{"prices": []any{map[string]any{"effective_from": "2026-01-01",
-		"usd_per_million": map[string]any{"tokens_in": 1, "tokens_out": 2}}}}, nil)
+		"tiers": []any{map[string]any{"above_input_tokens": 0,
+			"usd_per_million": map[string]any{"tokens_in": 1, "tokens_out": 2}}}}}}, nil)
 	if _, err := readSettings(with(priced, nil)); err == nil || !strings.Contains(err.Error(), `model "llama" is priced`) {
 		t.Errorf("priced seed: %v, want an error naming the model", err)
 	}

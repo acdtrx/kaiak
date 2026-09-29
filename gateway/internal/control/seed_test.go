@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -108,7 +109,7 @@ func TestSeedConfigServesWhenTheControlPlaneHasNoConfig(t *testing.T) {
 func errorControlPlane(t *testing.T, status int, code string) *url.URL {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Kaiak-Protocol", "2")
+		w.Header().Set("Kaiak-Protocol", "3")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(`{"error":"` + code + `"}`))
@@ -169,12 +170,13 @@ func TestBootFailsWithNoSourceOfConfig(t *testing.T) {
 	}
 }
 
-// A last-known-good file of the previous format (a format-1 config inside) is
-// discarded and logged: the boot falls back to the seed.
+// A last-known-good file of the previous format (a format-2 config inside, prices
+// without tiers) is discarded and logged: the boot falls back to the seed.
 func TestLastKnownGoodOfAnotherFormatIsDiscarded(t *testing.T) {
 	h := newHarness(t)
 	old := lastKnownGood{ConfigEpoch: "0123456789abcdef0123456789abcdef", Version: 3,
-		Config: []byte(`{"format_version": 1, "global": {"default_user": {"allowed_models": ["*"]}}}`)}
+		Config: []byte(`{"format_version": 2, "models": {"m": {"prices": [{"effective_from": "2026-01-01", ` +
+			`"usd_per_million": {"tokens_in": 1}}]}}}`)}
 	if err := h.dir.WriteVersioned(LastKnownGoodFile, lastKnownGoodFormat-1, old); err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +187,7 @@ func TestLastKnownGoodOfAnotherFormatIsDiscarded(t *testing.T) {
 	h.wantLoad(load{TriggerSeed, true})
 	h.noLoadPending()
 	if out := h.logs.String(); !strings.Contains(out, "discarded data file with a different format version") ||
-		!strings.Contains(out, "found_version=2") {
+		!strings.Contains(out, fmt.Sprintf("found_version=%d", lastKnownGoodFormat-1)) {
 		t.Errorf("discard not logged:\n%s", out)
 	}
 }

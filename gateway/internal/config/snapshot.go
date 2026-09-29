@@ -209,9 +209,19 @@ type OutputLimit struct {
 type Price struct {
 	// EffectiveFrom is midnight UTC of the day the price takes effect.
 	EffectiveFrom time.Time
-	// USDPerMillion holds the units the entry names (tokens_in, tokens_cached,
-	// tokens_out). tokens_cached left out is charged at the tokens_in price; tokens_in
-	// or tokens_out left out costs 0.
+	// Tiers are the entry's prices by the request's input size (tokens_in +
+	// tokens_cached): at least one, the first at 0, thresholds strictly increasing.
+	Tiers []PriceTier
+}
+
+// PriceTier is one tier of a price entry, complete in itself: nothing is inherited
+// from the tier below.
+type PriceTier struct {
+	// AboveInputTokens: the tier applies to a request whose input size is above it.
+	AboveInputTokens int64
+	// USDPerMillion holds the units the tier names (tokens_in, tokens_cached,
+	// tokens_out). tokens_cached left out is charged at the tier's tokens_in price;
+	// tokens_in or tokens_out left out costs 0.
 	USDPerMillion map[Unit]float64
 }
 
@@ -435,11 +445,15 @@ func resolveModel(name string, m modelDoc, backends map[string]*Backend) *Model 
 	for i, p := range m.Prices {
 		// The semantic rules have checked the date names a real day.
 		from, _ := time.Parse(time.DateOnly, p.EffectiveFrom)
-		units := make(map[Unit]float64, len(p.USDPerMillion))
-		for unit, usd := range p.USDPerMillion {
-			units[Unit(unit)] = usd
+		tiers := make([]PriceTier, len(p.Tiers))
+		for j, tier := range p.Tiers {
+			units := make(map[Unit]float64, len(tier.USDPerMillion))
+			for unit, usd := range tier.USDPerMillion {
+				units[Unit(unit)] = usd
+			}
+			tiers[j] = PriceTier{AboveInputTokens: int64(tier.AboveInputTokens), USDPerMillion: units}
 		}
-		model.Prices[i] = Price{EffectiveFrom: from, USDPerMillion: units}
+		model.Prices[i] = Price{EffectiveFrom: from, Tiers: tiers}
 	}
 	return model
 }

@@ -293,7 +293,7 @@ func TestIntegerSpellings(t *testing.T) {
 	if err != nil || resync != (Resync{}) {
 		t.Fatalf("resync: %v", err)
 	}
-	status, err := DecodeStatus([]byte(`{"instance":"gw-1","protocol_version":2.0,"state":"ready",
+	status, err := DecodeStatus([]byte(`{"instance":"gw-1","protocol_version":3.0,"state":"ready",
 		"started_at":"2026-09-24T10:00:00Z","applied_config_version":4e1,"applied_config_epoch":"0f1e2d3c4b5a69788796a5b4c3d2e1f0","last_rejection":null,
 		"backends":{"b":{"in_flight":2.0,"max_in_flight":4e0,"deployments":{}}},"models":{"m":{"queued":1.0}}}`))
 	if err != nil {

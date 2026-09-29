@@ -79,8 +79,8 @@ func buildConfig(o options, hash string) ([]byte, error) {
 	}
 	var prices []any
 	if o.priceIn != 0 || o.priceOut != 0 {
-		prices = []any{map[string]any{"effective_from": "2000-01-01",
-			"usd_per_million": map[string]any{"tokens_in": o.priceIn, "tokens_out": o.priceOut}}}
+		prices = []any{map[string]any{"effective_from": "2000-01-01", "tiers": []any{map[string]any{
+			"above_input_tokens": 0, "usd_per_million": map[string]any{"tokens_in": o.priceIn, "tokens_out": o.priceOut}}}}}
 	}
 	chat := func(outputLimit int) map[string]any {
 		m := map[string]any{
@@ -120,7 +120,7 @@ func buildConfig(o options, hash string) ([]byte, error) {
 	}
 
 	return json.MarshalIndent(map[string]any{
-		"format_version": 2,
+		"format_version": 3,
 		"global":         global,
 		"backends":       backends,
 		"models":         models,

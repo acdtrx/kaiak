@@ -99,8 +99,13 @@ type outputLimitDoc struct {
 }
 
 type priceDoc struct {
-	EffectiveFrom string             `json:"effective_from"`
-	USDPerMillion map[string]float64 `json:"usd_per_million"`
+	EffectiveFrom string         `json:"effective_from"`
+	Tiers         []priceTierDoc `json:"tiers"`
+}
+
+type priceTierDoc struct {
+	AboveInputTokens float64            `json:"above_input_tokens"`
+	USDPerMillion    map[string]float64 `json:"usd_per_million"`
 }
 
 // groupDoc: Parent "" is a top-level group (IDs are never empty). A nil

@@ -31,7 +31,10 @@ var (
 
 // FormatVersion is the config document format this gateway reads; any other is
 // rejected, never migrated.
-const FormatVersion = 2
+const FormatVersion = 3
+
+// maxPriceTiers bounds a price entry's tiers.
+const maxPriceTiers = 8
 
 // Bounds on a group's labels.
 const (
@@ -220,8 +223,13 @@ func (c *schemaCheck) model(v any, path string) {
 		}},
 		"prices": {Check: c.ArrayOf(0, 0, false, func(v any, path string) {
 			c.Object(v, path, map[string]schemacheck.Field{
-				"effective_from":  {Required: true, Check: c.StringMatching(datePattern, "a date, YYYY-MM-DD")},
-				"usd_per_million": {Required: true, Check: c.usdPerMillion},
+				"effective_from": {Required: true, Check: c.StringMatching(datePattern, "a date, YYYY-MM-DD")},
+				"tiers": {Required: true, Check: c.ArrayOf(1, maxPriceTiers, false, func(v any, path string) {
+					c.Object(v, path, map[string]schemacheck.Field{
+						"above_input_tokens": {Required: true, Check: c.IntegerAtLeast(0)},
+						"usd_per_million":    {Required: true, Check: c.usdPerMillion},
+					})
+				})},
 			})
 		})},
 	})
