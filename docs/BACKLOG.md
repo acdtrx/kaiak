@@ -198,6 +198,23 @@ Group entries under headings as themes emerge.
 
 ## Control plane
 
+- **Publish `kaiak-control` to a registry** — as `@acdtrx/kaiak-control`, so apps
+  install it instead of a submodule or `file:` checkout (`GUIDE.md` §3). Blocker: the
+  package ships `.ts` source and Node refuses to strip types under `node_modules`
+  (`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`), so it needs a `tsc` build to
+  `dist/` (JS + declarations, `rewriteRelativeImportExtensions`), with `exports`
+  pointing there and a `development` condition keeping the repo on source — a dated
+  amendment to `TECH-STACK.md`'s native-TypeScript, no-build choice. Also: drop
+  `private`, add `repository`, `homepage`, `engines`, `publishConfig.access: public`
+  (scoped packages default to restricted), a package README pointing to `GUIDE.md`;
+  the version follows the release tags (the library and the gateway must share the
+  protocol version); a publish job in `release.yml` on `vX.Y.Z`. Registry: npmjs.com
+  (installs with no setup; trusted publishing from GitHub Actions stores no token
+  and records provenance; needs an npm user or free organization named `acdtrx` to
+  own the scope) or GitHub Packages (scope must match the owner; installing needs a
+  GitHub token and an `.npmrc` line even for public packages). Revisit trigger: the
+  user decides — apps outside the repo are being built on it and asked for a
+  published package. (under consideration 2026-09-29)
 - **Per-instance gateway tokens** — one token per gateway (or per instance-name
   pattern) instead of the shared `KAIAK_CONTROL_TOKEN`, so the control plane can bind
   a caller to the instance IDs it may report under; today any token holder can report
