@@ -275,8 +275,9 @@ Replace this section with a compatibility policy when the project graduates.
   pipeline (auth → limits → routing → provider → accounting). No endpoint or fast path
   skips a stage; new cross-cutting behavior (caching, guardrails, prompt logging) is a
   new stage, never a special case inside a provider.
-- **Only provider packages talk to backends.** Nothing else opens a connection to a
-  model server or cloud API.
+- **Only named code talks to backends.** In the gateway, only provider packages open
+  a connection to a model server or cloud API. In `control/`, only `kaiak-control`'s
+  `backend-verify` does, and only when the app calls it (`docs/specs/BACKEND-VERIFY.md`).
 - **Passthrough preserves what it doesn't understand.** OpenAI-format requests going to
   an OpenAI-compatible backend are forwarded with the minimal edits the gateway owns
   (model name, output-limit defaults/ceiling, usage reporting flags); unknown fields

@@ -27,7 +27,7 @@ Group entries under headings as themes emerge.
   instead of declaring them. No backend reports the list today: llama-server's `/props`
   has only a yes/no (`chat_template_caps.supports_reasoning_effort`), vLLM and cloud
   APIs nothing. Efforts stay declared and remain the control plane's responsibility;
-  `verifyBackend` (`docs/plans/backend-verify/`) reports only that yes/no, as a hint.
+  `verifyBackend` (`docs/specs/BACKEND-VERIFY.md`) reports only that yes/no, as a hint.
   A heuristic over the chat template (`reasoning_effort`, `enable_thinking`, `<think>`)
   could guess more. Revisit trigger: a backend starts reporting its supported effort
   values, or operators keep getting efforts wrong at add time. (ruled 2026-09-29.)
@@ -37,8 +37,15 @@ Group entries under headings as themes emerge.
   OpenAI names. Revisit trigger: a deployed model needs a numeric effort that clients
   cannot send as it is. (ruled 2026-09-29.)
 - **llama-server specifics** — concurrency cap from its slot count (`/props`
-  `total_slots`; `verifyBackend` reads its metadata already). It works today as a plain OpenAI-compatible backend. Revisit trigger: the smaller
+  `total_slots`; `verifyBackend` already reads `/props`, not that field). It works
+  today as a plain OpenAI-compatible backend. Revisit trigger: the smaller
   llama-server deployment goes ahead.
+- **More from llama-server in `verifyBackend`** — router mode (one server, several
+  models; `/props?model=<name>` describes each — today `/props` is read only when the
+  list has one model) and the server's default sampling parameters
+  (`default_generation_settings.params`) as candidate model `defaults`. Revisit
+  trigger: a router-mode llama-server is deployed, or operators copy sampling
+  defaults by hand. (ruled 2026-09-29: out of the first `verifyBackend`.)
 - **Backend credentials in config** — the key value in config instead of an
   `api_key_env` naming a gateway environment variable. Gains: one place to manage
   keys, rotation by config push instead of a gateway rollout, gateways need only the
