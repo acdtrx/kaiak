@@ -82,8 +82,8 @@ The name reads the same both ways (the gateway carries traffic in both direction
   length, default sampling parameters, supported reasoning efforts, capabilities) —
   declared in config (`kaiak-control`'s `verifyBackend` fills it in from what the
   backend reports when the model is added; the gateway discovers nothing);
-  output-limit default and ceiling; prices (per usage unit, with an effective date);
-  which limit types apply.
+  output-limit default and ceiling; prices (per usage unit, with an effective date,
+  tiered by input size); which limit types apply.
 - **Key** — belongs to one **group**; hashed; can expire or be disabled. Keys are
   created by the control plane and reach the gateway as hashes in config. A key has
   **no limits of its own**: its usage counts toward its group and every ancestor.

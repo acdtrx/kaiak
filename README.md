@@ -21,7 +21,7 @@ a small sample control plane shows how.
 - **The contract** (`protocol/`): JSON Schemas and shared fixtures both halves test
   against.
 
-> **Status:** pre-1.0. Config format and protocol are at version 2. There is no
+> **Status:** pre-1.0. Config format and protocol are at version 3. There is no
 > backwards compatibility between versions yet: gateways and control plane upgrade
 > together.
 

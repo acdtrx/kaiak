@@ -394,6 +394,62 @@ func TestGatewayEndToEnd(t *testing.T) {
 	})
 }
 
+// TestTieredPrices: a model billed higher above 100 input tokens prices each request
+// at the tier its input size (tokens_in + tokens_cached) falls in, the whole request
+// at that tier; a request exactly at the threshold stays on the tier below.
+func TestTieredPrices(t *testing.T) {
+	backend := fakebackend.New()
+	defer backend.Close()
+	dir := t.TempDir()
+	configFile := filepath.Join(dir, "config.json")
+	evalKey, evalHash := newKey()
+	_, annHash := newKey()
+	cfg := testConfig(backend.URL(), evalHash, annHash, "")
+	cfg["models"].(map[string]any)["tiered"] = map[string]any{
+		"deployments": []any{map[string]any{"backend": "fake", "model": backendChatModel}},
+		"metadata": map[string]any{"context_length": 8192,
+			"capabilities": map[string]any{"streaming": true, "tools": false, "vision": false, "reasoning": false}},
+		"prices": []any{map[string]any{"effective_from": "2026-01-01", "tiers": []any{
+			map[string]any{"above_input_tokens": 0,
+				"usd_per_million": map[string]any{"tokens_in": 1, "tokens_cached": 0.5, "tokens_out": 2}},
+			map[string]any{"above_input_tokens": 100,
+				"usd_per_million": map[string]any{"tokens_in": 3, "tokens_cached": 1.5, "tokens_out": 6}},
+		}}},
+	}
+	writeJSON(t, configFile, cfg)
+	g := startGateway(t, configFile, "")
+
+	for _, c := range []struct {
+		name           string
+		prompt, cached int
+		want           float64 // cost_usd
+	}{
+		{"below the threshold", 50, 0, 0.00007},         // 50×1 + 10×2
+		{"exactly at the threshold", 100, 0, 0.00012},   // 100×1 + 10×2
+		{"above the threshold", 101, 0, 0.000363},       // 101×3 + 10×6
+		{"above with cached input", 101, 51, 0.0002865}, // 50×3 + 51×1.5 + 10×6
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			backend.SetReply(fakebackend.Reply{Usage: &fakebackend.Usage{
+				PromptTokens: c.prompt, CompletionTokens: 10, CachedTokens: c.cached}})
+			id := "e2e-tier-" + strings.ReplaceAll(c.name, " ", "-")
+			if r := g.post(t, "/v1/chat/completions", evalKey, id, chatBody("tiered", false, nil)); r.StatusCode != http.StatusOK {
+				t.Fatalf("status %d %s", r.StatusCode, r.body)
+			}
+			line := g.settled(t, id)
+			if line["tokens_in"] != float64(c.prompt-c.cached) || line["tokens_cached"] != float64(c.cached) ||
+				line["tokens_out"] != 10.0 || line["cost_usd"] != c.want {
+				t.Errorf("log line %v, want cost_usd %v", line, c.want)
+			}
+		})
+	}
+
+	usage := `{key_group="eval",root_group="research",key_id="k-eval",model="tiered",status="complete"}`
+	if got, want := g.metric(t, `kaiak_usage_cost_usd_total`+usage), 0.0008395; got != want {
+		t.Errorf("cost metric %v, want %v", got, want)
+	}
+}
+
 // lastRequest is the body of the last request the backend received.
 func lastRequest(t *testing.T, b *fakebackend.Backend) map[string]any {
 	t.Helper()

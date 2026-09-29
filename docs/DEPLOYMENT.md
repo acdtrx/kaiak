@@ -532,6 +532,18 @@ the document (a script, or the control plane) rather than editing it by hand.
   budget_unavailable`) once a control-plane outage passes
   `global.control_outage_grace_ms` (default 15 min) — keep the control plane up, and
   alert before the grace ends (Observability).
+  A model needs a second tier when its price sheet bills long prompts higher (gpt-5.4
+  and later: above 272k input tokens, the whole request at the higher rates); with one
+  tier, long prompts are under-priced and USD limits let them through too cheaply.
+  Each tier lists all its prices, and a request exactly at the threshold stays on the
+  tier below (`docs/specs/CONTROL-PROTOCOL.md`, Config → Tiered prices):
+
+  ```json
+  "prices": [{ "effective_from": "2026-03-01", "tiers": [
+    { "above_input_tokens": 0,      "usd_per_million": { "tokens_in": 2.5, "tokens_cached": 0.25, "tokens_out": 15 } },
+    { "above_input_tokens": 272000, "usd_per_million": { "tokens_in": 5,   "tokens_cached": 0.5,  "tokens_out": 22.5 } }
+  ] }]
+  ```
 - **Before go-live, run the live kit** against the real resource:
   `go -C scripts/live run . -kind azure-openai -base-url https://<resource>.openai.azure.com -model <deployment>`
   and check the provider's assumptions in the order `docs/testing/LIVE-BACKENDS.md`

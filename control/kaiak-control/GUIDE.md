@@ -3,7 +3,8 @@
 > For a coding agent (or a person) building the real kaiak control plane — the app with
 > the UI — in its own repository, on this library. Read it top to bottom before writing
 > code. Written 2026-09-26 against kaiak 0.6.0; brought to the group tree (config
-> format 2, protocol version 2) on 2026-09-27.
+> format 2, protocol version 2) on 2026-09-27; to tiered prices (config format 3,
+> protocol version 3) on 2026-09-29.
 >
 > Background, in this order: `docs/architecture/control-plane.html` (how gateways and a
 > control plane work together, with diagrams), `docs/specs/CONTROL-PROTOCOL.md` (the

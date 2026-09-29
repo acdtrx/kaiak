@@ -418,7 +418,7 @@ svg .band { stroke: none; }
   <li><strong>Output limit</strong>: each model has a default (injected when the client sets none) and a ceiling (requests above it are lowered).</li>
   <li><strong>Accounting</strong> reads the backend's usage report from the relayed response (the usage chunk is read even when withheld from a client that did not ask for it). Missing report → the record is flagged <code>estimated</code>; a response that stopped early → <code>partial</code>, billed for what was relayed.</li>
   <li><strong>One record per routed request</strong>, plus one per retried attempt that reached the backend and got no answer. Each carries the key's group path (<code>groups</code>, top-level first), so the control plane counts it toward every group on it. Requests refused before routing produce none.</li>
-  <li><strong>Units</strong>: <code>tokens_in</code> (uncached), <code>tokens_cached</code>, <code>tokens_out</code> (reasoning included), <code>tokens_reasoning</code> (visibility only). Cost is in nano-USD from the price table in force on the request's UTC date.</li>
+  <li><strong>Units</strong>: <code>tokens_in</code> (uncached), <code>tokens_cached</code>, <code>tokens_out</code> (reasoning included), <code>tokens_reasoning</code> (visibility only). Cost is in nano-USD from the price table entry in force on the request's UTC date, at the tier its input size (<code>tokens_in</code> + <code>tokens_cached</code>) falls in.</li>
   <li><strong>Metrics and usage records are separate paths.</strong> Metrics are cheap and approximate for dashboards; records are exact and idempotent for billing. Neither is derived from the other.</li>
 </ul>
 </section>
@@ -589,7 +589,7 @@ svg .band { stroke: none; }
   <!-- 4 meter, 5 sinks -->
   <rect x="560" y="240" width="200" height="60" rx="8" class="hot"/>
   <text x="660" y="263" text-anchor="middle" class="la">④ accounting meter</text>
-  <text x="660" y="283" text-anchor="middle" class="s">usage units map · prices per unit</text>
+  <text x="660" y="283" text-anchor="middle" class="s">usage units map · prices per unit and tier</text>
   <path d="M800,200 L700,200 L700,238" class="edge" marker-end="url(#x-a)"/>
   <text x="750" y="194" text-anchor="middle" class="s">events</text>
 
@@ -643,7 +643,7 @@ svg .band { stroke: none; }
     </tr>
     <tr>
       <td>④ Usage units</td>
-      <td><code>accounting.Units</code> (a map), <code>usd_per_million</code> per unit in config, the meter per endpoint</td>
+      <td><code>accounting.Units</code> (a map), <code>usd_per_million</code> per unit in each price tier in config, the meter per endpoint</td>
       <td><code>tokens_in</code>, <code>tokens_cached</code>, <code>tokens_out</code>, <code>tokens_reasoning</code></td>
       <td><code>images</code>, <code>audio_seconds</code>, <code>characters</code> for <code>/v1/images/generations</code>, <code>/v1/audio/*</code></td>
       <td>New price units in the schema, the meter's reading of those responses, and limit types that count them. Job-queue image APIs (ComfyUI-style) need a separate adapter.</td>
@@ -754,7 +754,7 @@ svg .band { stroke: none; }
 </section>
 
 <footer>
-  Overview only — the contracts are in <code>docs/specs/GATEWAY.md</code> and <code>docs/specs/CONTROL-PROTOCOL.md</code>, the package-level detail in <code>docs/ARCHITECTURE.md</code>, operations in <code>docs/DEPLOYMENT.md</code>. Written 2026-09-26 against 0.6.0; describes the group tree with the 2026-09-27 review's fixes (after 0.7.1). Continue with <a href="control-plane.html">gateway ↔ control plane</a>.
+  Overview only — the contracts are in <code>docs/specs/GATEWAY.md</code> and <code>docs/specs/CONTROL-PROTOCOL.md</code>, the package-level detail in <code>docs/ARCHITECTURE.md</code>, operations in <code>docs/DEPLOYMENT.md</code>. Written 2026-09-26 against 0.6.0; describes the group tree with the 2026-09-27 review's fixes (after 0.7.1) and tiered prices (2026-09-29). Continue with <a href="control-plane.html">gateway ↔ control plane</a>.
 </footer>
 </main>
 </body>

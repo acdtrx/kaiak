@@ -127,3 +127,12 @@ cross-half e2e and sample configs stay red until step 4.
 - Gateway e2e: a request above the threshold of a two-tier model settles at the upper
   tier's cost; one below, at the base tier's cost.
 - `scripts/check-all.sh` green at the end of the phase.
+
+**Verification status:** done (2026-09-29); phase 1 green.
+
+- [x] Tier selection at the edges, cached input, estimated records, one tier as the
+  flat arithmetic (`STEP-3-gateway.md`; kaiak-control in `STEP-2-kaiak-control.md`).
+- [x] Shared fixtures, same codes from both halves (`STEP-1-contract.md`, steps 2–3).
+- [x] Gateway e2e: below, exactly at and above the threshold, and cached input
+  above it, settle at their tiers' costs (`STEP-4-e2e-and-docs.md`).
+- [x] `scripts/check-all.sh` green 3× in a row (`STEP-4-e2e-and-docs.md`).
