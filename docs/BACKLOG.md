@@ -254,3 +254,25 @@ Group entries under headings as themes emerge.
   loop the protocol plugin shares (2026-09-27 review, R7). Sample only. Fix: index
   children and keys by parent once per render. Revisit trigger: the sample used with
   thousands of groups.
+
+## Observability
+
+- **Config size and load-time metrics** — measure config loading in production before
+  optimizing it for large deployments (20+ models, 30+ backends, 3–7k keys). Today
+  the gateway counts loads (`kaiak_config_loads_total`), stamps the last apply
+  (`kaiak_config_last_applied_timestamp_seconds`) and logs backend, model and key
+  counts on `config applied` — nothing says how large a config is or how long it
+  took. Wanted:
+  - the applied config's size in bytes (a gauge, and on the `config applied` /
+    `config rejected` log lines);
+  - apply duration per trigger — parse, schema and semantic checks, snapshot build
+    (`config.Applier.apply`);
+  - the limiter's resync, timed on its own: `limits.Limiter.sync` runs inside the
+    first `Reserve` after a swap, under the limiter lock, so every request waits
+    for it — the cost requests actually feel, and one an apply timer misses;
+  - on the control side, if wanted: `publishConfig`'s validation and resolution
+    time and the encoded snapshot size (every gateway receives it; the gateway
+    refuses a snapshot over 16 MiB).
+  Revisit trigger: before the first production run with a large config — build
+  the metrics, run, and decide on optimization from the numbers. (ruled 2026-09-30:
+  measure first; not built yet.)
