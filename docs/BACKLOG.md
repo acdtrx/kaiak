@@ -86,6 +86,32 @@ Group entries under headings as themes emerge.
 - **Cloud workload identity** — AWS IRSA / Pod Identity, Azure managed identity instead
   of static keys. Revisit trigger: static credentials are not allowed in the target
   cluster.
+- **llama-server quirks** — behaviours of llama-server that break what the gateway
+  assumes of a backend, for the `llama-server` backend module (2026-09-30 review,
+  L1–L3; all reproduced live):
+  - *Multi-sequence usage* (L1): for a `/v1/completions` `prompt` list (several
+    prompts in one request, each answered separately) llama-server's `usage` counts
+    one prompt, and for `n` > 1 (several alternative answers) one choice; the gateway
+    settles limits, budgets and records from that report — up to 1/16 or 1/`max_n`
+    of what ran. Fix: refuse prompt lists and `n` > 1 on llama-server, or floor the
+    usage at the gateway's own figures and flag the record `estimated`.
+  - *Own parameter names* (L2): llama-server reads `n_predict` before
+    `max_completion_tokens`/`max_tokens` and `n_cmpl` before `n` (and, on
+    `/v1/completions`, `max_completion_tokens` before `max_tokens`), so a client
+    passes the output ceiling, the `-1` refusal, `max_n` and the reservation. Fix: own
+    those names (check, lower, reserve) or refuse them.
+  - *Client errors answered 500* (L3): llama-server answers `500 server_error` to
+    every internal exception except `invalid_argument` (`tools/server/server.cpp`),
+    including a `response_format` schema its grammar converter cannot handle; five
+    such requests open the circuit for every key, and one per probe interval keeps it
+    open, billed $0. Fix: treat a llama-server `500` as the client's error (relayed,
+    not retried, not a circuit failure); a dead server still opens the circuit
+    through refused connections, timeouts and 502/503/504.
+  Until then: `global.max_n: 1` and `max_sequences_per_request: 1` refuse prompt lists
+  and `n` > 1 on every backend (not `n_cmpl`). Revisit trigger: llama-server serves a
+  priced or limited model to clients that are not fully trusted, or a circuit opens
+  on a llama-server model without the server being down. (ruled 2026-09-30: deferred;
+  the `llama-server` type comes first.)
 
 ## Pipeline stages
 
