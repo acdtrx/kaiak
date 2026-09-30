@@ -22,6 +22,10 @@
   itself in a `Kaiak-Instance` header. TLS vouches for the control plane and is
   expected outside local runs; tokens never go in URLs. What a token holder can do:
   Control-plane processes → Trust model.
+- **No redirects** (settled 2026-10-01): the gateway does not follow a redirect from
+  the control URL — Go resends the token to a redirect target with the same host name
+  whatever its port or scheme — and logs the 3xx as an error;
+  `KAIAK_CONTROL_URL` must be the address that answers.
 - **Protocol version** travels as a `Kaiak-Protocol` header on every request and
   response (the SSE stream's response included); the current version is `3`
   (settled 2026-09-29, with tiered prices).

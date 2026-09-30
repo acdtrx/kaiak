@@ -86,7 +86,8 @@ func (c *Client) post(ctx context.Context, path, instance string, body []byte, w
 }
 
 // send adds the token, the protocol version and the instance to req, sends it, and
-// refuses an answer that does not carry the protocol version this gateway speaks.
+// refuses a redirect (not followed: defaultHTTPClient) and an answer that does not
+// carry the protocol version this gateway speaks.
 func (c *Client) send(req *http.Request, instance string) (*http.Response, error) {
 	req.Header.Set("Authorization", "Bearer "+c.opts.Token)
 	req.Header.Set(headerProtocol, protocolHeaderValue)
@@ -94,6 +95,11 @@ func (c *Client) send(req *http.Request, instance string) (*http.Response, error
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, err
+	}
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		resp.Body.Close()
+		return nil, fmt.Errorf("control plane answered %d, a redirect: redirects are not followed, "+
+			"so KAIAK_CONTROL_URL must be the address that answers", resp.StatusCode)
 	}
 	if got := resp.Header.Values(headerProtocol); len(got) != 1 || got[0] != protocolHeaderValue {
 		resp.Body.Close()

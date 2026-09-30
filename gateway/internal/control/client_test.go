@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -977,6 +978,35 @@ func TestControlPlaneAnswersHaveAHeaderTimeout(t *testing.T) {
 	transport, ok := c.Transport.(*http.Transport)
 	if !ok || transport.ResponseHeaderTimeout != responseHeaderTimeout || c.Timeout != 0 {
 		t.Errorf("default client %+v", c)
+	}
+}
+
+func TestRedirectsAreNotFollowedWithTheToken(t *testing.T) {
+	var reached atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	defer redirector.Close()
+	u, err := url.Parse(redirector.URL + "/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h := newHarness(t)
+	c := h.client(func(o *Options) { o.URL = u })
+	if err := c.Boot(context.Background()); err == nil {
+		t.Fatal("Boot applied a config through a redirect")
+	}
+	if n := reached.Load(); n != 0 {
+		t.Errorf("the redirect target was reached %d times", n)
+	}
+	if out := h.logs.String(); !strings.Contains(out, "control plane answered 307, a redirect") {
+		t.Errorf("the redirect is not named in the log:\n%s", out)
 	}
 }
 

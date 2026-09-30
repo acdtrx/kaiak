@@ -59,12 +59,16 @@ const (
 const responseHeaderTimeout = 30 * time.Second
 
 // defaultHTTPClient is the client for control-plane requests: no overall timeout
-// (the stream is long-lived; each request is bounded by its context), and no answer
-// may take longer than responseHeaderTimeout to start.
+// (the stream is long-lived; each request is bounded by its context), no answer may
+// take longer than responseHeaderTimeout to start, and redirects are not followed —
+// Go resends Authorization to a redirect target with the same host name whatever its
+// port or scheme, so following one could hand the token to another service, or send
+// it in clear after an https→http redirect.
 func defaultHTTPClient() *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ResponseHeaderTimeout = responseHeaderTimeout
-	return &http.Client{Transport: transport}
+	return &http.Client{Transport: transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
 
 // snapshotTimeout bounds one GET /v1/config after boot, so a control plane that
