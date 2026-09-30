@@ -179,7 +179,8 @@ still open), and the process exits 0.
 
 - **`terminationGracePeriodSeconds` ≥ grace + drain timeout + 10 s**: 75 s at the
   defaults. The Kubernetes default of 30 s kills long streams mid-drain and skips
-  the flush.
+  the flush. Docker and Compose have the same limit under another name, with a 10 s
+  default: `docker run --stop-timeout 75`, `stop_grace_period: 75s` in Compose.
 - **Size the drain timeout to the longest request a rollout should let finish, plus
   the reserve.** A thinking model streaming 16k tokens at 30 tokens/s runs about 9
   minutes; a non-stream request can run up to its backend's `response_timeout_ms`

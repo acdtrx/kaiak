@@ -194,13 +194,13 @@ Two images, for `linux/amd64` and `linux/arm64`, published with every release:
   and no volume.
 - `ghcr.io/acdtrx/kaiak-sample`: the sample control plane.
 
-Tags are the release version (`0.7.4`) and `latest` for the newest stable release.
+Tags are the release version (`0.8.0`) and `latest` for the newest stable release.
 To build your own: `scripts/build-images.sh --repo <registry/namespace> [--push]`
 (`--push` pushes only after `scripts/smoke-images.sh` has run both images end to end).
 
 ```sh
 # the gateway in file mode: mount the config's directory read-only
-docker run -d --name kaiak --read-only -p 8080:8080 -p 9090:9090 \
+docker run -d --name kaiak --read-only --stop-timeout 75 -p 8080:8080 -p 9090:9090 \
   -v "$PWD/kaiak-config:/config:ro" -e KAIAK_CONFIG_FILE=/config/config.json \
   -e AZURE_SWEDENCENTRAL_API_KEY -e VLLM_EMBED_API_KEY \
   ghcr.io/acdtrx/kaiak:latest
@@ -210,14 +210,22 @@ docker network create kaiak
 docker run -d --name kaiak-sample --network kaiak -p 8090:8090 \
   -v "$PWD/kaiak-config:/config:ro" -e KAIAK_SAMPLE_CONFIG=/config/config.json \
   -e KAIAK_CONTROL_TOKEN=change-me ghcr.io/acdtrx/kaiak-sample:latest
-docker run -d --name kaiak-gw-1 --read-only --network kaiak -p 8080:8080 -p 9090:9090 \
+docker run -d --name kaiak-gw-1 --read-only --stop-timeout 75 --network kaiak \
+  -p 8080:8080 -p 9090:9090 \
   -e KAIAK_CONTROL_URL=http://kaiak-sample:8090 -e KAIAK_CONTROL_TOKEN=change-me \
+  -e AZURE_SWEDENCENTRAL_API_KEY -e VLLM_EMBED_API_KEY \
   ghcr.io/acdtrx/kaiak:latest
 
 # mint a key with the sample image, no local Node needed
 docker run --rm ghcr.io/acdtrx/kaiak-sample:latest \
   node sample/src/keygen-cli.ts --id k-me --group alice
 ```
+
+The gateway reads the backends' API keys from its own environment in both modes: the
+control plane publishes only the variable names. `--stop-timeout 75` gives the drain
+its time at the defaults — `docker stop` otherwise kills the gateway after 10 s,
+cutting requests still running and losing their usage (`docs/DEPLOYMENT.md`,
+Draining).
 
 Production (replicas, probes, drain timing, sizing, alerts):
 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
