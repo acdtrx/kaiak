@@ -14,8 +14,8 @@ Six read-only reviewers, each on its own detached worktree at `v0.8.0`:
 - **[O]** daily operations (the docs followed as written, a real run with fake
   localhost backends).
 
-A plain copy for an independent review is at `/tmp/kaiak`; its findings, if any, join
-this file as **[B]**.
+An independent review of a plain copy joins this file as **[B]** (Independent review,
+below; its report is `AUDIT-independent.md`).
 
 Every finding is tagged by frequency under legitimate use: `daily` / `occasional` /
 `rare` / `adversarial`. The main session re-checked the key claims against the code:
@@ -107,6 +107,20 @@ by earlier audits has regressed; the 2026-09-27 R1 and R3 are confirmed fixed (2
 
 No flaky tests in 3× runs of each half. Slowest: `e2e` ~58 s (TestControlModeEndToEnd
 12 s, TestSharedLimitsAcrossGateways 10 s, TestMinimalControlPlaneSetup 10 s).
+
+### Independent review [B]
+
+Run on a plain copy of `main` at `627ebfc` (2026-10-01: v0.8.0 plus C5, O2, O3 and the
+backend types), report in `AUDIT-independent.md`. Every reproduction was re-run by the
+main session and failed as reported, and each mechanism was checked in the code.
+Its baseline passed except staticcheck, which it could not download offline.
+
+| # | Finding | Freq | Sev |
+|---|---|---|---|
+| B1 | **A control-plane `4xx` with code `request-invalid` sets a usage batch aside, whatever the status.** The gateway decides by code alone (`control/usage.go:402`, `batchRefusals[refused.code]`); `kaiak-control`'s Fastify error handler maps every `4xx` it did not produce itself to `request-invalid` (`fastify/index.ts:102`). So a host's own hook answering `429` (throttling) or `401` (its auth) makes the gateway drop the batch — kept only with a data directory — where the spec allows setting aside only on `400`/`413` with those codes (`CONTROL-PROTOCOL.md`, Sending). Reproduced: `429 request-invalid` → batch 1 set aside, batch 2 acked. Fix: the gateway requires the documented status and code; the adapter keeps `request-invalid` for its own body checks. | occasional (hosts adding hooks) | medium (usage lost) |
+| B2 | **A failed carry-over write commits the config and loses the spend** — the same root as C4: publishing stores and announces the version before the carried totals are written (`config-versions/index.ts:73-75`, `usage/index.ts:242`), and a retry compares against the already-committed model set, so nothing carries. Reproduced with an injected store failure: $100 spent, version 2 live, carry `[]` after the retry. Fix C4 and B2 together: carry-over and publish as one step, or the carry made before the version is announced. | rare | medium |
+| B3 | **A status report over 64 KiB is refused, so that gateway never joins the live set** (`fastify/index.ts:40`); every deployment is in the status (`cmd/kaiak/main.go:694-712`) and nothing in the config bounds their number. 30 backends × 20 models (600 deployments) gives ~88 KiB; the bound falls near 450 deployments. With no live gateway counted, each gateway enforces the whole per-minute limit and backend cap instead of its share (`limits/shared.go:69`). Reproduced through the real adapter and the gateway's status builder. Related to C1 (config size) and the config-size metrics in `docs/BACKLOG.md`. | daily, once a config has ~450+ deployments | medium (shares wrong fleet-wide, status lost) |
+| B4 | **The memory store hands out its stored config, not a copy** (`storage/memory.ts:48`, `configsAfter` likewise; `saveConfig` copies): a host that edits `currentConfig()` before publishing changes the active config even when the publish is then refused. Reproduced: a rejected edit left `requests_per_minute: -1` active at version 1. Fix: copy on read, as on write. | occasional (library hosts) | medium |
 
 ### Minor and by design (recorded only)
 
