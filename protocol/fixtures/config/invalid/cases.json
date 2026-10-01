@@ -45,7 +45,7 @@
   },
   "backend-type-unknown.json": {
     "kind": "schema",
-    "reason": "backend type must be openai-compatible or azure-openai"
+    "reason": "backend type must be openai-compatible, openai, azure-openai, vllm or llama-server"
   },
   "backends-as-array.json": {
     "kind": "schema",
@@ -444,6 +444,10 @@
   "model-retries-empty.json": {
     "kind": "schema",
     "reason": "a model's retries override sets max_attempts"
+  },
+  "openai-without-api-key-env.json": {
+    "kind": "schema",
+    "reason": "openai backends need api_key_env"
   },
   "output-limit-above-context.json": {
     "kind": "semantic",

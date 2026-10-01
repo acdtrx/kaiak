@@ -204,16 +204,16 @@
       "required": ["type", "base_url"],
       "properties": {
         "type": {
-          "description": "openai-compatible: vLLM, llama-server, SGLang, OpenAI. azure-openai: Azure's OpenAI-compatible /openai/v1/ API.",
-          "enum": ["openai-compatible", "azure-openai"]
+          "description": "The server, which picks the gateway's module for it: openai (OpenAI's API), azure-openai (Azure's OpenAI-compatible /openai/v1/ API), vllm, llama-server (llama.cpp), or openai-compatible for any other server speaking the OpenAI format (SGLang, …). openai and azure-openai run every request on the standard service tier; the others pass the client's service_tier untouched (docs/specs/GATEWAY.md, Providers).",
+          "enum": ["openai-compatible", "openai", "azure-openai", "vllm", "llama-server"]
         },
         "base_url": {
-          "description": "openai-compatible: the base URL an OpenAI client would use, API version path included (e.g. http://vllm:8000/v1); the gateway appends the endpoint path (/chat/completions). azure-openai: the resource endpoint (e.g. https://my-resource.openai.azure.com); the gateway appends /openai/v1/. No credentials (user:password@ — provider secrets travel only through api_key_env), trailing slash, query or fragment.",
+          "description": "openai-compatible, openai, vllm, llama-server: the base URL an OpenAI client would use, API version path included (e.g. http://vllm:8000/v1); the gateway appends the endpoint path (/chat/completions). azure-openai: the resource endpoint (e.g. https://my-resource.openai.azure.com); the gateway appends /openai/v1/. No credentials (user:password@ — provider secrets travel only through api_key_env), trailing slash, query or fragment.",
           "type": "string",
           "pattern": "^https?://[^/\\s?#@]+(/[^\\s?#]*[^/\\s?#])?$"
         },
         "api_key_env": {
-          "description": "Name of the environment variable holding the backend's API key. Omitted = unauthenticated (self-hosted backends only; required for azure-openai). Names starting with KAIAK_ are refused: they hold the gateway's own settings and tokens, which must never be sent to a backend.",
+          "description": "Name of the environment variable holding the backend's API key. Omitted = unauthenticated (self-hosted backends only; required for openai and azure-openai). Names starting with KAIAK_ are refused: they hold the gateway's own settings and tokens, which must never be sent to a backend.",
           "type": "string",
           "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
           "not": { "type": "string", "pattern": "^KAIAK_" }
@@ -254,7 +254,7 @@
         }
       },
       "if": {
-        "properties": { "type": { "const": "azure-openai" } },
+        "properties": { "type": { "enum": ["openai", "azure-openai"] } },
         "required": ["type"]
       },
       "then": { "required": ["api_key_env"] }

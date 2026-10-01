@@ -211,11 +211,16 @@ own, and a client sending repeats is broken either way.
 
 ## Providers (v1)
 
-- **openai-compatible** — vLLM, llama-server, SGLang, OpenAI. Streaming requests get
-  `stream_options.include_usage` set so the final chunk reports tokens.
-- **azure-openai** — Azure's OpenAI-compatible `/openai/v1/` API: the same wire format
-  and model naming, `api-key` header auth, no `api-version`. The classic
-  deployment-in-URL API is not supported.
+- **Backend types**, one per server, all speaking the OpenAI wire format (streaming
+  requests get `stream_options.include_usage` set so the final chunk reports tokens):
+  - **openai** — OpenAI's API.
+  - **azure-openai** — Azure's OpenAI-compatible `/openai/v1/` API: the same wire
+    format and model naming, `api-key` header auth, no `api-version`. The classic
+    deployment-in-URL API is not supported.
+  - **vllm** — vLLM.
+  - **llama-server** — llama.cpp's server.
+  - **openai-compatible** — the generic type: any other server speaking the OpenAI
+    format (SGLang, …). It carries no server's own rules.
 - **A module per backend type over one OpenAI wire core** (settled 2026-09-29): each
   backend type is a module that is the provider for that type — its URL layout,
   credential, body edits, what its models list says, which error code means a
@@ -223,26 +228,40 @@ own, and a client sending repeats is broken either way.
   format has in common: body editing, sending, streaming, usage, timeouts, error
   mapping, reading a models list. The core is not a provider, knows no backend type
   and reads no per-type flags; the registry's choice of module is the one place a
-  type is named. A new backend type (a separate `openai` or `vllm`) is added only
-  when a real difference needs one: a type is a config and protocol change. Rejected:
-  one provider reading a per-type description — the shared code still branched on
-  flags that were one type's behavior; a full provider per type — it would copy the
-  core, where nearly all the complexity is.
-- **Base URLs** (settled 2026-09-24): an openai-compatible `base_url` is what an
-  OpenAI client would use, API version path included (`http://vllm:8000/v1`); the
-  gateway appends the endpoint path (`/chat/completions`, …). An azure-openai
-  `base_url` is the resource endpoint (`https://<resource>.openai.azure.com`); the
-  gateway appends `/openai/v1/` and the endpoint path.
+  type is named. Rejected: one provider reading a per-type description — the shared
+  code still branched on flags that were one type's behavior; a full provider per
+  type — it would copy the core, where nearly all the complexity is.
+- **A type per server** (settled 2026-09-30): each server kind the gateway knows has
+  its own type and module, even while its module behaves as `openai-compatible`
+  does; `openai-compatible` is left for servers without one. A module is
+  self-contained over the wire core — no module embeds another or reads another's
+  type — so a fix for one server never reaches another. Replaces the 2026-09-29 rule
+  that a new type is added only when a real difference needs one: with vLLM,
+  llama-server and OpenAI under one type, a rule meant for one server landed on all
+  (OpenAI's service tier reached every self-hosted server), and a fix for one had
+  nowhere to go — the 2026-09-30 review found three (llama-server's usage and error
+  quirks, `docs/BACKLOG.md`). Rejected: keeping one type until a difference needs
+  its own — the differences were already there, and a fix made inside the generic
+  module reaches every server under it. Adding a type changes neither the config
+  format nor the protocol version (`CONTROL-PROTOCOL.md`, Config → Backend types).
+- **Base URLs** (settled 2026-09-24): an `openai-compatible`, `openai`, `vllm` or
+  `llama-server` `base_url` is what an OpenAI client would use, API version path
+  included (`http://vllm:8000/v1`, `https://api.openai.com/v1` — no type has a default
+  URL); the gateway appends the endpoint path (`/chat/completions`, …). An
+  azure-openai `base_url` is the resource endpoint
+  (`https://<resource>.openai.azure.com`); the gateway appends `/openai/v1/` and the
+  endpoint path.
 - Credentials are referenced by environment-variable name in config, never inline:
-  openai-compatible sends `Authorization: Bearer <value>` (nothing when the backend has
-  no `api_key_env`), azure-openai sends `api-key: <value>`. An `api_key_env` starting
-  with `KAIAK_` is refused by the schema, both halves (settled 2026-09-25, N-S2):
-  those variables hold the gateway's own settings and tokens
-  (`KAIAK_CONTROL_TOKEN`, `KAIAK_METRICS_TOKEN`), and a backend credential is sent to
-  the backend's URL — which the config author chooses, and the background model
-  check calls with no client request. The provider refuses such a name again where
-  it reads the credential (settled 2026-09-25, the independent audit's finding 1:
-  a config repeating `backends` hid one from the schema): a backend naming a
+  azure-openai sends `api-key: <value>`, every other type `Authorization: Bearer
+  <value>` (nothing when the backend has no `api_key_env`). `openai` and
+  `azure-openai` require `api_key_env` (schema, both halves): neither answers without
+  a key. An `api_key_env` starting with `KAIAK_` is refused by the schema, both halves
+  (settled 2026-09-25, N-S2): those variables hold the gateway's own settings and
+  tokens (`KAIAK_CONTROL_TOKEN`, `KAIAK_METRICS_TOKEN`), and a backend credential is
+  sent to the backend's URL — which the config author chooses, and the background
+  model check calls with no client request. The provider refuses such a name again
+  where it reads the credential (settled 2026-09-25, the independent audit's finding
+  1: a config repeating `backends` hid one from the schema): a backend naming a
   `KAIAK_` variable gets no credential at all, so the value never leaves.
 - **Backend model names** (settled 2026-09-25, E12): a deployment's `model` is the
   model name in the backend's own naming (`backend_model_name`: 1 to 512 printable
@@ -260,29 +279,34 @@ own, and a client sending repeats is broken either way.
   events already in the client's format; relaying and observing those events is the
   pipeline's job, the same for every provider.
 - **Passthrough edits** (settled 2026-09-24) are the only changes to the client's
-  body: `model` becomes the deployment's model name; `service_tier` becomes
-  `"default"` (Service tier, below); a stream whose client did not set
-  `stream_options.include_usage: true` gets it set (other `stream_options` members
-  kept); declared defaults and the output limit are set as the Model metadata and
-  Limits sections say. Edits splice the owned
-  values into the raw bytes — every other byte (unknown fields, their values, key
-  order, whitespace) reaches the backend unchanged. Each owned key is edited once: a
-  body repeating a top-level member never gets here (Request pipeline → duplicate
-  members), and the editor refuses a repeated key it edits as a gateway fault
-  (settled 2026-09-25).
-- **Service tier** (settled 2026-09-29): every request runs on the backend's
-  standard tier. Prices are standard-tier rates, and OpenAI and Azure bill priority
-  processing at about twice that (flex at half), so a client choosing its tier would
-  spend budgets at a rate its records do not show. A `service_tier` the client sent
-  becomes `"default"`, on every backend and endpoint, and every chat completions
-  request carries `"service_tier": "default"` even when the client sent none: an
-  absent tier (`auto`) means the deployment's own setting on Azure (which may be
-  priority) and the project's on OpenAI. Servers that do not define the field
-  (vLLM, llama-server) ignore it. Completions and embeddings requests without one are
-  left without one: OpenAI refuses a parameter an endpoint does not define.
-  `service_tier` cannot be a model default. Rejected: removing the client's field
-  (`auto` again); adding it on every endpoint (OpenAI's completions and embeddings
-  would refuse it); Azure's
+  body: `model` becomes the deployment's model name; on `openai` and `azure-openai`,
+  `service_tier` becomes `"default"` (Service tier, below); a stream whose client did
+  not set `stream_options.include_usage: true` gets it set (other `stream_options`
+  members kept); declared defaults and the output limit are set as the Model metadata
+  and Limits sections say. Edits splice the owned values into the raw bytes — every
+  other byte (unknown fields, their values, key order, whitespace) reaches the backend
+  unchanged. Each owned key is edited once: a body repeating a top-level member never
+  gets here (Request pipeline → duplicate members), and the editor refuses a repeated
+  key it edits as a gateway fault (settled 2026-09-25).
+- **Service tier** (settled 2026-09-29; by type 2026-09-30): on `openai` and
+  `azure-openai`, every request runs on the backend's standard tier. Prices are
+  standard-tier rates, and OpenAI and Azure bill priority processing at about twice
+  that (flex at half), so a client choosing its tier would spend budgets at a rate
+  its records do not show. A `service_tier` the client sent becomes `"default"`, on
+  every endpoint, and every chat completions request carries
+  `"service_tier": "default"` even when the client sent none: an absent tier (`auto`)
+  means the deployment's own setting on Azure (which may be priority) and the
+  project's on OpenAI. Completions and embeddings requests without one are left
+  without one: OpenAI refuses a parameter an endpoint does not define.
+  `openai-compatible`, `vllm` and `llama-server` pass the client's `service_tier`
+  untouched and add none (settled 2026-09-30): no tier is billed there, and a strict
+  server that refuses unknown fields would refuse one it did not ask for. An OpenAI
+  backend configured as `openai-compatible` therefore runs on the tier the client
+  asks for, or the project's — OpenAI takes the `openai` type. `service_tier` cannot
+  be a model default. Rejected: forcing the tier on `openai-compatible` too, for
+  OpenAI backends left under the generic type — the generic type would carry one
+  server's rule to every other; removing the client's field (`auto` again); adding it
+  on every endpoint (OpenAI's completions and embeddings would refuse it); Azure's
   `x-ms-service-tier` header (one body edit covers both backends; client headers are
   never forwarded, so a client cannot send it either); pricing the tier the response
   reports — per-tier price tables and a rule for who may ask for priority, not built
@@ -364,9 +388,9 @@ own, and a client sending repeats is broken either way.
   (`{"error": {"message", "code"}}` — OpenAI, vLLM; `{"message", "code"}` — older
   vLLM; `{"error": "<text>"}` — Ollama): the message names the deployment's
   backend-side model as a whole word (vLLM: ``The model `…` does not exist.``), or
-  the code is the backend module's: `model_not_found` (openai-compatible), or
-  `DeploymentNotFound` or `model_not_found` (azure-openai, whose v1 API is OpenAI's
-  shape). Any other
+  the code is the backend module's: `model_not_found` (`openai-compatible`, `openai`,
+  `vllm`, `llama-server`), or `DeploymentNotFound` or `model_not_found`
+  (`azure-openai`, whose v1 API is OpenAI's shape). Any other
   `404` stays the caller's and is relayed as it came. The probe checks the model too
   (Routing and reliability → Circuit mechanics), and every applied config is checked
   once in the background: each backend's models list is fetched (up to 8 backends at
@@ -627,16 +651,16 @@ own, and a client sending repeats is broken either way.
     half-open while the models list answers, and opens again when it stops. The prober stops once no circuit of the backend is open or half-open
     (trials closed them, a reload dropped them), and at shutdown (after the drain,
     so probes can still half-open circuits for queued requests).
-  - The probe: `GET` on the models list (`<base_url>/models` for openai-compatible,
-    `<base_url>/openai/v1/models` for azure-openai) with the backend's credential,
-    over the backend's connection pool, bounded by its connect timeout plus 5 s.
-    Success is a `2xx` carrying an OpenAI models list (settled 2026-09-25, H8); a
-    circuit goes half-open only when the list has its deployment's backend-side
+  - The probe: `GET` on the models list (`<base_url>/openai/v1/models` for
+    azure-openai, `<base_url>/models` for every other type) with the backend's
+    credential, over the backend's connection pool, bounded by its connect timeout
+    plus 5 s. Success is a `2xx` carrying an OpenAI models list (settled 2026-09-25,
+    H8); a circuit goes half-open only when the list has its deployment's backend-side
     model among `data[*].id` — one whose model is missing stays open while the
     backend's others go half-open, its prober keeps probing, and the first such probe
     logs `circuit kept open: the backend does not list the deployment's model` (warn).
-    An azure-openai list names models, not the deployment names requests carry, so
-    it is not checked there.
+    An azure-openai list names models, not the deployment names requests carry, so it
+    is not checked there.
   - A probe is an invocable mechanism (`ProbeNow`, with the trigger that invoked it);
     the prober's timer is its trigger `interval`. A probe cut short by shutdown is
     neither counted nor logged.

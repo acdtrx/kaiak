@@ -390,8 +390,9 @@ the `{ error, detail }` body, `error` being the stable code:
   `max_tokens`, `max_completion_tokens`, `n`, `best_of`, `service_tier`) are refused
   there — the output limit is set through `output_limit`, `n`/`best_of` multiply the
   output reservation, so only the client sets them (settled 2026-09-25, H10), and the
-  service tier is always standard (`GATEWAY.md`, Providers → Service tier; settled
-  2026-09-29). **Numbers in `defaults` must fit a JavaScript number**
+  service tier is the gateway's on `openai` and `azure-openai` and the client's on
+  every other type (`GATEWAY.md`, Providers → Service tier; settled 2026-09-29, by
+  type 2026-09-30). **Numbers in `defaults` must fit a JavaScript number**
   (settled 2026-09-25): `kaiak-control` holds the document as JavaScript values, so a
   number past the double range (`1e400`, at any depth) is refused by both halves — it
   would become `Infinity`, which JSON cannot carry back — and a number with more
@@ -412,6 +413,17 @@ the `{ error, detail }` body, `error` being the stable code:
   (`/models/qwen3-embedding-0.6b-q8_0.gguf`) included. ASCII keeps the byte and
   character counts equal in both halves and the names safe in logs and metric
   labels; a name outside it gets an alias on the backend (llama-server `--alias`).
+- **Backend types** (settled 2026-09-30): a backend's `type` is one of
+  `openai-compatible` (the generic type), `openai`, `azure-openai`, `vllm`,
+  `llama-server` — what each does: `GATEWAY.md`, Providers. `openai` and
+  `azure-openai` require `api_key_env`. **The versions stay** (settled 2026-10-01):
+  config `format_version` 3 and protocol version 3. Adding types is additive — every
+  format-3 config stays valid — and a gateway that does not know a type rejects the
+  config with a schema error, which the control plane sees like any rejection; no
+  protocol message changes. A bump would not catch an OpenAI backend left as
+  `openai-compatible` either: the operator edits the number, not the type. Rejected:
+  format 4 and protocol 4 — churn across every fixture and the last-known-good format
+  for no check that helps.
 - **`api_key_env`** names an environment variable (`^[A-Za-z_][A-Za-z0-9_]*$`) that
   does not start with `KAIAK_` (settled 2026-09-25, N-S2): the gateway's own tokens
   live there, and a config author could otherwise have them sent to any backend URL.

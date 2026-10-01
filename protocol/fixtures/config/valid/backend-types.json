@@ -1,0 +1,41 @@
+{
+  "format_version": 3,
+  "global": {},
+  "backends": {
+    "generic": { "type": "openai-compatible", "base_url": "http://sglang:30000/v1" },
+    "openai": {
+      "type": "openai",
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY"
+    },
+    "azure": {
+      "type": "azure-openai",
+      "base_url": "https://my-resource.openai.azure.com",
+      "api_key_env": "AZURE_OPENAI_API_KEY"
+    },
+    "vllm": { "type": "vllm", "base_url": "http://vllm:8000/v1" },
+    "llama": { "type": "llama-server", "base_url": "http://llama:8080/v1", "max_in_flight": 4 }
+  },
+  "models": {
+    "chat": {
+      "deployments": [
+        { "backend": "generic", "model": "org/chat-model" },
+        { "backend": "openai", "model": "gpt-chat" },
+        { "backend": "azure", "model": "chat-deployment" },
+        { "backend": "vllm", "model": "org/chat-model" },
+        { "backend": "llama", "model": "chat-model" }
+      ],
+      "metadata": {
+        "context_length": 32768,
+        "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": false }
+      }
+    }
+  },
+  "groups": { "me": {} },
+  "keys": {
+    "k-me": {
+      "hash": "sha256:59f8f6709d858b919a10541cd215a0de7b4299bbc6c11a2e0bf4ca03ec6df717",
+      "group": "me"
+    }
+  }
+}

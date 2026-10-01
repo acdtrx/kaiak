@@ -41,7 +41,7 @@
 
 | Option | Required | Meaning |
 | --- | --- | --- |
-| `type` | yes | `"openai-compatible"` or `"azure-openai"` — the config's backend `type`. |
+| `type` | yes | The config's backend `type`: `"openai-compatible"`, `"openai"`, `"azure-openai"`, `"vllm"` or `"llama-server"` (settled 2026-09-30). |
 | `baseUrl` | yes | The backend's `base_url`, exactly as config spells it. |
 | `credential` | no | The credential **value** (not an env name), passed by the app. Omitted: nothing is sent. |
 | `model` | no | A backend-side model name (a deployment's `model`) to check and describe. |
@@ -68,7 +68,7 @@ way by the gateway:
 
 | Type | Models list | Credential header |
 | --- | --- | --- |
-| `openai-compatible` | `GET <baseUrl>/models` | `Authorization: Bearer <credential>` |
+| `openai-compatible`, `openai`, `vllm`, `llama-server` | `GET <baseUrl>/models` | `Authorization: Bearer <credential>` |
 | `azure-openai` | `GET <baseUrl>/openai/v1/models` | `api-key: <credential>` |
 
 - Every request sends `Accept: application/json`, `User-Agent: kaiak-control` and the
@@ -87,7 +87,7 @@ way by the gateway:
 
 ## Server recognition
 
-From the models list's `data[*].owned_by`, openai-compatible only:
+From the models list's `data[*].owned_by`, every type but azure-openai:
 
 | Every entry's `owned_by` | `server` |
 | --- | --- |
@@ -96,6 +96,17 @@ From the models list's `data[*].owned_by`, openai-compatible only:
 | anything else, mixed values, or an empty list | `"unknown"` |
 
 An azure-openai backend reports `"unknown"`: its type already says what it is.
+
+- **Recognition follows the answer, not the declared type**: what is read (`/props`,
+  Sources) depends on the recognized `server`, whatever `type` was given.
+- **A recognized server under another type gets a note** (settled 2026-09-30): when
+  `server` is `"vllm"` or `"llama-server"` and `type` is not the same name, the
+  report's top-level `notes` carries
+  `the models list says the server is <server>: use type "<server>", not "<type>"`
+  (e.g. `… is vllm: use type "vllm", not "openai-compatible"`). It is a note, not a
+  failure: the backend answered and the gateway reaches it the same way under either
+  type — but only the server's own type gets its module's rules (`GATEWAY.md`,
+  Providers). An `"unknown"` server gets no note, whatever the type.
 
 ## Sources
 
@@ -204,7 +215,7 @@ Only the models-list request decides `ok`. The first failure ends the call.
 | `timeout` | The models list did not arrive whole within `timeoutMs`. |
 | `credential-refused` | The models list answered `401` or `403` (the message says whether a credential was sent). |
 | `not-a-models-list` | Any other answer that is not a `2xx` JSON body of at most 1 MiB matching the models-list schema: another status (a `3xx` included — not followed), a body that is not JSON, over the cap, or without a `data` array of entries with a string `id`. The message names the status or what was wrong. |
-| `model-not-listed` | openai-compatible only: `model` was given and no entry's `id` equals it whole (the gateway's model check matches the same way). `models` still lists what the list said; `/props` is not read. |
+| `model-not-listed` | Every type but azure-openai: `model` was given and no entry's `id` equals it whole (the gateway's model check matches the same way). `models` still lists what the list said; `/props` is not read. |
 
 - **Abort is not a failure**: when the caller's `signal` aborts, the call rejects
   with the signal's reason, as platform APIs do.

@@ -32,6 +32,9 @@ standard service tier is forced by `openai` and `azure-openai` only.
 ## Acceptance criteria
 
 - The gateway passes every shared config fixture with the codes `cases.json` names.
+  `openai-without-api-key-env.json` is rejected for the missing `api_key_env`, not
+  as an unknown type: a gateway test asserts the reason (the fixture test only
+  checks that the config is rejected; found in step 1).
 - **One table test runs every module through the same service-tier cases** against
   the fake backend's recorded body: chat without a tier, chat with `"priority"`,
   embeddings with and without one. `openai` and `azure-openai` send `"default"` on
