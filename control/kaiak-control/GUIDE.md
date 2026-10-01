@@ -251,9 +251,12 @@ edit which group or mint keys in it is your app's business, never config.
   **For a fresh budget, use a new ID.**
 - **Model-set edits keep the spend**: a limit whose model set changed (same group or
   global, same type) takes over the dropped limit's window; each carry fires
-  `onLimitCarriedOver`. The core carries against the previously published version, a
-  gateway against the config it applied before — they differ for a while when a
-  gateway skipped versions; the totals computed under the new config settle it.
+  `onLimitCarriedOver` once the publish has succeeded. The carry is written before
+  the version is stored: a store write failing (the database down) fails the
+  publish with nothing stored — retry it; nothing is carried twice. The core
+  carries against the previously published version, a gateway against the config
+  it applied before — they differ for a while when a gateway skipped versions; the
+  totals computed under the new config settle it.
 
 **Prices** (`CONTROL-PROTOCOL.md` → Config → Prices, Tiered prices, Units and price
 units): a model's `prices` is a list of `{ effective_from, tiers }` in increasing date
@@ -410,7 +413,10 @@ if (current && totals) {
   browsers (the sample pushes at most once a second) and read fresh state when you
   push rather than queueing values.
 - A listener that throws goes to `onListenerError`; by default that rethrows and
-  crashes the process — keep listeners total, or log in `onListenerError`.
+  crashes the process — keep listeners total, or log in `onListenerError`. The
+  event says which: `config-published`, `totals-changed`, `gateways-changed`, or
+  `limit-carried-over` (an `onLimitCarriedOver` that threw, with its carry); the
+  publish, count or status it came from has succeeded either way.
 
 ## 10. Operating it
 

@@ -4,6 +4,7 @@ import path from "node:path";
 import { describe, test } from "node:test";
 
 import type { Config } from "../config/index.ts";
+import type { BeforeSave } from "../config-versions/index.ts";
 import { validateTotals } from "../messages/index.ts";
 import type { Totals, UsageBatch, UsageRecord } from "../messages/index.ts";
 import { createMemoryStore } from "../storage/index.ts";
@@ -78,7 +79,9 @@ interface Harness {
   usage: Usage;
   store: ControlPlaneStore;
   setTime(ms: number): void;
-  publish(config: Config): Promise<void>;
+  // Stores config as the next version; beforeSave (a publish's, from Usage.publishing)
+  // runs first, as the config-versions module runs it.
+  publish(config: Config, beforeSave?: BeforeSave): Promise<void>;
   listenerErrors: unknown[];
 }
 
@@ -96,9 +99,11 @@ async function harness(options: Partial<Omit<UsageOptions, "clock">> = {}): Prom
     controlPlaneId: CONTROL_PLANE,
     ...options,
   });
-  const publish = async (config: Config): Promise<void> => {
+  const publish = async (config: Config, beforeSave?: BeforeSave): Promise<void> => {
+    const next = { version: version + 1, config, publishedAt: now };
+    await beforeSave?.(await store.latestConfig(), next);
     version += 1;
-    await store.saveConfig({ version, config, publishedAt: now }, 100);
+    await store.saveConfig(next, 100);
   };
   await publish(fullConfig());
   return { usage, store, setTime: (ms) => (now = ms), publish, listenerErrors };
@@ -276,7 +281,7 @@ describe("aggregation", () => {
 
 describe("model-set edits (D5)", () => {
   // A publish run in the totals' turn, as the core runs every publish.
-  const publishIn = (h: Harness, config: Config): Promise<void> => h.usage.publishing(() => h.publish(config));
+  const publishIn = (h: Harness, config: Config): Promise<void> => h.usage.publishing((beforeSave) => h.publish(config, beforeSave));
   const globalUsd = async (usage: Usage): Promise<{ models?: string[]; used: string } | undefined> => {
     const window = (await currentTotals(usage)).windows.find((w) => w.group === undefined && w.type === "usd_per_month");
     return window && { ...(window.models && { models: window.models }), used: window.used };
@@ -345,7 +350,7 @@ describe("model-set edits of group limits", () => {
     defaults.limits = defaults.limits.map((limit) =>
       limit.type === "usd_per_month" ? { ...limit, models: ["gpt-4.1-mini"] } : limit,
     );
-    await h.usage.publishing(() => h.publish(edited));
+    await h.usage.publishing((beforeSave) => h.publish(edited, beforeSave));
 
     const usd = (await currentTotals(h.usage)).windows.filter((window) => window.type === "usd_per_month");
     assert.deepEqual(usd, [

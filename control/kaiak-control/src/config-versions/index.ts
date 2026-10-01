@@ -24,11 +24,16 @@ export type ConfigsSince = { resync: false; epoch: string; configs: StoredConfig
 
 export type ConfigPublishedListener = (published: StoredConfig) => void;
 
+// Runs once a publish's document is valid and before its version is stored: what must
+// be in the store before any reader can see the version (the usage module's
+// carry-over). A rejection fails the publish with nothing stored or announced.
+export type BeforeSave = (previous: StoredConfig | undefined, next: StoredConfig) => Promise<void>;
+
 // Hears of a listener that threw while being told of a published version.
 export type ConfigListenerErrorHandler = (error: unknown, published: StoredConfig) => void;
 
 export interface ConfigVersions {
-  publishConfig(doc: unknown): Promise<PublishResult>;
+  publishConfig(doc: unknown, beforeSave?: BeforeSave): Promise<PublishResult>;
   currentConfig(): Promise<StoredConfig | undefined>;
   // The store's config epoch (ControlPlaneStore.configEpoch).
   configEpoch(): Promise<string>;
@@ -64,13 +69,14 @@ export function createConfigVersions({
   // Publishes run one at a time, so two cannot claim the same version.
   let publishing: Promise<unknown> = Promise.resolve();
 
-  const publishOne = async (doc: unknown): Promise<PublishResult> => {
+  const publishOne = async (doc: unknown, beforeSave?: BeforeSave): Promise<PublishResult> => {
     const result = validateConfig(doc);
     if (!result.ok) return { ok: false, issues: result.issues };
     const latest = await store.latestConfig();
     const moved = latest ? parentChanges(latest.config, result.config) : [];
     if (moved.length > 0) return { ok: false, issues: moved };
     const published: StoredConfig = { version: (latest?.version ?? 0) + 1, config: result.config, publishedAt: clock() };
+    await beforeSave?.(latest, published);
     await store.saveConfig(published, historySize);
     notify(published);
     return { ok: true, published };
@@ -90,8 +96,8 @@ export function createConfigVersions({
   };
 
   return {
-    publishConfig(doc) {
-      const run = publishing.then(() => publishOne(doc));
+    publishConfig(doc, beforeSave) {
+      const run = publishing.then(() => publishOne(doc, beforeSave));
       publishing = run.catch(() => {
         // The caller gets this publish's failure from `run`; the queue only orders publishes.
       });

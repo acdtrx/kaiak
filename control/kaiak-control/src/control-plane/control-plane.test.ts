@@ -93,6 +93,112 @@ test("the core takes usage batches with its clock and reports totals listener fa
   assert.deepEqual(events, ["totals-changed"]);
 });
 
+describe("a model-set edit's carry-over and the publish", () => {
+  const SEPT_24 = Date.UTC(2026, 8, 24, 10, 30);
+  const full = (): Record<string, unknown> => JSON.parse(readFileSync(FULL, "utf8"));
+  // full.json with the global USD limit's model set widened: its spend carries over.
+  const widened = (): Record<string, unknown> => {
+    const config = full() as { global: { limits: { type: string; models?: string[] }[] } };
+    for (const limit of config.global.limits) {
+      if (limit.type === "usd_per_month") limit.models = ["gpt-4.1", "gpt-4.1-mini", "qwen3-32b"];
+    }
+    return config;
+  };
+  const globalUsd = async (controlPlane: ControlPlane): Promise<{ models?: string[]; used: string }> => {
+    const window = (await controlPlane.totals("gw-1"))?.windows.find(
+      (w) => w.group === undefined && w.type === "usd_per_month",
+    );
+    assert.ok(window, "the global USD window");
+    return { ...(window.models && { models: window.models }), used: window.used };
+  };
+  const spent = async (controlPlane: ControlPlane): Promise<string> => {
+    assert.ok((await controlPlane.publishConfig(full())).ok);
+    assert.ok((await controlPlane.acceptUsageBatch("gw-1", JSON.parse(readFileSync(MIXED_BATCH, "utf8")))).ok);
+    const { used } = await globalUsd(controlPlane);
+    assert.ok(BigInt(used) > 0n, "the batch spent against the global USD limit");
+    return used;
+  };
+
+  test("a failed carry write stores and announces nothing; the retry carries the spend", async () => {
+    const memory = createMemoryStore();
+    let failCarry = false;
+    const store: ControlPlaneStore = {
+      ...memory,
+      async addWindowTotals(additions) {
+        if (failCarry) {
+          failCarry = false;
+          throw new Error("store unavailable");
+        }
+        return memory.addWindowTotals(additions);
+      },
+    };
+    const controlPlane = createControlPlane({ store, token: "t", clock: () => SEPT_24 });
+    const used = await spent(controlPlane);
+    const heard: number[] = [];
+    controlPlane.onConfigPublished((published) => heard.push(published.version));
+
+    failCarry = true;
+    await assert.rejects(controlPlane.publishConfig(widened()), /store unavailable/);
+    assert.equal((await controlPlane.currentConfig())?.version, 1, "nothing stored");
+    assert.deepEqual(heard, [], "nothing announced");
+
+    const retry = await controlPlane.publishConfig(widened());
+    assert.ok(retry.ok);
+    assert.equal(retry.published.version, 2);
+    assert.deepEqual(await globalUsd(controlPlane), { models: ["gpt-4.1", "gpt-4.1-mini", "qwen3-32b"], used });
+  });
+
+  test("a carry written before a failed store write is not added twice by the retry", async () => {
+    const memory = createMemoryStore();
+    let failSave = false;
+    const store: ControlPlaneStore = {
+      ...memory,
+      async saveConfig(entry, keep) {
+        if (failSave) {
+          failSave = false;
+          throw new Error("store unavailable");
+        }
+        return memory.saveConfig(entry, keep);
+      },
+    };
+    const controlPlane = createControlPlane({ store, token: "t", clock: () => SEPT_24 });
+    const used = await spent(controlPlane);
+
+    failSave = true;
+    await assert.rejects(controlPlane.publishConfig(widened()), /store unavailable/);
+    assert.ok((await controlPlane.publishConfig(widened())).ok);
+    assert.equal((await globalUsd(controlPlane)).used, used);
+  });
+
+  test("an onLimitCarriedOver that throws goes to the host's handler; the publish succeeds", async () => {
+    const events: { type: string; carry?: unknown }[] = [];
+    const controlPlane = createControlPlane({
+      store: createMemoryStore(),
+      token: "t",
+      clock: () => SEPT_24,
+      onLimitCarriedOver: () => {
+        throw new Error("audit log unavailable");
+      },
+      onListenerError: (_error, event) => events.push(event),
+    });
+    const used = await spent(controlPlane);
+
+    const result = await controlPlane.publishConfig(widened());
+    assert.ok(result.ok);
+    assert.equal((await globalUsd(controlPlane)).used, used);
+    assert.deepEqual(
+      events.map((event) => event.type),
+      ["limit-carried-over"],
+    );
+    assert.deepEqual(events[0]?.carry, {
+      type: "usd_per_month",
+      models: ["gpt-4.1", "gpt-4.1-mini", "qwen3-32b"],
+      from: [["gpt-4.1", "gpt-4.1-mini"]],
+      ambiguous: false,
+    });
+  });
+});
+
 test("the live set's size is the live-gateway count in totals and acks", async () => {
   let now = Date.UTC(2026, 8, 24, 10, 30);
   const events: string[] = [];

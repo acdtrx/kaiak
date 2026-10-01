@@ -7,6 +7,8 @@
 
 import { randomBytes } from "node:crypto";
 
+import type { BeforeSave } from "../config-versions/index.ts";
+
 import { validateUsageBatch } from "../messages/index.ts";
 import type { BatchId, Totals, TotalsLimitType, TotalsWindow, UsageAck, UsageBatch } from "../messages/index.ts";
 import type { ControlPlaneStore, CurrentWindows, ReceivedRecord, StoredConfig, WindowTotal } from "../storage/index.ts";
@@ -69,8 +71,12 @@ export interface Usage {
   // Runs a publish in the totals' turn, so no batch counts between the publish and
   // what it changes in the totals: a limit whose only change is its model set keeps
   // its current windows' spend (Budgets → Model-set edits). Every publish goes
-  // through it.
-  publishing<T>(publish: () => Promise<T>): Promise<T>;
+  // through it, passing beforeSave on to the store write: the carried spend is
+  // written before the version is stored, so a failed write fails the publish with
+  // nothing stored, and a retry carries again — a carry raises a window only up to
+  // its predecessor's amount, so repeating it adds nothing. onLimitCarriedOver hears
+  // of the carries once the publish has succeeded.
+  publishing<T>(publish: (beforeSave: BeforeSave) => Promise<T>): Promise<T>;
   // The newest received records, newest first.
   recentRecords(): Promise<ReceivedRecord[]>;
   // Calls listener after every batch that was counted; returns the unsubscribe, which
@@ -90,8 +96,10 @@ export interface UsageOptions {
   recentRecordsSize: number;
   // The live-gateway count every totals message carries.
   liveGateways: () => number | Promise<number>;
-  // Called for each totals listener that throws; the batch is counted either way.
-  onListenerError: (error: unknown) => void;
+  // Called for each totals listener that throws (the batch is counted either way), and
+  // for an onLimitCarriedOver that throws, with the carry it was told of (the publish
+  // has succeeded either way).
+  onListenerError: (error: unknown, carry?: LimitCarryOver) => void;
   // The revision's control-plane ID: 32 lowercase hex digits. Default: random, new
   // with every process (tests fix it).
   controlPlaneId?: string;
@@ -209,16 +217,17 @@ export function createUsage({
   // Carries each model-set-edited limit's spend in the current windows from the
   // limits it replaced: the new window is raised to the largest predecessor's amount
   // (it can already hold its own, from when a limit of that identity last existed in
-  // the window). Runs in the publish's turn, before any batch counts under the new
-  // config.
-  const carryOver = async (before: StoredConfig, after: StoredConfig, now: number): Promise<void> => {
+  // the window). Runs in the publish's turn, before the new version is stored; returns
+  // what the host hears of once the publish has succeeded.
+  const carryOver = async (before: StoredConfig, after: StoredConfig, now: number): Promise<LimitCarryOver[]> => {
     const carries = carryOvers(countedLimitsOf(before.config), limitsOf(after));
-    if (carries.length === 0) return;
+    if (carries.length === 0) return [];
     const windows = currentWindows(now);
     const stored = new Map((await store.currentWindowTotals(windows)).map((total) => [windowKeyOf(total), total.used]));
     const usedIn = (limit: { group?: string; type: TotalsLimitType; models?: string[] }): bigint =>
       stored.get(windowKeyOf({ ...limit, windowStart: windowStartFor(limit.type, windows) })) ?? 0n;
     const additions: WindowTotal[] = [];
+    const notices: LimitCarryOver[] = [];
     for (const { to, from } of carries) {
       const carried = from.reduce((most, old) => (usedIn(old) > most ? usedIn(old) : most), 0n);
       const own = usedIn(to);
@@ -231,7 +240,7 @@ export function createUsage({
           used: carried - own,
         });
       }
-      onLimitCarriedOver({
+      notices.push({
         ...(to.group !== undefined && { group: to.group }),
         type: to.type,
         ...(to.models !== undefined && { models: [...to.models] }),
@@ -240,6 +249,7 @@ export function createUsage({
       });
     }
     if (additions.length > 0) await store.addWindowTotals(additions);
+    return notices;
   };
 
   const notify = (): void => {
@@ -326,10 +336,17 @@ export function createUsage({
     },
     publishing: (publish) =>
       exclusive(async () => {
-        const before = await store.latestConfig();
-        const result = await publish();
-        const after = await store.latestConfig();
-        if (before && after && after.version !== before.version) await carryOver(before, after, clock());
+        const notices: LimitCarryOver[] = [];
+        const result = await publish(async (previous, next) => {
+          if (previous) notices.push(...(await carryOver(previous, next, clock())));
+        });
+        for (const notice of notices) {
+          try {
+            onLimitCarriedOver(notice);
+          } catch (error) {
+            onListenerError(error, notice);
+          }
+        }
         return result;
       }),
     recentRecords: () => store.recentRecords(recentRecordsSize),

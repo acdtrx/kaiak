@@ -809,7 +809,16 @@ How the control plane takes `POST /v1/usage`, as `kaiak-control` implements it.
   predecessors for a while. The totals computed under the new config settle the
   difference: once they reach the gateway, they are its base for every limit
   (`GATEWAY.md`, Limits → Control-plane mode). Rejected: a new identity starting
-  at 0 — adding a model to a spent monthly budget forgave the month.
+  at 0 — adding a model to a spent monthly budget forgave the month. **The carry is
+  written before the version is stored** (settled 2026-10-01; the 2026-09-30
+  review's C4 and B2): a store write that fails fails the publish with nothing
+  stored or announced, and the host retries; a carry only raises a window up to its
+  predecessor's amount, so a retry after a carry written and a version not stored
+  adds nothing twice. The host hears of each carry (`onLimitCarriedOver`) once the
+  publish has succeeded; a callback that throws goes to `onListenerError` and never
+  fails it. Rejected: storing the version first — a failed carry then left the new
+  config live with the spend lost, and the retry, comparing against the stored
+  version, found nothing to carry.
 - **Per-minute windows** stay local to each gateway; the control plane pushes only the
   number of live gateways, and each gateway enforces limit ÷ live gateways, rounded
   down, 0 counting as 1, never below 1 unless the limit is 0 (`GATEWAY.md`, Limits →

@@ -20,6 +20,7 @@ import type { LimitCarryOver, Usage } from "../usage/index.ts";
 export type ListenerEvent =
   | { type: "config-published"; published: StoredConfig }
   | { type: "totals-changed" }
+  | { type: "limit-carried-over"; carry: LimitCarryOver }
   | { type: "gateways-changed"; change: GatewaysChange };
 
 export type ListenerErrorHandler = (error: unknown, event: ListenerEvent) => void;
@@ -141,7 +142,8 @@ export function createControlPlane(options: ControlPlaneOptions): ControlPlane {
     clock,
     recentRecordsSize,
     liveGateways: gateways.liveGateways,
-    onListenerError: (error) => onListenerError(error, { type: "totals-changed" }),
+    onListenerError: (error, carry) =>
+      onListenerError(error, carry ? { type: "limit-carried-over", carry } : { type: "totals-changed" }),
     controlPlaneId,
     onLimitCarriedOver,
   });
@@ -201,7 +203,7 @@ export function createControlPlane(options: ControlPlaneOptions): ControlPlane {
   });
   return {
     // Every publish runs in the totals' turn (Usage.publishing).
-    publishConfig: (doc) => usage.publishing(() => configVersions.publishConfig(doc)),
+    publishConfig: (doc) => usage.publishing((beforeSave) => configVersions.publishConfig(doc, beforeSave)),
     currentConfig: configVersions.currentConfig,
     configEpoch: configVersions.configEpoch,
     configsSince: configVersions.configsSince,
