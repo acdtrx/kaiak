@@ -192,12 +192,8 @@ func (a *API) logRequest(rq *request) {
 	if rq.queueWait.Queued {
 		attrs = append(attrs, slog.Float64("queue_wait_ms", float64(rq.queueWait.Duration.Microseconds())/1000))
 	}
-	switch {
-	case rq.failure != nil:
-		attrs = append(attrs, slog.String("error_code", rq.failure.code))
-	case rq.deployment.Backend != nil && rq.w.status >= 400:
-		// A backend error status relayed as it came: its class stands for the code.
-		attrs = append(attrs, slog.String("error_code", string(relayedStatusClass(rq.w.status))))
+	if code := errorCode(rq); code != "" {
+		attrs = append(attrs, slog.String("error_code", code))
 	}
 	if rej := rq.rejection; rej != nil {
 		attrs = append(attrs, limitAttrs(rej)...)

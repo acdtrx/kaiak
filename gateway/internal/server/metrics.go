@@ -20,6 +20,11 @@ func (a *API) observeRequest(rq *request) {
 	a.ops.ObserveRequest(rq.endpoint.name(), model, rq.w.status, time.Since(rq.start))
 	if class, ok := errorClass(rq); ok {
 		a.ops.CountError(class)
+		code := errorCode(rq)
+		if code == "" {
+			code = rq.relayEnd
+		}
+		a.ops.CountRequestError(rq.identity.Group, rq.keyID, model, code)
 	}
 	if rej := rq.rejection; rej != nil && !rej.Unavailable {
 		a.ops.CountLimitRejection(string(rej.Scope), rej.Type)
@@ -85,6 +90,20 @@ func errorClass(rq *request) (metrics.ErrorClass, bool) {
 		return relayedStatusClass(rq.w.status), true
 	}
 	return "", false
+}
+
+// errorCode is the request log line's error_code: the gateway's own error answer, or
+// for a backend error status relayed as it came, its class; "" for a request that
+// got neither — a success, or a response broken off after it started (relay_end
+// says how).
+func errorCode(rq *request) string {
+	switch {
+	case rq.failure != nil:
+		return rq.failure.code
+	case rq.deployment.Backend != nil && rq.w.status >= 400:
+		return string(relayedStatusClass(rq.w.status))
+	}
+	return ""
 }
 
 // relayedStatusClass classifies a backend error status relayed to the client, by

@@ -123,6 +123,7 @@ type Ops struct {
 	firstToken      *HistogramVec
 	tokenRate       *HistogramVec
 	errors          *CounterVec
+	requestErrors   *CounterVec
 	limitRejections *CounterVec
 	queueWait       *HistogramVec
 	queueRejections *CounterVec
@@ -157,6 +158,9 @@ func NewOps(reg *Registry, router *routing.Router, holder *config.Holder) *Ops {
 			tokenRateBuckets, "model", "backend"),
 		errors: reg.Counter("kaiak_errors_total",
 			"Requests that ended in an error, by class.", "class"),
+		requestErrors: reg.Counter("kaiak_request_errors_total",
+			"Requests that ended in an error, refusals included, by key and error code.",
+			"key_group", "root_group", "key_id", "model", "code"),
 		limitRejections: reg.Counter("kaiak_limit_rejections_total",
 			"Requests a limit refused (rate_limit_exceeded, budget_exceeded), by the kind of scope the limit belongs to and its type.",
 			"scope_kind", "type"),
@@ -383,6 +387,29 @@ func (o *Ops) ObserveTimeToFirstToken(model, backend string, d time.Duration) {
 // ObserveOutputRate records one completed stream's decode speed in tokens per second.
 func (o *Ops) ObserveOutputRate(model, backend string, tokensPerSecond float64) {
 	o.tokenRate.Observe(tokensPerSecond, model, backend)
+}
+
+// CountRequestError counts one request that ended in an error by who sent it and how
+// it ended: group and keyID are the request's key (group nil and keyID empty without
+// a valid key), labelled as the usage metrics are — key_group, root_group, key_id,
+// following the live config's key_id_label and group_label — model only once it
+// passed the access check, and code the request log line's error_code, or the
+// relay_end of a response broken off after it started. Series exist only once
+// counted: their number follows the keys that met an error, not the config.
+func (o *Ops) CountRequestError(group *config.Group, keyID, model, code string) {
+	var keyGroup, root string
+	if group != nil {
+		keyGroup, root = group.ID, group.PathIDs[0]
+	}
+	if snap := o.holder.Current(); snap != nil {
+		if !snap.KeyIDLabel {
+			keyID = ""
+		}
+		if !snap.GroupLabel {
+			keyGroup = ""
+		}
+	}
+	o.requestErrors.Inc(keyGroup, root, keyID, model, code)
 }
 
 // CountError counts one request that ended in an error of class c.

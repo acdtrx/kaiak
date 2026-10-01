@@ -1751,6 +1751,7 @@ own, and a client sending repeats is broken either way.
   | `kaiak_time_to_first_token_seconds` | histogram | `model`, `backend` | The answering attempt's send to the first stream event carrying generated content, observed as that event arrives; streams only (settled 2026-09-25, D6: from the request's arrival, a failed first attempt's wait was blamed on the backend that then answered) |
   | `kaiak_output_tokens_per_second` | histogram | `model`, `backend` | Decode speed of streams that ran to their end: (`tokens_out` − 1) ÷ time from first content to the last event; needs ≥ 2 output tokens |
   | `kaiak_errors_total` | counter | `class` | Requests that ended in an error (classes below) |
+  | `kaiak_request_errors_total` | counter | `key_group`, `root_group`, `key_id`, `model`, `code` | Requests that ended in an error — refusals before routing included — by who sent them and how they ended (Errors by key, below); a series exists once counted |
   | `kaiak_limit_rejections_total` | counter | `scope_kind`, `type` | Requests a limit refused (`rate_limit_exceeded`, `budget_exceeded`) by the kind of scope the limit belongs to (`global`, `group`; settled 2026-09-27) and its type (`requests_per_minute`, `tokens_per_minute`, `tokens_per_hour`, `usd_per_month`); `budget_unavailable` is not counted here — no caller's limit was hit (settled 2026-09-25, D6). No group ID: the log line names it |
   | `kaiak_backend_in_flight_requests` | gauge | `backend` | Requests routed and not yet over; every configured backend present, 0 when idle |
   | `kaiak_backend_max_in_flight` | gauge | `backend` | The backend cap this gateway enforces: its share of `max_in_flight` among the live gateways (Caps across gateways); backends without a cap are absent |
@@ -1944,9 +1945,25 @@ own, and a client sending repeats is broken either way.
   that reset on restart and are never read back into a record; records never come
   from metrics. Ops metrics are observed by the request pipeline itself; the decode
   rate reads the settled `tokens_out` only as an input.
+- **Errors by key** (settled 2026-10-01): `kaiak_request_errors_total` counts every
+  request that `kaiak_errors_total` counts, labelled as the usage metrics are —
+  `key_group`, `root_group`, `key_id` (all absent without a valid key) and `model`
+  (only once it passed the access check, so a client cannot add names) — and by
+  `code`: the request log line's `error_code`, or the `relay_end` of a response
+  broken off after it started (`client_closed`, `upstream_failed`, …). A team's
+  dashboard then shows its errors and refusals beside its usage: the usage metrics
+  see only settled records, so a refusal before routing never reached them and a
+  routed failure looked like an empty success. Its series follow the keys that met
+  an error and the codes they met (a fixed set): within the usage series' bound
+  (Cardinality) times the codes actually seen. Rejected: these labels on
+  `kaiak_errors_total` — its classes are present at 0 from startup for fleet
+  alerts, and a per-key family cannot be; carrying outcomes to the control plane
+  in usage records and batches — a protocol change, deferred until an app built on
+  `kaiak-control` needs them in its own store (`docs/BACKLOG.md`).
 - **Key-ID and group switches** (key ID settled 2026-09-24; group 2026-09-27):
   `global.metrics.key_id_label` and `global.metrics.group_label` (default on) are
-  read from the live config at each record. Off, new series carry no `key_id` (no
+  read from the live config at each record (and at each error, for
+  `kaiak_request_errors_total`). Off, new series carry no `key_id` (no
   `key_group`; `root_group` stays — it keeps a per-branch view, bounded by the
   top-level groups: Cardinality); series already written with one stay until
   restart (counters never go back, and dropping them would make sums fall).

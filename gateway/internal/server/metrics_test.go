@@ -124,6 +124,57 @@ func TestStreamMetricsTimeToFirstTokenAndDecodeRate(t *testing.T) {
 	)
 }
 
+// Every request that ended in an error is counted by its key, model and the log
+// line's error code — refusals before routing, routed failures and relayed backend
+// errors alike; a model only once it passed the access check, no key labels without
+// a valid key.
+func TestRequestErrorsByKeyAndCode(t *testing.T) {
+	g := newTestGateway(t)
+	withLimits(t, g, "", `[{ "type": "requests_per_minute", "value": 1 }]`)
+	chat := func(key, model string) *httptest.ResponseRecorder {
+		return do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: key,
+			body: `{"model":"` + model + `","messages":[]}`})
+	}
+	if w := chat(workloadKey, "pair"); w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	expectError(t, chat(workloadKey, "pair"), http.StatusTooManyRequests, "rate_limit_exceeded")
+	expectError(t, chat(workloadKey, "pair"), http.StatusTooManyRequests, "rate_limit_exceeded")
+	expectError(t, chat(userKey, "nope-model"), http.StatusNotFound, "model_not_found")
+	expectError(t, chat("kaiak-not-a-key", "pair"), http.StatusUnauthorized, "invalid_api_key")
+	expectError(t, do(t, g.h, call{method: "GET", path: "/nowhere"}), http.StatusNotFound, "unknown_url")
+
+	text := g.metricsText()
+	expectMetricLines(t, text,
+		`kaiak_request_errors_total{key_group="eval",root_group="research",key_id="k-eval",model="pair",code="rate_limit_exceeded"} 2`,
+		`kaiak_request_errors_total{key_group="ann",root_group="users",key_id="k-ann",code="model_not_found"} 1`,
+		`kaiak_request_errors_total{code="invalid_api_key"} 1`,
+		`kaiak_request_errors_total{code="unknown_url"} 1`,
+	)
+	if strings.Contains(text, `model="nope-model"`) {
+		t.Errorf("a model name the config does not grant is a label:\n%s", text)
+	}
+	if n := strings.Count(text, "kaiak_request_errors_total{"); n != 4 {
+		t.Errorf("%d request-error series, want 4 (the success counts none):\n%s", n, text)
+	}
+}
+
+// A relayed backend error status counts under its class, as the log line's
+// error_code names it; the label switches apply as for the usage metrics.
+func TestRequestErrorsFollowTheLabelSwitches(t *testing.T) {
+	g := newTestGateway(t)
+	g.holder.Swap(testSnapshotWith(t, g.backend.URL(), func(doc string) string {
+		return strings.Replace(doc, `"max_request_body_bytes": 1024 }`,
+			`"max_request_body_bytes": 1024, "metrics": { "key_id_label": false, "group_label": false } }`, 1)
+	}))
+	g.backend.SetReply(fakebackend.Reply{Status: http.StatusInternalServerError})
+	if w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: userKey, body: chatBody}); w.Code != http.StatusInternalServerError {
+		t.Fatalf("status %d", w.Code)
+	}
+	expectMetricLines(t, g.metricsText(),
+		`kaiak_request_errors_total{root_group="users",model="open",code="upstream_error"} 1`)
+}
+
 func TestKeyIDLabelSwitchedOff(t *testing.T) {
 	g := newTestGateway(t)
 	g.holder.Swap(testSnapshotWith(t, g.backend.URL(), func(doc string) string {

@@ -605,6 +605,11 @@ the document (a script, or the control plane) rather than editing it by hand.
   `key_group`, not `group`, because scrape configs often set a target label
   `group`, which would rename the gateway's to `exported_group`. Ops series are bounded by the
   config (backends, deployments, models), never by clients.
+- **Errors per team or key**: `kaiak_request_errors_total` carries the usage labels
+  and the error `code`, so a team's page shows its failures and refusals beside its
+  usage — e.g. `sum by (code) (increase(kaiak_request_errors_total{root_group="team-a"}[1h]))`.
+  Requests without a valid key count with no key labels. It follows the same two
+  switches; its series are the keys that met an error, times the codes they met.
 - **Logs**: one JSON line per request (message `request`, with the request ID, key
   ID and its `group`, model, backend, status,
   `ttft_ms` for streams and, on failure, the error code); never keys, prompts or
