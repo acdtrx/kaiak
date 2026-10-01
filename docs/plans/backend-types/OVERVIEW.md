@@ -150,4 +150,17 @@ clears kaiak-control's, step 3 the gateway's).
   `-kind vllm` against the DGX, each with a wrong `base_url` for phase 2.
 - `scripts/check-all.sh` green at each phase end.
 
-**Verification status:** not started.
+**Verification status:** phase 1 done (2026-10-01), green; phase 2 not started.
+
+- [x] Shared fixtures, same codes from both halves (`STEP-1-contract.md`, steps 2–3).
+- [x] One table test of every gateway module's service tier
+  (`STEP-3-gateway.md`, `TestServiceTierByModule`); end to end through one gateway
+  (`STEP-4-e2e-and-docs.md`, `TestBackendTypes`).
+- [x] Each module's URL, credential header and probe against the fake backend
+  (`STEP-3-gateway.md`).
+- [x] `verifyBackend`: every type accepted; the note on a vLLM or llama-server
+  answer under another type (`STEP-2-kaiak-control.md`).
+- [ ] Phase 2: the unknown-path answer per module, the config-apply warning.
+- [ ] Live: `-kind llama-server` and `-kind vllm` against the DGX.
+- [x] `scripts/check-all.sh` green 3× in a row at the end of phase 1
+  (`STEP-4-e2e-and-docs.md`).

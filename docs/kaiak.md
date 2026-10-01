@@ -108,8 +108,9 @@ The name reads the same both ways (the gateway carries traffic in both direction
 
 - Inbound: OpenAI `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`,
   `/v1/models` (extended with metadata), `/v1/models/{id}/props`.
-- Providers: OpenAI-compatible (vLLM, llama-server, SGLang, OpenAI), Azure OpenAI
-  (its OpenAI-compatible `/openai/v1/` API).
+- Providers: a module per server — OpenAI, Azure OpenAI (its OpenAI-compatible
+  `/openai/v1/` API), vLLM, llama-server — and a generic OpenAI-compatible type for
+  any other server speaking the OpenAI format (SGLang, …).
 - Routing: aliases, multiple deployments, load balancing, retries before the
   first byte, circuit breaker driven by real-traffic failures (probing only while open),
   per-backend concurrency cap with a bounded queue.

@@ -8,17 +8,17 @@
   },
   "backends": {
     "vllm-gpu-1": {
-      "type": "openai-compatible",
+      "type": "vllm",
       "base_url": "http://vllm-gpu-1.internal:8000/v1",
       "first_event_timeout_ms": 120000
     },
     "vllm-gpu-2": {
-      "type": "openai-compatible",
+      "type": "vllm",
       "base_url": "http://vllm-gpu-2.internal:8000/v1",
       "first_event_timeout_ms": 120000
     },
     "vllm-embed": {
-      "type": "openai-compatible",
+      "type": "vllm",
       "base_url": "http://vllm-embed.internal:8000/v1",
       "api_key_env": "VLLM_EMBED_API_KEY"
     },

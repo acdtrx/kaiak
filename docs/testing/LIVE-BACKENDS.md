@@ -1,9 +1,9 @@
 # Live backend checks
 
-> The runbook for `scripts/live/`: run the built `kaiak` against a real vLLM, Azure
-> OpenAI or OpenAI backend and check it end to end. Opt-in — never needed for a green
-> suite (`docs/TECH-STACK.md`, Testing). The kit's own self-test, against the fake
-> backend, runs in `scripts/check-gateway.sh`.
+> The runbook for `scripts/live/`: run the built `kaiak` against a real vLLM,
+> llama-server, Azure OpenAI or OpenAI backend and check it end to end. Opt-in —
+> never needed for a green suite (`docs/TECH-STACK.md`, Testing). The kit's own
+> self-test, against the fake backend, runs in `scripts/check-gateway.sh`.
 
 ## What it does
 
@@ -11,9 +11,10 @@ One command per backend kind. The runner:
 
 1. builds `kaiak` from this checkout (or runs the one given with `-kaiak`);
 2. generates a config for the backend — a fresh random client key and its hash, one
-   backend (two with `-base-url-2`: see Two vLLM processes, one model; one more with
-   `-embeddings-base-url`: see Embeddings on a server of their own), four public
-   models on it (below), one group holding the key;
+   backend of the type `-kind` names (two with `-base-url-2`: see Two vLLM
+   processes, one model; one more with `-embeddings-base-url`: see Embeddings on a
+   server of their own), four public models on it (below), one group holding the
+   key;
 3. starts `kaiak` on free loopback ports with a temporary data directory and JSON logs;
 4. runs the checks, printing `PASS`/`FAIL`/`SKIP` per check and a summary;
 5. sends SIGTERM, requires a clean drain and exit 0, and deletes everything it made
@@ -39,12 +40,14 @@ unpriced and skip the cost checks).
 
 - Go (the version in `gateway/go.mod`) and this repository checked out; run from the
   repository root (the runner finds `gateway/` from the working directory).
-- The backend reachable from this machine: `curl <base-url>/models` (vLLM, OpenAI) or
+- The backend reachable from this machine: `curl <base-url>/models` (vLLM,
+  llama-server, OpenAI) or
   `curl https://<resource>.openai.azure.com/openai/v1/models -H "api-key: $AZURE_OPENAI_API_KEY"`
   answers.
-- The backend key in an environment variable (vLLM only if it runs with `--api-key`).
-  The runner passes the variable's **name** into the config (`api_key_env`), never the
-  value; the value never appears in its output or in the gateway log.
+- The backend key in an environment variable (vLLM and llama-server only if they run
+  with `--api-key`). The runner passes the variable's **name** into the config
+  (`api_key_env`), never the value; the value never appears in its output or in the
+  gateway log.
 - Each run sends about eight small chat requests (one asks for a long story, cut at
   16 tokens) and one embeddings request — a few thousand tokens on a paid API.
 
@@ -67,6 +70,23 @@ go -C scripts/live run . -kind vllm \
   `curl http://vllm-host:8000/v1/models` lists it.
 - No key by default: vLLM runs unauthenticated unless started with `--api-key`.
 - Embeddings usually live on a separate vLLM instance (a pooling model): add
+  `-embeddings-base-url` (see Embeddings on a server of their own).
+
+### llama-server
+
+```sh
+go -C scripts/live run . -kind llama-server \
+  -base-url http://llama-host:8080/v1 \
+  -model /models/qwen3-8b-q4_k_m.gguf
+# llama-server started with --api-key:  export LLAMA_API_KEY=...  and add  -api-key-env LLAMA_API_KEY
+```
+
+- `base-url` includes `/v1`, as for vLLM.
+- `model` is the id llama-server lists — the model file's path unless it was started
+  with `--alias <name>` — `curl http://llama-host:8080/v1/models` lists it.
+- No key by default: llama-server runs unauthenticated unless started with
+  `--api-key`.
+- Embeddings run on a llama-server of their own (started with `--embeddings`): add
   `-embeddings-base-url` (see Embeddings on a server of their own).
 
 ### OpenAI
@@ -100,15 +120,15 @@ go -C scripts/live run . -kind azure-openai \
 ### Self-test (no backend needed)
 
 ```sh
-go -C scripts/live run . -self-test          # all three kinds
+go -C scripts/live run . -self-test          # all four kinds
 go -C scripts/live run . -self-test -kind azure-openai
 ```
 
 Runs every check against the fake backend (`gateway/internal/fakebackend/cmd/fakebackend`)
-standing in for each kind: vLLM layout without a key, OpenAI layout with
-`Authorization: Bearer`, Azure layout (`/openai/v1/`) with `api-key` — the fake answers
-`401` to a missing or wrong credential and `404` to a wrong path, so a config the kit
-generates wrongly fails here first.
+standing in for each kind: vLLM and llama-server layout without a key, OpenAI
+layout with `Authorization: Bearer`, Azure layout (`/openai/v1/`) with `api-key` — the
+fake answers `401` to a missing or wrong credential and `404` to a wrong path, so a
+config the kit generates wrongly fails here first.
 
 The self-test ends with a two-backend run: two fakes serving one model, each capped
 at one request (`-max-in-flight 1`), with the failover check — the runner stops the
@@ -135,7 +155,7 @@ context length. `go -C scripts/live run . -h` lists them all.
 | `usage-log/stream-usg` | that stream counted exactly too |
 | `embeddings` | embeddings reach the backend; the answer names `live-embed`, has a vector and `prompt_tokens`; with `-embeddings-base-url`, its log line names backend `live-embeddings` |
 | `usage-log/embeddings` | embeddings usage counted exactly (input tokens, no output) |
-| `output-ceiling` | a request for the model's whole context length in output tokens (`-context-length`; more is refused, `400 invalid_value`) is lowered to the ceiling: `completion_tokens` ≤ ceiling, `finish_reason: "length"`. vLLM is asked through `max_tokens` (the gateway lowers the client's own key), OpenAI and Azure through `max_completion_tokens` (their reasoning models refuse `max_tokens`) |
+| `output-ceiling` | a request for the model's whole context length in output tokens (`-context-length`; more is refused, `400 invalid_value`) is lowered to the ceiling: `completion_tokens` ≤ ceiling, `finish_reason: "length"`. vLLM and llama-server are asked through `max_tokens` (the gateway lowers the client's own key), OpenAI and Azure through `max_completion_tokens` (their reasoning models refuse `max_tokens`) |
 | `rate-limit` | the second `live-rpm` request in a minute gets `429 rate_limit_exceeded` with `Retry-After` and `x-ratelimit-*-requests` headers — before reaching the backend |
 | `metrics` | the admin `/metrics` shows the chat requests, their `tokens_out` and cost, and the rate-limit refusal |
 | `spread` | two backends: six requests one after another are served by both (`backend` on each log line) — tied deployments take turns |
@@ -270,8 +290,9 @@ checks run as without it.
     another resource.
   - `504 upstream_timeout` — nothing within `-request-timeout`; a cold vLLM loading
     the model can take longer — raise it.
-  - `404` relayed from the backend — for vLLM a wrong `-model` or a missing `/v1`; for
-    Azure a wrong deployment name, or a resource without the v1 API.
+  - `404` relayed from the backend — for vLLM or llama-server a wrong `-model` or a
+    missing `/v1`; for Azure a wrong deployment name, or a resource without the v1
+    API.
   - `400` relayed from the backend — a parameter the backend refuses; the body says
     which. `-chat-defaults` values are the first suspect.
 - `estimated=true` on a `usage-log/*` check: the backend sent no usage, so the gateway

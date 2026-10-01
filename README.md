@@ -37,7 +37,7 @@ a small sample control plane shows how.
 | Know exactly what the gateway does (API, limits, routing, lifecycle) | [`docs/specs/GATEWAY.md`](docs/specs/GATEWAY.md) |
 | Run it in production (Kubernetes, sizing, alerts, secrets) | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) |
 | Find your way around the code | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/TECH-STACK.md`](docs/TECH-STACK.md) |
-| Test against a real vLLM / Azure OpenAI / OpenAI backend | [`docs/testing/LIVE-BACKENDS.md`](docs/testing/LIVE-BACKENDS.md) |
+| Test against a real vLLM / llama-server / Azure OpenAI / OpenAI backend | [`docs/testing/LIVE-BACKENDS.md`](docs/testing/LIVE-BACKENDS.md) |
 | See what is deliberately not built yet, and when it would be | [`docs/BACKLOG.md`](docs/BACKLOG.md) |
 | Contribute (or point a coding agent at the project) | [`AGENTS.md`](AGENTS.md), [`docs/CODING-RULES.md`](docs/CODING-RULES.md) |
 
@@ -85,12 +85,14 @@ stable).
    It prints the key, its ID, its hash and the entry to paste into the config's `keys`.
 
 3. **Write a config.** Start from [`examples/config.json`](examples/config.json): two
-   vLLM hosts, an embeddings host, an Azure OpenAI resource with priced models, a
+   vLLM hosts, a vLLM embeddings host, an Azure OpenAI resource with priced models, a
    group tree (a team with a project split into prod and dev, another team, and a
    `users` group whose `child_defaults` give every person the same models and
    limits), and example limits. Replace the backend URLs and the placeholder key
-   hashes. Backend credentials are named by environment variable (`api_key_env`),
-   never written in the file.
+   hashes. A backend's `type` names its server — `vllm`, `llama-server`, `openai`,
+   `azure-openai`, or `openai-compatible` for any other OpenAI-format server
+   (`docs/DEPLOYMENT.md` → Config for many hosts). Backend credentials are named by
+   environment variable (`api_key_env`), never written in the file.
 
 4. **Run**
 

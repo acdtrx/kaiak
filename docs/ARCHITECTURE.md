@@ -115,8 +115,9 @@ enforce the boundaries.
   reporter, and its circuit events to `metrics` through an observer interface
   `routing` defines.
 - `provider` — the only code that talks to backends: a module per backend type
-  (openai-compatible, azure-openai) over a shared OpenAI wire core, passthrough body
-  edits, per-backend connection pools, the circuit breaker's probe (`GET …/models`);
+  (openai, azure-openai, vllm, llama-server, and the generic openai-compatible), each
+  self-contained over a shared OpenAI wire core, passthrough body edits, per-backend
+  connection pools, the circuit breaker's probe (`GET …/models`);
   it reads backend streams with `sse`. It returns response events in the client's format; `server`
   relays them to the client, and observers (accounting) read them on the way.
 - `accounting` — meters each attempt's response as it is relayed, settles usage and
@@ -225,9 +226,9 @@ Test tooling outside the binary:
   logs, metrics and headers. Needs Node and `control/`'s dependencies, so `go test ./...` leaves it out
   and `scripts/check-all.sh` runs it.
 - `scripts/live` — the live-test kit, a separate Go module (standard library only,
-  imports nothing from the gateway): generates a config for a real vLLM, Azure OpenAI
-  or OpenAI backend — or two backends serving one model (load spread, the cap, a
-  failover the user drives) — runs the built binary and checks it end to end
+  imports nothing from the gateway): generates a config for a real vLLM,
+  llama-server, Azure OpenAI or OpenAI backend — or two backends serving one model
+  (load spread, the cap, a failover the user drives) — runs the built binary and checks it end to end
   (`docs/testing/LIVE-BACKENDS.md`).
 
 ## Control-plane packages

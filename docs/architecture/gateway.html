@@ -229,7 +229,7 @@ svg .band { stroke: none; }
     <tr><td><code>limits</code></td><td>One window counter per limit of global and of each group (sliding minute, UTC hour, UTC month); a request is checked against global and every group on its key's path; check-and-reserve before routing, settle from usage records after. In control-plane mode: pushed totals + own uncounted usage, per-minute shares, the outage refusal.</td></tr>
     <tr><td><code>routing</code></td><td>Model → deployment choice, in-flight counts, per-backend caps, one FIFO queue per model with a single dispatcher, per-deployment circuit breakers and their probers. State outlives config reloads that keep the deployment.</td></tr>
     <tr><td><code>accounting</code></td><td>Meters each attempt's response as it is relayed; settles usage and cost into records, each naming the key's group path; hands them to the control client's batcher and the usage-metrics sink.</td></tr>
-    <tr><td><code>provider</code></td><td>A module per backend type (OpenAI-compatible, Azure OpenAI) over a shared OpenAI wire core, passthrough body edits, per-backend connection pools, the circuit probe (<code>GET …/models</code>).</td></tr>
+    <tr><td><code>provider</code></td><td>A module per backend type (OpenAI, Azure OpenAI, vLLM, llama-server, and the generic OpenAI-compatible) over a shared OpenAI wire core, passthrough body edits, per-backend connection pools, the circuit probe (<code>GET …/models</code>).</td></tr>
     <tr><td><code>config</code></td><td>Strict decoding, validation, resolution into an immutable snapshot (each group's path, allowed models and effective limits), the holder that swaps it atomically, the one apply path, the file loader.</td></tr>
     <tr><td><code>control</code></td><td>Boot (snapshot → last-known-good → seed), the config stream with reconnect and resync, the usage batch sender, the status reporter, contact tracking.</td></tr>
     <tr><td><code>metrics</code></td><td>Small registry (counters, gauges, fixed-bucket histograms) and Prometheus text exposition.</td></tr>
@@ -578,8 +578,8 @@ svg .band { stroke: none; }
 
   <!-- backends -->
   <rect x="800" y="240" width="150" height="46" rx="8" class="ext"/>
-  <text x="875" y="260" text-anchor="middle" class="l">OpenAI-compatible</text>
-  <text x="875" y="276" text-anchor="middle" class="s">vLLM · SGLang · Azure</text>
+  <text x="875" y="260" text-anchor="middle" class="l">OpenAI format</text>
+  <text x="875" y="276" text-anchor="middle" class="s">a module per server</text>
   <rect x="800" y="300" width="150" height="46" rx="8" class="frame"/>
   <text x="875" y="320" text-anchor="middle" class="l">Anthropic API</text>
   <text x="875" y="336" text-anchor="middle" class="s">Bedrock (Converse)</text>
@@ -637,8 +637,8 @@ svg .band { stroke: none; }
     <tr>
       <td>③ Providers</td>
       <td><code>provider.Provider</code>: <code>Send(ctx, req) → Response</code> of events <em>already in the client's format</em>; <code>Registry.For</code> picks by backend <code>type</code></td>
-      <td><code>openai-compatible</code>, <code>azure-openai</code> (a module each, one shared wire core)</td>
-      <td>Bedrock (Converse API, binary stream framing, SigV4 written in-repo), Anthropic API, llama-server specifics (cap from slot count), cloud workload identity (IRSA / managed identity instead of static keys)</td>
+      <td><code>openai</code>, <code>azure-openai</code>, <code>vllm</code>, <code>llama-server</code>, <code>openai-compatible</code> (a module each, one shared wire core)</td>
+      <td>Bedrock (Converse API, binary stream framing, SigV4 written in-repo), Anthropic API, llama-server specifics in its module (cap from slot count), cloud workload identity (IRSA / managed identity instead of static keys)</td>
       <td>A backend <code>type</code> in the config schema (a protocol change on both halves), request conversion, stream decoding and signing behind <code>Send</code>, and its failures mapped to the provider error codes. The pipeline does not change.</td>
     </tr>
     <tr>

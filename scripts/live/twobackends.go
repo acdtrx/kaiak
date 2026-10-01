@@ -119,7 +119,7 @@ func (r *run) checkFailover() {
 			return
 		}
 	} else {
-		r.ask(fmt.Sprintf("Stop the second backend (%s) now, e.g. Ctrl-C its vLLM process. "+
+		r.ask(fmt.Sprintf("Stop the second backend (%s) now, e.g. Ctrl-C its server process. "+
 			"A request goes every %s; waiting up to %s for its circuit to open.", r.o.baseURL2, r.o.failoverPace, r.o.failoverWait))
 	}
 

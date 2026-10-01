@@ -44,13 +44,13 @@ english.
   gateway — all checks `scripts/check-gateway.sh` (gofmt, vet, staticcheck, race
   tests incl. the e2e test in `gateway/e2e`, then lint and self-test of the live-test
   kit in `scripts/live`; any cwd) · run `go run ./cmd/kaiak` from `gateway/`;
-  live backends (opt-in) `go -C scripts/live run . -kind vllm|openai|azure-openai …`
+  live backends (opt-in) `go -C scripts/live run . -kind vllm|llama-server|openai|azure-openai …`
   (`docs/testing/LIVE-BACKENDS.md`);
   control — from `control/`: `npm test` · `npm run lint` (`tsc` + boundary lint) ·
   sample control plane `KAIAK_SAMPLE_CONFIG=<file> KAIAK_CONTROL_TOKEN=<token> npm run dev -w sample`
   (`npm start -w sample` for JSON logs) · keygen
   `npm run keygen -w sample -- --id <key-id> --group <id>` · verify a backend
-  `npm run verify -w sample -- --base-url <url> [--api-key-env <NAME>] [--model <name>]`;
+  `npm run verify -w sample -- --base-url <url> [--type <type>] [--api-key-env <NAME>] [--model <name>]`;
   images (linux/amd64, on any Docker context; any cwd) — build
   `scripts/build-images.sh --repo <registry/namespace> [--context <ctx>] [--builder <builder>]`,
   smoke `scripts/smoke-images.sh --gateway <image> --sample <image>`, push

@@ -341,6 +341,19 @@ how the gateway acts on them: `GATEWAY.md` → Routing and reliability. A worked
 example: `examples/config.json`. Twenty hosts × a few models is repetitive — generate
 the document (a script, or the control plane) rather than editing it by hand.
 
+- **A backend's `type` is its server's** (`GATEWAY.md` → Providers): `vllm`,
+  `llama-server` (llama.cpp), `openai` (OpenAI's API, `https://api.openai.com/v1`),
+  `azure-openai` (Azure OpenAI, below), and `openai-compatible` only for a server
+  without a type of its own (SGLang, …). A backend answers the same under any of the
+  OpenAI-format types, but only its own type carries that server's rules. `openai`
+  and `azure-openai` require `api_key_env` and **force the standard service tier**: a
+  client's `service_tier` becomes `"default"` and every chat request carries it, so
+  requests are billed at the standard rates `prices` holds. `vllm`, `llama-server`
+  and `openai-compatible` pass the client's `service_tier` untouched and add none —
+  **an OpenAI deployment kept as `openai-compatible` runs on the tier the client asks
+  for, or the project's own**, and priority bills about twice the configured prices.
+  The sample's `verify` (`kaiak-control`'s `verifyBackend`) notes a vLLM or
+  llama-server answer under another type.
 - **One backend per vLLM process** (one URL = one process and port), with
   **`max_in_flight` = what that process takes** — typically its `--max-num-seqs`, or
   lower if latency at full batch is too high. Requests past it wait in the
@@ -722,6 +735,9 @@ directory's owner must be the gateway's user:
   and after `control_outage_grace_ms` refuse priced USD-limited models. New gateway
   pods of the old version exit at boot (a protocol mismatch counts as unavailable:
   they use the seed if set). Upgrade both within the grace.
+- **A backend type a gateway does not know** rejects the whole config on that
+  gateway (a schema error, reported like any rejection; the format version stays):
+  upgrade the gateways before publishing a config that uses a new type.
 - **Usage is flushed by the drain**: confirm each old pod logged `usage flushed` (not
   `usage not flushed`) during a rollout; give it a drain that ends before its
   timeout.

@@ -47,9 +47,9 @@ Group entries under headings as themes emerge.
   OpenAI names. Revisit trigger: a deployed model needs a numeric effort that clients
   cannot send as it is. (ruled 2026-09-29.)
 - **llama-server specifics** — concurrency cap from its slot count (`/props`
-  `total_slots`; `verifyBackend` already reads `/props`, not that field). It works
-  today as a plain OpenAI-compatible backend. Revisit trigger: the smaller
-  llama-server deployment goes ahead.
+  `total_slots`; `verifyBackend` already reads `/props`, not that field), in the
+  `llama-server` module. Revisit trigger: the smaller llama-server deployment goes
+  ahead.
 - **More from llama-server in `verifyBackend`** — router mode (one server, several
   models; `/props?model=<name>` describes each — today `/props` is read only when the
   list has one model) and the server's default sampling parameters
