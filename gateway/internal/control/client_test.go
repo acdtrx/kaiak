@@ -142,7 +142,7 @@ func (h *harness) client(tune func(*Options)) *Client {
 	}
 	logger := slog.New(slog.NewTextHandler(h.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	applier := config.NewApplier(h.holder, logger, func(string) (string, bool) { return "", false },
-		func(trigger string, applied bool, _ time.Time) { h.loads <- load{trigger, applied} })
+		func(l config.Load) { h.loads <- load{l.Trigger, l.Applied} })
 	// A short boot wait: a boot with the control plane down retries (at test speed)
 	// until it ends.
 	opts := Options{URL: u, Token: testToken, Instance: testInstance, Applier: applier, Dir: h.dir, Logger: logger,

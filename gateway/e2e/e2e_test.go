@@ -311,6 +311,9 @@ func TestGatewayEndToEnd(t *testing.T) {
 			`kaiak_errors_total{class="budget_exceeded"}`:                                       1,
 			`kaiak_config_loads_total{trigger="sighup",result="rejected"}`:                      1,
 			`kaiak_config_loads_total{trigger="sighup",result="applied"}`:                       1,
+			`kaiak_config_apply_duration_seconds_count{trigger="startup",result="applied"}`:     1,
+			`kaiak_config_apply_duration_seconds_count{trigger="sighup",result="rejected"}`:     1,
+			`kaiak_config_apply_duration_seconds_count{trigger="sighup",result="applied"}`:      1,
 			`kaiak_usage_records_total` + usage:                                                 4,
 			`kaiak_usage_tokens_total` + strings.TrimSuffix(usage, "}") + `,unit="tokens_out"}`: 16,
 			`kaiak_backend_in_flight_requests{backend="fake"}`:                                  0,
@@ -321,6 +324,17 @@ func TestGatewayEndToEnd(t *testing.T) {
 		}
 		if got := g.metric(t, `kaiak_usage_cost_usd_total`+usage); got <= 0 {
 			t.Errorf("chat cost %v, want > 0", got)
+		}
+		info, err := os.Stat(configFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := g.metric(t, `kaiak_config_size_bytes`); got != float64(info.Size()) {
+			t.Errorf("config size %v, want the file's %d bytes", got, info.Size())
+		}
+		// Requests ran on the startup config: the limiter matched its counters to it.
+		if got := g.metric(t, `kaiak_limits_sync_duration_seconds_count`); got < 1 {
+			t.Errorf("limiter syncs %v, want at least the startup config's", got)
 		}
 	})
 

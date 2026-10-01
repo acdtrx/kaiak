@@ -81,6 +81,9 @@ var (
 	// Attempts per request: one bucket per possible count (max_attempts is at most
 	// config.MaxAttemptsCeiling).
 	attemptBuckets = []float64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+	// Config work — an apply, a limiter resync — spans a small config's fraction of a
+	// millisecond to a large one's seconds.
+	configWorkBuckets = []float64{0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30}
 )
 
 // Queue rejection reasons, the reason label of kaiak_queue_rejections_total.
@@ -129,6 +132,9 @@ type Ops struct {
 	upstreamTime    *HistogramVec
 	configLoads     *CounterVec
 	configApplied   *GaugeVec
+	configSize      *GaugeVec
+	configApply     *HistogramVec
+	limitsSync      *HistogramVec
 	refusedConns    *CounterVec
 }
 
@@ -174,6 +180,14 @@ func NewOps(reg *Registry, router *routing.Router, holder *config.Holder) *Ops {
 			"Config loads by trigger (startup, sighup, control, seed, last-known-good) and result (applied, rejected).", "trigger", "result"),
 		configApplied: reg.Gauge("kaiak_config_last_applied_timestamp_seconds",
 			"Unix time the running config was applied."),
+		configSize: reg.Gauge("kaiak_config_size_bytes",
+			"Size of the running config document, in bytes."),
+		configApply: reg.Histogram("kaiak_config_apply_duration_seconds",
+			"Time a config load took to validate the document and build its snapshot, to the swap or the rejection, by trigger and result.",
+			configWorkBuckets, "trigger", "result"),
+		limitsSync: reg.Histogram("kaiak_limits_sync_duration_seconds",
+			"Time the limiter took to match its counters to a newly applied config; the request that finds the new config waits for it, and every other request waits behind it.",
+			configWorkBuckets),
 		refusedConns: reg.Counter("kaiak_connections_refused_total",
 			"API connections closed at accept because KAIAK_MAX_CONNECTIONS were open."),
 	}
@@ -189,8 +203,10 @@ func NewOps(reg *Registry, router *routing.Router, holder *config.Holder) *Ops {
 	for _, trigger := range configTriggers {
 		for _, result := range configResults {
 			o.configLoads.Add(0, trigger, result)
+			o.configApply.Prepare(trigger, result)
 		}
 	}
+	o.limitsSync.Prepare()
 	if s := holder.Current(); s != nil {
 		o.prepareSeries(s)
 	}
@@ -426,18 +442,30 @@ func (o *Ops) ObserveAttempts(model string, n int) {
 // KAIAK_MAX_CONNECTIONS open.
 func (o *Ops) ConnectionRefused() { o.refusedConns.Inc() }
 
-// ConfigLoaded records one config load: its trigger, whether it was applied, and when.
-// An applied config's series are created at 0 (the holder holds it by then).
-func (o *Ops) ConfigLoaded(trigger string, applied bool, at time.Time) {
+// ConfigLoaded records one config load (a config.LoadObserver): its trigger and
+// result, its duration when there was a document, and for an applied config when and
+// its size. An applied config's series are created at 0 (the holder holds it by
+// then).
+func (o *Ops) ConfigLoaded(l config.Load) {
 	result := "rejected"
-	if applied {
+	if l.Applied {
 		result = "applied"
-		o.configApplied.Set(float64(at.UnixMilli()) / 1000)
+		o.configApplied.Set(float64(l.At.UnixMilli()) / 1000)
+		o.configSize.Set(float64(l.Bytes))
 		if s := o.holder.Current(); s != nil {
 			o.prepareSeries(s)
 		}
 	}
-	o.configLoads.Inc(trigger, result)
+	if l.Document {
+		o.configApply.Observe(l.Duration.Seconds(), l.Trigger, result)
+	}
+	o.configLoads.Inc(l.Trigger, result)
+}
+
+// ObserveLimitsSync records one limiter resync to a new config (a limits sync
+// observer).
+func (o *Ops) ObserveLimitsSync(d time.Duration) {
+	o.limitsSync.Observe(d.Seconds())
 }
 
 // prepareSeries creates at 0 every ops series whose label values s determines

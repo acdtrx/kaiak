@@ -113,6 +113,8 @@ type Limiter struct {
 	contact func() Contact
 
 	mu sync.Mutex
+	// observeSync, when set, hears how long each sync to a new snapshot took.
+	observeSync func(time.Duration)
 	// applied is the snapshot the counters were last matched to. The limiter follows
 	// the holder's live snapshot, not each request's: a changed limit applies at once.
 	applied  *config.Snapshot
@@ -206,6 +208,16 @@ func NewShared(holder *config.Holder, now func() time.Time, contact func() Conta
 
 func (l *Limiter) shared() bool { return l.contact != nil }
 
+// ObserveSyncs has f told how long each match of the counters to a newly applied
+// config took (the ops metrics): the request that finds the new config waits for it
+// under the limiter's lock, and every other request behind it. The time is the
+// process clock's, not the limiter's.
+func (l *Limiter) ObserveSyncs(f func(time.Duration)) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.observeSync = f
+}
+
 // sync matches the counters to the live snapshot when it changed: limits that still
 // exist keep their counters (a changed value applies to the count so far), a limit
 // whose only change is its model set keeps its predecessor's (carryOver), other new
@@ -214,6 +226,10 @@ func (l *Limiter) sync() {
 	snap := l.holder.Current()
 	if snap == nil || snap == l.applied {
 		return
+	}
+	if l.observeSync != nil {
+		start := time.Now()
+		defer func() { l.observeSync(time.Since(start)) }()
 	}
 	now := l.now()
 	next := make(map[counterKey]*counter, len(l.counters))

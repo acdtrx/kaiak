@@ -292,25 +292,12 @@ Group entries under headings as themes emerge.
 
 ## Observability
 
-- **Config size and load-time metrics** — measure config loading in production before
-  optimizing it for large deployments (about 20 models over some 30 deployments,
-  3–7k keys). Today the gateway counts loads (`kaiak_config_loads_total`), stamps the last apply
-  (`kaiak_config_last_applied_timestamp_seconds`) and logs backend, model and key
-  counts on `config applied` — nothing says how large a config is or how long it
-  took. Wanted:
-  - the applied config's size in bytes (a gauge, and on the `config applied` /
-    `config rejected` log lines);
-  - apply duration per trigger — parse, schema and semantic checks, snapshot build
-    (`config.Applier.apply`);
-  - the limiter's resync, timed on its own: `limits.Limiter.sync` runs inside the
-    first `Reserve` after a swap, under the limiter lock, so every request waits
-    for it — the cost requests actually feel, and one an apply timer misses;
-  - on the control side, if wanted: `publishConfig`'s validation and resolution
-    time and the encoded snapshot size (every gateway receives it; the gateway
-    refuses a snapshot over 16 MiB).
-  Revisit trigger: before the first production run with a large config — build
-  the metrics, run, and decide on optimization from the numbers. (ruled 2026-09-30:
-  measure first; not built yet.)
+- **Control-plane config publish cost** — `publishConfig`'s validation and
+  resolution time and the encoded snapshot size are not measured: every gateway
+  receives that snapshot, and a gateway refuses one over 16 MiB. The gateway side is
+  measured (`GATEWAY.md` → Observability: Config load cost). Revisit trigger:
+  publishes feel slow, or a gateway's `kaiak_config_size_bytes` comes near the
+  16 MiB snapshot cap.
 - **Errors and refusals per team** — a team's dashboard can show its usage but not
   its errors. The usage metrics carry `key_group`, `root_group`, `key_id` and
   `model`, but count only usage records: a request refused before routing (unknown

@@ -263,7 +263,7 @@ func TestOpsMetrics(t *testing.T) {
 	ops.ObserveUpstreamAttempt("busy", "m", AttemptServerError, 2*time.Second)
 	expectPanic(t, "unknown attempt outcome", func() { ops.ObserveUpstreamAttempt("busy", "m", "nope", 0) })
 	ops.ObserveAttempts("m", 2)
-	ops.ConfigLoaded("startup", true, time.UnixMilli(1_700_000_000_500))
+	ops.ConfigLoaded(config.Load{Trigger: "startup", Applied: true, At: time.UnixMilli(1_700_000_000_500)})
 	expectPanic(t, "unknown error class", func() { ops.CountError("nope") })
 
 	out := text(reg)
@@ -301,6 +301,56 @@ func TestOpsMetrics(t *testing.T) {
 	}
 	if !strings.Contains(out, `kaiak_build_info{version="`) || !strings.Contains(out, `,go_version="go`) {
 		t.Errorf("build info missing:\n%s", out)
+	}
+}
+
+func TestConfigLoadMetrics(t *testing.T) {
+	holder := &config.Holder{}
+	reg := NewRegistry()
+	ops := NewOps(reg, routing.New(routing.Options{}), holder)
+	out := text(reg)
+	for _, want := range []string{
+		`kaiak_config_apply_duration_seconds_count{trigger="startup",result="applied"} 0`,
+		`kaiak_config_apply_duration_seconds_count{trigger="last-known-good",result="rejected"} 0`,
+		`kaiak_limits_sync_duration_seconds_count 0`,
+	} {
+		if !strings.Contains(out, want+"\n") {
+			t.Errorf("not at 0 from the start: %q in:\n%s", want, out)
+		}
+	}
+	// No config is in force: no size to give.
+	if strings.Contains(out, "\nkaiak_config_size_bytes ") {
+		t.Errorf("a config size before any config:\n%s", out)
+	}
+
+	holder.Swap(&config.Snapshot{})
+	ops.ConfigLoaded(config.Load{Trigger: "startup", Applied: true, At: time.Now(), Document: true, Bytes: 2048,
+		Duration: 700 * time.Microsecond})
+	ops.ConfigLoaded(config.Load{Trigger: "sighup", At: time.Now(), Document: true, Bytes: 9999,
+		Duration: 40 * time.Millisecond})
+	ops.ConfigLoaded(config.Load{Trigger: "sighup", At: time.Now()}) // the file could not be read
+	ops.ObserveLimitsSync(3 * time.Second)
+
+	out = text(reg)
+	for _, want := range []string{
+		// A rejected document leaves the size of the one in force.
+		`kaiak_config_size_bytes 2048`,
+		`kaiak_config_apply_duration_seconds_bucket{trigger="startup",result="applied",le="0.0005"} 0`,
+		`kaiak_config_apply_duration_seconds_bucket{trigger="startup",result="applied",le="0.001"} 1`,
+		`kaiak_config_apply_duration_seconds_count{trigger="startup",result="applied"} 1`,
+		`kaiak_config_apply_duration_seconds_bucket{trigger="sighup",result="rejected",le="0.025"} 0`,
+		`kaiak_config_apply_duration_seconds_bucket{trigger="sighup",result="rejected",le="0.05"} 1`,
+		// The unreadable file is a load, counted, but no document was timed.
+		`kaiak_config_apply_duration_seconds_count{trigger="sighup",result="rejected"} 1`,
+		`kaiak_config_loads_total{trigger="sighup",result="rejected"} 2`,
+		`kaiak_config_apply_duration_seconds_count{trigger="sighup",result="applied"} 0`,
+		`kaiak_limits_sync_duration_seconds_bucket{le="2.5"} 0`,
+		`kaiak_limits_sync_duration_seconds_bucket{le="5"} 1`,
+		`kaiak_limits_sync_duration_seconds_count 1`,
+	} {
+		if !strings.Contains(out, want+"\n") {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
 	}
 }
 

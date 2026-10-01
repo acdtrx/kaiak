@@ -1440,7 +1440,10 @@ own, and a client sending repeats is broken either way.
   (`startup`, `sighup`; in control-plane mode `control`, `last-known-good` and `seed`) and
   result: `config applied`, or `config rejected` with the issue codes and
   `running_config=kept` when an older config stays in force. Control-plane loads also
-  log `config_version`. SIGHUP in control-plane mode is logged and ignored.
+  log `config_version`. Both lines carry `bytes` (the document's size) and
+  `duration_ms` (its validation and snapshot build, to the swap or the rejection),
+  except a rejection with no document — the file could not be read. SIGHUP in
+  control-plane mode is logged and ignored.
 - **Rejection codes**: `syntax` (not a single JSON value), `duplicate-member` (an
   object names a member twice, at any depth; the issue's path is the repeated
   member), `schema` (breaks
@@ -1765,6 +1768,9 @@ own, and a client sending repeats is broken either way.
   | `kaiak_probes_total` | counter | `backend`, `result` | Probes of backends with open circuits: `success`, `failure` |
   | `kaiak_config_loads_total` | counter | `trigger`, `result` | Config loads: `startup`/`sighup`/`control`/`seed`/`last-known-good`, `applied`/`rejected` |
   | `kaiak_config_last_applied_timestamp_seconds` | gauge | — | Unix time the running config was applied |
+  | `kaiak_config_size_bytes` | gauge | — | Size of the running config document in bytes, as applied (a file's bytes, a control-plane snapshot's `config`); absent before the first config (Config load cost, below) |
+  | `kaiak_config_apply_duration_seconds` | histogram | `trigger`, `result` | Every config load that had a document, from the start of its validation (syntax, schema, semantic rules, credentials, snapshot build) to the swap or the rejection; labels as `kaiak_config_loads_total`. A file that could not be read is counted there, not here |
+  | `kaiak_limits_sync_duration_seconds` | histogram | — | The limiter matching its counters to a newly applied config — done inside the first limiter call after the swap (normally a request's admission), under the limiter's lock, so that request waits for it and every other request waits behind it. Calls that find no new config are not observed |
   | `kaiak_connections_refused_total` | counter | — | API connections closed at accept because `KAIAK_MAX_CONNECTIONS` were open (0 with no cap) |
   | `kaiak_build_info` | gauge | `version`, `go_version` | Always 1; `version` is the release the binary was built as — the image build links its `git describe` version in (`docs/TECH-STACK.md`, Container images), else the module version Go stamped, else `(devel)` |
   | `kaiak_usage_batch_sends_total` | counter | `result` | Control-plane mode: usage batch sends — `acked`, `rejected` (set aside), `failed` (retried) |
@@ -1830,8 +1836,9 @@ own, and a client sending repeats is broken either way.
     and backends — so `increase(...) > 0` sees the first rejection, opening or
     burst instead of a series born at 1. At startup: `kaiak_errors_total` per class,
     `kaiak_limit_rejections_total` per scope kind × type,
-    `kaiak_config_loads_total` per trigger × result (all five triggers, whichever
-    mode), the usage-delivery counters per result and drop reason,
+    `kaiak_config_loads_total` and `kaiak_config_apply_duration_seconds` per
+    trigger × result (all five triggers, whichever mode),
+    `kaiak_limits_sync_duration_seconds`, the usage-delivery counters per result and drop reason,
     `kaiak_usage_clamped_records_total`. Per applied config: per model
     `kaiak_queue_rejections_total` × reason, `kaiak_queue_wait_seconds`,
     `kaiak_request_attempts`; per deployment `kaiak_upstream_attempts_total` ×
@@ -1912,8 +1919,24 @@ own, and a client sending repeats is broken either way.
     histograms model × backend × 15 and 13 lines; queue wait model × 17 lines;
     attempts model × 13 lines; retries model × backend × 6 reasons; limit
     rejections 8 (2 scope kinds × 4 types); upstream attempts
-    deployments × ≤ 12 outcomes; attempt duration backends × 18 lines — all bounded
+    deployments × ≤ 12 outcomes; attempt duration backends × 18 lines; config apply
+    duration 10 × 18 lines (5 triggers × 2 results) and limiter sync 18 — all bounded
     by the config, never by clients or keys.
+- **Config load cost** (settled 2026-10-01): large configs (some 20 models over 30
+  deployments, thousands of keys) are measured before anything about loading them
+  is optimized — `kaiak_config_size_bytes`, `kaiak_config_apply_duration_seconds`,
+  `kaiak_limits_sync_duration_seconds` and the `bytes` / `duration_ms` fields on the
+  load lines. The apply is timed from the start of its validation, after any wait for
+  another load, to the swap or the rejection; the limiter's resync is timed on its
+  own, since it runs later, on the request path, and is the cost requests feel. Both
+  histograms share buckets from 0.5 ms to 30 s (0.0005, 0.001, 0.0025, 0.005, 0.01,
+  0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30; slower in `+Inf`), resolving a
+  small config's sub-millisecond load and a large one's seconds. `result` splits the
+  apply histogram because a rejection stops at its first failing stage (a syntax
+  error in microseconds): mixed in, rejections would hide what an applied config
+  costs. No labels beyond `trigger` and `result` — nothing per key, group or
+  backend. Rejected: a size or duration per stage (parse, checks, snapshot build,
+  per config section) — kept out until a measurement says which part costs.
 - **Two paths, not derived** (principle 7; settled 2026-09-24): usage metrics come
   from a sink on accounting's fan-out, fed each settled record as it is produced —
   the same settlement the usage record carries, so dashboards and billing never count

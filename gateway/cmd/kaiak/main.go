@@ -351,8 +351,8 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 	// Every applied config sets the backend caps routing enforces and the backends
 	// whose connection pools are kept, and has its deployments' models checked in
 	// the background.
-	applier := config.NewApplier(holder, logger, lookupEnv, func(trigger string, applied bool, at time.Time) {
-		if applied {
+	applier := config.NewApplier(holder, logger, lookupEnv, func(load config.Load) {
+		if load.Applied {
 			router.Configure(holder.Current())
 			circuits.PrepareSeries(holder.Current())
 			providers.Retain(holder.Current().Backends)
@@ -362,7 +362,7 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 					"max_request_body_bytes", bodyCap, "body_memory_bytes", s.bodyMemory)
 			}
 		}
-		ops.ConfigLoaded(trigger, applied, at)
+		ops.ConfigLoaded(load)
 	})
 	var loader *config.FileLoader
 	var client *control.Client
@@ -373,12 +373,14 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 			return err
 		}
 		limiter = limits.New(holder, time.Now, logger)
+		limiter.ObserveSyncs(ops.ObserveLimitsSync)
 		restoreLimits(limiter, dir, logger)
 	} else {
 		// The limiter reads the client's contact (the outage) and the client feeds
 		// the limiter totals and usage generations; client is set before any request
 		// or scrape can read it.
 		limiter = limits.NewShared(holder, time.Now, func() limits.Contact { return controlContact(client) }, logger)
+		limiter.ObserveSyncs(ops.ObserveLimitsSync)
 		client = control.New(control.Options{URL: s.control.url, Token: s.control.token, Instance: s.instanceID,
 			Applier: applier, Dir: dir, Logger: logger, BootWait: s.control.bootWait, StartedAt: startedAt,
 			SeedConfig: s.control.seed, SeedFile: s.control.seedFile,

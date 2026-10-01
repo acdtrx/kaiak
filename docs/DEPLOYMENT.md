@@ -581,6 +581,13 @@ the document (a script, or the control plane) rather than editing it by hand.
   CIDR allowed); the token where that is not enough.
 - **Version**: `kaiak_build_info{version="…"}` carries the image's version (its tag,
   from `git describe`); compare it across pods during a rollout.
+- **Config load cost** (`GATEWAY.md` → Observability: Config load cost): with a large
+  config, read `kaiak_config_size_bytes`, the apply time
+  (`histogram_quantile(0.99, sum by (le) (rate(kaiak_config_apply_duration_seconds_bucket{result="applied"}[1h])))`,
+  or the `duration_ms` and `bytes` on each `config applied` line) and the limiter's
+  resync after each new config (`kaiak_limits_sync_duration_seconds` — the pause the
+  first requests on a new config feel). They are there to measure, not to alert on:
+  no threshold is known yet.
 - **Cardinality** (`GATEWAY.md` → Observability: Cardinality): usage series per
   replica ≈ `label sets × models used × 2 statuses × 6`. 500 keys using 3 models
   each: 18,000 series per replica, × the replicas for the store's total. When it

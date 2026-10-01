@@ -13,9 +13,23 @@ import (
 	"kaiak/internal/schemacheck"
 )
 
-// LoadObserver is told the result of every config load: its trigger, whether the
-// config was applied, and when (the ops metrics).
-type LoadObserver func(trigger string, applied bool, at time.Time)
+// Load is one config load as its observer hears of it (the ops metrics).
+type Load struct {
+	// Trigger names what asked for the load; Applied is whether the config was swapped
+	// in, At when the load ended.
+	Trigger string
+	Applied bool
+	At      time.Time
+	// Document: there was a document to validate — false for a load that failed
+	// before (Reject). Only then are Bytes, the document's size, and Duration, the time
+	// from the start of its validation to the swap or the rejection, set.
+	Document bool
+	Bytes    int
+	Duration time.Duration
+}
+
+// LoadObserver is told of every config load.
+type LoadObserver func(Load)
 
 // Applier is the one path by which a config document becomes the live snapshot,
 // whatever its source (config file, control plane, last-known-good copy): validate it
@@ -55,17 +69,28 @@ func (a *Applier) apply(trigger string, data []byte, v Version, attrs []any) (*S
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	// The clock starts once the lock is held: a load waiting for another is not
+	// slower for it.
+	start := time.Now()
 	snapshot, err := Check(data, a.lookupEnv)
 	if err != nil {
-		a.reject(trigger, err, attrs)
+		a.reject(Load{Trigger: trigger, Document: true, Bytes: len(data), Duration: time.Since(start)}, err, attrs)
 		return nil, err
 	}
 	snapshot.Version = v
 	a.holder.Swap(snapshot)
+	load := Load{Trigger: trigger, Applied: true, Document: true, Bytes: len(data), Duration: time.Since(start)}
 	a.logger.Info("config applied", append(append([]any{"trigger", trigger}, attrs...),
-		"backends", len(snapshot.Backends), "models", len(snapshot.Models), "keys", len(snapshot.Keys))...)
-	a.report(trigger, true)
+		"backends", len(snapshot.Backends), "models", len(snapshot.Models), "keys", len(snapshot.Keys),
+		"bytes", load.Bytes, durationMS(load.Duration))...)
+	a.report(load)
 	return snapshot, nil
+}
+
+// durationMS is a load's duration as a log attribute, in milliseconds to the
+// microsecond, as the gateway logs its other durations.
+func durationMS(d time.Duration) slog.Attr {
+	return slog.Float64("duration_ms", float64(d.Microseconds())/1000)
 }
 
 // Loaded reports whether a config is in force.
@@ -89,13 +114,13 @@ func Check(data []byte, lookupEnv func(string) (string, bool)) (*Snapshot, error
 func (a *Applier) Reject(trigger string, err error, attrs ...any) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.reject(trigger, err, attrs)
+	a.reject(Load{Trigger: trigger}, err, attrs)
 	return err
 }
 
 // reject logs and counts a failed load. Callers hold a.mu.
-func (a *Applier) reject(trigger string, err error, attrs []any) {
-	logAttrs := append(append([]any{"trigger", trigger}, attrs...), "error", err)
+func (a *Applier) reject(load Load, err error, attrs []any) {
+	logAttrs := append(append([]any{"trigger", load.Trigger}, attrs...), "error", err)
 	var invalid *ValidationError
 	if errors.As(err, &invalid) {
 		logAttrs = append(logAttrs, "codes", invalid.Codes())
@@ -103,13 +128,17 @@ func (a *Applier) reject(trigger string, err error, attrs []any) {
 	if a.holder.Loaded() {
 		logAttrs = append(logAttrs, "running_config", "kept")
 	}
+	if load.Document {
+		logAttrs = append(logAttrs, "bytes", load.Bytes, durationMS(load.Duration))
+	}
 	a.logger.Error("config rejected", logAttrs...)
-	a.report(trigger, false)
+	a.report(load)
 }
 
-func (a *Applier) report(trigger string, applied bool) {
+func (a *Applier) report(load Load) {
 	if a.observe != nil {
-		a.observe(trigger, applied, time.Now())
+		load.At = time.Now()
+		a.observe(load)
 	}
 }
 

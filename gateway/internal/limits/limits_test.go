@@ -480,6 +480,32 @@ func TestReloadKeepsMatchingCounters(t *testing.T) {
 	}
 }
 
+func TestSyncIsObservedOncePerNewConfig(t *testing.T) {
+	c := newClock("2026-09-24T10:00:00Z")
+	holder := holderOf(snapshot(t, limitsDoc{team: rpm2}))
+	l := c.limiter(holder)
+	var syncs []time.Duration
+	l.ObserveSyncs(func(d time.Duration) { syncs = append(syncs, d) })
+
+	admitN(t, l, workload, 2, 100) // the first request matches the counters to the config
+	_ = l.Usage()
+	if len(syncs) != 1 {
+		t.Fatalf("%d syncs observed for one config, want 1", len(syncs))
+	}
+	holder.Swap(snapshot(t, limitsDoc{team: `[{ "type": "requests_per_minute", "value": 3 }]`}))
+	admitN(t, l, workload, 1, 100)
+	_ = l.Usage()
+	if len(syncs) != 2 {
+		t.Fatalf("%d syncs observed for two configs, want 2", len(syncs))
+	}
+	for _, d := range syncs {
+		// Timed on the process clock, which moves; the limiter's clock stood still.
+		if d <= 0 {
+			t.Errorf("sync duration %v, want the time it took", d)
+		}
+	}
+}
+
 func openDir(t *testing.T) (*state.Dir, *bytes.Buffer) {
 	t.Helper()
 	var logs bytes.Buffer

@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -44,20 +45,17 @@ func newTestLoader(t *testing.T, env func(string) (string, bool)) (*FileLoader, 
 }
 
 func TestApplierReportsEveryLoadToTheObserver(t *testing.T) {
-	type load struct {
-		trigger string
-		applied bool
-	}
-	var loads []load
+	var loads []Load
 	var logs bytes.Buffer
 	holder := &Holder{}
 	applier := NewApplier(holder, slog.New(slog.NewTextHandler(&logs, nil)), noEnv,
-		func(trigger string, applied bool, _ time.Time) { loads = append(loads, load{trigger, applied}) })
+		func(l Load) { loads = append(loads, l) })
 	valid, err := os.ReadFile(filepath.Join(fixturesDir, "valid", "minimal.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	before := time.Now()
 	if _, err := applier.Apply("control", valid, "config_version", 3); err != nil {
 		t.Fatal(err)
 	}
@@ -66,16 +64,42 @@ func TestApplierReportsEveryLoadToTheObserver(t *testing.T) {
 	}
 	_ = applier.Reject("sighup", os.ErrNotExist, "file", "x.json")
 
-	want := []load{{"control", true}, {"control", false}, {"sighup", false}}
-	if !slices.Equal(loads, want) {
-		t.Errorf("loads %v, want %v", loads, want)
+	type load struct {
+		trigger  string
+		applied  bool
+		document bool
+		bytes    int
+	}
+	var got []load
+	for _, l := range loads {
+		got = append(got, load{l.Trigger, l.Applied, l.Document, l.Bytes})
+		if l.At.Before(before) {
+			t.Errorf("load %+v: no end time", l)
+		}
+		// A document load is timed; the clock never reads zero across a parse.
+		if l.Document != (l.Duration > 0) {
+			t.Errorf("load %+v: a duration only for a document, and always then", l)
+		}
+	}
+	want := []load{{"control", true, true, len(valid)}, {"control", false, true, 1}, {"sighup", false, false, 0}}
+	if !slices.Equal(got, want) {
+		t.Errorf("loads %+v, want %+v", got, want)
 	}
 	out := logs.String()
-	for _, line := range []string{`msg="config applied" trigger=control config_version=3`,
-		`msg="config rejected" trigger=control config_version=4`, "codes=[syntax] running_config=kept"} {
+	for _, line := range []string{
+		fmt.Sprintf(`msg="config applied" trigger=control config_version=3 backends=1 models=1 keys=1 bytes=%d duration_ms=`, len(valid)),
+		`msg="config rejected" trigger=control config_version=4`,
+		"codes=[syntax] running_config=kept bytes=1 duration_ms=",
+	} {
 		if !strings.Contains(out, line) {
 			t.Errorf("log misses %q:\n%s", line, out)
 		}
+	}
+	// A load with no document has no size or duration to log.
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if last := lines[len(lines)-1]; !strings.Contains(last, "trigger=sighup") ||
+		strings.Contains(last, "bytes=") || strings.Contains(last, "duration_ms=") {
+		t.Errorf("the unreadable file's line %q: want no bytes or duration_ms", last)
 	}
 }
 
