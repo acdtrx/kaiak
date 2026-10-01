@@ -418,8 +418,8 @@ own, and a client sending repeats is broken either way.
   - `vllm`: `{"detail": "Not Found"}` — FastAPI's answer to a route it does not
     have. vLLM's own errors take the OpenAI shape; its handler is registered for
     FastAPI's `HTTPException`, which the router's Starlette `404` does not match, so
-    the framework's default answer stands (read in vLLM's source, `main` on
-    2026-10-01; not run).
+    the framework's default answer stands (vLLM's source, `main` on 2026-10-01; run
+    on vLLM serving Qwen3.8-27B-NVFP4, 2026-10-01).
   - `llama-server`: `{"error": {"message": "File Not Found", "type":
     "not_found_error", "code": 404}}` (run on build 11146). Its HTTP layer gives
     every `404` that body, so in router mode a model the server does not have reads

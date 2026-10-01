@@ -150,8 +150,8 @@ clears kaiak-control's, step 3 the gateway's).
   `-kind vllm` against the DGX, each with a wrong `base_url` for phase 2.
 - `scripts/check-all.sh` green at each phase end.
 
-**Verification status:** phase 1 done (2026-10-01), green; phase 2 done
-(2026-10-01), green — the DGX live run not done.
+**Verification status:** done (2026-10-01); phase 1 and phase 2 green, the DGX
+live run passed.
 
 - [x] Shared fixtures, same codes from both halves (`STEP-1-contract.md`, steps 2–3).
 - [x] One table test of every gateway module's service tier
@@ -164,8 +164,13 @@ clears kaiak-control's, step 3 the gateway's).
 - [x] Phase 2: the unknown-path answer per module, the config-apply warning
   (`STEP-5-wrong-path.md`: provider, server, routing and e2e tests; llama-server's
   answer run locally, the others from source or known behaviour).
-- [ ] Live: `-kind llama-server` and `-kind vllm` against the DGX — not run. A
-  llama-server `base_url` missing `/v1` gives no `404` (it serves chat there): its
-  wrong-path run needs another path, e.g. `/v2` (`STEP-5-wrong-path.md`).
+- [x] Live, DGX (2026-10-01): `-kind vllm` (vLLM, Qwen3.8-27B-NVFP4) and
+  `-kind llama-server` (llama.cpp MTP build, Qwen3.8-27B UD-Q4_K_XL) each 11 passed,
+  0 failed (embeddings not served, skipped). Wrong path — vLLM `base_url` without
+  `/v1`, llama-server with `/v2` (without `/v1` it serves chat): the WARN `the backend
+  has no models list at its base_url` with the `/v1` hint, `502
+  upstream_path_missing`, the circuit opened after five failures. The servers'
+  answers: vLLM `{"detail":"Not Found"}`, llama-server `not_found_error`, as the
+  signatures say.
 - [x] `scripts/check-all.sh` green 3× in a row at the end of phase 1
   (`STEP-4-e2e-and-docs.md`).
