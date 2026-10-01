@@ -46,7 +46,7 @@ export function createMemoryStore(): ControlPlaneStore {
     },
 
     async latestConfig() {
-      return configs.at(-1);
+      return structuredClone(configs.at(-1));
     },
 
     async saveConfig(entry, keep) {
@@ -56,7 +56,7 @@ export function createMemoryStore(): ControlPlaneStore {
     },
 
     async configsAfter(version) {
-      return configs.filter((entry) => entry.version > version);
+      return structuredClone(configs.filter((entry) => entry.version > version));
     },
 
     async acquireLease(holder, now, expiresAt) {

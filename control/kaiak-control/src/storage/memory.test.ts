@@ -8,7 +8,7 @@ import { test } from "node:test";
 import type { BatchId } from "../messages/index.ts";
 
 import { createMemoryStore } from "./index.ts";
-import type { CountedBatch } from "./index.ts";
+import type { CountedBatch, StoredConfig } from "./index.ts";
 
 const EPOCH = "a".repeat(32);
 
@@ -59,6 +59,21 @@ test("forgetting a gateway keeps its last counted batch; the cursor retention dr
   await store.saveCountedBatch(counted(1, 300), undefined, 10);
   assert.deepEqual(await store.dropBatchCursorsCountedBefore(250), ["gw-2"]);
   assert.deepEqual(await store.lastBatch("gw-1"), batchId(1));
+});
+
+test("stored configs share no state with what callers hold, read or written", async () => {
+  const store = createMemoryStore();
+  const written = { version: 1, publishedAt: 0, config: { global: { max_n: 8 } } } as unknown as StoredConfig;
+  await store.saveConfig(written, 10);
+  (written.config as unknown as { global: { max_n: number } }).global.max_n = 1;
+
+  const latest = await store.latestConfig();
+  (latest?.config as unknown as { global: { max_n: number } }).global.max_n = 2;
+  const [after] = await store.configsAfter(0);
+  (after?.config as unknown as { global: { max_n: number } }).global.max_n = 3;
+
+  const stored = (await store.latestConfig())?.config as unknown as { global: { max_n: number } };
+  assert.equal(stored.global.max_n, 8);
 });
 
 test("every store has its own config epoch", async () => {
