@@ -293,8 +293,8 @@ Group entries under headings as themes emerge.
 ## Observability
 
 - **Config size and load-time metrics** — measure config loading in production before
-  optimizing it for large deployments (20+ models, 30+ backends, 3–7k keys). Today
-  the gateway counts loads (`kaiak_config_loads_total`), stamps the last apply
+  optimizing it for large deployments (about 20 models over some 30 deployments,
+  3–7k keys). Today the gateway counts loads (`kaiak_config_loads_total`), stamps the last apply
   (`kaiak_config_last_applied_timestamp_seconds`) and logs backend, model and key
   counts on `config applied` — nothing says how large a config is or how long it
   took. Wanted:
