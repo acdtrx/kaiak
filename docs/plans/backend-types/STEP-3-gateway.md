@@ -11,21 +11,16 @@ standard service tier is forced by `openai` and `azure-openai` only.
 
 - `gateway/internal/config/snapshot.go`: the `BackendType` constants.
 - `gateway/internal/config/schema.go`: the type list; `api_key_env` required for
-  `openai`, beside the `azure-openai` rule; `FormatVersion` 4.
+  `openai`, beside the `azure-openai` rule.
 - `gateway/internal/provider/`:
-  - `openai.go`, `vllm.go`, `llama_server.go`: new modules;
+  - `openai.go`, `vllm.go`, `llama_server.go`: new modules, each self-contained over
+    the wire core (overview decision 6);
   - `openai_compatible.go`: drops `standardServiceTier`;
-  - `azure_openai.go`: unchanged apart from shared helpers;
-  - `provider.go`: the registry's switch names every type;
-  - `wire.go`: helpers the bearer-style modules share (URL join, bearer header,
-    models-list probe), if extracting them keeps each module a few lines.
-- The protocol version constant (and `fakecontrol`'s header); the last-known-good
-  config file's format version.
+  - `azure_openai.go`: unchanged;
+  - `provider.go`: the registry's switch names every type.
 - `scripts/live/`: `config.go` emits the type of each `-kind`; `main.go` accepts
   `-kind llama-server`; the kit's self-test covers it if `check-gateway.sh` runs one
   per kind.
-- Tests that build configs (`cmd/kaiak`, `auth`, `config`, `limits`, `server`,
-  `e2e`) to format 4.
 
 ## Decisions made during planning
 
@@ -45,7 +40,6 @@ standard service tier is forced by `openai` and `azure-openai` only.
   the edit from any module fails it (closes the review's T1).
 - Per module: URL, credential header (none without `api_key_env` where allowed) and
   probe against the fake backend.
-- A last-known-good config of the old format version is discarded with its log line.
 - `scripts/check-gateway.sh` green, the live-test kit's self-test included. Suite
   recorded; expected red: whatever step 4 still owns (cross-half e2e configs, if not
   moved here).

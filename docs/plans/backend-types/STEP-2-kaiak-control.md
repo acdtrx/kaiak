@@ -4,15 +4,13 @@
 
 ## Intent
 
-`kaiak-control` and the sample accept, validate and verify the five backend types at
-format 4 and protocol 4.
+`kaiak-control` and the sample accept, validate and verify the five backend types.
 
 ## Files likely touched
 
 - `control/kaiak-control/src/config/types.ts`: `BackendType` gains `openai`, `vllm`,
   `llama-server`.
-- The config format and protocol version constants; the semantic or schema check for
-  `openai` without `api_key_env` if it is not schema-only.
+- The check for `openai` without `api_key_env`, if it is not schema-only.
 - `control/kaiak-control/src/backend-verify/index.ts`: every type accepted (the input
   check reads the schema's enum already — confirm); `<base_url>/models` for every type
   but `azure-openai`; the bearer credential likewise; a note when `recognizeServer`
@@ -21,8 +19,7 @@ format 4 and protocol 4.
 - `control/sample/src/verify/index.ts`: `--type` takes the five types (default
   stays `openai-compatible`); usage text.
 - `control/kaiak-control/GUIDE.md`: the types, which one forces the service tier,
-  choosing a type; examples at format 4.
-- Tests and test configs across `control/` to format 4.
+  choosing a type.
 
 ## Decisions made during planning
 

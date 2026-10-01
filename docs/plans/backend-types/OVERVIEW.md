@@ -50,26 +50,29 @@ Settled with the user (2026-09-30):
    is not restricted by these constraints, and a strict server that refuses unknown
    fields (review C6) no longer receives one it did not ask for.
 3. **llama-server's quirks wait** (backlog); the type comes first.
+4. **Versions stay** (2026-10-01): config `format_version` 3 and protocol version 3.
+   The change is additive — every format-3 config stays valid — and a gateway that
+   does not know a type rejects the config with a schema error the control plane
+   sees like any rejection. No protocol message changes. A bump would not catch an
+   OpenAI backend left as `openai-compatible` either (the operator edits the number,
+   not the type); the docs and release notes say which type forces the tier.
+   Rejected: format 4 and protocol 4 — churn across every fixture and the
+   last-known-good format for no check that helps.
 
 Made while planning (confirm in review):
 
-4. **Type names** follow the servers: `openai`, `vllm`, `llama-server` — the names
+5. **Type names** follow the servers: `openai`, `vllm`, `llama-server` — the names
    `verifyBackend` already reports as `server`, and the live-test kit's kinds.
-5. **The new modules start as `openai-compatible` does**: `base_url` includes the API
+6. **The new modules start as `openai-compatible` does**: `base_url` includes the API
    version path, bearer credential (none without `api_key_env`), the models list as
-   probe, `model_not_found` as the missing-model code. Each is its own module (file
-   and type in the registry), so a later fix changes one server only; the few lines
-   they have in common (URL join, bearer header, list probe) are shared helpers, not
-   copies.
-6. **`openai` requires `api_key_env`**, as `azure-openai` does (schema, both halves):
+   probe, `model_not_found` as the missing-model code. Each is a self-contained file
+   over the wire core (`passthroughBody`, `sendWire`, `fetchModelsList`,
+   `listedModels`) with its own `url`, `header`, `probe` and `Send` — about 45 lines —
+   and its own entry in the registry. No new shared helpers, and no module embeds
+   another: a fix for one server never reaches another by accident.
+7. **`openai` requires `api_key_env`**, as `azure-openai` does (schema, both halves):
    OpenAI answers nothing without a key. `base_url` stays required
    (`https://api.openai.com/v1`); no default URL.
-7. **Versions:** config `format_version` 4, protocol version 4, and the data
-   directory's last-known-good config format bumps. The types are additive, but the
-   meaning of an existing value changes — an OpenAI backend typed `openai-compatible`
-   loses the forced tier — so a config is moved on purpose, and halves of different
-   versions refuse each other with a clear error rather than a schema complaint about
-   a type. Usage records, totals, spool and snapshot formats are untouched.
 8. **`verifyBackend`** checks every type; `openai`, `vllm`, `llama-server` and
    `openai-compatible` read `<base_url>/models`. When the server it recognizes
    (`vllm`, `llama-server`) is not the declared type, the report carries a note naming
@@ -90,8 +93,7 @@ Made while planning (confirm in review):
 
 - Protocol changes land on both halves at once (`AGENTS.md` → Project-Specific Rules).
 - The gateway stays free of third-party dependencies.
-- No backwards compatibility: every config and fixture moves to format 4; no dual
-  reading.
+- No backwards compatibility: no dual reading of anything this plan changes.
 - Only provider packages talk to backends; `verifyBackend` stays the control half's
   only backend client.
 
@@ -99,14 +101,11 @@ Made while planning (confirm in review):
 
 - **A silent loss of the forced tier**: an OpenAI deployment kept as
   `openai-compatible` after the upgrade runs on the project's own tier. Mitigation:
-  the format bump makes every config a deliberate edit; `DEPLOYMENT.md`, `GUIDE.md`
-  and the release notes say which type forces the tier.
+  `DEPLOYMENT.md`, `GUIDE.md` and the release notes say which type forces the tier.
 - **Unknown-path answers vary by server and version** (phase 2). Mitigation: each
   module's signature is checked against the real server where one is at hand
   (llama-server locally, vLLM on the DGX) and against documented shapes otherwise;
   anything not recognized stays the caller's `404`, as today.
-- **Fixture breadth**: ~120 fixtures carry `format_version`. Mitigation: a one-off
-  script (not committed), diff reviewed.
 
 ## Tag
 
@@ -119,20 +118,19 @@ be a release.
 Branch `backend-types`, worktree `.claude/worktrees/backend-types`.
 
 - **Phase 1 — backend types, end to end** (steps 1–4). Green at the end.
-  1. `STEP-1-contract.md` — specs, schema, fixtures, versions.
-  2. `STEP-2-kaiak-control.md` — types, versions, `verifyBackend`, the sample's
-     `verify`, GUIDE.
+  1. `STEP-1-contract.md` — specs, schema, fixtures.
+  2. `STEP-2-kaiak-control.md` — types, `verifyBackend`, the sample's `verify`,
+     GUIDE.
   3. `STEP-3-gateway.md` — config types and rules, the modules, the service tier by
-     type, versions, the live-test kit.
+     type, the live-test kit.
   4. `STEP-4-e2e-and-docs.md` — e2e, examples, DEPLOYMENT, README, architecture
      pages; `scripts/check-all.sh` green.
 - **Phase 2 — wrong path is the deployment's failure** (step 5). Green at the end.
   5. `STEP-5-wrong-path.md` — per-module unknown-path answers, the new code, the
      config-apply warning, spec.
 
-Expected reds inside phase 1: after step 1 both halves fail the new fixtures and the
-version checks (step 2 clears kaiak-control's, step 3 the gateway's); the cross-half
-e2e and sample configs stay red until step 3 or 4.
+Expected reds inside phase 1: after step 1 both halves fail the new fixtures (step 2
+clears kaiak-control's, step 3 the gateway's).
 
 ## Verification
 
