@@ -249,16 +249,38 @@ func (l *Limiter) Outage() bool {
 	return l.outageLocked(l.now())
 }
 
-// outageLocked is Outage at now. Callers hold l.mu and have synced.
+// outageLocked is Outage at now. Nothing signals an outage's start — the grace runs
+// out — so it is logged when first decided, by a request or a metrics scrape, and so
+// is its end: one line each, never one per request. Callers hold l.mu and have
+// synced.
 func (l *Limiter) outageLocked(now time.Time) bool {
 	if !l.shared() || l.applied == nil {
 		return false
 	}
 	c, grace := l.contact(), l.applied.ControlOutageGrace
-	if !c.Connected && now.Sub(c.Last) > grace {
-		return true
+	var reason string
+	var began time.Time // when the grace ran out
+	switch {
+	case !c.Connected && now.Sub(c.Last) > grace:
+		reason, began = "no contact", c.Last.Add(grace)
+	case !c.UsageWaitingSince.IsZero() && now.Sub(c.UsageWaitingSince) > grace:
+		reason, began = "usage not acknowledged", c.UsageWaitingSince.Add(grace)
 	}
-	return !c.UsageWaitingSince.IsZero() && now.Sub(c.UsageWaitingSince) > grace
+	switch {
+	case reason != "" && l.outageSince.IsZero():
+		l.outageSince = began
+		attrs := []any{"reason", reason, "since_contact", now.Sub(c.Last).Round(time.Second).String(),
+			"grace", grace.String()}
+		if !c.UsageWaitingSince.IsZero() {
+			attrs = append(attrs, "usage_waiting", now.Sub(c.UsageWaitingSince).Round(time.Second).String())
+		}
+		l.logger.Warn("control plane outage: priced USD-limited models refused", attrs...)
+	case reason == "" && !l.outageSince.IsZero():
+		l.logger.Info("control plane outage over: contact is back",
+			"lasted", now.Sub(l.outageSince).Round(time.Second).String())
+		l.outageSince = time.Time{}
+	}
+	return reason != ""
 }
 
 // FirstTotals is closed once the first totals message is taken: the control plane has

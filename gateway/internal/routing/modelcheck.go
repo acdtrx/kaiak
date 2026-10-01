@@ -16,9 +16,9 @@ const modelCheckParallel = 8
 // ModelChecker checks, for each config applied, that every deployment's backend
 // lists the deployment's model (docs/specs/GATEWAY.md, Providers: wrong model on a
 // host, wrong path to a host): one probe per backend, in the background, a warning
-// per deployment whose model is missing and per backend whose models list is not
-// where its base_url says. It never delays or refuses a config; a newer config
-// replaces one not yet checked.
+// per deployment whose model is missing, per backend whose models list is not where
+// its base_url says and per backend that does not answer. It never delays or refuses
+// a config; a newer config replaces one not yet checked.
 type ModelChecker struct {
 	probe  ProbeFunc
 	logger *slog.Logger
@@ -103,7 +103,9 @@ func (c *ModelChecker) check(ctx context.Context, s *config.Snapshot) {
 				return
 			}
 			if err != nil {
-				c.logger.Info("model check skipped: the backend did not answer", "backend", id, "error", err.Error())
+				// A warning: config apply is infrequent, and a backend out of reach
+				// then (often a mistyped host) is what the operator needs to see.
+				c.logger.Warn("model check skipped: the backend did not answer", "backend", id, "error", err.Error())
 				return
 			}
 			slices.Sort(names)

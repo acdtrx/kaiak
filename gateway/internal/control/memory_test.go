@@ -50,6 +50,29 @@ func TestWithoutADataDirectoryBatchesAreDeliveredFromMemory(t *testing.T) {
 	}
 }
 
+// O7: batches the flush could not deliver are lost with the process — billing data
+// lost, logged at error level like the other losses.
+func TestWithoutADataDirectoryAnUndeliveredFlushIsLoggedAsLost(t *testing.T) {
+	h := newHarness(t)
+	h.cp.Publish(configA(t))
+	h.cp.SetDown(true)
+	c, _, _ := h.usageClient(MaxBatchRecords, withoutDataDir)
+	c.Record(testRecord(1))
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if c.FlushUsage(ctx, "drain") {
+		t.Fatal("FlushUsage reports everything delivered with the control plane down")
+	}
+	logged := false
+	for line := range strings.SplitSeq(h.logs.String(), "\n") {
+		logged = logged || strings.Contains(line, `level=ERROR msg="usage not flushed: lost at exit (no data directory)"`) &&
+			strings.HasSuffix(line, "trigger=drain batches=1 records=1")
+	}
+	if !logged {
+		t.Errorf("no error-level loss line for 1 batch, 1 record:\n%s", h.logs.String())
+	}
+}
+
 // Past the bound the oldest queued batches are dropped — but not the outstanding one,
 // which may be on the wire — logged and counted with their own reason. The bound is
 // 4 records' worth of encoded bytes (testRecord(1) to (9) are the same size,

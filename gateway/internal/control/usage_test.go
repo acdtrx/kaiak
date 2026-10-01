@@ -625,7 +625,7 @@ func TestFlushLeavesUndeliveredBatchesSpooled(t *testing.T) {
 	if files := h.spoolFiles(spoolBatchPrefix); len(files) != 1 {
 		t.Errorf("spool %v, want the sealed batch", files)
 	}
-	if !strings.Contains(h.logs.String(), "usage not flushed: left in the spool for the next start") {
+	if !strings.Contains(h.logs.String(), `level=WARN msg="usage not flushed: left in the spool for the next start"`) {
 		t.Errorf("not logged:\n%s", h.logs.String())
 	}
 }

@@ -563,6 +563,82 @@ func TestShareNeverMakesARequestImpossible(t *testing.T) {
 	}
 }
 
+// O6: the outage's start is logged once as a warning, its end once at info — on
+// the transitions, whatever the requests and scrapes in between.
+func TestOutageStartAndEndAreLoggedOnce(t *testing.T) {
+	c := newClock("2026-09-24T10:30:00Z")
+	var logs bytes.Buffer
+	contact := &contactState{connected: true, last: c.t}
+	l := NewShared(holderOf(snapshot(t, limitsDoc{team: usdLimitM1, grace: "60000"})), c.now, contact.get,
+		slog.New(slog.NewTextHandler(&logs, nil)))
+	l.TakeTotals(&Totals{}, 0)
+	const (
+		started = `level=WARN msg="control plane outage: priced USD-limited models refused"`
+		over    = `level=INFO msg="control plane outage over: contact is back"`
+	)
+	lines := func(prefix string) []string {
+		var out []string
+		for line := range strings.SplitSeq(logs.String(), "\n") {
+			if _, rest, ok := strings.Cut(line, prefix); ok {
+				out = append(out, strings.TrimSpace(rest))
+			}
+		}
+		return out
+	}
+
+	contact.set(false, c.t)
+	c.advance(time.Minute) // at the grace: no outage yet
+	l.Outage()
+	admitN(t, l, workload, 1, 10)
+	if got := lines("msg=\"control plane outage"); len(got) != 0 {
+		t.Fatalf("outage logged at the grace: %v", got)
+	}
+	c.advance(time.Millisecond)
+	for range 3 {
+		refused(t, l, workload, 10)
+		l.Outage()
+	}
+	if got := lines(started); len(got) != 1 || got[0] != `reason="no contact" since_contact=1m0s grace=1m0s` {
+		t.Errorf("start lines %q, want one, with the reason, the time since contact and the grace", got)
+	}
+	c.advance(30 * time.Second)
+	contact.set(true, c.t)
+	admitN(t, l, workload, 2, 10)
+	l.Outage()
+	if got := lines(over); len(got) != 1 || got[0] != "lasted=30s" {
+		t.Errorf("end lines %q, want one, with how long it lasted", got)
+	}
+
+	// Usage waiting past the grace with the stream open: its own reason.
+	logs.Reset()
+	contact.setWaiting(c.t)
+	c.advance(61 * time.Second)
+	contact.set(true, c.t)
+	refused(t, l, workload, 10)
+	refused(t, l, workload, 10)
+	if got := lines(started); len(got) != 1 ||
+		got[0] != `reason="usage not acknowledged" since_contact=0s grace=1m0s usage_waiting=1m1s` {
+		t.Errorf("start lines %q, want one, for the unacknowledged usage", got)
+	}
+	contact.setWaiting(time.Time{})
+	admitN(t, l, workload, 1, 10)
+	if got := lines(over); len(got) != 1 || got[0] != "lasted=1s" {
+		t.Errorf("end lines %q, want one", got)
+	}
+
+	// Before the first totals, requests are refused for that alone; a request still
+	// logs the outage once the grace has passed.
+	logs.Reset()
+	boot := &contactState{last: c.t}
+	l = NewShared(holderOf(snapshot(t, limitsDoc{team: usdLimitM1, grace: "60000"})), c.now, boot.get,
+		slog.New(slog.NewTextHandler(&logs, nil)))
+	c.advance(time.Minute + time.Second)
+	refused(t, l, workload, 10)
+	if got := lines(started); len(got) != 1 {
+		t.Errorf("start lines %q before the first totals, want one", got)
+	}
+}
+
 // M16 at the limiter: an open stream is contact, but not while usage batches have
 // waited past the grace for an answer.
 func TestUsageWaitingPastTheGraceIsAnOutage(t *testing.T) {

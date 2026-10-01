@@ -179,7 +179,7 @@ func TestSeedServesWithTheControlPlaneDown(t *testing.T) {
 		t.Fatalf("chat on the seed: %d %s", r.StatusCode, r.body)
 	}
 	g.stop(t)
-	g.logs.wait(t, "the undelivered usage", msg("usage not flushed: lost at exit (no data directory)", "batches", "1"))
+	g.logs.wait(t, "the undelivered usage", msg("usage not flushed: lost at exit (no data directory)", "level", "ERROR", "batches", "1"))
 }
 
 // E2: a seed with a priced model fails the start, naming the model.

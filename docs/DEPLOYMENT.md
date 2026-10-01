@@ -137,7 +137,9 @@ outage):
 - **After `global.control_outage_grace_ms`** (default 15 min) with no contact,
   requests for a **priced model under a `usd_per_month` limit** are refused `503
   budget_unavailable`: nobody knows the spend. Free models and models under no USD
-  limit keep serving. The first contact ends it.
+  limit keep serving. The first contact ends it. The log says so once each way:
+  `control plane outage: priced USD-limited models refused` (warn) and `control
+  plane outage over: contact is back` (info).
 - **Usage waits in memory, bounded per pod by `KAIAK_USAGE_MEMORY_BYTES`** (default
   64 MiB of encoded records, shown by `kaiak_usage_queued_bytes`): past that, the
   oldest queued batches are dropped, logged at error level and counted in
@@ -175,7 +177,10 @@ refused, and in-flight requests, streams included, get the drain timeout
 Requests still running then are cut, and their partial usage records go out with
 the rest in the reserve. Usage batches keep going out every 5 s throughout the
 drain; then a final status (≤ 2 s), the admin listener closes (≤ 5 s for a scrape
-still open), and the process exits 0.
+still open), and the process exits 0. The `draining` log line names the times in
+force: `grace`, `timeout`, `flush_reserve` and `cut_after` — when requests still
+running are cut, counted from the grace's end (the timeout less the reserve; the
+whole timeout in file mode).
 
 - **`terminationGracePeriodSeconds` ≥ grace + drain timeout + 10 s**: 75 s at the
   defaults. The Kubernetes default of 30 s kills long streams mid-drain and skips
@@ -198,7 +203,7 @@ still open), and the process exits 0.
 | How it ends | Lost usage |
 |---|---|
 | Drained, control plane answering | nothing |
-| Drained, control plane unreachable or slow | what the flush could not deliver — logged `usage not flushed: lost at exit (no data directory)` with the batches and records |
+| Drained, control plane unreachable or slow | what the flush could not deliver — logged at error level, `usage not flushed: lost at exit (no data directory)`, with the batches and records |
 | Killed without a drain (OOM kill, node loss, SIGKILL after the grace period) | every record not yet acknowledged: normally the last ≤ 5 s; during an outage, everything queued (up to `KAIAK_USAGE_MEMORY_BYTES`, about 130 000 records at the default) |
 
 Nothing else is lost: config and totals come back from the control plane.
@@ -386,7 +391,8 @@ the document (a script, or the control plane) rather than editing it by hand.
   (`/models/qwen3-embedding-0.6b-q8_0.gguf`), accepted as it is (1 to 512 printable
   ASCII characters, no spaces). Or give llama-server `--alias <name>` and use that.
   The gateway warns at each config apply for a deployment its backend does not
-  list.
+  list, and for a backend the check cannot read: one that does not answer (a
+  mistyped host, a server down), or whose models list is not at its `base_url`.
 - **Timeouts, per backend** (`GATEWAY.md` → Routing and reliability: Timeouts):
 
   | Field | Default | Size it to |

@@ -748,7 +748,7 @@ func TestModelCheckWarnsPerMissingModel(t *testing.T) {
 		strings.Count(out, "does not list") != 1 {
 		t.Errorf("log:\n%s\nwant one warning, for wrong@x", out)
 	}
-	if !strings.Contains(out, `level=INFO msg="model check skipped: the backend did not answer" backend=down`) {
+	if !strings.Contains(out, `level=WARN msg="model check skipped: the backend did not answer" backend=down error="connection refused"`) {
 		t.Errorf("log:\n%s\nwant the unreachable backend named", out)
 	}
 	// A models list answering 404: the backend is up and its base_url likely wrong.

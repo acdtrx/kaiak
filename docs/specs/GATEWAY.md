@@ -398,8 +398,13 @@ own, and a client sending repeats is broken either way.
   once, off the request path, never delaying or refusing the config) and each
   deployment whose model is not listed gets a warning
   (`the backend does not list the deployment's model`: backend, deployment model);
-  a backend that does not answer is logged at info, one whose models list answers
-  `404` gets a warning (Wrong path to a host, below). A server that ignores the request's
+  one whose models list answers `404` gets a warning (Wrong path to a host, below).
+  A backend that does not answer at all (DNS failure, connection refused, timeout,
+  any other failure) gets a warning too, `model check skipped: the backend did not
+  answer` (backend, error — never a credential) (settled 2026-10-01; the 2026-09-30
+  review's O4): config apply is infrequent, and a backend out of reach then — often
+  a mistyped host — is what the operator needs to see. Rejected: info — the line
+  read as routine noise. A server that ignores the request's
   model name (llama-server) must still be configured with a name it lists.
   Rejected: relaying the `404` — the client would read its own model name as wrong,
   and a fast `404` made the wrong host the least loaded one, so it drew traffic.
@@ -1204,6 +1209,16 @@ own, and a client sending repeats is broken either way.
     counting, per-minute limits included. The first contact ends it. Rejected:
     counting the time between heartbeats as no contact — a grace below 15 s would
     then flap with a healthy stream.
+  - **Outage log lines** (settled 2026-10-01; the 2026-09-30 review's O6): the
+    outage's start and end are logged once each, never per request:
+    `control plane outage: priced USD-limited models refused` (warn: `reason` — `no
+    contact`, or `usage not acknowledged` (below) with `usage_waiting` —
+    `since_contact`, `grace`) and `control plane outage over: contact is back`
+    (info: `lasted`, from the grace running out). Nothing signals the grace running
+    out, so each transition is logged when the outage is next decided — by a
+    request or a metrics scrape (`kaiak_control_outage`) — and can lag it on an
+    idle, unscraped gateway; the fields give the true times. Rejected: a timer of
+    its own — a second clock for what the gauge and the requests already decide.
   - **Usage acks count for money limits** (settled 2026-09-25, M16): while usage
     batches wait for an answer (sealed or queued, not yet acknowledged or refused),
     an open stream is not enough — the gateway is also in outage once they have
@@ -2012,7 +2027,11 @@ own, and a client sending repeats is broken either way.
   Ctrl-C and `docker stop` users expect a clean stop):
   1. `/readyz` fails with `draining`; status `draining` is sent to the control plane
      (control-plane mode). From here every API response carries `Connection: close`, so keep-alive
-     clients reconnect — to another instance once this one is out of rotation;
+     clients reconnect — to another instance once this one is out of rotation. The
+     log line `draining` names the times in force (settled 2026-10-01; the
+     2026-09-30 review's O8): `grace`, `timeout` (`KAIAK_DRAIN_TIMEOUT_MS` as set),
+     `flush_reserve` (0 in file mode) and `cut_after` — timeout less reserve,
+     counted from the grace's end: when requests still running are cut (step 4);
   2. new requests are still accepted for the **grace period** (`KAIAK_DRAIN_GRACE_MS`,
      default 5 s): endpoint removal propagates slowly — failing fast here drops
      requests;
@@ -2047,8 +2066,9 @@ own, and a client sending repeats is broken either way.
      acknowledged or set aside — within what remains of grace + drain timeout, counted
      from the drain's start (at least the reserve) — then a final `draining` status
      goes out (bounded to 2 s). What is not delivered stays in the spool for the next
-     start, or, with no data directory, is lost with the process (logged `usage not
-     flushed: lost at exit`, with the batches and records). Then the
+     start, or, with no data directory, is lost with the process (logged at error
+     level, as other lost usage is: `usage not flushed: lost at exit`, with the
+     batches and records; settled 2026-10-01, the 2026-09-30 review's O7). Then the
      control-plane client stops, the file-mode usage snapshot (or the totals cache)
      is written when there is a data directory, the admin
      listener stops, the process exits 0. The admin listener serves throughout:

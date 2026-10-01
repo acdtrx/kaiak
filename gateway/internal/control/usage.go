@@ -495,11 +495,15 @@ func (c *Client) FlushUsage(ctx context.Context, trigger string) bool {
 		select {
 		case <-changed:
 		case <-ctx.Done():
-			msg := "usage not flushed: left in the spool for the next start"
+			// Batches lost at exit are billing data lost, logged at error level as the
+			// other losses are; spooled ones wait for the next start.
 			if u.store.inMemory() {
-				msg = "usage not flushed: lost at exit (no data directory)"
+				c.logger.Error("usage not flushed: lost at exit (no data directory)", "trigger", trigger,
+					"batches", batches, "records", records)
+				return false
 			}
-			c.logger.Warn(msg, "trigger", trigger, "batches", batches, "records", records)
+			c.logger.Warn("usage not flushed: left in the spool for the next start", "trigger", trigger,
+				"batches", batches, "records", records)
 			return false
 		}
 	}

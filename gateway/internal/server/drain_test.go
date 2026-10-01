@@ -304,6 +304,40 @@ func TestHurriedDrainSkipsTheWaitsAndCutsOff(t *testing.T) {
 	}
 }
 
+// O8: the draining line names the configured timeout and the flush reserve, and when
+// in-flight requests are cut — the reserve before the timeout.
+func TestDrainCutsTheReserveBeforeTheTimeout(t *testing.T) {
+	g := newTestGateway(t)
+	g.backend.SetReply(fakebackend.Reply{HangAfter: 1})
+	d := newDrainable(t, g)
+	resp, _, err := d.post(t, newClient(t), userKey, `{"model":"open","stream":true}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	readEvent(t, bufio.NewReader(resp.Body))
+
+	done := make(chan struct{})
+	go func() {
+		g.drain.Run(d.l, DrainTimes{Timeout: time.Hour, Reserve: time.Hour - 20*time.Millisecond}, nil, d.logger)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(waitTimeout):
+		t.Fatal("drain still waiting past the timeout less the reserve")
+	}
+	logs := g.logText()
+	for _, want := range []string{
+		`"msg":"draining","grace":"0s","timeout":"1h0m0s","flush_reserve":"59m59.98s","cut_after":"20ms","in_flight":1`,
+		`"reason":"timeout","requests":1`,
+	} {
+		if !strings.Contains(logs, want) {
+			t.Errorf("log misses %s:\n%s", want, logs)
+		}
+	}
+}
+
 // errorsCounted reads kaiak_errors_total for class from the exposition.
 func errorsCounted(t *testing.T, g *testGateway, class string) string {
 	t.Helper()

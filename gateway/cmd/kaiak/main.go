@@ -495,7 +495,7 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 	drainDeadline := time.Now().Add(s.drain.Grace + s.drain.Timeout)
 	drainTimes := s.drain
 	if client != nil {
-		drainTimes.Timeout -= s.drainReserve
+		drainTimes.Reserve = s.drainReserve
 		client.SetDraining()
 	}
 	// hurry is closed by a second stop signal, or at once when ctx is cancelled.

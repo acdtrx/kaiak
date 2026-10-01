@@ -150,6 +150,9 @@ type Limiter struct {
 	// mismatchSince is when the newest totals and the applied config started to
 	// differ; zero while they agree.
 	mismatchSince time.Time
+	// outageSince is when the outage the log announced began (its grace ran out);
+	// zero while none is announced (outageLocked).
+	outageSince time.Time
 	// restoredUntagged: uncounted usage restored at boot is tagged generation 0 (no
 	// spooled batch carried it), to leave with the first totals applied (LoadShared).
 	restoredUntagged bool
@@ -444,7 +447,8 @@ func (l *Limiter) Reserve(s Subject, tokens int64) (*Reservation, *Rejection) {
 	now := l.now()
 	counters := l.applicable(s)
 
-	if l.noTotalsLocked() || l.outageLocked(now) || l.mismatchPastGraceLocked(now) {
+	// The outage first: deciding it on every request is what logs its start and end.
+	if l.outageLocked(now) || l.noTotalsLocked() || l.mismatchPastGraceLocked(now) {
 		for _, c := range counters {
 			if c.measure == MeasureCost {
 				return nil, &Rejection{Scope: c.key.scope(), ID: c.key.group, Type: c.limit.Type, Measure: c.measure,
