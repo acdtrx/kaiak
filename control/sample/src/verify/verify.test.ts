@@ -60,12 +60,32 @@ async function refused(args: string[], pattern: RegExp, env: NodeJS.ProcessEnv =
 test("bad arguments are refused with a message, before anything is sent", async () => {
   await refused([], /--base-url is required/);
   await refused(["--base-url", ""], /--base-url is required/);
-  await refused(["--base-url", "http://h/v1", "--type", "bedrock"], /--type must be openai-compatible or azure-openai, not "bedrock"/);
+  await refused(
+    ["--base-url", "http://h/v1", "--type", "bedrock"],
+    /^--type must be one of openai-compatible, openai, azure-openai, vllm, llama-server, not "bedrock"$/,
+  );
   await refused(["--base-url", "http://h/v1", "--api-key", "sk-x"], /--api-key/);
   await refused(["--base-url", "http://h/v1", "extra"], /extra/);
   await refused(["--base-url", "http://h/v1", "--timeout-ms", "5s"], /--timeout-ms takes a whole number/);
   await refused(["--base-url", "http://h/v1", "--timeout-ms", "-1"], /--timeout-ms/);
   await refused(["--base-url", "http://h/v1", "--api-key-env", "NOT A NAME"], /--api-key-env takes a variable name/);
+});
+
+test("--type takes each of the five backend types, and the check follows it", async (t) => {
+  const fake = await fakeLlamaServer(t);
+  for (const type of ["openai-compatible", "openai", "vllm", "llama-server"]) {
+    const result = await runVerify(["--base-url", fake.baseUrl, "--type", type], {});
+    assert.ok(result.kind === "report", type);
+    assert.equal(result.report.ok, true, type);
+    assert.equal(result.report.server, "llama-server", type);
+    const note = 'the models list says the server is llama-server: use type "llama-server"';
+    assert.equal(result.report.notes.some((entry) => entry.startsWith(note)), type !== "llama-server", type);
+  }
+  // azure-openai reads another path, which this fake does not serve.
+  const azure = await runVerify(["--base-url", fake.baseUrl, "--type", "azure-openai"], {});
+  assert.ok(azure.kind === "report");
+  assert.equal(azure.report.failure?.code, "not-a-models-list");
+  assert.match(azure.report.failure?.message ?? "", /\/v1\/openai\/v1\/models answered 404$/);
 });
 
 test("the API key comes from the named variable, which must be set", async () => {
@@ -158,4 +178,15 @@ test("the command exits 0 on a passing check, 1 on a failed one or bad arguments
   assert.equal(bad.code, 1);
   assert.equal(bad.stdout, "");
   assert.match(bad.stderr, /^verify: --base-url is required.*\nusage \(from control\/\): npm run verify -w sample -- --base-url/);
+
+  const badType = await run(process.execPath, [CLI, "--base-url", fake.baseUrl, "--type", "bedrock"], {
+    encoding: "utf8",
+  }).then(
+    () => assert.fail("expected exit status 1"),
+    (error: { code: number; stdout: string; stderr: string }) => error,
+  );
+  assert.equal(badType.code, 1);
+  assert.equal(badType.stdout, "");
+  assert.match(badType.stderr, /^verify: --type must be one of [^\n]*\nusage /);
+  assert.match(badType.stderr, /\n {2}--type {9}the backend's type: openai-compatible, openai, azure-openai, vllm, llama-server /);
 });

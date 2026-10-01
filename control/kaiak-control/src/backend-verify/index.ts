@@ -6,6 +6,7 @@
 
 import { Ajv2020 } from "ajv/dist/2020.js";
 
+import { BACKEND_TYPES } from "../config/index.ts";
 import type { BackendType } from "../config/index.ts";
 import { definitionChecker } from "../schemas/index.ts";
 
@@ -160,6 +161,11 @@ export async function verifyBackend(options: VerifyBackendOptions): Promise<Back
   const server = recognizeServer(list.data);
   const models = list.data.map((entry): VerifiedModel => ({ id: entry.id, sources: {}, notes: [] }));
   const notes: string[] = [];
+  // Only the server's own type gets its gateway module's rules; the backend is reached
+  // the same way under either, so this is a note, not a failure.
+  if (server !== "unknown" && server !== settings.type) {
+    notes.push(`the models list says the server is ${server}: use type "${server}", not "${settings.type}"`);
+  }
   if (server === "vllm") {
     list.data.forEach((entry, index) => readVllmEntry(entry, listUrl, modelAt(models, index)));
   } else if (server === "unknown") {
@@ -198,7 +204,7 @@ function checkInput(options: VerifyBackendOptions): Settings {
   };
   if (typeof options !== "object" || options === null) refuse("options must be an object");
   const { type, baseUrl, credential, model, timeoutMs, signal } = options;
-  if (!isBackendType(type)) refuse('type must be "openai-compatible" or "azure-openai"');
+  if (!isBackendType(type)) refuse(`type must be one of ${BACKEND_TYPES.map((name) => `"${name}"`).join(", ")}`);
   // Values are never echoed: a malformed baseUrl may carry userinfo, a credential is secret.
   if (!isBaseUrl(baseUrl)) {
     refuse("baseUrl is not a valid backend base_url (http or https; no userinfo, trailing slash, query or fragment)");
@@ -342,7 +348,7 @@ function modelsListOf(
   }
 }
 
-// From every entry's owned_by (openai-compatible only).
+// From every entry's owned_by (every type but azure-openai).
 function recognizeServer(entries: ModelEntry[]): VerifiedServer {
   if (entries.length === 0) return "unknown";
   if (entries.every((entry) => entry.owned_by === "vllm")) return "vllm";

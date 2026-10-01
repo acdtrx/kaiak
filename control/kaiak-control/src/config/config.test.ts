@@ -7,13 +7,14 @@ import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, test } from "node:test";
 
-import { validateConfig } from "./index.ts";
+import { BACKEND_TYPES, validateConfig } from "./index.ts";
 
 const FIXTURES = path.resolve(import.meta.dirname, "../../../../protocol/fixtures/config");
 const VALID_DIR = path.join(FIXTURES, "valid");
 const INVALID_DIR = path.join(FIXTURES, "invalid");
 const EXAMPLES_DIR = path.resolve(import.meta.dirname, "../../../../examples");
 const CASES_FILE = "cases.json";
+const CONFIG_SCHEMA = path.resolve(import.meta.dirname, "../../schema/config.schema.json");
 
 interface InvalidCase {
   kind: "schema" | "semantic";
@@ -46,6 +47,11 @@ function readCases(): Map<string, InvalidCase> {
   }
   return cases;
 }
+
+test("BACKEND_TYPES is the schema's backend type enum, in its order", () => {
+  const schema = readJson(CONFIG_SCHEMA) as { $defs: { backend: { properties: { type: { enum: unknown } } } } };
+  assert.deepEqual(BACKEND_TYPES, schema.$defs.backend.properties.type.enum);
+});
 
 describe("valid config fixtures", () => {
   for (const file of fixtureFiles(VALID_DIR)) {

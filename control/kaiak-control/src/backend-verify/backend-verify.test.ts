@@ -5,6 +5,8 @@ import type { AddressInfo } from "node:net";
 import { test } from "node:test";
 import type { TestContext } from "node:test";
 
+import { BACKEND_TYPES } from "../config/index.ts";
+import type { BackendType } from "../config/index.ts";
 import { verifyBackend } from "./index.ts";
 import type { BackendReport, VerifyBackendOptions } from "./index.ts";
 
@@ -153,7 +155,7 @@ function assertNoCredential(value: unknown): void {
 
 test("llama-server: context, vision, tools and reasoning read from /props at the root", async (t) => {
   const backend = await fakeBackend(t, { "/v1/models": json(200, LLAMA_LIST), "/props": json(200, LLAMA_PROPS) });
-  const report = await verify({ baseUrl: `${backend.origin}/v1`, model: LLAMA_MODEL });
+  const report = await verify({ type: "llama-server", baseUrl: `${backend.origin}/v1`, model: LLAMA_MODEL });
   const props = `${backend.origin}/props`;
   assert.deepEqual(report, {
     ok: true,
@@ -282,7 +284,7 @@ test("llama-server listing several models: /props is not read, each model says s
 
 test("vLLM: context from max_model_len on the list; no /props request", async (t) => {
   const backend = await fakeBackend(t, { "/v1/models": json(200, VLLM_LIST) });
-  const report = await verify({ baseUrl: `${backend.origin}/v1`, model: VLLM_MODEL });
+  const report = await verify({ type: "vllm", baseUrl: `${backend.origin}/v1`, model: VLLM_MODEL });
   assert.deepEqual(report, {
     ok: true,
     server: "vllm",
@@ -401,6 +403,71 @@ test("azure-openai: the list at /openai/v1/models with api-key; no models, a not
 
   const noModel = await verifyBackend({ type: "azure-openai", baseUrl: backend.origin, credential: CREDENTIAL });
   assert.equal(noModel.metadata, undefined);
+});
+
+test("each type reads its models list at its URL with its credential header", async (t) => {
+  const cases: [BackendType, string, string, string][] = [
+    ["openai-compatible", "/v1", "/v1/models", "authorization"],
+    ["openai", "/v1", "/v1/models", "authorization"],
+    ["vllm", "/v1", "/v1/models", "authorization"],
+    ["llama-server", "/v1", "/v1/models", "authorization"],
+    ["azure-openai", "", "/openai/v1/models", "api-key"],
+  ];
+  assert.deepEqual(cases.map(([type]) => type).sort(), [...BACKEND_TYPES].sort(), "every type is covered");
+  for (const [type, basePath, listPath, header] of cases) {
+    const backend = await fakeBackend(t, { [listPath]: json(200, OPENAI_LIST) });
+    const report = await verifyBackend({ type, baseUrl: `${backend.origin}${basePath}`, credential: CREDENTIAL });
+    assert.equal(report.ok, true, type);
+    assert.deepEqual(
+      backend.requests.map((request) => request.path),
+      [listPath],
+      type,
+    );
+    const [request] = backend.requests;
+    const expected = header === "api-key" ? CREDENTIAL : `Bearer ${CREDENTIAL}`;
+    assert.equal(request?.headers[header], expected, `${type}: ${header}`);
+    const other = header === "api-key" ? "authorization" : "api-key";
+    assert.equal(request?.headers[other], undefined, `${type}: no ${other}`);
+    assertNoCredential(report);
+  }
+});
+
+test("a recognized server under another type gets a note naming its type", async (t) => {
+  const vllm = await fakeBackend(t, { "/v1/models": json(200, VLLM_LIST) });
+  for (const type of ["openai-compatible", "openai", "llama-server"] as const) {
+    const report = await verify({ type, baseUrl: `${vllm.origin}/v1`, model: VLLM_MODEL });
+    assert.equal(report.ok, true, type);
+    assert.equal(report.server, "vllm", type);
+    assert.deepEqual(report.notes, [`the models list says the server is vllm: use type "vllm", not "${type}"`], type);
+    assert.deepEqual(report.metadata, { context_length: 262144 }, `${type}: read as vLLM all the same`);
+  }
+
+  const llama = await fakeBackend(t, { "/v1/models": json(200, LLAMA_LIST), "/props": json(200, LLAMA_PROPS) });
+  const report = await verify({ type: "vllm", baseUrl: `${llama.origin}/v1`, model: LLAMA_MODEL });
+  assert.equal(report.server, "llama-server");
+  assert.deepEqual(report.notes, ['the models list says the server is llama-server: use type "llama-server", not "vllm"']);
+  assert.equal(report.models[0]?.context_length, 262144, "/props read all the same");
+
+  const unlisted = await verify({ type: "openai-compatible", baseUrl: `${llama.origin}/v1`, model: "other" });
+  assert.equal(unlisted.failure?.code, "model-not-listed");
+  assert.deepEqual(unlisted.notes, [
+    'the models list says the server is llama-server: use type "llama-server", not "openai-compatible"',
+  ]);
+});
+
+test("no type note when the type matches the server, or the server is unknown", async (t) => {
+  const vllm = await fakeBackend(t, { "/v1/models": json(200, VLLM_LIST) });
+  assert.deepEqual((await verify({ type: "vllm", baseUrl: `${vllm.origin}/v1` })).notes, []);
+
+  const llama = await fakeBackend(t, { "/v1/models": json(200, LLAMA_LIST), "/props": json(200, LLAMA_PROPS) });
+  assert.deepEqual((await verify({ type: "llama-server", baseUrl: `${llama.origin}/v1` })).notes, []);
+
+  const openai = await fakeBackend(t, { "/v1/models": json(200, OPENAI_LIST) });
+  for (const type of ["openai-compatible", "openai", "vllm", "llama-server"] as const) {
+    const report = await verify({ type, baseUrl: `${openai.origin}/v1` });
+    assert.equal(report.server, "unknown", type);
+    assert.ok(report.notes.every((note) => !note.includes("use type")), `${type}: ${report.notes.join("; ")}`);
+  }
 });
 
 test("headers: Accept, User-Agent and the credential header as the gateway sends it", async (t) => {
@@ -567,6 +634,14 @@ test("invalid input throws verify-input-invalid and sends nothing", async (t) =>
     });
   }
   assert.equal(backend.requests.length, 0);
+
+  await assert.rejects(verifyBackend({ type: "bedrock" as BackendType, baseUrl: base }), (error: Error) => {
+    assert.equal(
+      error.message,
+      'type must be one of "openai-compatible", "openai", "azure-openai", "vllm", "llama-server"',
+    );
+    return true;
+  });
 });
 
 test("the credential appears in no report of any outcome", async (t) => {

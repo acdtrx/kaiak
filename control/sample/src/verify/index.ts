@@ -9,7 +9,7 @@
 
 import { parseArgs } from "node:util";
 
-import { verifyBackend } from "kaiak-control";
+import { BACKEND_TYPES, verifyBackend } from "kaiak-control";
 import type { BackendReport, BackendType, VerifyBackendOptions } from "kaiak-control";
 
 export type VerifyResult =
@@ -20,9 +20,9 @@ export type VerifyResult =
 
 export const USAGE = [
   "usage (from control/): npm run verify -w sample -- --base-url <url>",
-  "         [--type openai-compatible|azure-openai] [--api-key-env <NAME>] [--model <name>] [--timeout-ms <n>]",
+  "         [--type <type>] [--api-key-env <NAME>] [--model <name>] [--timeout-ms <n>]",
   "  --base-url     the backend's base_url, exactly as config spells it",
-  "  --type         the backend's type (default openai-compatible)",
+  `  --type         the backend's type: ${BACKEND_TYPES.join(", ")} (default openai-compatible)`,
   "  --api-key-env  the environment variable holding the backend's API key (never the key itself)",
   "  --model        a backend-side model name to check and describe",
   "  --timeout-ms   bound on each request (default 5000)",
@@ -73,10 +73,8 @@ function parse(args: readonly string[], env: NodeJS.ProcessEnv): VerifyBackendOp
   const baseUrl = values["base-url"];
   if (!baseUrl) return { message: "--base-url is required: the backend's base_url, as config spells it" };
   const type = values.type ?? "openai-compatible";
-  if (type !== "openai-compatible" && type !== "azure-openai") {
-    return { message: `--type must be openai-compatible or azure-openai, not "${type}"` };
-  }
-  const options: VerifyBackendOptions = { type: type satisfies BackendType, baseUrl };
+  if (!isBackendType(type)) return { message: `--type must be one of ${BACKEND_TYPES.join(", ")}, not "${type}"` };
+  const options: VerifyBackendOptions = { type, baseUrl };
 
   const keyEnv = values["api-key-env"];
   if (keyEnv !== undefined) {
@@ -95,6 +93,10 @@ function parse(args: readonly string[], env: NodeJS.ProcessEnv): VerifyBackendOp
     options.timeoutMs = Number(timeout);
   }
   return options;
+}
+
+function isBackendType(value: string): value is BackendType {
+  return (BACKEND_TYPES as readonly string[]).includes(value);
 }
 
 function isInputInvalid(error: unknown): error is Error & { code: "verify-input-invalid" } {

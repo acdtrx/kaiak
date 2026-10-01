@@ -1,7 +1,11 @@
 // The config document as TypeScript sees it once it has passed the schema.
 // protocol/schema/config.schema.json is the source of truth; these types follow it.
 
-export type BackendType = "openai-compatible" | "azure-openai";
+// The backend type enum, as a value for apps that list or check types; a test pins it to
+// the schema's enum.
+export const BACKEND_TYPES = ["openai-compatible", "openai", "azure-openai", "vllm", "llama-server"] as const;
+
+export type BackendType = (typeof BACKEND_TYPES)[number];
 
 export type LimitType = "requests_per_minute" | "tokens_per_minute" | "tokens_per_hour" | "usd_per_month";
 

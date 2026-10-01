@@ -4,7 +4,7 @@ export const libraryName = "kaiak-control";
 
 export type { ValidationIssue } from "./schemas/index.ts";
 
-export { limitIdentity, resolveScopes, validateConfig } from "./config/index.ts";
+export { BACKEND_TYPES, limitIdentity, resolveScopes, validateConfig } from "./config/index.ts";
 export type * from "./config/index.ts";
 
 export {

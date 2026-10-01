@@ -4,7 +4,8 @@
 > the UI — in its own repository, on this library. Read it top to bottom before writing
 > code. Written 2026-09-26 against kaiak 0.6.0; brought to the group tree (config
 > format 2, protocol version 2) on 2026-09-27; to tiered prices (config format 3,
-> protocol version 3) on 2026-09-29.
+> protocol version 3) on 2026-09-29; to a backend type per server (formats unchanged)
+> on 2026-10-01.
 >
 > Background, in this order: `docs/architecture/control-plane.html` (how gateways and a
 > control plane work together, with diagrams), `docs/specs/CONTROL-PROTOCOL.md` (the
@@ -199,6 +200,24 @@ field meanings in `docs/specs/CONTROL-PROTOCOL.md` → Config. Top level:
 `format_version: 3`, `global`, `backends`, `models`, `keys`, and optional `groups` —
 each collection an object keyed by ID.
 
+**Backend types** (`CONTROL-PROTOCOL.md` → Config → Backend types; what each does:
+`GATEWAY.md` → Providers): a backend's `type` names its server and picks the
+gateway's module for it. `BACKEND_TYPES` lists them, for a form's choices.
+
+- `openai` (OpenAI's API) and `azure-openai` (Azure's `/openai/v1/` API) require
+  `api_key_env` and **force the standard service tier** (Prices, below).
+- `vllm`, `llama-server` (llama.cpp) and `openai-compatible` — any other server
+  speaking the OpenAI format (SGLang, …) — pass the client's `service_tier` untouched.
+- **Choosing a type**: the server's own type whenever it has one;
+  `openai-compatible` only for a server without one. The backend answers the same
+  under either, but only its own type gets that server's rules: an OpenAI backend
+  left as `openai-compatible` runs on the tier its clients ask for, and priority
+  bills about twice the prices config holds. `verifyBackend` notes a vLLM or
+  llama-server answer under another type (§8).
+- `base_url` is what an OpenAI client would use, `/v1` included
+  (`https://api.openai.com/v1`, `http://vllm:8000/v1`); for `azure-openai` it is the
+  resource endpoint (`https://<resource>.openai.azure.com`). No type has a default.
+
 **The group tree** (`CONTROL-PROTOCOL.md` → Config → The group tree): each group is
 `{ parent?, labels?, allowed_models?, limits?, child_defaults? }`; no `parent` = a
 top-level group, `global` is the root above them, at most 8 levels. Your domain
@@ -254,12 +273,14 @@ use the price of their day.
   input) and `tokens_out` (all output, reasoning included). `tokens_reasoning` is
   never priced — it is inside `tokens_out`. A tier without `tokens_cached` charges
   cached input at that tier's `tokens_in` price, never free.
-- **Prices are standard-tier rates.** The gateway keeps every request on standard
-  processing: a client's `service_tier` becomes `"default"`, and every chat request
-  carries it even when the client sent none, since the default (`auto`) follows the
-  Azure deployment's or OpenAI project's setting, which may be Priority (`GATEWAY.md`
-  → Providers → Service tier). Priority, flex and batch rates never apply, and `service_tier` cannot be a
-  model default.
+- **Prices are standard-tier rates.** On `openai` and `azure-openai` backends the
+  gateway keeps every request on standard processing: a client's `service_tier`
+  becomes `"default"`, and every chat request carries it even when the client sent
+  none, since the default (`auto`) follows the Azure deployment's or OpenAI
+  project's setting, which may be Priority (`GATEWAY.md` → Providers → Service
+  tier). Priority, flex and batch rates never apply there. The other types pass the
+  client's `service_tier` untouched — no tier is billed there. `service_tier` cannot
+  be a model default.
 - **Azure deployment types price differently**: Data Zone (EU/US) is about 10%
   above Global for the same model. Price a model at the rate of the deployment type
   its deployments use.
@@ -327,7 +348,10 @@ field by field, is `docs/specs/BACKEND-VERIFY.md`.
     `credential-refused`, `not-a-models-list`, `model-not-listed`. Branch on the code;
     `message` and the `notes` are for people.
   - `server`: `vllm`, `llama-server` or `unknown` (OpenAI, Azure, anything else — only
-    reachability, the credential and the listed ids are checked there).
+    reachability, the credential and the listed ids are checked there). Recognized
+    from the answer, whatever `type` was given; a `vllm` or `llama-server` under
+    another type adds a note naming the type to use — show it before the operator
+    saves the backend.
   - `models[]`: every listed model, with what the server reports (`context_length`;
     for llama-server also `capabilities.vision`, `tools`, `reasoning`) and a `sources`
     entry per value: the URL and field it came from, and `hint`.
@@ -350,7 +374,7 @@ field by field, is `docs/specs/BACKEND-VERIFY.md`.
   stale until someone verifies again.
 
 The sample's `verify` command wraps it for a config file:
-`npm run verify -w sample -- --base-url <url> [--api-key-env <NAME>] [--model <name>]`
+`npm run verify -w sample -- --base-url <url> [--type <type>] [--api-key-env <NAME>] [--model <name>]`
 (`control/sample/src/verify/`).
 
 ## 9. Reading state for the UI
