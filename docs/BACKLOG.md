@@ -298,31 +298,17 @@ Group entries under headings as themes emerge.
   measured (`GATEWAY.md` → Observability: Config load cost). Revisit trigger:
   publishes feel slow, or a gateway's `kaiak_config_size_bytes` comes near the
   16 MiB snapshot cap.
-- **Errors and refusals per team** — a team's dashboard can show its usage but not
-  its errors. The usage metrics carry `key_group`, `root_group`, `key_id` and
-  `model`, but count only usage records: a request refused before routing (unknown
-  key, a limit, a full queue, the body cap) leaves none, and a routed request that
-  failed leaves one whose `status` (`complete`, `partial`) does not say it failed.
-  The error metrics have no group or key label: `kaiak_errors_total` (`class`),
-  `kaiak_limit_rejections_total` (`scope_kind`, `type` — no group ID by decision,
-  settled 2026-09-27: "the log line names it"), `kaiak_queue_rejections_total`
-  (`model`, `reason`). Per team, errors are found only in the request log lines (key
-  ID, group, `error_code`). Options: `root_group` on the error and limit-rejection
-  counters (bounded by the number of top-level groups; empty for requests with no
-  valid key), under the same switch as `group_label`; or an outcome label on
-  `kaiak_usage_records_total`, which covers routed failures but not refusals.
-  The control plane is just as blind: a usage record has no outcome field, only the
-  `estimated` and `partial` flags, and a backend error status (a `4xx` relayed, a
+- **Request outcomes in the control plane** — an app built on `kaiak-control` sees
+  usage but not failures in its own store: a usage record has no outcome field, only
+  the `estimated` and `partial` flags, and a backend error status (a `4xx` relayed, a
   `5xx` answered `upstream_error`) settles as zero units with **neither flag** — the
-  same as a success that used no tokens (`accounting/meter.go`, Settle). `estimated`
-  marks a success the backend reported no usage for, not a failure; `partial` marks
-  an answer cut short or never given (zeros when nothing reached the model, the input
-  estimated when the request was sent in full). An app building per-team error views
-  from records (the management app hit this, 2026-10-01) cannot tell a failure from
-  an empty success, and never sees refusals. Options on this side: an outcome field
-  in the usage record (the gateway's `error_code`, or a short outcome class) — a
-  protocol change on both halves; refusals before routing as counts in the status
-  report, or as records of their own (they carry no units, so no budget changes).
-  Revisit trigger: a team-facing dashboard needs error or refusal rates, or teams'
-  "why are my requests failing" questions are answered from logs often enough to
-  hurt. (ruled 2026-10-01: recorded; not built.)
+  same as a success that used no tokens (`accounting/meter.go`, Settle); `estimated`
+  marks a success the backend reported no usage for, not a failure. A request refused
+  before routing sends nothing at all. Errors and refusals per key and team are in
+  Prometheus (`kaiak_request_errors_total`, `GATEWAY.md` → Errors by key); this is
+  the same data in the app's store. A plan was drafted and shelved (commit
+  `ec05ca9`, `docs/plans/request-outcomes/`): `status` and `error_code` on every
+  usage record, refusal counts per key, model and code in each usage batch, protocol
+  version 4, `CountedBatch.refusals` in the store interface. Revisit trigger: the
+  management app (or another host) needs failures and refusals in its own database
+  rather than from Prometheus. (ruled 2026-10-01: metrics first.)
