@@ -365,6 +365,29 @@ func TestRefusedBatchIsSetAsideAndTheNextSent(t *testing.T) {
 	}
 }
 
+func TestBatchRefusalCodeOnAnotherStatusIsRetried(t *testing.T) {
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusUnauthorized} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			h := newHarness(t)
+			h.cp.Publish(configA(t))
+			h.cp.FailUsage(fakecontrol.UsageFault{Status: status, Code: "request-invalid"})
+			c, obs, _ := h.usageClient(1, nil)
+			c.Record(testRecord(1))
+			refused := h.wantUsage(fakecontrol.OutcomeRefused, 1, 1)
+			resent := h.wantUsage(fakecontrol.OutcomeCounted, 1, 1)
+			if refused.Batch != resent.Batch {
+				t.Errorf("resent %+v, refused %+v: want the same batch", resent.Batch, refused.Batch)
+			}
+			if got := []string{obs.next(t), obs.next(t)}; !slices.Equal(got, []string{BatchFailed, BatchAcked}) {
+				t.Errorf("results %v", got)
+			}
+			if got := h.spoolFiles(spoolRejectedPrefix); len(got) != 0 {
+				t.Errorf("batch set aside: %v", got)
+			}
+		})
+	}
+}
+
 func TestRefusedBatchesKeptAreBounded(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))

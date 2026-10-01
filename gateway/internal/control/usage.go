@@ -81,6 +81,15 @@ var batchRefusals = map[string]bool{
 	"request-invalid":          true,
 }
 
+// batchRefused reports whether e means the batch itself can never be accepted: one of
+// batchRefusals' codes answered 400 or 413 (CONTROL-PROTOCOL.md, Sending). The same
+// code on another status is retried — a host's own throttling or auth in front of the
+// protocol's routes can carry it, labelled by the host's framework, and dropping the
+// batch over it would lose billing data.
+func batchRefused(e *statusError) bool {
+	return (e.status == http.StatusBadRequest || e.status == http.StatusRequestEntityTooLarge) && batchRefusals[e.code]
+}
+
 // usageSender owns the filling batch, the queue of sealed batches and their sending.
 type usageSender struct {
 	c        *Client
@@ -399,7 +408,7 @@ func (u *usageSender) sendOutstanding(ctx context.Context, e spoolEntry, batch U
 		u.backoff.reset()
 		u.observe(BatchAcked)
 		u.logger.Debug("usage batch acknowledged", attrs...)
-	case errors.As(err, &refused) && batchRefusals[refused.code]:
+	case errors.As(err, &refused) && batchRefused(refused):
 		u.answered()
 		kept := u.setAside(e)
 		u.observe(BatchRejected)
