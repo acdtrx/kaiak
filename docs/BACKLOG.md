@@ -315,6 +315,18 @@ Group entries under headings as themes emerge.
   counters (bounded by the number of top-level groups; empty for requests with no
   valid key), under the same switch as `group_label`; or an outcome label on
   `kaiak_usage_records_total`, which covers routed failures but not refusals.
+  The control plane is just as blind: a usage record has no outcome field, only the
+  `estimated` and `partial` flags, and a backend error status (a `4xx` relayed, a
+  `5xx` answered `upstream_error`) settles as zero units with **neither flag** — the
+  same as a success that used no tokens (`accounting/meter.go`, Settle). `estimated`
+  marks a success the backend reported no usage for, not a failure; `partial` marks
+  an answer cut short or never given (zeros when nothing reached the model, the input
+  estimated when the request was sent in full). An app building per-team error views
+  from records (the management app hit this, 2026-10-01) cannot tell a failure from
+  an empty success, and never sees refusals. Options on this side: an outcome field
+  in the usage record (the gateway's `error_code`, or a short outcome class) — a
+  protocol change on both halves; refusals before routing as counts in the status
+  report, or as records of their own (they carry no units, so no budget changes).
   Revisit trigger: a team-facing dashboard needs error or refusal rates, or teams'
   "why are my requests failing" questions are answered from logs often enough to
   hurt. (ruled 2026-10-01: recorded; not built.)
