@@ -302,3 +302,19 @@ Group entries under headings as themes emerge.
   Revisit trigger: before the first production run with a large config — build
   the metrics, run, and decide on optimization from the numbers. (ruled 2026-09-30:
   measure first; not built yet.)
+- **Errors and refusals per team** — a team's dashboard can show its usage but not
+  its errors. The usage metrics carry `key_group`, `root_group`, `key_id` and
+  `model`, but count only usage records: a request refused before routing (unknown
+  key, a limit, a full queue, the body cap) leaves none, and a routed request that
+  failed leaves one whose `status` (`complete`, `partial`) does not say it failed.
+  The error metrics have no group or key label: `kaiak_errors_total` (`class`),
+  `kaiak_limit_rejections_total` (`scope_kind`, `type` — no group ID by decision,
+  settled 2026-09-27: "the log line names it"), `kaiak_queue_rejections_total`
+  (`model`, `reason`). Per team, errors are found only in the request log lines (key
+  ID, group, `error_code`). Options: `root_group` on the error and limit-rejection
+  counters (bounded by the number of top-level groups; empty for requests with no
+  valid key), under the same switch as `group_label`; or an outcome label on
+  `kaiak_usage_records_total`, which covers routed failures but not refusals.
+  Revisit trigger: a team-facing dashboard needs error or refusal rates, or teams'
+  "why are my requests failing" questions are answered from logs often enough to
+  hurt. (ruled 2026-10-01: recorded; not built.)
