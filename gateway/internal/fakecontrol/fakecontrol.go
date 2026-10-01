@@ -3,8 +3,8 @@
 // publishes, takes usage batches (de-duplicated by batch ID as the protocol settles, so
 // a test can check exactly-once counting) and status reports, runs the request checks,
 // records every request, and lets the test script stream events, go down, restart,
-// answer with another protocol version, or fail usage batches (an error answer, or an
-// ack dropped after counting). Its totals are
+// answer with another protocol version, or fail usage batches (an error answer, an
+// ack dropped after counting, or an ack naming another batch). Its totals are
 // scripted: the test sets the windows and the live-gateway count, and the server
 // keeps the revision (a random control-plane ID, new on Restart, and a sequence
 // bumped by every change) and each instance's counted_through, as kaiak-control
@@ -89,6 +89,8 @@ const (
 	OutcomeAckDropped = "ack-dropped"
 	// OutcomeRefused: answered with an error; nothing counted.
 	OutcomeRefused = "refused"
+	// OutcomeAckOther: answered with an ack naming another batch; nothing counted.
+	OutcomeAckOther = "ack-other"
 )
 
 // UsageEvent is one POST /v1/usage as the server took it.
@@ -112,6 +114,9 @@ type UsageFault struct {
 	// DropAck takes the batch as usual (counted, or a duplicate), then drops the
 	// connection instead of answering: the gateway sees a lost ack.
 	DropAck bool
+	// AckOther answers with an ack naming another batch (the next sequence of the
+	// same epoch) without taking the batch, as a broken proxy or cache would.
+	AckOther bool
 }
 
 // eventsBuffer bounds the usage and status events held for a test that does not read
@@ -671,6 +676,16 @@ func (s *Server) serveUsage(w http.ResponseWriter, r *http.Request) {
 	} else {
 		fault = s.usageFault
 	}
+	if fault != nil && fault.AckOther {
+		other := batch.Batch
+		other.Sequence++
+		totals := s.totalsLocked(batch.Batch.Instance)
+		s.mu.Unlock()
+		event.Outcome = OutcomeAckOther
+		s.announceUsage(event)
+		writeAck(w, other, totals)
+		return
+	}
 	if fault != nil && !fault.DropAck {
 		s.mu.Unlock()
 		refuse(fault.Status, fault.Code)
@@ -696,7 +711,12 @@ func (s *Server) serveUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.announceUsage(event)
-	id, _ := json.Marshal(batch.Batch) // a struct of strings and an integer always encodes
+	writeAck(w, batch.Batch, totals)
+}
+
+// writeAck answers a usage batch with the ack naming batch, carrying totals.
+func writeAck(w http.ResponseWriter, batch BatchID, totals []byte) {
+	id, _ := json.Marshal(batch) // a struct of strings and an integer always encodes
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = fmt.Fprintf(w, `{"batch":%s,"totals":%s}`, id, totals) // a failed write means the gateway left
 }

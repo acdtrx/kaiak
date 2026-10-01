@@ -186,3 +186,22 @@ func TestNegativeCountIsClampedNotSaturated(t *testing.T) {
 		t.Error("the full limit is refused on an empty window")
 	}
 }
+
+// A minute bucket is reused every 60 s: the second that comes back to its index
+// starts from zero, never from what the bucket held a minute earlier.
+func TestSlidingMinuteBucketReusedAfterAMinuteStartsEmpty(t *testing.T) {
+	w := newWindow(SlidingMinute, 100)
+	t0 := at("2026-09-24T10:00:07Z")
+	w.add(t0, 70, false, 0)
+	later := t0.Add(60 * time.Second) // the same bucket index
+	w.add(later, 30, false, 0)
+	if got := w.usedAt(later); got != 30 {
+		t.Errorf("used %d after reusing the bucket, want 30 (only the new amount)", got)
+	}
+	if !w.admits(later, 70) {
+		t.Error("refused a request that fits the limit with only 30 used")
+	}
+	if w.admits(later, 71) {
+		t.Error("admitted past the limit")
+	}
+}

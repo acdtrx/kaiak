@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -406,6 +407,39 @@ func TestHeadersNameTheTightestLimit(t *testing.T) {
 	}
 }
 
+// With several limits refusing, Retry-After is the longest wait among them — a
+// client retrying sooner is refused again — whichever counter is checked first.
+func TestRetryAfterIsTheLongestWaitAmongRefusingLimits(t *testing.T) {
+	const rpm, tph = `[{ "type": "requests_per_minute", "value": 2 }]`, `[{ "type": "tokens_per_hour", "value": 1000 }]`
+	for _, c := range []struct {
+		name string
+		doc  limitsDoc
+		// scope and id name the hour limit, the longer wait.
+		scope Scope
+		id    string
+	}{
+		{"minute checked first", limitsDoc{global: rpm, team: tph}, ScopeGroup, "t"},
+		{"hour checked first", limitsDoc{global: tph, team: rpm}, ScopeGlobal, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			clk := newClock("2026-09-24T10:15:00Z")
+			l := clk.limiter(holderOf(snapshot(t, c.doc)))
+			admitN(t, l, workload, 1, 500)
+			clk.advance(10 * time.Second)
+			admitN(t, l, workload, 1, 500)
+			// Requests are spent until the first slides out at 10:16:00 (50 s); tokens
+			// until the hour ends at 11:00:00.
+			rej := refused(t, l, workload, 100)
+			if want := 44*time.Minute + 50*time.Second; rej.RetryAfter != want {
+				t.Errorf("retry after %v, want %v (the hour limit's wait, not the minute's 50s)", rej.RetryAfter, want)
+			}
+			if rej.Scope != c.scope || rej.ID != c.id || rej.Type != config.LimitTokensPerHour {
+				t.Errorf("rejection %+v, want the hour limit of scope %s %q", rej, c.scope, c.id)
+			}
+		})
+	}
+}
+
 func TestReloadKeepsMatchingCounters(t *testing.T) {
 	c := newClock("2026-09-24T10:00:00Z")
 	holder := holderOf(snapshot(t, limitsDoc{
@@ -737,6 +771,51 @@ func TestCarryOverStaysWithinItsGroup(t *testing.T) {
 	holder.Swap(snapshot(t, limitsDoc{ann: `[{ "type": "tokens_per_hour", "value": 5000, "models": ["m1", "m2"] }]`}))
 	if got := used(t, l, "ann", config.LimitTokensPerHour); got != 0 {
 		t.Errorf("ann tokens %d after the edit, want 0: the team's usage is not hers", got)
+	}
+}
+
+// A limit split by a model-set edit into two new identities carries its predecessor's
+// usage to both: the first takes the counter over, reservations in flight included;
+// the second gets a copy of the settled usage only — the in-flight reservation settles
+// on the counter it was made on, so a copied hold would never be released. The two
+// count separately from then on.
+func TestCarryOverToTwoNewLimitsFromOnePredecessor(t *testing.T) {
+	c := newClock("2026-09-24T10:00:00Z")
+	holder := holderOf(snapshot(t, limitsDoc{team: `[{ "type": "tokens_per_hour", "value": 5000, "models": ["m1", "m2"] }]`}))
+	l := c.limiter(holder)
+	l.Settle(admitN(t, l, workload, 1, 5000)[0], record(400, 0, 0, 0, 0))
+	inFlight := admitN(t, l, workload, 1, 1000)[0]
+
+	holder.Swap(snapshot(t, limitsDoc{team: `[
+    { "type": "tokens_per_hour", "value": 5000, "models": ["m1"] },
+    { "type": "tokens_per_hour", "value": 5000, "models": ["m2"] } ]`}))
+	usedOn := func(model string) int64 {
+		t.Helper()
+		for _, u := range l.Usage() {
+			if u.Group == "t" && u.Type == config.LimitTokensPerHour && slices.Equal(u.Models, []string{model}) {
+				return u.Used
+			}
+		}
+		t.Fatalf("no team tokens_per_hour counter on %s", model)
+		return 0
+	}
+	if m1, m2 := usedOn("m1"), usedOn("m2"); m1 != 1400 || m2 != 400 {
+		t.Fatalf("after the split m1 %d, m2 %d; want 1400 (400 settled + 1000 in flight) and 400 (settled only)", m1, m2)
+	}
+
+	c.advance(time.Second)
+	l.Settle(inFlight, record(200, 0, 0, 0, 0))
+	if m1, m2 := usedOn("m1"), usedOn("m2"); m1 != 600 || m2 != 400 {
+		t.Errorf("after the in-flight request settled m1 %d, m2 %d; want 600 and 400 (no phantom hold)", m1, m2)
+	}
+
+	l.Settle(admitN(t, l, workload, 1, 100)[0], record(100, 0, 0, 0, 0))
+	if m1, m2 := usedOn("m1"), usedOn("m2"); m1 != 700 || m2 != 400 {
+		t.Errorf("after a request on m1: m1 %d, m2 %d; want 700 and 400 (separate counters)", m1, m2)
+	}
+	l.Settle(admitN(t, l, workload.on("m2"), 1, 50)[0], record(50, 0, 0, 0, 0))
+	if m1, m2 := usedOn("m1"), usedOn("m2"); m1 != 700 || m2 != 450 {
+		t.Errorf("after a request on m2: m1 %d, m2 %d; want 700 and 450", m1, m2)
 	}
 }
 

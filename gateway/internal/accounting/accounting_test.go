@@ -305,3 +305,31 @@ func TestSettlementClampsUsageToTheProtocolBound(t *testing.T) {
 		t.Errorf("OutOfRange told %d times, want still 1", clamped)
 	}
 }
+
+// A cost past the int64 range saturates at its maximum: a float64 → int64 conversion
+// out of range is implementation-defined (negative on amd64, the shipped image's
+// architecture), and a negative cost would pass every budget. Settlement then clamps
+// it to the protocol bound like any other out-of-range amount.
+func TestCostSaturatesAtTheInt64Edge(t *testing.T) {
+	expensive := []config.Price{price("2025-01-01", map[config.Unit]float64{config.UnitTokensIn: 1000, config.UnitTokensOut: 1000})}
+	for _, units := range []Units{
+		tokenUnits(math.MaxInt64, 0, 0, 0),
+		tokenUnits(0, 0, math.MaxInt64, 0),
+		tokenUnits(1<<53, 0, 1<<53, 0),
+	} {
+		if got := Cost(expensive, day("2025-07-01"), units); got != math.MaxInt64 {
+			t.Errorf("cost of %v: %d, want the int64 maximum", units, got)
+		}
+	}
+
+	clamped := 0
+	r := NewRecorder(RecorderOptions{Instance: "gw-1", Sink: &recordingSink{}, OutOfRange: func() { clamped++ }})
+	model := &config.Model{Name: "chat", Prices: expensive}
+	meter := bodyMeter(0, 40, 200, `{"choices":[],"usage":{"prompt_tokens":9223372036854775807,"completion_tokens":3}}`)
+	rec := r.Settle(Request{RequestID: "req-edge", Model: model,
+		Deployment: config.Deployment{Backend: &config.Backend{ID: "vllm"}}, Start: day("2025-07-01")}, meter, true)
+	if rec.CostNanoUSD != MaxAmount || rec.Units[config.UnitTokensIn] != MaxAmount || clamped != 1 {
+		t.Errorf("cost %d, units %v, clamps told %d; want the cost and tokens_in clamped to %d, told once",
+			rec.CostNanoUSD, rec.Units, clamped, int64(MaxAmount))
+	}
+}

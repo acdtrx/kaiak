@@ -343,6 +343,32 @@ func TestLostAckIsResentAndCountedOnce(t *testing.T) {
 	}
 }
 
+// An ack naming another batch is not the outstanding batch's: taken as its ack, the
+// batch would leave the queue uncounted. It stays queued, is resent with the same ID
+// and records, and the mismatch is logged.
+func TestAckNamingAnotherBatchIsNotTaken(t *testing.T) {
+	h := newHarness(t)
+	h.cp.Publish(configA(t))
+	h.cp.FailUsage(fakecontrol.UsageFault{AckOther: true})
+	c, obs, _ := h.usageClient(1, nil)
+	c.Record(testRecord(1))
+	sent := h.wantUsage(fakecontrol.OutcomeAckOther, 1, 1)
+	resent := h.wantUsage(fakecontrol.OutcomeCounted, 1, 1)
+	if sent.Batch != resent.Batch || !slices.Equal(recordIDs(t, sent.Body), recordIDs(t, resent.Body)) {
+		t.Errorf("resent %+v, first sent %+v: want the same batch", resent.Batch, sent.Batch)
+	}
+	if got := []string{obs.next(t), obs.next(t)}; !slices.Equal(got, []string{BatchFailed, BatchAcked}) {
+		t.Errorf("results %v", got)
+	}
+	if n := len(h.cp.CountedRecords()); n != 1 {
+		t.Errorf("%d records counted, want 1", n)
+	}
+	if out := h.logs.String(); !strings.Contains(out, "usage batch not delivered; retrying") ||
+		!strings.Contains(out, fmt.Sprintf("usage ack names batch %s/2, sent %s/1", sent.Batch.Epoch, sent.Batch.Epoch)) {
+		t.Errorf("mismatched ack not logged:\n%s", out)
+	}
+}
+
 func TestRefusedBatchIsSetAsideAndTheNextSent(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))
