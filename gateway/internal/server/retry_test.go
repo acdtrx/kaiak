@@ -105,6 +105,8 @@ func TestRetrySucceedsOnTheOtherDeployment(t *testing.T) {
 		{name: "wrong model on the host", first: "local", fail: fakebackend.Reply{Status: 404,
 			Body: `{"object":"error","message":"The model ` + "`first`" + ` does not exist.","type":"NotFoundError","param":null,"code":404}`},
 			outcome: "upstream_model_missing", reason: "model_missing", records: 1},
+		{name: "no endpoint at the host's base_url", first: "local", fail: fakebackend.Reply{Status: 404, Body: "404 page not found\n"},
+			outcome: "upstream_path_missing", reason: "path_missing", records: 1},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			g, other := newRetryGateway(t, c.first, "local-b", nil)

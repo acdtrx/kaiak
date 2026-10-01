@@ -25,9 +25,10 @@ func TestSeriesStartAtZero(t *testing.T) {
 	writeJSON(t, configFile, reliabilityConfig(a.URL(), b.URL(), hash, nil))
 	g := startGateway(t, configFile, filepath.Join(dir, "data"))
 
-	outcomes := []string{"success", "unavailable", "timeout", "auth_failed", "model_missing", "server_error",
-		"broke_off", "response_timeout", "rate_limited", "client_error", "canceled", "internal"}
-	reasons := []string{"unavailable", "timeout", "server_error", "rate_limited", "auth_failed", "model_missing"}
+	outcomes := []string{"success", "unavailable", "timeout", "auth_failed", "model_missing", "path_missing",
+		"server_error", "broke_off", "response_timeout", "rate_limited", "client_error", "canceled", "internal"}
+	reasons := []string{"unavailable", "timeout", "server_error", "rate_limited", "auth_failed", "model_missing",
+		"path_missing"}
 	want := func(series string, value float64) {
 		t.Helper()
 		if v, ok := g.metricValue(t, series); !ok || v != value {

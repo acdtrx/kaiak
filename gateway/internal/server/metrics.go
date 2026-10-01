@@ -128,7 +128,7 @@ func errorCodeClass(code string) metrics.ErrorClass {
 		return metrics.ErrorUpstreamUnavailable
 	case "upstream_timeout":
 		return metrics.ErrorUpstreamTimeout
-	case "upstream_auth_failed", "upstream_model_missing", "upstream_error":
+	case "upstream_auth_failed", "upstream_model_missing", "upstream_path_missing", "upstream_error":
 		return metrics.ErrorUpstreamError
 	case "client_closed":
 		return metrics.ErrorClientClosed

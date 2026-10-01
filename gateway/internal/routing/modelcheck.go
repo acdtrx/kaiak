@@ -2,6 +2,7 @@ package routing
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"slices"
 	"sync"
@@ -13,10 +14,11 @@ import (
 const modelCheckParallel = 8
 
 // ModelChecker checks, for each config applied, that every deployment's backend
-// lists the deployment's model (docs/specs/GATEWAY.md, Routing and reliability:
-// wrong model on a host): one probe per backend, in the background, a warning per
-// deployment whose model is missing. It never delays or refuses a config; a newer
-// config replaces one not yet checked.
+// lists the deployment's model (docs/specs/GATEWAY.md, Providers: wrong model on a
+// host, wrong path to a host): one probe per backend, in the background, a warning
+// per deployment whose model is missing and per backend whose models list is not
+// where its base_url says. It never delays or refuses a config; a newer config
+// replaces one not yet checked.
 type ModelChecker struct {
 	probe  ProbeFunc
 	logger *slog.Logger
@@ -61,6 +63,14 @@ func (c *ModelChecker) Run(ctx context.Context) {
 	}
 }
 
+// pathMissing is a probe error saying the backend answered 404 for its models list
+// (provider.PathMissingError): the server is up, and the backend's base_url is most
+// likely wrong. BaseURLHint says what base_url should hold for the backend's type.
+type pathMissing interface {
+	error
+	BaseURLHint() string
+}
+
 // check probes every backend of s with deployments, at most modelCheckParallel at
 // once, and warns for each deployment whose model its backend does not list.
 func (c *ModelChecker) check(ctx context.Context, s *config.Snapshot) {
@@ -85,6 +95,11 @@ func (c *ModelChecker) check(ctx context.Context, s *config.Snapshot) {
 			defer func() { <-slots }()
 			serves, err := c.probe(ctx, b)
 			if ctx.Err() != nil {
+				return
+			}
+			if pathErr, ok := errors.AsType[pathMissing](err); ok {
+				c.logger.Warn("the backend has no models list at its base_url", "backend", id, "base_url", b.BaseURL,
+					"hint", pathErr.BaseURLHint())
 				return
 			}
 			if err != nil {

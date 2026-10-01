@@ -96,7 +96,8 @@ func (m *Meter) Sent() {
 }
 
 // Refused records that the backend refused the request outright — the gateway's
-// credential, or a model it does not serve: an answer, with nothing processed.
+// credential, a model it does not serve, a path it does not have: an answer, with
+// nothing processed.
 func (m *Meter) Refused() {
 	m.refused = true
 }

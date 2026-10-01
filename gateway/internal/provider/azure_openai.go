@@ -38,15 +38,26 @@ func (m *azureOpenAI) Send(ctx context.Context, req *Request) (Response, error) 
 	}
 	return sendWire(ctx, req, wireCall{
 		backend: m.backend, client: m.client, url: m.url(req.Endpoint.path()), header: m.header(),
-		body: body, stripUsage: stripUsage, missingModelCodes: []string{"DeploymentNotFound", "model_not_found"},
+		body: body, stripUsage: stripUsage, missingModelCodes: []string{"DeploymentNotFound", "model_not_found"}, unknownPath: m.unknownPath,
 	})
 }
+
+// unknownPath: an Azure resource answers a path it does not have with
+// {"error": {"code": "404", "message": "Resource not found"}}.
+func (m *azureOpenAI) unknownPath(answer []byte) bool {
+	e, ok := readErrorAnswer(answer)
+	return ok && e.Message == "Resource not found"
+}
+
+// azurePathHint is the base_url hint for azure-openai: the module adds the API's
+// path itself (docs/specs/GATEWAY.md, Base URLs).
+const azurePathHint = "base_url should be the resource endpoint with no path, e.g. https://<resource>.openai.azure.com: the gateway adds /openai/v1"
 
 // probe checks that the resource answers. Its models list names models, not the
 // deployment names requests carry, so it cannot say whether a deployment exists:
 // every name counts as served, and the trial request decides.
 func (m *azureOpenAI) probe(ctx context.Context) (func(string) bool, error) {
-	if _, err := fetchModelsList(ctx, m.backend, m.client, m.url("models"), m.header()); err != nil {
+	if _, err := fetchModelsList(ctx, m.backend, m.client, m.url("models"), m.header(), azurePathHint); err != nil {
 		return nil, err
 	}
 	return func(string) bool { return true }, nil

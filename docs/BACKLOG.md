@@ -107,10 +107,19 @@ Group entries under headings as themes emerge.
     open, billed $0. Fix: treat a llama-server `500` as the client's error (relayed,
     not retried, not a circuit failure); a dead server still opens the circuit
     through refused connections, timeouts and 502/503/504.
+  - *A `base_url` without `/v1` half works* (found 2026-10-01, run on build 11146):
+    llama-server serves `/chat/completions` and `/models` without the prefix as
+    with it, but `/completions` and `/embeddings` there are its own formats (`200`,
+    `{"content": …}` and `[{"embedding": [[…]]}]`, no OpenAI `usage`), so chat works,
+    the models list and the config-apply check pass, and completions and embeddings
+    reach clients in a shape they cannot read, with usage estimated. No `404`, so the
+    wrong-path rule (`GATEWAY.md`, Wrong path to a host) cannot see it. Fix: the
+    module refuses (config issue) or warns about a `base_url` not ending in `/v1`.
   Until then: `global.max_n: 1` and `max_sequences_per_request: 1` refuse prompt lists
   and `n` > 1 on every backend (not `n_cmpl`). Revisit trigger: llama-server serves a
   priced or limited model to clients that are not fully trusted, or a circuit opens
-  on a llama-server model without the server being down. (ruled 2026-09-30: deferred;
+  on a llama-server model without the server being down, or a llama-server
+  completions or embeddings client gets an answer it cannot read. (ruled 2026-09-30: deferred;
   the `llama-server` type comes first.)
 
 ## Pipeline stages

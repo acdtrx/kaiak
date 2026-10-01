@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"kaiak/internal/config"
 )
@@ -37,13 +38,20 @@ func (m *openAI) Send(ctx context.Context, req *Request) (Response, error) {
 	}
 	return sendWire(ctx, req, wireCall{
 		backend: m.backend, client: m.client, url: m.url(req.Endpoint.path()), header: m.header(),
-		body: body, stripUsage: stripUsage, missingModelCodes: []string{"model_not_found"},
+		body: body, stripUsage: stripUsage, missingModelCodes: []string{"model_not_found"}, unknownPath: m.unknownPath,
 	})
+}
+
+// unknownPath: OpenAI answers a path it does not have with an invalid_request_error
+// whose message starts "Invalid URL" ("Invalid URL (POST /chat/completions)").
+func (m *openAI) unknownPath(answer []byte) bool {
+	e, ok := readErrorAnswer(answer)
+	return ok && e.Type == "invalid_request_error" && strings.HasPrefix(e.Message, "Invalid URL")
 }
 
 // probe reads the models list, which names what requests carry.
 func (m *openAI) probe(ctx context.Context) (func(string) bool, error) {
-	body, err := fetchModelsList(ctx, m.backend, m.client, m.url("models"), m.header())
+	body, err := fetchModelsList(ctx, m.backend, m.client, m.url("models"), m.header(), versionPathHint)
 	if err != nil {
 		return nil, err
 	}

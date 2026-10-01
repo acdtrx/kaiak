@@ -153,6 +153,10 @@ const (
 	// not exist there — the host serves another model (docs/specs/GATEWAY.md,
 	// Providers: wrong model on a host).
 	CodeModelMissing Code = "upstream_model_missing"
+	// CodePathMissing: the backend answered 404 the way its server answers a path it
+	// does not have — the backend's base_url is wrong (docs/specs/GATEWAY.md,
+	// Providers: wrong path to a host).
+	CodePathMissing Code = "upstream_path_missing"
 )
 
 // Error is a failure before any part of the response reached the client. Its message

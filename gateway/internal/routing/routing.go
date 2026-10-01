@@ -151,7 +151,8 @@ type grant struct {
 }
 
 // ProbeFunc checks whether backend b answers (provider.Registry.Probe): a nil error
-// when it does, with serves reporting whether it serves a backend-side model name.
+// when it does, with serves reporting whether it serves a backend-side model name;
+// an error with a BaseURLHint (pathMissing) when its models list answered 404.
 // It must return once ctx ends.
 type ProbeFunc func(ctx context.Context, b *config.Backend) (serves func(model string) bool, err error)
 

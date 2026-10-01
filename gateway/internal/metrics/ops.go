@@ -53,6 +53,7 @@ const (
 	AttemptTimeout      AttemptOutcome = "timeout"       // a stream's first-event timeout
 	AttemptAuthFailed   AttemptOutcome = "auth_failed"   // the backend refused the gateway's credential
 	AttemptModelMissing AttemptOutcome = "model_missing" // the backend does not serve the model
+	AttemptPathMissing  AttemptOutcome = "path_missing"  // the backend's base_url leads to no endpoint
 	AttemptServerError  AttemptOutcome = "server_error"  // a backend 5xx
 	AttemptBrokeOff     AttemptOutcome = "broke_off"     // broken off, stalled or incomplete after the first event
 	// Neutral: they leave the circuit as it is.
@@ -64,7 +65,7 @@ const (
 )
 
 var attemptOutcomes = []AttemptOutcome{AttemptSuccess, AttemptUnavailable, AttemptTimeout, AttemptAuthFailed,
-	AttemptModelMissing, AttemptServerError, AttemptBrokeOff, AttemptResponseTimeout, AttemptRateLimited,
+	AttemptModelMissing, AttemptPathMissing, AttemptServerError, AttemptBrokeOff, AttemptResponseTimeout, AttemptRateLimited,
 	AttemptClientError, AttemptCanceled, AttemptInternal}
 
 // Bucket bounds. Durations span quick refusals to a long generation (longer ones,
@@ -92,7 +93,8 @@ var queueReasons = []string{QueueFull, QueueTimeout}
 
 // retryReasons are the reason label values of kaiak_retries_total: the request
 // pipeline's retry reasons (docs/specs/GATEWAY.md, Routing and reliability: retries).
-var retryReasons = []string{"unavailable", "timeout", "server_error", "rate_limited", "auth_failed", "model_missing"}
+var retryReasons = []string{"unavailable", "timeout", "server_error", "rate_limited", "auth_failed", "model_missing",
+	"path_missing"}
 
 // limitScopeKinds are the scope_kind label values of kaiak_limit_rejections_total:
 // the kinds of scope a limit belongs to (limits.Scope).
@@ -158,7 +160,7 @@ func NewOps(reg *Registry, router *routing.Router, holder *config.Holder) *Ops {
 		queueRejections: reg.Counter("kaiak_queue_rejections_total",
 			"Requests refused by their model's queue, by reason (full, timeout).", "model", "reason"),
 		retries: reg.Counter("kaiak_retries_total",
-			"Retries: attempts sent after an earlier attempt of the same request failed, by the backend of that attempt and its failure (unavailable, timeout, server_error, rate_limited, auth_failed, model_missing).",
+			"Retries: attempts sent after an earlier attempt of the same request failed, by the backend of that attempt and its failure (unavailable, timeout, server_error, rate_limited, auth_failed, model_missing, path_missing).",
 			"model", "backend", "reason"),
 		attempts: reg.Histogram("kaiak_request_attempts",
 			"Attempts per routed request, the first included.", attemptBuckets, "model"),

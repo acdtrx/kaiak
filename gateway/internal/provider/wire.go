@@ -22,8 +22,9 @@ import (
 // speaking the OpenAI format shares (openai.go, azure_openai.go, vllm.go,
 // llama_server.go, openai_compatible.go). The core is
 // not a provider and knows no backend type: a module prepares the upstream request —
-// URL, credential, body edits, the error codes that mean a missing model — and hands
-// it to sendWire; its probe reads the models list with fetchModelsList.
+// URL, credential, body edits, the error codes that mean a missing model, its
+// server's answer to a path it does not have — and hands it to sendWire; its probe
+// reads the models list with fetchModelsList.
 
 // wireCall is one upstream request a backend module prepared.
 type wireCall struct {
@@ -40,6 +41,10 @@ type wireCall struct {
 	// missingModelCodes are the error codes by which the backend says, in a 404, that
 	// the model does not exist there.
 	missingModelCodes []string
+	// unknownPath reports whether a 404 answer (its first maxNotFoundBody bytes) is
+	// the server's answer to a path it does not have: the request reached the
+	// server but no endpoint, so the backend's base_url is wrong.
+	unknownPath func(answer []byte) bool
 }
 
 // sendWire sends call upstream for req and waits for the first event of the response,
@@ -109,12 +114,22 @@ func sendWire(ctx context.Context, req *Request, call wireCall) (Response, error
 		return nil, &Error{Code: CodeAuthFailed, Err: fmt.Errorf("backend %s answered %d", call.backend.ID, resp.StatusCode)}
 	}
 	if resp.StatusCode == http.StatusNotFound {
-		if modelMissing(resp, req.Deployment.Model, call.missingModelCodes) {
-			_ = resp.Body.Close() // the backend's answer names its model: not relayed
+		// A missing model is read first: a server may answer it in the same shape as
+		// an unknown path.
+		var deploymentErr *Error
+		switch answer, ok := readNotFound(resp); {
+		case ok && modelMissing(answer, req.Deployment.Model, call.missingModelCodes):
+			deploymentErr = &Error{Code: CodeModelMissing, Err: fmt.Errorf("backend %s answered 404: model %q does not exist there",
+				call.backend.ID, req.Deployment.Model)}
+		case ok && call.unknownPath(answer):
+			deploymentErr = &Error{Code: CodePathMissing, Err: fmt.Errorf("backend %s answered 404: no endpoint at %s (check its base_url)",
+				call.backend.ID, call.url)}
+		}
+		if deploymentErr != nil {
+			_ = resp.Body.Close() // the backend's answer is about its deployment: not relayed
 			timer.Stop()
 			cancel(nil)
-			return nil, &Error{Code: CodeModelMissing, Err: fmt.Errorf("backend %s answered 404: model %q does not exist there",
-				call.backend.ID, req.Deployment.Model)}
+			return nil, deploymentErr
 		}
 	}
 
@@ -168,9 +183,11 @@ const maxProbeBody = 1 << 20
 
 // fetchModelsList asks backend b for its models list at url, with header (the
 // module's credential), bounded by b's connect timeout plus probeReadTimeout, and
-// returns the answer's body when the status is 2xx. The error may name the backend's
-// address, never the credential.
-func fetchModelsList(ctx context.Context, b *config.Backend, client *http.Client, url string, header http.Header) ([]byte, error) {
+// returns the answer's body when the status is 2xx. A 404 is a *PathMissingError
+// carrying pathHint, the module's word on what base_url should hold. The error may
+// name the backend's address, never the credential.
+func fetchModelsList(ctx context.Context, b *config.Backend, client *http.Client, url string, header http.Header,
+	pathHint string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, b.ConnectTimeout+probeReadTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -189,11 +206,35 @@ func fetchModelsList(ctx context.Context, b *config.Backend, client *http.Client
 	if err != nil {
 		return nil, fmt.Errorf("backend %s: read models list: %w", b.ID, err)
 	}
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &PathMissingError{Backend: b.ID, URL: url, Hint: pathHint}
+	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return nil, fmt.Errorf("backend %s: models list answered %d", b.ID, resp.StatusCode)
 	}
 	return body, nil
 }
+
+// PathMissingError is a probe's error when the backend answered 404 for its models
+// list: the server is up, and the backend's base_url is most likely wrong.
+type PathMissingError struct {
+	Backend string
+	// URL is the models list's address; Hint says what the module expects base_url
+	// to hold.
+	URL  string
+	Hint string
+}
+
+func (e *PathMissingError) Error() string {
+	return fmt.Sprintf("backend %s: models list answered 404 at %s", e.Backend, e.URL)
+}
+
+// BaseURLHint says what the backend's base_url should hold.
+func (e *PathMissingError) BaseURLHint() string { return e.Hint }
+
+// versionPathHint is the base_url hint of the modules whose base_url is what an
+// OpenAI client would use (docs/specs/GATEWAY.md, Base URLs).
+const versionPathHint = "base_url should end in the API version path, e.g. /v1"
 
 // listedModels reads an OpenAI models list and reports, through serves, whether a
 // backend-side model name is one of its data[*].id.
@@ -213,43 +254,45 @@ func listedModels(b *config.Backend, body []byte) (serves func(model string) boo
 	return func(model string) bool { return ids[model] }, nil
 }
 
-// maxNotFoundBody is the most of a 404 answer read to tell a missing model from a
-// caller's 404; error answers are small.
+// maxNotFoundBody is the most of a 404 answer read to tell the deployment's failure
+// (a missing model, an unknown path) from a caller's 404; error answers are small.
 const maxNotFoundBody = 64 << 10
 
-// modelMissing reads a 404 answer and reports whether it says the deployment's model
-// does not exist on the backend: its error message names model as a whole word, or
-// its error code is one of codes, the module's. The
-// answer's shapes vary by server — {"error": {"message", "code"}} (OpenAI, vLLM),
-// {"message", "code"} at the top level (older vLLM), {"error": "<message>"}
-// (Ollama). What was read is put back in front of the body, so an answer that is not
-// about the model is relayed whole — and a read error is not the model's: the body
-// returns it again after what was read.
-func modelMissing(resp *http.Response, model string, codes []string) bool {
+// readNotFound reads the start of a 404 answer, up to maxNotFoundBody bytes, and puts
+// what was read back in front of the body, so an answer that is the caller's is
+// relayed whole. ok is false when the read failed: such an answer is not the
+// deployment's, and the body returns the error again after what was read.
+func readNotFound(resp *http.Response) (answer []byte, ok bool) {
 	head, err := io.ReadAll(io.LimitReader(resp.Body, maxNotFoundBody))
 	resp.Body = struct {
 		io.Reader
 		io.Closer
 	}{io.MultiReader(bytes.NewReader(head), resp.Body), resp.Body}
-	if err != nil {
-		return false
-	}
-	var answer struct {
+	return head, err == nil
+}
+
+// modelMissing reports whether a 404 answer says the deployment's model does not
+// exist on the backend: its error message names model as a whole word, or its error
+// code is one of codes, the module's. The answer's shapes vary by server —
+// {"error": {"message", "code"}} (OpenAI, vLLM), {"message", "code"} at the top
+// level (older vLLM), {"error": "<message>"} (Ollama).
+func modelMissing(answer []byte, model string, codes []string) bool {
+	var top struct {
 		Error   json.RawMessage `json:"error"`
 		Message string          `json:"message"`
 		Code    json.RawMessage `json:"code"`
 	}
-	if json.Unmarshal(head, &answer) != nil {
+	if json.Unmarshal(answer, &top) != nil {
 		return false
 	}
-	message, code := answer.Message, answer.Code
+	message, code := top.Message, top.Code
 	var nested struct {
 		Message string          `json:"message"`
 		Code    json.RawMessage `json:"code"`
 	}
 	switch {
-	case json.Unmarshal(answer.Error, &message) == nil:
-	case json.Unmarshal(answer.Error, &nested) == nil:
+	case json.Unmarshal(top.Error, &message) == nil:
+	case json.Unmarshal(top.Error, &nested) == nil:
 		message, code = nested.Message, nested.Code
 	}
 	var codeName string
@@ -257,6 +300,34 @@ func modelMissing(resp *http.Response, model string, codes []string) bool {
 		return true
 	}
 	return namesWord(message, model)
+}
+
+// errorAnswer is what the core reads of an error answer in the OpenAI format.
+type errorAnswer struct {
+	Type    string
+	Message string
+}
+
+// readErrorAnswer reads an answer in the OpenAI error shape: {"error": {...}} (its
+// type and message, where they are strings) or {"error": "<text>"} (the text as its
+// message). ok is false for any other body — plain text, HTML, other JSON.
+func readErrorAnswer(answer []byte) (e errorAnswer, ok bool) {
+	var top struct {
+		Error json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(answer, &top) != nil {
+		return errorAnswer{}, false
+	}
+	if json.Unmarshal(top.Error, &e.Message) == nil {
+		return e, true
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(top.Error, &fields) != nil || fields == nil {
+		return errorAnswer{}, false
+	}
+	_ = json.Unmarshal(fields["type"], &e.Type) // a type that is not a string reads as none
+	_ = json.Unmarshal(fields["message"], &e.Message)
+	return e, true
 }
 
 // namesWord reports whether text contains word with no model-name character right

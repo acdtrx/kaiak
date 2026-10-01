@@ -174,11 +174,12 @@ func TestModelMissingAnswerIsAnError(t *testing.T) {
 		}
 	}
 	// A 404 that does not name the model (or names it only inside a longer name) is
-	// relayed, body intact.
+	// relayed, body intact. (An openai-compatible 404 outside the OpenAI error shape
+	// is an unknown path: TestUnknownPathByModule.)
 	for _, body := range []string{
 		`{"error":{"message":"LoRA adapter foo not found","type":"NotFoundError","code":404}}`,
 		`{"error":{"message":"The model ` + "`Qwen/Qwen3-32B-FP8`" + ` does not exist.","type":"NotFoundError","code":404}}`,
-		`not json`,
+		`{"error":"adapter foo not found"}`,
 	} {
 		fb.QueueReplies(fakebackend.Reply{Status: http.StatusNotFound, Body: body})
 		resp, err := send("Qwen/Qwen3-32B")

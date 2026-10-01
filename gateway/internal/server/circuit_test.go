@@ -87,6 +87,9 @@ func TestOutcomeClassification(t *testing.T) {
 		{name: "backend 404 naming the deployment's model", model: "open", reply: fakebackend.Reply{Status: 404,
 			Body: `{"error":{"message":"The model ` + "`open`" + ` does not exist.","type":"NotFoundError","param":"model","code":404}}`},
 			class: failure},
+		// The backend's base_url leads to no endpoint: the deployment is broken.
+		{name: "backend 404 at no endpoint", model: "open", reply: fakebackend.Reply{Status: 404, Body: "404 page not found\n"},
+			class: failure},
 		{name: "credential refused (401)", model: "open",
 			reply: fakebackend.Reply{RequireHeader: "X-Never-Sent", RequireValue: "x"}, class: failure},
 		{name: "credential refused (403)", model: "open", reply: fakebackend.Reply{Status: 403}, class: failure},

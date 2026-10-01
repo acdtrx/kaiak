@@ -186,6 +186,9 @@ func errUpstream(code provider.Code) *apiError {
 	case provider.CodeModelMissing:
 		return &apiError{status: http.StatusBadGateway, errType: typeServer, code: string(code),
 			message: "The model backend does not serve the model."}
+	case provider.CodePathMissing:
+		return &apiError{status: http.StatusBadGateway, errType: typeServer, code: string(code),
+			message: "The model backend's address is misconfigured."}
 	}
 	return &apiError{status: http.StatusBadGateway, errType: typeServer, code: string(provider.CodeUnavailable),
 		message: "The model backend could not be reached."}

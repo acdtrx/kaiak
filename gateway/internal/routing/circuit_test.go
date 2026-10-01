@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -697,6 +698,13 @@ func (b *logBuffer) String() string {
 
 // At config apply every backend is probed once, in the background, and each
 // deployment whose model it does not list is warned about (H8).
+// hintedError is a probe error for a models list answering 404 (provider's
+// PathMissingError): it says what base_url should hold.
+type hintedError struct{ hint string }
+
+func (e hintedError) Error() string       { return "models list answered 404" }
+func (e hintedError) BaseURLHint() string { return e.hint }
+
 func TestModelCheckWarnsPerMissingModel(t *testing.T) {
 	var logs logBuffer
 	logger := slog.New(slog.NewTextHandler(&logs, nil))
@@ -708,12 +716,16 @@ func TestModelCheckWarnsPerMissingModel(t *testing.T) {
 		mu.Lock()
 		probed[b.ID]++
 		mu.Unlock()
-		if b.ID == "down" {
+		switch b.ID {
+		case "down":
 			return nil, errors.New("connection refused")
+		case "nopath":
+			return nil, fmt.Errorf("probe: %w", hintedError{"base_url should end in /v1"})
 		}
 		return func(model string) bool { return model != "wrong@x" }, nil
 	}, logger)
 	x, y, down := backend("x", 0), backend("y", 0), backend("down", 0)
+	nopath := &config.Backend{ID: "nopath", BaseURL: "http://vllm:8000"}
 	ctx, stop := context.WithCancel(context.Background())
 	stopped := make(chan struct{})
 	go func() {
@@ -721,8 +733,8 @@ func TestModelCheckWarnsPerMissingModel(t *testing.T) {
 		close(stopped)
 	}()
 	c.Check(circuitSnapshot(1, time.Hour, queuedModel("right", 1, time.Hour, x, y), queuedModel("wrong", 1, time.Hour, x),
-		queuedModel("other", 1, time.Hour, down)))
-	for range 3 {
+		queuedModel("other", 1, time.Hour, down), queuedModel("lost", 1, time.Hour, nopath)))
+	for range 4 {
 		select {
 		case <-done:
 		case <-time.After(waitTimeout):
@@ -736,10 +748,15 @@ func TestModelCheckWarnsPerMissingModel(t *testing.T) {
 		strings.Count(out, "does not list") != 1 {
 		t.Errorf("log:\n%s\nwant one warning, for wrong@x", out)
 	}
-	if !strings.Contains(out, `msg="model check skipped: the backend did not answer" backend=down`) {
+	if !strings.Contains(out, `level=INFO msg="model check skipped: the backend did not answer" backend=down`) {
 		t.Errorf("log:\n%s\nwant the unreachable backend named", out)
 	}
-	if probed["x"] != 1 || probed["y"] != 1 || probed["down"] != 1 {
+	// A models list answering 404: the backend is up and its base_url likely wrong.
+	if !strings.Contains(out, `level=WARN msg="the backend has no models list at its base_url" backend=nopath base_url=http://vllm:8000 hint="base_url should end in /v1"`) ||
+		strings.Contains(out, "skipped: the backend did not answer\" backend=nopath") {
+		t.Errorf("log:\n%s\nwant a warning naming nopath's base_url, with the hint", out)
+	}
+	if probed["x"] != 1 || probed["y"] != 1 || probed["down"] != 1 || probed["nopath"] != 1 {
 		t.Errorf("probes %v, want one per backend", probed)
 	}
 }

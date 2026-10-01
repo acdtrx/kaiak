@@ -38,14 +38,23 @@ func (m *llamaServer) Send(ctx context.Context, req *Request) (Response, error) 
 	}
 	return sendWire(ctx, req, wireCall{
 		backend: m.backend, client: m.client, url: m.url(req.Endpoint.path()), header: m.header(),
-		body: body, stripUsage: stripUsage, missingModelCodes: []string{"model_not_found"},
+		body: body, stripUsage: stripUsage, missingModelCodes: []string{"model_not_found"}, unknownPath: m.unknownPath,
 	})
+}
+
+// unknownPath: llama-server answers a path it does not have with
+// {"error": {"message": "File Not Found", "type": "not_found_error", "code": 404}}.
+// Its HTTP layer gives every 404 that body, so in router mode a model it does not
+// have reads the same: the deployment's failure either way.
+func (m *llamaServer) unknownPath(answer []byte) bool {
+	e, ok := readErrorAnswer(answer)
+	return ok && e.Type == "not_found_error" && e.Message == "File Not Found"
 }
 
 // probe reads the models list, which names what requests carry: the model file's
 // path, or its --alias (docs/specs/GATEWAY.md, Backend model names).
 func (m *llamaServer) probe(ctx context.Context) (func(string) bool, error) {
-	body, err := fetchModelsList(ctx, m.backend, m.client, m.url("models"), m.header())
+	body, err := fetchModelsList(ctx, m.backend, m.client, m.url("models"), m.header(), versionPathHint)
 	if err != nil {
 		return nil, err
 	}

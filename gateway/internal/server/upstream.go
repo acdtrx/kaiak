@@ -25,6 +25,7 @@ const (
 	retryRateLimited  = "rate_limited"  // a backend 429
 	retryAuthFailed   = "auth_failed"   // the backend refused the gateway's credential
 	retryModelMissing = "model_missing" // the backend does not serve the deployment's model
+	retryPathMissing  = "path_missing"  // the backend's base_url leads to no endpoint
 )
 
 // attempt is one try of a routed request on one deployment: its slot, the meter the
@@ -179,7 +180,8 @@ func sendAttempt(ctx context.Context, rq *request, providers *provider.Registry)
 	if err != nil {
 		failure := upstreamFailure(ctx, rq, err)
 		if perr, ok := errors.AsType[*provider.Error](rq.upstreamErr); ok &&
-			(perr.Code == provider.CodeAuthFailed || perr.Code == provider.CodeModelMissing) {
+			(perr.Code == provider.CodeAuthFailed || perr.Code == provider.CodeModelMissing ||
+				perr.Code == provider.CodePathMissing) {
 			rq.meter.Refused()
 		}
 		return nil, failure
@@ -193,8 +195,9 @@ func sendAttempt(ctx context.Context, rq *request, providers *provider.Registry)
 // reliability: retries), for the current attempt, which has sent nothing to the
 // client yet: a connect error or a connection lost before the first event, a
 // stream's first-event timeout, a backend 5xx or 429, the backend refusing the
-// gateway's credential (another backend has its own) and the backend not serving the
-// deployment's model (another deployment does) may be retried; "" otherwise —
+// gateway's credential (another backend has its own), the backend not serving the
+// deployment's model and the backend's base_url leading to no endpoint (another
+// deployment does serve) may be retried; "" otherwise —
 // a response relayed from the backend (a success, a caller's 4xx), a non-stream
 // response timeout (the backend was working on a long answer; another would take as
 // long), the client gone, the drain's cut, a gateway fault.
@@ -221,6 +224,8 @@ func retryReason(rq *request) string {
 		return retryAuthFailed
 	case provider.CodeModelMissing:
 		return retryModelMissing
+	case provider.CodePathMissing:
+		return retryPathMissing
 	}
 	return retryUnavailable
 }
@@ -228,12 +233,15 @@ func retryReason(rq *request) string {
 // avoidAfter adds what the failed attempt at rules out for the request's next
 // attempts: retries are failover only, so at's deployment is refused — the client
 // (its SDK) retries the same deployment itself, and a gateway retry there would
-// multiply its attempts; a backend that refused the gateway's credential is refused
-// with all of m's deployments on it (the same credential would be refused).
+// multiply its attempts. A failure that belongs to the backend rather than the
+// deployment refuses all of m's deployments on that backend: the gateway's
+// credential refused (the same credential would be refused) and its base_url leading
+// to no endpoint (every deployment on it uses the same base_url). A missing model is
+// the deployment's alone: another model on the same backend may be served.
 func avoidAfter(avoid routing.Avoid, m *config.Model, at *attempt) routing.Avoid {
 	key := routing.DeploymentID{Backend: at.deployment.Backend.ID, Model: at.deployment.Model}
 	avoid.Refused = append(avoid.Refused, key)
-	if at.retryReason == retryAuthFailed {
+	if at.retryReason == retryAuthFailed || at.retryReason == retryPathMissing {
 		for _, d := range m.Deployments {
 			if d.Backend.ID == key.Backend {
 				avoid.Refused = append(avoid.Refused, routing.DeploymentID{Backend: d.Backend.ID, Model: d.Model})
@@ -384,7 +392,7 @@ func (rq *request) endAttempt(recorder *accounting.Recorder) {
 // reason of a failure. Failures: no response (connect error, broken before the
 // first event), a stream's first-event timeout, the backend refusing the gateway's
 // credential (every request would fail the same way), the backend not serving the
-// deployment's model, a backend 5xx, a response broken off upstream, stalled or
+// deployment's model, the backend's base_url leading to no endpoint, a backend 5xx, a response broken off upstream, stalled or
 // ended incomplete. A non-stream response timeout before the first bytes is its own
 // class, neutral but for a half-open trial and a run of them (routing.ResponseTimeout).
 // Neutral: a non-stream response timeout after the first bytes (a large body still
@@ -411,6 +419,8 @@ func classifyAttempt(rq *request) (metrics.AttemptOutcome, routing.Outcome, stri
 			return metrics.AttemptAuthFailed, routing.Failure, rq.upstreamErr.Error()
 		case provider.CodeModelMissing:
 			return metrics.AttemptModelMissing, routing.Failure, rq.upstreamErr.Error()
+		case provider.CodePathMissing:
+			return metrics.AttemptPathMissing, routing.Failure, rq.upstreamErr.Error()
 		}
 		return metrics.AttemptUnavailable, routing.Failure, rq.upstreamErr.Error()
 	}

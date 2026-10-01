@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"kaiak/internal/fakebackend"
@@ -143,4 +144,35 @@ func TestBackendTypes(t *testing.T) {
 		}
 	}
 	g.stop(t)
+}
+
+// A backend whose base_url misses the API version path (the 2026-09-30 review's O1):
+// its models list answers 404, and the check at config apply warns, naming the
+// backend, its base_url and what base_url should hold — the other backends, whose
+// lists answer, get no such warning.
+func TestWrongBaseURLIsWarnedAtApply(t *testing.T) {
+	backend := fakebackend.New()
+	defer backend.Close()
+	dir := t.TempDir()
+	_, hash := newKey()
+	cfg := typesConfig(backend.URL(), hash)
+	cfg["backends"].(map[string]any)["lost"] = map[string]any{"type": "vllm", "base_url": backend.URL()}
+	cfg["models"].(map[string]any)["on-lost"] = map[string]any{
+		"deployments": []any{map[string]any{"backend": "lost", "model": "Qwen/Qwen3-8B"}},
+		"metadata": map[string]any{"context_length": 8192,
+			"capabilities": map[string]any{"streaming": true, "tools": false, "vision": false, "reasoning": false}},
+	}
+	configFile := filepath.Join(dir, "config.json")
+	writeJSON(t, configFile, cfg)
+	g := startGatewayEnv(t, append(gatewayEnv(configFile, ""),
+		openAIKeyEnv+"=sk-e2e-openai", azureKeyEnv+"=e2e-azure"))
+
+	line := g.logs.wait(t, "the base_url warning", msg("the backend has no models list at its base_url", "backend", "lost"))
+	if line["level"] != "WARN" || line["base_url"] != backend.URL() ||
+		line["hint"] != "base_url should end in the API version path, e.g. /v1" {
+		t.Errorf("warning %v, want WARN naming base_url %s with the version-path hint", line, backend.URL())
+	}
+	if strings.Count(g.logs.text(), "no models list at its base_url") != 1 {
+		t.Errorf("log:\n%s\nwant the one warning, for lost", g.logs.text())
+	}
 }

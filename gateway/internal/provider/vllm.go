@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 
 	"kaiak/internal/config"
@@ -37,14 +38,23 @@ func (m *vLLM) Send(ctx context.Context, req *Request) (Response, error) {
 	}
 	return sendWire(ctx, req, wireCall{
 		backend: m.backend, client: m.client, url: m.url(req.Endpoint.path()), header: m.header(),
-		body: body, stripUsage: stripUsage, missingModelCodes: []string{"model_not_found"},
+		body: body, stripUsage: stripUsage, missingModelCodes: []string{"model_not_found"}, unknownPath: m.unknownPath,
 	})
+}
+
+// unknownPath: vLLM's web framework (FastAPI) answers a path it has no route for
+// with {"detail": "Not Found"}; vLLM's own 404s carry the OpenAI error shape.
+func (m *vLLM) unknownPath(answer []byte) bool {
+	var a struct {
+		Detail *string `json:"detail"`
+	}
+	return json.Unmarshal(answer, &a) == nil && a.Detail != nil && *a.Detail == "Not Found"
 }
 
 // probe reads the models list, which names what requests carry (vLLM's
 // --served-model-name).
 func (m *vLLM) probe(ctx context.Context) (func(string) bool, error) {
-	body, err := fetchModelsList(ctx, m.backend, m.client, m.url("models"), m.header())
+	body, err := fetchModelsList(ctx, m.backend, m.client, m.url("models"), m.header(), versionPathHint)
 	if err != nil {
 		return nil, err
 	}

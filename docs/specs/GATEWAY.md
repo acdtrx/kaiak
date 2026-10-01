@@ -54,6 +54,7 @@
   | Backend unreachable: connect refused or timed out, DNS, TLS, connection lost before the first event | 502 | `server_error` | `upstream_unavailable` |
   | Backend refused the gateway's own credential (backend `401`/`403`) | 502 | `server_error` | `upstream_auth_failed` |
   | Backend answered `404` saying the deployment's model does not exist there (Providers: wrong model on a host) | 502 | `server_error` | `upstream_model_missing` |
+  | Backend answered `404` the way its server answers a path it does not have — the backend's `base_url` is wrong (Providers: wrong path to a host) | 502 | `server_error` | `upstream_path_missing` |
   | A stream got no first event within the backend's first-event timeout, or a non-stream response did not arrive within its response timeout | 504 | `server_error` | `upstream_timeout` |
   | Backend answered a `5xx` (its error code and type logged, its text neither logged nor relayed; its `Retry-After` kept) | the backend's `5xx` | `server_error` | `upstream_error` |
   | Gateway fault building the upstream request | 500 | `server_error` | `internal_error` |
@@ -397,10 +398,53 @@ own, and a client sending repeats is broken either way.
   once, off the request path, never delaying or refusing the config) and each
   deployment whose model is not listed gets a warning
   (`the backend does not list the deployment's model`: backend, deployment model);
-  an unreachable backend is logged at info. A server that ignores the request's
+  a backend that does not answer is logged at info, one whose models list answers
+  `404` gets a warning (Wrong path to a host, below). A server that ignores the request's
   model name (llama-server) must still be configured with a name it lists.
   Rejected: relaying the `404` — the client would read its own model name as wrong,
   and a fast `404` made the wrong host the least loaded one, so it drew traffic.
+- **Wrong path to a host** (settled 2026-10-01; the 2026-09-30 review's O1): a
+  backend `404` that the backend's module recognizes as its server's answer to a
+  path it does not have is the deployment's failure, as a missing model is — the
+  backend's `base_url` is wrong (typically the API version path left out). It answers
+  `502 upstream_path_missing` (the backend's text is not relayed), is retried on
+  another deployment, counts toward the circuit and produces no usage, with its own
+  retry reason and attempt outcome, `path_missing`. Like a refused credential it
+  belongs to the backend, not the deployment: every deployment of the model on that
+  backend shares its `base_url` and would hit the same wrong path, so all of them are
+  refused for the request's retries (a missing model stays per deployment). A missing
+  model is read first.
+  The signatures, per module:
+  - `vllm`: `{"detail": "Not Found"}` — FastAPI's answer to a route it does not
+    have. vLLM's own errors take the OpenAI shape; its handler is registered for
+    FastAPI's `HTTPException`, which the router's Starlette `404` does not match, so
+    the framework's default answer stands (read in vLLM's source, `main` on
+    2026-10-01; not run).
+  - `llama-server`: `{"error": {"message": "File Not Found", "type":
+    "not_found_error", "code": 404}}` (run on build 11146). Its HTTP layer gives
+    every `404` that body, so in router mode a model the server does not have reads
+    as a wrong path too — the deployment's failure either way. llama-server serves
+    chat completions and its models list without `/v1` as well, so a `base_url`
+    missing it gives no `404` there (`docs/BACKLOG.md`, llama-server quirks).
+  - `openai`: an `invalid_request_error` whose message starts `Invalid URL` (`Invalid
+    URL (POST /chat/completions)`) — OpenAI's known answer, not verified live.
+  - `azure-openai`: `{"error": {"code": "404", "message": "Resource not found"}}` —
+    the resource's answer to a path it does not have, not verified live.
+  - `openai-compatible`, whose server is unknown: a `404` whose body is not an
+    OpenAI-shaped error (`{"error": {...}}` or `{"error": "<text>"}`) — plain text,
+    HTML, other JSON (older vLLM's top-level `{"message": …}` included), an empty
+    body. A server speaking the OpenAI format answers in that shape; anything else
+    came from below the API — a web framework, a proxy.
+
+  Any other `404` stays the caller's, relayed as it came. The check at config apply
+  (Wrong model on a host) logs a models list answering `404` as a warning, `the
+  backend has no models list at its base_url` (backend, `base_url`, `hint`): the
+  hint says `base_url` should end in the API version path (e.g. `/v1`), or, for
+  `azure-openai`, that it is the resource endpoint with no path (the gateway adds
+  `/openai/v1`). Rejected: folding it into `upstream_model_missing` and its label —
+  one alert either way, but the operator could not tell a wrong URL from a wrong
+  model; reading every `openai-compatible` `404` as the deployment's — a caller's
+  `404` (an unknown adapter) would fail over and open the circuit.
 - **Complete responses** (settled 2026-09-25; the audit's M13): HTTP framing ending
   cleanly does not make an answer whole — a backend whose generator dies can end its
   response on an event boundary. A successful (`2xx`) stream is complete once it
@@ -464,6 +508,7 @@ own, and a client sending repeats is broken either way.
     | Backend `429` | yes — `rate_limited`; the deployment cools down (429 cooldown, below) |
     | Backend `401`/`403` (`upstream_auth_failed`) | yes — `auth_failed`; every deployment of the model on that backend is refused for the request |
     | Backend `404` naming the deployment's model (`upstream_model_missing`) | yes — `model_missing` |
+    | Backend `404` at a path its server does not have (`upstream_path_missing`) | yes — `path_missing`; every deployment of the model on that backend is refused for the request |
     | A response relayed (`2xx`, a caller's `4xx`), anything after the first event | no |
     | Client gone, the drain's cut, a gateway fault | no |
 
@@ -545,7 +590,7 @@ own, and a client sending repeats is broken either way.
   breaker**; while open, the gateway probes it on an interval and closes the circuit
   when a probe succeeds. No always-on active checks (deferred). Settled 2026-09-24:
   backend failures count (connect errors, stream first-event and stall timeouts,
-  5xx, a refused credential, a missing model, broken-off responses — the full list
+  5xx, a refused credential, a missing model, a wrong path, broken-off responses — the full list
   is the outcome-class table below); backend 429 (busy, not broken) and
   caller-caused 4xx do not. The circuit opens after 5 consecutive failures (config).
   The probe is a cheap `GET …/models` on the backend every 10 s (config) — no tokens,
@@ -562,6 +607,7 @@ own, and a client sending repeats is broken either way.
   | Backend `5xx` (answered `upstream_error`) | failure |
   | Backend `401`/`403` (`upstream_auth_failed`) | failure |
   | Backend `404` naming the deployment's model (`upstream_model_missing`) | failure |
+  | Backend `404` at a path its server does not have (`upstream_path_missing`) | failure |
   | Response broken off upstream after the first event (`relay_end=upstream_failed`) | failure |
   | Stream silent for the stall timeout after the first event (`relay_end=upstream_stalled`) | failure |
   | Successful response ended before it was complete (`relay_end=upstream_incomplete`) | failure |
@@ -1693,7 +1739,7 @@ own, and a client sending repeats is broken either way.
   | `kaiak_queued_requests` | gauge | `model` | Requests waiting in the model's queue; every configured model present, 0 when empty |
   | `kaiak_queue_wait_seconds` | histogram | `model` | Time queued requests waited before getting a slot (refused ones are counted below instead) |
   | `kaiak_queue_rejections_total` | counter | `model`, `reason` | Requests the model's queue refused: `full` (`queue_full`), `timeout` (`queue_timeout`) |
-  | `kaiak_retries_total` | counter | `model`, `backend`, `reason` | Retries sent — attempts after an earlier attempt of the same request failed, counted as each is sent — by that attempt's backend and failure: `unavailable`, `timeout`, `server_error`, `rate_limited`, `auth_failed`, `model_missing` |
+  | `kaiak_retries_total` | counter | `model`, `backend`, `reason` | Retries sent — attempts after an earlier attempt of the same request failed, counted as each is sent — by that attempt's backend and failure: `unavailable`, `timeout`, `server_error`, `rate_limited`, `auth_failed`, `model_missing`, `path_missing` |
   | `kaiak_upstream_attempts_total` | counter | `backend`, `deployment_model`, `outcome` | Every upstream attempt (first attempts and retries) by its outcome — the circuit breaker's classification, named (below) |
   | `kaiak_upstream_attempt_duration_seconds` | histogram | `backend` | Every upstream attempt from its send to its end: a relayed response to the end of its relay (stream or not), a retried or failed attempt to its failure (a held backend error: its status and first event) |
   | `kaiak_request_attempts` | histogram | `model` | Attempts per routed request, the first included (buckets 1–10) |
@@ -1754,7 +1800,7 @@ own, and a client sending repeats is broken either way.
     2026-09-25, D6; the independent daily-operations review's finding 5), and
     exactly once however the request then ends. Outcomes, a fixed set: success —
     `success`; failures — `unavailable`, `timeout` (a stream's first-event
-    timeout), `auth_failed`, `model_missing`, `server_error` (a backend `5xx`),
+    timeout), `auth_failed`, `model_missing`, `path_missing`, `server_error` (a backend `5xx`),
     `broke_off` (broken off, stalled or incomplete after the first event); neutral
     — `response_timeout` (a non-stream response timeout, before or after the first
     bytes; before them it is a failure for a half-open trial and from the 3rd in a
@@ -1762,7 +1808,7 @@ own, and a client sending repeats is broken either way.
     `canceled` (the client left, or the drain cut, before the first event),
     `internal` (a gateway fault building the upstream request). Label values are
     config names and the fixed outcomes only, never client input; every configured
-    deployment has all twelve series from the start, at 0 (next bullet).
+    deployment has all thirteen series from the start, at 0 (next bullet).
   - **Series at 0** (settled 2026-09-25, E5; the audit's N-O4): every counter and
     histogram whose label values are fixed or come from the config exists at 0
     from startup, and a config apply creates those of its new models, deployments
@@ -1801,7 +1847,7 @@ own, and a client sending repeats is broken either way.
     `no_healthy_deployment` (every deployment's circuit open — platform-side: the
     backends are failing; its own class because nothing was sent upstream),
     `upstream_unavailable`,
-    `upstream_timeout`, `upstream_error` (`upstream_auth_failed`, `upstream_model_missing`, a backend
+    `upstream_timeout`, `upstream_error` (`upstream_auth_failed`, `upstream_model_missing`, `upstream_path_missing`, a backend
     `5xx` — answered `upstream_error` —, a response that broke off upstream), `upstream_rate_limited` (a relayed
     backend `429`), `upstream_client_error` (a relayed backend `4xx` other than
     `429`), `client_closed`, `shutting_down` (`server_shutting_down`, a response the

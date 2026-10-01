@@ -290,9 +290,14 @@ checks run as without it.
     another resource.
   - `504 upstream_timeout` — nothing within `-request-timeout`; a cold vLLM loading
     the model can take longer — raise it.
-  - `404` relayed from the backend — for vLLM or llama-server a wrong `-model` or a
-    missing `/v1`; for Azure a wrong deployment name, or a resource without the v1
-    API.
+  - `502 upstream_path_missing` — the backend answered `404` for a path it does not
+    have: a wrong `-base-url` (vLLM or OpenAI without `/v1`; for Azure, a path after
+    the resource endpoint). The gateway's log also warns `the backend has no models
+    list at its base_url` at startup.
+  - `502 upstream_model_missing` — the backend does not serve `-model` (for Azure,
+    no deployment of that name).
+  - `404` relayed from the backend — a `404` the gateway does not read as the
+    deployment's: the backend's text says what is missing.
   - `400` relayed from the backend — a parameter the backend refuses; the body says
     which. `-chat-defaults` values are the first suspect.
 - `estimated=true` on a `usage-log/*` check: the backend sent no usage, so the gateway

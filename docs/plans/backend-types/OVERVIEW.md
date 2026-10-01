@@ -150,7 +150,8 @@ clears kaiak-control's, step 3 the gateway's).
   `-kind vllm` against the DGX, each with a wrong `base_url` for phase 2.
 - `scripts/check-all.sh` green at each phase end.
 
-**Verification status:** phase 1 done (2026-10-01), green; phase 2 not started.
+**Verification status:** phase 1 done (2026-10-01), green; phase 2 done
+(2026-10-01), green — the DGX live run not done.
 
 - [x] Shared fixtures, same codes from both halves (`STEP-1-contract.md`, steps 2–3).
 - [x] One table test of every gateway module's service tier
@@ -160,7 +161,11 @@ clears kaiak-control's, step 3 the gateway's).
   (`STEP-3-gateway.md`).
 - [x] `verifyBackend`: every type accepted; the note on a vLLM or llama-server
   answer under another type (`STEP-2-kaiak-control.md`).
-- [ ] Phase 2: the unknown-path answer per module, the config-apply warning.
-- [ ] Live: `-kind llama-server` and `-kind vllm` against the DGX.
+- [x] Phase 2: the unknown-path answer per module, the config-apply warning
+  (`STEP-5-wrong-path.md`: provider, server, routing and e2e tests; llama-server's
+  answer run locally, the others from source or known behaviour).
+- [ ] Live: `-kind llama-server` and `-kind vllm` against the DGX — not run. A
+  llama-server `base_url` missing `/v1` gives no `404` (it serves chat there): its
+  wrong-path run needs another path, e.g. `/v2` (`STEP-5-wrong-path.md`).
 - [x] `scripts/check-all.sh` green 3× in a row at the end of phase 1
   (`STEP-4-e2e-and-docs.md`).
