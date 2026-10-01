@@ -155,12 +155,16 @@ Its baseline passed except staticcheck, which it could not download offline.
 
 ## Follow-up (2026-10-01)
 
-- **Fixed:** C5 (`89a1e91`), O2 and O3 (`3b5ca5a`), B1 (`16c440c`), B4 (`5704b1d`);
+- **Fixed:** C5 (`89a1e91`), O2 and O3 (`3b5ca5a`), B1 (`16c440c`), B4 (`5704b1d`),
+  C4 and B2 (`e76fbf0`: the carry is written before the version is stored), O4, O6,
+  O7 and O8 (`9bcd328`); test gaps T2–T6 closed (`2563b40`);
   C6, T1 and O1 by the backend-types plan (`docs/plans/backend-types/`: a type per
   server, the service tier forced only on `openai` and `azure-openai`, a wrong path
   answered `502 upstream_path_missing`).
 - **Backlogged** (`docs/BACKLOG.md`): L1–L3 (llama-server quirks); the per-team view
   of errors raised alongside this review.
-- **Open, recorded here:** C4 with B2 (publishing and carry-over as one step), and the
-  remaining findings, rated by frequency at the planned scale — about 20 models over
-  some 30 deployments, 3–7k keys — at which C1 and B3 are far off.
+- **Built from the backlog alongside:** config size and load-time metrics
+  (`c40bbb3`), to measure config loading at the planned scale.
+- **Open, recorded here:** the remaining findings, rated by frequency at the planned
+  scale — about 20 models over some 30 deployments, 3–7k keys — at which C1 and B3
+  are far off.
