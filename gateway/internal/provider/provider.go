@@ -23,7 +23,7 @@ import (
 // keeping every backend-specific concern behind Send and Response: the pipeline hands
 // over the client's request as received plus the routing decision, and gets back
 // status, headers and events already in the client's format (OpenAI JSON and SSE). A
-// translating provider converts on both sides; the openai-compatible one passes
+// translating provider converts on both sides; the OpenAI-format modules pass
 // through with the owned edits only.
 type Provider interface {
 	// Send sends req upstream and waits for the first event of the response (or for
@@ -205,10 +205,16 @@ func (r *Registry) For(b *config.Backend) Provider {
 // The config schema admits only the types listed here, so another is a gateway fault.
 func (r *Registry) module(b *config.Backend) backendModule {
 	switch b.Type {
-	case config.BackendOpenAICompatible:
-		return &openAICompatible{backend: b, client: r.client(b), credential: r.credential(b)}
+	case config.BackendOpenAI:
+		return &openAI{backend: b, client: r.client(b), credential: r.credential(b)}
 	case config.BackendAzureOpenAI:
 		return &azureOpenAI{backend: b, client: r.client(b), credential: r.credential(b)}
+	case config.BackendVLLM:
+		return &vLLM{backend: b, client: r.client(b), credential: r.credential(b)}
+	case config.BackendLlamaServer:
+		return &llamaServer{backend: b, client: r.client(b), credential: r.credential(b)}
+	case config.BackendOpenAICompatible:
+		return &openAICompatible{backend: b, client: r.client(b), credential: r.credential(b)}
 	}
 	panic(fmt.Sprintf("provider: no module for backend type %q", b.Type))
 }

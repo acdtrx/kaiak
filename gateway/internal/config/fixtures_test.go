@@ -146,6 +146,33 @@ func TestInvalidFixtures(t *testing.T) {
 	}
 }
 
+// The fixtures for a backend type that requires api_key_env are refused for the
+// missing key at the backend, not as an unknown type: TestInvalidFixtures sees only
+// the schema code, which both reasons share.
+func TestBackendsRequiringAPIKeyEnv(t *testing.T) {
+	for file, backend := range map[string]string{
+		"openai-without-api-key-env.json": "openai",
+		"azure-without-api-key-env.json":  "vllm",
+	} {
+		t.Run(file, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join(fixturesDir, "invalid", file))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = Parse(data)
+			var invalid *ValidationError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("want a *ValidationError, got %v", err)
+			}
+			want := "/backends/" + backend
+			if len(invalid.Issues) != 1 || invalid.Issues[0].Path != want ||
+				!strings.Contains(invalid.Issues[0].Message, "need api_key_env") {
+				t.Errorf("issues %v, want one at %s saying the backend needs api_key_env", invalid.Issues, want)
+			}
+		})
+	}
+}
+
 // duplicateCase is an entry of protocol/fixtures/duplicate-members/cases.json: raw
 // documents repeating an object member, which the gateway refuses (duplicate-member,
 // at path) before any decoder reads them. kaiak-control's suite runs the same files

@@ -264,7 +264,7 @@ func runSelfTest(ctx context.Context, o options) error {
 		k.apiKeyEnv = defaultAPIKeyEnv[kind]
 		k.requestTimeout = 10 * time.Second
 		secret, _ := newKey()
-		auth := map[string]string{kindVLLM: "none", kindOpenAI: "bearer", kindAzure: "api-key"}[kind]
+		auth := map[string]string{kindVLLM: "none", kindLlamaServer: "none", kindOpenAI: "bearer", kindAzure: "api-key"}[kind]
 		fake, root, err := startFake(ctx, fakeBin, "127.0.0.1:0", auth, secret, selfTestChatModel, selfTestEmbedModel)
 		if err != nil {
 			return err

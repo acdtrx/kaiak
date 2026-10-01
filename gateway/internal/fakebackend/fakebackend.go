@@ -1,6 +1,6 @@
 // Package fakebackend is an OpenAI-compatible model server for tests. It serves chat
 // completions, completions, embeddings and the models list (the gateway's probe)
-// under /v1/ (openai-compatible layout) and /openai/v1/ (Azure layout), answers as
+// under /v1/ (the OpenAI layout) and /openai/v1/ (Azure layout), answers as
 // scripted by the test, and records every request it receives. Test tooling only: nothing in the gateway binary imports it;
 // cmd/fakebackend runs it as a process for the e2e test and the live-test kit.
 package fakebackend
@@ -152,8 +152,8 @@ func NewAt(addr string) (*Backend, error) {
 	return b, nil
 }
 
-// URL is the backend's root URL (no path): an openai-compatible base_url is URL()
-// + "/v1"; an azure-openai base_url is URL().
+// URL is the backend's root URL (no path): an azure-openai base_url is URL(); every
+// other type's is URL() + "/v1".
 func (b *Backend) URL() string { return b.server.URL }
 
 // Close stops the backend, cancelling any request still running.

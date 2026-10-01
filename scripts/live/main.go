@@ -1,5 +1,5 @@
-// Command live runs the kaiak gateway against a real backend (vLLM, Azure OpenAI or
-// OpenAI) and checks it end to end, printing PASS/FAIL per check. It generates the
+// Command live runs the kaiak gateway against a real backend (vLLM, llama-server, Azure
+// OpenAI or OpenAI) and checks it end to end, printing PASS/FAIL per check. It generates the
 // config (with a fresh client key), starts the built kaiak binary, drives it over HTTP
 // and reads its log and metrics. With -base-url-2 a second backend of the same kind
 // serves the same model: the models get two deployments, and the reliability checks
@@ -26,14 +26,15 @@ import (
 	"time"
 )
 
-// Backend kinds.
+// Backend kinds, each named as the backend type the generated config gives it.
 const (
-	kindVLLM   = "vllm"
-	kindAzure  = "azure-openai"
-	kindOpenAI = "openai"
+	kindVLLM        = "vllm"
+	kindLlamaServer = "llama-server"
+	kindAzure       = "azure-openai"
+	kindOpenAI      = "openai"
 )
 
-var allKinds = []string{kindVLLM, kindOpenAI, kindAzure}
+var allKinds = []string{kindVLLM, kindLlamaServer, kindOpenAI, kindAzure}
 
 // options is everything a run needs, from flags and environment.
 type options struct {
@@ -84,14 +85,16 @@ func (o options) label() string {
 }
 
 // defaultAPIKeyEnv is the variable holding the backend key when -api-key-env is not
-// given: vLLM usually runs without one.
-var defaultAPIKeyEnv = map[string]string{kindVLLM: "", kindOpenAI: "OPENAI_API_KEY", kindAzure: "AZURE_OPENAI_API_KEY"}
+// given: self-hosted servers usually run without one.
+var defaultAPIKeyEnv = map[string]string{
+	kindVLLM: "", kindLlamaServer: "", kindOpenAI: "OPENAI_API_KEY", kindAzure: "AZURE_OPENAI_API_KEY",
+}
 
 func main() {
 	var o options
 	selfTest := flag.Bool("self-test", false, "run every check against the fake backend standing in for each kind (or only -kind)")
-	flag.StringVar(&o.kind, "kind", "", "backend kind: vllm, azure-openai or openai")
-	flag.StringVar(&o.baseURL, "base-url", os.Getenv("LIVE_BASE_URL"), "backend base URL (env LIVE_BASE_URL): vLLM http://host:8000/v1; OpenAI https://api.openai.com/v1 (the default); Azure the resource endpoint https://<resource>.openai.azure.com")
+	flag.StringVar(&o.kind, "kind", "", "backend kind: vllm, llama-server, azure-openai or openai")
+	flag.StringVar(&o.baseURL, "base-url", os.Getenv("LIVE_BASE_URL"), "backend base URL (env LIVE_BASE_URL): vLLM or llama-server http://host:8000/v1; OpenAI https://api.openai.com/v1 (the default); Azure the resource endpoint https://<resource>.openai.azure.com")
 	flag.StringVar(&o.baseURL2, "base-url-2", os.Getenv("LIVE_BASE_URL_2"), "a second backend of the same kind serving the same -model (env LIVE_BASE_URL_2): two deployments, and the load-spread, cap and failover checks")
 	flag.IntVar(&o.maxInFlight, "max-in-flight", 0, "with -base-url-2: each backend's max_in_flight (0: no cap); adds the capacity check")
 	flag.BoolVar(&o.checkFailover, "check-failover", false, "with -base-url-2: the failover check — stop the second backend when asked, start it again when asked")
@@ -100,7 +103,7 @@ func main() {
 	flag.StringVar(&o.embeddingsModel, "embeddings-model", os.Getenv("LIVE_EMBEDDINGS_MODEL"), "embeddings model name on the backend, optional (env LIVE_EMBEDDINGS_MODEL)")
 	flag.StringVar(&o.embeddingsBaseURL, "embeddings-base-url", os.Getenv("LIVE_EMBEDDINGS_BASE_URL"), "a separate openai-compatible server for -embeddings-model (env LIVE_EMBEDDINGS_BASE_URL), e.g. http://host:8003/v1; default: -base-url serves it")
 	flag.StringVar(&o.embeddingsAPIKeyEnv, "embeddings-api-key-env", "", "with -embeddings-base-url: name of the environment variable holding that server's key (default: none)")
-	flag.StringVar(&o.apiKeyEnv, "api-key-env", "-", "name of the environment variable holding the backend key (default: none for vllm, OPENAI_API_KEY, AZURE_OPENAI_API_KEY)")
+	flag.StringVar(&o.apiKeyEnv, "api-key-env", "-", "name of the environment variable holding the backend key (default: none for vllm and llama-server, OPENAI_API_KEY, AZURE_OPENAI_API_KEY)")
 	flag.IntVar(&o.maxOutput, "max-output", 1024, "output-limit default and ceiling of the chat model (raise it for reasoning models)")
 	flag.IntVar(&o.ceiling, "ceiling", 16, "output-limit ceiling of the model the ceiling check uses")
 	flag.IntVar(&o.contextLength, "context-length", 32768, "declared context length of the chat model")
@@ -164,6 +167,9 @@ func resolve(o *options) error {
 	}
 	if o.kind == kindAzure && o.apiKeyEnv == "" {
 		return errors.New("azure-openai needs -api-key-env: Azure authenticates with an api-key header")
+	}
+	if o.kind == kindOpenAI && o.apiKeyEnv == "" {
+		return errors.New("openai needs -api-key-env: OpenAI answers nothing without a key")
 	}
 	if o.apiKeyEnv != "" && os.Getenv(o.apiKeyEnv) == "" {
 		return fmt.Errorf("%s is not set: export the backend key there, or name another variable with -api-key-env", o.apiKeyEnv)

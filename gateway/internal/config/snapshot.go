@@ -56,7 +56,10 @@ type BackendType string
 
 const (
 	BackendOpenAICompatible BackendType = "openai-compatible"
+	BackendOpenAI           BackendType = "openai"
 	BackendAzureOpenAI      BackendType = "azure-openai"
+	BackendVLLM             BackendType = "vllm"
+	BackendLlamaServer      BackendType = "llama-server"
 )
 
 type LimitType string

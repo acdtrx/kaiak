@@ -7,11 +7,9 @@ import (
 	"kaiak/internal/config"
 )
 
-// openAICompatible is the module for openai-compatible backends: any server speaking
-// the OpenAI format that has no type of its own (SGLang, …). It is the wire core with
-// the OpenAI API's conventions and no server's own rules: the client's service_tier
-// passes untouched and none is added.
-type openAICompatible struct {
+// openAI is the module for openai backends: OpenAI's API, which bills by service
+// tier, so every request runs on the standard one.
+type openAI struct {
 	backend    *config.Backend
 	client     *http.Client
 	credential string
@@ -19,10 +17,11 @@ type openAICompatible struct {
 
 // url joins the base URL, which already ends in the API version path
 // (docs/specs/GATEWAY.md, Base URLs), and the endpoint path.
-func (m *openAICompatible) url(path string) string { return m.backend.BaseURL + "/" + path }
+func (m *openAI) url(path string) string { return m.backend.BaseURL + "/" + path }
 
-// header carries the credential as a bearer token; a backend without one gets none.
-func (m *openAICompatible) header() http.Header {
+// header carries the credential as a bearer token. The schema requires api_key_env;
+// a credential the registry withholds (Registry.credential) sends no header.
+func (m *openAI) header() http.Header {
 	h := make(http.Header)
 	if m.credential != "" {
 		h.Set("Authorization", "Bearer "+m.credential)
@@ -31,8 +30,8 @@ func (m *openAICompatible) header() http.Header {
 }
 
 // Send implements Provider.
-func (m *openAICompatible) Send(ctx context.Context, req *Request) (Response, error) {
-	body, stripUsage, err := passthroughBody(req)
+func (m *openAI) Send(ctx context.Context, req *Request) (Response, error) {
+	body, stripUsage, err := passthroughBody(req, standardServiceTier(req.Endpoint))
 	if err != nil {
 		return nil, editError(err)
 	}
@@ -43,7 +42,7 @@ func (m *openAICompatible) Send(ctx context.Context, req *Request) (Response, er
 }
 
 // probe reads the models list, which names what requests carry.
-func (m *openAICompatible) probe(ctx context.Context) (func(string) bool, error) {
+func (m *openAI) probe(ctx context.Context) (func(string) bool, error) {
 	body, err := fetchModelsList(ctx, m.backend, m.client, m.url("models"), m.header())
 	if err != nil {
 		return nil, err

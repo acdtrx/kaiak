@@ -82,10 +82,9 @@ func TestNonStreamRelayIsFaithfulExceptTheModel(t *testing.T) {
 	if got.Path != "/v1/chat/completions" {
 		t.Errorf("backend path %q", got.Path)
 	}
-	// The model and the standard service tier are the gateway's edits (a chat request
-	// always carries it); every other byte is the client's.
-	wantBody := strings.TrimSuffix(strings.Replace(body, `"renamed"`, `"vendor/renamed-7b-instruct"`, 1), "}") +
-		`,"service_tier":"default"}`
+	// The model is the gateway's one edit here (an openai-compatible backend gets no
+	// service tier); every other byte is the client's.
+	wantBody := strings.Replace(body, `"renamed"`, `"vendor/renamed-7b-instruct"`, 1)
 	if string(got.Body) != wantBody {
 		t.Errorf("backend body\n%s\nwant\n%s", got.Body, wantBody)
 	}
@@ -143,10 +142,7 @@ func TestUnknownFieldsReachTheBackendUntouched(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", w.Code, w.Body.String())
 	}
-	// The standard service tier is added after the last member, before the closing
-	// whitespace and brace.
-	want := strings.TrimSuffix(strings.Replace(body, `"renamed"`, `"vendor/renamed-7b-instruct"`, 1), "\n}") +
-		`,"service_tier":"default"` + "\n}"
+	want := strings.Replace(body, `"renamed"`, `"vendor/renamed-7b-instruct"`, 1)
 	if got := string(onlyRequest(t, g.backend).Body); got != want {
 		t.Errorf("backend body\n%s\nwant\n%s", got, want)
 	}
@@ -161,7 +157,7 @@ func TestStreamWithoutUsageRequestHidesTheUsageChunk(t *testing.T) {
 	}
 
 	sent := onlyRequest(t, g.backend).Body
-	if want := `{"model":"open","stream":true,"messages":[],"service_tier":"default","stream_options":{"include_usage":true}}`; string(sent) != want {
+	if want := `{"model":"open","stream":true,"messages":[],"stream_options":{"include_usage":true}}`; string(sent) != want {
 		t.Errorf("backend body %s, want %s", sent, want)
 	}
 
@@ -194,8 +190,8 @@ func TestStreamWithUsageRequestKeepsTheUsageChunk(t *testing.T) {
 		t.Fatalf("status %d", w.Code)
 	}
 	sent := onlyRequest(t, g.backend).Body
-	if want := strings.TrimSuffix(body, "}") + `,"service_tier":"default"}`; string(sent) != want {
-		t.Errorf("backend body %s, want the client's with the standard service tier added: %s", sent, want)
+	if string(sent) != body {
+		t.Errorf("backend body %s, want the client's unchanged", sent)
 	}
 	if want := directStream(t, g.backend, sent); w.Body.String() != want {
 		t.Errorf("client stream\n%s\nwant\n%s", w.Body.String(), want)

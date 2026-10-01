@@ -42,14 +42,9 @@ const (
 // (hash) with every model allowed.
 func buildConfig(o options, hash string) ([]byte, error) {
 	timeout := o.requestTimeout.Milliseconds()
-	backendOf := func(kind, baseURL, apiKeyEnv string) map[string]any {
-		b := map[string]any{"base_url": baseURL, "first_event_timeout_ms": timeout,
+	backendOf := func(backendType, baseURL, apiKeyEnv string) map[string]any {
+		b := map[string]any{"type": backendType, "base_url": baseURL, "first_event_timeout_ms": timeout,
 			"response_timeout_ms": timeout, "stall_timeout_ms": timeout}
-		if kind == kindAzure {
-			b["type"] = "azure-openai"
-		} else {
-			b["type"] = "openai-compatible"
-		}
 		if apiKeyEnv != "" {
 			b["api_key_env"] = apiKeyEnv
 		}
@@ -106,7 +101,7 @@ func buildConfig(o options, hash string) ([]byte, error) {
 		embedBackend := backendFirst
 		if o.embeddingsServer() {
 			embedBackend = backendEmbed
-			backends[backendEmbed] = backendOf(kindVLLM, o.embeddingsBaseURL, o.embeddingsAPIKeyEnv)
+			backends[backendEmbed] = backendOf("openai-compatible", o.embeddingsBaseURL, o.embeddingsAPIKeyEnv)
 		}
 		embed := map[string]any{
 			"deployments": []any{map[string]any{"backend": embedBackend, "model": o.embeddingsModel}},

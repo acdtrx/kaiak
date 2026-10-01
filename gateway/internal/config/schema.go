@@ -89,8 +89,11 @@ var refusedDefaults = []string{
 }
 
 var (
-	backendTypes = []string{string(BackendOpenAICompatible), string(BackendAzureOpenAI)}
-	limitTypes   = []string{
+	backendTypes = []string{
+		string(BackendOpenAICompatible), string(BackendOpenAI), string(BackendAzureOpenAI), string(BackendVLLM),
+		string(BackendLlamaServer),
+	}
+	limitTypes = []string{
 		string(LimitRequestsPerMinute), string(LimitTokensPerMinute), string(LimitTokensPerHour), string(LimitUSDPerMonth),
 	}
 	// Limit types whose value counts requests or tokens, so it must be an integer.
@@ -166,9 +169,10 @@ func (c *schemaCheck) backend(v any, path string) {
 	if m == nil {
 		return
 	}
-	if m["type"] == string(BackendAzureOpenAI) {
+	// OpenAI and Azure answer nothing without a key.
+	if t, _ := m["type"].(string); t == string(BackendOpenAI) || t == string(BackendAzureOpenAI) {
 		if _, ok := m["api_key_env"]; !ok {
-			c.Fail(path, "azure-openai backends need api_key_env")
+			c.Fail(path, t+" backends need api_key_env")
 		}
 	}
 }

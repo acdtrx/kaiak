@@ -1,7 +1,7 @@
 // Command fakebackend runs the fake OpenAI-compatible backend as a process, for
 // scripts, the live-test kit's self-test and manual runs. Test tooling only.
 //
-// It serves /v1/ (openai-compatible layout) and /openai/v1/ (Azure layout), prints
+// It serves /v1/ (the OpenAI layout) and /openai/v1/ (Azure layout), prints
 // "listening <url>" on stdout once it accepts connections, and stops on SIGINT or
 // SIGTERM. Answers honor max_completion_tokens / max_tokens (finish_reason "length"
 // when they cut the answer short).

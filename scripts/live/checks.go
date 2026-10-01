@@ -322,12 +322,12 @@ func (r *run) checkEmbeddings() {
 
 // checkCeiling asks for far more output than the capped model's ceiling allows — its
 // whole context length; more is refused outright (400 invalid_value): the gateway
-// must lower it, so the answer stops at the ceiling. vLLM is asked through
-// max_tokens (the gateway lowers the client's own key); the cloud APIs through
+// must lower it, so the answer stops at the ceiling. vLLM and llama-server are asked
+// through max_tokens (the gateway lowers the client's own key); the cloud APIs through
 // max_completion_tokens (their reasoning models refuse max_tokens).
 func (r *run) checkCeiling() {
 	limitKey := "max_completion_tokens"
-	if r.o.kind == kindVLLM {
+	if r.o.kind == kindVLLM || r.o.kind == kindLlamaServer {
 		limitKey = "max_tokens"
 	}
 	body := map[string]any{"model": modelCapped, limitKey: r.o.contextLength, "messages": []any{map[string]any{"role": "user",

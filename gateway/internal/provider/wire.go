@@ -19,7 +19,8 @@ import (
 )
 
 // The OpenAI wire core: the request, response and error handling every backend module
-// speaking the OpenAI format shares (openai_compatible.go, azure_openai.go). The core is
+// speaking the OpenAI format shares (openai.go, azure_openai.go, vllm.go,
+// llama_server.go, openai_compatible.go). The core is
 // not a provider and knows no backend type: a module prepares the upstream request —
 // URL, credential, body edits, the error codes that mean a missing model — and hands
 // it to sendWire; its probe reads the models list with fetchModelsList.
@@ -318,8 +319,9 @@ func passthroughBody(req *Request, extra ...memberEdit) (body []byte, stripUsage
 	return body, stripUsage, err
 }
 
-// standardServiceTier is the edit that keeps a request on standard processing
-// (docs/specs/GATEWAY.md, Providers → Service tier): prices are standard-tier rates,
+// standardServiceTier is the edit that keeps a request on standard processing, for
+// the modules whose backends bill by tier (openai.go, azure_openai.go;
+// docs/specs/GATEWAY.md, Providers → Service tier): prices are standard-tier rates,
 // and a priority request is billed about twice what its record would say. A chat
 // completions request always carries service_tier "default" — an absent tier means
 // "auto", which follows the deployment's or project's own setting. On the other
