@@ -304,4 +304,27 @@ Group entries under headings as themes emerge.
   usage record, refusal counts per key, model and code in each usage batch, protocol
   version 4, `CountedBatch.refusals` in the store interface. Revisit trigger: the
   management app (or another host) needs failures and refusals in its own database
-  rather than from Prometheus. (ruled 2026-10-01: metrics first.)
+  rather than from Prometheus. (ruled 2026-10-01: metrics first. The user leans
+  toward the observability path instead (OpenTelemetry export, below; 2026-10-02).
+- **OpenTelemetry export** — request outcomes, timings and errors in an
+  OpenTelemetry-style backend, kept apart from the control plane's job (config,
+  usage, budgets). Three layers, cheapest first:
+  - *Logs* — no gateway change: the per-request log line (`GATEWAY.md` →
+    Observability: Logs) already carries every request's outcome, refusals and
+    `401`s included — status, error code, limit detail, attempts (`tried`), upstream
+    error code and type, `queue_wait_ms`, `ttft_ms`, `relay_end`, token units, cost,
+    key ID and group. A collector reads it from stdout (OTel Collector `filelog`,
+    Vector, Fluent Bit). Log shipping may drop lines under pressure: fine for
+    outcomes, never for billing (usage records stay the record).
+  - *Metrics* — `/metrics` is Prometheus text, which the Collector's `prometheus`
+    receiver scrapes; native OTLP metrics only if a backend cannot scrape.
+  - *Traces* — new work. Confined test first: forward the W3C `traceparent` header
+    to backends (vLLM can continue the trace) and log `trace_id` on the request line,
+    linking client traces to gateway lines. Span export (per request, per attempt,
+    queue wait) needs OTLP: the OTel Go SDK is a third-party dependency (a dated
+    ruling in `TECH-STACK.md`), or a hand-written OTLP/HTTP exporter using its JSON
+    encoding.
+  Revisit trigger: logs shipped from stdout prove insufficient — a question about a
+  request that the log line cannot answer, or a client team that traces its own
+  calls and needs the gateway's part linked in.
+
