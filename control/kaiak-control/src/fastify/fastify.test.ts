@@ -22,7 +22,7 @@ const MINIMAL = path.resolve(import.meta.dirname, "../../../../protocol/fixtures
 
 const GATEWAY_HEADERS = {
   authorization: `Bearer ${TOKEN}`,
-  "kaiak-protocol": "3",
+  "kaiak-protocol": "4",
   "kaiak-instance": "gw-1",
 };
 
@@ -168,7 +168,7 @@ describe("GET /v1/config", { timeout: 10_000 }, () => {
 
     const response = await fetch(`${app.base}/v1/config`, { headers: GATEWAY_HEADERS });
     assert.equal(response.status, 200);
-    assert.equal(response.headers.get("kaiak-protocol"), "3");
+    assert.equal(response.headers.get("kaiak-protocol"), "4");
     const body: unknown = await response.json();
     assert.deepEqual(body, { config_epoch: app.epoch, version: 2, config: configNumbered(2) });
     assert.ok(validateConfigSnapshot(body).ok);
@@ -178,7 +178,7 @@ describe("GET /v1/config", { timeout: 10_000 }, () => {
     const app = await startApp(newControlPlane());
     const response = await fetch(`${app.base}/v1/config`, { headers: GATEWAY_HEADERS });
     assert.equal(response.status, 503);
-    assert.equal(response.headers.get("kaiak-protocol"), "3");
+    assert.equal(response.headers.get("kaiak-protocol"), "4");
     const body = (await response.json()) as { error: string; detail: string };
     assert.equal(body.error, "config-unavailable");
     assert.equal(typeof body.detail, "string");
@@ -205,7 +205,7 @@ describe("request checks", { timeout: 10_000 }, () => {
     },
     {
       name: "another protocol version",
-      headers: { ...GATEWAY_HEADERS, "kaiak-protocol": "2" },
+      headers: { ...GATEWAY_HEADERS, "kaiak-protocol": "3" },
       status: 400,
       error: "protocol-version-mismatch",
     },
@@ -225,7 +225,7 @@ describe("request checks", { timeout: 10_000 }, () => {
         const app = await startApp(controlPlane);
         const response = await fetch(`${app.base}${endpoint}`, { headers: failure.headers });
         assert.equal(response.status, failure.status);
-        assert.equal(response.headers.get("kaiak-protocol"), "3");
+        assert.equal(response.headers.get("kaiak-protocol"), "4");
         const text = await response.text();
         assert.ok(!text.includes("not-the-token"), "the presented token is not echoed");
         const body = JSON.parse(text) as { error: string; detail: unknown };
@@ -256,7 +256,7 @@ describe("request checks", { timeout: 10_000 }, () => {
       const app = await startApp(controlPlane);
       const response = await fetch(`${app.base}/v1/stream?${since}`, { headers: GATEWAY_HEADERS });
       assert.equal(response.status, 400);
-      assert.equal(response.headers.get("kaiak-protocol"), "3");
+      assert.equal(response.headers.get("kaiak-protocol"), "4");
       const body = (await response.json()) as { error: string; detail: unknown };
       assert.equal(body.error, "since-invalid");
       assert.equal(typeof body.detail, "string");
@@ -275,7 +275,7 @@ describe("answers outside the routes", { timeout: 10_000 }, () => {
       const app = await startApp(newControlPlane());
       const response = await fetch(`${app.base}${requestPath}`, { method, headers: GATEWAY_HEADERS });
       assert.equal(response.status, 404);
-      assert.equal(response.headers.get("kaiak-protocol"), "3");
+      assert.equal(response.headers.get("kaiak-protocol"), "4");
       if (method !== "HEAD") assert.equal(((await response.json()) as { error: string }).error, "not-found");
     });
   }
@@ -284,7 +284,7 @@ describe("answers outside the routes", { timeout: 10_000 }, () => {
     const app = await startApp(newControlPlane());
     const response = await fetch(`${app.base}/v1/nothing-here`, { headers: { ...GATEWAY_HEADERS, authorization: "" } });
     assert.equal(response.status, 401);
-    assert.equal(response.headers.get("kaiak-protocol"), "3");
+    assert.equal(response.headers.get("kaiak-protocol"), "4");
   });
 
   test("a status body over 64 KiB answers 413 request-invalid with the protocol header", async () => {
@@ -295,7 +295,7 @@ describe("answers outside the routes", { timeout: 10_000 }, () => {
       body: JSON.stringify({ padding: "x".repeat(64 * 1024) }),
     });
     assert.equal(response.status, 413);
-    assert.equal(response.headers.get("kaiak-protocol"), "3");
+    assert.equal(response.headers.get("kaiak-protocol"), "4");
     assert.equal(((await response.json()) as { error: string }).error, "request-invalid");
   });
 
@@ -323,7 +323,7 @@ describe("GET /v1/stream", { timeout: 10_000 }, () => {
     assert.equal(headers.get("content-type"), "text/event-stream; charset=utf-8");
     assert.equal(headers.get("cache-control"), "no-cache");
     assert.equal(headers.get("x-accel-buffering"), "no");
-    assert.equal(headers.get("kaiak-protocol"), "3");
+    assert.equal(headers.get("kaiak-protocol"), "4");
     assert.equal(headers.get("content-encoding"), null);
   });
 

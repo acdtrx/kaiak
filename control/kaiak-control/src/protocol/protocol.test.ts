@@ -15,7 +15,7 @@ const TOKEN = "s3cret-token";
 
 const goodHeaders: RequestHeaders = {
   authorization: `Bearer ${TOKEN}`,
-  "kaiak-protocol": "3",
+  "kaiak-protocol": "4",
   "kaiak-instance": "gw-1",
 };
 
@@ -51,13 +51,13 @@ describe("bearer token", () => {
 });
 
 describe("protocol version", () => {
-  test("the current version is 3 and passes", () => {
-    assert.equal(PROTOCOL_VERSION, 3);
-    assert.equal(checkProtocolVersion("3"), undefined);
+  test("the current version is 4 and passes", () => {
+    assert.equal(PROTOCOL_VERSION, 4);
+    assert.equal(checkProtocolVersion("4"), undefined);
   });
 
   test("another or missing version is a mismatch, a repeated one (joined by Node) included", () => {
-    for (const header of ["2", "4", "3.0", "", " 3", undefined, "3, 3"]) {
+    for (const header of ["3", "5", "4.0", "", " 4", undefined, "4, 4"]) {
       const error = checkProtocolVersion(header);
       assert.equal(error?.code, "protocol-version-mismatch", JSON.stringify(header));
       assert.equal(error?.status, 400);

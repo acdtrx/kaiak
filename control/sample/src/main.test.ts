@@ -50,7 +50,7 @@ test("the server logs its address once listening, serves gateways and exits 0 on
   const { url } = JSON.parse(line) as { url: string };
 
   const response = await fetch(`${url}/v1/config`, {
-    headers: { authorization: `Bearer ${TOKEN}`, "kaiak-protocol": "3", "kaiak-instance": "gw-1" },
+    headers: { authorization: `Bearer ${TOKEN}`, "kaiak-protocol": "4", "kaiak-instance": "gw-1" },
   });
   assert.equal(response.status, 200);
   assert.equal(((await response.json()) as { version: number }).version, 1);

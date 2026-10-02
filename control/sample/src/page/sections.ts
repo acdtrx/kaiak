@@ -301,7 +301,7 @@ async function renderUsage({ core, clock }: PageSources): Promise<Markup> {
   if (records.length === 0) return html`${heading}<p class="muted">No usage received yet.</p>`;
   return html`${heading}
 <div class="scroll"><table>
-<thead><tr><th>Received</th><th>Gateway</th><th>Key ID</th><th>Group</th><th>Model</th><th>Deployment</th><th class="num">In</th><th class="num">Cached</th><th class="num">Out</th><th class="num">Reasoning</th><th class="num">Cost</th><th>Flags</th></tr></thead>
+<thead><tr><th>Received</th><th>Gateway</th><th>Key ID</th><th>Group</th><th>Model</th><th>Deployment</th><th class="num">In</th><th class="num">Cached</th><th class="num">Cache write</th><th class="num">Out</th><th class="num">Reasoning</th><th class="num">Cost</th><th>Flags</th></tr></thead>
 <tbody>${records.map((received) => usageRow(received, now))}</tbody>
 </table></div>`;
 }
@@ -318,6 +318,7 @@ function usageRow({ receivedAt, record }: ReceivedRecord, now: number): Markup {
 <td>${record.deployment.backend}/${record.deployment.model}</td>
 <td class="num">${formatCount(units.tokens_in)}</td>
 <td class="num">${formatCount(units.tokens_cached)}</td>
+<td class="num">${formatCount(units.tokens_cache_write)}</td>
 <td class="num">${formatCount(units.tokens_out)}</td>
 <td class="num">${formatCount(units.tokens_reasoning)}</td>
 <td class="num">${formatNanoUsd(BigInt(record.cost_nano_usd))}</td>

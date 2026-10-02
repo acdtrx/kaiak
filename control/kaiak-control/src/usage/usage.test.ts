@@ -37,17 +37,17 @@ function fullConfig(): Config {
 
 let recordCount = 0;
 
-// units: tokens_in, tokens_cached, tokens_out, tokens_reasoning. gatewayTime defaults to
-// a moment in T0's hour.
+// units: tokens_in, tokens_cached, tokens_cache_write, tokens_out, tokens_reasoning.
+// gatewayTime defaults to a moment in T0's hour.
 function record(
   groups: string[],
   model: string,
-  units: [number, number, number, number],
+  units: [number, number, number, number, number],
   cost: number,
   gatewayTime = "2026-09-24T10:29:59.123456789Z",
 ): UsageRecord {
   recordCount += 1;
-  const [tokensIn, tokensCached, tokensOut, tokensReasoning] = units;
+  const [tokensIn, tokensCached, tokensCacheWrite, tokensOut, tokensReasoning] = units;
   return {
     record_id: recordCount.toString(16).padStart(32, "0"),
     request_id: `req-${recordCount}`,
@@ -56,7 +56,13 @@ function record(
     groups,
     model,
     deployment: { backend: "b", model },
-    units: { tokens_in: tokensIn, tokens_cached: tokensCached, tokens_out: tokensOut, tokens_reasoning: tokensReasoning },
+    units: {
+      tokens_in: tokensIn,
+      tokens_cached: tokensCached,
+      tokens_cache_write: tokensCacheWrite,
+      tokens_out: tokensOut,
+      tokens_reasoning: tokensReasoning,
+    },
     cost_nano_usd: cost,
     estimated: false,
     partial: false,
@@ -72,7 +78,7 @@ const EVAL = ["research", "eval-pipeline"];
 const SUPPORT = ["support", "support-bot"];
 
 function oneTokenRecord(): UsageRecord {
-  return record(["users", "carol"], "qwen3-32b", [1, 0, 0, 0], 1);
+  return record(["users", "carol"], "qwen3-32b", [1, 0, 0, 0, 0], 1);
 }
 
 interface Harness {
@@ -133,18 +139,18 @@ describe("aggregation", () => {
     const records = [
       // global's USD limit covers only the gpt models; research's USD limit all;
       // eval-pipeline's hour limit only qwen3-32b.
-      record(EVAL, "qwen3-32b", [800, 100, 300, 0], 5_000),
-      record(EVAL, "gpt-4.1", [1000, 0, 500, 0], 7_000_000),
+      record(EVAL, "qwen3-32b", [800, 100, 0, 300, 0], 5_000),
+      record(EVAL, "gpt-4.1", [1000, 0, 0, 500, 0], 7_000_000),
       // Group support has no limits; support-bot's per-minute limits are not counted.
-      record(SUPPORT, "gpt-4.1-mini", [10, 0, 10, 0], 2_000),
+      record(SUPPORT, "gpt-4.1-mini", [10, 0, 0, 10, 0], 2_000),
       // alice: default hour limit, her own USD limit (same identity as the default's).
-      record(["users", "alice"], "gpt-4.1-mini", [2048, 1024, 377, 0], 1_524_000),
+      record(["users", "alice"], "gpt-4.1-mini", [2048, 1024, 0, 377, 0], 1_524_000),
       // bob: both hour limits cover qwen3-32b; reasoning is inside tokens_out. Cost 0
       // adds nothing to his USD limit.
-      record(["users", "bob"], "qwen3-32b", [100, 0, 50, 20], 0),
+      record(["users", "bob"], "qwen3-32b", [100, 0, 0, 50, 20], 0),
       // Listed groups the config does not define are skipped; the rest and global count.
-      record(["users", "ghost"], "gpt-4.1", [1, 1, 1, 0], 1_000),
-      record(["research", "gone"], "bge-m3", [5, 0, 0, 0], 3),
+      record(["users", "ghost"], "gpt-4.1", [1, 1, 0, 1, 0], 1_000),
+      record(["research", "gone"], "bge-m3", [5, 0, 0, 0, 0], 3),
     ];
     const intake = acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, records)));
     assert.equal(intake.outcome, "first");
@@ -177,6 +183,14 @@ describe("aggregation", () => {
     assert.deepEqual(intake.ack, { batch: { instance: INSTANCE, epoch: EPOCH_A, sequence: 1 }, totals });
   });
 
+  test("input written to the cache counts toward a token limit beside the other input and the output", async () => {
+    const { usage } = await harness();
+    // 3 plain, 1024 read, 1009 written, 40 out (12 of them reasoning, already inside).
+    const written = record(["users", "carol"], "gpt-4.1-mini", [3, 1024, 1009, 40, 12], 1);
+    acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [written])));
+    assert.equal(await carolHourUsed(usage), "2076");
+  });
+
   test("a deep path counts toward every listed group with limits, and global", async () => {
     const { usage, publish } = await harness();
     const config = fullConfig();
@@ -196,7 +210,7 @@ describe("aggregation", () => {
     await publish(config);
 
     const path = ["team", "project", "region", "env", "workload"];
-    acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [record(path, "gpt-4.1", [10, 0, 5, 0], 4_000)])));
+    acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [record(path, "gpt-4.1", [10, 0, 0, 5, 0], 4_000)])));
     const levels = ["team", "project", "env", "workload"].flatMap((group) => [
       { group, type: "tokens_per_hour", window_start: HOUR_10, used: "15" },
       { group, type: "usd_per_month", window_start: SEPTEMBER, used: "4000" },
@@ -215,7 +229,7 @@ describe("aggregation", () => {
     delete config.keys["k-eval-ci"];
     await publish(config);
 
-    acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [record(EVAL, "gpt-4.1", [10, 0, 5, 0], 4_000)])));
+    acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [record(EVAL, "gpt-4.1", [10, 0, 0, 5, 0], 4_000)])));
     assert.deepEqual((await currentTotals(usage)).windows, [
       { type: "usd_per_month", models: ["gpt-4.1", "gpt-4.1-mini"], window_start: SEPTEMBER, used: "4000" },
       { group: "research", type: "usd_per_month", window_start: SEPTEMBER, used: "4000" },
@@ -224,7 +238,7 @@ describe("aggregation", () => {
 
   test("records count under the config in force when they arrive", async () => {
     const { usage, publish } = await harness();
-    acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [record(EVAL, "bge-m3", [1, 0, 0, 0], 10)])));
+    acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [record(EVAL, "bge-m3", [1, 0, 0, 0, 0], 10)])));
 
     // Version 2 drops research's limits: its window leaves the totals.
     const config = fullConfig();
@@ -238,7 +252,7 @@ describe("aggregation", () => {
 
     // Version 3 brings the limit back: it holds what was counted while it existed.
     await publish(fullConfig());
-    acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 2, [record(EVAL, "bge-m3", [1, 0, 0, 0], 5)])));
+    acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 2, [record(EVAL, "bge-m3", [1, 0, 0, 0, 0], 5)])));
     totals = await currentTotals(usage);
     assert.equal(totals.config_version, 3);
     assert.equal(totals.windows.find((window) => window.group === "research")?.used, "15");
@@ -246,7 +260,7 @@ describe("aggregation", () => {
 
   test("cost sums stay exact beyond 2^53 nano-USD", async () => {
     const { usage } = await harness();
-    const records = [1, 2, 3].map(() => record(["users", "carol"], "gpt-4.1-mini", [0, 0, 0, 0], MAX_RECORD_COST));
+    const records = [1, 2, 3].map(() => record(["users", "carol"], "gpt-4.1-mini", [0, 0, 0, 0, 0], MAX_RECORD_COST));
     acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, records)));
     const totals = await currentTotals(usage);
     const carolUsd = totals.windows.find((window) => window.group === "carol" && window.type === "usd_per_month");
@@ -257,7 +271,7 @@ describe("aggregation", () => {
   test("a window past the 18-digit ceiling is reported at the ceiling", async () => {
     const { usage } = await harness();
     // 112 records at the per-record maximum pass 10^18 nano-USD.
-    const records = Array.from({ length: 112 }, () => record(["users", "carol"], "gpt-4.1-mini", [0, 0, 0, 0], MAX_RECORD_COST));
+    const records = Array.from({ length: 112 }, () => record(["users", "carol"], "gpt-4.1-mini", [0, 0, 0, 0, 0], MAX_RECORD_COST));
     acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, records)));
     const totals = await currentTotals(usage);
     const carolUsd = totals.windows.find((window) => window.group === "carol" && window.type === "usd_per_month");
@@ -289,14 +303,14 @@ describe("model-set edits (D5)", () => {
 
   test("a limit whose only change is its model set keeps its spend", async () => {
     const h = await harness();
-    acked(await h.usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [record(["users", "carol"], "gpt-4.1-mini", [1, 0, 0, 0], 700)])));
+    acked(await h.usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [record(["users", "carol"], "gpt-4.1-mini", [1, 0, 0, 0, 0], 700)])));
     assert.deepEqual(await globalUsd(h.usage), { models: ["gpt-4.1", "gpt-4.1-mini"], used: "700" });
 
     const edited = fullConfig();
     edited.global.limits = [{ type: "usd_per_month", value: 5000, models: ["gpt-4.1"] }];
     await publishIn(h, edited);
     assert.deepEqual(await globalUsd(h.usage), { models: ["gpt-4.1"], used: "700" });
-    acked(await h.usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 2, [record(["users", "carol"], "gpt-4.1", [1, 0, 0, 0], 5)])));
+    acked(await h.usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 2, [record(["users", "carol"], "gpt-4.1", [1, 0, 0, 0, 0], 5)])));
     assert.deepEqual(await globalUsd(h.usage), { models: ["gpt-4.1"], used: "705" });
 
     // Back to both models within the month: the returning limit had 700 of its own;
@@ -317,7 +331,7 @@ describe("model-set edits (D5)", () => {
     acked(
       await h.usage.acceptUsageBatch(
         INSTANCE,
-        batch(EPOCH_A, 1, [record(["users", "carol"], "gpt-4.1", [1, 0, 0, 0], 300), record(["users", "carol"], "gpt-4.1-mini", [1, 0, 0, 0], 500)]),
+        batch(EPOCH_A, 1, [record(["users", "carol"], "gpt-4.1", [1, 0, 0, 0, 0], 300), record(["users", "carol"], "gpt-4.1-mini", [1, 0, 0, 0, 0], 500)]),
       ),
     );
     const merged = fullConfig();
@@ -340,7 +354,7 @@ describe("model-set edits of group limits", () => {
   test("each group's limit carries its own spend; limits of other groups and other types stay", async () => {
     const carried: unknown[] = [];
     const h = await harness({ onLimitCarriedOver: (carry) => carried.push(carry) });
-    acked(await h.usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [record(["users", "carol"], "gpt-4.1-mini", [1, 0, 0, 0], 700)])));
+    acked(await h.usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [record(["users", "carol"], "gpt-4.1-mini", [1, 0, 0, 0, 0], 700)])));
 
     // The users' default USD limit narrows to gpt-4.1-mini: carol and bob take it from
     // child_defaults, alice overrides it with her own all-models limit.
@@ -460,7 +474,7 @@ describe("windows by the control plane's clock", () => {
     const { usage, store, setTime } = await harness();
     const lastMs = Date.UTC(2026, 8, 24, 10, 59, 59, 999);
     setTime(lastMs);
-    acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [record(["users", "carol"], "gpt-4.1-mini", [4, 0, 0, 0], 7)])));
+    acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [record(["users", "carol"], "gpt-4.1-mini", [4, 0, 0, 0, 0], 7)])));
 
     // The next batch, settled in the new hour, lands in it.
     setTime(Date.UTC(2026, 8, 24, 11));
@@ -472,7 +486,7 @@ describe("windows by the control plane's clock", () => {
     const intake = acked(
       await usage.acceptUsageBatch(
         INSTANCE,
-        batch(EPOCH_A, 2, [record(["users", "carol"], "gpt-4.1-mini", [3, 0, 0, 0], 1, "2026-09-24T11:00:00Z")]),
+        batch(EPOCH_A, 2, [record(["users", "carol"], "gpt-4.1-mini", [3, 0, 0, 0, 0], 1, "2026-09-24T11:00:00Z")]),
       ),
     );
     totals = await currentTotals(usage);
@@ -493,7 +507,7 @@ describe("windows by the control plane's clock", () => {
       ["tokens_per_hour", "usd_per_month", "usd_per_month"],
     );
     setTime(Date.UTC(2026, 8, 24, 12));
-    acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 3, [record(["users", "carol"], "gpt-4.1-mini", [1, 0, 0, 0], 1, "2026-09-24T12:00:00Z")])));
+    acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 3, [record(["users", "carol"], "gpt-4.1-mini", [1, 0, 0, 0, 0], 1, "2026-09-24T12:00:00Z")])));
     // Left: September's windows for carol and global (still current).
     assert.deepEqual(
       (await store.currentWindowTotals(at10)).map((total) => total.type),
@@ -508,7 +522,7 @@ describe("windows by the control plane's clock", () => {
   test("a record counts in its gateway_time window when that is the current or previous one", async () => {
     const { usage, store, setTime } = await harness();
     const carol = (units: number, at: string): UsageRecord =>
-      record(["users", "carol"], "gpt-4.1-mini", [units, 0, 0, 0], units, at);
+      record(["users", "carol"], "gpt-4.1-mini", [units, 0, 0, 0, 0], units, at);
     // Recovery at 12:30: a backlog from 10:xx (two hours back), 11:xx (previous), 12:xx.
     setTime(Date.UTC(2026, 8, 24, 12, 30));
     acked(
@@ -540,9 +554,9 @@ describe("windows by the control plane's clock", () => {
       await usage.acceptUsageBatch(
         INSTANCE,
         batch(EPOCH_A, 1, [
-          record(["users", "carol"], "gpt-4.1-mini", [0, 0, 0, 0], 50, "2026-09-30T23:59:59Z"),
-          record(["users", "carol"], "gpt-4.1-mini", [0, 0, 0, 0], 7, "2026-08-31T12:00:00Z"),
-          record(["users", "carol"], "gpt-4.1-mini", [0, 0, 0, 0], 20, "2026-10-01T00:01:00Z"),
+          record(["users", "carol"], "gpt-4.1-mini", [0, 0, 0, 0, 0], 50, "2026-09-30T23:59:59Z"),
+          record(["users", "carol"], "gpt-4.1-mini", [0, 0, 0, 0, 0], 7, "2026-08-31T12:00:00Z"),
+          record(["users", "carol"], "gpt-4.1-mini", [0, 0, 0, 0, 0], 20, "2026-10-01T00:01:00Z"),
         ]),
       ),
     );
@@ -561,14 +575,14 @@ describe("windows by the control plane's clock", () => {
   test("a month rollover starts a new month window", async () => {
     const { usage, store, setTime } = await harness();
     setTime(Date.UTC(2026, 8, 30, 23, 59, 59, 999));
-    acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [record(["users", "carol"], "gpt-4.1-mini", [0, 0, 0, 0], 50)])));
+    acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [record(["users", "carol"], "gpt-4.1-mini", [0, 0, 0, 0, 0], 50)])));
 
     setTime(Date.UTC(2026, 9, 1));
     assert.deepEqual((await currentTotals(usage)).windows, []);
     acked(
       await usage.acceptUsageBatch(
         INSTANCE,
-        batch(EPOCH_A, 2, [record(["users", "carol"], "gpt-4.1-mini", [0, 0, 0, 0], 20, "2026-10-01T00:00:00Z")]),
+        batch(EPOCH_A, 2, [record(["users", "carol"], "gpt-4.1-mini", [0, 0, 0, 0, 0], 20, "2026-10-01T00:00:00Z")]),
       ),
     );
     assert.deepEqual((await currentTotals(usage)).windows, [

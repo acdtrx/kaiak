@@ -9,10 +9,12 @@ export type BackendType = (typeof BACKEND_TYPES)[number];
 
 export type LimitType = "requests_per_minute" | "tokens_per_minute" | "tokens_per_hour" | "usd_per_month";
 
-// Usage units a usage record counts. tokens_in is uncached input, tokens_cached cached
-// input, tokens_out all output including reasoning; tokens_reasoning is the reasoning
-// share of tokens_out, recorded for visibility and never priced.
-export type UsageUnit = "tokens_in" | "tokens_cached" | "tokens_out" | "tokens_reasoning";
+// Usage units a usage record counts. tokens_in is plain input, tokens_cached input read
+// from the cache, tokens_cache_write input written to it (the three add up to the
+// backend's prompt tokens); tokens_out is all output including reasoning;
+// tokens_reasoning is the reasoning share of tokens_out, recorded for visibility and
+// never priced.
+export type UsageUnit = "tokens_in" | "tokens_cached" | "tokens_cache_write" | "tokens_out" | "tokens_reasoning";
 
 // Units a price entry may name.
 export type PriceUnit = Exclude<UsageUnit, "tokens_reasoning">;
@@ -57,7 +59,8 @@ export interface ModelMetadata {
 }
 
 // A price entry's tiers start at 0 and rise strictly; a record is priced whole at the
-// last tier whose above_input_tokens is below its input (tokens_in + tokens_cached).
+// last tier whose above_input_tokens is below its input (tokens_in + tokens_cached +
+// tokens_cache_write).
 export interface Price {
   effective_from: string;
   tiers: PriceTier[];
@@ -66,8 +69,8 @@ export interface Price {
 // Complete in itself: nothing is inherited from the tier below.
 export interface PriceTier {
   above_input_tokens: number;
-  // tokens_cached left out is charged at this tier's tokens_in price; tokens_in or
-  // tokens_out left out costs 0.
+  // tokens_cached or tokens_cache_write left out is charged at this tier's tokens_in
+  // price; tokens_in or tokens_out left out costs 0.
   usd_per_million: Partial<Record<PriceUnit, number>>;
 }
 
@@ -136,7 +139,7 @@ export interface Global {
 }
 
 export interface Config {
-  format_version: 3;
+  format_version: 4;
   global: Global;
   backends: Record<string, Backend>;
   models: Record<string, Model>;

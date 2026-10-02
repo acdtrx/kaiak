@@ -33,7 +33,7 @@ function readFixture(relative: string): unknown {
 const READY = readFixture("messages/status/valid/ready.json") as GatewayStatus;
 
 function headersFor(instance: string): Record<string, string> {
-  return { authorization: `Bearer ${TOKEN}`, "kaiak-protocol": "3", "kaiak-instance": instance };
+  return { authorization: `Bearer ${TOKEN}`, "kaiak-protocol": "4", "kaiak-instance": instance };
 }
 
 const CONTROL_PLANE = "c".repeat(32);
@@ -145,7 +145,7 @@ describe("POST /v1/status", { timeout: 10_000 }, () => {
     const app = await startApp(controlPlane);
     const response = await postStatus(app, "gw-1");
     assert.equal(response.status, 204);
-    assert.equal(response.headers.get("kaiak-protocol"), "3");
+    assert.equal(response.headers.get("kaiak-protocol"), "4");
     assert.equal(await response.text(), "");
     assert.deepEqual(await controlPlane.gateways(), [
       { instance: "gw-1", status: { ...READY, instance: "gw-1" }, receivedAt: 1_000, live: true },

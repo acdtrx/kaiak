@@ -86,8 +86,8 @@ export function batchAdditions(records: readonly UsageRecord[], limits: CountedL
 // is inside tokens_out), or the cost in nano-USD.
 function amountFor(type: TotalsLimitType, record: UsageRecord): bigint {
   if (type === "usd_per_month") return BigInt(record.cost_nano_usd);
-  const { tokens_in, tokens_cached, tokens_out } = record.units;
-  return BigInt(tokens_in) + BigInt(tokens_cached) + BigInt(tokens_out);
+  const { tokens_in, tokens_cached, tokens_cache_write, tokens_out } = record.units;
+  return BigInt(tokens_in) + BigInt(tokens_cached) + BigInt(tokens_cache_write) + BigInt(tokens_out);
 }
 
 // A limit that keeps its spend across a config change (docs/specs/CONTROL-PROTOCOL.md,

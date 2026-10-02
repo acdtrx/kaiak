@@ -42,7 +42,8 @@ function fixtureRecords(): ReceivedRecord[] {
   const [workload, user] = batch.records;
   assert.ok(workload && user);
   return [
-    { receivedAt: NOW - 5_000, record: { ...user, key_id: EVIL } },
+    // Written input of its own, so the cache-write column shows a value no other column does.
+    { receivedAt: NOW - 5_000, record: { ...user, key_id: EVIL, units: { ...user.units, tokens_cache_write: 512 } } },
     { receivedAt: NOW - 65_000, record: workload },
   ];
 }
@@ -55,7 +56,7 @@ const GATEWAYS: GatewayView[] = [
     instance: "gw-1",
     status: {
       instance: "gw-1",
-      protocol_version: 3,
+      protocol_version: 4,
       state: "ready",
       started_at: "2026-09-24T09:58:12.5Z",
       applied_config_version: 7,
@@ -77,7 +78,7 @@ const GATEWAYS: GatewayView[] = [
     instance: "gw-2",
     status: {
       instance: "gw-2",
-      protocol_version: 3,
+      protocol_version: 4,
       state: "draining",
       started_at: "2026-09-24T08:00:00Z",
       applied_config_version: 6,
@@ -96,7 +97,7 @@ const GATEWAYS: GatewayView[] = [
     instance: "gw-3",
     status: {
       instance: "gw-3",
-      protocol_version: 3,
+      protocol_version: 4,
       state: "ready",
       started_at: "2026-09-24T07:00:00Z",
       applied_config_version: 7,
@@ -305,7 +306,7 @@ test("recent usage: one row per record, newest first, with the group path, token
   const alice = usage.indexOf('users /</span> <span class="id">alice</span>');
   const workload = usage.indexOf("eval-pipeline");
   assert.ok(alice !== -1 && workload !== -1 && alice < workload, "newest first");
-  assert.match(usage, /5 s ago[\s\S]*gw-1[\s\S]*<td><span class="muted">users \/<\/span> <span class="id">alice<\/span><\/td>[\s\S]*gpt-4.1-mini[\s\S]*azure-westeurope\/gpt-4.1-mini[\s\S]*2,048<\/td>\s*<td class="num">1,024<\/td>\s*<td class="num">377<\/td>\s*<td class="num">0<\/td>\s*<td class="num">\$0.001524<\/td>[\s\S]*estimated[\s\S]*partial/);
+  assert.match(usage, /5 s ago[\s\S]*gw-1[\s\S]*<td><span class="muted">users \/<\/span> <span class="id">alice<\/span><\/td>[\s\S]*gpt-4.1-mini[\s\S]*azure-westeurope\/gpt-4.1-mini[\s\S]*2,048<\/td>\s*<td class="num">1,024<\/td>\s*<td class="num">512<\/td>\s*<td class="num">377<\/td>\s*<td class="num">0<\/td>\s*<td class="num">\$0.001524<\/td>[\s\S]*estimated[\s\S]*partial/);
   assert.match(usage, /k-eval-ci[\s\S]*<td><span class="muted">research \/<\/span> <span class="id">eval-pipeline<\/span><\/td>[\s\S]*812<\/td>/);
 });
 
