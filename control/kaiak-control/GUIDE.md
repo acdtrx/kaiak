@@ -307,10 +307,11 @@ use the price of their day.
   `output_cost_per_token_…`. That tier lists every unit itself, so copy any unit the
   list gives no long-context rate for from the tier at 0 (leaving `tokens_out` out
   would make its output free). The other fields are not priced by kaiak: the
-  `_priority`, `_flex` and `_batches` variants (service tiers the gateway never
-  uses), `cache_creation_input_token_cost_above_1hr` (a one-hour cache lifetime:
-  kaiak counts writes as one unit, as Azure reports them), audio, image and
-  per-second rates (endpoints the gateway does not serve), and
+  `_priority`, `_flex`, `_batches` and `_ultrafast` variants (service tiers the
+  gateway never uses), `cache_creation_input_token_cost_above_1hr` and its
+  `_above_1hr_above_<N>k_tokens` variants (a one-hour cache lifetime, not a
+  long-context rate: kaiak counts writes as one unit, as Azure reports them), audio,
+  image and per-second rates (endpoints the gateway does not serve), and
   `search_context_cost_per_query` (a per-search fee). Azure deployment names are
   yours, so the mapping from a model to its LiteLLM key is a setting in your app, not
   something to guess from names. The list carries no dates and is community-kept:
