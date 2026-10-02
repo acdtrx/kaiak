@@ -10,15 +10,16 @@ import (
 )
 
 // Units maps usage units to amounts (docs/specs/CONTROL-PROTOCOL.md, Prices). Every
-// record from a token endpoint carries all four token units, zeros included.
+// record from a token endpoint carries all five token units, zeros included.
 type Units map[config.Unit]int64
 
-func tokenUnits(in, cached, out, reasoning int64) Units {
+func tokenUnits(in, cached, cacheWrite, out, reasoning int64) Units {
 	return Units{
-		config.UnitTokensIn:        in,
-		config.UnitTokensCached:    cached,
-		config.UnitTokensOut:       out,
-		config.UnitTokensReasoning: reasoning,
+		config.UnitTokensIn:         in,
+		config.UnitTokensCached:     cached,
+		config.UnitTokensCacheWrite: cacheWrite,
+		config.UnitTokensOut:        out,
+		config.UnitTokensReasoning:  reasoning,
 	}
 }
 
@@ -183,11 +184,11 @@ type Flags struct {
 //     the record is flagged estimated.
 func (m *Meter) Settle(complete bool) (Units, Flags) {
 	if m.SentUnanswered() {
-		return tokenUnits(m.input, 0, 0, 0), Flags{Estimated: true, Partial: true}
+		return tokenUnits(m.input, 0, 0, 0, 0), Flags{Estimated: true, Partial: true}
 	}
 	flags := Flags{Partial: !complete || !m.answered}
 	if !m.answered || !m.succeeded() {
-		return tokenUnits(0, 0, 0, 0), flags
+		return tokenUnits(0, 0, 0, 0, 0), flags
 	}
 	if !m.stream && m.body != nil {
 		if raw, ok := m.body.member("usage"); ok {
@@ -200,7 +201,7 @@ func (m *Meter) Settle(complete bool) (Units, Flags) {
 		return m.reported, flags
 	}
 	flags.Estimated = true
-	return tokenUnits(m.input, 0, EstimateTokens(m.outputBytes()), 0), flags
+	return tokenUnits(m.input, 0, 0, EstimateTokens(m.outputBytes()), 0), flags
 }
 
 // outputBytes is the generated content seen: stream chunk content, or the content of a
@@ -234,7 +235,8 @@ type usageReport struct {
 	PromptTokens        *int64 `json:"prompt_tokens"`
 	CompletionTokens    *int64 `json:"completion_tokens"`
 	PromptTokensDetails *struct {
-		CachedTokens int64 `json:"cached_tokens"`
+		CachedTokens     int64 `json:"cached_tokens"`
+		CacheWriteTokens int64 `json:"cache_write_tokens"`
 	} `json:"prompt_tokens_details"`
 	CompletionTokensDetails *struct {
 		ReasoningTokens int64 `json:"reasoning_tokens"`
@@ -242,10 +244,12 @@ type usageReport struct {
 }
 
 // parseUsage maps a usage object onto the units (docs/specs/CONTROL-PROTOCOL.md,
-// Units and price units): tokens_in = prompt − cached, tokens_cached = cached,
-// tokens_out = completion (reasoning included), tokens_reasoning = the reasoning
-// share of it. Embeddings count prompt tokens only. A null, missing or malformed
-// usage, or one with neither token count, is no report.
+// Units and price units): tokens_cached = cached, tokens_cache_write = written,
+// tokens_in = prompt − cached − written, tokens_out = completion (reasoning
+// included), tokens_reasoning = the reasoning share of it. Cached is clamped to
+// prompt first, then written to what remains, so the three input units add up to
+// prompt. Embeddings count prompt tokens only. A null, missing or malformed usage, or
+// one with neither token count, is no report.
 func (m *Meter) parseUsage(raw json.RawMessage) (Units, bool) {
 	if len(raw) == 0 || raw[0] != '{' {
 		return nil, false
@@ -256,17 +260,18 @@ func (m *Meter) parseUsage(raw json.RawMessage) (Units, bool) {
 	}
 	prompt := nonNegative(u.PromptTokens)
 	if m.endpoint == provider.Embeddings {
-		return tokenUnits(prompt, 0, 0, 0), true
+		return tokenUnits(prompt, 0, 0, 0, 0), true
 	}
 	completion := nonNegative(u.CompletionTokens)
-	var cached, reasoning int64
+	var cached, written, reasoning int64
 	if d := u.PromptTokensDetails; d != nil {
 		cached = min(max(d.CachedTokens, 0), prompt)
+		written = min(max(d.CacheWriteTokens, 0), prompt-cached)
 	}
 	if d := u.CompletionTokensDetails; d != nil {
 		reasoning = min(max(d.ReasoningTokens, 0), completion)
 	}
-	return tokenUnits(prompt-cached, cached, completion, reasoning), true
+	return tokenUnits(prompt-cached-written, cached, written, completion, reasoning), true
 }
 
 func nonNegative(n *int64) int64 {

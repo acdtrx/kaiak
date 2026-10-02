@@ -241,7 +241,7 @@ func TestAccountingRecordEncodesToAValidMessage(t *testing.T) {
 			KeyID: "k-eval-ci", Groups: []string{"research", "rag", "eval-pipeline"},
 			Model: "qwen3-32b", Deployment: accounting.Deployment{Backend: "vllm-a", Model: "Qwen/Qwen3-32B"},
 			Units: accounting.Units{config.UnitTokensIn: 812, config.UnitTokensCached: 0,
-				config.UnitTokensOut: 240, config.UnitTokensReasoning: 96},
+				config.UnitTokensCacheWrite: 0, config.UnitTokensOut: 240, config.UnitTokensReasoning: 96},
 			CostNanoUSD: 1234, GatewayTime: time.Date(2026, 9, 24, 10, 0, 0, 123456789, time.UTC),
 		},
 		{
@@ -249,7 +249,7 @@ func TestAccountingRecordEncodesToAValidMessage(t *testing.T) {
 			KeyID: "k-alice", Groups: []string{"alice"},
 			Model: "gpt-4.1-mini", Deployment: accounting.Deployment{Backend: "azure", Model: "gpt-4.1-mini"},
 			Units: accounting.Units{config.UnitTokensIn: 0, config.UnitTokensCached: 0,
-				config.UnitTokensOut: 0, config.UnitTokensReasoning: 0},
+				config.UnitTokensCacheWrite: 0, config.UnitTokensOut: 0, config.UnitTokensReasoning: 0},
 			Partial: true, GatewayTime: time.Date(2026, 9, 24, 10, 0, 1, 0, time.UTC),
 		},
 	}
@@ -293,7 +293,7 @@ func TestIntegerSpellings(t *testing.T) {
 	if err != nil || resync != (Resync{}) {
 		t.Fatalf("resync: %v", err)
 	}
-	status, err := DecodeStatus([]byte(`{"instance":"gw-1","protocol_version":3.0,"state":"ready",
+	status, err := DecodeStatus([]byte(`{"instance":"gw-1","protocol_version":4.0,"state":"ready",
 		"started_at":"2026-09-24T10:00:00Z","applied_config_version":4e1,"applied_config_epoch":"0f1e2d3c4b5a69788796a5b4c3d2e1f0","last_rejection":null,
 		"backends":{"b":{"in_flight":2.0,"max_in_flight":4e0,"deployments":{}}},"models":{"m":{"queued":1.0}}}`))
 	if err != nil {

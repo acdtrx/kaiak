@@ -25,7 +25,7 @@ const (
 	spoolBatchPrefix    = "usage-batch-"
 	spoolRejectedPrefix = "usage-rejected-"
 	// spoolFormat is the format version of every spool file.
-	spoolFormat = 2
+	spoolFormat = 3
 	// rejectedKept is how many refused batches and records are kept for inspection;
 	// older ones are deleted as new ones are set aside.
 	rejectedKept = 10

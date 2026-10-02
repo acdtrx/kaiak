@@ -230,6 +230,7 @@ func (a *API) logRequest(rq *request) {
 		attrs = append(attrs,
 			slog.Int64("tokens_in", units[config.UnitTokensIn]),
 			slog.Int64("tokens_cached", units[config.UnitTokensCached]),
+			slog.Int64("tokens_cache_write", units[config.UnitTokensCacheWrite]),
 			slog.Int64("tokens_out", units[config.UnitTokensOut]),
 			slog.Int64("tokens_reasoning", units[config.UnitTokensReasoning]),
 			slog.Float64("cost_usd", float64(cost)/1e9),

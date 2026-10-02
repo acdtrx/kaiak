@@ -75,7 +75,7 @@ func TestSharedWindowsCountPushedTotalsPlusOwnUsage(t *testing.T) {
 		t.Errorf("rejection %+v, want the workload hour limit at 900 of 1000", rej)
 	}
 	// Settled at 50 tokens and 0.1 USD: the team's money is spent (0.9 pushed + 0.1).
-	l.Settle(res, record(40, 0, 10, 0, 100_000_000))
+	l.Settle(res, record(40, 0, 0, 10, 0, 100_000_000))
 	if got := used(t, l, "w", config.LimitTokensPerHour); got != 650 {
 		t.Errorf("hour used %d, want 600 pushed + 50 own", got)
 	}
@@ -95,8 +95,8 @@ func TestCountedUsageIsNeitherDoubledNorDropped(t *testing.T) {
 	hour := func() int64 { return used(t, l, "w", config.LimitTokensPerHour) }
 
 	const sealed = 1 // batch 1 holds the first record, batch 2 the second
-	l.Settle(admitN(t, l, workload, 1, 10)[0], inGeneration(sealed, record(100, 0, 0, 0, 0)))
-	l.Settle(admitN(t, l, workload, 1, 10)[0], inGeneration(2, record(50, 0, 0, 0, 0)))
+	l.Settle(admitN(t, l, workload, 1, 10)[0], inGeneration(sealed, record(100, 0, 0, 0, 0, 0)))
+	l.Settle(admitN(t, l, workload, 1, 10)[0], inGeneration(2, record(50, 0, 0, 0, 0, 0)))
 	if got := hour(); got != 150 {
 		t.Fatalf("hour used %d, want 150 own", got)
 	}
@@ -130,7 +130,7 @@ func TestPushedWindowRolloverMidBatch(t *testing.T) {
 	l.TakeTotals(&Totals{Windows: []PushedWindow{
 		pushedWindow("w", config.LimitTokensPerHour, nil, "2026-09-24T10:00:00Z", 500)}}, 0)
 	const sealed = 1
-	l.Settle(admitN(t, l, workload, 1, 10)[0], inGeneration(sealed, record(100, 0, 0, 0, 0)))
+	l.Settle(admitN(t, l, workload, 1, 10)[0], inGeneration(sealed, record(100, 0, 0, 0, 0, 0)))
 	if got := hour(); got != 600 {
 		t.Fatalf("hour used %d, want 600", got)
 	}
@@ -214,7 +214,7 @@ func TestUncountedUsageStaysInItsOwnWindow(t *testing.T) {
 	generation := uint64(1)
 	for range 3 {
 		for range 6 {
-			rec := inGeneration(generation, record(100, 0, 0, 0, 0))
+			rec := inGeneration(generation, record(100, 0, 0, 0, 0, 0))
 			rec.GatewayTime = c.t
 			l.Settle(admitN(t, l, workload, 1, 100)[0], rec)
 			c.advance(10 * time.Minute)
@@ -228,7 +228,7 @@ func TestUncountedUsageStaysInItsOwnWindow(t *testing.T) {
 	// A record settled in the last second of an hour and handed to the limiter in
 	// the next is not charged to the new hour.
 	c.set("2026-09-24T13:00:00.5Z")
-	rec := inGeneration(generation, record(100, 0, 0, 0, 0))
+	rec := inGeneration(generation, record(100, 0, 0, 0, 0, 0))
 	rec.GatewayTime = at("2026-09-24T12:59:59.9Z")
 	l.Settle(admitN(t, l, workload, 1, 100)[0], rec)
 	if got := hour(); got != 0 {
@@ -373,12 +373,12 @@ func TestUsageSettledAfterItsBatchIsCountedIsNotCountedTwice(t *testing.T) {
 	if got := hour(); got != 610 {
 		t.Fatalf("hour used %d before settlement, want 600 pushed + the 10 reserved", got)
 	}
-	l.Settle(res, inGeneration(1, record(600, 0, 0, 0, 0)))
+	l.Settle(res, inGeneration(1, record(600, 0, 0, 0, 0, 0)))
 	if got := hour(); got != 600 {
 		t.Errorf("hour used %d, want 600: the record is in the pushed base", got)
 	}
 	// A record of the next batch still counts as the gateway's own.
-	l.Settle(admitN(t, l, workload, 1, 10)[0], inGeneration(2, record(5, 0, 0, 0, 0)))
+	l.Settle(admitN(t, l, workload, 1, 10)[0], inGeneration(2, record(5, 0, 0, 0, 0, 0)))
 	if got := hour(); got != 605 {
 		t.Errorf("hour used %d, want 605", got)
 	}
@@ -390,8 +390,8 @@ func TestOlderGenerationSettledLateLeavesWithItsBatch(t *testing.T) {
 	c := newClock("2026-09-24T10:30:00Z")
 	l, _ := c.shared(holderOf(snapshot(t, limitsDoc{workload: hourLimit})))
 	hour := func() int64 { return used(t, l, "w", config.LimitTokensPerHour) }
-	l.Settle(admitN(t, l, workload, 1, 10)[0], inGeneration(2, record(50, 0, 0, 0, 0)))
-	l.Settle(admitN(t, l, workload, 1, 10)[0], inGeneration(1, record(100, 0, 0, 0, 0)))
+	l.Settle(admitN(t, l, workload, 1, 10)[0], inGeneration(2, record(50, 0, 0, 0, 0, 0)))
+	l.Settle(admitN(t, l, workload, 1, 10)[0], inGeneration(1, record(100, 0, 0, 0, 0, 0)))
 	l.TakeTotals(&Totals{Windows: []PushedWindow{
 		pushedWindow("w", config.LimitTokensPerHour, nil, "2026-09-24T10:00:00Z", 100)}}, 1)
 	if got := hour(); got != 150 {
@@ -429,7 +429,7 @@ func TestTotalsOfAnotherConfigKeepTheSpentBudget(t *testing.T) {
 		t.Fatal("mismatch reported with totals for the applied config")
 	}
 	// A request on m2 (not under v1's budget) is recorded in batch 1.
-	l.Settle(admitN(t, l, workload.on("m2"), 1, 10)[0], inGeneration(1, record(10, 0, 0, 0, 50_000_000)))
+	l.Settle(admitN(t, l, workload.on("m2"), 1, 10)[0], inGeneration(1, record(10, 0, 0, 0, 0, 50_000_000)))
 
 	// v2 rejected here; acks keep coming with v2's totals (its widened limit's window,
 	// and the other limits unlisted), batch 1 among them.
@@ -509,7 +509,7 @@ func TestUnpricedModelsAreNeverRefusedForBudgets(t *testing.T) {
 		t.Errorf("m1 with the budget spent: %+v, want the USD limit refusing", rej)
 	}
 	res := admitN(t, l, workload.on("m2"), 1, 10)[0]
-	l.Settle(res, inGeneration(1, record(10, 0, 10, 0, 0)))
+	l.Settle(res, inGeneration(1, record(10, 0, 0, 10, 0, 0)))
 	if got := used(t, l, "", config.LimitUSDPerMonth); got != 1_000_000_000 {
 		t.Errorf("global USD used %d, want the pushed 1 USD only", got)
 	}
@@ -542,7 +542,7 @@ func TestShareNeverMakesARequestImpossible(t *testing.T) {
 	if rej.Limit != 15000 || rej.Max != 60000 || rej.RetryAfter <= 0 || rej.RetryAfter > time.Minute {
 		t.Errorf("rejection %+v, want the 15 000 share of 60 000, retry within the minute", rej)
 	}
-	l.Settle(res, inGeneration(1, record(100, 0, 16384, 0, 0)))
+	l.Settle(res, inGeneration(1, record(100, 0, 0, 16384, 0, 0)))
 	c.advance(61 * time.Second)
 	admitN(t, l, workload, 1, request)
 	c.advance(61 * time.Second)
@@ -674,7 +674,7 @@ func TestModelSetEditKeepsTheSpend(t *testing.T) {
 	l.TakeTotals(&Totals{Windows: []PushedWindow{
 		pushedWindow("t", config.LimitUSDPerMonth, []string{"m1"}, "2026-09-01T00:00:00Z", 900_000_000),
 	}}, 0)
-	l.Settle(admitN(t, l, workload, 1, 10)[0], inGeneration(1, record(10, 0, 0, 0, 100_000_000)))
+	l.Settle(admitN(t, l, workload, 1, 10)[0], inGeneration(1, record(10, 0, 0, 0, 0, 100_000_000)))
 	if rej := refused(t, l, workload, 10); rej.Measure != MeasureCost {
 		t.Fatalf("rejection %+v, want the spent USD limit", rej)
 	}
@@ -722,7 +722,7 @@ func TestSharedStateSurvivesARestart(t *testing.T) {
 		pushedWindow("w", config.LimitTokensPerHour, nil, "2026-09-24T10:00:00Z", 600),
 		pushedWindow("t", config.LimitUSDPerMonth, []string{"m1"}, "2026-09-01T00:00:00Z", 1_000_000_000),
 	}}, 0)
-	l.Settle(admitN(t, l, workload.on("m2"), 1, 10)[0], inGeneration(1, record(50, 0, 0, 0, 0)))
+	l.Settle(admitN(t, l, workload.on("m2"), 1, 10)[0], inGeneration(1, record(50, 0, 0, 0, 0, 0)))
 	if n, err := l.SaveShared(dir); err != nil || n != 2 {
 		t.Fatalf("saved %d windows (%v), want 2", n, err)
 	}
@@ -830,7 +830,7 @@ func TestHoldOfAClearedWindowIsNeverReleasedAfterAClockCorrection(t *testing.T) 
 	push("2026-09-24T12:00:00Z") // a control-plane clock ahead
 	_ = l.Usage()                // the window rolls into the pushed one, the hold cleared
 	push("2026-09-24T10:00:00Z") // corrected: back to the gateway's window
-	l.Settle(res, record(10, 0, 0, 0, 0))
+	l.Settle(res, record(10, 0, 0, 0, 0, 0))
 	if got := used(t, l, "w", config.LimitTokensPerHour); got != 10 {
 		t.Errorf("used %d after the correction, want the settled 10", got)
 	}

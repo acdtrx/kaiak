@@ -109,7 +109,7 @@ func TestSeedConfigServesWhenTheControlPlaneHasNoConfig(t *testing.T) {
 func errorControlPlane(t *testing.T, status int, code string) *url.URL {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Kaiak-Protocol", "3")
+		w.Header().Set("Kaiak-Protocol", "4")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(`{"error":"` + code + `"}`))
@@ -170,13 +170,13 @@ func TestBootFailsWithNoSourceOfConfig(t *testing.T) {
 	}
 }
 
-// A last-known-good file of the previous format (a format-2 config inside, prices
-// without tiers) is discarded and logged: the boot falls back to the seed.
+// A last-known-good file of the previous format (a format-3 config inside, from
+// before tokens_cache_write) is discarded and logged: the boot falls back to the seed.
 func TestLastKnownGoodOfAnotherFormatIsDiscarded(t *testing.T) {
 	h := newHarness(t)
 	old := lastKnownGood{ConfigEpoch: "0123456789abcdef0123456789abcdef", Version: 3,
-		Config: []byte(`{"format_version": 2, "models": {"m": {"prices": [{"effective_from": "2026-01-01", ` +
-			`"usd_per_million": {"tokens_in": 1}}]}}}`)}
+		Config: []byte(`{"format_version": 3, "models": {"m": {"prices": [{"effective_from": "2026-01-01", ` +
+			`"tiers": [{"above_input_tokens": 0, "usd_per_million": {"tokens_in": 1}}]}]}}}`)}
 	if err := h.dir.WriteVersioned(LastKnownGoodFile, lastKnownGoodFormat-1, old); err != nil {
 		t.Fatal(err)
 	}

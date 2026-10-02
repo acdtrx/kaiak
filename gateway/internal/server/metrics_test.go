@@ -40,7 +40,7 @@ func TestOpsAndUsageMetricsMoveWithRequests(t *testing.T) {
 	g := newTestGateway(t)
 	withLimits(t, g, "", `[{ "type": "requests_per_minute", "value": 2 }]`)
 	g.backend.SetReply(fakebackend.Reply{Usage: &fakebackend.Usage{
-		PromptTokens: 100, CachedTokens: 40, CompletionTokens: 10, ReasoningTokens: 4}})
+		PromptTokens: 100, CachedTokens: 40, CacheWriteTokens: 20, CompletionTokens: 10, ReasoningTokens: 4}})
 	chat := func(key, model string) *httptest.ResponseRecorder {
 		return do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: key,
 			body: `{"model":"` + model + `","messages":[]}`})
@@ -85,6 +85,7 @@ func TestOpsAndUsageMetricsMoveWithRequests(t *testing.T) {
 		usageLine("kaiak_usage_records_total", wl, 1),
 		usageLine("kaiak_usage_tokens_total", wl+`,unit="tokens_in"`, pair.Units[config.UnitTokensIn]),
 		usageLine("kaiak_usage_tokens_total", wl+`,unit="tokens_cached"`, pair.Units[config.UnitTokensCached]),
+		usageLine("kaiak_usage_tokens_total", wl+`,unit="tokens_cache_write"`, pair.Units[config.UnitTokensCacheWrite]),
 		usageLine("kaiak_usage_tokens_total", wl+`,unit="tokens_out"`, pair.Units[config.UnitTokensOut]),
 		usageLine("kaiak_usage_tokens_total", wl+`,unit="tokens_reasoning"`, pair.Units[config.UnitTokensReasoning]),
 		`kaiak_usage_cost_usd_total{`+wl+`} `+strconv.FormatFloat(float64(pair.CostNanoUSD)/1e9, 'g', -1, 64),
@@ -92,7 +93,7 @@ func TestOpsAndUsageMetricsMoveWithRequests(t *testing.T) {
 		`kaiak_usage_records_total{key_group="ann",root_group="users",key_id="k-ann",model="open",status="complete"} 1`,
 		`kaiak_backend_in_flight_requests{backend="local"} 0`,
 	)
-	if pair.CostNanoUSD != 120_000 || pair.Units[config.UnitTokensIn] != 60 {
+	if pair.CostNanoUSD != 120_000 || pair.Units[config.UnitTokensIn] != 40 || pair.Units[config.UnitTokensCacheWrite] != 20 {
 		t.Errorf("unexpected record %+v", pair)
 	}
 	if strings.Contains(text, "nope-model") {

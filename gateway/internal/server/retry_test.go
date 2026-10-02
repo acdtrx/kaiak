@@ -161,11 +161,11 @@ func TestTimedOutAttemptIsRecordedAndLimitsSettleTheSum(t *testing.T) {
 	if timedOut.Deployment != (accounting.Deployment{Backend: "slow", Model: "first"}) || !timedOut.Estimated || !timedOut.Partial {
 		t.Errorf("timed-out attempt's record %+v", timedOut)
 	}
-	expectUnits(t, timedOut, units(accounting.EstimateTokens(int64(len(body))), 0, 0, 0), true, true)
+	expectUnits(t, timedOut, units(accounting.EstimateTokens(int64(len(body))), 0, 0, 0, 0), true, true)
 	if answer.Deployment != (accounting.Deployment{Backend: "local-b", Model: "second"}) {
 		t.Errorf("answer record %+v", answer)
 	}
-	expectUnits(t, answer, units(30, 0, 12, 0), false, false)
+	expectUnits(t, answer, units(30, 0, 0, 12, 0), false, false)
 	if timedOut.RecordID == answer.RecordID {
 		t.Error("the two records share a record ID")
 	}

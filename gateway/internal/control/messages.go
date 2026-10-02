@@ -80,8 +80,9 @@ type TotalsWindow struct {
 	// WindowStart is the top of the hour (tokens_per_hour) or the first of the month
 	// (usd_per_month), UTC, by the control plane's clock.
 	WindowStart time.Time `json:"window_start"`
-	// Used counts tokens (tokens_in + tokens_cached + tokens_out) or nano-USD. It
-	// travels as a string of digits: a JavaScript number is exact only up to 2^53.
+	// Used counts tokens (tokens_in + tokens_cached + tokens_cache_write + tokens_out)
+	// or nano-USD. It travels as a string of digits: a JavaScript number is exact only
+	// up to 2^53.
 	Used int64 `json:"used,string"`
 }
 

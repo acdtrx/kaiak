@@ -23,7 +23,7 @@ func TestResponseTimeoutIsNotRetried(t *testing.T) {
 	if n := len(g.backend.Requests()); n != 1 {
 		t.Errorf("backend got %d requests, want 1: a response timeout is not retried", n)
 	}
-	expectUnits(t, onlyRecord(t, g), units(int64(len(body)+3)/4, 0, 0, 0), true, true)
+	expectUnits(t, onlyRecord(t, g), units(int64(len(body)+3)/4, 0, 0, 0, 0), true, true)
 	logs := g.logText()
 	for _, want := range []string{`"attempts":1`, `"error_code":"upstream_timeout"`, `no response within 150ms`} {
 		if !strings.Contains(logs, want) {
@@ -60,7 +60,7 @@ func TestStalledStreamEndsAsUpstreamFailure(t *testing.T) {
 		t.Fatal("backend request not cancelled after the stall")
 	}
 	// Two chunks seen, "Hello" and " from": 10 bytes.
-	expectUnits(t, settledRecord(t, g), units(int64(len(body)+3)/4, 0, 3, 0), true, true)
+	expectUnits(t, settledRecord(t, g), units(int64(len(body)+3)/4, 0, 0, 3, 0), true, true)
 	if logs := g.logText(); !strings.Contains(logs, `"relay_end":"upstream_stalled"`) || !strings.Contains(logs, "silent for 150ms") {
 		t.Errorf("log misses the stall:\n%s", logs)
 	}
@@ -121,7 +121,7 @@ func TestStreamEndingBeforeItsTerminalChunkIsIncomplete(t *testing.T) {
 		t.Errorf("client got %d events, want 1", n)
 	}
 	// One chunk seen, "Hello": 5 bytes.
-	expectUnits(t, settledRecord(t, g), units(int64(len(body)+3)/4, 0, 2, 0), true, true)
+	expectUnits(t, settledRecord(t, g), units(int64(len(body)+3)/4, 0, 0, 2, 0), true, true)
 	if n := len(g.backend.Requests()); n != 1 {
 		t.Errorf("backend got %d requests, want 1", n)
 	}

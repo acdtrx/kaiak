@@ -60,7 +60,7 @@ func testConfig(backendURL, evalHash, annHash, extraModel string) map[string]any
 		models[extraModel] = chatModel(nil)
 	}
 	return map[string]any{
-		"format_version": 3,
+		"format_version": 4,
 		"global": map[string]any{
 			"limits": []any{map[string]any{"type": "usd_per_month", "value": 0.0001, "models": []any{"priced"}}},
 		},
@@ -286,7 +286,7 @@ func TestGatewayEndToEnd(t *testing.T) {
 	})
 
 	t.Run("SIGHUP reload keeps a bad config out and applies a good one", func(t *testing.T) {
-		if err := os.WriteFile(configFile, []byte(`{"format_version": 3,`), 0o600); err != nil {
+		if err := os.WriteFile(configFile, []byte(`{"format_version": 4,`), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		g.signal(t, syscall.SIGHUP)
@@ -409,8 +409,9 @@ func TestGatewayEndToEnd(t *testing.T) {
 }
 
 // TestTieredPrices: a model billed higher above 100 input tokens prices each request
-// at the tier its input size (tokens_in + tokens_cached) falls in, the whole request
-// at that tier; a request exactly at the threshold stays on the tier below.
+// at the tier its input size (tokens_in + tokens_cached + tokens_cache_write) falls
+// in, the whole request at that tier; a request exactly at the threshold stays on the
+// tier below.
 func TestTieredPrices(t *testing.T) {
 	backend := fakebackend.New()
 	defer backend.Close()

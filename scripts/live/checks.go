@@ -397,15 +397,16 @@ func (r *run) checkUsageLog(name, id string, output bool) {
 		r.fail(name, "estimated=%v: the backend reported no usage, so the gateway estimated it", line["estimated"])
 	case line["partial"] != false:
 		r.fail(name, "partial=%v (relay_end %v)", line["partial"], line["relay_end"])
-	case num("tokens_in")+num("tokens_cached") == 0:
+	case num("tokens_in")+num("tokens_cached")+num("tokens_cache_write") == 0:
 		r.fail(name, "no input tokens")
 	case output && num("tokens_out") == 0:
 		r.fail(name, "no output tokens")
 	case priced && num("cost_usd") <= 0:
 		r.fail(name, "cost_usd %v with prices set", line["cost_usd"])
 	default:
-		r.pass(name, fmt.Sprintf("in %v, cached %v, out %v, reasoning %v, cost_usd %v", line["tokens_in"],
-			line["tokens_cached"], line["tokens_out"], line["tokens_reasoning"], line["cost_usd"]))
+		r.pass(name, fmt.Sprintf("in %v, cached %v, cache write %v, out %v, reasoning %v, cost_usd %v",
+			line["tokens_in"], line["tokens_cached"], line["tokens_cache_write"], line["tokens_out"],
+			line["tokens_reasoning"], line["cost_usd"]))
 	}
 }
 

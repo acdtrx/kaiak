@@ -500,11 +500,12 @@ func (l *Limiter) Reserve(s Subject, tokens int64) (*Reservation, *Rejection) {
 
 // Settle ends a reservation with the request's usage records on the counters it was
 // checked against: token reservations are replaced by the tokens the records
-// processed (input, cached input and output — every token counts), their cost is
-// added to cost limits, and the request stays counted — once, however many records
-// it has (one per attempt that produced usage, docs/specs/GATEWAY.md, Usage across
-// attempts). A request that never produced a record passes none; its token
-// reservations are then released, and the request still counts: it took a slot.
+// processed (input, input read from or written to the cache, and output — every token
+// counts), their cost is added to cost limits, and the request stays counted — once,
+// however many records it has (one per attempt that produced usage,
+// docs/specs/GATEWAY.md, Usage across attempts). A request that never produced a
+// record passes none; its token reservations are then released, and the request still
+// counts: it took a slot.
 // Settle runs once per reservation; counters dropped by a reload since are settled
 // harmlessly.
 //
@@ -549,12 +550,18 @@ func (l *Limiter) checkCountLocked(c *counter) {
 	}
 }
 
-// amountOf is what rec counts on a token or cost counter.
+// amountOf is what rec counts on a token or cost counter: its cost, or every token
+// the backend handled — tokens_in + tokens_cached + tokens_cache_write + tokens_out
+// (reasoning is inside tokens_out).
 func amountOf(m Measure, rec accounting.UsageRecord) int64 {
 	if m == MeasureCost {
 		return rec.CostNanoUSD
 	}
-	return saturatingAdd(saturatingAdd(rec.Units[config.UnitTokensIn], rec.Units[config.UnitTokensCached]), rec.Units[config.UnitTokensOut])
+	var tokens int64
+	for _, unit := range []config.Unit{config.UnitTokensIn, config.UnitTokensCached, config.UnitTokensCacheWrite, config.UnitTokensOut} {
+		tokens = saturatingAdd(tokens, rec.Units[unit])
+	}
+	return tokens
 }
 
 // CounterUsage is one counter's state, for reading (metrics, tests).

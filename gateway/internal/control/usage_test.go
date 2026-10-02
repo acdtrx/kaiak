@@ -30,9 +30,10 @@ func testRecord(n int) accounting.UsageRecord {
 		Groups:          []string{"research", "eval"},
 		Model:           "llama",
 		Deployment:      accounting.Deployment{Backend: "local", Model: "llama-3"},
-		Units:           accounting.Units{"tokens_in": 10, "tokens_cached": 0, "tokens_out": 5, "tokens_reasoning": 0},
-		CostNanoUSD:     int64(n),
-		GatewayTime:     time.Date(2026, 9, 24, 10, 0, 0, n, time.UTC),
+		Units: accounting.Units{"tokens_in": 10, "tokens_cached": 0, "tokens_cache_write": 0, "tokens_out": 5,
+			"tokens_reasoning": 0},
+		CostNanoUSD: int64(n),
+		GatewayTime: time.Date(2026, 9, 24, 10, 0, 0, n, time.UTC),
 	}
 }
 
@@ -527,50 +528,73 @@ func TestSpoolOfAnotherFormatStartsANewEpoch(t *testing.T) {
 	}
 }
 
-// A spool left by the format-1 gateway — an index and a queued batch whose record
-// names an owner, not groups — is discarded whole: the batch is never sent, and the
-// first batch after the start opens a new epoch. The version is written literally, so
-// the test does not move with spoolFormat.
-func TestFormatOneSpoolIsDiscardedWithItsBatches(t *testing.T) {
-	const oldEpoch = "0123456789abcdef0123456789abcdef"
-	h := newHarness(t)
-	h.cp.Publish(configA(t))
-	index := json.RawMessage(`{"instance":"` + testInstance + `","epoch":"` + oldEpoch + `","next_sequence":2}`)
-	batchFile := spoolBatchPrefix + oldEpoch + "-1.json"
-	batch := json.RawMessage(`{"batch":{"instance":"` + testInstance + `","epoch":"` + oldEpoch + `","sequence":1},
+// A spool left by an older gateway — an index and a queued batch whose record has
+// that format's shape — is discarded whole: the batch is never sent, and the first
+// batch after the start opens a new epoch. Format 1 records name an owner, not groups;
+// format 2 records carry four token units, not tokens_cache_write. The versions are
+// written literally, so the test does not move with spoolFormat.
+func TestOlderFormatSpoolIsDiscardedWithItsBatches(t *testing.T) {
+	for _, old := range []struct {
+		format int
+		// scope and units are the record's members of that format.
+		scope, units string
+	}{
+		{1, `"owner":{"team":"research","workload":"eval"}`,
+			`{"tokens_in":10,"tokens_cached":0,"tokens_out":5,"tokens_reasoning":0}`},
+		{2, `"groups":["research","eval"]`,
+			`{"tokens_cached":0,"tokens_in":10,"tokens_out":5,"tokens_reasoning":0}`},
+	} {
+		t.Run(fmt.Sprintf("format %d", old.format), func(t *testing.T) {
+			const oldEpoch = "0123456789abcdef0123456789abcdef"
+			h := newHarness(t)
+			h.cp.Publish(configA(t))
+			index := json.RawMessage(`{"instance":"` + testInstance + `","epoch":"` + oldEpoch + `","next_sequence":2}`)
+			batchFile := spoolBatchPrefix + oldEpoch + "-1.json"
+			batch := json.RawMessage(`{"batch":{"instance":"` + testInstance + `","epoch":"` + oldEpoch + `","sequence":1},
   "records":[{"record_id":"` + fmt.Sprintf("%032x", 99) + `","request_id":"req-old","gateway_instance":"` + testInstance + `",
-    "key_id":"k-eval","owner":{"team":"research","workload":"eval"},"model":"llama",
+    "key_id":"k-eval",` + old.scope + `,"model":"llama",
     "deployment":{"backend":"local","model":"llama-3"},
-    "units":{"tokens_in":10,"tokens_cached":0,"tokens_out":5,"tokens_reasoning":0},
+    "units":` + old.units + `,
     "cost_nano_usd":1,"estimated":false,"partial":false,"gateway_time":"2026-09-24T10:00:00Z"}]}`)
-	if err := h.dir.WriteVersioned(SpoolFile, 1, index); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.dir.WriteVersioned(batchFile, 1, batch); err != nil {
-		t.Fatal(err)
-	}
+			if err := h.dir.WriteVersioned(SpoolFile, old.format, index); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.dir.WriteVersioned(batchFile, old.format, batch); err != nil {
+				t.Fatal(err)
+			}
 
-	c, _, _ := h.usageClient(1, nil)
-	c.Record(testRecord(1))
-	fresh := h.wantUsage(fakecontrol.OutcomeCounted, 1, 1)
-	if fresh.Batch.Epoch == oldEpoch {
-		t.Errorf("epoch %s of the discarded spool kept", oldEpoch)
-	}
-	counted := h.cp.CountedRecords()
-	if len(counted) != 1 {
-		t.Fatalf("%d records counted, want only the new one", len(counted))
-	}
-	var rec struct {
-		Groups []string `json:"groups"`
-	}
-	if err := json.Unmarshal(counted[0], &rec); err != nil || len(rec.Groups) == 0 {
-		t.Errorf("counted record %s has no groups (err %v)", counted[0], err)
-	}
-	if files := h.spoolFiles(spoolBatchPrefix); slices.Contains(files, batchFile) {
-		t.Errorf("format-1 batch file still spooled: %v", files)
-	}
-	if n := strings.Count(h.logs.String(), "discarded data file with a different format version"); n != 2 {
-		t.Errorf("%d discards logged, want 2 (index and batch):\n%s", n, h.logs.String())
+			c, _, _ := h.usageClient(1, nil)
+			c.Record(testRecord(1))
+			fresh := h.wantUsage(fakecontrol.OutcomeCounted, 1, 1)
+			if fresh.Batch.Epoch == oldEpoch {
+				t.Errorf("epoch %s of the discarded spool kept", oldEpoch)
+			}
+			counted := h.cp.CountedRecords()
+			if len(counted) != 1 {
+				t.Fatalf("%d records counted, want only the new one", len(counted))
+			}
+			var rec struct {
+				RequestID string           `json:"request_id"`
+				Groups    []string         `json:"groups"`
+				Units     map[string]int64 `json:"units"`
+			}
+			if err := json.Unmarshal(counted[0], &rec); err != nil || rec.RequestID == "req-old" || len(rec.Groups) == 0 {
+				t.Errorf("counted record %s is not the new one (err %v)", counted[0], err)
+			}
+			if _, ok := rec.Units["tokens_cache_write"]; !ok {
+				t.Errorf("counted record %s has no tokens_cache_write", counted[0])
+			}
+			if files := h.spoolFiles(spoolBatchPrefix); slices.Contains(files, batchFile) {
+				t.Errorf("format-%d batch file still spooled: %v", old.format, files)
+			}
+			out := h.logs.String()
+			if n := strings.Count(out, "discarded data file with a different format version"); n != 2 {
+				t.Errorf("%d discards logged, want 2 (index and batch):\n%s", n, out)
+			}
+			if !strings.Contains(out, fmt.Sprintf("found_version=%d", old.format)) {
+				t.Errorf("the discarded format is not logged:\n%s", out)
+			}
+		})
 	}
 }
 
@@ -694,7 +718,8 @@ func TestInvalidRecordIsSetAsideAloneAtSeal(t *testing.T) {
 	h.cp.Publish(configA(t))
 	c, obs, _ := h.usageClient(3, nil)
 	bad := testRecord(2)
-	bad.Units = accounting.Units{"tokens_in": 1 << 53, "tokens_cached": 0, "tokens_out": 0, "tokens_reasoning": 0}
+	bad.Units = accounting.Units{"tokens_in": 1 << 53, "tokens_cached": 0, "tokens_cache_write": 0, "tokens_out": 0,
+		"tokens_reasoning": 0}
 	c.Record(testRecord(1))
 	c.Record(bad)
 	c.Record(testRecord(3))

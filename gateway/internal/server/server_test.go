@@ -52,7 +52,8 @@ const (
 //   - down: backend "down", nothing listening
 //   - pair: two deployments, "pair-a" on "local" and "pair-b" on "local-b" (the same
 //     fake backend under another ID); declared defaults, an output limit, prices
-//     (1 and 2 USD per million input and output tokens now, no tokens_cached price)
+//     (1 and 2 USD per million input and output tokens now, no tokens_cached or
+//     tokens_cache_write price)
 func testSnapshot(t *testing.T, backendURL string) *config.Snapshot {
 	t.Helper()
 	return testSnapshotWith(t, backendURL, nil)
@@ -82,7 +83,7 @@ func testDocWith(backendURL string, edit func(doc string) string) string {
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } } }`
 	}
 	doc := `{
-  "format_version": 3,
+  "format_version": 4,
   "global": { "max_request_body_bytes": 1024 },
   "backends": {
     "local": { "type": "openai-compatible", "base_url": "` + backendURL + `/v1", "api_key_env": "LOCAL_KEY" },

@@ -150,7 +150,8 @@ func reservedTokens(t *testing.T, g *testGateway) int64 {
 func settledTokens(g *testGateway) int64 {
 	var n int64
 	for _, r := range g.usage.all() {
-		n += r.Units[config.UnitTokensIn] + r.Units[config.UnitTokensCached] + r.Units[config.UnitTokensOut]
+		n += r.Units[config.UnitTokensIn] + r.Units[config.UnitTokensCached] + r.Units[config.UnitTokensCacheWrite] +
+			r.Units[config.UnitTokensOut]
 	}
 	return n
 }

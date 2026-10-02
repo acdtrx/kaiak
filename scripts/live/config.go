@@ -115,7 +115,7 @@ func buildConfig(o options, hash string) ([]byte, error) {
 	}
 
 	return json.MarshalIndent(map[string]any{
-		"format_version": 3,
+		"format_version": 4,
 		"global":         global,
 		"backends":       backends,
 		"models":         models,

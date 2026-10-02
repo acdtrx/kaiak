@@ -247,9 +247,10 @@ func TestDrainTimeoutCutsOffHungRequests(t *testing.T) {
 			if c.reply.StallBeforeFirstByte {
 				// D1: the backend had the prompt when the drain cut it: the input,
 				// estimated from the body, no output.
-				expectUnits(t, r, units(int64(len(body)+3)/4, 0, 0, 0), true, true)
+				expectUnits(t, r, units(int64(len(body)+3)/4, 0, 0, 0, 0), true, true)
 			}
-			want := r.Units[config.UnitTokensIn] + r.Units[config.UnitTokensCached] + r.Units[config.UnitTokensOut]
+			want := r.Units[config.UnitTokensIn] + r.Units[config.UnitTokensCached] +
+				r.Units[config.UnitTokensCacheWrite] + r.Units[config.UnitTokensOut]
 			if used := counterUsed(t, g, "research", config.LimitTokensPerMinute); used != want {
 				t.Errorf("team tokens %d after the cut, want the settled %d", used, want)
 			}

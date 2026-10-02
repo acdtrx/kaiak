@@ -15,7 +15,7 @@ import (
 
 // ProtocolVersion is the protocol version this gateway speaks, sent in the
 // Kaiak-Protocol header and in status.
-const ProtocolVersion = 3
+const ProtocolVersion = 4
 
 // Codes for a rejected message. A schema violation has no per-rule code: CodeSchema
 // plus the walker's own message, as for config documents.

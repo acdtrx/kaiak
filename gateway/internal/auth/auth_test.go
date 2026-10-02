@@ -34,7 +34,7 @@ func testSnapshot(t *testing.T) *config.Snapshot {
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } } }`
 	}
 	doc := `{
-  "format_version": 3,
+  "format_version": 4,
   "global": {},
   "backends": { "local": { "type": "openai-compatible", "base_url": "http://localhost:8000/v1" } },
   "models": { ` + model("open") + `, ` + model("secret") + ` },

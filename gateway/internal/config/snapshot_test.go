@@ -56,7 +56,7 @@ func mustReject(t *testing.T, doc string) *ValidationError {
 // minimalDoc is protocol/fixtures/config/valid/minimal.json with one field replaceable.
 func minimalDoc(backend string) string {
 	return `{
-  "format_version": 3,
+  "format_version": 4,
   "global": {},
   "backends": { "local": ` + backend + ` },
   "models": {

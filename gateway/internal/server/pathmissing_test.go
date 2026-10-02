@@ -91,7 +91,7 @@ func TestUnknownPathIsTheDeploymentsFailure(t *testing.T) {
 			if len(records) != 1 {
 				t.Fatalf("%d records, want the request's one", len(records))
 			}
-			expectUnits(t, records[0], units(0, 0, 0, 0), false, true)
+			expectUnits(t, records[0], units(0, 0, 0, 0, 0), false, true)
 			expectMetricLines(t, scrape(g), `kaiak_errors_total{class="upstream_error"} 1`)
 		})
 	}

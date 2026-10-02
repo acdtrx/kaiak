@@ -31,7 +31,7 @@ const reliableModel = backendChatModel
 // 100 ms. tune edits the document before it is written.
 func reliabilityConfig(aURL, bURL, hash string, tune func(cfg map[string]any)) map[string]any {
 	cfg := map[string]any{
-		"format_version": 3,
+		"format_version": 4,
 		"global": map[string]any{
 			"circuit": map[string]any{"failure_threshold": 2, "probe_interval_ms": 100},
 		},

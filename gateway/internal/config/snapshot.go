@@ -73,16 +73,18 @@ const (
 
 // Unit is a usage unit: what usage records, prices and limits count
 // (docs/specs/CONTROL-PROTOCOL.md, Prices). The token units priced are disjoint:
-// tokens_in is uncached input, tokens_cached cached input, tokens_out all output
+// tokens_in is input neither read from nor written to the cache, tokens_cached input
+// read from it, tokens_cache_write input written to it, tokens_out all output
 // including reasoning. tokens_reasoning is the reasoning share of tokens_out, recorded
 // for visibility and never priced.
 type Unit string
 
 const (
-	UnitTokensIn        Unit = "tokens_in"
-	UnitTokensCached    Unit = "tokens_cached"
-	UnitTokensOut       Unit = "tokens_out"
-	UnitTokensReasoning Unit = "tokens_reasoning"
+	UnitTokensIn         Unit = "tokens_in"
+	UnitTokensCached     Unit = "tokens_cached"
+	UnitTokensCacheWrite Unit = "tokens_cache_write"
+	UnitTokensOut        Unit = "tokens_out"
+	UnitTokensReasoning  Unit = "tokens_reasoning"
 )
 
 // Version identifies a config a control plane published: its version number and the
@@ -213,7 +215,8 @@ type Price struct {
 	// EffectiveFrom is midnight UTC of the day the price takes effect.
 	EffectiveFrom time.Time
 	// Tiers are the entry's prices by the request's input size (tokens_in +
-	// tokens_cached): at least one, the first at 0, thresholds strictly increasing.
+	// tokens_cached + tokens_cache_write): at least one, the first at 0, thresholds
+	// strictly increasing.
 	Tiers []PriceTier
 }
 
@@ -223,8 +226,8 @@ type PriceTier struct {
 	// AboveInputTokens: the tier applies to a request whose input size is above it.
 	AboveInputTokens int64
 	// USDPerMillion holds the units the tier names (tokens_in, tokens_cached,
-	// tokens_out). tokens_cached left out is charged at the tier's tokens_in price;
-	// tokens_in or tokens_out left out costs 0.
+	// tokens_cache_write, tokens_out). tokens_cached or tokens_cache_write left out is
+	// charged at the tier's tokens_in price; tokens_in or tokens_out left out costs 0.
 	USDPerMillion map[Unit]float64
 }
 

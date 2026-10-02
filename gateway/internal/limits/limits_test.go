@@ -51,7 +51,7 @@ func snapshot(t *testing.T, l limitsDoc) *config.Snapshot {
       "metadata": { "context_length": 32768,
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } } }`
 	doc := `{
-  "format_version": 3,
+  "format_version": 4,
   "global": {` + graceField(l.grace) + ` "limits": ` + list(l.global) + ` },
   "backends": { "b": { "type": "openai-compatible", "base_url": "http://localhost:1/v1" } },
   "models": { "m1": ` + strings.Replace(model, `"metadata"`, `"prices": [{ "effective_from": "2020-01-01",
@@ -243,10 +243,10 @@ func TestRefusalReservesNothing(t *testing.T) {
 	}
 }
 
-func record(in, cached, out, reasoning, costNano int64) accounting.UsageRecord {
+func record(in, cached, cacheWrite, out, reasoning, costNano int64) accounting.UsageRecord {
 	return accounting.UsageRecord{
 		Units: accounting.Units{config.UnitTokensIn: in, config.UnitTokensCached: cached,
-			config.UnitTokensOut: out, config.UnitTokensReasoning: reasoning},
+			config.UnitTokensCacheWrite: cacheWrite, config.UnitTokensOut: out, config.UnitTokensReasoning: reasoning},
 		CostNanoUSD: costNano,
 	}
 }
@@ -269,11 +269,11 @@ func TestSettlementReplacesReservationsWithActuals(t *testing.T) {
 		t.Fatalf("reserved %d/%d, want 5000", m, h)
 	}
 	c.advance(3 * time.Second)
-	l.Settle(res, record(100, 50, 30, 10, 0))
+	l.Settle(res, record(100, 50, 0, 30, 10, 0))
 	if m, h := tokens(); m != 180 || h != 180 {
 		t.Errorf("after settling %d/%d tokens, want 180", m, h)
 	}
-	l.Settle(res, record(100, 50, 30, 10, 0)) // a second settle changes nothing
+	l.Settle(res, record(100, 50, 0, 30, 10, 0)) // a second settle changes nothing
 	if m, _ := tokens(); m != 180 {
 		t.Errorf("settling twice counted again: %d", m)
 	}
@@ -281,7 +281,7 @@ func TestSettlementReplacesReservationsWithActuals(t *testing.T) {
 	// Upstream failure or disconnect before an answer: the record has zero units, so
 	// the reservation is released; the request still counts.
 	res = admitN(t, l, workload, 1, 5000)[0]
-	l.Settle(res, record(0, 0, 0, 0, 0))
+	l.Settle(res, record(0, 0, 0, 0, 0, 0))
 	// No record at all (refused downstream before accounting): same.
 	res = admitN(t, l, workload, 1, 5000)[0]
 	l.Settle(res)
@@ -290,6 +290,22 @@ func TestSettlementReplacesReservationsWithActuals(t *testing.T) {
 	}
 	if got := used(t, l, "w", config.LimitRequestsPerMinute); got != 3 {
 		t.Errorf("requests %d, want 3: failed requests still took a slot", got)
+	}
+}
+
+// Input written to the cache is input the backend handled: it counts toward the token
+// limits beside plain input, cached input and output.
+func TestSettlementCountsInputWrittenToTheCache(t *testing.T) {
+	c := newClock("2026-09-24T10:00:00Z")
+	l := c.limiter(holderOf(snapshot(t, limitsDoc{workload: `[
+    { "type": "tokens_per_minute", "value": 100000 },
+    { "type": "tokens_per_hour", "value": 100000 } ]`})))
+	res := admitN(t, l, workload, 1, 5000)[0]
+	l.Settle(res, record(3, 1024, 1009, 40, 12, 0))
+	for _, typ := range []config.LimitType{config.LimitTokensPerMinute, config.LimitTokensPerHour} {
+		if got := used(t, l, "w", typ); got != 2076 {
+			t.Errorf("%s used %d, want 2076 (3 + 1024 + 1009 + 40)", typ, got)
+		}
 	}
 }
 
@@ -302,7 +318,7 @@ func TestSettlementSumsTheRequestsRecords(t *testing.T) {
 	// A request with two records (a timed-out attempt, then the answer) counts once,
 	// with the tokens and cost of both.
 	res := admitN(t, l, workload, 1, 5000)[0]
-	l.Settle(res, record(25, 0, 0, 0, 100), record(20, 5, 30, 0, 700))
+	l.Settle(res, record(25, 0, 0, 0, 0, 100), record(20, 5, 0, 30, 0, 700))
 	if got := used(t, l, "w", config.LimitTokensPerMinute); got != 80 {
 		t.Errorf("tokens %d, want 80 (25 + 20 + 5 + 30)", got)
 	}
@@ -333,7 +349,7 @@ func TestAHugeReservationCannotWrapTheCounter(t *testing.T) {
 			l := newClock("2026-09-24T10:00:00Z").limiter(holderOf(snapshot(t, limitsDoc{
 				team: `[{ "type": "` + string(typ) + `", "value": 1000 }]`})))
 			res := admitN(t, l, workload, 1, 10)[0]
-			l.Settle(res, record(10, 0, 0, 0, 0))
+			l.Settle(res, record(10, 0, 0, 0, 0, 0))
 
 			rej := refused(t, l, workload, math.MaxInt64)
 			if rej.Measure != MeasureTokens || rej.Requested != math.MaxInt64 || rej.Requested <= rej.Max {
@@ -355,10 +371,10 @@ func TestCostLimitRefusesOnceTheBudgetIsSpent(t *testing.T) {
 	l := c.limiter(holderOf(snapshot(t, limitsDoc{team: `[{ "type": "usd_per_month", "value": 0.000002 }]`})))
 	// Cost is known only afterwards, so concurrent requests all pass the check…
 	first := admitN(t, l, workload, 2, 10)
-	l.Settle(first[0], record(1, 0, 1, 0, 1500))
+	l.Settle(first[0], record(1, 0, 0, 1, 0, 1500))
 	admitN(t, l, workload, 1, 10)
 	// …and the budget refuses once the settled cost reaches it (overshoot allowed).
-	l.Settle(first[1], record(1, 0, 1, 0, 1500))
+	l.Settle(first[1], record(1, 0, 0, 1, 0, 1500))
 	rej := refused(t, l, workload, 10)
 	if rej.Measure != MeasureCost || rej.ID != "t" || rej.Limit != 2000 || rej.Used != 3000 {
 		t.Errorf("rejection %+v", rej)
@@ -528,9 +544,9 @@ func TestSnapshotRoundTrip(t *testing.T) {
 	c := newClock("2026-09-24T10:20:00Z")
 	l := c.limiter(holderOf(snapshot(t, persisted)))
 	res := admitN(t, l, workload, 2, 1000)
-	l.Settle(res[0], record(100, 0, 20, 0, 7000))
-	l.Settle(res[1], record(10, 0, 5, 0, 500))
-	l.Settle(admitN(t, l, ann, 1, 1000)[0], record(40, 2, 0, 0, 0))
+	l.Settle(res[0], record(100, 0, 0, 20, 0, 7000))
+	l.Settle(res[1], record(10, 0, 0, 5, 0, 500))
+	l.Settle(admitN(t, l, ann, 1, 1000)[0], record(40, 2, 0, 0, 0, 0))
 	admitN(t, l, workload, 1, 999) // in flight at save time: not saved
 	n, err := l.SaveSnapshot(dir)
 	if err != nil || n != 3 {
@@ -564,8 +580,8 @@ func TestSnapshotDropsPassedWindowsAndRemovedLimits(t *testing.T) {
 	dir, _ := openDir(t)
 	c := newClock("2026-09-24T10:59:00Z")
 	l := c.limiter(holderOf(snapshot(t, persisted)))
-	l.Settle(admitN(t, l, workload, 1, 10)[0], record(100, 0, 0, 0, 1000))
-	l.Settle(admitN(t, l, ann, 1, 10)[0], record(100, 0, 0, 0, 0))
+	l.Settle(admitN(t, l, workload, 1, 10)[0], record(100, 0, 0, 0, 0, 1000))
+	l.Settle(admitN(t, l, ann, 1, 10)[0], record(100, 0, 0, 0, 0, 0))
 	if _, err := l.SaveSnapshot(dir); err != nil {
 		t.Fatal(err)
 	}
@@ -631,7 +647,7 @@ func TestBillabilityComesFromTheRequestsOwnSnapshot(t *testing.T) {
 	// cost still counts.
 	res := admitN(t, l, workload, 1, 1)[0]
 	h.Swap(free)
-	l.Settle(res, record(0, 0, 0, 0, 1_000_000_000))
+	l.Settle(res, record(0, 0, 0, 0, 0, 1_000_000_000))
 	if got := used(t, l, "t", config.LimitUSDPerMonth); got != 1_000_000_000 {
 		t.Fatalf("team spent %d, want the settled $1", got)
 	}
@@ -659,7 +675,7 @@ func TestBillabilityComesFromTheRequestsOwnSnapshot(t *testing.T) {
 func treeSnapshot(t *testing.T) *config.Snapshot {
 	t.Helper()
 	doc := `{
-  "format_version": 3,
+  "format_version": 4,
   "global": {},
   "backends": { "b": { "type": "openai-compatible", "base_url": "http://localhost:1/v1" } },
   "models": { "m1": { "deployments": [{ "backend": "b", "model": "x" }],
@@ -725,7 +741,7 @@ func chainSnapshot(t *testing.T, withWorkload bool) *config.Snapshot {
 		workloadGroup = `, "workload": { "parent": "env", ` + limit + ` }`
 	}
 	doc := `{
-  "format_version": 3,
+  "format_version": 4,
   "global": {},
   "backends": { "b": { "type": "openai-compatible", "base_url": "http://localhost:1/v1" } },
   "models": { "m1": { "deployments": [{ "backend": "b", "model": "x" }],
@@ -769,7 +785,7 @@ func TestSettlementReachesAncestorsOfADeletedGroup(t *testing.T) {
 				}
 			}
 			c.advance(time.Second)
-			l.Settle(res, inGeneration(1, record(100, 50, 30, 0, 0)))
+			l.Settle(res, inGeneration(1, record(100, 50, 0, 30, 0, 0)))
 			for _, group := range []string{"team", "env"} {
 				if got := used(t, l, group, config.LimitTokensPerHour); got != 180 {
 					t.Errorf("%s tokens %d, want the 180 settled", group, got)
@@ -809,7 +825,7 @@ func TestCarryOverToTwoNewLimitsFromOnePredecessor(t *testing.T) {
 	c := newClock("2026-09-24T10:00:00Z")
 	holder := holderOf(snapshot(t, limitsDoc{team: `[{ "type": "tokens_per_hour", "value": 5000, "models": ["m1", "m2"] }]`}))
 	l := c.limiter(holder)
-	l.Settle(admitN(t, l, workload, 1, 5000)[0], record(400, 0, 0, 0, 0))
+	l.Settle(admitN(t, l, workload, 1, 5000)[0], record(400, 0, 0, 0, 0, 0))
 	inFlight := admitN(t, l, workload, 1, 1000)[0]
 
 	holder.Swap(snapshot(t, limitsDoc{team: `[
@@ -830,16 +846,16 @@ func TestCarryOverToTwoNewLimitsFromOnePredecessor(t *testing.T) {
 	}
 
 	c.advance(time.Second)
-	l.Settle(inFlight, record(200, 0, 0, 0, 0))
+	l.Settle(inFlight, record(200, 0, 0, 0, 0, 0))
 	if m1, m2 := usedOn("m1"), usedOn("m2"); m1 != 600 || m2 != 400 {
 		t.Errorf("after the in-flight request settled m1 %d, m2 %d; want 600 and 400 (no phantom hold)", m1, m2)
 	}
 
-	l.Settle(admitN(t, l, workload, 1, 100)[0], record(100, 0, 0, 0, 0))
+	l.Settle(admitN(t, l, workload, 1, 100)[0], record(100, 0, 0, 0, 0, 0))
 	if m1, m2 := usedOn("m1"), usedOn("m2"); m1 != 700 || m2 != 400 {
 		t.Errorf("after a request on m1: m1 %d, m2 %d; want 700 and 400 (separate counters)", m1, m2)
 	}
-	l.Settle(admitN(t, l, workload.on("m2"), 1, 50)[0], record(50, 0, 0, 0, 0))
+	l.Settle(admitN(t, l, workload.on("m2"), 1, 50)[0], record(50, 0, 0, 0, 0, 0))
 	if m1, m2 := usedOn("m1"), usedOn("m2"); m1 != 700 || m2 != 450 {
 		t.Errorf("after a request on m2: m1 %d, m2 %d; want 700 and 450", m1, m2)
 	}
@@ -852,7 +868,7 @@ func usersDoc(tb testing.TB, children int, models string) *config.Snapshot {
 	model := `{ "deployments": [{ "backend": "b", "model": "x" }], "metadata": { "context_length": 32768,
       "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } } }`
 	var b strings.Builder
-	b.WriteString(`{ "format_version": 3, "global": {},
+	b.WriteString(`{ "format_version": 4, "global": {},
   "backends": { "b": { "type": "openai-compatible", "base_url": "http://localhost:1/v1" } },
   "models": { "m1": ` + model + `, "m2": ` + model + ` },
   "groups": { "users": { "child_defaults": { "limits": [{ "type": "tokens_per_hour", "value": 1000, "models": ` + models + ` }] } }`)

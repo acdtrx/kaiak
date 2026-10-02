@@ -208,23 +208,27 @@ func tierFor(price config.Price, input int64) config.PriceTier {
 }
 
 // inputSize is the record's input size, the figure a tier is picked by: tokens_in +
-// tokens_cached, saturating at the int64 bound (units are clamped to the protocol's
-// bound only after pricing, and are never negative).
+// tokens_cached + tokens_cache_write, saturating at the int64 bound (units are clamped
+// to the protocol's bound only after pricing, and are never negative).
 func inputSize(units Units) int64 {
-	in, cached := units[config.UnitTokensIn], units[config.UnitTokensCached]
-	if cached > math.MaxInt64-in {
-		return math.MaxInt64
+	var size int64
+	for _, unit := range []config.Unit{config.UnitTokensIn, config.UnitTokensCached, config.UnitTokensCacheWrite} {
+		n := units[unit]
+		if n > math.MaxInt64-size {
+			return math.MaxInt64
+		}
+		size += n
 	}
-	return in + cached
+	return size
 }
 
 // Cost prices units under the entry in force at t, in nano-USD
 // (docs/specs/CONTROL-PROTOCOL.md, Units and price units): at the one tier the
-// record's input size picks, the whole record — input, cached input and output — at
-// that tier's prices. The priced units are disjoint, so the cost is a sum;
-// tokens_cached without a price of its own is charged at the tier's tokens_in price;
-// tokens_reasoning is inside tokens_out and never priced. An unpriced model, or a date
-// before its first entry, costs 0.
+// record's input size picks, the whole record — input, input read from and written to
+// the cache, and output — at that tier's prices. The priced units are disjoint, so
+// the cost is a sum; tokens_cached or tokens_cache_write without a price of its own is
+// charged at the tier's tokens_in price; tokens_reasoning is inside tokens_out and
+// never priced. An unpriced model, or a date before its first entry, costs 0.
 //
 // Each record's cost is rounded to a whole nano-dollar once, here: records are summed
 // as integers downstream, so totals over any number of records carry no floating-point
@@ -236,17 +240,25 @@ func Cost(prices []config.Price, t time.Time, units Units) int64 {
 	}
 	tier := tierFor(price, inputSize(units))
 	in := tier.USDPerMillion[config.UnitTokensIn]
-	cached, ok := tier.USDPerMillion[config.UnitTokensCached]
-	if !ok {
-		cached = in
-	}
 	out := tier.USDPerMillion[config.UnitTokensOut]
 	// USD per million tokens × tokens = micro-dollars; × 1000 = nano-dollars.
 	nano := 1000 * (float64(units[config.UnitTokensIn])*in +
-		float64(units[config.UnitTokensCached])*cached +
+		float64(units[config.UnitTokensCached])*cacheInputPrice(tier, config.UnitTokensCached) +
+		float64(units[config.UnitTokensCacheWrite])*cacheInputPrice(tier, config.UnitTokensCacheWrite) +
 		float64(units[config.UnitTokensOut])*out)
 	if nano >= math.MaxInt64 {
 		return math.MaxInt64
 	}
 	return int64(math.Round(nano))
+}
+
+// cacheInputPrice is the tier's price for unit, input read from or written to the
+// cache: its own price when the tier names one, else the tier's tokens_in price —
+// leaving it out must never make cached input free, nor written input cheaper than
+// plain input.
+func cacheInputPrice(tier config.PriceTier, unit config.Unit) float64 {
+	if price, ok := tier.USDPerMillion[unit]; ok {
+		return price
+	}
+	return tier.USDPerMillion[config.UnitTokensIn]
 }

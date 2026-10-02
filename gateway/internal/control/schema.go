@@ -30,7 +30,7 @@ var (
 	states           = []string{string(StateStarting), string(StateReady), string(StateDraining)}
 	circuits         = []string{string(CircuitClosed), string(CircuitOpen), string(CircuitHalfOpen)}
 	tokenUnits       = []config.Unit{
-		config.UnitTokensIn, config.UnitTokensCached, config.UnitTokensOut, config.UnitTokensReasoning,
+		config.UnitTokensIn, config.UnitTokensCached, config.UnitTokensCacheWrite, config.UnitTokensOut, config.UnitTokensReasoning,
 	}
 )
 

@@ -31,7 +31,7 @@ var (
 
 // FormatVersion is the config document format this gateway reads; any other is
 // rejected, never migrated.
-const FormatVersion = 3
+const FormatVersion = 4
 
 // maxPriceTiers bounds a price entry's tiers.
 const maxPriceTiers = 8
@@ -100,7 +100,9 @@ var (
 	countLimitTypes = []string{
 		string(LimitRequestsPerMinute), string(LimitTokensPerMinute), string(LimitTokensPerHour),
 	}
-	priceUnits = []string{string(UnitTokensIn), string(UnitTokensCached), string(UnitTokensOut)}
+	priceUnits = []string{
+		string(UnitTokensIn), string(UnitTokensCached), string(UnitTokensCacheWrite), string(UnitTokensOut),
+	}
 )
 
 // checkSchema validates the generic JSON tree against the config schema.

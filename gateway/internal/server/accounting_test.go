@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"maps"
 	"net/http"
@@ -39,9 +40,9 @@ func onlyRecord(t *testing.T, g *testGateway) accounting.UsageRecord {
 	return records[0]
 }
 
-func units(in, cached, out, reasoning int64) accounting.Units {
+func units(in, cached, cacheWrite, out, reasoning int64) accounting.Units {
 	return accounting.Units{
-		config.UnitTokensIn: in, config.UnitTokensCached: cached,
+		config.UnitTokensIn: in, config.UnitTokensCached: cached, config.UnitTokensCacheWrite: cacheWrite,
 		config.UnitTokensOut: out, config.UnitTokensReasoning: reasoning,
 	}
 }
@@ -69,7 +70,7 @@ func TestNonStreamUsageIsRecordedExactlyAndPriced(t *testing.T) {
 		t.Fatalf("status %d: %s", w.Code, w.Body.String())
 	}
 	r := onlyRecord(t, g)
-	expectUnits(t, r, units(60, 40, 10, 4), false, false)
+	expectUnits(t, r, units(60, 40, 0, 10, 4), false, false)
 	// No tokens_cached price: cached input is charged at the input price.
 	// 60×1 + 40×1 + 10×2 = 120 micro-dollars.
 	if r.CostNanoUSD != 120_000 {
@@ -88,7 +89,7 @@ func TestNonStreamUsageIsRecordedExactlyAndPriced(t *testing.T) {
 		t.Errorf("record ID %q, time %v", r.RecordID, r.GatewayTime)
 	}
 	logs := g.logText()
-	for _, want := range []string{`"tokens_in":60`, `"tokens_cached":40`, `"tokens_out":10`,
+	for _, want := range []string{`"tokens_in":60`, `"tokens_cached":40`, `"tokens_cache_write":0`, `"tokens_out":10`,
 		`"tokens_reasoning":4`, `"cost_usd":0.00012`, `"estimated":false`, `"partial":false`} {
 		if !strings.Contains(logs, want) {
 			t.Errorf("log misses %s:\n%s", want, logs)
@@ -105,9 +106,40 @@ func TestStreamUsageCountsTheHiddenUsageChunk(t *testing.T) {
 		t.Fatalf("client saw the usage chunk it did not ask for:\n%s", w.Body.String())
 	}
 	r := onlyRecord(t, g)
-	expectUnits(t, r, units(12, 0, 30, 0), false, false)
+	expectUnits(t, r, units(12, 0, 0, 30, 0), false, false)
 	if r.CostNanoUSD != 0 || !slices.Equal(r.Groups, []string{"users", "ann"}) {
 		t.Errorf("unpriced model: cost %d, groups %v", r.CostNanoUSD, r.Groups)
+	}
+}
+
+// Input written to the backend's cache, reported in a body's usage or a stream's
+// usage chunk, is its own unit in the record and the log line; "pair" names no write
+// price, so it is charged at the input price.
+func TestInputWrittenToTheCacheIsRecordedAndLogged(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			g := newTestGateway(t)
+			g.backend.SetReply(fakebackend.Reply{Usage: &fakebackend.Usage{
+				PromptTokens: 2036, CacheWriteTokens: 2033, CompletionTokens: 9}})
+			w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey,
+				body: fmt.Sprintf(`{"model":"pair","messages":[],"stream":%v}`, stream)})
+			if w.Code != http.StatusOK {
+				t.Fatalf("status %d: %s", w.Code, w.Body.String())
+			}
+			r := onlyRecord(t, g)
+			expectUnits(t, r, units(3, 0, 2033, 9, 0), false, false)
+			// (3 + 2033) × 1 + 9 × 2 = 2054 micro-dollars.
+			if r.CostNanoUSD != 2_054_000 {
+				t.Errorf("cost %d nano-USD, want 2054000", r.CostNanoUSD)
+			}
+			logs := g.logText()
+			for _, want := range []string{`"tokens_in":3`, `"tokens_cached":0`, `"tokens_cache_write":2033`,
+				`"tokens_out":9`} {
+				if !strings.Contains(logs, want) {
+					t.Errorf("log misses %s:\n%s", want, logs)
+				}
+			}
+		})
 	}
 }
 
@@ -115,7 +147,7 @@ func TestEmbeddingsCountPromptTokensOnly(t *testing.T) {
 	g := newTestGateway(t)
 	g.backend.SetReply(fakebackend.Reply{Usage: &fakebackend.Usage{PromptTokens: 9, CompletionTokens: 99}})
 	do(t, g.h, call{method: "POST", path: "/v1/embeddings", key: userKey, body: `{"model":"open","input":"x"}`})
-	expectUnits(t, onlyRecord(t, g), units(9, 0, 0, 0), false, false)
+	expectUnits(t, onlyRecord(t, g), units(9, 0, 0, 0, 0), false, false)
 }
 
 func TestMissingUsageIsEstimated(t *testing.T) {
@@ -129,7 +161,7 @@ func TestMissingUsageIsEstimated(t *testing.T) {
 			do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: userKey, body: c.body})
 			// Input: the client's body; output: the generated text only, ~4 bytes a token.
 			in := int64(len(c.body)+3) / 4
-			expectUnits(t, onlyRecord(t, g), units(in, 0, (int64(len(fakeContent))+3)/4, 0), true, false)
+			expectUnits(t, onlyRecord(t, g), units(in, 0, 0, (int64(len(fakeContent))+3)/4, 0), true, false)
 		})
 	}
 }
@@ -149,7 +181,7 @@ func TestClientDisconnectRecordsPartialUsage(t *testing.T) {
 	resp.Body.Close()
 
 	// Two chunks seen, "Hello" and " from": 10 bytes.
-	expectUnits(t, settledRecord(t, g), units(int64(len(body)+3)/4, 0, 3, 0), true, true)
+	expectUnits(t, settledRecord(t, g), units(int64(len(body)+3)/4, 0, 0, 3, 0), true, true)
 }
 
 // D1 (H6): the client leaving after its request reached the backend, before the
@@ -176,7 +208,7 @@ func TestClientGoneBeforeTheFirstEventBillsTheSentPrompt(t *testing.T) {
 	<-done
 	<-arrived.Canceled()
 
-	expectUnits(t, settledRecord(t, g), units(int64(len(body)+3)/4, 0, 0, 0), true, true)
+	expectUnits(t, settledRecord(t, g), units(int64(len(body)+3)/4, 0, 0, 0, 0), true, true)
 }
 
 func TestBackendCutMidStreamRecordsPartialUsage(t *testing.T) {
@@ -188,7 +220,7 @@ func TestBackendCutMidStreamRecordsPartialUsage(t *testing.T) {
 	_, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
 
-	expectUnits(t, settledRecord(t, g), units(int64(len(body)+3)/4, 0, 3, 0), true, true)
+	expectUnits(t, settledRecord(t, g), units(int64(len(body)+3)/4, 0, 0, 3, 0), true, true)
 	if logs := g.logText(); !strings.Contains(logs, `"estimated":true,"partial":true`) {
 		t.Errorf("log misses the flags:\n%s", logs)
 	}
@@ -199,7 +231,7 @@ func TestRequestsWithoutABackendAnswerRecordNoUnits(t *testing.T) {
 	w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey, body: `{"model":"down"}`})
 	expectError(t, w, http.StatusBadGateway, "upstream_unavailable")
 	r := onlyRecord(t, g)
-	expectUnits(t, r, units(0, 0, 0, 0), false, true)
+	expectUnits(t, r, units(0, 0, 0, 0, 0), false, true)
 	if r.Deployment != (accounting.Deployment{Backend: "down", Model: "down"}) {
 		t.Errorf("deployment %+v", r.Deployment)
 	}
@@ -213,7 +245,7 @@ func TestBackendErrorStatusRecordsNoUnits(t *testing.T) {
 		t.Fatalf("status %d", w.Code)
 	}
 	r := onlyRecord(t, g)
-	expectUnits(t, r, units(0, 0, 0, 0), false, false)
+	expectUnits(t, r, units(0, 0, 0, 0, 0), false, false)
 	if r.CostNanoUSD != 0 {
 		t.Errorf("cost %d for a refused request", r.CostNanoUSD)
 	}
@@ -281,7 +313,7 @@ func TestUsageRecordCarriesNothingSensitive(t *testing.T) {
 			t.Errorf("record carries %q: %s", secret, data)
 		}
 	}
-	if !strings.Contains(string(data), `"units":{"tokens_cached":0,"tokens_in":7,"tokens_out":1,"tokens_reasoning":0}`) {
+	if !strings.Contains(string(data), `"units":{"tokens_cache_write":0,"tokens_cached":0,"tokens_in":7,"tokens_out":1,"tokens_reasoning":0}`) {
 		t.Errorf("units encoding: %s", data)
 	}
 }

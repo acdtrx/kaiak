@@ -162,7 +162,7 @@ func TestUsageSinkCountsRecords(t *testing.T) {
 	reg := NewRegistry()
 	sink := NewUsageSink(reg, holder)
 	units := accounting.Units{config.UnitTokensIn: 60, config.UnitTokensCached: 40,
-		config.UnitTokensOut: 10, config.UnitTokensReasoning: 4}
+		config.UnitTokensCacheWrite: 30, config.UnitTokensOut: 10, config.UnitTokensReasoning: 4}
 	rec := accounting.UsageRecord{KeyID: "k-eval", Groups: []string{"research", "rag", "rag-prod", "eval"},
 		Model: "pair", Deployment: accounting.Deployment{Backend: "local", Model: "pair-a"},
 		Units: units, CostNanoUSD: 120_000}
@@ -179,6 +179,7 @@ func TestUsageSinkCountsRecords(t *testing.T) {
 		`kaiak_usage_records_total{` + wl + `} 2`,
 		`kaiak_usage_tokens_total{` + wl + `,unit="tokens_in"} 120`,
 		`kaiak_usage_tokens_total{` + wl + `,unit="tokens_cached"} 80`,
+		`kaiak_usage_tokens_total{` + wl + `,unit="tokens_cache_write"} 60`,
 		`kaiak_usage_tokens_total{` + wl + `,unit="tokens_out"} 20`,
 		`kaiak_usage_tokens_total{` + wl + `,unit="tokens_reasoning"} 8`,
 		`kaiak_usage_cost_usd_total{` + wl + `} 0.00024`,

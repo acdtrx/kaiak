@@ -79,12 +79,14 @@ type Reply struct {
 	HonorMaxTokens bool
 }
 
-// Usage is a token report. CachedTokens and ReasoningTokens, when set, are reported
-// in prompt_tokens_details and completion_tokens_details, as OpenAI does.
+// Usage is a token report. CachedTokens, CacheWriteTokens and ReasoningTokens, when
+// set, are reported in prompt_tokens_details and completion_tokens_details, as OpenAI
+// and Azure OpenAI do.
 type Usage struct {
 	PromptTokens     int
 	CompletionTokens int
 	CachedTokens     int
+	CacheWriteTokens int
 	ReasoningTokens  int
 }
 
@@ -528,8 +530,15 @@ func usageBody(u Usage, endpoint string) map[string]any {
 	}
 	body := map[string]any{"prompt_tokens": u.PromptTokens, "completion_tokens": u.CompletionTokens,
 		"total_tokens": u.PromptTokens + u.CompletionTokens}
+	promptDetails := map[string]int{}
 	if u.CachedTokens > 0 {
-		body["prompt_tokens_details"] = map[string]int{"cached_tokens": u.CachedTokens}
+		promptDetails["cached_tokens"] = u.CachedTokens
+	}
+	if u.CacheWriteTokens > 0 {
+		promptDetails["cache_write_tokens"] = u.CacheWriteTokens
+	}
+	if len(promptDetails) > 0 {
+		body["prompt_tokens_details"] = promptDetails
 	}
 	if u.ReasoningTokens > 0 {
 		body["completion_tokens_details"] = map[string]int{"reasoning_tokens": u.ReasoningTokens}
