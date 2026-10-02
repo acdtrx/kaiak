@@ -68,12 +68,13 @@
       }
     },
     "units": {
-      "description": "Usage units; every record carries the four token units, zeros included. Other units join when their models do.",
+      "description": "Usage units; every record carries the five token units, zeros included. tokens_in, tokens_cached and tokens_cache_write are disjoint and add up to the backend's prompt tokens; tokens_reasoning is the reasoning share of tokens_out. Other units join when their models do.",
       "type": "object",
       "additionalProperties": false,
       "required": [
         "tokens_in",
         "tokens_cached",
+        "tokens_cache_write",
         "tokens_out",
         "tokens_reasoning"
       ],
@@ -82,6 +83,9 @@
           "$ref": "common.schema.json#/$defs/count"
         },
         "tokens_cached": {
+          "$ref": "common.schema.json#/$defs/count"
+        },
+        "tokens_cache_write": {
           "$ref": "common.schema.json#/$defs/count"
         },
         "tokens_out": {

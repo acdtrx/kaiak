@@ -13,6 +13,7 @@
     "model": "/models/qwen3-embedding-0.6b-q8_0.gguf"
   },
   "units": {
+    "tokens_cache_write": 0,
     "tokens_cached": 0,
     "tokens_in": 812,
     "tokens_out": 240,

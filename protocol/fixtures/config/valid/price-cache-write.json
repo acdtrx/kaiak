@@ -1,0 +1,58 @@
+{
+  "format_version": 4,
+  "global": {},
+  "backends": {
+    "azure": {
+      "type": "azure-openai",
+      "base_url": "https://my-resource.openai.azure.com",
+      "api_key_env": "AZURE_OPENAI_API_KEY"
+    }
+  },
+  "models": {
+    "gpt-5.6": {
+      "deployments": [{ "backend": "azure", "model": "gpt-5.6-luna" }],
+      "metadata": {
+        "context_length": 1050000,
+        "capabilities": { "streaming": true, "tools": true, "vision": true, "reasoning": true },
+        "reasoning_efforts": ["low", "medium", "high"]
+      },
+      "output_limit": { "default": 16384, "ceiling": 128000 },
+      "prices": [
+        {
+          "effective_from": "2026-09-01",
+          "tiers": [
+            {
+              "above_input_tokens": 0,
+              "usd_per_million": { "tokens_in": 2.5, "tokens_cached": 0.25, "tokens_out": 15 }
+            }
+          ]
+        },
+        {
+          "effective_from": "2026-10-01",
+          "tiers": [
+            {
+              "above_input_tokens": 0,
+              "usd_per_million": {
+                "tokens_in": 2.5,
+                "tokens_cached": 0.25,
+                "tokens_cache_write": 3.125,
+                "tokens_out": 15
+              }
+            },
+            {
+              "above_input_tokens": 272000,
+              "usd_per_million": {
+                "tokens_in": 5,
+                "tokens_cached": 0.5,
+                "tokens_cache_write": 6.25,
+                "tokens_out": 22.5
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "groups": { "u": {} },
+  "keys": {}
+}

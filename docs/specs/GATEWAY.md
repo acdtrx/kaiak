@@ -1015,8 +1015,10 @@ own, and a client sending repeats is broken either way.
   The limits themselves are the live config's, as everywhere.
 - **Settle** (settled 2026-09-24), once the request is over, on the counters it was
   checked against: token reservations are replaced by the actual tokens processed —
-  `tokens_in + tokens_cached + tokens_out` (cached input counts: every token the
-  backend handled; reasoning is inside `tokens_out`); the record's cost is added to
+  `tokens_in + tokens_cached + tokens_cache_write + tokens_out` (input read from or
+  written to the cache counts: every token the backend handled — written tokens
+  settled 2026-10-02, since leaving them out would take them out of the token
+  limits; reasoning is inside `tokens_out`); the record's cost is added to
   USD counters; the request stays counted, whatever its outcome — a request that
   failed upstream or was dropped still took a slot. A request with zero units (no
   backend answer, backend error status) releases its token reservation. A reservation
@@ -1250,10 +1252,11 @@ own, and a client sending repeats is broken either way.
 
 ## Accounting
 
-- **Usage units** are a generic map (`tokens_in`, `tokens_out`, `tokens_cached`,
-  `tokens_reasoning` in v1; `images`, `audio_seconds`, `characters` later). Prices and
-  limits refer to units. What each token unit means, and which are priced:
-  `CONTROL-PROTOCOL.md`, Config → Units and price units.
+- **Usage units** are a generic map (`tokens_in`, `tokens_cached`,
+  `tokens_cache_write`, `tokens_out`, `tokens_reasoning` in v1; `images`,
+  `audio_seconds`, `characters` later). Prices and limits refer to units. What each
+  token unit means, and which are priced: `CONTROL-PROTOCOL.md`, Config → Units and
+  price units.
 - **One record per routed request** (settled 2026-09-24): every request that reached
   the routing stage settles into exactly one usage record for its last attempt,
   whatever happened next — plus one per retried attempt whose request reached the
@@ -1264,12 +1267,15 @@ own, and a client sending repeats is broken either way.
 - Token counts come from the backend's usage report, read from the response in the
   client's format as it is relayed (settled 2026-09-24): a non-stream body's top-level
   `usage`, or a stream's last non-null `usage` — the usage chunk the gateway withholds
-  from a client that did not ask for it is still read. `prompt_tokens` minus
-  `prompt_tokens_details.cached_tokens` → `tokens_in`; `cached_tokens` →
-  `tokens_cached`; `completion_tokens` → `tokens_out`;
+  from a client that did not ask for it is still read.
+  `prompt_tokens_details.cached_tokens` → `tokens_cached`;
+  `prompt_tokens_details.cache_write_tokens` → `tokens_cache_write` (settled
+  2026-10-02, every backend type: the field is read wherever the backend reports
+  it); `prompt_tokens` minus both → `tokens_in`; `completion_tokens` → `tokens_out`;
   `completion_tokens_details.reasoning_tokens` → `tokens_reasoning`. Missing detail
-  fields count 0; inconsistent ones are clamped (cached ≤ prompt, reasoning ≤
-  completion). Embeddings count `prompt_tokens` only.
+  fields count 0; inconsistent ones are clamped — cached ≤ prompt first, then
+  written ≤ prompt − cached, so the three input units always add up to
+  `prompt_tokens`; reasoning ≤ completion. Embeddings count `prompt_tokens` only.
 - **The record's scopes** (settled 2026-09-27): a record carries the key's group
   path (`groups`, top-level first) as the request's config snapshot had it at
   authentication — the control plane counts it toward those groups and global
@@ -1282,7 +1288,8 @@ own, and a client sending repeats is broken either way.
   `content`, `refusal`, reasoning text (`reasoning_content` or `reasoning`, one of
   them), tool-call names and arguments; completions `text`. JSON structure, roles,
   finish reasons and indexes do not count. A non-stream body's choices are kept up to
-  4 MiB to be read; past that their raw size counts.
+  4 MiB to be read; past that their raw size counts. The estimated input is all
+  `tokens_in`; `tokens_cached`, `tokens_cache_write` and `tokens_reasoning` are 0.
 - **Partial** (settled 2026-09-24): a response that stopped early (client disconnect,
   backend failure mid-response, cut off by the drain) is **flagged `partial`** and counts what was relayed
   up to then — the backend's report when one arrived, else the estimate.
@@ -1311,10 +1318,12 @@ own, and a client sending repeats is broken either way.
   counted (`kaiak_usage_clamped_records_total`); the record's flags are unchanged.
 - **Cost** = units × the prices of one tier of the model's price table entry in force
   at request time (the latest `effective_from` on or before the request's start,
-  UTC). The tier is picked from the record's input size, `tokens_in + tokens_cached`
-  (an estimated record's is its estimated input): the last tier whose
-  `above_input_tokens` is below it, else the first; the whole record is priced at
-  that tier (settled 2026-09-29; `CONTROL-PROTOCOL.md`, Config → Tiered prices).
+  UTC). The tier is picked from the record's input size,
+  `tokens_in + tokens_cached + tokens_cache_write` (an estimated record's is its
+  estimated input): the last tier whose `above_input_tokens` is below it, else the
+  first; the whole record is priced at that tier (settled 2026-09-29, written tokens
+  in the input size settled 2026-10-02; `CONTROL-PROTOCOL.md`, Config → Tiered
+  prices).
   Providers report tokens, not money, so the table is required for any priced
   model. Arithmetic
   (settled 2026-09-24): each record's cost is computed once in floating point from the
@@ -1592,7 +1601,7 @@ own, and a client sending repeats is broken either way.
     (`version`, `codes`) is kept for the status report until a later config from the
     control plane is applied (`CONTROL-PROTOCOL.md`, Messages → Status).
   - **Last-known-good** (with a data directory only; `last-known-good.json`, format
-    version 4 — settled 2026-09-29, the config format 3 inside): the config
+    version 5 — settled 2026-10-02, the config format 4 inside): the config
     document exactly as the control plane sent it, its version and config epoch
     (so the stream after a last-known-good boot resumes in that epoch, and a control
     plane on another store answers `resync`), written after each
@@ -1637,13 +1646,13 @@ own, and a client sending repeats is broken either way.
       records — about 145 records/s through the 15-minute outage grace. Rejected: a
       record count (the fixed 10 000 records covered about 100 s at 100 records/s,
       far short of the grace, and records differ in size by their IDs and names).
-  - **Usage spool** (with a data directory; settled 2026-09-24; format version 2
-    because records carry `groups`, settled 2026-09-27): one file per sealed batch,
-    `usage-batch-<epoch>-<sequence>.json` (the batch message exactly as sent), and an
-    index, `usage-spool.json` (instance, epoch, next sequence). The files are the
-    queue: memory holds only their IDs and record counts, and the batch being sent,
-    so a long outage costs disk, not memory, and each seal writes one batch — never
-    the whole queue.
+  - **Usage spool** (with a data directory; settled 2026-09-24; format version 3
+    because records carry `tokens_cache_write`, settled 2026-10-02): one file per
+    sealed batch, `usage-batch-<epoch>-<sequence>.json` (the batch message exactly as
+    sent), and an index, `usage-spool.json` (instance, epoch, next sequence). The
+    files are the queue: memory holds only their IDs and record counts, and the batch
+    being sent, so a long outage costs disk, not memory, and each seal writes one
+    batch — never the whole queue.
     - **Write policy**: a seal writes the batch file, then the index past it; only
       then is the batch queued, so no batch is ever sent before it and its sequence
       are durable, and a restart never reuses a sequence for other records. An ack
@@ -1787,7 +1796,7 @@ own, and a client sending repeats is broken either way.
   | `kaiak_control_config_mismatch` | gauge | — | Control-plane mode: 1 while the newest totals are for another config than the applied one (typically one this gateway rejected), else 0 — from the start, before the grace; past the grace priced money-limited models are refused `budget_unavailable` (Limits → Control-plane mode: totals follow their config) |
   | `kaiak_usage_records_total` | counter | usage labels | Usage records settled: one per routed request, plus one per retried attempt sent in full and unanswered. Records, not requests — count client requests with `kaiak_request_duration_seconds_count` |
   | `kaiak_usage_clamped_records_total` | counter | — | Usage records whose units or cost passed 2^53 − 1 and were clamped to it (Accounting) |
-  | `kaiak_usage_tokens_total` | counter | usage labels, `unit` | Tokens per usage unit (all four token units, zeros included) |
+  | `kaiak_usage_tokens_total` | counter | usage labels, `unit` | Tokens per usage unit (all five token units, zeros included) |
   | `kaiak_usage_cost_usd_total` | counter | usage labels | Estimated cost in USD (the records' nano-dollars ÷ 10⁹, summed exactly as integers) |
 
   - **Alert on usage delivery, not only the stream** (settled 2026-09-25, M16): a
@@ -1894,8 +1903,9 @@ own, and a client sending repeats is broken either way.
     thing): with `group_label` off, series have no `key_group`; with
     `key_id_label` off, no `key_id`.
   - **Cardinality** (settled 2026-09-25, H9). Usage series per replica ≈
-    `label sets × models × statuses × 6`, where 6 = records 1 + cost 1 + tokens 4
-    (one per unit), statuses ≤ 2 (`complete`, `partial`), models = the models each
+    `label sets × models × statuses × 7`, where 7 = records 1 + cost 1 + tokens 5
+    (one per unit; settled 2026-10-02, with `tokens_cache_write`), statuses ≤ 2
+    (`complete`, `partial`), models = the models each
     label set actually used, and label sets = the distinct group/key combinations
     seen: the keys used with `key_id_label` on (a key belongs to one group, and a
     group to one top-level group, so the group labels add nothing); with it off, the
@@ -1909,10 +1919,10 @@ own, and a client sending repeats is broken either way.
     backend. Worked example — 20 hosts, 500 keys: 450 personal keys, one per person,
     each person a group under a top-level `users` group, and 50 workload keys, one
     per workload group, in team → project → env → workload branches under 5
-    top-level team groups; 3 models per key: both labels on, 500 × 3 × 2 × 6 =
-    18,000 series; `key_id_label` off, 500 groups — the same 18,000 here, since every
+    top-level team groups; 3 models per key: both labels on, 500 × 3 × 2 × 7 =
+    21,000 series; `key_id_label` off, 500 groups — the same 21,000 here, since every
     key has its own group; `group_label` off too, 6 top-level groups (5 teams +
-    `users`), 6 × 3 × 2 × 6 = 216. Multiply by the gateway replicas for the metrics
+    `users`), 6 × 3 × 2 × 7 = 252. Multiply by the gateway replicas for the metrics
     store's total, and switch `key_id_label` off first, then `group_label`, when the
     total outgrows what the store is sized for. Series stay until restart once written
     (below). Ops series: request duration `endpoint` × `model` × `status_class` ×
@@ -2011,10 +2021,10 @@ own, and a client sending repeats is broken either way.
   (`down/m:upstream_unavailable,local/m:200`); `retry_refused` when a retry got no
   slot (`queue_full`, `queue_timeout`, `no_deployment_left`) or the model's retry
   budget was spent (`retry_budget`).
-  Once settled (routed requests): `tokens_in`, `tokens_cached`, `tokens_out`,
-  `tokens_reasoning`, `cost_usd` (in dollars, for reading) — summed over the
-  request's records — and the last record's `estimated`, `partial`. The line is written after settlement, as the request's
-  last act.
+  Once settled (routed requests): `tokens_in`, `tokens_cached`, `tokens_cache_write`
+  (settled 2026-10-02), `tokens_out`, `tokens_reasoning`, `cost_usd` (in dollars, for
+  reading) — summed over the request's records — and the last record's `estimated`,
+  `partial`. The line is written after settlement, as the request's last act.
 
 ## Lifecycle
 

@@ -1,5 +1,5 @@
 {
-  "format_version": 3,
+  "format_version": 4,
   "global": { "max_n": 0 },
   "backends": { "vllm": { "type": "openai-compatible", "base_url": "http://vllm:8000/v1" } },
   "models": {

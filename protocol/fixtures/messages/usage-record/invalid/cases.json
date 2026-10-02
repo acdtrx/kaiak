@@ -84,9 +84,13 @@
     "kind": "schema",
     "reason": "request IDs hold no spaces"
   },
+  "units-missing-cache-write.json": {
+    "kind": "schema",
+    "reason": "every record carries tokens_cache_write, zeros included"
+  },
   "units-missing-reasoning.json": {
     "kind": "schema",
-    "reason": "the four token units are always present, zeros included"
+    "reason": "the five token units are always present, zeros included"
   },
   "units-negative.json": {
     "kind": "schema",

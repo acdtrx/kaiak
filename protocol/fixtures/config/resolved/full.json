@@ -1,7 +1,7 @@
 {
   "reason": "the full valid fixture's groups",
   "config": {
-    "format_version": 3,
+    "format_version": 4,
     "global": {
       "limits": [
         { "type": "requests_per_minute", "value": 3000 },

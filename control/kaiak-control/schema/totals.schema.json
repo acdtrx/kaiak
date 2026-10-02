@@ -123,7 +123,7 @@
           "$ref": "config.schema.json#/$defs/timestamp"
         },
         "used": {
-          "description": "tokens_per_hour: tokens (tokens_in + tokens_cached + tokens_out); usd_per_month: nano-USD.",
+          "description": "tokens_per_hour: tokens (tokens_in + tokens_cached + tokens_cache_write + tokens_out); usd_per_month: nano-USD.",
           "$ref": "common.schema.json#/$defs/amount"
         }
       },

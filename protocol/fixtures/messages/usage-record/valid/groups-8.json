@@ -19,6 +19,7 @@
     "model": "Qwen/Qwen3-32B"
   },
   "units": {
+    "tokens_cache_write": 0,
     "tokens_cached": 0,
     "tokens_in": 812,
     "tokens_out": 240,

@@ -27,8 +27,8 @@
   whatever its port or scheme — and logs the 3xx as an error;
   `KAIAK_CONTROL_URL` must be the address that answers.
 - **Protocol version** travels as a `Kaiak-Protocol` header on every request and
-  response (the SSE stream's response included); the current version is `3`
-  (settled 2026-09-29, with tiered prices).
+  response (the SSE stream's response included); the current version is `4`
+  (settled 2026-10-02, with the cache-write unit).
 
 ## Endpoints (provisional)
 
@@ -59,11 +59,11 @@ the `{ error, detail }` body, `error` being the stable code:
 | Check | Code | Status |
 | --- | --- | --- |
 | `Authorization: Bearer <token>` carries the token (missing, not a bearer token, or wrong) | `unauthorized` | 401 |
-| `Kaiak-Protocol` is the current version, `3` (other or missing) | `protocol-version-mismatch` | 400 |
+| `Kaiak-Protocol` is the current version, `4` (other or missing) | `protocol-version-mismatch` | 400 |
 | `Kaiak-Instance` is an instance ID (Messages; missing or malformed) | `instance-invalid` | 400 |
 
 - **Repeated headers** (settled 2026-09-25): Node's HTTP layer joins a repeated
-  `Kaiak-Protocol` or `Kaiak-Instance` into one value (`3, 3`), which fails its check
+  `Kaiak-Protocol` or `Kaiak-Instance` into one value (`4, 4`), which fails its check
   as any other wrong value does, and keeps only the first of repeated `Authorization`
   headers — so the checks see one value per header and have no "repeated" case of
   their own.
@@ -283,14 +283,15 @@ the `{ error, detail }` body, `error` being the stable code:
   - `window_start` is the top of a UTC hour (`tokens_per_hour`) or the first of a UTC
     month at midnight (`usd_per_month`), by the control plane's clock.
   - `used` counts what the gateway counts against that limit: tokens as
-    `tokens_in + tokens_cached + tokens_out`, USD in nano-USD. It is a **string of
-    decimal digits** (no leading zeros, at most 18 digits — below 10^18 nano-USD, one
-    billion dollars per window). A JSON number is exact in JavaScript only up to 2^53
-    nano-USD, about 9 million dollars, and a month of an organization's spend can pass
-    that; a string stays exact in every JSON parser — `kaiak-control` reads it as a
-    `BigInt`, the gateway as an `int64`. Rejected: a number with a documented 2^53
-    bound (a silently rounded budget total is the worst failure mode), and strings for
-    USD only (one representation for every `used` keeps one parsing path).
+    `tokens_in + tokens_cached + tokens_cache_write + tokens_out`, USD in nano-USD.
+    It is a **string of decimal digits** (no leading zeros, at most 18 digits — below
+    10^18 nano-USD, one billion dollars per window). A JSON number is exact in
+    JavaScript only up to 2^53 nano-USD, about 9 million dollars, and a month of an
+    organization's spend can pass that; a string stays exact in every JSON parser —
+    `kaiak-control` reads it as a `BigInt`, the gateway as an `int64`. Rejected: a
+    number with a documented 2^53 bound (a silently rounded budget total is the worst
+    failure mode), and strings for USD only (one representation for every `used` keeps
+    one parsing path).
 - **Matching totals to limits** (enforced by the gateway, `GATEWAY.md`, Limits): only
   totals computed under the gateway's applied config apply; then a
   window applies to the gateway's counter with the same group (or global), type and
@@ -371,8 +372,8 @@ the `{ error, detail }` body, `error` being the stable code:
   `protocol/fixtures/config/` (settled 2026-09-24): `valid/`, `invalid/` (with
   `cases.json`: kind, code, reason) and `resolved/` (The group tree → Resolution
   fixtures).
-- **Top-level shape**: `format_version` (the integer `3`; settled 2026-09-29, with
-  tiered prices), `global`, `backends`, `models`, `keys` (required), `groups`
+- **Top-level shape**: `format_version` (the integer `4`; settled 2026-10-02, with
+  the cache-write unit), `global`, `backends`, `models`, `keys` (required), `groups`
   (optional, omitted = none).
   Collections are **objects keyed by ID** — uniqueness comes for free; the model key is
   the public model name clients send.
@@ -416,14 +417,14 @@ the `{ error, detail }` body, `error` being the stable code:
 - **Backend types** (settled 2026-09-30): a backend's `type` is one of
   `openai-compatible` (the generic type), `openai`, `azure-openai`, `vllm`,
   `llama-server` — what each does: `GATEWAY.md`, Providers. `openai` and
-  `azure-openai` require `api_key_env`. **The versions stay** (settled 2026-10-01):
-  config `format_version` 3 and protocol version 3. Adding types is additive — every
-  format-3 config stays valid — and a gateway that does not know a type rejects the
-  config with a schema error, which the control plane sees like any rejection; no
-  protocol message changes. A bump would not catch an OpenAI backend left as
-  `openai-compatible` either: the operator edits the number, not the type. Rejected:
-  format 4 and protocol 4 — churn across every fixture and the last-known-good format
-  for no check that helps.
+  `azure-openai` require `api_key_env`. **Types bump no version** (settled
+  2026-10-01): adding types is additive — every config of the current format stays
+  valid — and a gateway that does not know a type rejects the config with a schema
+  error, which the control plane sees like any rejection; no protocol message
+  changes. A bump would not catch an OpenAI backend left as `openai-compatible`
+  either: the operator edits the number, not the type. Rejected: a config format and
+  protocol bump for the types — churn across every fixture and the last-known-good
+  format for no check that helps.
 - **`api_key_env`** names an environment variable (`^[A-Za-z_][A-Za-z0-9_]*$`) that
   does not start with `KAIAK_` (settled 2026-09-25, N-S2): the gateway's own tokens
   live there, and a config author could otherwise have them sent to any backend URL.
@@ -512,35 +513,54 @@ the `{ error, detail }` body, `error` being the stable code:
     The first tier's is 0 (`price-tier-first-not-zero`) and each later one is above
     the one before (`price-tiers-not-increasing`). A model without long-context
     pricing has one tier, so every model is priced by the same rule.
-  - **Input size** is `tokens_in + tokens_cached` — the backend's `prompt_tokens`.
-    An estimated record (`GATEWAY.md`, Accounting → Estimation) uses its estimated
-    input, the figure limits reserved.
+  - **Input size** is `tokens_in + tokens_cached + tokens_cache_write` — the
+    backend's `prompt_tokens`. An estimated record (`GATEWAY.md`, Accounting →
+    Estimation) uses its estimated input, the figure limits reserved. Written tokens
+    count (settled 2026-10-02): they are input, and the providers' thresholds count
+    the whole prompt.
   - **Which tier applies**: the last tier whose `above_input_tokens` is strictly less
     than the input size; the first tier applies to every other record, an input of
     0 included. "Above 272000" matches the providers' ">272K".
-  - **The whole record** is priced at that tier — input, cached input and output
-    alike — as the providers bill it, not only the tokens past the threshold.
+  - **The whole record** is priced at that tier — input, cached input, input written
+    to the cache and output alike — as the providers bill it, not only the tokens
+    past the threshold.
   - **Each tier is complete in itself**: it lists its own prices, nothing is inherited
     from the tier below; the price-unit rules (below) hold within each tier.
-  - Usage records do not change: they carry `tokens_in` and `tokens_cached`, so the
-    control plane can re-price by the same rule. USD limits are unaffected: they
-    reserve nothing before a request runs, and cost is known only when it settles.
+  - Tiers add nothing to usage records: a record carries every input unit
+    (`tokens_in`, `tokens_cached`, `tokens_cache_write`), so the control plane can
+    re-price by the same rule. USD limits are unaffected: they reserve nothing before
+    a request runs, and cost is known only when it settles.
   - Rejected: a base price plus a separate long-context block (`usd_per_million` +
     `usd_per_million_large` + one threshold) and any fixed two-tier shape — flat, but
     capped at two tiers, so bracketed pricing (Qwen) would need another format change.
 - **Units and price units** (settled 2026-09-24). Usage units are disjoint where they
   are priced, so a cost is a plain sum of units × price:
-  - `tokens_in` — uncached input: the backend's prompt tokens minus cached ones;
-  - `tokens_cached` — cached input (OpenAI `prompt_tokens_details.cached_tokens`);
+  - `tokens_in` — plain input: the backend's prompt tokens minus those read from the
+    cache and those written to it;
+  - `tokens_cached` — input read from the cache (OpenAI
+    `prompt_tokens_details.cached_tokens`);
+  - `tokens_cache_write` — input written to the cache
+    (`prompt_tokens_details.cache_write_tokens`; settled 2026-10-02, below);
   - `tokens_out` — all output, reasoning included (providers bill reasoning as output);
   - `tokens_reasoning` — the reasoning share of `tokens_out`
     (`completion_tokens_details.reasoning_tokens`), recorded for visibility only.
 
-  `usd_per_million` accepts only `tokens_in`, `tokens_cached` and `tokens_out`;
+  The three input units add up to the backend's prompt tokens. `usd_per_million`
+  accepts only `tokens_in`, `tokens_cached`, `tokens_cache_write` and `tokens_out`;
   `tokens_reasoning` is never priced (it is already inside `tokens_out`, and pricing
-  it would charge reasoning twice). Within a tier, an unpriced `tokens_cached` is
-  charged at that tier's `tokens_in` price — leaving it out must never make cached
-  input free; an unpriced `tokens_in` or `tokens_out` costs 0 for that unit.
+  it would charge reasoning twice). Within a tier, an unpriced `tokens_cached` or
+  `tokens_cache_write` is charged at that tier's `tokens_in` price — leaving it out
+  must never make cached input free, nor written input cheaper than plain input; an
+  unpriced `tokens_in` or `tokens_out` costs 0 for that unit.
+  - **`tokens_cache_write`** (settled 2026-10-02). Azure OpenAI bills prompt tokens
+    written to its cache above plain input — gpt-5.6 and later at 1.25× input, reads
+    at 0.1× (LiteLLM's `cache_creation_input_token_cost`) — and reports them as
+    `prompt_tokens_details.cache_write_tokens` beside `cached_tokens`, both inside
+    `prompt_tokens`, streamed or not; writes need no opt-in. Counted as plain input,
+    written tokens would be charged about 25% under. One unit for every backend: a
+    backend that does not report the field counts 0. Rejected: one unit per cache
+    lifetime (5 minutes, 1 hour), as Anthropic and Bedrock price writes — Azure
+    reports one count, and the Bedrock provider is not built.
 - **Semantic rules** — what the schema cannot express, checked by code in both halves,
   each with a stable code that both halves report for the same fixture:
   - `key-group-unknown` — a key's `group` has no entry.
@@ -616,7 +636,8 @@ the `{ error, detail }` body, `error` being the stable code:
   {"record_id": "<32 hex, random>", "request_id": "…", "gateway_instance": "gw-1",
    "key_id": "k-eval-ci", "groups": ["research", "rag", "eval-pipeline"],
    "model": "qwen3-32b", "deployment": {"backend": "vllm-a", "model": "Qwen/Qwen3-32B"},
-   "units": {"tokens_cached": 0, "tokens_in": 812, "tokens_out": 240, "tokens_reasoning": 96},
+   "units": {"tokens_cache_write": 0, "tokens_cached": 0, "tokens_in": 812,
+             "tokens_out": 240, "tokens_reasoning": 96},
    "cost_nano_usd": 0, "estimated": false, "partial": false,
    "gateway_time": "2026-09-24T10:00:00.123456789Z"}
   ```
@@ -627,15 +648,15 @@ the `{ error, detail }` body, `error` being the stable code:
   first, the key's own group last (settled 2026-09-27: the path, not only the
   group, so the control plane counts a record without re-deriving ancestors from a
   config that may have changed since); `model` is the public name;
-  `units` always carries the four token units, zeros included (other units join the
-  map when their models do); `cost_nano_usd` is the cost in billionths of a dollar —
-  an integer, so totals over any number of records add up exactly (a JavaScript number
-  holds it exactly up to about 9 million dollars, the bound the schema puts on one
-  record; aggregates beyond that need `BigInt`, and travel as strings — Messages,
-  Totals); `gateway_time` is when the gateway settled the record (it picks the
-  record's window, Usage intake). Records carry
-  the raw units beside the cost, so the control plane can re-price. Never a key, a
-  credential, or request or response content.
+  `units` always carries the five token units, zeros included (settled 2026-10-02,
+  with `tokens_cache_write`; other units join the map when their models do);
+  `cost_nano_usd` is the cost in billionths of a dollar — an integer, so totals over
+  any number of records add up exactly (a JavaScript number holds it exactly up to
+  about 9 million dollars, the bound the schema puts on one record; aggregates beyond
+  that need `BigInt`, and travel as strings — Messages, Totals); `gateway_time` is
+  when the gateway settled the record (it picks the record's window, Usage intake).
+  Records carry the raw units beside the cost, so the control plane can re-price.
+  Never a key, a credential, or request or response content.
 - Sent in batches in the background, never on the request path (Usage batches).
 - **Time reference is the control plane**: its clock decides which windows are
   current; a record's `gateway_time` picks its window among the current and the
@@ -739,11 +760,12 @@ How the control plane takes `POST /v1/usage`, as `kaiak-control` implements it.
   every group its `groups` lists that the config in force at receipt (the current
   published version) defines — the path as recorded, never re-derived. Within those
   scopes, every `tokens_per_hour` and `usd_per_month` limit whose model set covers
-  the record's model adds `tokens_in + tokens_cached + tokens_out` or
-  `cost_nano_usd` to that limit's window for the record (Counted in its own
-  window). A group's limits are its effective ones (`child_defaults` merged; Config
-  → The group tree). Per-minute limits are not counted (they stay local to
-  gateways).
+  the record's model adds
+  `tokens_in + tokens_cached + tokens_cache_write + tokens_out` (settled 2026-10-02:
+  written tokens count, as every token the backend handled does) or `cost_nano_usd`
+  to that limit's window for the record (Counted in its own window). A group's limits
+  are its effective ones (`child_defaults` merged; Config → The group tree).
+  Per-minute limits are not counted (they stay local to gateways).
 - **Groups the config no longer defines** (deleted after the gateway settled the
   record) are skipped; the listed groups that remain and global still count — so
   usage settled just before a delete counts toward the ancestors that remain, and

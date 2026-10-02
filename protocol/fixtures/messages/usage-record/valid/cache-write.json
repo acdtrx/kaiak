@@ -1,0 +1,25 @@
+{
+  "record_id": "5e0c7b2a9d4f41e68a3b2c1d0e9f8a7b",
+  "request_id": "req-01K6CW2033WRITE",
+  "gateway_instance": "gw-1",
+  "key_id": "k-alice-laptop",
+  "groups": [
+    "alice"
+  ],
+  "model": "gpt-5.6",
+  "deployment": {
+    "backend": "azure",
+    "model": "gpt-5.6-luna"
+  },
+  "units": {
+    "tokens_cache_write": 2033,
+    "tokens_cached": 0,
+    "tokens_in": 3,
+    "tokens_out": 12,
+    "tokens_reasoning": 0
+  },
+  "cost_nano_usd": 6540625,
+  "estimated": false,
+  "partial": false,
+  "gateway_time": "2026-10-02T09:30:00Z"
+}

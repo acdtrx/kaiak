@@ -12,6 +12,7 @@
     "model": "gpt-4.1-mini"
   },
   "units": {
+    "tokens_cache_write": 0,
     "tokens_cached": 1024,
     "tokens_in": 2048,
     "tokens_out": 377,

@@ -20,6 +20,7 @@
         "model": "Qwen/Qwen3-32B"
       },
       "units": {
+        "tokens_cache_write": 0,
         "tokens_cached": 0,
         "tokens_in": 812,
         "tokens_out": 240,
@@ -44,6 +45,7 @@
         "model": "gpt-4.1-mini"
       },
       "units": {
+        "tokens_cache_write": 0,
         "tokens_cached": 1024,
         "tokens_in": 2048,
         "tokens_out": 377,

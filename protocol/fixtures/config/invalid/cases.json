@@ -196,9 +196,9 @@
     "kind": "schema",
     "reason": "the first-event timeout is a positive integer"
   },
-  "format-version-2.json": {
+  "format-version-3.json": {
     "kind": "schema",
-    "reason": "format_version must be 3"
+    "reason": "format_version must be 4"
   },
   "format-version-missing.json": {
     "kind": "schema",
@@ -463,6 +463,10 @@
     "kind": "schema",
     "reason": "output_limit needs both default and ceiling"
   },
+  "price-cache-write-negative.json": {
+    "kind": "schema",
+    "reason": "a tokens_cache_write price is not negative"
+  },
   "price-date-month-13.json": {
     "kind": "semantic",
     "code": "date-invalid",
@@ -548,7 +552,7 @@
   },
   "price-unknown-unit.json": {
     "kind": "schema",
-    "reason": "price units are tokens_in, tokens_cached, tokens_out"
+    "reason": "price units are tokens_in, tokens_cached, tokens_cache_write, tokens_out"
   },
   "queue-size-negative.json": {
     "kind": "schema",

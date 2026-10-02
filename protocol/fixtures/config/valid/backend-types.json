@@ -1,5 +1,5 @@
 {
-  "format_version": 3,
+  "format_version": 4,
   "global": {},
   "backends": {
     "generic": { "type": "openai-compatible", "base_url": "http://sglang:30000/v1" },

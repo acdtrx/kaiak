@@ -9,7 +9,7 @@
   "properties": {
     "format_version": {
       "description": "Version of this document format. A different version is rejected, never migrated.",
-      "const": 3
+      "const": 4
     },
     "global": { "$ref": "#/$defs/global" },
     "backends": {
@@ -359,7 +359,7 @@
           "required": ["max_attempts"]
         },
         "prices": {
-          "description": "Price table, entries in strictly increasing effective_from order. The entry in force is the latest one effective on or before the request's UTC date. Omitted or empty = unpriced (cost 0). Priced units are disjoint: tokens_in is uncached input, tokens_cached cached input, tokens_out all output including reasoning; reasoning tokens are recorded but never priced on their own.",
+          "description": "Price table, entries in strictly increasing effective_from order. The entry in force is the latest one effective on or before the request's UTC date. Omitted or empty = unpriced (cost 0). Priced units are disjoint: tokens_in is plain input, tokens_cached input read from the cache, tokens_cache_write input written to the cache, tokens_out all output including reasoning; reasoning tokens are recorded but never priced on their own.",
           "type": "array",
           "items": {
             "type": "object",
@@ -368,7 +368,7 @@
             "properties": {
               "effective_from": { "$ref": "#/$defs/date" },
               "tiers": {
-                "description": "Prices by the request's input size (tokens_in + tokens_cached), thresholds strictly increasing from 0. A record is priced whole at the last tier whose above_input_tokens is below its input size, or at the first tier. Each tier lists its own prices; nothing is inherited from the tier below.",
+                "description": "Prices by the request's input size (tokens_in + tokens_cached + tokens_cache_write), thresholds strictly increasing from 0. A record is priced whole at the last tier whose above_input_tokens is below its input size, or at the first tier. Each tier lists its own prices; nothing is inherited from the tier below.",
                 "type": "array",
                 "minItems": 1,
                 "maxItems": 8,
@@ -384,13 +384,14 @@
                       "maximum": 9007199254740991
                     },
                     "usd_per_million": {
-                      "description": "USD per million units. tokens_cached left out is charged at the tier's tokens_in price; tokens_in or tokens_out left out costs 0.",
+                      "description": "USD per million units. tokens_cached or tokens_cache_write left out is charged at the tier's tokens_in price; tokens_in or tokens_out left out costs 0.",
                       "type": "object",
                       "additionalProperties": false,
                       "minProperties": 1,
                       "properties": {
                         "tokens_in": { "type": "number", "minimum": 0 },
                         "tokens_cached": { "type": "number", "minimum": 0 },
+                        "tokens_cache_write": { "type": "number", "minimum": 0 },
                         "tokens_out": { "type": "number", "minimum": 0 }
                       }
                     }

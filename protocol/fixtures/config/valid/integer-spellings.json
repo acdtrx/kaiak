@@ -1,5 +1,5 @@
 {
-  "format_version": 3,
+  "format_version": 4,
   "global": { "max_request_body_bytes": 1e6, "queue": { "size": 1E2, "timeout_ms": 30000.0 } },
   "backends": { "local": { "type": "openai-compatible", "base_url": "http://localhost:8080/v1" } },
   "models": {
