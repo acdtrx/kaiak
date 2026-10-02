@@ -12,18 +12,11 @@ Group entries under headings as themes emerge.
 ## Providers and APIs
 
 - **Bedrock provider** — translating provider (Converse API), binary stream framing,
-  hand-written SigV4. Revisit trigger: a Bedrock-only model is needed by a real user.
+  hand-written SigV4. Its usage report's `cacheWriteInputTokens` maps to
+  `tokens_cache_write`; Bedrock prices writes by cache lifetime, which the one unit
+  does not split (`docs/specs/CONTROL-PROTOCOL.md`, Config → Units and price units).
+  Revisit trigger: a Bedrock-only model is needed by a real user.
   (ruled 2026-09-24: deferred from v1.)
-- **Cache-write usage unit** — a `tokens_cache_write` unit (perhaps split by cache
-  lifetime: 5 minutes, 1 hour) priced like the others, for providers that bill
-  writing a prompt into the cache above plain input: Bedrock
-  (`cacheWriteInputTokens`, about 1.25× input), Claude on Azure AI Foundry, Azure
-  gpt-5.6 (`cache_creation_input_token_cost`). Tier choice would then count cache
-  writes in the input size, as Anthropic does for its 200k threshold. Until then
-  such tokens are either reported inside the backend's prompt count (charged as
-  plain input) or not at all. Backend modules map their usage reports to it; pricing
-  stays provider-blind. Revisit trigger: the Bedrock provider starts, or a deployed
-  model's price list charges cache writes. (ruled 2026-09-29.)
 - **Anthropic Messages inbound** — second inbound format (`/v1/messages`, `x-api-key`
   auth). Revisit trigger: a client that only speaks the Anthropic API needs access.
 - **OpenAI Responses API inbound** — used by newer clients (e.g. Codex CLI, Agents SDK).

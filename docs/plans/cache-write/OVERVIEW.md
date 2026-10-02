@@ -128,4 +128,23 @@ need moving).
   (`-kind azure-openai`) with a fresh long prompt shows `tokens_cache_write` in the log
   line and the cost at the write price. Needs the user's endpoint and key.
 
-**Verification status:** not started.
+**Verification status:** done (2026-10-02); phase 1 green. The live check is
+pending.
+
+- [x] Meter: writes reported and not, stream and non-stream, clamping, embeddings, a
+  backend that omits the field (`STEP-3-gateway.md`).
+- [x] Cost: written tokens at their price, unpriced → the tier's `tokens_in`, written
+  tokens across a tier threshold (`STEP-3-gateway.md`).
+- [x] Limits: written tokens count toward token limits, in the gateway
+  (`STEP-3-gateway.md`) and in `kaiak-control` (`STEP-2-kaiak-control.md`).
+- [x] Shared fixtures, same codes from both halves (`STEP-1-contract.md`, steps 2–3).
+- [x] Gateway e2e: writes settle at the write price streamed and not, across the tier
+  threshold, and at `tokens_in` when unpriced; the log line and
+  `kaiak_usage_tokens_total` carry the unit (`STEP-4-e2e-and-docs.md`).
+- [x] Cross-half e2e: written tokens reach the sample and count toward its
+  `tokens_per_hour` total (`STEP-4-e2e-and-docs.md`).
+- [x] `scripts/check-all.sh` green 3× in a row (`STEP-4-e2e-and-docs.md`).
+- [ ] Live: the live-test kit against the user's Azure deployment
+  (`-kind azure-openai`), a fresh long prompt sent twice — `tokens_cache_write` and
+  the write-price cost on the first log line. Needs the user's endpoint and key; run
+  after the merge.

@@ -170,6 +170,16 @@ func TestAcrossHalves(t *testing.T) {
 		}
 	})
 
+	t.Run("input read from and written to the cache counts toward the token total", func(t *testing.T) {
+		// 2036 prompt tokens (3 plain, 1024 read, 1009 written) and 40 out: the
+		// answer's total_tokens, 2076, all counted toward the hourly token limit.
+		backend.SetReply(fakebackend.Reply{Usage: &fakebackend.Usage{
+			PromptTokens: 2036, CompletionTokens: 40, CachedTokens: 1024, CacheWriteTokens: 1009}})
+		defer backend.SetReply(fakebackend.Reply{})
+		served(t, "chat on gw-a, input written to the cache", chat(t, a, "chat"))
+		allCounted(t, waitLimit)
+	})
+
 	t.Run("a group's budget spent through one gateway is enforced on the other", func(t *testing.T) {
 		if r := chat(t, b, "priced-probe"); r.StatusCode != http.StatusBadRequest {
 			t.Fatalf("probe on gw-b before the spend: %d %s, want the backend's 400", r.StatusCode, r.body)

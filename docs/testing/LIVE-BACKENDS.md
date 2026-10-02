@@ -333,10 +333,12 @@ when access arrives, in this order:
 4. **Responses name a dated model version** (e.g. `gpt-4.1-2025-04-14`), which the
    gateway replaces with the public name — `chat` and `chat-stream` check it.
 5. **Usage fields** are OpenAI's: `usage.prompt_tokens`, `completion_tokens`,
-   `prompt_tokens_details.cached_tokens`, `completion_tokens_details.reasoning_tokens`.
-   Cached tokens only show on prompts over 1024 tokens, so the kit's short prompts
-   report 0 — to check the cached path, send a long prompt twice and look at
-   `tokens_cached` on the second log line.
+   `prompt_tokens_details.cached_tokens`, `prompt_tokens_details.cache_write_tokens`,
+   `completion_tokens_details.reasoning_tokens`. Cache reads and writes only show on
+   prompts over 1024 tokens, so the kit's short prompts report 0 — to check the cache
+   paths, send a fresh long prompt twice: the first log line carries
+   `tokens_cache_write` (gpt-5.6 and later) and a cost at the write price, the second
+   `tokens_cached`.
 6. **Streaming usage**: `stream_options.include_usage` is honored and yields the
    usage-only final chunk (`choices: []`). `usage-log/stream` and `chat-stream-usage`
    check it. Azure may also send chunks with empty `choices` for content-filter

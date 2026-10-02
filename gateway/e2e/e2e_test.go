@@ -465,6 +465,83 @@ func TestTieredPrices(t *testing.T) {
 	}
 }
 
+// TestInputWrittenToTheCache: prompt tokens the backend reports written to its cache
+// (prompt_tokens_details.cache_write_tokens) settle at the tokens_cache_write price,
+// streamed and not; they count toward the input size that picks the tier; a model
+// that prices no write charges them at its tokens_in price.
+func TestInputWrittenToTheCache(t *testing.T) {
+	backend := fakebackend.New()
+	defer backend.Close()
+	dir := t.TempDir()
+	configFile := filepath.Join(dir, "config.json")
+	evalKey, evalHash := newKey()
+	_, annHash := newKey()
+	cfg := testConfig(backend.URL(), evalHash, annHash, "")
+	chatModel := func(tiers ...any) map[string]any {
+		return map[string]any{
+			"deployments": []any{map[string]any{"backend": "fake", "model": backendChatModel}},
+			"metadata": map[string]any{"context_length": 8192,
+				"capabilities": map[string]any{"streaming": true, "tools": false, "vision": false, "reasoning": false}},
+			"prices": []any{map[string]any{"effective_from": "2026-01-01", "tiers": tiers}},
+		}
+	}
+	models := cfg["models"].(map[string]any)
+	models["written"] = chatModel(
+		map[string]any{"above_input_tokens": 0, "usd_per_million": map[string]any{
+			"tokens_in": 1, "tokens_cached": 0.1, "tokens_cache_write": 1.25, "tokens_out": 2}},
+		map[string]any{"above_input_tokens": 100, "usd_per_million": map[string]any{
+			"tokens_in": 2, "tokens_cached": 0.2, "tokens_cache_write": 2.5, "tokens_out": 4}},
+	)
+	models["write-unpriced"] = chatModel(
+		map[string]any{"above_input_tokens": 0, "usd_per_million": map[string]any{
+			"tokens_in": 1, "tokens_cached": 0.1, "tokens_out": 2}},
+	)
+	writeJSON(t, configFile, cfg)
+	g := startGateway(t, configFile, "")
+
+	for _, c := range []struct {
+		name                    string
+		model                   string
+		stream                  bool
+		prompt, cached, written int
+		want                    float64 // cost_usd
+	}{
+		{"written", "written", false, 60, 0, 40, 0.00009},                       // 20×1 + 40×1.25 + 10×2
+		{"written and read streamed", "written", true, 60, 10, 40, 0.000081},    // 10×1 + 10×0.1 + 40×1.25 + 10×2
+		{"written over the threshold", "written", false, 101, 0, 41, 0.0002625}, // 60×2 + 41×2.5 + 10×4
+		{"written unpriced", "write-unpriced", false, 60, 0, 40, 0.00008},       // 20×1 + 40×1 + 10×2
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			backend.SetReply(fakebackend.Reply{Usage: &fakebackend.Usage{
+				PromptTokens: c.prompt, CompletionTokens: 10, CachedTokens: c.cached, CacheWriteTokens: c.written}})
+			id := "e2e-write-" + strings.ReplaceAll(c.name, " ", "-")
+			if r := g.post(t, "/v1/chat/completions", evalKey, id, chatBody(c.model, c.stream, nil)); r.StatusCode != http.StatusOK {
+				t.Fatalf("status %d %s", r.StatusCode, r.body)
+			}
+			line := g.settled(t, id)
+			if line["tokens_in"] != float64(c.prompt-c.cached-c.written) || line["tokens_cached"] != float64(c.cached) ||
+				line["tokens_cache_write"] != float64(c.written) || line["tokens_out"] != 10.0 ||
+				line["estimated"] != false || line["cost_usd"] != c.want {
+				t.Errorf("log line %v, want cost_usd %v", line, c.want)
+			}
+		})
+	}
+
+	usage := func(model, unit string) string {
+		return fmt.Sprintf(`{key_group="eval",root_group="research",key_id="k-eval",model=%q,status="complete"%s}`, model, unit)
+	}
+	for series, want := range map[string]float64{
+		`kaiak_usage_tokens_total` + usage("written", `,unit="tokens_cache_write"`):        121, // 40 + 40 + 41
+		`kaiak_usage_tokens_total` + usage("written", `,unit="tokens_cached"`):             10,
+		`kaiak_usage_tokens_total` + usage("write-unpriced", `,unit="tokens_cache_write"`): 40,
+		`kaiak_usage_cost_usd_total` + usage("written", ""):                                0.0004335, // 0.00009 + 0.000081 + 0.0002625
+	} {
+		if got := g.metric(t, series); got != want {
+			t.Errorf("%s = %v, want %v", series, got, want)
+		}
+	}
+}
+
 // lastRequest is the body of the last request the backend received.
 func lastRequest(t *testing.T, b *fakebackend.Backend) map[string]any {
 	t.Helper()

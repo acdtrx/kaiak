@@ -564,6 +564,20 @@ the document (a script, or the control plane) rather than editing it by hand.
     { "above_input_tokens": 272000, "usd_per_million": { "tokens_in": 5,   "tokens_cached": 0.5,  "tokens_out": 22.5 } }
   ] }]
   ```
+
+  Price `tokens_cache_write` too for gpt-5.6 and later: Azure bills prompt tokens
+  written to its cache at about 1.25× input (reads at 0.1×) and reports them on any
+  uncached prompt over about 1k tokens, so long first prompts are mostly written.
+  Left out, written tokens are charged at the tier's `tokens_in` price — about 25%
+  under for that input. Written tokens count toward the input size that picks the
+  tier (`docs/specs/CONTROL-PROTOCOL.md`, Config → Units and price units):
+
+  ```json
+  "prices": [{ "effective_from": "2026-10-01", "tiers": [
+    { "above_input_tokens": 0,      "usd_per_million": { "tokens_in": 2.5, "tokens_cached": 0.25, "tokens_cache_write": 3.125, "tokens_out": 15 } },
+    { "above_input_tokens": 272000, "usd_per_million": { "tokens_in": 5,   "tokens_cached": 0.5,  "tokens_cache_write": 6.25,  "tokens_out": 22.5 } }
+  ] }]
+  ```
 - **Before go-live, run the live kit** against the real resource:
   `go -C scripts/live run . -kind azure-openai -base-url https://<resource>.openai.azure.com -model <deployment>`
   and check the provider's assumptions in the order `docs/testing/LIVE-BACKENDS.md`
