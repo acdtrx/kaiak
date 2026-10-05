@@ -2283,10 +2283,12 @@ own, and a client sending repeats is broken either way.
     stopped`. It sends what is queued until the queue is empty, bounded by the
     drain's deadline (grace + drain timeout from the drain's start) or 1 s from the
     flush's start, whichever is later — so the last lines still go when the usage
-    flush took the whole reserve. A start that fails once the exporter runs (a
-    rejected config at startup, a boot that ends with no config) ends with the same
-    flush, bounded by 1 s, so the line naming the cause reaches the collector. What
-    is still queued then is dropped and counted.
+    flush took the whole reserve. After a second stop signal, which skips the
+    waiting left (Lifecycle → Draining), the 1 s alone bounds it. A start that fails
+    once the exporter runs (a rejected config at startup, a boot that ends with no
+    config) ends with the same flush, bounded by 1 s, after `kaiak stopped with an
+    error`, so the line naming the cause reaches the collector. What is still queued
+    then is dropped and counted.
 
 ## Lifecycle
 

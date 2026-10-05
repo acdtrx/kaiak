@@ -23,6 +23,7 @@ import (
 	"kaiak/internal/limits"
 	"kaiak/internal/logattr"
 	"kaiak/internal/metrics"
+	"kaiak/internal/otlplog"
 	"kaiak/internal/provider"
 	"kaiak/internal/routing"
 	"kaiak/internal/server"
@@ -44,8 +45,9 @@ func main() {
 	reload := make(chan os.Signal, 1)
 	signal.Notify(reload, syscall.SIGHUP)
 
+	// run logs the error itself, as its last line: with OTLP log export on, the line
+	// must go out before the export's final flush.
 	if err := run(context.Background(), logger, os.LookupEnv, reload, stop); err != nil {
-		logger.Error("kaiak stopped with an error", "exception.message", err)
 		os.Exit(1)
 	}
 }
@@ -89,6 +91,8 @@ type settings struct {
 	maxConnections int64
 	// metricsToken is the bearer token /metrics requires; "" leaves it open.
 	metricsToken string
+	// logExport is where log records also go over OTLP; nil when export is off.
+	logExport *otlplog.Settings
 }
 
 // controlSettings are control-plane mode's: where the control plane is, the token
@@ -184,6 +188,9 @@ func readSettings(lookupEnv func(string) (string, bool)) (settings, error) {
 		}
 	}
 	s.metricsToken, _ = lookupEnv("KAIAK_METRICS_TOKEN")
+	if s.logExport, err = otlplog.ReadSettings(lookupEnv); err != nil {
+		return s, err
+	}
 	s.instanceID, _ = lookupEnv("KAIAK_INSTANCE_ID")
 	if s.instanceID == "" {
 		host, err := os.Hostname()
@@ -302,10 +309,25 @@ func durationMS(lookupEnv func(string) (string, bool), name string, def time.Dur
 // hurries it. Cancelling ctx stops without waiting: the drain runs hurried. Once the
 // API has drained, run flushes usage to the control plane (control-plane mode) or
 // writes the limits snapshot (file mode, with a data directory), stops the admin
-// listener and returns.
+// listener and returns. Its last line is `kaiak stopped`, or `kaiak stopped with an
+// error` with the error it returns. With OTLP log export configured, every line
+// from `kaiak starting` on also goes to the collector, and the export's final flush
+// is run's last act.
 func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (string, bool),
-	reload, stop <-chan os.Signal) error {
+	reload, stop <-chan os.Signal) (err error) {
 	startedAt := time.Now()
+	// The export and the end of its final flush: the drain's deadline once a drain
+	// started, unless a second signal hurried it.
+	var logExport *otlplog.Exporter
+	var logFlushBy time.Time
+	defer func() {
+		if err != nil {
+			logger.Error("kaiak stopped with an error", "exception.message", err)
+		}
+		if logExport != nil {
+			finishLogExport(logExport, logFlushBy)
+		}
+	}()
 	s, err := readSettings(lookupEnv)
 	if err != nil {
 		return err
@@ -313,6 +335,14 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 	source := []any{"kaiak.config.file", s.configFile}
 	if s.control != nil {
 		source = []any{"kaiak.control.url", s.control.url.Redacted()}
+	}
+	if s.logExport != nil {
+		// Export problems go to the stderr logger alone: one exported would feed the
+		// problem it reports.
+		logExport = otlplog.New(s.logExport, otlplog.Resource{ServiceVersion: metrics.Version(), InstanceID: s.instanceID},
+			logger)
+		logger = slog.New(logExport.Handler(logger.Handler()))
+		source = append(source, "kaiak.log_export.endpoint", s.logExport.EndpointHost())
 	}
 	logger.Info("kaiak starting", append([]any{"process.pid", os.Getpid(), "service.instance.id", s.instanceID,
 		"kaiak.data_dir", s.dataDir}, source...)...)
@@ -345,6 +375,12 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 	holder := &config.Holder{}
 	providers := provider.NewRegistry(lookupEnv)
 	registry := metrics.NewRegistry()
+	if logExport != nil {
+		metrics.RegisterLogExport(registry, func() metrics.LogExportCounts {
+			c := logExport.Counts()
+			return metrics.LogExportCounts{Exported: c.Exported, Failed: c.Failed, Dropped: c.Dropped}
+		})
+	}
 	circuits := metrics.NewCircuits(registry)
 	router := routing.New(routing.Options{Probe: providers.Probe, Observer: circuits, Logger: logger})
 	ops := metrics.NewOps(registry, router, holder)
@@ -496,6 +532,7 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 	// control-plane mode in-flight requests are cut the flush reserve before the
 	// timeout, so the records they settle still have time to reach the control plane.
 	drainDeadline := time.Now().Add(s.drain.Grace + s.drain.Timeout)
+	logFlushBy = drainDeadline
 	drainTimes := s.drain
 	if client != nil {
 		drainTimes.Reserve = s.drainReserve
@@ -521,6 +558,12 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 	drain.Run(api, drainTimes, hurry, logger)
 	if client != nil {
 		finishWithControlPlane(client, drainDeadline, hurry)
+	}
+	// A second signal skips the waiting left: the log export keeps only its floor.
+	select {
+	case <-hurry:
+		logFlushBy = time.Time{}
+	default:
 	}
 	close(drained)
 	stopBackground()
@@ -635,6 +678,25 @@ func finishWithControlPlane(client *control.Client, deadline time.Time, hurry <-
 	statusCtx, cancelStatus := context.WithTimeout(context.Background(), finalStatusTimeout)
 	defer cancelStatus()
 	_ = client.ReportStatus(statusCtx, "drain") // the result is logged; the usage flush is over either way
+}
+
+// logExportFlushFloor is the least time the log export's final flush gets: the last
+// lines still go when the usage flush took the whole drain, or when the start failed.
+const logExportFlushFloor = time.Second
+
+// finishLogExport is the log export's final flush, the process's last act
+// (docs/specs/GATEWAY.md, Observability → OTLP log export: at exit): what is queued is
+// sent until by, or until logExportFlushFloor from now when that is later. What is
+// still queued then is dropped and counted (and reported on stderr, within the
+// report's once-a-minute limit).
+func finishLogExport(e *otlplog.Exporter, by time.Time) {
+	if floor := time.Now().Add(logExportFlushFloor); floor.After(by) {
+		by = floor
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), by)
+	defer cancel()
+	_ = e.Flush(ctx) // what did not fit is Close's to count
+	e.Close()
 }
 
 // adminShutdownTimeout bounds how long a probe or scrape still open at the end may

@@ -233,6 +233,7 @@ svg .band { stroke: none; }
     <tr><td><code>config</code></td><td>Strict decoding, validation, resolution into an immutable snapshot (each group's path, allowed models and effective limits), the holder that swaps it atomically, the one apply path, the file loader.</td></tr>
     <tr><td><code>control</code></td><td>Boot (snapshot → last-known-good → seed), the config stream with reconnect and resync, the usage batch sender, the status reporter, contact tracking.</td></tr>
     <tr><td><code>metrics</code></td><td>Small registry (counters, gauges, fixed-bucket histograms) and Prometheus text exposition.</td></tr>
+    <tr><td><code>otlplog</code></td><td>Optional OTLP log export (<code>OTEL_*</code> variables): an <code>slog</code> handler beside the stderr one queues a copy of every line; one sender posts OTLP/HTTP JSON batches with retries, drops the newest when its queue is full, and flushes at exit after usage. Its own problems go to stderr only. Not drawn: <code>cmd/kaiak</code> wraps the logger with it.</td></tr>
     <tr><td><code>state</code></td><td>The optional data directory: versioned files, atomic writes, a <code>flock</code> so one gateway owns it.</td></tr>
     <tr><td><code>sse</code>, <code>clip</code>, <code>logattr</code>, <code>schemacheck</code></td><td>Shared parts: SSE reader (backend streams and the config stream), bounding client strings before they are logged, log durations in seconds, strict JSON and schema-mirroring checks.</td></tr>
     <tr><td><code>fakebackend</code>, <code>fakecontrol</code></td><td>Test doubles only; used by unit tests and the e2e suite in <code>gateway/e2e</code>.</td></tr>
@@ -747,14 +748,14 @@ svg .band { stroke: none; }
 <section id="observability">
 <h2>Observability</h2>
 <ul>
-  <li><strong>Logs</strong>: one line per request (JSON by default, <code>KAIAK_LOG_FORMAT=text</code> for development); config loads log their trigger and result. Never a client key, provider secret, prompt or response.</li>
+  <li><strong>Logs</strong>: one line per request (JSON by default, <code>KAIAK_LOG_FORMAT=text</code> for development); config loads log their trigger and result. Never a client key, provider secret, prompt or response. Attribute names follow OpenTelemetry's conventions where they fit. With an OTLP endpoint in the standard <code>OTEL_*</code> variables every line also goes to an OpenTelemetry collector (OTLP/HTTP JSON) — stderr is always written; the export is queued off the request path and counted in <code>kaiak_log_export_records_total</code>.</li>
   <li><strong>Metrics</strong> on the admin port (optionally behind <code>KAIAK_METRICS_TOKEN</code>): ops metrics from the pipeline, usage metrics from accounting (labelled <code>key_group</code> — the key's group; not <code>group</code>, a common scrape target label —, <code>root_group</code> — its top-level group —, <code>key_id</code>, <code>model</code>, <code>status</code>; <code>global.metrics.group_label</code> and <code>key_id_label</code> switch the first and third off to bound series), control-plane connection state (<code>kaiak_control_outage</code>, <code>kaiak_control_config_mismatch</code>), delivery metrics from the batch sender. Every series with config-bounded labels exists at 0 from startup; usage series appear with traffic.</li>
   <li><strong>Limit refusals</strong> carry <code>Retry-After</code> and rate-limit headers; <code>X-Request-Id</code> ties a response to its log line and usage record.</li>
 </ul>
 </section>
 
 <footer>
-  Overview only — the contracts are in <code>docs/specs/GATEWAY.md</code> and <code>docs/specs/CONTROL-PROTOCOL.md</code>, the package-level detail in <code>docs/ARCHITECTURE.md</code>, operations in <code>docs/DEPLOYMENT.md</code>. Written 2026-09-26 against 0.6.0; describes the group tree with the 2026-09-27 review's fixes (after 0.7.1), tiered prices (2026-09-29) and the cache-write unit (2026-10-02). Continue with <a href="control-plane.html">gateway ↔ control plane</a>.
+  Overview only — the contracts are in <code>docs/specs/GATEWAY.md</code> and <code>docs/specs/CONTROL-PROTOCOL.md</code>, the package-level detail in <code>docs/ARCHITECTURE.md</code>, operations in <code>docs/DEPLOYMENT.md</code>. Written 2026-09-26 against 0.6.0; describes the group tree with the 2026-09-27 review's fixes (after 0.7.1), tiered prices (2026-09-29), the cache-write unit (2026-10-02) and OTLP log export (2026-10-05). Continue with <a href="control-plane.html">gateway ↔ control plane</a>.
 </footer>
 </main>
 </body>

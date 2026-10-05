@@ -63,8 +63,8 @@ type family struct {
 	divisor float64
 	// buckets are a histogram's upper bounds, increasing; +Inf is implicit.
 	buckets []float64
-	// collect, when set, produces a gauge's samples at write time instead of stored
-	// series.
+	// collect, when set, produces a gauge's or counter's samples at write time
+	// instead of stored series.
 	collect func(emit func(value float64, labelValues ...string))
 
 	mu     sync.RWMutex
@@ -114,6 +114,13 @@ func (r *Registry) Gauge(name, help string, labels ...string) *GaugeVec {
 // once per series. It runs on the scraping goroutine and must not block.
 func (r *Registry) GaugeFunc(name, help string, labels []string, collect func(emit func(value float64, labelValues ...string))) {
 	r.register(&family{name: name, help: help, kind: kindGauge, labels: labels, collect: collect})
+}
+
+// CounterFunc registers a counter read from a count kept elsewhere at write time:
+// collect calls emit once per series. It runs on the scraping goroutine and must not
+// block; the counts it reads must never go back.
+func (r *Registry) CounterFunc(name, help string, labels []string, collect func(emit func(value float64, labelValues ...string))) {
+	r.register(&family{name: name, help: help, kind: kindCounter, labels: labels, divisor: 1, collect: collect})
 }
 
 // Histogram registers a histogram family with the given bucket upper bounds

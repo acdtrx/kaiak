@@ -213,15 +213,16 @@ func startGatewayIn(t *testing.T, dir string, env []string) *gateway {
 	return g
 }
 
-// startProcess starts kaiak with env (and none of the test process's KAIAK_
-// variables) in working directory dir ("": the test's), reading its log. The process
-// is killed at test cleanup if still running.
+// startProcess starts kaiak with env (and none of the test process's KAIAK_ or OTEL_
+// variables: an exporter endpoint set for the shell must not reach the gateways) in
+// working directory dir ("": the test's), reading its log. The process is killed at
+// test cleanup if still running.
 func startProcess(t *testing.T, dir string, env []string) *gateway {
 	t.Helper()
 	cmd := exec.Command(kaiakBin)
 	cmd.Dir = dir
 	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "KAIAK_") {
+		if !strings.HasPrefix(kv, "KAIAK_") && !strings.HasPrefix(kv, "OTEL_") {
 			cmd.Env = append(cmd.Env, kv)
 		}
 	}

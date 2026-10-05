@@ -29,6 +29,7 @@ flowchart LR
     cp -.->|backend verify: GETs,<br/>when the app calls it| be
     file[(Config file)] -.->|file mode| gw
     prom[Prometheus] -->|scrape admin port| gw
+    gw -.->|log lines, OTLP/HTTP JSON,<br/>when configured| otel[OpenTelemetry<br/>collector]
 ```
 
 - Client → gateway → backend is the only request path. The control plane feeds it
@@ -44,6 +45,10 @@ flowchart LR
   per-minute limits by the live-gateway count (`docs/specs/CONTROL-PROTOCOL.md`,
   Budgets).
 - Metrics and usage records are separate paths (`docs/kaiak.md`, principle 7).
+- Logs go to stderr always and, with an OTLP endpoint in the `OTEL_*` variables, to
+  an OpenTelemetry collector too — queued and sent in the background, never on the
+  request path, flushed at exit after usage (`docs/specs/GATEWAY.md`, Observability
+  → OTLP log export).
 
 ## Deployment shape
 
@@ -138,8 +143,8 @@ enforce the boundaries.
   money-limited models (no contact, or usage batches unanswered, past the grace), and
   the last applied totals kept in `state` across restarts. It knows nothing of the
   protocol: `cmd/kaiak` converts the client's totals updates and contact.
-- `metrics` — a small registry (counters, gauges, fixed-bucket histograms, gauges read
-  at scrape time) and its Prometheus text exposition, served on the admin port; the
+- `metrics` — a small registry (counters, gauges, fixed-bucket histograms, gauges and
+  counters read at scrape time) and its Prometheus text exposition, served on the admin port; the
   ops metrics the `server` pipeline feeds when a request is over; the usage-metrics
   sink on accounting's fan-out. The registry is built in `cmd/kaiak` and passed in.
 - `state` — the optional data directory and its files, each carrying a format
@@ -149,6 +154,14 @@ enforce the boundaries.
   logged or echoed in an error message; `server` and `auth` use it.
 - `logattr` — log attribute values in the units the log vocabulary fixes (a duration
   in seconds); every package that logs a duration uses it.
+- `otlplog` — OTLP log export: reads the `OTEL_*` settings, and its `slog` handler
+  hands every record to the stderr handler and queues a copy; one sender goroutine
+  posts the queue as OTLP/HTTP JSON batches with retries, dropping the newest when
+  full, and flushes on demand. It imports nothing of the gateway's but `clip`.
+  `cmd/kaiak` wraps the process logger with it when export is on, gives it a
+  stderr-only logger for its own problem reports (no feedback loop), reads its counts
+  into `metrics` (`kaiak_log_export_records_total`) and runs its final flush as the
+  process's last act.
 - `sse` — the server-sent events reader (WHATWG format): splits a stream into blocks
   with their raw bytes, data, event name and ID, bounded in size. The provider relays
   backend streams with it; `control` follows the config stream with it.

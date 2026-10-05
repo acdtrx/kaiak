@@ -148,4 +148,24 @@ code and tests together.
   exporter) shows the records with their attributes and resource.
 - `scripts/check-all.sh` green.
 
-**Verification status:** not started.
+**Verification status:** done (2026-10-05); phase 1 green.
+
+- [x] Unit: every variable and its fallback, malformed values, the protocol refusal;
+  every attribute kind and group; batching by size and time; retries, `Retry-After`;
+  drop-newest; a stalled collector never blocks; flush and close
+  (`STEP-3-exporter.md`).
+- [x] Wiring: settings read with the others (a malformed one fails the start, on
+  stderr); a start that fails once the exporter runs still exports its lines, the
+  cause included; the error line written once (`STEP-4-wiring-and-e2e.md`).
+- [x] Metric: `kaiak_log_export_records_total{outcome}` at 0 from startup when on,
+  absent when off, following the exporter's counts (`STEP-4-wiring-and-e2e.md`).
+- [x] e2e: every stderr line of a gateway's life — boot, a success, a `401`, a limit
+  refusal, the drain, `kaiak stopped` — reaches a fake collector with the same
+  message, level, time and attributes, under the resource; headers sent and never
+  logged; no export with no endpoint or with `OTEL_LOGS_EXPORTER=none`; a refused
+  batch counted failed and reported on stderr only; a stalled collector bounds the
+  exit (`STEP-4-wiring-and-e2e.md`).
+- [x] Live: an `otel/opentelemetry-collector:0.162.0` (OTLP/HTTP receiver, `debug`
+  exporter) shows the records with their typed attributes and resource
+  (`STEP-4-wiring-and-e2e.md`).
+- [x] `scripts/check-all.sh` green 3× in a row (`STEP-4-wiring-and-e2e.md`).

@@ -353,9 +353,14 @@ var version string
 
 // registerBuildInfo registers kaiak_build_info: the build's version and the Go version.
 func registerBuildInfo(reg *Registry) {
-	info, ok := debug.ReadBuildInfo()
 	reg.Gauge("kaiak_build_info", "Build information; the value is always 1.", "version", "go_version").
-		Set(1, buildVersion(version, info, ok), runtime.Version())
+		Set(1, Version(), runtime.Version())
+}
+
+// Version is the build version kaiak_build_info reports.
+func Version() string {
+	info, ok := debug.ReadBuildInfo()
+	return buildVersion(version, info, ok)
 }
 
 // buildVersion picks the version to report: the one stamped at link time, else the
