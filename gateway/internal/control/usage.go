@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"kaiak/internal/accounting"
+	"kaiak/internal/netfail"
 )
 
 // Usage delivery (CONTROL-PROTOCOL.md, Usage batches): settled records fill a batch;
@@ -457,7 +458,7 @@ func (u *usageSender) post(ctx context.Context, batch UsageBatch) (UsageAck, err
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxMessageBytes+1))
 	if err != nil {
-		return UsageAck{}, fmt.Errorf("read usage ack: %w", err)
+		return UsageAck{}, fmt.Errorf("read usage ack: %s", netfail.Class(err))
 	}
 	if len(data) > maxMessageBytes {
 		return UsageAck{}, fmt.Errorf("usage ack exceeds %d bytes", maxMessageBytes)

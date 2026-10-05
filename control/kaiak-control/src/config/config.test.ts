@@ -93,6 +93,17 @@ describe("invalid config fixtures", () => {
   }
 });
 
+// The 2026-10-05 review's H1: the gateway's log exporter reads its collector's
+// credentials and addresses from OTEL_ variables, so no backend may name one as its
+// key — its value would be sent to the backend's URL, which the config author chooses.
+test("a backend's api_key_env cannot name a gateway OTEL_ variable", () => {
+  const doc = readJson(path.join(VALID_DIR, "minimal.json")) as { backends: { local: Record<string, unknown> } };
+  for (const name of ["OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_LOGS_HEADERS", "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"]) {
+    doc.backends.local.api_key_env = name;
+    assert.equal(validateConfig(doc).ok, false, `accepted a backend referencing ${name}`);
+  }
+});
+
 describe("group tree rules", () => {
   // minimal.json (its key in group "me") with more groups.
   const withGroups = (groups: Record<string, { parent?: string }>): unknown => {

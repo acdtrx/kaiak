@@ -7,6 +7,7 @@ import (
 	"io"
 	"time"
 
+	"kaiak/internal/netfail"
 	"kaiak/internal/sse"
 )
 
@@ -74,8 +75,12 @@ func (c *Client) followStream(ctx context.Context) streamResult {
 			case errors.Is(err, io.EOF):
 			case errors.Is(cause, errIdle):
 				result.err = errIdle
-			default:
+			case errors.Is(err, sse.ErrTruncated), errors.Is(err, sse.ErrTooLarge):
 				result.err = fmt.Errorf("read config stream: %w", err)
+			default:
+				// The connection's failure, by its class: Go's text can quote what
+				// the answer sent (docs/specs/GATEWAY.md, Logs: no remote text).
+				result.err = fmt.Errorf("read config stream: %s", netfail.Class(err))
 			}
 			return result
 		}

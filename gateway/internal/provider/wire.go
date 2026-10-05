@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"kaiak/internal/config"
+	"kaiak/internal/netfail"
 	"kaiak/internal/sse"
 )
 
@@ -105,7 +106,7 @@ func sendWire(ctx context.Context, req *Request, call wireCall) (Response, error
 
 	resp, err := call.client.Do(upstream)
 	if err != nil {
-		return nil, fail(err)
+		return nil, fail(errors.New(netfail.Class(err)))
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		_ = resp.Body.Close() // the backend's refusal body is not relayed
@@ -185,7 +186,8 @@ const maxProbeBody = 1 << 20
 // module's credential), bounded by b's connect timeout plus probeReadTimeout, and
 // returns the answer's body when the status is 2xx. A 404 is a *PathMissingError
 // carrying pathHint, the module's word on what base_url should hold. The error may
-// name the backend's address, never the credential.
+// name the backend's address, never the credential nor text the backend sent: a
+// transport failure is named by its class (netfail).
 func fetchModelsList(ctx context.Context, b *config.Backend, client *http.Client, url string, header http.Header,
 	pathHint string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, b.ConnectTimeout+probeReadTimeout)
@@ -199,12 +201,12 @@ func fetchModelsList(ctx context.Context, b *config.Backend, client *http.Client
 	req.Header.Set("User-Agent", "kaiak")
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("backend %s: %w", b.ID, err)
+		return nil, fmt.Errorf("backend %s: %s", b.ID, netfail.Class(err))
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxProbeBody))
 	if err != nil {
-		return nil, fmt.Errorf("backend %s: read models list: %w", b.ID, err)
+		return nil, fmt.Errorf("backend %s: read models list: %s", b.ID, netfail.Class(err))
 	}
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, &PathMissingError{Backend: b.ID, URL: url, Hint: pathHint}
@@ -559,7 +561,7 @@ func (r *upstreamResponse) readEvent() (ev Event, data bool, err error) {
 	if r.stream {
 		block, err := r.events.Next()
 		if err != nil {
-			return Event{}, false, err
+			return Event{}, false, readFailure(err)
 		}
 		ev = Event{Data: block.Raw}
 		if block.HasData {
@@ -583,14 +585,27 @@ func (r *upstreamResponse) readEvent() (ev Event, data bool, err error) {
 			}
 			// A piece can be all backend model name, which is not emitted.
 			if len(piece) > 0 {
-				r.pending = err
+				r.pending = readFailure(err)
 				return Event{Data: piece}, true, nil
 			}
 		}
 		if err != nil {
-			return Event{}, false, err
+			return Event{}, false, readFailure(err)
 		}
 	}
+}
+
+// readFailure is a body read's error as the gateway words it: the end of the body
+// and the event stream's own failures (ended inside an event, a block past the size
+// limit) as they are; any other — the connection's — as its class (netfail). Go
+// builds some of those from the bytes the backend sent (a trailer line it cannot
+// parse is quoted whole), and the error reaches log lines (docs/specs/GATEWAY.md,
+// Logs: no remote text).
+func readFailure(err error) error {
+	if err == nil || err == io.EOF || errors.Is(err, sse.ErrTruncated) || errors.Is(err, sse.ErrTooLarge) {
+		return err
+	}
+	return errors.New(netfail.Class(err))
 }
 
 // succeeded reports whether the backend answered with a 2xx status. Completeness

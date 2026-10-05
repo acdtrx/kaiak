@@ -224,9 +224,9 @@ func (r *Registry) module(b *config.Backend) backendModule {
 }
 
 // credential is the gateway's credential for b; "" when it has none. A reserved
-// KAIAK_ name gives none either: the config schema refuses one, and this is the last
-// point before its value would leave for the backend's URL, which the config author
-// chooses.
+// KAIAK_ or OTEL_ name gives none either: the config schema refuses one, and this is
+// the last point before its value would leave for the backend's URL, which the config
+// author chooses.
 func (r *Registry) credential(b *config.Backend) string {
 	if b.APIKeyEnv == "" || config.IsReservedEnvName(b.APIKeyEnv) {
 		return ""
@@ -241,7 +241,7 @@ func (r *Registry) credential(b *config.Backend) string {
 // over b's connection pool, bounded by b's connect timeout plus probeReadTimeout. A
 // 2xx answer succeeds; serves reports whether a backend-side model name is served
 // there, as far as the backend's list says. The error may name the backend's address,
-// never the credential.
+// never the credential nor text the backend sent.
 func (r *Registry) Probe(ctx context.Context, b *config.Backend) (serves func(model string) bool, err error) {
 	return r.module(b).probe(ctx)
 }
@@ -316,7 +316,8 @@ var (
 
 // Errors a Response's Next returns, wrapped, when the response broke off after the
 // first event for a reason of the gateway's own reading (docs/specs/GATEWAY.md,
-// Providers: upstream failures and complete responses). Any other error is the connection's.
+// Providers: upstream failures and complete responses). Any other error is the
+// connection's, named by its class (netfail), or the event stream's (sse).
 var (
 	// ErrStalled: a stream was silent for the backend's stall timeout.
 	ErrStalled = errors.New("stream stalled")

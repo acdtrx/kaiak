@@ -10,7 +10,10 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
+
+	"kaiak/internal/netfail"
 )
 
 // Header names and the protocol version as it travels in the header
@@ -33,7 +36,7 @@ const maxMessageBytes = 16 << 20
 var errProtocolMismatch = errors.New("protocol version mismatch")
 
 // statusError is an answer other than the one the endpoint succeeds with, carrying
-// the protocol's error code when the body had one.
+// the protocol's error code when the body had one in the protocol's code shape.
 type statusError struct {
 	status int
 	code   string
@@ -87,14 +90,17 @@ func (c *Client) post(ctx context.Context, path, instance string, body []byte, w
 
 // send adds the token, the protocol version and the instance to req, sends it, and
 // refuses a redirect (not followed: defaultHTTPClient) and an answer that does not
-// carry the protocol version this gateway speaks.
+// carry the protocol version this gateway speaks. Its errors reach log lines, so they
+// carry nothing the answer sent (docs/specs/GATEWAY.md, Logs: no remote text): a
+// transport failure is named by its class — Go quotes a header line it cannot parse
+// whole — and a mismatched version by protocolSeen.
 func (c *Client) send(req *http.Request, instance string) (*http.Response, error) {
 	req.Header.Set("Authorization", "Bearer "+c.opts.Token)
 	req.Header.Set(headerProtocol, protocolHeaderValue)
 	req.Header.Set(headerInstance, instance)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, errors.New(netfail.Class(err))
 	}
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
 		resp.Body.Close()
@@ -103,19 +109,43 @@ func (c *Client) send(req *http.Request, instance string) (*http.Response, error
 	}
 	if got := resp.Header.Values(headerProtocol); len(got) != 1 || got[0] != protocolHeaderValue {
 		resp.Body.Close()
-		return nil, fmt.Errorf("%w: control plane answered %d with %s %q, gateway speaks %s",
-			errProtocolMismatch, resp.StatusCode, headerProtocol, got, protocolHeaderValue)
+		return nil, fmt.Errorf("%w: control plane answered %d %s, gateway speaks %s",
+			errProtocolMismatch, resp.StatusCode, protocolSeen(got), protocolHeaderValue)
 	}
 	return resp, nil
 }
 
-// errorCode reads the { error, detail? } body's code; "" when the body is not one.
+// protocolSeen says what a mismatched answer's Kaiak-Protocol values held: none,
+// something other than one integer, or the integer — never the value as received,
+// which can be anything (a URL answering with the bearer token in it).
+func protocolSeen(values []string) string {
+	if len(values) == 0 {
+		return "without " + headerProtocol
+	}
+	if n, err := strconv.Atoi(values[0]); len(values) == 1 && err == nil && strconv.Itoa(n) == values[0] {
+		return "with " + headerProtocol + " " + values[0]
+	}
+	return "with an invalid " + headerProtocol
+}
+
+// errorCodeShape is the protocol's error code shape (CONTROL-PROTOCOL.md, Shape:
+// errors), at most maxErrorCodeChars long.
+var errorCodeShape = regexp.MustCompile(`^[a-z]+(-[a-z]+)*$`)
+
+const maxErrorCodeChars = 64
+
+// errorCode reads the { error, detail? } body's code; "" when the body is not one or
+// the code is not in the protocol's code shape — an answer that is not the control
+// plane's own can carry anything there, and the code reaches log lines.
 func errorCode(body io.Reader) string {
 	var e struct {
 		Error string `json:"error"`
 	}
 	data, err := io.ReadAll(io.LimitReader(body, 64<<10))
 	if err != nil || json.Unmarshal(data, &e) != nil {
+		return ""
+	}
+	if len(e.Error) > maxErrorCodeChars || !errorCodeShape.MatchString(e.Error) {
 		return ""
 	}
 	return e.Error
@@ -131,7 +161,7 @@ func (c *Client) fetchSnapshot(ctx context.Context) (ConfigSnapshot, error) {
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxMessageBytes+1))
 	if err != nil {
-		return ConfigSnapshot{}, fmt.Errorf("read config snapshot: %w", err)
+		return ConfigSnapshot{}, fmt.Errorf("read config snapshot: %s", netfail.Class(err))
 	}
 	if len(data) > maxMessageBytes {
 		return ConfigSnapshot{}, fmt.Errorf("config snapshot exceeds %d bytes", maxMessageBytes)
@@ -153,7 +183,7 @@ func (c *Client) openStream(ctx context.Context, since configPosition) (*http.Re
 	}
 	if mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type")); mediaType != "text/event-stream" {
 		resp.Body.Close()
-		return nil, fmt.Errorf("open config stream: answer is %q, not text/event-stream", mediaType)
+		return nil, errors.New("open config stream: the answer is not text/event-stream")
 	}
 	return resp, nil
 }

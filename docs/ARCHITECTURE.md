@@ -157,7 +157,8 @@ enforce the boundaries.
 - `netfail` — names a failed exchange's class (timed out, connection refused, TLS
   failure, malformed response, …) in the gateway's own words, so a log line
   reporting a transport failure never carries the bytes Go quoted from the remote
-  party (`docs/specs/GATEWAY.md`, Logs: no remote text).
+  party (`docs/specs/GATEWAY.md`, Logs: no remote text); `provider`, `control` and
+  `otlplog` use it.
 - `otlplog` — OTLP log export: reads the `OTEL_*` settings, and its `slog` handler
   hands every record to the stderr handler and queues a copy; one sender goroutine
   posts the queue as OTLP/HTTP JSON batches with retries, dropping the newest when

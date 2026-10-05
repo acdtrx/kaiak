@@ -42,15 +42,25 @@ const (
 	maxLabelValueChars = 256
 )
 
-// reservedEnvPrefix may not start an api_key_env name: the gateway's own settings and
-// tokens (KAIAK_CONTROL_TOKEN, KAIAK_METRICS_TOKEN) live there, and a backend
-// credential is sent to the backend's URL — which the config author chooses.
-const reservedEnvPrefix = "KAIAK_"
+// reservedEnvPrefixes may not start an api_key_env name, mirroring the schema's
+// ^(KAIAK|OTEL)_: the gateway's own settings and tokens (KAIAK_CONTROL_TOKEN,
+// KAIAK_METRICS_TOKEN) and its log export's headers and endpoints (OTEL_EXPORTER_OTLP_*,
+// which can carry the collector's credentials) live there, and a backend credential
+// is sent to the backend's URL — which the config author chooses. The whole OTEL_
+// prefix, not a list of the variables read today.
+var reservedEnvPrefixes = []string{"KAIAK_", "OTEL_"}
 
 // IsReservedEnvName reports whether name is one of the gateway's own variables, which
 // no backend credential may name: the schema refuses it, and the provider reading the
 // credential refuses it again.
-func IsReservedEnvName(name string) bool { return strings.HasPrefix(name, reservedEnvPrefix) }
+func IsReservedEnvName(name string) bool {
+	for _, prefix := range reservedEnvPrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
 
 // reservedModelSuffix may not end a public model name: GET /v1/models/{id}/props would
 // take such a model's own path for its props endpoint.
@@ -182,7 +192,8 @@ func (c *schemaCheck) backend(v any, path string) {
 func (c *schemaCheck) apiKeyEnv(v any, path string) {
 	c.StringMatching(envNamePattern, "an environment variable name")(v, path)
 	if s, ok := v.(string); ok && IsReservedEnvName(s) {
-		c.Fail(path, "must not start with "+reservedEnvPrefix+": those variables hold the gateway's own settings and tokens")
+		c.Fail(path, "must not start with KAIAK_ or OTEL_: those variables hold the gateway's own settings and tokens "+
+			"and its log export's headers and endpoints")
 	}
 }
 

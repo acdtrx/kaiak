@@ -2,10 +2,12 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -412,6 +414,55 @@ func TestReservedVariablesAreNeverSentAsACredential(t *testing.T) {
 	}
 	if c := r.credential(b); c != "" {
 		t.Errorf("credential %q, want none", c)
+	}
+}
+
+// The 2026-10-05 review's H1: the log exporter's OTEL_ variables hold its collector
+// credentials (the headers) and addresses. A config naming one as a backend's
+// api_key_env is refused, and a backend naming one anyway — past a validation bug —
+// gets no credential: the value never reaches the backend the config author chose.
+func TestLogExportVariablesAreNeverSentAsACredential(t *testing.T) {
+	data, err := os.ReadFile("../../../protocol/fixtures/config/valid/minimal.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+		"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"} {
+		t.Run(name, func(t *testing.T) {
+			received := make(chan string, 1)
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				received <- r.Header.Get("Authorization")
+				io.WriteString(w, `{"data":[]}`)
+			}))
+			defer backend.Close()
+			var doc map[string]any
+			if err := json.Unmarshal(data, &doc); err != nil {
+				t.Fatal(err)
+			}
+			b := doc["backends"].(map[string]any)["local"].(map[string]any)
+			b["base_url"], b["api_key_env"] = backend.URL+"/v1", name
+			edited, err := json.Marshal(doc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lookup := func(key string) (string, bool) {
+				return "authorization=Bearer%20export-secret", key == name
+			}
+			if _, err := config.Check(edited, lookup); err == nil {
+				t.Errorf("a config naming %s as a backend's api_key_env was accepted", name)
+			}
+
+			r := NewRegistry(lookup)
+			defer r.Retain(nil)
+			sneaky := &config.Backend{ID: "local", Type: config.BackendOpenAICompatible, BaseURL: backend.URL + "/v1",
+				APIKeyEnv: name, ConnectTimeout: time.Second}
+			if _, err := r.Probe(context.Background(), sneaky); err != nil {
+				t.Fatal(err)
+			}
+			if got := <-received; got != "" {
+				t.Errorf("the probe sent %s to the backend as Authorization %q", name, got)
+			}
+		})
 	}
 }
 
