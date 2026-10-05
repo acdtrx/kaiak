@@ -105,17 +105,17 @@ func TestReservationSettlesToActualUsage(t *testing.T) {
 	if got := w.Header().Get("x-ratelimit-remaining-tokens"); got != strconv.Itoa(100000-8-256) {
 		t.Errorf("remaining tokens at admission %q, want the reservation of 8 + 256 taken", got)
 	}
-	// Settled: 60 uncached + 40 cached input + 10 output.
-	if got := counterUsed(t, g, "research", config.LimitTokensPerMinute); got != 110 {
-		t.Errorf("team tokens %d after settlement, want 110", got)
+	// Settled: 60 uncached input + 10 output; the 40 read from the cache do not count.
+	if got := counterUsed(t, g, "research", config.LimitTokensPerMinute); got != 70 {
+		t.Errorf("team tokens %d after settlement, want 70", got)
 	}
 
 	// An upstream failure settles with zero units: its reservation is released, and
 	// the request still counts.
 	w = do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey, body: `{"model":"down"}`})
 	expectError(t, w, http.StatusBadGateway, "upstream_unavailable")
-	if got := counterUsed(t, g, "research", config.LimitTokensPerMinute); got != 110 {
-		t.Errorf("team tokens %d after an upstream failure, want 110", got)
+	if got := counterUsed(t, g, "research", config.LimitTokensPerMinute); got != 70 {
+		t.Errorf("team tokens %d after an upstream failure, want 70", got)
 	}
 	if got := counterUsed(t, g, "research", config.LimitRequestsPerMinute); got != 2 {
 		t.Errorf("team requests %d, want 2", got)

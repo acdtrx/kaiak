@@ -83,7 +83,8 @@ func TestAcrossHalves(t *testing.T) {
 	}
 
 	// tokens holds what the gateways served since the sample's store began: every
-	// answer's tokens, which the sample's hourly token total must equal once counted.
+	// answer's tokens a token limit counts — its total less the input read from the
+	// cache — which the sample's hourly token total must equal once counted.
 	var tokens servedTokens
 	served := func(t *testing.T, what string, r *response) {
 		t.Helper()
@@ -91,14 +92,12 @@ func TestAcrossHalves(t *testing.T) {
 			t.Fatalf("%s: %d %s, want 200", what, r.StatusCode, r.body)
 		}
 		var body struct {
-			Usage struct {
-				Total int64 `json:"total_tokens"`
-			} `json:"usage"`
+			Usage answerUsage `json:"usage"`
 		}
 		if err := json.Unmarshal(r.body, &body); err != nil || body.Usage.Total <= 0 {
 			t.Fatalf("%s: no usage in %s (%v)", what, r.body, err)
 		}
-		tokens.add(body.Usage.Total)
+		tokens.add(body.Usage.limitTokens())
 	}
 	chat := func(t *testing.T, g *gateway, model string) *response {
 		t.Helper()
@@ -170,9 +169,9 @@ func TestAcrossHalves(t *testing.T) {
 		}
 	})
 
-	t.Run("input read from and written to the cache counts toward the token total", func(t *testing.T) {
-		// 2036 prompt tokens (3 plain, 1024 read, 1009 written) and 40 out: the
-		// answer's total_tokens, 2076, all counted toward the hourly token limit.
+	t.Run("input written to the cache counts toward the token total, input read from it not", func(t *testing.T) {
+		// 2036 prompt tokens (3 plain, 1024 read, 1009 written) and 40 out: of the
+		// answer's total_tokens, 2076, the hourly token limit counts 1052.
 		backend.SetReply(fakebackend.Reply{Usage: &fakebackend.Usage{
 			PromptTokens: 2036, CompletionTokens: 40, CachedTokens: 1024, CacheWriteTokens: 1009}})
 		defer backend.SetReply(fakebackend.Reply{})
@@ -259,14 +258,12 @@ func TestAcrossHalves(t *testing.T) {
 		close(pace)
 		evs := finishStream(t, stream)
 		var usage struct {
-			Usage struct {
-				Total int64 `json:"total_tokens"`
-			} `json:"usage"`
+			Usage answerUsage `json:"usage"`
 		}
 		if len(evs) < 2 || json.Unmarshal([]byte(evs[len(evs)-2]), &usage) != nil || usage.Usage.Total <= 0 {
 			t.Fatalf("held stream: no usage chunk in %q", evs)
 		}
-		tokens.add(usage.Usage.Total)
+		tokens.add(usage.Usage.limitTokens())
 		res := await(t, waiting)
 		served(t, "the queued request", &response{Response: &http.Response{StatusCode: res.status}, body: res.body})
 		// The queue ending sends a report too; the circuit stays open (no probe
@@ -651,6 +648,18 @@ func (w *totalsWatch) wait(t *testing.T, what string, limit time.Duration, match
 		}
 	}
 }
+
+// answerUsage is the part of an answer's usage a token limit reads.
+type answerUsage struct {
+	Total   int64 `json:"total_tokens"`
+	Details struct {
+		Cached int64 `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
+}
+
+// limitTokens is what a token limit counts of the answer: every token but the input
+// read from the cache (GATEWAY.md, Limits → Settle).
+func (u answerUsage) limitTokens() int64 { return u.Total - u.Details.Cached }
 
 // servedTokens are the tokens of the answers served, each with when it was received.
 // The sample's tokens_per_hour total covers one UTC hour, so a run crossing the top

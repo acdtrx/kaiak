@@ -186,6 +186,21 @@ Group entries under headings as themes emerge.
   stream, superseded by the final one (cumulative per request; the control plane counts
   the latest). Revisit trigger: budget overshoot from long streams shows up in practice.
   (ruled 2026-09-24: deferred from v1.)
+- **Fleet-wide per-minute token limits** — count per-minute token windows in the
+  control plane, as hour windows are, so a gateway enforces `pushed totals + its own
+  usage not yet counted` instead of `floor(limit ÷ live gateways)`: uneven traffic
+  across gateways stops costing a scope part of its limit (seen 2026-10-05: a 2M
+  limit refused at 1M on one of two gateways). Reuses the usage batches (sealed every
+  5 s) and the totals push (at most once a second); about 6 s behind. Drawbacks: the
+  limit becomes soft — at a window's start every gateway sees it empty, so cap each
+  gateway's not-yet-counted usage at its share; requests in flight are invisible to
+  other gateways, and a long generation counts all its tokens in the minute it ends
+  (a slow backend dumps minutes of output into one window — interim records, above,
+  are the companion fix); outage fallback to shares, and a protocol change on both
+  halves. Requests-per-minute limits stay shares (records carry no request count).
+  Revisit trigger: per-minute refusals keep showing one gateway's window full while
+  the others have room, after cache reads left the token count (2026-10-05). (ruled
+  2026-10-05: postponed — the user is weighing the end-of-stream dump.)
 
 - **Carry-over copy reads the claimer's pushed base** — in control-plane mode, when
   one dropped limit is taken over by several new limits (a model-set edit that splits

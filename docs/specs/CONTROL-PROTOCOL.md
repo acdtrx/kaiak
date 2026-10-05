@@ -283,7 +283,8 @@ the `{ error, detail }` body, `error` being the stable code:
   - `window_start` is the top of a UTC hour (`tokens_per_hour`) or the first of a UTC
     month at midnight (`usd_per_month`), by the control plane's clock.
   - `used` counts what the gateway counts against that limit: tokens as
-    `tokens_in + tokens_cached + tokens_cache_write + tokens_out`, USD in nano-USD.
+    `tokens_in + tokens_cache_write + tokens_out` (input read from the cache does not
+    count: `GATEWAY.md`, Limits → Settle), USD in nano-USD.
     It is a **string of decimal digits** (no leading zeros, at most 18 digits — below
     10^18 nano-USD, one billion dollars per window). A JSON number is exact in
     JavaScript only up to 2^53 nano-USD, about 9 million dollars, and a month of an
@@ -761,8 +762,9 @@ How the control plane takes `POST /v1/usage`, as `kaiak-control` implements it.
   published version) defines — the path as recorded, never re-derived. Within those
   scopes, every `tokens_per_hour` and `usd_per_month` limit whose model set covers
   the record's model adds
-  `tokens_in + tokens_cached + tokens_cache_write + tokens_out` (settled 2026-10-02:
-  written tokens count, as every token the backend handled does) or `cost_nano_usd`
+  `tokens_in + tokens_cache_write + tokens_out` (written tokens count, settled
+  2026-10-02; input read from the cache does not, settled 2026-10-05 — `GATEWAY.md`,
+  Limits → Settle) or `cost_nano_usd`
   to that limit's window for the record (Counted in its own window). A group's limits
   are its effective ones (`child_defaults` merged; Config → The group tree).
   Per-minute limits are not counted (they stay local to gateways).

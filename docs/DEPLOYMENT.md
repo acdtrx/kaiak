@@ -462,7 +462,10 @@ the document (a script, or the control plane) rather than editing it by hand.
   output limit — the client's `max_completion_tokens`/`max_tokens` up to the model's
   ceiling, else the model's default — times its sequences (`n`, `best_of`, a
   completion's prompts). The reservation stands until the request ends, then is
-  replaced by the tokens actually processed (cached input included). So a limit
+  replaced by the tokens actually processed — plain input, input written to the
+  cache and output; **input read from the cache does not count**, since a
+  prefix-cache hit costs the backend almost nothing (an agent resending a long
+  context every turn settles at its new tokens, not the whole context). So a limit
   counts what requests *might* use while they run: a workload keeping 20 requests
   open on a model with a 4096 default and 2000-token prompts holds about
   20 × (2000 + 4096) ≈ 122 000 tokens of reservations at once, though it may settle
@@ -482,9 +485,9 @@ the document (a script, or the control plane) rather than editing it by hand.
   full.
 - **vLLM: add `--enable-prompt-tokens-details`** to `vllm serve` for the cached-token
   count. Without it vLLM reports no `prompt_tokens_details`, so prefix-cache hits
-  count as ordinary input (`tokens_cached` 0 in usage and metrics) and a
-  `tokens_cached` price never applies. Token limits are unaffected (they count
-  cached input in full either way).
+  count as ordinary input (`tokens_cached` 0 in usage and metrics): a
+  `tokens_cached` price never applies, and token limits count the whole prompt,
+  cache hits included.
 - **Reliability defaults** worth knowing: 3 attempts (failover only: at most one
   per deployment of the model), a retry budget of 20% of a
   model's attempts per 10 s (at least 10), circuit open after 5 consecutive failures

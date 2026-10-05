@@ -500,10 +500,10 @@ func (l *Limiter) Reserve(s Subject, tokens int64) (*Reservation, *Rejection) {
 
 // Settle ends a reservation with the request's usage records on the counters it was
 // checked against: token reservations are replaced by the tokens the records
-// processed (input, input read from or written to the cache, and output — every token
-// counts), their cost is added to cost limits, and the request stays counted — once,
-// however many records it has (one per attempt that produced usage,
-// docs/specs/GATEWAY.md, Usage across attempts). A request that never produced a
+// processed (amountOf: input read from the cache does not count), their cost is
+// added to cost limits, and the request stays counted — once, however many records
+// it has (one per attempt that produced usage, docs/specs/GATEWAY.md, Usage across
+// attempts). A request that never produced a
 // record passes none; its token reservations are then released, and the request still
 // counts: it took a slot.
 // Settle runs once per reservation; counters dropped by a reload since are settled
@@ -550,15 +550,16 @@ func (l *Limiter) checkCountLocked(c *counter) {
 	}
 }
 
-// amountOf is what rec counts on a token or cost counter: its cost, or every token
-// the backend handled — tokens_in + tokens_cached + tokens_cache_write + tokens_out
-// (reasoning is inside tokens_out).
+// amountOf is what rec counts on a token or cost counter: its cost, or the tokens that
+// load the backend — tokens_in + tokens_cache_write + tokens_out (reasoning is inside
+// tokens_out). Input read from the cache does not count: a prefix-cache hit costs the
+// backend almost nothing.
 func amountOf(m Measure, rec accounting.UsageRecord) int64 {
 	if m == MeasureCost {
 		return rec.CostNanoUSD
 	}
 	var tokens int64
-	for _, unit := range []config.Unit{config.UnitTokensIn, config.UnitTokensCached, config.UnitTokensCacheWrite, config.UnitTokensOut} {
+	for _, unit := range []config.Unit{config.UnitTokensIn, config.UnitTokensCacheWrite, config.UnitTokensOut} {
 		tokens = saturatingAdd(tokens, rec.Units[unit])
 	}
 	return tokens

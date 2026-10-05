@@ -1015,10 +1015,16 @@ own, and a client sending repeats is broken either way.
   The limits themselves are the live config's, as everywhere.
 - **Settle** (settled 2026-09-24), once the request is over, on the counters it was
   checked against: token reservations are replaced by the actual tokens processed —
-  `tokens_in + tokens_cached + tokens_cache_write + tokens_out` (input read from or
-  written to the cache counts: every token the backend handled — written tokens
-  settled 2026-10-02, since leaving them out would take them out of the token
-  limits; reasoning is inside `tokens_out`); the record's cost is added to
+  `tokens_in + tokens_cache_write + tokens_out` (written tokens settled 2026-10-02,
+  since leaving them out would take them out of the token limits; reasoning is
+  inside `tokens_out`). **Input read from the cache does not count** (settled
+  2026-10-05): a token limit measures backend load, and a prefix-cache hit costs the
+  backend almost nothing — an agent resending a long context every turn spent its
+  whole per-minute limit on input the backend barely touched. Cache reads stay in
+  the record and are priced; the reservation still holds the full input estimate,
+  since what will be cached is unknown until the backend answers. Rejected: counting
+  every token the backend handled (OpenAI's rule for its per-minute limits). The
+  record's cost is added to
   USD counters; the request stays counted, whatever its outcome — a request that
   failed upstream or was dropped still took a slot. A request with zero units (no
   backend answer, backend error status) releases its token reservation. A reservation

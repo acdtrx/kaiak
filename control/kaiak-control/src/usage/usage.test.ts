@@ -138,7 +138,8 @@ describe("aggregation", () => {
     const { usage, store } = await harness();
     const records = [
       // global's USD limit covers only the gpt models; research's USD limit all;
-      // eval-pipeline's hour limit only qwen3-32b.
+      // eval-pipeline's hour limit only qwen3-32b. Token limits leave out input read
+      // from the cache (eval-pipeline's 100, alice's 1024).
       record(EVAL, "qwen3-32b", [800, 100, 0, 300, 0], 5_000),
       record(EVAL, "gpt-4.1", [1000, 0, 0, 500, 0], 7_000_000),
       // Group support has no limits; support-bot's per-minute limits are not counted.
@@ -165,7 +166,7 @@ describe("aggregation", () => {
       windows: [
         { type: "usd_per_month", models: ["gpt-4.1", "gpt-4.1-mini"], window_start: SEPTEMBER, used: "8527000" },
         { group: "research", type: "usd_per_month", window_start: SEPTEMBER, used: "7005003" },
-        { group: "eval-pipeline", type: "tokens_per_hour", models: ["qwen3-32b"], window_start: HOUR_10, used: "1200" },
+        { group: "eval-pipeline", type: "tokens_per_hour", models: ["qwen3-32b"], window_start: HOUR_10, used: "1100" },
         {
           group: "eval-pipeline",
           type: "usd_per_month",
@@ -174,7 +175,7 @@ describe("aggregation", () => {
           used: "7000000",
         },
         { group: "support-bot", type: "usd_per_month", window_start: SEPTEMBER, used: "2000" },
-        { group: "alice", type: "tokens_per_hour", window_start: HOUR_10, used: "3449" },
+        { group: "alice", type: "tokens_per_hour", window_start: HOUR_10, used: "2425" },
         { group: "alice", type: "usd_per_month", window_start: SEPTEMBER, used: "1524000" },
         { group: "bob", type: "tokens_per_hour", window_start: HOUR_10, used: "150" },
         { group: "bob", type: "tokens_per_hour", models: ["qwen3-32b"], window_start: HOUR_10, used: "150" },
@@ -183,12 +184,12 @@ describe("aggregation", () => {
     assert.deepEqual(intake.ack, { batch: { instance: INSTANCE, epoch: EPOCH_A, sequence: 1 }, totals });
   });
 
-  test("input written to the cache counts toward a token limit beside the other input and the output", async () => {
+  test("a token limit counts plain input, input written to the cache and output — not input read from it", async () => {
     const { usage } = await harness();
     // 3 plain, 1024 read, 1009 written, 40 out (12 of them reasoning, already inside).
     const written = record(["users", "carol"], "gpt-4.1-mini", [3, 1024, 1009, 40, 12], 1);
     acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [written])));
-    assert.equal(await carolHourUsed(usage), "2076");
+    assert.equal(await carolHourUsed(usage), "1052"); // 3 + 1009 + 40
   });
 
   test("a deep path counts toward every listed group with limits, and global", async () => {

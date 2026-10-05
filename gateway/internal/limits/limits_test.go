@@ -263,18 +263,19 @@ func TestSettlementReplacesReservationsWithActuals(t *testing.T) {
 	}
 
 	// Success: the reservation (input estimate + output limit) becomes the actual
-	// tokens processed — input, cached and output; reasoning is inside output.
+	// tokens processed — input and output, not the 50 read from the cache; reasoning is
+	// inside output.
 	res := admitN(t, l, workload, 1, 5000)[0]
 	if m, h := tokens(); m != 5000 || h != 5000 {
 		t.Fatalf("reserved %d/%d, want 5000", m, h)
 	}
 	c.advance(3 * time.Second)
 	l.Settle(res, record(100, 50, 0, 30, 10, 0))
-	if m, h := tokens(); m != 180 || h != 180 {
-		t.Errorf("after settling %d/%d tokens, want 180", m, h)
+	if m, h := tokens(); m != 130 || h != 130 {
+		t.Errorf("after settling %d/%d tokens, want 130", m, h)
 	}
 	l.Settle(res, record(100, 50, 0, 30, 10, 0)) // a second settle changes nothing
-	if m, _ := tokens(); m != 180 {
+	if m, _ := tokens(); m != 130 {
 		t.Errorf("settling twice counted again: %d", m)
 	}
 
@@ -285,17 +286,17 @@ func TestSettlementReplacesReservationsWithActuals(t *testing.T) {
 	// No record at all (refused downstream before accounting): same.
 	res = admitN(t, l, workload, 1, 5000)[0]
 	l.Settle(res)
-	if m, h := tokens(); m != 180 || h != 180 {
-		t.Errorf("tokens %d/%d after released reservations, want 180", m, h)
+	if m, h := tokens(); m != 130 || h != 130 {
+		t.Errorf("tokens %d/%d after released reservations, want 130", m, h)
 	}
 	if got := used(t, l, "w", config.LimitRequestsPerMinute); got != 3 {
 		t.Errorf("requests %d, want 3: failed requests still took a slot", got)
 	}
 }
 
-// Input written to the cache is input the backend handled: it counts toward the token
-// limits beside plain input, cached input and output.
-func TestSettlementCountsInputWrittenToTheCache(t *testing.T) {
+// Token limits count the tokens that load the backend: plain input, input written to
+// the cache and output. Input read from the cache does not count.
+func TestSettlementCountsInputWrittenToTheCacheNotReadFromIt(t *testing.T) {
 	c := newClock("2026-09-24T10:00:00Z")
 	l := c.limiter(holderOf(snapshot(t, limitsDoc{workload: `[
     { "type": "tokens_per_minute", "value": 100000 },
@@ -303,8 +304,8 @@ func TestSettlementCountsInputWrittenToTheCache(t *testing.T) {
 	res := admitN(t, l, workload, 1, 5000)[0]
 	l.Settle(res, record(3, 1024, 1009, 40, 12, 0))
 	for _, typ := range []config.LimitType{config.LimitTokensPerMinute, config.LimitTokensPerHour} {
-		if got := used(t, l, "w", typ); got != 2076 {
-			t.Errorf("%s used %d, want 2076 (3 + 1024 + 1009 + 40)", typ, got)
+		if got := used(t, l, "w", typ); got != 1052 {
+			t.Errorf("%s used %d, want 1052 (3 + 1009 written + 40; the 1024 read do not count)", typ, got)
 		}
 	}
 }
@@ -319,8 +320,8 @@ func TestSettlementSumsTheRequestsRecords(t *testing.T) {
 	// with the tokens and cost of both.
 	res := admitN(t, l, workload, 1, 5000)[0]
 	l.Settle(res, record(25, 0, 0, 0, 0, 100), record(20, 5, 0, 30, 0, 700))
-	if got := used(t, l, "w", config.LimitTokensPerMinute); got != 80 {
-		t.Errorf("tokens %d, want 80 (25 + 20 + 5 + 30)", got)
+	if got := used(t, l, "w", config.LimitTokensPerMinute); got != 75 {
+		t.Errorf("tokens %d, want 75 (25 + 20 + 30; the 5 read from the cache do not count)", got)
 	}
 	if got := used(t, l, "w", config.LimitUSDPerMonth); got != 800 {
 		t.Errorf("cost %d nano-USD, want 800", got)
@@ -546,7 +547,7 @@ func TestSnapshotRoundTrip(t *testing.T) {
 	res := admitN(t, l, workload, 2, 1000)
 	l.Settle(res[0], record(100, 0, 0, 20, 0, 7000))
 	l.Settle(res[1], record(10, 0, 0, 5, 0, 500))
-	l.Settle(admitN(t, l, ann, 1, 1000)[0], record(40, 2, 0, 0, 0, 0))
+	l.Settle(admitN(t, l, ann, 1, 1000)[0], record(42, 0, 0, 0, 0, 0))
 	admitN(t, l, workload, 1, 999) // in flight at save time: not saved
 	n, err := l.SaveSnapshot(dir)
 	if err != nil || n != 3 {
@@ -787,8 +788,8 @@ func TestSettlementReachesAncestorsOfADeletedGroup(t *testing.T) {
 			c.advance(time.Second)
 			l.Settle(res, inGeneration(1, record(100, 50, 0, 30, 0, 0)))
 			for _, group := range []string{"team", "env"} {
-				if got := used(t, l, group, config.LimitTokensPerHour); got != 180 {
-					t.Errorf("%s tokens %d, want the 180 settled", group, got)
+				if got := used(t, l, group, config.LimitTokensPerHour); got != 130 {
+					t.Errorf("%s tokens %d, want the 130 settled", group, got)
 				}
 			}
 		})
