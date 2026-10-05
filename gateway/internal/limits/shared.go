@@ -104,9 +104,9 @@ func (l *Limiter) warnSmallSharesLocked() {
 				continue
 			}
 			l.logger.Warn("per-minute share below the model's default output: a request at the default is admitted only while this gateway's window is empty",
-				"kaiak.limit.scope", c.key.scope(), "kaiak.limit.group", c.key.group, "kaiak.model.name", name,
-				"kaiak.limit.configured", effectiveLimit(c.limit), "kaiak.limit.live_gateways", l.live,
-				"kaiak.limit.enforced", c.w.limit, "kaiak.model.output_default", m.OutputLimit.Default)
+				append(identityAttrs(c.key.group), "kaiak.model.name", name,
+					"kaiak.limit.configured", effectiveLimit(c.limit), "kaiak.limit.live_gateways", l.live,
+					"kaiak.limit.enforced", c.w.limit, "kaiak.model.output_default", m.OutputLimit.Default)...)
 		}
 	}
 }
@@ -153,9 +153,8 @@ func (l *Limiter) warnAheadLocked(w PushedWindow, now time.Time) {
 		return
 	}
 	l.aheadWarned = w.Start
-	l.logger.Warn("pushed window ahead of the gateway's clock", "kaiak.limit.scope", scopeOf(w.Group),
-		"kaiak.limit.group", w.Group, "kaiak.limit.type", w.Type,
-		"kaiak.limit.window_start", w.Start.UTC(), "kaiak.gateway_time", now.UTC())
+	l.logger.Warn("pushed window ahead of the gateway's clock", append(identityAttrs(w.Group),
+		"kaiak.limit.type", w.Type, "kaiak.limit.window_start", w.Start.UTC(), "kaiak.gateway_time", now.UTC())...)
 }
 
 // retireCountedLocked drops the generations shown counted from the counters' own

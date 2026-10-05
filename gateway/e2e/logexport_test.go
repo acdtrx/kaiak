@@ -413,7 +413,7 @@ func TestLogExport(t *testing.T) {
 			"http.response.status_code": 401.0, "kaiak.auth.failure": "missing_key", "error.type": "missing_api_key"}},
 		{"the limit refusal", msg("request", "kaiak.request.id", "otlp-rpm-2"), map[string]any{
 			"http.response.status_code": 429.0, "error.type": "rate_limit_exceeded", "kaiak.limit.type": "requests_per_minute",
-			"kaiak.limit.id": "eval", "kaiak.limit.configured": 2.0}},
+			"kaiak.limit.group": "eval", "kaiak.limit.configured": 2.0}},
 		{"kaiak stopped", msg("kaiak stopped"), nil},
 	} {
 		r := find(c.match)

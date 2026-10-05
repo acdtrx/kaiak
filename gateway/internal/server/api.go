@@ -162,11 +162,13 @@ func (a *API) begin(w http.ResponseWriter, r *http.Request) *request {
 func (a *API) logRequest(rq *request) {
 	attrs := []slog.Attr{slog.String("kaiak.request.id", rq.id)}
 	attrs = append(attrs, methodAttrs(rq.r.Method)...)
-	attrs = append(attrs,
-		slog.String("url.path", clip.String(rq.r.URL.Path)),
-		slog.Int("http.response.status_code", rq.w.status),
-		logattr.SecondsMicro("kaiak.request.duration", time.Since(rq.start)),
-	)
+	attrs = append(attrs, slog.String("url.path", clip.String(rq.r.URL.Path)))
+	// No status for a client that left before any answer: none was sent. Its 499 is
+	// the request metric's alone (docs/specs/GATEWAY.md, Observability → Logs).
+	if rq.failure == nil || rq.failure.code != codeClientClosed {
+		attrs = append(attrs, slog.Int("http.response.status_code", rq.w.status))
+	}
+	attrs = append(attrs, logattr.SecondsMicro("kaiak.request.duration", time.Since(rq.start)))
 	if rq.keyID != "" {
 		attrs = append(attrs, slog.String("kaiak.key.id", rq.keyID))
 	}
@@ -280,25 +282,19 @@ func providerName(t config.BackendType) string {
 }
 
 // limitAttrs are a limit refusal's log fields: the limit's kind of scope (global or
-// group), its group's ID ("global" for a global limit), its type, the value enforced (a per-minute limit's
-// share among the live gateways) and the value configured, what the window had used
-// (unknown for a budget refused as unavailable) and, for a token limit, what the
-// request asked for. Counts are in the limit's unit; USD limits are in dollars, as
-// kaiak.usage.cost_usd.
+// group), its group's ID (absent for a global limit), its type, the value enforced (a
+// per-minute limit's share among the live gateways) and the value configured, what the
+// window had used (unknown for a budget refused as unavailable) and, for a token
+// limit, what the request asked for. Counts are in the limit's unit; USD limits are in
+// dollars, as kaiak.usage.cost_usd (limits.LogValue).
 func limitAttrs(rej *limits.Rejection) []slog.Attr {
-	id := rej.ID
-	if rej.Scope == limits.ScopeGlobal {
-		id = "global"
+	value := func(key string, v int64) slog.Attr { return slog.Any(key, limits.LogValue(rej.Measure, v)) }
+	attrs := []slog.Attr{slog.String("kaiak.limit.scope", string(rej.Scope))}
+	if rej.Group != "" {
+		attrs = append(attrs, slog.String("kaiak.limit.group", rej.Group))
 	}
-	value := func(key string, v int64) slog.Attr {
-		if rej.Measure == limits.MeasureCost {
-			return slog.Float64(key, float64(v)/1e9)
-		}
-		return slog.Int64(key, v)
-	}
-	attrs := []slog.Attr{slog.String("kaiak.limit.scope", string(rej.Scope)), slog.String("kaiak.limit.id", id),
-		slog.String("kaiak.limit.type", string(rej.Type)), value("kaiak.limit.enforced", rej.Limit),
-		value("kaiak.limit.configured", rej.Max)}
+	attrs = append(attrs, slog.String("kaiak.limit.type", string(rej.Type)), value("kaiak.limit.enforced", rej.Limit),
+		value("kaiak.limit.configured", rej.Max))
 	if rej.Unavailable {
 		return attrs
 	}

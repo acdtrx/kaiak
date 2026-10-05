@@ -459,7 +459,7 @@ func TestRetryQueuesForACappedBackend(t *testing.T) {
 		cancelHolder()
 		srv.Close()
 		line := logLine(t, g, "r")
-		if !strings.Contains(line, `"http.response.status_code":499`) || !strings.Contains(line, `"error.type":"client_closed"`) ||
+		if strings.Contains(line, `"http.response.status_code"`) || !strings.Contains(line, `"error.type":"client_closed"`) ||
 			!strings.Contains(line, `"kaiak.attempts":1,`) {
 			t.Errorf("log line: %s", line)
 		}

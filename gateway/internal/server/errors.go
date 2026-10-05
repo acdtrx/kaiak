@@ -164,12 +164,16 @@ func errReadBody() *apiError {
 		message: "The request body could not be read."}
 }
 
-// statusClientClosed is the status logged when the client left before any answer was
-// written (nginx's convention). The client never receives it.
+// statusClientClosed is the status the request metric records when the client left
+// before any answer was written (nginx's convention). The client never receives it,
+// and the request line carries no status for it.
 const statusClientClosed = 499
 
+// codeClientClosed is the error code of a client that left before any answer.
+const codeClientClosed = "client_closed"
+
 func errClientClosed() *apiError {
-	return &apiError{status: statusClientClosed, errType: typeInvalidRequest, code: "client_closed",
+	return &apiError{status: statusClientClosed, errType: typeInvalidRequest, code: codeClientClosed,
 		message: "The client closed the request."}
 }
 

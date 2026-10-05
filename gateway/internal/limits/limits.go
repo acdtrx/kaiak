@@ -332,15 +332,33 @@ func (l *Limiter) carryOver(k counterKey, predecessors []*counter, claimed map[*
 		level = slog.LevelWarn
 	}
 	l.logger.Log(context.Background(), level, "limit keeps its usage across a model-set change",
-		"kaiak.limit.scope", k.scope(), "kaiak.limit.group", k.group, "kaiak.limit.type", k.typ,
-		"kaiak.limit.models", modelsAttr(k.models), "kaiak.limit.from_models", modelsAttr(best.key.models),
-		"kaiak.limit.predecessors", len(predecessors), "kaiak.limit.used", bestUsed)
+		append(identityAttrs(k.group), "kaiak.limit.type", k.typ,
+			"kaiak.limit.models", modelsAttr(k.models), "kaiak.limit.from_models", modelsAttr(best.key.models),
+			"kaiak.limit.predecessors", len(predecessors), "kaiak.limit.used", LogValue(measure, bestUsed))...)
 	if !claimed[best] {
 		claimed[best] = true
 		best.key = k
 		return best
 	}
 	return &counter{key: k, measure: measure, w: best.w.copySettled(now)}
+}
+
+// identityAttrs are a limit's scope and group log fields: the group is absent for a
+// global limit, whose scope says global (docs/specs/GATEWAY.md, Observability → Logs).
+func identityAttrs(group string) []any {
+	if group == "" {
+		return []any{"kaiak.limit.scope", ScopeGlobal}
+	}
+	return []any{"kaiak.limit.scope", ScopeGroup, "kaiak.limit.group", group}
+}
+
+// LogValue is an amount in a limit's unit as the logs write it: requests and tokens as
+// they are, nano-USD in dollars, as kaiak.usage.cost_usd.
+func LogValue(m Measure, v int64) any {
+	if m == MeasureCost {
+		return float64(v) / 1e9
+	}
+	return v
 }
 
 // modelsAttr writes a counter key's model set for the log: "*" for all models.
@@ -381,6 +399,31 @@ func (c *counter) admits(now time.Time, need int64) bool {
 		return true
 	}
 	return c.w.kind == SlidingMinute && need > c.w.limit && need <= effectiveLimit(c.limit) && c.w.usedAt(now) == 0
+}
+
+// inFlightRetry is what a token limit blocked only by requests still running counts
+// toward Retry-After, and its x-ratelimit-reset-tokens on that refusal
+// (docs/specs/GATEWAY.md, Limits → Refusal): a reservation holds the input estimate
+// plus the output limit, a request settles at a fraction of it, and when the running
+// requests end is unknown — a short guess, not a promise.
+const inFlightRetry = 2 * time.Second
+
+// blockedByRunning reports whether c, refusing need at now, would admit it were its
+// in-flight reservations gone — a token limit only: a request limit keeps counting the
+// request once it settles.
+func (c *counter) blockedByRunning(now time.Time, need int64) bool {
+	if c.measure != MeasureTokens {
+		return false
+	}
+	held := c.w.inFlight(now)
+	if held == 0 {
+		return false
+	}
+	settled := c.w.usedAt(now) - held
+	if fits(settled, need, c.w.limit) {
+		return true
+	}
+	return c.w.kind == SlidingMinute && need > c.w.limit && need <= effectiveLimit(c.limit) && settled == 0
 }
 
 // share is a per-minute limit's share among live gateways: rounded down, never below
@@ -468,26 +511,34 @@ func (l *Limiter) Reserve(s Subject, tokens int64) (*Reservation, *Rejection) {
 	if l.outageLocked(now) || l.noTotalsLocked() || l.mismatchPastGraceLocked(now) {
 		for _, c := range counters {
 			if c.measure == MeasureCost {
-				return nil, &Rejection{Scope: c.key.scope(), ID: c.key.group, Type: c.limit.Type, Measure: c.measure,
+				return nil, &Rejection{Scope: c.key.scope(), Group: c.key.group, Type: c.limit.Type, Measure: c.measure,
 					Limit: c.w.limit, Max: effectiveLimit(c.limit), Unavailable: true}
 			}
 		}
 	}
 
 	var rej *Rejection
+	// running are the refusing counters blocked only by requests still running.
+	var running []*counter
 	for _, c := range counters {
 		n := need(c, tokens)
 		if c.admits(now, n) {
 			continue
 		}
-		wait := c.w.waitFor(now, n)
+		var wait time.Duration
+		if c.blockedByRunning(now, n) {
+			wait = inFlightRetry
+			running = append(running, c)
+		} else {
+			wait = c.w.waitFor(now, n)
+		}
 		if rej == nil || wait > rej.RetryAfter {
-			rej = &Rejection{Scope: c.key.scope(), ID: c.key.group, Type: c.limit.Type, Measure: c.measure, Limit: c.w.limit,
+			rej = &Rejection{Scope: c.key.scope(), Group: c.key.group, Type: c.limit.Type, Measure: c.measure, Limit: c.w.limit,
 				Max: effectiveLimit(c.limit), Used: c.w.usedAt(now), Requested: n, RetryAfter: wait}
 		}
 	}
 	if rej != nil {
-		rej.Headers = headersFor(counters, now)
+		rej.Headers = headersFor(counters, now, running)
 		return nil, rej
 	}
 
@@ -495,7 +546,7 @@ func (l *Limiter) Reserve(s Subject, tokens int64) (*Reservation, *Rejection) {
 	for _, c := range counters {
 		res.holds = append(res.holds, heldCounter{c: c, h: c.w.reserve(now, need(c, tokens))})
 	}
-	res.headers = headersFor(counters, now)
+	res.headers = headersFor(counters, now, nil)
 	return res, nil
 }
 
@@ -546,8 +597,8 @@ func (l *Limiter) Settle(r *Reservation, recs ...accounting.UsageRecord) {
 // Callers hold l.mu.
 func (l *Limiter) checkCountLocked(c *counter) {
 	if c.w.clampNegative() {
-		l.logger.Error("limit counter went negative: clamped to 0", "kaiak.limit.scope", c.key.scope(),
-			"kaiak.limit.group", c.key.group, "kaiak.limit.type", c.key.typ, "kaiak.limit.models", modelsAttr(c.key.models))
+		l.logger.Error("limit counter went negative: clamped to 0", append(identityAttrs(c.key.group),
+			"kaiak.limit.type", c.key.typ, "kaiak.limit.models", modelsAttr(c.key.models))...)
 	}
 }
 

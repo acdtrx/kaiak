@@ -104,7 +104,7 @@ func TestGroupTreeEndToEnd(t *testing.T) {
 			t.Errorf("refusal %s: want \"group limit\" with no group ID or label", body)
 		}
 		line := g.settled(t, id)
-		for field, want := range map[string]any{"kaiak.limit.scope": "group", "kaiak.limit.id": limitID, "kaiak.key.group": group} {
+		for field, want := range map[string]any{"kaiak.limit.scope": "group", "kaiak.limit.group": limitID, "kaiak.key.group": group} {
 			if line[field] != want {
 				t.Errorf("log line %s = %v, want %v", field, line[field], want)
 			}

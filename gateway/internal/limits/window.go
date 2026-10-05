@@ -27,7 +27,9 @@ const minuteBuckets = 60
 //
 // Reservations are counted where they are made; settling releases a reservation (if
 // its bucket or window is still current) and counts the actual amount at the settle
-// time, so every amount is counted in exactly one bucket.
+// time, so every amount is counted in exactly one bucket. Every window also keeps the
+// part of its count still held by unsettled reservations apart (inFlight): a refusal
+// blocked only by requests still running answers a short retry.
 //
 // A shared window is an hour or month window in control-plane mode: what it counts
 // is the control plane's pushed total for the window plus this gateway's own usage
@@ -39,9 +41,11 @@ type window struct {
 	// control-plane mode a per-minute window's share.
 	limit int64
 
-	// SlidingMinute: bucket i holds the amount counted during unix second sec[i].
-	sec [minuteBuckets]int64
-	n   [minuteBuckets]int64
+	// SlidingMinute: bucket i holds the amount counted during unix second sec[i], and
+	// nHeld[i] the part of that still held by unsettled reservations.
+	sec   [minuteBuckets]int64
+	n     [minuteBuckets]int64
+	nHeld [minuteBuckets]int64
 
 	// UTCHour, UTCMonth: the current window's start (unix seconds), everything counted
 	// in it, and the part of that still held by unsettled reservations. incarnation
@@ -208,10 +212,13 @@ func (w *window) add(now time.Time, amount int64, held bool, generation uint64) 
 	s := now.Unix()
 	i := s % minuteBuckets
 	if w.sec[i] != s {
-		w.sec[i], w.n[i] = s, 0
+		w.sec[i], w.n[i], w.nHeld[i] = s, 0, 0
 	}
 	amount = saturatingAdd(w.n[i], amount) - w.n[i]
 	w.n[i] += amount
+	if held {
+		w.nHeld[i] += amount
+	}
 	return hold{at: s, n: amount}
 }
 
@@ -234,12 +241,16 @@ func (w *window) release(now time.Time, h hold) {
 	i := h.at % minuteBuckets
 	if w.sec[i] == h.at {
 		w.n[i] -= h.n
+		w.nHeld[i] -= h.n
 	}
 }
 
 // keep turns a reservation into settled usage where it was counted.
 func (w *window) keep(now time.Time, h hold) {
 	if w.kind == SlidingMinute {
+		if i := h.at % minuteBuckets; w.sec[i] == h.at {
+			w.nHeld[i] -= h.n
+		}
 		return
 	}
 	w.roll(now)
@@ -297,8 +308,8 @@ func (w *window) clampNegative() bool {
 	negative := w.used < 0 || w.held < 0
 	w.used, w.held = max(w.used, 0), max(w.held, 0)
 	for i := range w.n {
-		negative = negative || w.n[i] < 0
-		w.n[i] = max(w.n[i], 0)
+		negative = negative || w.n[i] < 0 || w.nHeld[i] < 0
+		w.n[i], w.nHeld[i] = max(w.n[i], 0), max(w.nHeld[i], 0)
 	}
 	return negative
 }
@@ -331,6 +342,22 @@ func (w *window) waitFor(now time.Time, need int64) time.Duration {
 		}
 	}
 	return wait
+}
+
+// inFlight is the part of the window's count at now still held by unsettled
+// reservations.
+func (w *window) inFlight(now time.Time) int64 {
+	if w.kind != SlidingMinute {
+		w.roll(now)
+		return w.held
+	}
+	var sum int64
+	for i := range minuteBuckets {
+		if live(w.sec[i], now) {
+			sum = saturatingAdd(sum, w.nHeld[i])
+		}
+	}
+	return sum
 }
 
 // resetIn is how long until the window holds nothing: the x-ratelimit-reset-* value.
@@ -377,5 +404,9 @@ func (w *window) copySettled(now time.Time) *window {
 	c.local = slices.Clone(w.local)
 	c.used -= c.held
 	c.held = 0
+	for i := range c.n {
+		c.n[i] -= c.nHeld[i]
+		c.nHeld[i] = 0
+	}
 	return &c
 }

@@ -71,7 +71,7 @@ func TestSharedWindowsCountPushedTotalsPlusOwnUsage(t *testing.T) {
 
 	// 600 pushed + a 300 reservation fits 1000; another 200 does not.
 	res := admitN(t, l, workload, 1, 300)[0]
-	if rej := refused(t, l, workload, 200); rej.ID != "w" || rej.Used != 900 || rej.Limit != 1000 {
+	if rej := refused(t, l, workload, 200); rej.Group != "w" || rej.Used != 900 || rej.Limit != 1000 {
 		t.Errorf("rejection %+v, want the workload hour limit at 900 of 1000", rej)
 	}
 	// Settled at 50 tokens and 0.1 USD: the team's money is spent (0.9 pushed + 0.1).
@@ -79,7 +79,7 @@ func TestSharedWindowsCountPushedTotalsPlusOwnUsage(t *testing.T) {
 	if got := used(t, l, "w", config.LimitTokensPerHour); got != 650 {
 		t.Errorf("hour used %d, want 600 pushed + 50 own", got)
 	}
-	if rej := refused(t, l, workload, 10); rej.ID != "t" || rej.Measure != MeasureCost {
+	if rej := refused(t, l, workload, 10); rej.Group != "t" || rej.Measure != MeasureCost {
 		t.Errorf("rejection %+v, want the team's USD limit", rej)
 	}
 	// m2 is outside the USD limit's model set.
@@ -321,7 +321,7 @@ func TestOutageRefusesMoneyLimitedModelsAfterTheGrace(t *testing.T) {
 		t.Fatal("no outage past the grace")
 	}
 	rej := refused(t, l, workload, 10)
-	if !rej.Unavailable || rej.ID != "t" || rej.Type != config.LimitUSDPerMonth {
+	if !rej.Unavailable || rej.Group != "t" || rej.Type != config.LimitUSDPerMonth {
 		t.Errorf("rejection %+v, want unavailable, by the team's USD limit", rej)
 	}
 	// m2 has no USD limit, and ann no limits at all: they keep serving.
@@ -853,7 +853,7 @@ func TestNoTotalsYetRefusesMoneyLimitedModels(t *testing.T) {
 	default:
 	}
 	rej := refused(t, l, workload, 10)
-	if !rej.Unavailable || rej.ID != "t" || rej.Type != config.LimitUSDPerMonth {
+	if !rej.Unavailable || rej.Group != "t" || rej.Type != config.LimitUSDPerMonth {
 		t.Fatalf("rejection %+v, want unavailable by the team's USD limit", rej)
 	}
 	// Not the unpriced model, and not the hour token limit: they count from zero.

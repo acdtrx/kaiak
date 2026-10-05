@@ -303,7 +303,7 @@ func TestLeavingTheQueueReleasesTheReservation(t *testing.T) {
 	cancelHolder()
 	srv.Close()
 	line := logLine(t, g, "gone")
-	if !strings.Contains(line, `"http.response.status_code":499`) || !strings.Contains(line, `"error.type":"client_closed"`) ||
+	if strings.Contains(line, `"http.response.status_code"`) || !strings.Contains(line, `"error.type":"client_closed"`) ||
 		!strings.Contains(line, `"kaiak.queue.wait_duration":`) {
 		t.Errorf("gone log line: %s", line)
 	}

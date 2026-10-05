@@ -1,6 +1,7 @@
 package limits
 
 import (
+	"slices"
 	"time"
 
 	"kaiak/internal/config"
@@ -9,10 +10,10 @@ import (
 // Rejection says why a request was refused: the limit that refused it (the one that
 // frees up last, when several do) and when it will have room.
 type Rejection struct {
-	// Scope is the kind of scope the limit belongs to; ID is its group's ID, "" for a
-	// global limit — for the operator's log only, never for the client.
+	// Scope is the kind of scope the limit belongs to; Group is its group's ID, "" for
+	// a global limit — for the operator's log only, never for the client.
 	Scope   Scope
-	ID      string
+	Group   string
 	Type    config.LimitType
 	Measure Measure
 	// Limit, Used and Requested are in the limit's unit (requests, tokens, nano-USD).
@@ -21,7 +22,8 @@ type Rejection struct {
 	// never have. Requested is 0 for a cost limit: cost is known only after a
 	// request, so a cost limit refuses once its window has reached the limit.
 	Limit, Max, Used, Requested int64
-	// RetryAfter is how long until every refusing limit has room for the request.
+	// RetryAfter is how long until every refusing limit has room for the request; a
+	// token limit blocked only by requests still running counts inFlightRetry.
 	RetryAfter time.Duration
 	Headers    Headers
 	// Unavailable: the request's priced model is covered by a USD limit (Scope, Type)
@@ -39,15 +41,17 @@ type Headers struct {
 }
 
 // HeaderValues are one limit's numbers: the limit, what remains of it now, and how
-// long until its window holds nothing.
+// long until its window holds nothing — inFlightRetry for a limit refusing only
+// because of requests still running.
 type HeaderValues struct {
 	Limit, Remaining int64
 	Reset            time.Duration
 }
 
-// headersFor computes the header values over the request's applicable counters.
-// Callers hold the limiter's lock.
-func headersFor(counters []*counter, now time.Time) Headers {
+// headersFor computes the header values over the request's applicable counters;
+// running are the refusing counters blocked only by requests still running (nil when
+// admitted). Callers hold the limiter's lock.
+func headersFor(counters []*counter, now time.Time, running []*counter) Headers {
 	var h Headers
 	for _, c := range counters {
 		var slot **HeaderValues
@@ -60,6 +64,9 @@ func headersFor(counters []*counter, now time.Time) Headers {
 			continue
 		}
 		v := &HeaderValues{Limit: c.w.limit, Remaining: max(c.w.limit-c.w.usedAt(now), 0), Reset: c.w.resetIn(now)}
+		if slices.Contains(running, c) {
+			v.Reset = inFlightRetry
+		}
 		if *slot == nil || v.Remaining < (*slot).Remaining {
 			*slot = v
 		}

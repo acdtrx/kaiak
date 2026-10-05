@@ -2,6 +2,7 @@ package limits
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math"
@@ -153,7 +154,7 @@ func TestEveryScopeIsEnforced(t *testing.T) {
 			l := newClock("2026-09-24T10:00:00Z").limiter(holderOf(snapshot(t, c.doc)))
 			admitN(t, l, c.subject, 2, 10)
 			rej := refused(t, l, c.subject, 10)
-			if rej.Scope != c.scope || rej.ID != c.group || rej.Measure != MeasureRequests || rej.Limit != 2 || rej.Used != 2 {
+			if rej.Scope != c.scope || rej.Group != c.group || rej.Measure != MeasureRequests || rej.Limit != 2 || rej.Used != 2 {
 				t.Errorf("rejection %+v, want scope %s %q, 2 of 2 used", rej, c.scope, c.group)
 			}
 		})
@@ -182,13 +183,13 @@ func TestModelSets(t *testing.T) {
 		workload: `[{ "type": "requests_per_minute", "value": 3 }]`,
 	})))
 	admitN(t, l, workload, 1, 10)
-	if rej := refused(t, l, workload, 10); rej.ID != "t" {
+	if rej := refused(t, l, workload, 10); rej.Group != "t" {
 		t.Errorf("refused by %s, want the m1 team limit", rej.Scope)
 	}
 	// m2 is outside the team limit's model set; the workload limit counts all models
 	// together: m1's request plus two on m2 reach its 3.
 	admitN(t, l, workload.on("m2"), 2, 10)
-	if rej := refused(t, l, workload.on("m2"), 10); rej.ID != "w" {
+	if rej := refused(t, l, workload.on("m2"), 10); rej.Group != "w" {
 		t.Errorf("refused by %s, want the all-models workload limit", rej.Scope)
 	}
 }
@@ -377,7 +378,7 @@ func TestCostLimitRefusesOnceTheBudgetIsSpent(t *testing.T) {
 	// …and the budget refuses once the settled cost reaches it (overshoot allowed).
 	l.Settle(first[1], record(1, 0, 0, 1, 0, 1500))
 	rej := refused(t, l, workload, 10)
-	if rej.Measure != MeasureCost || rej.ID != "t" || rej.Limit != 2000 || rej.Used != 3000 {
+	if rej.Measure != MeasureCost || rej.Group != "t" || rej.Limit != 2000 || rej.Used != 3000 {
 		t.Errorf("rejection %+v", rej)
 	}
 	if want := at("2026-10-01T00:00:00Z").Sub(c.now()); rej.RetryAfter != want {
@@ -410,7 +411,7 @@ func TestHeadersNameTheTightestLimit(t *testing.T) {
 	admitN(t, l, workload, 2, 100)
 	rej := refused(t, l, workload, 100)
 	// Requests at t+0, t+10 (two): the first frees a slot at t+60, 50 s from now.
-	if rej.RetryAfter != 50*time.Second || rej.ID != "w" {
+	if rej.RetryAfter != 50*time.Second || rej.Group != "w" {
 		t.Errorf("retry after %v by %s, want 50s by the workload", rej.RetryAfter, rej.Scope)
 	}
 	if rej.Headers.Requests.Remaining != 0 || rej.Headers.Tokens.Remaining != 400 {
@@ -441,17 +442,99 @@ func TestRetryAfterIsTheLongestWaitAmongRefusingLimits(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			clk := newClock("2026-09-24T10:15:00Z")
 			l := clk.limiter(holderOf(snapshot(t, c.doc)))
-			admitN(t, l, workload, 1, 500)
+			// Settled, so the hour is blocked by settled usage, not by running
+			// requests (TestRefusalBlockedOnlyByRunningRequestsAnswersAShortRetry).
+			l.Settle(admitN(t, l, workload, 1, 500)[0], record(500, 0, 0, 0, 0, 0))
 			clk.advance(10 * time.Second)
-			admitN(t, l, workload, 1, 500)
+			l.Settle(admitN(t, l, workload, 1, 500)[0], record(500, 0, 0, 0, 0, 0))
 			// Requests are spent until the first slides out at 10:16:00 (50 s); tokens
 			// until the hour ends at 11:00:00.
 			rej := refused(t, l, workload, 100)
 			if want := 44*time.Minute + 50*time.Second; rej.RetryAfter != want {
 				t.Errorf("retry after %v, want %v (the hour limit's wait, not the minute's 50s)", rej.RetryAfter, want)
 			}
-			if rej.Scope != c.scope || rej.ID != c.id || rej.Type != config.LimitTokensPerHour {
+			if rej.Scope != c.scope || rej.Group != c.id || rej.Type != config.LimitTokensPerHour {
 				t.Errorf("rejection %+v, want the hour limit of scope %s %q", rej, c.scope, c.id)
+			}
+		})
+	}
+}
+
+// A token limit blocked only by requests still running — it would admit the request
+// were their reservations gone — answers a short fixed retry, in Retry-After and in
+// x-ratelimit-reset-tokens: reservations hold the full input estimate plus the output
+// limit, and requests settle at a fraction of it within seconds (docs/specs/GATEWAY.md,
+// Limits → Refusal). The 8th agent of the review's repro was told 59 s and admitted 3 s
+// later; the hour limit's 55m, 5 s later.
+func TestRefusalBlockedOnlyByRunningRequestsAnswersAShortRetry(t *testing.T) {
+	const shortRetry = 2 * time.Second // the spec's fixed value
+	for _, c := range []struct {
+		name     string
+		limit    string
+		inFlight int
+		tokens   int64
+		// wait is how long after the refusal the first request settles, small.
+		wait time.Duration
+	}{
+		{"minute", `[{ "type": "tokens_per_minute", "value": 500000 }]`, 7, 64000, 3 * time.Second},
+		{"hour", `[{ "type": "tokens_per_hour", "value": 1000000 }]`, 9, 104000, 5 * time.Second},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			clk := newClock("2026-10-05T10:05:00Z")
+			l := clk.limiter(holderOf(snapshot(t, limitsDoc{team: c.limit})))
+			running := admitN(t, l, workload, c.inFlight, c.tokens)
+			rej := refused(t, l, workload, c.tokens)
+			if rej.RetryAfter != shortRetry {
+				t.Errorf("retry after %v, want %v: only running requests block", rej.RetryAfter, shortRetry)
+			}
+			if h := rej.Headers.Tokens; h == nil || h.Reset != shortRetry {
+				t.Errorf("tokens headers on the refusal %+v, want reset %v", h, shortRetry)
+			}
+
+			clk.advance(c.wait)
+			l.Settle(running[0], record(2000, 30000, 0, 500, 0, 0))
+			res, rej := l.Reserve(workload, c.tokens)
+			if rej != nil {
+				t.Fatalf("refused again after the first request settled small: %+v", rej)
+			}
+			// Admitted responses keep the time until the window holds nothing.
+			if h := res.Headers().Tokens; h == nil || h.Reset == shortRetry {
+				t.Errorf("tokens headers on the admitted request %+v, want the window's reset", h)
+			}
+		})
+	}
+}
+
+// A token limit blocked by settled usage keeps its time: the minute's slot expiry, the
+// hour's end — the short retry is for running requests only.
+func TestRefusalBlockedBySettledUsageKeepsItsTime(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		limit   string
+		settled int
+		tokens  int64
+		want    time.Duration
+	}{
+		// Settled at 10:05:00; refused 10 s later: the bucket leaves at 10:06:00.
+		{"minute", `[{ "type": "tokens_per_minute", "value": 500000 }]`, 7, 64000, 50 * time.Second},
+		// The hour ends at 11:00:00.
+		{"hour", `[{ "type": "tokens_per_hour", "value": 1000000 }]`, 9, 104000, 54*time.Minute + 50*time.Second},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			clk := newClock("2026-10-05T10:05:00Z")
+			l := clk.limiter(holderOf(snapshot(t, limitsDoc{team: c.limit})))
+			for _, res := range admitN(t, l, workload, c.settled, c.tokens) {
+				l.Settle(res, record(c.tokens, 0, 0, 0, 0, 0))
+			}
+			// One more running request: settled usage alone already blocks.
+			admitN(t, l, workload, 1, 1000)
+			clk.advance(10 * time.Second)
+			rej := refused(t, l, workload, c.tokens)
+			if rej.RetryAfter != c.want {
+				t.Errorf("retry after %v, want %v", rej.RetryAfter, c.want)
+			}
+			if h := rej.Headers.Tokens; h == nil || h.Reset != c.want {
+				t.Errorf("tokens headers on the refusal %+v, want reset %v", h, c.want)
 			}
 		})
 	}
@@ -474,7 +557,7 @@ func TestReloadKeepsMatchingCounters(t *testing.T) {
 		workload: `[{ "type": "tokens_per_minute", "value": 1000 }]`,
 	}))
 	rej := refused(t, l, workload, 100)
-	if rej.ID != "t" || rej.Limit != 4 || rej.Used != 4 {
+	if rej.Group != "t" || rej.Limit != 4 || rej.Used != 4 {
 		t.Errorf("rejection %+v, want the lowered team limit with the count kept", rej)
 	}
 	if got := used(t, l, "t", config.LimitTokensPerHour); got != 400 {
@@ -710,7 +793,7 @@ func TestEveryGroupOnThePathIsEnforced(t *testing.T) {
 	l := newClock("2026-09-24T10:00:00Z").limiter(holderOf(s))
 	admitN(t, l, prod, 2, 100)
 	rej := refused(t, l, prod, 100)
-	if rej.Scope != ScopeGroup || rej.ID != "rag-prod" || rej.Type != config.LimitRequestsPerMinute {
+	if rej.Scope != ScopeGroup || rej.Group != "rag-prod" || rej.Type != config.LimitRequestsPerMinute {
 		t.Errorf("rejection %+v, want rag-prod's requests limit (from rag's child_defaults)", rej)
 	}
 	if got := used(t, l, "rag", config.LimitTokensPerMinute); got != 200 {
@@ -727,7 +810,7 @@ func TestEveryGroupOnThePathIsEnforced(t *testing.T) {
 	l2 := newClock("2026-09-24T10:00:00Z").limiter(holderOf(s))
 	admitN(t, l2, prod, 1, 600)
 	rej = refused(t, l2, dev, 600)
-	if rej.ID != "rag" || rej.Type != config.LimitTokensPerMinute || rej.Used != 600 {
+	if rej.Group != "rag" || rej.Type != config.LimitTokensPerMinute || rej.Used != 600 {
 		t.Errorf("rejection %+v, want rag's tokens limit spent by the other env", rej)
 	}
 }
@@ -859,6 +942,45 @@ func TestCarryOverToTwoNewLimitsFromOnePredecessor(t *testing.T) {
 	l.Settle(admitN(t, l, workload.on("m2"), 1, 50)[0], record(50, 0, 0, 0, 0, 0))
 	if m1, m2 := usedOn("m1"), usedOn("m2"); m1 != 700 || m2 != 450 {
 		t.Errorf("after a request on m2: m1 %d, m2 %d; want 700 and 450", m1, m2)
+	}
+}
+
+// The carry-over line logs a USD limit's used amount in dollars, as the request
+// line's refusal fields do — not in the counter's nano-USD.
+func TestCarryOverLogsUsedInDollars(t *testing.T) {
+	clk := newClock("2026-10-05T10:00:00Z")
+	holder := holderOf(snapshot(t, limitsDoc{team: `[{"type":"usd_per_month","value":100,"models":["m1"]}]`}))
+	var logs bytes.Buffer
+	l := New(holder, clk.now, slog.New(slog.NewJSONHandler(&logs, nil)))
+	l.Settle(admitN(t, l, workload, 1, 1)[0], record(1, 0, 0, 0, 0, 2_000_000_000)) // $2.
+	holder.Swap(snapshot(t, limitsDoc{team: `[{"type":"usd_per_month","value":100,"models":["m1","m2"]}]`}))
+	l.Usage() // syncs to the changed model set and logs the carry-over
+	var line map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &line); err != nil {
+		t.Fatalf("decode the carry-over line: %v; %s", err, logs.Bytes())
+	}
+	if got := line["kaiak.limit.used"]; got != float64(2) {
+		t.Errorf("$2 of carried spend logged as kaiak.limit.used=%v, want 2", got)
+	}
+}
+
+// An operational line about a global limit carries no kaiak.limit.group:
+// kaiak.limit.scope says global, as on the request line.
+func TestGlobalLimitLinesCarryNoGroup(t *testing.T) {
+	clk := newClock("2026-10-05T10:00:00Z")
+	holder := holderOf(snapshot(t, limitsDoc{global: `[{"type":"tokens_per_hour","value":1000,"models":["m1"]}]`}))
+	var logs bytes.Buffer
+	l := New(holder, clk.now, slog.New(slog.NewJSONHandler(&logs, nil)))
+	admitN(t, l, workload, 1, 10)
+	holder.Swap(snapshot(t, limitsDoc{global: `[{"type":"tokens_per_hour","value":1000,"models":["m1","m2"]}]`}))
+	l.Usage()
+	var line map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &line); err != nil {
+		t.Fatalf("decode the carry-over line: %v; %s", err, logs.Bytes())
+	}
+	if g, ok := line["kaiak.limit.group"]; ok || line["kaiak.limit.scope"] != "global" {
+		t.Errorf("global limit's line: scope %v, kaiak.limit.group %q present %v; want global and no group",
+			line["kaiak.limit.scope"], g, ok)
 	}
 }
 

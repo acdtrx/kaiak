@@ -205,3 +205,20 @@ func TestSlidingMinuteBucketReusedAfterAMinuteStartsEmpty(t *testing.T) {
 		t.Error("admitted past the limit")
 	}
 }
+
+// A minute window copied for a second new limit identity keeps its settled usage and
+// drops its in-flight reservations, as an hour window does: they settle on the window
+// they were made on, so a copied hold would never be released.
+func TestSlidingMinuteCopyDropsReservations(t *testing.T) {
+	w := newWindow(SlidingMinute, 1000)
+	now := at("2026-10-05T10:00:00Z")
+	w.add(now, 300, false, 0)
+	w.reserve(now, 200)
+	c := w.copySettled(now)
+	if got := c.usedAt(now); got != 300 {
+		t.Errorf("copy counts %d, want the 300 settled", got)
+	}
+	if got := w.usedAt(now); got != 500 {
+		t.Errorf("original counts %d after the copy, want 500", got)
+	}
+}
