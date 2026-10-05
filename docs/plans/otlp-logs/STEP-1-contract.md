@@ -1,6 +1,6 @@
 # Step 1 — contract
 
-**Status:** not started
+**Status:** done (2026-10-05)
 
 ## Intent
 
@@ -57,4 +57,188 @@ step writes.
 
 ## Result
 
-_Not started._
+**What changed**
+
+- `docs/specs/GATEWAY.md`:
+  - Observability → **Logs** rewritten around **the field tables** (one for the
+    request line, one for operational events), each row `Attribute | Was | …`, so
+    the old → new mapping is in the spec itself. Around them, dated 2026-10-05: the
+    one-vocabulary decision (rejected: exporter-only translation, keeping kaiak's
+    names), the conventions followed, the naming rules for `kaiak.*`, the units
+    rule, and the request line's message and `eventName`.
+  - Observability → new **OTLP log export** bullet: content, resource, record
+    mapping, delivery (queue 10 000, batches 512 / 1 s, one export in flight,
+    retries, drop-newest, the metric's outcomes, `log export failing` on stderr
+    only), and at-exit behaviour.
+  - Configuration sources → new **OTLP log export** bullet: every `OTEL_*`
+    variable read, its fallback and default, on/off rules, `http/json` only with
+    the explicit refusal of `grpc` / `http/protobuf`, start failures, the
+    variables not read.
+  - Metric list: `kaiak_log_export_records_total{outcome}`.
+  - Lifecycle → Draining step 5 and the Kubernetes sizing note: the export's final
+    flush after usage and `kaiak stopped`.
+  - Every other mention of a log field in the spec moved to the new names
+    (`kaiak.relay_end=…`, `kaiak.retry_refused`, `kaiak.upstream.error.*`,
+    `kaiak.queue_wait_ms`, `kaiak.circuit.*`, `error.type`, `kaiak.limit.*`, the
+    outage line, the config-load line, the drain line, `kaiak.reason`, the
+    `kaiak_circuit_open` note, Errors by key, Config load cost).
+- `docs/DEPLOYMENT.md`: Environment table rows for the `OTEL_*` variables; the
+  proxy note covers the collector; Draining and Resources mention the export's
+  final flush and queue; Observability → new *Log export to an OpenTelemetry
+  collector* bullet (sidecar or node agent with `status.hostIP`, a minimal
+  Collector config with the `otlp` receiver on HTTP `0.0.0.0:4318` and the `debug`
+  exporter, picking request lines by body, querying by standard names, the loss
+  metric); a *Log export losing records* starter alert.
+- `docs/TECH-STACK.md`: the Logging bullet points at the vocabulary; new
+  *OTLP log export: hand-written OTLP/HTTP with JSON encoding* ruling (settled
+  2026-10-05; rejected: the OTel Go SDK as the first third-party module, protobuf
+  encoding, gRPC).
+- `docs/BACKLOG.md`: *OpenTelemetry export* → the *Logs* layer is planned by this
+  plan; the revisit trigger now speaks for traces only.
+
+**The mapping in short** (the full tables: `GATEWAY.md` → Observability: Logs)
+
+- Request line, standard names: `method` → `http.request.method` (`_OTHER` for an
+  unknown method, then `http.request.method_original`); `path` → `url.path`;
+  `status` → `http.response.status_code`; `error_code` → `error.type`; `model` →
+  `gen_ai.request.model`; `stream` → `gen_ai.request.stream`; `tokens_in` →
+  **computed** `gen_ai.usage.input_tokens` = in + cached + cache_write;
+  `tokens_cached` → `gen_ai.usage.cache_read.input_tokens`; `tokens_cache_write` →
+  `gen_ai.usage.cache_write.input_tokens`; `tokens_out` →
+  `gen_ai.usage.output_tokens`; `tokens_reasoning` →
+  `gen_ai.usage.reasoning.output_tokens`.
+- Request line, added: `gen_ai.operation.name` (`chat`, `text_completion`,
+  `embeddings`), `kaiak.backend.type`, `gen_ai.provider.name` (`openai`,
+  `azure.ai.openai` only).
+- Request line, `kaiak.*`: `request_id` → `kaiak.request.id`; `latency_ms` →
+  `kaiak.request.duration_ms`; `key_id` → `kaiak.key.id`; `group` →
+  `kaiak.key.group`; `auth_failure` → `kaiak.auth.failure`; `limit_scope|limit_id|
+  limit_type|limit|limit_configured|used|requested` → `kaiak.limit.scope|id|type|
+  enforced|configured|used|requested`; `backend` → `kaiak.backend.id`;
+  `deployment_model` → `kaiak.deployment.model`; `attempts`, `tried`,
+  `retry_refused`, `queue_wait_ms`, `ttft_ms`, `relay_end` → `kaiak.` + the same
+  name; `upstream_error|_code|_type` → `kaiak.upstream.error.message|code|type`;
+  `cost_usd|estimated|partial` → `kaiak.usage.cost_usd|estimated|partial`.
+- Operational events: `error` → `exception.message`; `pid` → `process.pid`;
+  `instance_id` → `service.instance.id`; `file` → `file.name` (data-directory
+  files) or `file.path` (paths); `addr` → `server.address` + `server.port`; the
+  batch-refused line's `status`/`code` → `http.response.status_code`/`error.type`;
+  everything else under subject namespaces — `kaiak.config.*`, `kaiak.control.*`,
+  `kaiak.totals.*`, `kaiak.usage.*`, `kaiak.limit.*`, `kaiak.model.*`,
+  `kaiak.circuit.*`, `kaiak.drain.*`, `kaiak.listener.*`, `kaiak.data_file.*`,
+  `kaiak.log_export.*`, with shared `kaiak.reason`, `kaiak.trigger`,
+  `kaiak.backend.id`, `kaiak.deployment.model`, `kaiak.duration_ms`,
+  `kaiak.lasted_ms`. Duration strings (`grace`, `timeout`, `flush_reserve`,
+  `cut_after`, `since_contact`, `usage_waiting`, `lasted`, the listener's
+  `timeout`) become `_ms` numbers.
+- Conventions: `semantic-conventions` v1.44.0 (2026-08-04; the attributes used
+  are unchanged on `main` 2026-10-05); `semantic-conventions-genai` `main` at
+  `e07f4eb` (2026-10-02; no release yet).
+
+**Decisions made during the step**
+
+- The request line keeps the message `request`; no OTLP `eventName` (rejected
+  `kaiak.request`: a second way to say what the body says).
+- `error` (a Go error string) → `exception.message`: `error.type` must be
+  low-cardinality, `error.message` is deprecated, and `exception.message` is what
+  OTel's Go `RecordError` writes. `error_code` → `error.type` (a low-cardinality
+  class the request ended with — matches).
+- Durations stay milliseconds, `_ms` names (rejected: seconds as doubles — no
+  standard attribute applies; Go duration strings — not comparable). The request
+  line's to the microsecond, others whole.
+- Not standard on purpose: `deployment_model` (not `gen_ai.response.model`, which
+  is what the backend's answer reports), `ttft_ms` (not
+  `gen_ai.response.time_to_first_chunk`: any chunk, in seconds), `backend` (not
+  `server.address`: a config ID, not an address), `latency_ms` (no attribute
+  standard for a log record's duration).
+- `gen_ai.provider.name` only where a well-known value fits (`openai`,
+  `azure.ai.openai`); `kaiak.backend.type` always, so one field answers "which
+  type" for every backend.
+- `http.request.method` follows the convention's `_OTHER` rule with
+  `http.request.method_original` (clipped) for unknown methods.
+- No name is also a namespace (`kaiak.backend.id`, `kaiak.limit.enforced` for the
+  old `limit`) — stores keeping attributes as nested objects reject a value and an
+  object at one path.
+- Variables: `OTEL_LOGS_EXPORTER=otlp` with no endpoint turns export on to the
+  specification's default `http://localhost:4318/v1/logs` (a fleet-wide injected
+  `otlp` should not fail the start); `OTEL_LOGS_EXPORTER` takes only `otlp`/`none`,
+  `OTEL_SDK_DISABLED` only `true`/`false`; compression, certificate, `*_INSECURE`,
+  `OTEL_BLRP_*` and attribute-limit variables are not read.
+- Delivery details the plan left open: backoff 0.5 s doubling to 5 s with jitter;
+  a `Retry-After` beyond the batch's remaining timeout fails it; response bodies
+  read up to 4 MiB; partial-success rejections count as `failed`; `log export
+  failing` at most once a minute; queue and batch sizes fixed (not
+  configurable); scope `kaiak`, no `schemaUrl`; `service.version` and
+  `service.instance.id` win over `OTEL_RESOURCE_ATTRIBUTES`.
+- At exit: the final flush runs after `kaiak stopped`, bounded by the drain's
+  deadline or 1 s from its start, whichever is later; a start failure after the
+  exporter started gets the same flush, bounded by 1 s.
+- `kaiak_log_export_records_total` series exist at 0 from startup when export is
+  on, and are absent when it is off.
+
+**Against OVERVIEW** (reported, not silently changed there):
+
+- OVERVIEW's Goal says the content is exactly today's: the request line gains three
+  fields (`gen_ai.operation.name`, `kaiak.backend.type`, `gen_ai.provider.name`),
+  and `kaiak starting` gains `kaiak.log_export.endpoint` (step 4's). Operational
+  durations change from strings to `_ms` numbers.
+- Decision 6: export is also on with `OTEL_LOGS_EXPORTER=otlp` and no endpoint
+  (default endpoint), beyond "on when either endpoint is set".
+- Decision 9 says "default 10 000": the queue is fixed, not configurable.
+- Decision 11 says the flush is within the reserve: it is after usage and bounded
+  by the drain's deadline, but always gets at least 1 s, so `kaiak stopped` and the
+  drain's last lines reach the collector even when usage took the whole reserve.
+- The GenAI cache-write attribute is `gen_ai.usage.cache_write.input_tokens` (not
+  `cache_creation`, which the registry no longer has).
+- Decision 5's example `kaiak.key_id` is `kaiak.key.id` (the key's ID and group
+  are one namespace, `kaiak.key.*`).
+
+**Old log field names outside the spec — for step 2** (`git grep` at this commit,
+outside `docs/plans`, `docs/reviews`; protocol fixtures and schemas name usage
+record fields, not log fields, and stay):
+
+- Code that writes them: `gateway/internal/server/api.go` (request line),
+  `internal/server/drain.go`, `internal/server/listener.go`,
+  `internal/config/loader.go`, `internal/control/{client,lastknowngood,spool,spooldisk,status,stream,usage}.go`,
+  `internal/limits/{limits,shared}.go`, `internal/routing/{circuit,modelcheck}.go`,
+  `internal/accounting/accounting.go`, `internal/state/state.go`,
+  `cmd/kaiak/main.go`.
+- Comments naming them: `internal/server/metrics.go:95-97` (`error_code`,
+  `relay_end`), `internal/server/upstream.go:611,622` (`relay_end`),
+  `internal/metrics/ops.go:396-397`.
+- Tests reading them (narrow grep for the distinctive names; step 2 needs its own
+  grep for the generic ones — `status`, `backend`, `model`, `trigger`, `file`,
+  `addr`, …): `cmd/kaiak/main_test.go`, `e2e/{control,e2e,grouptree,harness,media,reliability,timeouts}_test.go`,
+  `internal/accounting/accounting_test.go`, `internal/config/loader_test.go`,
+  `internal/control/{client,usage}_test.go`,
+  `internal/server/{accounting,backend_errors,circuit,drain,keylimit,limits,listener,metrics,pathmissing,queue,retry,retrybudget,server,timeouts,upstream,visibility}_test.go`.
+  The e2e harness and the live kit read the `listening` line's `addr`: they must
+  join `server.address` and `server.port`.
+- Live-test kit: `scripts/live/checks.go` (`request_id`, `status`, `backend`,
+  `tokens_*`, `cost_usd`, `estimated`, `partial`, `relay_end`, `error_code`,
+  `upstream_error`), `scripts/live/twobackends.go` (`request_id`, `attempts`,
+  `queue_wait_ms`, `backend`, `trigger`), `scripts/live/process.go` (`listener`,
+  `addr`).
+- Docs: `docs/DEPLOYMENT.md:180-183` (the drain line's `grace`, `timeout`,
+  `flush_reserve`, `cut_after`), `:492-496` (limit fields), `:615` (`duration_ms`,
+  `bytes`), `:641-648` (the Logs bullet); `docs/testing/LIVE-BACKENDS.md:151`,
+  `:161`, `:284`, `:303`, `:338-341` (`estimated`, `backend`, `error_code`,
+  `upstream_error`, `tokens_cache_write`, `tokens_cached`); `docs/BACKLOG.md:318`
+  (`error_code` in a settled entry's history); `docs/architecture/*.html` name no
+  field.
+- Not for step 2: `docs/ARCHITECTURE.md` gains the exporter package when step 3/4
+  adds it.
+
+**Suite** — `scripts/check-all.sh`, green (docs only):
+
+```
+==> gofmt / go vet / staticcheck 2026.2.1 (gateway)
+==> go test -race (gateway): ok cmd/kaiak, e2e, accounting, auth, clip, config,
+    control, limits, metrics, provider, routing, schemacheck, server, sse, state
+==> gofmt / go vet / staticcheck (live-test kit); self-test passed for vllm,
+    llama-server, openai, azure-openai, vllm with two backends
+==> npm test (control): tests 574, pass 574, fail 0
+==> npm run lint (control): boundaries ok
+==> cross-half e2e: ok kaiak/e2e 43.879s
+all checks passed
+```

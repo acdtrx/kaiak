@@ -324,12 +324,11 @@ Group entries under headings as themes emerge.
 - **OpenTelemetry export** — request outcomes, timings and errors in an
   OpenTelemetry-style backend, kept apart from the control plane's job (config,
   usage, budgets). Three layers, cheapest first:
-  - *Logs* — no gateway change: the per-request log line (`GATEWAY.md` →
-    Observability: Logs) already carries every request's outcome, refusals and
-    `401`s included — status, error code, limit detail, attempts (`tried`), upstream
-    error code and type, `queue_wait_ms`, `ttft_ms`, `relay_end`, token units, cost,
-    key ID and group. A collector reads it from stdout (OTel Collector `filelog`,
-    Vector, Fluent Bit). Log shipping may drop lines under pressure: fine for
+  - *Logs* — planned (2026-10-05, `docs/plans/otlp-logs/`): every log line in one
+    vocabulary, OpenTelemetry's names where they fit, exported over OTLP/HTTP when
+    an `OTEL_*` endpoint is set (`GATEWAY.md` → Observability: Logs, OTLP log
+    export); a collector can also still read stderr (OTel Collector `filelog`,
+    Vector, Fluent Bit). Either path may drop lines under pressure: fine for
     outcomes, never for billing (usage records stay the record).
   - *Metrics* — `/metrics` is Prometheus text, which the Collector's `prometheus`
     receiver scrapes; native OTLP metrics only if a backend cannot scrape.
@@ -339,7 +338,7 @@ Group entries under headings as themes emerge.
     queue wait) needs OTLP: the OTel Go SDK is a third-party dependency (a dated
     ruling in `TECH-STACK.md`), or a hand-written OTLP/HTTP exporter using its JSON
     encoding.
-  Revisit trigger: logs shipped from stdout prove insufficient — a question about a
-  request that the log line cannot answer, or a client team that traces its own
-  calls and needs the gateway's part linked in.
+  Revisit trigger (traces; the logs layer is planned): a question about a request
+  that the log line cannot answer, or a client team that traces its own calls and
+  needs the gateway's part linked in.
 

@@ -46,7 +46,21 @@
   explicit validation functions after decoding. The shared fixtures in `protocol/` keep
   this in agreement with the schemas `kaiak-control` validates against.
 - **Logging**: `log/slog` — JSON in production, text handler in development; one line
-  per request with request ID, key ID, model, backend, status, latency, tokens.
+  per request with request ID, key ID, model, backend, status, latency, tokens;
+  attribute names follow OpenTelemetry's semantic conventions where they fit
+  (`docs/specs/GATEWAY.md`, Observability: Logs).
+- **OTLP log export: hand-written OTLP/HTTP with JSON encoding** (settled
+  2026-10-05). An `slog` handler beside the stderr one queues each record; a
+  background sender posts batches as OTLP JSON (`resourceLogs` → `scopeLogs` →
+  `logRecords`) with `net/http` and `encoding/json`. OTLP/HTTP JSON is a documented
+  encoding that every collector's OTLP HTTP receiver accepts, and the gateway
+  writes only logs — a few hundred lines. Rejected: the OpenTelemetry Go SDK and its
+  OTLP log exporter — it would be the gateway's first third-party module, with its
+  transitive tree (protobuf among it), for what the standard library already
+  covers; protobuf encoding (`http/protobuf`, the specification's default) — it needs
+  the protobuf runtime or a hand-written protobuf encoder; gRPC — a dependency, and
+  the target collectors take OTLP/HTTP. Revisit if traces need span export
+  (`docs/BACKLOG.md` → OpenTelemetry export).
 - **Persistence: plain files, no SQLite** (settled 2026-09-24; an opt-in: the
   gateway is stateless by default, settled 2026-09-25 — with no `KAIAK_DATA_DIR` it
   writes nothing). The gateway's state is small, in its data directory, every file

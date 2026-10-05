@@ -177,7 +177,8 @@ refused, and in-flight requests, streams included, get the drain timeout
 Requests still running then are cut, and their partial usage records go out with
 the rest in the reserve. Usage batches keep going out every 5 s throughout the
 drain; then a final status (≤ 2 s), the admin listener closes (≤ 5 s for a scrape
-still open), and the process exits 0. The `draining` log line names the times in
+still open), with log export on the last queued log lines are sent (at least 1 s),
+and the process exits 0. The `draining` log line names the times in
 force: `grace`, `timeout`, `flush_reserve` and `cut_after` — when requests still
 running are cut, counted from the grace's end (the timeout less the reserve; the
 whole timeout in file mode).
@@ -224,7 +225,8 @@ Nothing else is lost: config and totals come back from the control plane.
   KiB) to estimate output when a backend reports no usage. Headroom covers idle
   connections, metrics series, limit counters (about 1.4 KB per effective limit, at
   most about 70 MB: Config for many hosts), the usage queue (up to `KAIAK_USAGE_MEMORY_BYTES`,
-  64 MiB; its heap is about its encoded size) and the runtime. Starting point:
+  64 MiB; its heap is about its encoded size), with log export on its queue (at most
+10 000 records, about 10 MB) and the runtime. Starting point:
   **limit = 2 × budget + 512 MiB** (1.5 GiB at the default budget) with
   `GOMEMLIMIT` set, good for about 5 000 open streams per pod alongside ordinary
   bodies; beyond that add 70 KiB for each stream above 5 000 (10 000 streams: about
@@ -317,13 +319,22 @@ sources):
 | `KAIAK_BODY_MEMORY_BYTES` | `536870912` (512 MiB) | The body budget (Resources); above 0. |
 | `KAIAK_USAGE_MEMORY_BYTES` | `67108864` (64 MiB) | Control-plane mode: the bound on unacknowledged usage held in memory, by encoded size (Control-plane outages); above 0. |
 | `KAIAK_MAX_CONNECTIONS` | `0` (no cap) | The most connections the API listener keeps open, idle keep-alive ones included; beyond it a connection is closed at accept (Secrets and trust: connection floods); 0 or more. |
+| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | — | Log export (Observability: log export): the URL log records are posted to, as is (`http://collector:4318/v1/logs`). Setting it turns export on. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | The same, as a base: `/v1/logs` is appended (`http://collector:4318`). The `LOGS` variable wins. |
+| `OTEL_LOGS_EXPORTER` | — | `none` turns log export off whatever else is set; `otlp` turns it on, to `http://localhost:4318/v1/logs` when no endpoint is set. |
+| `OTEL_SDK_DISABLED` | `false` | `true` turns log export off. |
+| `OTEL_EXPORTER_OTLP_LOGS_HEADERS`, `OTEL_EXPORTER_OTLP_HEADERS` | — | Headers sent with each export, `key=value,…`, values percent-encoded (a backend's API key: a Secret). Never logged. |
+| `OTEL_EXPORTER_OTLP_LOGS_TIMEOUT`, `OTEL_EXPORTER_OTLP_TIMEOUT` | `10000` | How long one batch may take, retries included (above 0). |
+| `OTEL_EXPORTER_OTLP_LOGS_PROTOCOL`, `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/json` | Only `http/json`; `grpc` or `http/protobuf` fail the start. |
+| `OTEL_SERVICE_NAME` | `kaiak` | The `service.name` of the exported records' resource. |
+| `OTEL_RESOURCE_ATTRIBUTES` | — | More resource attributes, `key=value,…` (`deployment.environment.name=prod`); `service.version` and `service.instance.id` are always the gateway's own. |
 
 Also read by the gateway (Go runtime and standard library): every backend's
 `api_key_env` (Secrets); `GOMEMLIMIT` (Resources); `SSL_CERT_FILE` (the image sets
 its bundle) and `SSL_CERT_DIR` (Availability: private CAs); and
 `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` for both backend and control-plane
-connections — when the cluster sets a proxy, list in-cluster backends and the
-control plane in `NO_PROXY`.
+connections and the log export — when the cluster sets a proxy, list in-cluster
+backends, the control plane and the collector in `NO_PROXY`.
 
 **Sample control plane** (`control/sample/src/settings/index.ts`):
 
@@ -635,6 +646,69 @@ the document (a script, or the control plane) rather than editing it by hand.
   `4xx` carries `upstream_error_code`/`upstream_error_type` from the backend's error;
   a retried request lists every attempt in `tried` (`GATEWAY.md` → Observability:
   Logs).
+- **Log export to an OpenTelemetry collector** (`GATEWAY.md` → Observability: OTLP
+  log export), for a platform that cannot read container output: set
+  `OTEL_EXPORTER_OTLP_ENDPOINT` (or the `LOGS` variable) and every log line — the
+  request line and every operational event, the same attributes as on stderr — is
+  also posted to the collector over OTLP/HTTP as JSON. stderr stays on. Nothing
+  else changes: the request path only queues a copy; a slow or down collector costs
+  at most the queue (10 000 records) and drops the newest records beyond it.
+  - **Where the collector runs**: a sidecar in the gateway's pod
+    (`OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318`), or the node's agent (a
+    DaemonSet with a host port), reached through the node's IP:
+
+    ```yaml
+    env:
+      - name: NODE_IP
+        valueFrom: {fieldRef: {fieldPath: status.hostIP}}
+      - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: http://$(NODE_IP):4318
+      - name: OTEL_RESOURCE_ATTRIBUTES
+        value: deployment.environment.name=prod
+    ```
+
+    The records' resource carries `service.name` (`kaiak`, or `OTEL_SERVICE_NAME`),
+    `service.version` and `service.instance.id` (the pod name, the gateway's
+    instance ID); add the cluster's own with `OTEL_RESOURCE_ATTRIBUTES` or the
+    collector's `k8sattributes` processor.
+  - **A minimal collector** (`otel/opentelemetry-collector-contrib`, or the core
+    `otel/opentelemetry-collector`) with the OTLP receiver on HTTP — the only
+    transport the gateway speaks; `0.0.0.0` because the receiver listens on
+    `localhost` by default, which a node agent's clients cannot reach:
+
+    ```yaml
+    receivers:
+      otlp:
+        protocols:
+          http:
+            endpoint: 0.0.0.0:4318
+    processors:
+      batch: {}
+    exporters:
+      debug:
+        verbosity: detailed   # replace with the backend's exporter
+    service:
+      pipelines:
+        logs:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [debug]
+    ```
+
+    The request lines are the records whose body is `request`: a `filter` or
+    `routing` processor on the log body separates them from operational events.
+  - **Query by the standard names** where they exist: `http.response.status_code`,
+    `error.type` (the gateway's error code), `gen_ai.request.model`,
+    `gen_ai.usage.input_tokens` (all input, cache reads and writes included) and
+    `gen_ai.usage.output_tokens`; kaiak's own under `kaiak.*` (`kaiak.key.id`,
+    `kaiak.limit.*`, `kaiak.tried`, `kaiak.usage.cost_usd`). The field tables:
+    `GATEWAY.md` → Observability: Logs.
+  - **Watch for loss**: `kaiak_log_export_records_total{outcome="dropped"}` (the
+    queue was full, or records were still queued at exit) and `{outcome="failed"}`
+    (the collector refused a batch, or retries ran out of time); the gateway's
+    stderr says why (`log export failing`, at most once a minute). Lost log
+    records lose no usage: usage records go to the control plane, never through
+    the logs.
 
 **Starter alerts** (every metric and label exists in `gateway/internal/metrics`;
 thresholds are starting points). Each is written as a Prometheus rule expression
@@ -671,6 +745,7 @@ before priced models are refused. Scale the 300 with the grace if you change it.
 | Body budget refusals | ticket | `sum(increase(kaiak_errors_total{class="server_busy"}[10m])) > 0` | — | The body budget is spent: raise `KAIAK_BODY_MEMORY_BYTES` (and the memory limit) or add replicas. |
 | Connections refused | ticket | `increase(kaiak_connections_refused_total[5m]) > 0` | — | Per pod: the API listener is at `KAIAK_MAX_CONNECTIONS` — a connection flood the ingress let through, or a cap too low for the pod's clients (idle keep-alive connections count). |
 | Clamped usage | ticket | `sum(increase(kaiak_usage_clamped_records_total[1h])) > 0` | — | A backend reported absurd usage. |
+| Log export losing records | ticket | `sum by (outcome) (increase(kaiak_log_export_records_total{outcome=~"dropped\|failed"}[15m])) > 0` | — | Log lines did not reach the collector: it is down, slow or refusing (`log export failing` on the gateway's stderr names the status or error). Only with log export on. |
 
 ## Secrets and trust
 
