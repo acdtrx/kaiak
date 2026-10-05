@@ -61,6 +61,9 @@ Made while planning (confirm in review):
    tokens_cache_write + tokens_out` (every token the backend handled), in the gateway's
    local limits and in `kaiak-control`'s aggregation. Without this, written tokens
    would silently leave the token limits.
+   *Superseded 2026-10-05 by `1454a17`:* `tokens_cached` no longer counts — a
+   record's tokens are `tokens_in + tokens_cache_write + tokens_out`
+   (`docs/specs/GATEWAY.md`, Limits → Settle). Written tokens still count.
 9. **Every record carries the five token units, zeros included**, like the four today.
    Estimated records report 0 written. Embeddings count `prompt_tokens` only.
 10. **Metrics and logs:** `kaiak_usage_tokens_total` gains `unit="tokens_cache_write"`

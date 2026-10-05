@@ -46,7 +46,7 @@ something the protocol needs, the change belongs in the kaiak repo (§11).
 3. **Config holds key hashes, never keys.** `createKey(id)` returns `{ id, key, hash }`;
    store `id` + `hash`, show `key` once, never log or persist it.
 4. **Backend secrets never enter config.** A backend names an environment variable
-   (`api_key_env`, not starting with `KAIAK_`) set on the gateways; `base_url` carries
+   (`api_key_env`, not starting with `KAIAK_` or `OTEL_`) set on the gateways; `base_url` carries
    no `user:password@`.
 5. **The gateway endpoints only authenticate gateways.** The plugin checks the shared
    gateway token (`KAIAK_CONTROL_TOKEN`). Your UI and admin routes need their own
@@ -304,9 +304,14 @@ use the price of their day.
   in `_above_<N>k_tokens` is a long-context rate and goes to the tier at N × 1000:
   `input_cost_per_token_above_272k_tokens` → the 272000 tier's `tokens_in`, and the
   same for `cache_read_input_token_cost_…`, `cache_creation_input_token_cost_…` and
-  `output_cost_per_token_…`. That tier lists every unit itself, so copy any unit the
-  list gives no long-context rate for from the tier at 0 (leaving `tokens_out` out
-  would make its output free). The other fields are not priced by kaiak: the
+  `output_cost_per_token_…`. A tier prices every unit itself, so when the list gives
+  no long-context rate for `tokens_in` or `tokens_out`, copy that unit from the tier
+  at 0 (leaving `tokens_out` out would make its output free). Copy nothing else: a
+  cache unit with no long-context rate stays out of the tier, and is charged at
+  that tier's own `tokens_in` (`CONTROL-PROTOCOL.md`, Config → Units and price
+  units). Copied, the tier at 0's cache-write rate would price long-context writes
+  below the tier's plain input; the fallback errs high instead. The other fields
+  are not priced by kaiak: the
   `_priority`, `_flex`, `_batches` and `_ultrafast` variants (service tiers the
   gateway never uses), `cache_creation_input_token_cost_above_1hr` and its
   `_above_1hr_above_<N>k_tokens` variants (a one-hour cache lifetime, not a

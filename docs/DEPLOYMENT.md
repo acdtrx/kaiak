@@ -483,6 +483,9 @@ the document (a script, or the control plane) rather than editing it by hand.
   20 × (2000 + 4096) ≈ 122 000 tokens of reservations at once, though it may settle
   at a fraction of that. **Size a per-minute token limit** to at least the scope's
   peak concurrent requests × (typical input + the output limit they run under) —
+  cache reads included: leaving them out of the count does not lower this floor,
+  since admission reserves the full input estimate, cached or not (only the
+  settled amount is lower, so the room frees sooner) —
   per gateway: in control-plane mode each gateway holds `floor(limit ÷ live
   gateways)` (above), and one reservation larger than that share waits for the
   gateway's window to empty. A request whose reservation exceeds the **full** limit
@@ -491,8 +494,8 @@ the document (a script, or the control plane) rather than editing it by hand.
   Keep `output_limit.default` near what answers need (not the ceiling): clients
   that set no limit reserve the default. Hourly token limits reserve the same
   way. The refusal's log line carries
-  `kaiak.limit.scope`, `kaiak.limit.id`, `kaiak.limit.type`, `kaiak.limit.enforced`
-  (the share enforced), `kaiak.limit.configured`, `kaiak.limit.used` and
+  `kaiak.limit.scope`, `kaiak.limit.group` (absent for a global limit),
+  `kaiak.limit.type`, `kaiak.limit.enforced` (the share enforced), `kaiak.limit.configured`, `kaiak.limit.used` and
   `kaiak.limit.requested`: `kaiak.limit.requested` above `kaiak.limit.configured`
   is a request too large for the limit, otherwise the window is full.
 - **vLLM: add `--enable-prompt-tokens-details`** to `vllm serve` for the cached-token
@@ -642,16 +645,24 @@ the document (a script, or the control plane) rather than editing it by hand.
 - **Logs**: one JSON line per request (message `request`), its attributes named
   after OpenTelemetry's conventions where they fit — `kaiak.request.id`,
   `kaiak.key.id` and `kaiak.key.group`, `gen_ai.request.model`, `kaiak.backend.id`,
-  `http.response.status_code`, `kaiak.request.duration` and
+  `http.response.status_code` (absent when the client left before any answer:
+  `error.type` is `client_closed`), `kaiak.request.duration` and
   `kaiak.time_to_first_token` for streams (seconds), the `gen_ai.usage.*` token
   counts (`gen_ai.usage.input_tokens` is all input, cache reads and writes
   included) and, on failure, `error.type`; never keys, prompts or responses. A
-  limit refusal names the limit (`kaiak.limit.scope`, `kaiak.limit.id`,
+  limit refusal names the limit (`kaiak.limit.scope`, `kaiak.limit.group`,
   `kaiak.limit.type`, `kaiak.limit.enforced`, `kaiak.limit.configured`,
   `kaiak.limit.used`, `kaiak.limit.requested`); a relayed backend `4xx` carries
   `kaiak.upstream.error.code`/`kaiak.upstream.error.type` from the backend's error;
   a retried request lists every attempt in `kaiak.tried` (`GATEWAY.md` →
-  Observability: Logs, the field tables).
+  Observability: Logs, the field tables). **Map durations and money as `double`**
+  when a log store ingests stderr with dynamic mapping (Elasticsearch, OpenSearch):
+  durations (`kaiak.request.duration`, `kaiak.time_to_first_token`,
+  `kaiak.duration` and every other time in seconds), `kaiak.usage.cost_usd` and a
+  USD limit's `kaiak.limit.*` values are decimal numbers, but a whole one is
+  written without a decimal point (`0`, `30`) — a store typing the field from the
+  first value it sees would make it an integer and then truncate or refuse the
+  fractions. Over OTLP they arrive typed (`doubleValue`).
 - **Log export to an OpenTelemetry collector** (`GATEWAY.md` → Observability: OTLP
   log export), for a platform that cannot read container output: set
   `OTEL_EXPORTER_OTLP_ENDPOINT` (or the `LOGS` variable) and every log line — the
@@ -661,7 +672,13 @@ the document (a script, or the control plane) rather than editing it by hand.
   at most the queue (10 000 records) and drops the newest records beyond it.
   - **Where the collector runs**: a sidecar in the gateway's pod
     (`OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318`), or the node's agent (a
-    DaemonSet with a host port), reached through the node's IP:
+    DaemonSet with a host port), reached through the node's IP. Keep it near: the
+    gateway has one export in flight, at most 512 records a round trip, so its log
+    throughput is about 512 records ÷ the collector's answer time — a remote
+    collector 100 ms away caps a gateway near 5 000 lines a second (one request
+    line per request, plus operational lines), and beyond that the queue fills and
+    drops. The endpoint must be the address that answers: the gateway does not
+    follow redirects (a `3xx` fails the batch):
 
     ```yaml
     env:
@@ -747,7 +764,7 @@ before priced models are refused. Scale the 300 with the grace if you change it.
 | Backend failure rate | ticket | `sum by (backend) (rate(kaiak_upstream_attempts_total{outcome=~"unavailable\|timeout\|server_error\|broke_off"}[5m])) / sum by (backend) (rate(kaiak_upstream_attempts_total[5m])) > 0.05 and sum by (backend) (rate(kaiak_upstream_attempts_total[5m])) > 0.1` | 5m | A struggling host, before its circuit opens. The second clause needs about 30 attempts in 5 minutes, so one failed request on a quiet backend is not a 50% rate. On an Azure backend, `broke_off` or `timeout` from reasoning models means their stream timeouts are too short (Azure OpenAI). |
 | Deployment often cooling down | ticket | `max by (backend, deployment_model) (avg_over_time(kaiak_deployment_cooling_down[30m])) > 0.25` | — | The deployment answered `429` often enough to spend a quarter of the last 30 minutes cooling down: its quota (Azure tokens or requests per minute) is too small for its share of the traffic. Raise the quota, or deploy the model in another resource or region and list it (Azure OpenAI: quota). Clients see it only when every deployment of the model cools at once (`kaiak_errors_total{class="upstream_rate_limited"}`). |
 | Queue rejections | ticket | `sum by (model) (rate(kaiak_queue_rejections_total[10m])) / sum by (model) (rate(kaiak_request_duration_seconds_count[10m])) > 0.01` | 10m | Over 1% of a model's requests refused by its queue (`reason="full"` or `timeout`) for 10 minutes: capacity. Compare `kaiak_backend_in_flight_requests` with `kaiak_backend_max_in_flight` across replicas (uneven shares), and the backends' own load. A burst that clears within minutes does not alert. |
-| Global limit refusals | ticket | `sum by (type) (increase(kaiak_limit_rejections_total{scope_kind="global"}[15m])) > 0` | — | A global limit refused requests — it applies to every client, so it is the platform's limit, not a group's. Group refusals (`scope_kind="group"`) are the group's business: their log lines name the group (`limit_id`). |
+| Global limit refusals | ticket | `sum by (type) (increase(kaiak_limit_rejections_total{scope_kind="global"}[15m])) > 0` | — | A global limit refused requests — it applies to every client, so it is the platform's limit, not a group's. Group refusals (`scope_kind="group"`) are the group's business: their log lines name the group (`kaiak.limit.group`). |
 | Body budget refusals | ticket | `sum(increase(kaiak_errors_total{class="server_busy"}[10m])) > 0` | — | The body budget is spent: raise `KAIAK_BODY_MEMORY_BYTES` (and the memory limit) or add replicas. |
 | Connections refused | ticket | `increase(kaiak_connections_refused_total[5m]) > 0` | — | Per pod: the API listener is at `KAIAK_MAX_CONNECTIONS` — a connection flood the ingress let through, or a cap too low for the pod's clients (idle keep-alive connections count). |
 | Clamped usage | ticket | `sum(increase(kaiak_usage_clamped_records_total[1h])) > 0` | — | A backend reported absurd usage. |
@@ -755,9 +772,12 @@ before priced models are refused. Scale the 300 with the grace if you change it.
 
 ## Secrets and trust
 
-- **Secrets**: `KAIAK_CONTROL_TOKEN`, `KAIAK_METRICS_TOKEN` and every backend
-  `api_key_env` come from Kubernetes Secrets, never from the config (config holds
-  only variable names; a `base_url` with `user:password@` is refused).
+- **Secrets**: `KAIAK_CONTROL_TOKEN`, `KAIAK_METRICS_TOKEN`, the log export's
+  headers (`OTEL_EXPORTER_OTLP_HEADERS`) and every backend `api_key_env` come from
+  Kubernetes Secrets, never from the config (config holds only variable names; a
+  `base_url` with `user:password@` is refused). A backend's `api_key_env` cannot
+  name a `KAIAK_` or `OTEL_` variable: the config author picks the backend's URL,
+  and the gateway's own secrets must never be sent there.
 - **The control token is shared** by every gateway, and its holder can report usage
   and status under any instance ID — spending any budget and changing the
   live-gateway count, hence every per-minute share (`CONTROL-PROTOCOL.md` →

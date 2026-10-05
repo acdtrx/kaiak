@@ -213,10 +213,10 @@
           "pattern": "^https?://[^/\\s?#@]+(/[^\\s?#]*[^/\\s?#])?$"
         },
         "api_key_env": {
-          "description": "Name of the environment variable holding the backend's API key. Omitted = unauthenticated (self-hosted backends only; required for openai and azure-openai). Names starting with KAIAK_ are refused: they hold the gateway's own settings and tokens, which must never be sent to a backend.",
+          "description": "Name of the environment variable holding the backend's API key. Omitted = unauthenticated (self-hosted backends only; required for openai and azure-openai). Names starting with KAIAK_ or OTEL_ are refused: they hold the gateway's own settings and tokens and its log export's headers and endpoints, which must never be sent to a backend.",
           "type": "string",
           "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
-          "not": { "type": "string", "pattern": "^KAIAK_" }
+          "not": { "type": "string", "pattern": "^(KAIAK|OTEL)_" }
         },
         "connect_timeout_ms": {
           "description": "Time allowed to open a connection to the backend.",

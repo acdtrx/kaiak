@@ -17,6 +17,11 @@
   header, below); a mismatch is refused with a clear error on both sides. No
   multi-version support before the project graduates.
 - **Errors** use the `{ error, detail? }` shape (CODING-RULES §5) on every endpoint.
+  `error` is a stable code: lowercase ASCII words joined by hyphens
+  (`^[a-z]+(-[a-z]+)*$`), at most 64 characters (settled 2026-10-05). The gateway
+  logs a code only in that shape and never logs `detail`: an answer that is not the
+  control plane's own (a proxy, a misdirected URL) can carry anything, credentials
+  included (`GATEWAY.md`, Observability → Logs: no remote text).
 - **Auth** (settled 2026-09-24): the gateway only makes outbound calls, so there is one
   bearer token, gateway → control plane (`KAIAK_CONTROL_TOKEN`); the gateway names
   itself in a `Kaiak-Instance` header. TLS vouches for the control plane and is
@@ -429,6 +434,14 @@ the `{ error, detail }` body, `error` being the stable code:
 - **`api_key_env`** names an environment variable (`^[A-Za-z_][A-Za-z0-9_]*$`) that
   does not start with `KAIAK_` (settled 2026-09-25, N-S2): the gateway's own tokens
   live there, and a config author could otherwise have them sent to any backend URL.
+  **Nor with `OTEL_`** (settled 2026-10-05, the 2026-10-05 review's H1): the
+  gateway's log export reads its collector's credentials from
+  `OTEL_EXPORTER_OTLP_HEADERS` and `OTEL_EXPORTER_OTLP_LOGS_HEADERS`. The whole
+  prefix is reserved, not those two names: an endpoint variable can carry
+  credentials too (`https://user:token@…`, a token in its query), and a list of
+  names would miss the next one the gateway reads. Both prefixes are case-sensitive,
+  as environment names are: `otel_…` is another variable, which the gateway never
+  reads. Rejected: a list of the secret-bearing names.
 - **The group tree** (settled 2026-09-27). Who may use which models and under which
   limits is one generic tree of groups:
   - **Shape**: `groups` maps group ID → `{ parent?, labels?, allowed_models?, limits?,

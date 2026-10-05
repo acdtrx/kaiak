@@ -324,7 +324,7 @@ Group entries under headings as themes emerge.
 - **OpenTelemetry export** — request outcomes, timings and errors in an
   OpenTelemetry-style backend, kept apart from the control plane's job (config,
   usage, budgets). Three layers, cheapest first:
-  - *Logs* — planned (2026-10-05, `docs/plans/otlp-logs/`): every log line in one
+  - *Logs* — built (2026-10-05, `docs/plans/otlp-logs/`): every log line in one
     vocabulary, OpenTelemetry's names where they fit, exported over OTLP/HTTP when
     an `OTEL_*` endpoint is set (`GATEWAY.md` → Observability: Logs, OTLP log
     export); a collector can also still read stderr (OTel Collector `filelog`,
@@ -338,7 +338,7 @@ Group entries under headings as themes emerge.
     queue wait) needs OTLP: the OTel Go SDK is a third-party dependency (a dated
     ruling in `TECH-STACK.md`), or a hand-written OTLP/HTTP exporter using its JSON
     encoding.
-  Revisit trigger (traces; the logs layer is planned): a question about a request
+  Revisit trigger (traces; the logs layer is built): a question about a request
   that the log line cannot answer, or a client team that traces its own calls and
   needs the gateway's part linked in.
 

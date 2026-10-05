@@ -31,6 +31,18 @@
     "kind": "schema",
     "reason": "api_key_env must not name one of the gateway's own KAIAK_ variables (its tokens would reach the backend's URL)"
   },
+  "api-key-env-otel-headers.json": {
+    "kind": "schema",
+    "reason": "api_key_env must not name an OTEL_ variable: OTEL_EXPORTER_OTLP_HEADERS holds the log export's credentials, which would reach the backend's URL"
+  },
+  "api-key-env-otel-logs-endpoint.json": {
+    "kind": "schema",
+    "reason": "the whole OTEL_ prefix is reserved, not only the header variables: an endpoint can carry credentials too"
+  },
+  "api-key-env-otel-logs-headers.json": {
+    "kind": "schema",
+    "reason": "api_key_env must not name an OTEL_ variable: OTEL_EXPORTER_OTLP_LOGS_HEADERS holds the log export's credentials, which would reach the backend's URL"
+  },
   "azure-without-api-key-env.json": {
     "kind": "schema",
     "reason": "azure-openai backends need api_key_env"

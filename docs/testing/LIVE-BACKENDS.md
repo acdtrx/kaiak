@@ -367,9 +367,11 @@ gateway started from `examples/config.json`):
   answers come back without reasoning; with thinking on they carry it.
 - **Reasoning parser fields** — with vLLM's `--reasoning-parser`, reasoning arrives in
   `reasoning_content` (older) or `reasoning` (newer) beside `content`, streamed as
-  deltas. Check that `tokens_reasoning` stays 0 unless vLLM reports
+  deltas. Check that the log line's `gen_ai.usage.reasoning.output_tokens` (the
+  record's `tokens_reasoning`) stays 0 unless vLLM reports
   `completion_tokens_details.reasoning_tokens` (it usually does not — reasoning is
-  still inside `tokens_out`, which is what is priced).
+  still inside `gen_ai.usage.output_tokens`, the record's `tokens_out`, which is
+  what is priced).
 - **Unknown sampling parameters pass through** — `top_k`, `min_p` as defaults reach
   vLLM untouched (the backend log shows each request's parameters when request
   logging is enabled on the vLLM server).
