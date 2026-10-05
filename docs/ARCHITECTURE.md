@@ -154,10 +154,14 @@ enforce the boundaries.
   logged or echoed in an error message; `server` and `auth` use it.
 - `logattr` — log attribute values in the units the log vocabulary fixes (a duration
   in seconds); every package that logs a duration uses it.
+- `netfail` — names a failed exchange's class (timed out, connection refused, TLS
+  failure, malformed response, …) in the gateway's own words, so a log line
+  reporting a transport failure never carries the bytes Go quoted from the remote
+  party (`docs/specs/GATEWAY.md`, Logs: no remote text).
 - `otlplog` — OTLP log export: reads the `OTEL_*` settings, and its `slog` handler
   hands every record to the stderr handler and queues a copy; one sender goroutine
   posts the queue as OTLP/HTTP JSON batches with retries, dropping the newest when
-  full, and flushes on demand. It imports nothing of the gateway's but `clip`.
+  full, and flushes on demand. It imports nothing of the gateway's but `netfail`.
   `cmd/kaiak` wraps the process logger with it when export is on, gives it a
   stderr-only logger for its own problem reports (no feedback loop), reads its counts
   into `metrics` (`kaiak_log_export_records_total`) and runs its final flush as the

@@ -3,8 +3,10 @@ package otlplog
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"math"
+	"reflect"
 	"slices"
 	"strconv"
 	"time"
@@ -123,8 +125,22 @@ func appendAttr(dst []attr, prefix string, a slog.Attr) []attr {
 
 // convert maps a resolved slog value to an OTLP-typed one (docs/specs/GATEWAY.md,
 // Observability → OTLP log export: record mapping). Where OTLP has no type for a
-// value, it carries the text the JSON handler writes for it.
-func convert(v slog.Value) value {
+// value, it carries the text the JSON handler writes for it — a value whose
+// rendering panics included, recovered as slog's handlers recover it: `<nil>` for
+// a nil pointer (an Error or MarshalJSON that does not guard against nil), else
+// `!PANIC: ` and the panic's value.
+func convert(v slog.Value) (out value) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		if rv := reflect.ValueOf(v.Any()); rv.Kind() == reflect.Pointer && rv.IsNil() {
+			out = value{kind: kindString, str: "<nil>"}
+			return
+		}
+		out = value{kind: kindString, str: fmt.Sprintf("!PANIC: %v", r)}
+	}()
 	switch v.Kind() {
 	case slog.KindString:
 		return value{kind: kindString, str: v.String()}

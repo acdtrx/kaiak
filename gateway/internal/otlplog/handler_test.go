@@ -260,3 +260,48 @@ func TestDoubleSpecialValues(t *testing.T) {
 // discard is an enabled next handler that writes nothing (slog.DiscardHandler is
 // disabled, so a logger would never reach the exporting handler).
 func discard() slog.Handler { return slog.NewJSONHandler(io.Discard, nil) }
+
+// nilDerefErr's Error dereferences its receiver: a typed nil panics.
+type nilDerefErr struct{ msg string }
+
+func (e *nilDerefErr) Error() string { return e.msg }
+
+type panicsInError struct{}
+
+func (panicsInError) Error() string { panic("error text unavailable") }
+
+type panicsInJSON struct{}
+
+func (panicsInJSON) MarshalJSON() ([]byte, error) { panic(errors.New("cannot marshal")) }
+
+// A value whose rendering panics is written as slog's handlers write it — the
+// JSON handler beside it is the reference — and the caller goes on.
+func TestPanickingValuesAreRenderedAsSlogDoes(t *testing.T) {
+	var typedNil *nilDerefErr
+	for _, tc := range []struct {
+		name  string
+		value any
+		want  string
+	}{
+		{"typed-nil error", error(typedNil), "<nil>"},
+		{"panicking Error", panicsInError{}, "!PANIC: error text unavailable"},
+		{"panicking MarshalJSON", panicsInJSON{}, "!PANIC: cannot marshal"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := idleExporter(t, nil)
+			var stderr bytes.Buffer
+			slog.New(e.Handler(slog.NewJSONHandler(&stderr, nil))).Info("m", "k", tc.value)
+			var line map[string]any
+			if err := json.Unmarshal(stderr.Bytes(), &line); err != nil {
+				t.Fatalf("stderr %q: %v", stderr.String(), err)
+			}
+			if line["k"] != tc.want {
+				t.Fatalf("the JSON handler wrote %q, want %q", line["k"], tc.want)
+			}
+			got := queued(e)[0].attrs
+			if want := []attr{{key: "k", value: value{kind: kindString, str: tc.want}}}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("attrs %+v, want %+v", got, want)
+			}
+		})
+	}
+}

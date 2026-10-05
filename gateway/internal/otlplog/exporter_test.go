@@ -363,9 +363,9 @@ func TestRetryAfterIsHonoured(t *testing.T) {
 		min, max time.Duration
 	}{
 		{"seconds", func() string { return "3" }, 3 * time.Second, 3 * time.Second},
-		{"zero seconds", func() string { return "0" }, 0, 0},
+		{"zero seconds: the backoff", func() string { return "0" }, 250 * time.Millisecond, 500 * time.Millisecond},
 		{"HTTP date", func() string { return time.Now().Add(5 * time.Second).UTC().Format(http.TimeFormat) }, 3 * time.Second, 5 * time.Second},
-		{"HTTP date in the past", func() string { return time.Now().Add(-time.Hour).UTC().Format(http.TimeFormat) }, 0, 0},
+		{"HTTP date in the past: the backoff", func() string { return time.Now().Add(-time.Hour).UTC().Format(http.TimeFormat) }, 250 * time.Millisecond, 500 * time.Millisecond},
 		{"unreadable: backoff", func() string { return "soon" }, 250 * time.Millisecond, 500 * time.Millisecond},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -439,7 +439,8 @@ func TestNoRetryOnOtherStatuses(t *testing.T) {
 			if len(reports) != 1 {
 				t.Fatalf("reports %v, want 1", reports)
 			}
-			want := fmt.Sprintf("collector answered %d %s: bad data in record 2", status, http.StatusText(status))
+			// The collector's message is never reported (Logs: no remote text).
+			want := fmt.Sprintf("collector answered %d %s", status, http.StatusText(status))
 			if r := reports[0]; r["http.response.status_code"] != float64(status) || r["exception.message"] != want ||
 				r["kaiak.log_export.failed"] != float64(3) || r["kaiak.log_export.dropped"] != float64(0) {
 				t.Fatalf("report %v, want status %d, message %q, 3 failed, 0 dropped", r, status, want)
@@ -458,7 +459,7 @@ func TestPartialSuccessCountsRejectedAsFailed(t *testing.T) {
 		{"more rejected than sent", `{"partialSuccess":{"rejectedLogRecords":"9"}}`, 0, 5},
 		{"a warning only", `{"partialSuccess":{"errorMessage":"deprecated field"}}`, 5, 0},
 		{"no body", ``, 5, 0},
-		{"not JSON", `ok`, 5, 0},
+		{"not JSON: unreadable", `ok`, 0, 5},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			col := newCollector(t, func(w http.ResponseWriter, _ *http.Request, _ int) {
@@ -483,7 +484,7 @@ func TestPartialSuccessIsReported(t *testing.T) {
 	h.logN(5, "m")
 	h.flush(t)
 	reports := h.reports.reports(t)
-	if len(reports) != 1 || reports[0]["exception.message"] != "collector rejected 2 records: too large" ||
+	if len(reports) != 1 || reports[0]["exception.message"] != "collector rejected 2 records" ||
 		reports[0]["http.response.status_code"] != float64(200) || reports[0]["kaiak.log_export.failed"] != float64(2) {
 		t.Fatalf("reports %v, want one with the rejection", reports)
 	}
@@ -593,9 +594,12 @@ func TestFlushEndsWithItsDeadlineAndCloseDrops(t *testing.T) {
 	}
 	h.e.Close()
 	wantCounts(t, h.e, Counts{Failed: 3, Dropped: 5})
+	// The report at exit is never held back: the drops at Close get their own
+	// line within the minute of the cut export's.
 	reports := h.reports.reports(t)
-	if len(reports) != 1 || reports[0]["kaiak.log_export.failed"] != float64(3) || reports[0]["kaiak.log_export.dropped"] != float64(0) {
-		t.Fatalf("reports %v, want one, at the cut export: the drops at Close fall within its minute", reports)
+	if len(reports) != 2 || reports[0]["kaiak.log_export.failed"] != float64(3) || reports[0]["kaiak.log_export.dropped"] != float64(0) ||
+		reports[1]["kaiak.log_export.failed"] != float64(0) || reports[1]["kaiak.log_export.dropped"] != float64(5) {
+		t.Fatalf("reports %v, want two: the cut export's 3 failed, then Close's 5 dropped", reports)
 	}
 }
 
@@ -661,5 +665,257 @@ func TestProblemReportsAreRateLimited(t *testing.T) {
 	h.flush(t)
 	if r := h.reports.reports(t); len(r) != 2 || col.requests.Load() != col2 {
 		t.Fatalf("reports %v, want no line without new problems", r)
+	}
+}
+
+// A redirect is not followed: neither the batch nor a configured header reaches
+// the target — here another host name, which Go's redirect rule would send a
+// custom credential header to — and the batch fails at once, reported by status.
+func TestRedirectIsNotFollowed(t *testing.T) {
+	reached := make(chan string, 10)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached <- r.Header.Get("X-Api-Key")
+		io.WriteString(w, "{}")
+	}))
+	defer target.Close()
+	destination := strings.Replace(target.URL, "127.0.0.1", "localhost", 1)
+	for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			col := newCollector(t, func(w http.ResponseWriter, r *http.Request, _ int) {
+				http.Redirect(w, r, destination, status)
+			})
+			h := newHarness(t, col, map[string]string{"OTEL_EXPORTER_OTLP_HEADERS": "x-api-key=test-secret"}, options{})
+			h.logN(2, "m")
+			h.flush(t)
+			select {
+			case key := <-reached:
+				t.Fatalf("the redirect's target was reached (x-api-key %q)", key)
+			default:
+			}
+			if n := col.requests.Load(); n != 1 {
+				t.Fatalf("%d requests, want 1: a redirect is not retried", n)
+			}
+			wantCounts(t, h.e, Counts{Failed: 2})
+			reports := h.reports.reports(t)
+			if len(reports) != 1 || reports[0]["http.response.status_code"] != float64(status) {
+				t.Fatalf("reports %v, want one with status %d", reports, status)
+			}
+		})
+	}
+}
+
+// A 302 to a login page answering 200 is not a delivery: nothing reached the
+// collector.
+func TestRedirectToAPageAnsweringOKIsNotExported(t *testing.T) {
+	login := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		io.WriteString(w, "<html><body>Sign in</body></html>")
+	}))
+	defer login.Close()
+	col := newCollector(t, func(w http.ResponseWriter, r *http.Request, _ int) {
+		http.Redirect(w, r, login.URL+"/login", http.StatusFound)
+	})
+	h := newHarness(t, col, nil, options{})
+	h.logN(3, "m")
+	h.flush(t)
+	wantCounts(t, h.e, Counts{Failed: 3})
+	reports := h.reports.reports(t)
+	if len(reports) != 1 || reports[0]["http.response.status_code"] != float64(http.StatusFound) {
+		t.Fatalf("reports %v, want one with status 302", reports)
+	}
+}
+
+// The collector's own text — a Status message, a partial success's errorMessage —
+// never reaches a report: an auth proxy may echo the credential in it.
+func TestCollectorTextIsNeverReported(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		partial bool
+		want    string
+	}{
+		{"failure status", false, "collector answered 401 Unauthorized"},
+		{"partial success", true, "collector rejected 1 records"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			col := newCollector(t, func(w http.ResponseWriter, r *http.Request, _ int) {
+				message := "invalid credential: " + r.Header.Get("Authorization")
+				if tc.partial {
+					json.NewEncoder(w).Encode(map[string]any{"partialSuccess": map[string]any{
+						"rejectedLogRecords": "1", "errorMessage": message,
+					}})
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				json.NewEncoder(w).Encode(map[string]any{"code": 16, "message": message})
+			})
+			h := newHarness(t, col, map[string]string{"OTEL_EXPORTER_OTLP_HEADERS": "authorization=Bearer%20test-secret"}, options{})
+			h.logN(2, "m")
+			h.flush(t)
+			reports := h.reports.reports(t)
+			if len(reports) != 1 {
+				t.Fatalf("reports %v, want 1", reports)
+			}
+			if got := reports[0]["exception.message"]; got != tc.want {
+				t.Fatalf("exception.message %q, want %q: never the collector's text", got, tc.want)
+			}
+		})
+	}
+}
+
+// A transport failure is reported in the gateway's own words: Go's error quotes
+// the bytes it could not parse — here a header line carrying a credential.
+func TestTransportErrorTextIsNeverReported(t *testing.T) {
+	col := newCollector(t, func(w http.ResponseWriter, _ *http.Request, _ int) {
+		conn, buf, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		defer conn.Close()
+		buf.WriteString("HTTP/1.1 200 OK\r\nBearer test-secret\r\n\r\n")
+		buf.Flush()
+	})
+	// The first backoff (at least 0.25 s) is beyond the timeout: one attempt.
+	h := newHarness(t, col, map[string]string{"OTEL_EXPORTER_OTLP_LOGS_TIMEOUT": "100"}, options{})
+	h.logN(1, "m")
+	h.flush(t)
+	wantCounts(t, h.e, Counts{Failed: 1})
+	reports := h.reports.reports(t)
+	if len(reports) != 1 {
+		t.Fatalf("reports %v, want 1", reports)
+	}
+	if msg, _ := reports[0]["exception.message"].(string); strings.Contains(msg, "test-secret") || strings.Contains(msg, "Bearer") {
+		t.Fatalf("exception.message %q carries the bytes the collector sent", msg)
+	}
+	if _, ok := reports[0]["http.response.status_code"]; ok {
+		t.Fatalf("report %v carries a status: no answer was read", reports[0])
+	}
+}
+
+// A 2xx counts as delivered only when its body is empty or an
+// ExportLogsServiceResponse; one that cannot be read, or is something else, fails
+// the whole batch unretried: the collector may have taken some of it.
+func TestUnreadableAnswerFailsUnretried(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		respond func(w http.ResponseWriter)
+	}{
+		{"truncated partial success", func(w http.ResponseWriter) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Length", "1000")
+			io.WriteString(w, `{"partialSuccess":{"rejectedLogRecords":"1"`)
+		}},
+		{"a login page", func(w http.ResponseWriter) {
+			w.Header().Set("Content-Type", "text/html")
+			io.WriteString(w, "<html><body>Sign in</body></html>")
+		}},
+		{"not JSON", func(w http.ResponseWriter) { io.WriteString(w, "ok") }},
+		{"a JSON array", func(w http.ResponseWriter) { io.WriteString(w, "[]") }},
+		{"JSON null", func(w http.ResponseWriter) { io.WriteString(w, "null") }},
+		{"partialSuccess not an object", func(w http.ResponseWriter) { io.WriteString(w, `{"partialSuccess":"none"}`) }},
+		{"rejectedLogRecords not an integer", func(w http.ResponseWriter) {
+			io.WriteString(w, `{"partialSuccess":{"rejectedLogRecords":true}}`)
+		}},
+		{"rejectedLogRecords a fraction", func(w http.ResponseWriter) {
+			io.WriteString(w, `{"partialSuccess":{"rejectedLogRecords":"1.5"}}`)
+		}},
+		{"errorMessage not a string", func(w http.ResponseWriter) {
+			io.WriteString(w, `{"partialSuccess":{"rejectedLogRecords":"1","errorMessage":7}}`)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			col := newCollector(t, func(w http.ResponseWriter, _ *http.Request, _ int) { tc.respond(w) })
+			h := newHarness(t, col, nil, options{})
+			h.logN(3, "m")
+			h.flush(t)
+			if n := col.requests.Load(); n != 1 {
+				t.Fatalf("%d requests, want 1: an unreadable answer is not retried", n)
+			}
+			wantCounts(t, h.e, Counts{Failed: 3})
+			reports := h.reports.reports(t)
+			if len(reports) != 1 || reports[0]["http.response.status_code"] != float64(200) {
+				t.Fatalf("reports %v, want one with status 200", reports)
+			}
+		})
+	}
+}
+
+// An ExportLogsServiceResponse without rejections delivers the batch, whatever
+// members OTLP does not define it carries.
+func TestAnswersThatDeliver(t *testing.T) {
+	for _, body := range []string{``, "\n", `{}`, `{"partialSuccess":null}`, `{"partialSuccess":{}}`,
+		`{"partialSuccess":{"rejectedLogRecords":null,"errorMessage":null}}`, `{"extra":[1,{"x":2}]}`,
+		`{"partialSuccess":{"rejectedLogRecords":"0","errorMessage":"","extra":true}}`} {
+		t.Run(body, func(t *testing.T) {
+			col := newCollector(t, func(w http.ResponseWriter, _ *http.Request, _ int) { io.WriteString(w, body) })
+			h := newHarness(t, col, nil, options{})
+			h.logN(2, "m")
+			h.flush(t)
+			wantCounts(t, h.e, Counts{Exported: 2})
+			if r := h.reports.reports(t); len(r) != 0 {
+				t.Fatalf("reports %v, want none", r)
+			}
+		})
+	}
+}
+
+// A Retry-After beyond any batch's timeout — two days, or more than a duration
+// holds — fails the batch without a retry: it saturates, never reads as absent.
+func TestLongRetryAfterFailsTheBatch(t *testing.T) {
+	for _, header := range []string{"172800", "99999999999999999999"} {
+		t.Run(header, func(t *testing.T) {
+			col := newCollector(t, func(w http.ResponseWriter, _ *http.Request, n int) {
+				if n == 0 {
+					w.Header().Set("Retry-After", header)
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+				io.WriteString(w, "{}")
+			})
+			h := newHarness(t, col, nil, options{})
+			h.logN(1, "m")
+			h.flush(t)
+			if n := col.requests.Load(); n != 1 {
+				t.Fatalf("%d requests (waits %v), want 1: the batch fails without a retry", n, h.recordedWaits())
+			}
+			wantCounts(t, h.e, Counts{Failed: 1})
+			if got := retryAfter(header, time.Now()); got < 172800*time.Second {
+				t.Fatalf("retryAfter(%q) = %v, want at least two days", header, got)
+			}
+		})
+	}
+}
+
+// Retry-After: 0, or a date already past, still waits the backoff: the wait is
+// max(Retry-After, backoff).
+func TestRetryAfterBelowTheBackoffWaitsTheBackoff(t *testing.T) {
+	for name, header := range map[string]func() string{
+		"zero":        func() string { return "0" },
+		"a past date": func() string { return time.Now().Add(-time.Hour).UTC().Format(http.TimeFormat) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			col := newCollector(t, func(w http.ResponseWriter, _ *http.Request, n int) {
+				if n < 3 {
+					w.Header().Set("Retry-After", header())
+					w.WriteHeader(http.StatusTooManyRequests)
+					return
+				}
+				io.WriteString(w, "{}")
+			})
+			h := newHarness(t, col, nil, options{})
+			h.logN(1, "m")
+			h.flush(t)
+			waits := h.recordedWaits()
+			if len(waits) != 3 {
+				t.Fatalf("waits %v, want 3", waits)
+			}
+			for i, base := range []time.Duration{500 * time.Millisecond, time.Second, 2 * time.Second} {
+				if waits[i] < base/2 || waits[i] > base {
+					t.Errorf("wait %d = %s, want the backoff, within [%s, %s]", i, waits[i], base/2, base)
+				}
+			}
+			wantCounts(t, h.e, Counts{Exported: 1})
+		})
 	}
 }

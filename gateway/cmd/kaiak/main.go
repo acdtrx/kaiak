@@ -306,7 +306,7 @@ func durationMS(lookupEnv func(string) (string, bool), name string, def time.Dur
 // then follows the control plane, sends usage and reports status in the background
 // until the drain is over. A value on stop, or a
 // listener failing, starts the drain (server.Drain.Run); a further value on stop
-// hurries it. Cancelling ctx stops without waiting: the drain runs hurried. Once the
+// hurries it, the final log flush included. Cancelling ctx stops without waiting: the drain runs hurried. Once the
 // API has drained, run flushes usage to the control plane (control-plane mode) or
 // writes the limits snapshot (file mode, with a data directory), stops the admin
 // listener and returns. Its last line is `kaiak stopped`, or `kaiak stopped with an
@@ -317,16 +317,21 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 	reload, stop <-chan os.Signal) (err error) {
 	startedAt := time.Now()
 	// The export and the end of its final flush: the drain's deadline once a drain
-	// started, unless a second signal hurried it.
+	// started. hurry is closed by a second stop signal (or ctx's end); its watch
+	// runs from the drain's start through the final flush, which it cuts to its
+	// floor, and endSignalWatch ends it after the flush.
 	var logExport *otlplog.Exporter
 	var logFlushBy time.Time
+	var hurry chan struct{}
+	endSignalWatch := func() {}
 	defer func() {
 		if err != nil {
 			logger.Error("kaiak stopped with an error", "exception.message", err)
 		}
 		if logExport != nil {
-			finishLogExport(logExport, logFlushBy)
+			finishLogExport(logExport, logFlushBy, hurry)
 		}
+		endSignalWatch()
 	}()
 	s, err := readSettings(lookupEnv)
 	if err != nil {
@@ -539,33 +544,31 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 		client.SetDraining()
 	}
 	// hurry is closed by a second stop signal, or at once when ctx is cancelled.
-	hurry := make(chan struct{})
-	drained := make(chan struct{})
+	hurry = make(chan struct{})
 	if ctx.Err() != nil {
 		close(hurry)
 	} else {
-		background.Go(func() {
+		endWatch := make(chan struct{})
+		var watch sync.WaitGroup
+		watch.Go(func() {
 			select {
 			case sig := <-stop:
 				logger.Warn("second stop signal: skipping the remaining drain", "kaiak.signal", sig.String())
 			case <-ctx.Done():
-			case <-drained:
+			case <-endWatch:
 				return
 			}
 			close(hurry)
 		})
+		endSignalWatch = func() {
+			close(endWatch)
+			watch.Wait()
+		}
 	}
 	drain.Run(api, drainTimes, hurry, logger)
 	if client != nil {
 		finishWithControlPlane(client, drainDeadline, hurry)
 	}
-	// A second signal skips the waiting left: the log export keeps only its floor.
-	select {
-	case <-hurry:
-		logFlushBy = time.Time{}
-	default:
-	}
-	close(drained)
 	stopBackground()
 	background.Wait()
 	switch {
@@ -686,17 +689,42 @@ const logExportFlushFloor = time.Second
 
 // finishLogExport is the log export's final flush, the process's last act
 // (docs/specs/GATEWAY.md, Observability → OTLP log export: at exit): what is queued is
-// sent until by, or until logExportFlushFloor from now when that is later. What is
-// still queued then is dropped and counted (and reported on stderr, within the
-// report's once-a-minute limit).
-func finishLogExport(e *otlplog.Exporter, by time.Time) {
-	if floor := time.Now().Add(logExportFlushFloor); floor.After(by) {
-		by = floor
-	}
-	ctx, cancel := context.WithDeadline(context.Background(), by)
+// sent until by, or until logExportFlushFloor from now when that is later. Once
+// hurry is closed — a second stop signal, before the flush or during it — the
+// floor alone bounds it: a flush already past it ends at once. A nil hurry (no
+// drain started) never closes. What is still queued at the end is dropped and
+// counted, and reported on stderr.
+func finishLogExport(e *otlplog.Exporter, by time.Time, hurry <-chan struct{}) {
+	floor := time.Now().Add(logExportFlushFloor)
+	ctx, cancel := context.WithDeadline(context.Background(), later(by, floor))
 	defer cancel()
+	floorCtx, cancelFloor := context.WithDeadline(context.Background(), floor)
+	defer cancelFloor()
+	var watch sync.WaitGroup
+	watch.Go(func() {
+		select {
+		case <-hurry:
+		case <-ctx.Done():
+			return
+		}
+		select {
+		case <-floorCtx.Done():
+			cancel()
+		case <-ctx.Done():
+		}
+	})
 	_ = e.Flush(ctx) // what did not fit is Close's to count
+	cancel()
+	watch.Wait()
 	e.Close()
+}
+
+// later is the later of a and b.
+func later(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
 }
 
 // adminShutdownTimeout bounds how long a probe or scrape still open at the end may

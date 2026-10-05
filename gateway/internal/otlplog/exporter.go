@@ -14,15 +14,15 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"math/rand/v2"
 	"net/http"
-	"net/url"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"kaiak/internal/clip"
+	"kaiak/internal/netfail"
 )
 
 // Delivery is fixed, not configurable (the batch processor's OTEL_BLRP_* variables
@@ -133,13 +133,19 @@ func newExporter(s *Settings, res Resource, report *slog.Logger, opts options) *
 		timeout:   s.timeout,
 		userAgent: "kaiak/" + res.ServiceVersion,
 		resource:  resourceAttributes(s, res),
-		client:    &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone()},
-		report:    report,
-		opts:      opts,
-		wake:      make(chan struct{}, 1),
-		flushes:   make(chan chan error),
-		stop:      stop,
-		done:      make(chan struct{}),
+		client: &http.Client{
+			Transport: http.DefaultTransport.(*http.Transport).Clone(),
+			// A redirect is not followed: Go would resend the batch and every
+			// configured header to its target (docs/specs/GATEWAY.md, OTLP log
+			// export → Delivery: no redirects). The 3xx fails the batch.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
+		report:  report,
+		opts:    opts,
+		wake:    make(chan struct{}, 1),
+		flushes: make(chan chan error),
+		stop:    stop,
+		done:    make(chan struct{}),
 	}
 	tick := opts.tick
 	var ticker *time.Ticker
@@ -201,7 +207,8 @@ func (e *Exporter) Close() {
 		e.mu.Unlock()
 		e.dropped.Add(uint64(left))
 		e.client.CloseIdleConnections()
-		e.reportProblems()
+		// The report at exit is never held back: drops at exit are never silent.
+		e.writeReport()
 	})
 }
 
@@ -301,10 +308,9 @@ func (e *Exporter) export(ctx context.Context, batch []record) {
 			e.fail(n, o.status, o.err)
 			return
 		}
-		wait := o.retryAfter
-		if wait < 0 {
-			wait = backoff(attempt)
-		}
+		// The collector's Retry-After when it is longer than the backoff: one of 0
+		// (or a date already past) would retry back to back.
+		wait := max(o.retryAfter, backoff(attempt))
 		if deadline, _ := ctx.Deadline(); wait >= time.Until(deadline) {
 			e.fail(n, o.status, o.err)
 			return
@@ -318,7 +324,9 @@ func (e *Exporter) export(ctx context.Context, batch []record) {
 	}
 }
 
-// outcome is one attempt's result.
+// outcome is one attempt's result. Its errors are in the gateway's own words,
+// never text the collector sent (docs/specs/GATEWAY.md, Observability → Logs: no
+// remote text): an auth proxy may echo the credential in its answer.
 type outcome struct {
 	// status is the collector's answer; 0 when it gave none.
 	status int
@@ -344,29 +352,47 @@ func (e *Exporter) post(ctx context.Context, body []byte) outcome {
 	req.Header.Set("User-Agent", e.userAgent)
 	resp, err := e.client.Do(req)
 	if err != nil {
-		// The URL error repeats the endpoint, query included; the cause is enough.
-		var ue *url.Error
-		if errors.As(err, &ue) {
-			err = ue.Err
-		}
 		if ctx.Err() != nil {
-			return outcome{err: fmt.Errorf("export cut short: %w", err)}
+			return outcome{err: fmt.Errorf("export cut short: %w", ctx.Err())}
 		}
-		return outcome{err: err, retry: true, retryAfter: -1}
+		return outcome{err: errors.New("no answer from the collector: " + netfail.Class(err)), retry: true, retryAfter: -1}
 	}
 	defer resp.Body.Close()
-	// A read error leaves what was read: the status already says what happened.
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize+1))
+	data, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize+1))
 	o := outcome{status: resp.StatusCode, retryAfter: -1}
+	answered := "collector answered " + strconv.Itoa(resp.StatusCode)
+	if text := http.StatusText(resp.StatusCode); text != "" {
+		answered += " " + text
+	}
 	if len(data) > maxResponseSize {
-		o.err = fmt.Errorf("collector answered %d with a body above 4 MiB", resp.StatusCode)
+		o.err = errors.New(answered + " with a body above 4 MiB")
 		return o
 	}
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		o.rejected, o.rejectErr = partialSuccess(data)
+	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		// What counts as delivered: an empty body or an ExportLogsServiceResponse.
+		// Anything else fails the batch unretried — the collector may have taken
+		// some of it, and a retry would duplicate those records.
+		if readErr != nil {
+			o.err = errors.New(answered + ", its answer unreadable: " + netfail.Class(readErr))
+			return o
+		}
+		rejected, ok := readExportResponse(data)
+		if !ok {
+			o.err = errors.New(answered + " with a body that is not an ExportLogsServiceResponse")
+			return o
+		}
+		if rejected > 0 {
+			o.rejected, o.rejectErr = rejected, fmt.Errorf("collector rejected %d records", rejected)
+		}
+		return o
+	case resp.StatusCode >= 300 && resp.StatusCode < 400:
+		o.err = errors.New(answered + ": redirects are not followed")
 		return o
 	}
-	o.err = collectorError(resp.StatusCode, data)
+	// A failure's body, a Status, is not decoded: its message is the collector's
+	// text.
+	o.err = errors.New(answered)
 	switch resp.StatusCode {
 	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 		o.retry = true
@@ -375,24 +401,34 @@ func (e *Exporter) post(ctx context.Context, body []byte) outcome {
 	return o
 }
 
-// partialSuccess reads ExportLogsServiceResponse's partial success: the records
-// the collector rejected and why. A body that is not one — empty, or not JSON —
-// rejected nothing: the 2xx said the batch was accepted.
-func partialSuccess(data []byte) (uint64, error) {
+// readExportResponse reads a 2xx body as an ExportLogsServiceResponse: empty, or a
+// JSON object whose partialSuccess, when present, is an object with
+// rejectedLogRecords an integer (or its decimal string) and errorMessage a string;
+// members OTLP does not define are ignored. It returns the records rejected, and
+// false for a body that is not one.
+func readExportResponse(data []byte) (uint64, bool) {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 {
+		return 0, true
+	}
+	if data[0] != '{' {
+		return 0, false
+	}
 	var resp struct {
 		PartialSuccess *struct {
-			RejectedLogRecords flexInt `json:"rejectedLogRecords"`
-			ErrorMessage       string  `json:"errorMessage"`
+			RejectedLogRecords *flexInt `json:"rejectedLogRecords"`
+			// ErrorMessage is decoded only to check its type: the collector's text
+			// is never logged.
+			ErrorMessage *string `json:"errorMessage"`
 		} `json:"partialSuccess"`
 	}
-	if json.Unmarshal(data, &resp) != nil || resp.PartialSuccess == nil || resp.PartialSuccess.RejectedLogRecords <= 0 {
-		return 0, nil
+	if json.Unmarshal(data, &resp) != nil {
+		return 0, false
 	}
-	n := uint64(resp.PartialSuccess.RejectedLogRecords)
-	if msg := resp.PartialSuccess.ErrorMessage; msg != "" {
-		return n, fmt.Errorf("collector rejected %d records: %s", n, clip.String(msg))
+	if resp.PartialSuccess == nil || resp.PartialSuccess.RejectedLogRecords == nil || *resp.PartialSuccess.RejectedLogRecords <= 0 {
+		return 0, true
 	}
-	return n, fmt.Errorf("collector rejected %d records", n)
+	return uint64(*resp.PartialSuccess.RejectedLogRecords), true
 }
 
 // flexInt is a JSON int64 written either way protobuf's JSON mapping accepts: a
@@ -409,27 +445,17 @@ func (n *flexInt) UnmarshalJSON(b []byte) error {
 	return err
 }
 
-// collectorError describes a failure status, with the message of the Status the
-// collector answered with when it sent one.
-func collectorError(status int, data []byte) error {
-	var st struct {
-		Message string `json:"message"`
-	}
-	if json.Unmarshal(data, &st) == nil && st.Message != "" {
-		return fmt.Errorf("collector answered %d %s: %s", status, http.StatusText(status), clip.String(st.Message))
-	}
-	return fmt.Errorf("collector answered %d %s", status, http.StatusText(status))
-}
-
 // retryAfter reads a Retry-After header — seconds or an HTTP date — as the wait
-// from now; below 0 when it is absent or unreadable.
+// from now; below 0 when it is absent or unreadable. A wait too long for a
+// duration saturates, so that it outlasts every batch's timeout rather than read
+// as absent.
 func retryAfter(h string, now time.Time) time.Duration {
 	if h == "" {
 		return -1
 	}
-	if secs, err := strconv.ParseInt(h, 10, 64); err == nil {
-		if secs < 0 || secs > int64(maxRetryAfter/time.Second) {
-			return -1
+	if secs, err := strconv.ParseUint(h, 10, 64); err == nil || errors.Is(err, strconv.ErrRange) {
+		if secs > uint64(maxWait/time.Second) {
+			return maxWait
 		}
 		return time.Duration(secs) * time.Second
 	}
@@ -439,9 +465,8 @@ func retryAfter(h string, now time.Time) time.Duration {
 	return -1
 }
 
-// maxRetryAfter keeps a Retry-After in seconds clear of overflow; any wait that
-// long is past every batch's timeout anyway.
-const maxRetryAfter = 24 * time.Hour
+// maxWait is the longest duration: a Retry-After saturates there.
+const maxWait = time.Duration(math.MaxInt64)
 
 // backoff is the wait before retry attempt+1: from 0.5 s, doubling, at most 5 s,
 // with jitter over its upper half.
@@ -463,13 +488,18 @@ func (e *Exporter) fail(n uint64, status int, err error) {
 // reportProblems writes `log export failing` when records failed or were dropped
 // since the last such line, at most once per reportInterval.
 func (e *Exporter) reportProblems() {
+	if !e.lastReport.IsZero() && e.opts.now().Sub(e.lastReport) < reportInterval {
+		return
+	}
+	e.writeReport()
+}
+
+// writeReport writes `log export failing` when records failed or were dropped since
+// the last such line.
+func (e *Exporter) writeReport() {
 	failed, dropped := e.failed.Load(), e.dropped.Load()
 	newFailed, newDropped := failed-e.reportedFailed, dropped-e.reportedDropped
 	if newFailed == 0 && newDropped == 0 {
-		return
-	}
-	now := e.opts.now()
-	if !e.lastReport.IsZero() && now.Sub(e.lastReport) < reportInterval {
 		return
 	}
 	attrs := []slog.Attr{
@@ -484,6 +514,6 @@ func (e *Exporter) reportProblems() {
 	}
 	e.report.LogAttrs(context.Background(), slog.LevelWarn, "log export failing", attrs...)
 	e.reportedFailed, e.reportedDropped = failed, dropped
-	e.lastReport = now
+	e.lastReport = e.opts.now()
 	e.lastStatus, e.lastError = 0, ""
 }

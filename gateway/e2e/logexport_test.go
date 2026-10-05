@@ -490,8 +490,9 @@ func TestLogExportRefusedBatch(t *testing.T) {
 	g := startGatewayEnv(t, append(gatewayEnv(configFile, ""), "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT="+collector.URL+"/v1/logs"))
 
 	report := g.logs.wait(t, "the failure report", msg("log export failing"))
+	// The collector's message is never reported (Logs: no remote text).
 	if report["http.response.status_code"] != 400.0 || report["kaiak.log_export.dropped"] != 0.0 ||
-		!strings.Contains(fmt.Sprint(report["exception.message"]), "export refused by the test") {
+		report["exception.message"] != "collector answered 400 Bad Request" {
 		t.Errorf("failure report %v", report)
 	}
 	failed := report["kaiak.log_export.failed"].(float64)
@@ -537,8 +538,8 @@ func buildVersionOf(t *testing.T, c *otlpCollector) string {
 
 // A collector that never answers holds one export; at exit the final flush gives up
 // at its bound — the drain's deadline, at least 1 s — and the export in flight counts
-// as failed, which stderr reports. What is still queued is dropped and counted; its
-// report falls within the once-a-minute limit of the one just written.
+// as failed, which stderr reports. What is still queued is dropped and counted, and
+// reported too: the report at exit is never held back.
 func TestLogExportStalledCollectorAtExit(t *testing.T) {
 	backend := fakebackend.New()
 	defer backend.Close()

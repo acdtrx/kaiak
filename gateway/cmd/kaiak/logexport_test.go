@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -11,7 +12,9 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestLogExportSettings(t *testing.T) {
@@ -123,5 +126,62 @@ func TestRunSettingsFailureReachesStderr(t *testing.T) {
 	}
 	if n := strings.Count(logs.String(), `"msg":"kaiak stopped with an error"`); n != 1 {
 		t.Errorf("error logged %d times on stderr, want once:\n%s", n, logs.String())
+	}
+}
+
+// A second stop signal arriving during the final log flush cuts it to its 1 s:
+// with a collector that stalls on the last lines, run returns about a second after
+// the flush started, not at the drain's deadline (10 s here).
+func TestSecondSignalCutsTheFinalLogFlush(t *testing.T) {
+	flushing := make(chan struct{})
+	release := make(chan struct{})
+	var seen, released sync.Once
+	unblock := func() { released.Do(func() { close(release) }) }
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "kaiak stopped") {
+			seen.Do(func() { close(flushing) })
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+		}
+		io.WriteString(w, "{}")
+	}))
+	defer collector.Close()
+	defer unblock()
+	var logs syncBuffer
+	stop := make(chan os.Signal, 2)
+	stop <- syscall.SIGTERM
+	env := envOf(map[string]string{
+		"KAIAK_CONFIG_FILE": minimalFixture, "KAIAK_INSTANCE_ID": "test-1",
+		"KAIAK_LISTEN_ADDR": "127.0.0.1:0", "KAIAK_ADMIN_ADDR": "127.0.0.1:0",
+		"KAIAK_DRAIN_GRACE_MS": "0", "KAIAK_DRAIN_TIMEOUT_MS": "10000",
+		"OTEL_EXPORTER_OTLP_ENDPOINT": collector.URL, "OTEL_EXPORTER_OTLP_TIMEOUT": "20000",
+	})
+	done := make(chan error, 1)
+	go func() {
+		done <- run(context.Background(), slog.New(slog.NewJSONHandler(&logs, nil)), env, make(chan os.Signal), stop)
+	}()
+	select {
+	case <-flushing:
+	case err := <-done:
+		t.Fatalf("run returned before the final flush: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the final flush never reached the collector")
+	}
+	stop <- os.Interrupt
+	// The 1 s floor, plus room for scheduling.
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		unblock()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		t.Fatal("the second signal did not cut the final log flush: run returned only once the collector answered")
 	}
 }
