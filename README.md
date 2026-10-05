@@ -196,7 +196,7 @@ Two images, for `linux/amd64` and `linux/arm64`, published with every release:
   and no volume.
 - `ghcr.io/acdtrx/kaiak-sample`: the sample control plane.
 
-Tags are the release version (`0.9.0`) and `latest` for the newest stable release.
+Tags are the release version (`0.10.0`) and `latest` for the newest stable release.
 To build your own: `scripts/build-images.sh --repo <registry/namespace> [--push]`
 (`--push` pushes only after `scripts/smoke-images.sh` has run both images end to end).
 
