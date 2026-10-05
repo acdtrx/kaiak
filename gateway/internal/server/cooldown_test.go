@@ -71,7 +71,7 @@ func TestAllDeploymentsThrottledAreStillUsed(t *testing.T) {
 	if w := post(t, g, "first", `{"model":"retry"}`); w.Code != http.StatusTooManyRequests {
 		t.Fatalf("status %d, want 429", w.Code)
 	}
-	if line := logLine(t, g, "first"); !strings.Contains(line, `"attempts":2,`) {
+	if line := logLine(t, g, "first"); !strings.Contains(line, `"kaiak.attempts":2,`) {
 		t.Fatalf("log line: %s", line)
 	}
 	if w := post(t, g, "second", `{"model":"retry"}`); w.Code != http.StatusTooManyRequests {
@@ -96,7 +96,7 @@ func TestCooldownEnds(t *testing.T) {
 	defer held.Release()
 	post(t, g, "throttled", `{"model":"retry"}`)
 	post(t, g, "cooling", `{"model":"retry"}`)
-	if line := logLine(t, g, "cooling"); !strings.Contains(line, `"backend":"local-b"`) || !strings.Contains(line, `"attempts":1,`) {
+	if line := logLine(t, g, "cooling"); !strings.Contains(line, `"kaiak.backend.id":"local-b"`) || !strings.Contains(line, `"kaiak.attempts":1,`) {
 		t.Errorf("during the cooldown: %s, want one attempt on local-b", line)
 	}
 	deadline := time.Now().Add(5 * time.Second)
@@ -107,7 +107,7 @@ func TestCooldownEnds(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	post(t, g, "after", `{"model":"retry"}`)
-	if line := logLine(t, g, "after"); !strings.Contains(line, `"backend":"local"`) || !strings.Contains(line, `"attempts":1,`) {
+	if line := logLine(t, g, "after"); !strings.Contains(line, `"kaiak.backend.id":"local"`) || !strings.Contains(line, `"kaiak.attempts":1,`) {
 		t.Errorf("after the cooldown: %s, want one attempt on local (fewer in flight)", line)
 	}
 	if n := len(other.Requests()); n != 2 {

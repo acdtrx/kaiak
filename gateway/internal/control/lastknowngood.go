@@ -32,12 +32,12 @@ func (c *Client) saveLastKnownGood(at configPosition, doc []byte) {
 	}
 	if err := c.opts.Dir.WriteVersioned(LastKnownGoodFile, lastKnownGoodFormat,
 		lastKnownGood{ConfigEpoch: at.epoch, Version: at.version, Config: doc}); err != nil {
-		c.logger.Error("last-known-good config not written", "file", LastKnownGoodFile,
-			"config_version", at.version, "config_epoch", at.epoch, "error", err)
+		c.logger.Error("last-known-good config not written", "file.name", LastKnownGoodFile,
+			"kaiak.config.version", at.version, "kaiak.config.epoch", at.epoch, "exception.message", err)
 		return
 	}
-	c.logger.Debug("last-known-good config written", "file", LastKnownGoodFile, "config_version", at.version,
-		"config_epoch", at.epoch)
+	c.logger.Debug("last-known-good config written", "file.name", LastKnownGoodFile, "kaiak.config.version", at.version,
+		"kaiak.config.epoch", at.epoch)
 }
 
 // bootFromLastKnownGood applies the last-known-good copy, if there is a data directory
@@ -54,25 +54,25 @@ func (c *Client) bootFromLastKnownGood() bool {
 	var saved lastKnownGood
 	found, err := c.opts.Dir.ReadVersioned(LastKnownGoodFile, lastKnownGoodFormat, &saved)
 	if err != nil {
-		c.logger.Warn("last-known-good config not read", "file", LastKnownGoodFile, "error", err)
+		c.logger.Warn("last-known-good config not read", "file.name", LastKnownGoodFile, "exception.message", err)
 		return false
 	}
 	if !found {
-		c.logger.Info("no last-known-good config", "file", LastKnownGoodFile)
+		c.logger.Info("no last-known-good config", "file.name", LastKnownGoodFile)
 		return false
 	}
 	if !hex32Pattern.MatchString(saved.ConfigEpoch) || saved.Version < 1 || saved.Version > schemacheck.MaxSafeInteger {
 		// The stream would resume from this position, and the control plane refuses a
 		// malformed one on every reconnect.
-		c.logger.Warn("last-known-good config discarded: malformed position", "file", LastKnownGoodFile,
-			"config_version", saved.Version, "config_epoch", saved.ConfigEpoch)
+		c.logger.Warn("last-known-good config discarded: malformed position", "file.name", LastKnownGoodFile,
+			"kaiak.config.version", saved.Version, "kaiak.config.epoch", saved.ConfigEpoch)
 		return false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	_, err = c.opts.Applier.ApplyPublished(TriggerLastKnownGood, saved.Config,
 		config.Version{Epoch: saved.ConfigEpoch, Number: saved.Version},
-		"config_version", saved.Version, "config_epoch", saved.ConfigEpoch, "file", LastKnownGoodFile)
+		"kaiak.config.version", saved.Version, "kaiak.config.epoch", saved.ConfigEpoch, "file.name", LastKnownGoodFile)
 	if err != nil {
 		return false
 	}

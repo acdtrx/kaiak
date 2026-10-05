@@ -100,7 +100,7 @@ func TestReadDiscardsAnotherFormatVersion(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(d.Path(), "usage.json")); !os.IsNotExist(err) {
 		t.Error("the stale file was not discarded")
 	}
-	if out := logs.String(); !strings.Contains(out, "discarded data file") || !strings.Contains(out, "found_version=1") {
+	if out := logs.String(); !strings.Contains(out, "discarded data file") || !strings.Contains(out, "kaiak.data_file.found_version=1") {
 		t.Errorf("discard not logged:\n%s", out)
 	}
 }

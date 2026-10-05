@@ -25,7 +25,7 @@ func TestResponseTimeoutIsNotRetried(t *testing.T) {
 	}
 	expectUnits(t, onlyRecord(t, g), units(int64(len(body)+3)/4, 0, 0, 0, 0), true, true)
 	logs := g.logText()
-	for _, want := range []string{`"attempts":1`, `"error_code":"upstream_timeout"`, `no response within 150ms`} {
+	for _, want := range []string{`"kaiak.attempts":1`, `"error.type":"upstream_timeout"`, `no response within 150ms`} {
 		if !strings.Contains(logs, want) {
 			t.Errorf("log misses %s:\n%s", want, logs)
 		}
@@ -61,7 +61,7 @@ func TestStalledStreamEndsAsUpstreamFailure(t *testing.T) {
 	}
 	// Two chunks seen, "Hello" and " from": 10 bytes.
 	expectUnits(t, settledRecord(t, g), units(int64(len(body)+3)/4, 0, 0, 3, 0), true, true)
-	if logs := g.logText(); !strings.Contains(logs, `"relay_end":"upstream_stalled"`) || !strings.Contains(logs, "silent for 150ms") {
+	if logs := g.logText(); !strings.Contains(logs, `"kaiak.relay_end":"upstream_stalled"`) || !strings.Contains(logs, "silent for 150ms") {
 		t.Errorf("log misses the stall:\n%s", logs)
 	}
 }
@@ -125,8 +125,8 @@ func TestStreamEndingBeforeItsTerminalChunkIsIncomplete(t *testing.T) {
 	if n := len(g.backend.Requests()); n != 1 {
 		t.Errorf("backend got %d requests, want 1", n)
 	}
-	if logs := g.logText(); !strings.Contains(logs, `"relay_end":"upstream_incomplete"`) {
-		t.Errorf("log misses relay_end:\n%s", logs)
+	if logs := g.logText(); !strings.Contains(logs, `"kaiak.relay_end":"upstream_incomplete"`) {
+		t.Errorf("log misses kaiak.relay_end:\n%s", logs)
 	}
 }
 
@@ -158,8 +158,8 @@ func TestJSONBodyEndingEarlyIsAnUpstreamFailure(t *testing.T) {
 			if rec := settledRecord(t, g); !rec.Partial {
 				t.Errorf("record %+v, want partial", rec)
 			}
-			if logs := g.logText(); !strings.Contains(logs, `"relay_end":"`+c.end+`"`) {
-				t.Errorf("log misses relay_end %s:\n%s", c.end, logs)
+			if logs := g.logText(); !strings.Contains(logs, `"kaiak.relay_end":"`+c.end+`"`) {
+				t.Errorf("log misses kaiak.relay_end %s:\n%s", c.end, logs)
 			}
 		})
 	}
@@ -196,7 +196,7 @@ func TestKeepAliveCommentsDoNotHoldOffTheStallTimer(t *testing.T) {
 		t.Errorf("client got %q, want the keep-alive comments relayed", data)
 	}
 	settledRecord(t, g)
-	if logs := g.logText(); !strings.Contains(logs, `"relay_end":"upstream_stalled"`) {
+	if logs := g.logText(); !strings.Contains(logs, `"kaiak.relay_end":"upstream_stalled"`) {
 		t.Errorf("log misses the stall:\n%s", logs)
 	}
 }

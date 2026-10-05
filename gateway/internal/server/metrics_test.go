@@ -161,7 +161,7 @@ func TestRequestErrorsByKeyAndCode(t *testing.T) {
 }
 
 // A relayed backend error status counts under its class, as the log line's
-// error_code names it; the label switches apply as for the usage metrics.
+// error.type names it; the label switches apply as for the usage metrics.
 func TestRequestErrorsFollowTheLabelSwitches(t *testing.T) {
 	g := newTestGateway(t)
 	g.holder.Swap(testSnapshotWith(t, g.backend.URL(), func(doc string) string {

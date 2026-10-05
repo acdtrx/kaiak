@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"kaiak/internal/config"
+	"kaiak/internal/logattr"
 )
 
 // Outcome is what a request's result says about its deployment's health, as the
@@ -122,8 +123,8 @@ func (r *Router) report(d config.Deployment, trial uint64, o Outcome, reason str
 	r.startProber(key.Backend)
 	r.mu.Unlock()
 
-	r.logger.Warn("circuit opened", "backend", key.Backend, "deployment_model", key.Model,
-		"failures", failures, "last_error", reason)
+	r.logger.Warn("circuit opened", "kaiak.backend.id", key.Backend, "kaiak.deployment.model", key.Model,
+		"kaiak.circuit.failures", failures, "kaiak.circuit.last_error", reason)
 	r.observer.CircuitChanged(key, CircuitOpen)
 	r.notify(true)
 }
@@ -146,15 +147,15 @@ func (r *Router) endTrial(key DeploymentID, c *circuit, o Outcome, reason string
 		}
 		r.dispatch()
 		r.mu.Unlock()
-		r.logger.Info("circuit closed", "backend", key.Backend, "deployment_model", key.Model,
-			"trigger", "trial", "open_ms", openFor.Milliseconds())
+		r.logger.Info("circuit closed", "kaiak.backend.id", key.Backend, "kaiak.deployment.model", key.Model,
+			"kaiak.trigger", "trial", logattr.Seconds("kaiak.circuit.open_duration", openFor))
 		r.observer.CircuitChanged(key, CircuitClosed)
 		r.notify(true)
 	default:
 		r.reopen(c, key.Backend)
 		r.mu.Unlock()
-		r.logger.Warn("circuit opened", "backend", key.Backend, "deployment_model", key.Model,
-			"trial", true, "last_error", reason)
+		r.logger.Warn("circuit opened", "kaiak.backend.id", key.Backend, "kaiak.deployment.model", key.Model,
+			"kaiak.circuit.trial", true, "kaiak.circuit.last_error", reason)
 		r.observer.CircuitChanged(key, CircuitOpen)
 		r.notify(true)
 	}
@@ -372,11 +373,11 @@ func (r *Router) ProbeNow(ctx context.Context, backend, trigger string) error {
 		if first {
 			level = slog.LevelInfo
 		}
-		r.logger.Log(context.Background(), level, "probe failed", "backend", backend, "trigger", trigger,
-			"duration_ms", duration.Milliseconds(), "error", err.Error())
+		r.logger.Log(context.Background(), level, "probe failed", "kaiak.backend.id", backend, "kaiak.trigger", trigger,
+			logattr.Seconds("kaiak.duration", duration), "exception.message", err.Error())
 		for _, key := range reopened {
-			r.logger.Warn("circuit opened", "backend", key.Backend, "deployment_model", key.Model,
-				"trigger", trigger, "last_error", "probe failed: "+err.Error())
+			r.logger.Warn("circuit opened", "kaiak.backend.id", key.Backend, "kaiak.deployment.model", key.Model,
+				"kaiak.trigger", trigger, "kaiak.circuit.last_error", "probe failed: "+err.Error())
 			r.observer.CircuitChanged(key, CircuitOpen)
 		}
 		r.notify(len(reopened) > 0)
@@ -413,15 +414,15 @@ func (r *Router) ProbeNow(ctx context.Context, backend, trigger string) error {
 	if len(halfOpened) > 0 {
 		level = slog.LevelInfo
 	}
-	r.logger.Log(context.Background(), level, "probe succeeded", "backend", backend, "trigger", trigger,
-		"duration_ms", duration.Milliseconds(), "circuits_half_open", len(halfOpened))
+	r.logger.Log(context.Background(), level, "probe succeeded", "kaiak.backend.id", backend, "kaiak.trigger", trigger,
+		logattr.Seconds("kaiak.duration", duration), "kaiak.circuit.half_opened", len(halfOpened))
 	for _, key := range unlisted {
-		r.logger.Warn("circuit kept open: the backend does not list the deployment's model", "backend", key.Backend,
-			"deployment_model", key.Model, "trigger", trigger)
+		r.logger.Warn("circuit kept open: the backend does not list the deployment's model", "kaiak.backend.id", key.Backend,
+			"kaiak.deployment.model", key.Model, "kaiak.trigger", trigger)
 	}
 	for i, key := range halfOpened {
-		r.logger.Info("circuit half-open", "backend", key.Backend, "deployment_model", key.Model,
-			"trigger", trigger, "open_ms", openFor[i].Milliseconds())
+		r.logger.Info("circuit half-open", "kaiak.backend.id", key.Backend, "kaiak.deployment.model", key.Model,
+			"kaiak.trigger", trigger, logattr.Seconds("kaiak.circuit.open_duration", openFor[i]))
 		r.observer.CircuitChanged(key, CircuitHalfOpen)
 	}
 	r.notify(changed)

@@ -37,15 +37,15 @@ func TestControlModeEndToEnd(t *testing.T) {
 	publish("")
 
 	g := startGatewayEnv(t, controlEnv(cp.URL(), token, dataDir))
-	g.logs.wait(t, "the boot from the control plane", msg("config applied", "trigger", "control", "config_version", "1"))
+	g.logs.wait(t, "the boot from the control plane", msg("config applied", "kaiak.trigger", "control", "kaiak.config.version", "1"))
 
 	t.Run("serves from the pushed config", func(t *testing.T) {
 		if r := g.post(t, "/v1/chat/completions", evalKey, "", chatBody("chat", false, nil)); r.StatusCode != http.StatusOK {
 			t.Fatalf("chat: %d %s", r.StatusCode, r.body)
 		}
-		g.logs.wait(t, "the stream", msg("config stream connected", "since", "1"))
+		g.logs.wait(t, "the stream", msg("config stream connected", "kaiak.config.since", "1"))
 		publish("chat-2")
-		g.logs.wait(t, "the pushed config", msg("config applied", "trigger", "control", "config_version", "2"))
+		g.logs.wait(t, "the pushed config", msg("config applied", "kaiak.trigger", "control", "kaiak.config.version", "2"))
 		if status, body := g.get(t, "/v1/models/chat-2", evalKey); status != http.StatusOK {
 			t.Fatalf("/v1/models/chat-2 after the push = %d %s", status, body)
 		}
@@ -109,7 +109,7 @@ func TestControlModeEndToEnd(t *testing.T) {
 		if n := countedIDs(t, cp)["e2e-usage-2"]; n != 1 {
 			t.Errorf("e2e-usage-2 counted %d times, want 1", n)
 		}
-		g.logs.wait(t, "the restored spool", msg("usage spool restored", "batches", "1"))
+		g.logs.wait(t, "the restored spool", msg("usage spool restored", "kaiak.usage.batches", "1"))
 	})
 
 	t.Run("SIGTERM flushes the last records and reports draining", func(t *testing.T) {
@@ -124,7 +124,7 @@ func TestControlModeEndToEnd(t *testing.T) {
 		if last := string(statuses[len(statuses)-1]); !strings.Contains(last, `"state":"draining"`) {
 			t.Errorf("last status %s, want draining", last)
 		}
-		g.logs.wait(t, "the flush", msg("usage flushed", "trigger", "drain"))
+		g.logs.wait(t, "the flush", msg("usage flushed", "kaiak.trigger", "drain"))
 	})
 
 	cp.Close()
@@ -133,7 +133,7 @@ func TestControlModeEndToEnd(t *testing.T) {
 		g := startGatewayEnv(t, append(controlEnv(cp.URL(), token, dataDir), "KAIAK_DRAIN_TIMEOUT_MS=500",
 			"KAIAK_CONTROL_BOOT_WAIT_MS=1000"))
 		g.logs.wait(t, "the last-known-good boot",
-			msg("config applied", "trigger", "last-known-good", "config_version", "2"))
+			msg("config applied", "kaiak.trigger", "last-known-good", "kaiak.config.version", "2"))
 		if status, body := g.get(t, "/v1/models/chat-2", evalKey); status != http.StatusOK {
 			t.Fatalf("/v1/models/chat-2 from last-known-good = %d %s", status, body)
 		}
@@ -142,7 +142,7 @@ func TestControlModeEndToEnd(t *testing.T) {
 		}
 		g.stop(t)
 		// The drain could not deliver: the batch stays spooled for the next start.
-		g.logs.wait(t, "the failed flush", msg("usage not flushed: left in the spool for the next start", "batches", "1"))
+		g.logs.wait(t, "the failed flush", msg("usage not flushed: left in the spool for the next start", "kaiak.usage.batches", "1"))
 		batches, err := filepath.Glob(filepath.Join(dataDir, "usage-batch-*.json"))
 		if err != nil || len(batches) != 1 {
 			t.Errorf("spooled batches %v (%v), want 1", batches, err)
@@ -218,7 +218,7 @@ func TestRestartWithTheControlPlaneDownKeepsASpentBudget(t *testing.T) {
 	cp.Publish(data)
 
 	g := startGatewayEnv(t, controlEnv(cp.URL(), token, dataDir))
-	g.logs.wait(t, "the stream", msg("config stream connected", "since", "1"))
+	g.logs.wait(t, "the stream", msg("config stream connected", "kaiak.config.since", "1"))
 	// The global budget on "priced" (0.0001 USD) is spent this month.
 	month := time.Now().UTC().Format("2006-01") + "-01T00:00:00Z"
 	cp.SetWindows([]byte(`[{"type":"usd_per_month","models":["priced"],"window_start":"` + month +
@@ -240,7 +240,7 @@ func TestRestartWithTheControlPlaneDownKeepsASpentBudget(t *testing.T) {
 
 	g = startGatewayEnv(t, append(controlEnv(cp.URL(), token, dataDir), "KAIAK_DRAIN_TIMEOUT_MS=500",
 		"KAIAK_CONTROL_BOOT_WAIT_MS=1000"))
-	g.logs.wait(t, "the last-known-good boot", msg("config applied", "trigger", "last-known-good", "config_version", "1"))
+	g.logs.wait(t, "the last-known-good boot", msg("config applied", "kaiak.trigger", "last-known-good", "kaiak.config.version", "1"))
 	r := g.post(t, "/v1/chat/completions", evalKey, "", chatBody("priced", false, nil))
 	if r.StatusCode != http.StatusTooManyRequests || !strings.Contains(string(r.body), "budget_exceeded") {
 		t.Errorf("after the restart: %d %s, want the spent budget still refusing", r.StatusCode, r.body)

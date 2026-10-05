@@ -332,8 +332,9 @@ func (l *Limiter) carryOver(k counterKey, predecessors []*counter, claimed map[*
 		level = slog.LevelWarn
 	}
 	l.logger.Log(context.Background(), level, "limit keeps its usage across a model-set change",
-		"scope", k.scope(), "group", k.group, "type", k.typ, "models", modelsAttr(k.models),
-		"from_models", modelsAttr(best.key.models), "predecessors", len(predecessors), "used", bestUsed)
+		"kaiak.limit.scope", k.scope(), "kaiak.limit.group", k.group, "kaiak.limit.type", k.typ,
+		"kaiak.limit.models", modelsAttr(k.models), "kaiak.limit.from_models", modelsAttr(best.key.models),
+		"kaiak.limit.predecessors", len(predecessors), "kaiak.limit.used", bestUsed)
 	if !claimed[best] {
 		claimed[best] = true
 		best.key = k
@@ -545,8 +546,8 @@ func (l *Limiter) Settle(r *Reservation, recs ...accounting.UsageRecord) {
 // Callers hold l.mu.
 func (l *Limiter) checkCountLocked(c *counter) {
 	if c.w.clampNegative() {
-		l.logger.Error("limit counter went negative: clamped to 0", "scope", c.key.scope(), "group", c.key.group,
-			"type", c.key.typ, "models", modelsAttr(c.key.models))
+		l.logger.Error("limit counter went negative: clamped to 0", "kaiak.limit.scope", c.key.scope(),
+			"kaiak.limit.group", c.key.group, "kaiak.limit.type", c.key.typ, "kaiak.limit.models", modelsAttr(c.key.models))
 	}
 }
 

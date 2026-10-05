@@ -103,7 +103,7 @@ func TestPerKeyConcurrencyLimit(t *testing.T) {
 	}
 	// The caller's own doing: the class of the gateway's other per-caller limits.
 	expectMetricLines(t, g.metricsText(), `kaiak_errors_total{class="rate_limited"} 2`)
-	if !strings.Contains(g.logText(), `"error_code":"concurrency_limit_exceeded"`) {
+	if !strings.Contains(g.logText(), `"error.type":"concurrency_limit_exceeded"`) {
 		t.Errorf("log line misses the code:\n%s", g.logText())
 	}
 

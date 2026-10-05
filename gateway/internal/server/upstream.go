@@ -608,7 +608,7 @@ func (rq *request) answerBackendFault(resp provider.Response) {
 	writeError(rq.w, rq.failure)
 }
 
-// Why a relayed response stopped early (the log line's relay_end;
+// Why a relayed response stopped early (the log line's kaiak.relay_end;
 // docs/specs/GATEWAY.md, Providers: upstream failures).
 const (
 	relayClientClosed       = "client_closed"
@@ -619,7 +619,7 @@ const (
 	relayUpstreamTimeout    = "upstream_timeout"    // a non-stream response past its response timeout
 )
 
-// upstreamRelayEnd is the relay_end of a relay the backend side broke off with err.
+// upstreamRelayEnd is the kaiak.relay_end of a relay the backend side broke off with err.
 func upstreamRelayEnd(err error) string {
 	switch {
 	case errors.Is(err, provider.ErrStalled):

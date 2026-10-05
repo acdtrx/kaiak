@@ -65,18 +65,18 @@ func TestLimitRefusalsLogTheLimit(t *testing.T) {
 	if w := postAs(t, g, workloadKey, "admitted", chatBody); w.Code != http.StatusOK {
 		t.Fatalf("admitted: status %d", w.Code)
 	}
-	expectFields(t, logFields(t, g, "admitted"), map[string]any{"group": "eval", "stream": false},
-		"team", "workload", "user", "limit_scope")
+	expectFields(t, logFields(t, g, "admitted"), map[string]any{"kaiak.key.group": "eval", "gen_ai.request.stream": false},
+		"team", "workload", "user", "kaiak.limit.scope")
 	if w := postAs(t, g, userKey, "user-admitted", chatBody); w.Code != http.StatusOK {
 		t.Fatalf("user-admitted: status %d", w.Code)
 	}
-	expectFields(t, logFields(t, g, "user-admitted"), map[string]any{"group": "ann"}, "team", "workload", "user")
+	expectFields(t, logFields(t, g, "user-admitted"), map[string]any{"kaiak.key.group": "ann"}, "team", "workload", "user")
 
 	expectError(t, postAs(t, g, workloadKey, "rpm", chatBody), http.StatusTooManyRequests, "rate_limit_exceeded")
-	expectFields(t, logFields(t, g, "rpm"), map[string]any{"error_code": "rate_limit_exceeded",
-		"limit_scope": "group", "limit_id": "eval", "limit_type": "requests_per_minute",
-		"limit": float64(1), "limit_configured": float64(1), "used": float64(1),
-		"group": "eval"})
+	expectFields(t, logFields(t, g, "rpm"), map[string]any{"error.type": "rate_limit_exceeded",
+		"kaiak.limit.scope": "group", "kaiak.limit.id": "eval", "kaiak.limit.type": "requests_per_minute",
+		"kaiak.limit.enforced": float64(1), "kaiak.limit.configured": float64(1), "kaiak.limit.used": float64(1),
+		"kaiak.key.group": "eval"})
 
 	usd := postAs(t, g, workloadKey, "usd", `{"model":"pair","messages":[]}`)
 	expectError(t, usd, http.StatusTooManyRequests, "budget_exceeded")
@@ -85,23 +85,23 @@ func TestLimitRefusalsLogTheLimit(t *testing.T) {
 		strings.Contains(body, "label-value-never-logged") {
 		t.Errorf("refusal message must name the scope kind only: %s", body)
 	}
-	expectFields(t, logFields(t, g, "usd"), map[string]any{"error_code": "budget_exceeded",
-		"limit_scope": "group", "limit_id": "research", "limit_type": "usd_per_month",
-		"limit": float64(0), "limit_configured": float64(0), "used": float64(0)})
+	expectFields(t, logFields(t, g, "usd"), map[string]any{"error.type": "budget_exceeded",
+		"kaiak.limit.scope": "group", "kaiak.limit.id": "research", "kaiak.limit.type": "usd_per_month",
+		"kaiak.limit.enforced": float64(0), "kaiak.limit.configured": float64(0), "kaiak.limit.used": float64(0)})
 
 	expectError(t, postAs(t, g, userKey, "tpm", `{"model":"Org/open-7b","messages":[{"role":"user","content":"a prompt over five tokens"}]}`),
 		http.StatusTooManyRequests, "rate_limit_exceeded")
 	tpm := logFields(t, g, "tpm")
-	expectFields(t, tpm, map[string]any{"limit_scope": "global", "limit_id": "global",
-		"limit_type": "tokens_per_minute", "limit": float64(5), "limit_configured": float64(5), "used": float64(0),
-		"group": "ann"})
+	expectFields(t, tpm, map[string]any{"kaiak.limit.scope": "global", "kaiak.limit.id": "global",
+		"kaiak.limit.type": "tokens_per_minute", "kaiak.limit.enforced": float64(5), "kaiak.limit.configured": float64(5),
+		"kaiak.limit.used": float64(0), "kaiak.key.group": "ann"})
 	// A token refusal says what the request asked for: here more than the limit
 	// allows at all (a request too large, not a full window).
-	if requested, ok := tpm["requested"].(float64); !ok || requested <= 5 {
-		t.Errorf("requested %v, want the request's reservation, above the limit", tpm["requested"])
+	if requested, ok := tpm["kaiak.limit.requested"].(float64); !ok || requested <= 5 {
+		t.Errorf("kaiak.limit.requested %v, want the request's reservation, above the limit", tpm["kaiak.limit.requested"])
 	}
-	if _, ok := logFields(t, g, "rpm")["requested"]; ok {
-		t.Error("a request limit's refusal logs requested")
+	if _, ok := logFields(t, g, "rpm")["kaiak.limit.requested"]; ok {
+		t.Error("a request limit's refusal logs kaiak.limit.requested")
 	}
 
 	for _, id := range []string{"rpm", "usd", "tpm"} {
@@ -129,9 +129,10 @@ func TestBudgetUnavailableLogsTheLimit(t *testing.T) {
 	withLimits(t, g, `[{ "type": "usd_per_month", "value": 100, "models": ["pair"] }]`, "")
 	expectError(t, postAs(t, g, workloadKey, "unavailable", `{"model":"pair","messages":[]}`),
 		http.StatusServiceUnavailable, "budget_unavailable")
-	expectFields(t, logFields(t, g, "unavailable"), map[string]any{"error_code": "budget_unavailable",
-		"limit_scope": "group", "limit_id": "research", "limit_type": "usd_per_month",
-		"limit": float64(100), "limit_configured": float64(100), "group": "eval"}, "used")
+	expectFields(t, logFields(t, g, "unavailable"), map[string]any{"error.type": "budget_unavailable",
+		"kaiak.limit.scope": "group", "kaiak.limit.id": "research", "kaiak.limit.type": "usd_per_month",
+		"kaiak.limit.enforced": float64(100), "kaiak.limit.configured": float64(100), "kaiak.key.group": "eval"},
+		"kaiak.limit.used")
 	expectMetricLines(t, g.metricsText(), `kaiak_limit_rejections_total{scope_kind="group",type="usd_per_month"} 0`)
 }
 
@@ -144,9 +145,9 @@ func TestRelayedBackendErrorsLogTheirClass(t *testing.T) {
 	if w := post(t, g, "client-error", `{"model":"open","messages":[]}`); w.Code != http.StatusBadRequest || w.Body.String() != caller {
 		t.Fatalf("400 answer %d %q, want the backend's as it came", w.Code, w.Body.String())
 	}
-	expectFields(t, logFields(t, g, "client-error"), map[string]any{"status": float64(400),
-		"error_code": "upstream_client_error", "upstream_error_code": "context_length_exceeded",
-		"upstream_error_type": "invalid_request_error"})
+	expectFields(t, logFields(t, g, "client-error"), map[string]any{"http.response.status_code": float64(400),
+		"error.type": "upstream_client_error", "kaiak.upstream.error.code": "context_length_exceeded",
+		"kaiak.upstream.error.type": "invalid_request_error"})
 	if strings.Contains(logLine(t, g, "client-error"), "secret prompt") {
 		t.Error("the backend's message reached the log")
 	}
@@ -157,15 +158,15 @@ func TestRelayedBackendErrorsLogTheirClass(t *testing.T) {
 	if w := post(t, g, "rate-limited", `{"model":"open","messages":[]}`); w.Code != http.StatusTooManyRequests {
 		t.Fatalf("429: status %d", w.Code)
 	}
-	expectFields(t, logFields(t, g, "rate-limited"), map[string]any{"error_code": "upstream_rate_limited",
-		"upstream_error_code": "rate_limit_exceeded", "upstream_error_type": "rate_limit_error",
-		"retry_refused": "no_deployment_left"})
+	expectFields(t, logFields(t, g, "rate-limited"), map[string]any{"error.type": "upstream_rate_limited",
+		"kaiak.upstream.error.code": "rate_limit_exceeded", "kaiak.upstream.error.type": "rate_limit_error",
+		"kaiak.retry_refused": "no_deployment_left"})
 
 	g.backend.SetReply(fakebackend.Reply{})
 	if w := post(t, g, "ok", `{"model":"open","messages":[]}`); w.Code != http.StatusOK {
 		t.Fatalf("ok: status %d", w.Code)
 	}
-	expectFields(t, logFields(t, g, "ok"), nil, "error_code", "upstream_error_code", "upstream_error_type")
+	expectFields(t, logFields(t, g, "ok"), nil, "error.type", "kaiak.upstream.error.code", "kaiak.upstream.error.type")
 	expectMetricLines(t, g.metricsText(), `kaiak_errors_total{class="upstream_client_error"} 1`,
 		`kaiak_errors_total{class="upstream_rate_limited"} 1`)
 }
@@ -186,13 +187,13 @@ func TestTimeToFirstTokenIsTheAnsweringAttempts(t *testing.T) {
 		t.Fatalf("status %d: %s", w.Code, w.Body.String())
 	}
 	fields := logFields(t, g, "ttft")
-	expectFields(t, fields, map[string]any{"stream": true, "attempts": float64(2)})
-	ttft, ok := fields["ttft_ms"].(float64)
-	if !ok || ttft >= 250 {
-		t.Errorf("ttft_ms %v, want the answering attempt's (under 250 ms)", fields["ttft_ms"])
+	expectFields(t, fields, map[string]any{"gen_ai.request.stream": true, "kaiak.attempts": float64(2)})
+	ttft, ok := fields["kaiak.time_to_first_token"].(float64)
+	if !ok || ttft >= 0.25 {
+		t.Errorf("kaiak.time_to_first_token %v, want the answering attempt's (under 0.25 s)", fields["kaiak.time_to_first_token"])
 	}
-	if latency := fields["latency_ms"].(float64); latency < float64(firstEventTimeout.Milliseconds()) {
-		t.Errorf("latency_ms %v, want it from arrival (past the first attempt's timeout)", latency)
+	if duration := fields["kaiak.request.duration"].(float64); duration < firstEventTimeout.Seconds() {
+		t.Errorf("kaiak.request.duration %v, want it from arrival (past the first attempt's timeout)", duration)
 	}
 	text := g.metricsText()
 	for _, backend := range []string{"local", "local-b"} {

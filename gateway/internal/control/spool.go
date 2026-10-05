@@ -127,13 +127,13 @@ func (u *usageSender) restore() {
 	u.queuedRecords = records
 	u.depthChangedLocked()
 	u.mu.Unlock()
-	attrs := []any{"epoch", u.index.Epoch, "next_sequence", u.index.NextSequence, "batches", len(entries),
-		"records", records}
+	attrs := []any{"kaiak.usage.epoch", u.index.Epoch, "kaiak.usage.next_sequence", u.index.NextSequence, "kaiak.usage.batches", len(entries),
+		"kaiak.usage.records", records}
 	switch {
 	case u.store.inMemory():
-		u.logger.Info("usage batches kept in memory until acknowledged: no data directory", "epoch", u.index.Epoch)
+		u.logger.Info("usage batches kept in memory until acknowledged: no data directory", "kaiak.usage.epoch", u.index.Epoch)
 	case reason != "":
-		u.logger.Info("usage spool: new epoch", append(attrs, "reason", reason)...)
+		u.logger.Info("usage spool: new epoch", append(attrs, "kaiak.reason", reason)...)
 	default:
 		u.logger.Info("usage spool restored", attrs...)
 	}
@@ -173,8 +173,8 @@ func (u *usageSender) persist() {
 		next.NextSequence++
 		file, err := u.store.save(UsageBatch{Batch: id, Records: records}, next)
 		if err != nil {
-			u.logger.Error("usage batch not written to the spool; kept in memory and retried", "sequence", id.Sequence,
-				"records", len(records), "error", err)
+			u.logger.Error("usage batch not written to the spool; kept in memory and retried", "kaiak.usage.sequence", id.Sequence,
+				"kaiak.usage.records", len(records), "exception.message", err)
 			u.checkAllSealed()
 			u.boundSealed()
 			return
@@ -193,12 +193,12 @@ func (u *usageSender) persist() {
 		u.depthChangedLocked()
 		u.mu.Unlock()
 		signal(u.queued)
-		u.logger.Debug("usage batch sealed", "epoch", id.Epoch, "sequence", id.Sequence, "records", len(records))
+		u.logger.Debug("usage batch sealed", "kaiak.usage.epoch", id.Epoch, "kaiak.usage.sequence", id.Sequence, "kaiak.usage.records", len(records))
 		if u.store.inMemory() {
 			u.boundQueued()
 		} else if depth%spoolWarnBatches == 0 {
 			u.logger.Warn("usage spool keeps growing: the control plane is not acknowledging batches",
-				"batches", depth, "records", queuedRecords)
+				"kaiak.usage.batches", depth, "kaiak.usage.records", queuedRecords)
 		}
 	}
 }
@@ -224,7 +224,7 @@ func (u *usageSender) checkSealed(i int, b sealedBatch) bool {
 		bad++
 		kept := u.store.setAsideRecord(rec, issues)
 		u.logger.Error("usage record refused by the protocol's checks; set aside, the rest of its batch is sent",
-			append([]any{"request_id", rec.RequestID, "record_id", rec.RecordID, "issues", issues}, fileAttr(kept)...)...)
+			append([]any{"kaiak.request.id", rec.RequestID, "kaiak.usage.record_id", rec.RecordID, "kaiak.usage.issues", issues}, fileAttr(kept)...)...)
 	}
 	u.mu.Lock()
 	u.sealed[i].checked = true
@@ -249,7 +249,7 @@ func fileAttr(file string) []any {
 	if file == "" {
 		return nil
 	}
-	return []any{"file", file}
+	return []any{"file.name", file}
 }
 
 // refusedRecord is a refused-record file's data: the record and why it was refused.
@@ -312,7 +312,7 @@ func (u *usageSender) boundSealed() {
 	u.mu.Unlock()
 	if dropped > 0 {
 		u.logger.Error("usage spool not writable: oldest sealed usage batches dropped to bound memory",
-			"batches", batches, "records", dropped, "kept_records", kept, "kept_bytes", keptBytes, "bound_bytes", bound)
+			"kaiak.usage.batches", batches, "kaiak.usage.records", dropped, "kaiak.usage.kept_records", kept, "kaiak.usage.kept_size", keptBytes, "kaiak.usage.max_size", bound)
 		u.observeDropped(DroppedSpoolFull, dropped)
 	}
 }
@@ -348,7 +348,7 @@ func (u *usageSender) boundQueued() {
 		_ = u.store.remove(e) // the memory store's remove cannot fail
 	}
 	u.logger.Error("usage batches not acknowledged: oldest queued usage batches dropped to bound memory (no data directory)",
-		"batches", len(gone), "records", dropped, "kept_records", kept, "kept_bytes", keptBytes, "bound_bytes", bound)
+		"kaiak.usage.batches", len(gone), "kaiak.usage.records", dropped, "kaiak.usage.kept_records", kept, "kaiak.usage.kept_size", keptBytes, "kaiak.usage.max_size", bound)
 	u.observeDropped(DroppedMemoryBound, dropped)
 }
 

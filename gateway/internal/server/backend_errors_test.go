@@ -28,8 +28,8 @@ func TestBackendErrorBodies(t *testing.T) {
 		t.Errorf("Retry-After %q, want the backend's", w.Header().Get("Retry-After"))
 	}
 	line := logLine(t, g, "fault")
-	if !strings.Contains(line, `"upstream_error_type":"server_error"`) || strings.Contains(line, "upstream_error_code") ||
-		!strings.Contains(line, `"error_code":"upstream_error"`) || !strings.Contains(line, `"status":503`) {
+	if !strings.Contains(line, `"kaiak.upstream.error.type":"server_error"`) || strings.Contains(line, "kaiak.upstream.error.code") ||
+		!strings.Contains(line, `"error.type":"upstream_error"`) || !strings.Contains(line, `"http.response.status_code":503`) {
 		t.Errorf("log line misses the backend's status and error type: %.3000s", line)
 	}
 	if strings.Contains(line, "CUDA") || strings.Contains(line, "gpu-7") || strings.Contains(line, "upstream_body") {

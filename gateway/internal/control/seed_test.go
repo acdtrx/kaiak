@@ -41,7 +41,7 @@ func TestSeedConfigServesABootWithTheControlPlaneDown(t *testing.T) {
 	if got := h.savedVersion(); got != 0 {
 		t.Errorf("last-known-good version %d after a seed boot, want none", got)
 	}
-	if !strings.Contains(h.logs.String(), `msg="config applied" trigger=seed file=seed.json`) {
+	if !strings.Contains(h.logs.String(), `msg="config applied" kaiak.trigger=seed file.path=seed.json`) {
 		t.Errorf("seed load not logged:\n%s", h.logs.String())
 	}
 
@@ -187,7 +187,7 @@ func TestLastKnownGoodOfAnotherFormatIsDiscarded(t *testing.T) {
 	h.wantLoad(load{TriggerSeed, true})
 	h.noLoadPending()
 	if out := h.logs.String(); !strings.Contains(out, "discarded data file with a different format version") ||
-		!strings.Contains(out, fmt.Sprintf("found_version=%d", lastKnownGoodFormat-1)) {
+		!strings.Contains(out, fmt.Sprintf("kaiak.data_file.found_version=%d", lastKnownGoodFormat-1)) {
 		t.Errorf("discard not logged:\n%s", out)
 	}
 }

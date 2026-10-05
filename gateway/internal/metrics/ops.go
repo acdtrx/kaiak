@@ -393,8 +393,8 @@ func (o *Ops) ObserveOutputRate(model, backend string, tokensPerSecond float64) 
 // it ended: group and keyID are the request's key (group nil and keyID empty without
 // a valid key), labelled as the usage metrics are — key_group, root_group, key_id,
 // following the live config's key_id_label and group_label — model only once it
-// passed the access check, and code the request log line's error_code, or the
-// relay_end of a response broken off after it started. Series exist only once
+// passed the access check, and code the request log line's error.type, or the
+// kaiak.relay_end of a response broken off after it started. Series exist only once
 // counted: their number follows the keys that met an error, not the config.
 func (o *Ops) CountRequestError(group *config.Group, keyID, model, code string) {
 	var keyGroup, root string

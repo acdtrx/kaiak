@@ -311,9 +311,9 @@ func (r *run) checkEmbeddings() {
 			r.pass("embeddings", detail)
 			return
 		}
-		line, err := r.gw.logs.wait(r.ctx, msg("request", "request_id", idEmbed))
-		if err != nil || line["backend"] != backendEmbed {
-			r.fail("embeddings", "served by backend %v, want %s (%v)", line["backend"], backendEmbed, err)
+		line, err := r.gw.logs.wait(r.ctx, msg("request", "kaiak.request.id", idEmbed))
+		if err != nil || line["kaiak.backend.id"] != backendEmbed {
+			r.fail("embeddings", "served by backend %v, want %s (%v)", line["kaiak.backend.id"], backendEmbed, err)
 			return
 		}
 		r.pass("embeddings", detail+", served by "+backendEmbed)
@@ -381,9 +381,9 @@ func (r *run) checkRateLimit() {
 }
 
 // checkUsageLog reads the request's log line: the backend's own token report
-// (estimated=false) and, when prices are set, a cost.
+// (kaiak.usage.estimated=false) and, when prices are set, a cost.
 func (r *run) checkUsageLog(name, id string, output bool) {
-	line, err := r.gw.logs.wait(r.ctx, msg("request", "request_id", id))
+	line, err := r.gw.logs.wait(r.ctx, msg("request", "kaiak.request.id", id))
 	if err != nil {
 		r.fail(name, "no log line for request %s: %v", id, err)
 		return
@@ -391,22 +391,23 @@ func (r *run) checkUsageLog(name, id string, output bool) {
 	num := func(k string) float64 { v, _ := line[k].(float64); return v }
 	priced := r.o.priceIn != 0 || r.o.priceOut != 0
 	switch {
-	case line["status"] != 200.0:
-		r.fail(name, "request %s ended with status %v", id, line["status"])
-	case line["estimated"] != false:
-		r.fail(name, "estimated=%v: the backend reported no usage, so the gateway estimated it", line["estimated"])
-	case line["partial"] != false:
-		r.fail(name, "partial=%v (relay_end %v)", line["partial"], line["relay_end"])
-	case num("tokens_in")+num("tokens_cached")+num("tokens_cache_write") == 0:
+	case line["http.response.status_code"] != 200.0:
+		r.fail(name, "request %s ended with status %v", id, line["http.response.status_code"])
+	case line["kaiak.usage.estimated"] != false:
+		r.fail(name, "kaiak.usage.estimated=%v: the backend reported no usage, so the gateway estimated it", line["kaiak.usage.estimated"])
+	case line["kaiak.usage.partial"] != false:
+		r.fail(name, "kaiak.usage.partial=%v (kaiak.relay_end %v)", line["kaiak.usage.partial"], line["kaiak.relay_end"])
+	case num("gen_ai.usage.input_tokens") == 0:
 		r.fail(name, "no input tokens")
-	case output && num("tokens_out") == 0:
+	case output && num("gen_ai.usage.output_tokens") == 0:
 		r.fail(name, "no output tokens")
-	case priced && num("cost_usd") <= 0:
-		r.fail(name, "cost_usd %v with prices set", line["cost_usd"])
+	case priced && num("kaiak.usage.cost_usd") <= 0:
+		r.fail(name, "kaiak.usage.cost_usd %v with prices set", line["kaiak.usage.cost_usd"])
 	default:
-		r.pass(name, fmt.Sprintf("in %v, cached %v, cache write %v, out %v, reasoning %v, cost_usd %v",
-			line["tokens_in"], line["tokens_cached"], line["tokens_cache_write"], line["tokens_out"],
-			line["tokens_reasoning"], line["cost_usd"]))
+		r.pass(name, fmt.Sprintf("in %v (cache read %v, cache write %v), out %v (reasoning %v), cost %v",
+			line["gen_ai.usage.input_tokens"], line["gen_ai.usage.cache_read.input_tokens"],
+			line["gen_ai.usage.cache_write.input_tokens"], line["gen_ai.usage.output_tokens"],
+			line["gen_ai.usage.reasoning.output_tokens"], line["kaiak.usage.cost_usd"]))
 	}
 }
 
@@ -493,13 +494,13 @@ func (r *run) ok(name string, resp *response, err error, id string) bool {
 // upstreamHint is the gateway's view of a failed request: its error code and the
 // upstream error it logged (which names the backend address, never a credential).
 func (r *run) upstreamHint(id string) string {
-	line, err := r.gw.logs.wait(r.ctx, msg("request", "request_id", id))
+	line, err := r.gw.logs.wait(r.ctx, msg("request", "kaiak.request.id", id))
 	if err != nil {
 		return ""
 	}
-	hint := fmt.Sprintf("\ngateway: error_code=%v", line["error_code"])
-	if up, ok := line["upstream_error"]; ok {
-		hint += fmt.Sprintf(" upstream_error=%v", up)
+	hint := fmt.Sprintf("\ngateway: error.type=%v", line["error.type"])
+	if up, ok := line["kaiak.upstream.error.message"]; ok {
+		hint += fmt.Sprintf(" kaiak.upstream.error.message=%v", up)
 	}
 	return hint
 }

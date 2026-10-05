@@ -77,7 +77,7 @@ func (g *gateway) exitCode(t *testing.T, within time.Duration) int {
 // exitError returns the error the gateway logged as it stopped with an error.
 func (g *gateway) exitError(t *testing.T) string {
 	t.Helper()
-	return g.logs.wait(t, "the exit error", msg("kaiak stopped with an error"))["error"].(string)
+	return g.logs.wait(t, "the exit error", msg("kaiak stopped with an error"))["exception.message"].(string)
 }
 
 // freeConfig is testConfig without its priced models: what a seed may hold.
@@ -112,7 +112,7 @@ func TestMinimalControlPlaneSetup(t *testing.T) {
 	cwd := readOnlyDir(t)
 
 	g := startGatewayIn(t, cwd, minimalControlEnv(cp.URL(), token))
-	g.logs.wait(t, "the boot from the control plane", msg("config applied", "trigger", "control", "config_version", "1"))
+	g.logs.wait(t, "the boot from the control plane", msg("config applied", "kaiak.trigger", "control", "kaiak.config.version", "1"))
 	g.logs.wait(t, "memory mode", msg("usage batches kept in memory until acknowledged: no data directory"))
 	if r := g.post(t, "/v1/chat/completions", evalKey, "e2e-minimal-1", chatBody("chat", false, nil)); r.StatusCode != http.StatusOK {
 		t.Fatalf("chat: %d %s", r.StatusCode, r.body)
@@ -154,7 +154,7 @@ func TestNoConfigAtBootExits(t *testing.T) {
 	if took := time.Since(started); took < 2*time.Second || took > 2*time.Second+3*time.Second {
 		t.Errorf("gave up after %s, want about the 2 s boot wait", took)
 	}
-	g.logs.wait(t, "the retries", msg("config snapshot not fetched at startup: retrying within the boot wait", "attempt", "1"))
+	g.logs.wait(t, "the retries", msg("config snapshot not fetched at startup: retrying within the boot wait", "kaiak.control.attempt", "1"))
 	if e := g.exitError(t); !strings.Contains(e, "no config: control plane unavailable and no seed") {
 		t.Errorf("exit error %q", e)
 	}
@@ -174,12 +174,12 @@ func TestSeedServesWithTheControlPlaneDown(t *testing.T) {
 
 	g := startGatewayIn(t, readOnlyDir(t), append(minimalControlEnv(cp.URL(), "t"), "KAIAK_SEED_CONFIG_FILE="+seed,
 		"KAIAK_CONTROL_BOOT_WAIT_MS=500", "KAIAK_DRAIN_GRACE_MS=0", "KAIAK_DRAIN_TIMEOUT_MS=1000"))
-	g.logs.wait(t, "the seed boot", msg("config applied", "trigger", "seed"))
+	g.logs.wait(t, "the seed boot", msg("config applied", "kaiak.trigger", "seed"))
 	if r := g.post(t, "/v1/chat/completions", evalKey, "", chatBody("rpm", false, nil)); r.StatusCode != http.StatusOK {
 		t.Fatalf("chat on the seed: %d %s", r.StatusCode, r.body)
 	}
 	g.stop(t)
-	g.logs.wait(t, "the undelivered usage", msg("usage not flushed: lost at exit (no data directory)", "level", "ERROR", "batches", "1"))
+	g.logs.wait(t, "the undelivered usage", msg("usage not flushed: lost at exit (no data directory)", "level", "ERROR", "kaiak.usage.batches", "1"))
 }
 
 // E2: a seed with a priced model fails the start, naming the model.
@@ -242,7 +242,7 @@ func TestDrainReserveDeliversTheCutRequestsUsage(t *testing.T) {
 
 	g := startGatewayEnv(t, append(controlEnv(cp.URL(), token, ""),
 		"KAIAK_DRAIN_TIMEOUT_MS=8000", "KAIAK_DRAIN_FLUSH_RESERVE_MS=1500"))
-	g.logs.wait(t, "the stream", msg("config stream connected", "since", "1"))
+	g.logs.wait(t, "the stream", msg("config stream connected", "kaiak.config.since", "1"))
 
 	pace := make(chan struct{})
 	backend.QueueReplies(fakebackend.Reply{Pace: pace, Chunks: []string{"a", "b"}}, fakebackend.Reply{HangAfter: 1})
@@ -276,5 +276,5 @@ func TestDrainReserveDeliversTheCutRequestsUsage(t *testing.T) {
 	if rec["partial"] != true {
 		t.Errorf("cut stream's record %v, want partial", rec)
 	}
-	g.logs.wait(t, "the flush", msg("usage flushed", "trigger", "drain"))
+	g.logs.wait(t, "the flush", msg("usage flushed", "kaiak.trigger", "drain"))
 }

@@ -148,7 +148,7 @@ context length. `go -C scripts/live run . -h` lists them all.
 | `auth-reject` | a request without a key gets `401` (the config loaded, the pipeline runs) |
 | `models` | `/v1/models` lists exactly the configured public models for the key |
 | `chat` | non-streamed chat reaches the backend and returns content under the **public** model name, with `usage` |
-| `usage-log/chat` | its log line carries the backend's own token counts (`estimated=false`) and a cost |
+| `usage-log/chat` | its log line carries the backend's own token counts (`kaiak.usage.estimated=false`) and a cost |
 | `chat-stream` | a stream without client `include_usage` relays chunks, every one named `live-chat`, ends with `[DONE]`, and **no usage chunk reaches the client** (the gateway asked for it and withholds it) |
 | `usage-log/stream` | the gateway still counted that stream exactly: the backend honored the injected `stream_options.include_usage` |
 | `chat-stream-usage` | with client `include_usage: true`, exactly one usage chunk arrives, last before `[DONE]` |
@@ -158,7 +158,7 @@ context length. `go -C scripts/live run . -h` lists them all.
 | `output-ceiling` | a request for the model's whole context length in output tokens (`-context-length`; more is refused, `400 invalid_value`) is lowered to the ceiling: `completion_tokens` ≤ ceiling, `finish_reason: "length"`. vLLM and llama-server are asked through `max_tokens` (the gateway lowers the client's own key), OpenAI and Azure through `max_completion_tokens` (their reasoning models refuse `max_tokens`) |
 | `rate-limit` | the second `live-rpm` request in a minute gets `429 rate_limit_exceeded` with `Retry-After` and `x-ratelimit-*-requests` headers — before reaching the backend |
 | `metrics` | the admin `/metrics` shows the chat requests, their `tokens_out` and cost, and the rate-limit refusal |
-| `spread` | two backends: six requests one after another are served by both (`backend` on each log line) — tied deployments take turns |
+| `spread` | two backends: six requests one after another are served by both (`kaiak.backend.id` on each log line) — tied deployments take turns |
 | `capacity` | two backends with `-max-in-flight N`: 2N+2 requests at once are all answered — those over the cap wait in the gateway's queue (the count queued is reported, not required) — and `kaiak_backend_max_in_flight` shows N for each |
 | `failover` | two backends with `-check-failover`: see the failover procedure below |
 | `gateway-exit` | (reported only on failure) SIGTERM drained the gateway and it exited 0 |
@@ -281,8 +281,8 @@ checks run as without it.
 ## Reading failures
 
 - A failed request prints the status, the body and the gateway's view from its log
-  line: `error_code` and `upstream_error` (which names the backend address, never a
-  credential):
+  line: `error.type` and `kaiak.upstream.error.message` (which names the backend
+  address, never a credential):
   - `502 upstream_unavailable` — the gateway could not connect: wrong host or port,
     DNS, TLS, a proxy in the way (`HTTPS_PROXY` is honored).
   - `502 upstream_auth_failed` — the backend answered `401`/`403` to the gateway's
@@ -300,7 +300,7 @@ checks run as without it.
     deployment's: the backend's text says what is missing.
   - `400` relayed from the backend — a parameter the backend refuses; the body says
     which. `-chat-defaults` values are the first suspect.
-- `estimated=true` on a `usage-log/*` check: the backend sent no usage, so the gateway
+- `kaiak.usage.estimated=true` on a `usage-log/*` check: the backend sent no usage, so the gateway
   fell back to its 4-bytes-per-token estimate. On `usage-log/stream` it means the
   backend ignored `stream_options.include_usage` (older vLLM, or a proxy in front of it
   that strips it).
@@ -337,8 +337,8 @@ when access arrives, in this order:
    `completion_tokens_details.reasoning_tokens`. Cache reads and writes only show on
    prompts over 1024 tokens, so the kit's short prompts report 0 — to check the cache
    paths, send a fresh long prompt twice: the first log line carries
-   `tokens_cache_write` (gpt-5.6 and later) and a cost at the write price, the second
-   `tokens_cached`.
+   `gen_ai.usage.cache_write.input_tokens` (gpt-5.6 and later) and a cost at the
+   write price, the second `gen_ai.usage.cache_read.input_tokens`.
 6. **Streaming usage**: `stream_options.include_usage` is honored and yields the
    usage-only final chunk (`choices: []`). `usage-log/stream` and `chat-stream-usage`
    check it. Azure may also send chunks with empty `choices` for content-filter

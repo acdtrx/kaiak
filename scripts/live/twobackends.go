@@ -16,7 +16,7 @@ func (r *run) servedBy(name, id string) (map[string]any, bool) {
 	if !r.ok(name, resp, err, id) {
 		return nil, false
 	}
-	line, err := r.gw.logs.wait(r.ctx, msg("request", "request_id", id))
+	line, err := r.gw.logs.wait(r.ctx, msg("request", "kaiak.request.id", id))
 	if err != nil {
 		r.fail(name, "no log line for request %s: %v", id, err)
 		return nil, false
@@ -26,7 +26,7 @@ func (r *run) servedBy(name, id string) (map[string]any, bool) {
 
 // attempts is the log line's attempt count (0 when absent).
 func attempts(line map[string]any) int {
-	n, _ := line["attempts"].(float64)
+	n, _ := line["kaiak.attempts"].(float64)
 	return int(n)
 }
 
@@ -40,7 +40,7 @@ func (r *run) checkSpread() {
 		if !ok {
 			return
 		}
-		served[fmt.Sprint(line["backend"])]++
+		served[fmt.Sprint(line["kaiak.backend.id"])]++
 	}
 	detail := fmt.Sprintf("%d requests: %s served %d, %s served %d", n, backendFirst, served[backendFirst],
 		backendSecond, served[backendSecond])
@@ -82,15 +82,15 @@ func (r *run) checkCapacity() {
 	queued := 0
 	served := map[string]int{}
 	for i := range n {
-		line, err := r.gw.logs.wait(r.ctx, msg("request", "request_id", fmt.Sprintf("live-capacity-%d", i)))
+		line, err := r.gw.logs.wait(r.ctx, msg("request", "kaiak.request.id", fmt.Sprintf("live-capacity-%d", i)))
 		if err != nil {
 			r.fail(name, "no log line for request live-capacity-%d: %v", i, err)
 			return
 		}
-		if _, ok := line["queue_wait_ms"]; ok {
+		if _, ok := line["kaiak.queue.wait_duration"]; ok {
 			queued++
 		}
-		served[fmt.Sprint(line["backend"])]++
+		served[fmt.Sprint(line["kaiak.backend.id"])]++
 	}
 	text, ok := r.metricsText(name)
 	if !ok {
@@ -128,7 +128,7 @@ func (r *run) checkFailover() {
 	defer deadline.Stop()
 	pace := time.NewTicker(r.o.failoverPace)
 	defer pace.Stop()
-	opened := msg("circuit opened", "backend", backendSecond)
+	opened := msg("circuit opened", "kaiak.backend.id", backendSecond)
 	served, retried := 0, 0
 	for i := 0; ; i++ {
 		if _, ok := r.gw.logs.find(opened); ok {
@@ -167,9 +167,9 @@ func (r *run) checkFailover() {
 		if !ok {
 			return
 		}
-		if line["backend"] != backendFirst || attempts(line) != 1 {
+		if line["kaiak.backend.id"] != backendFirst || attempts(line) != 1 {
 			r.fail(name, "with %s's circuit open a request went to %v in %d attempts, want %s in 1",
-				backendSecond, line["backend"], attempts(line), backendFirst)
+				backendSecond, line["kaiak.backend.id"], attempts(line), backendFirst)
 			return
 		}
 	}
@@ -184,7 +184,7 @@ func (r *run) checkFailover() {
 			r.o.baseURL2, r.o.failoverWait))
 	}
 	start = time.Now()
-	if _, err := r.gw.logs.waitWithin(r.ctx, r.o.failoverWait, msg("circuit half-open", "backend", backendSecond)); err != nil {
+	if _, err := r.gw.logs.waitWithin(r.ctx, r.o.failoverWait, msg("circuit half-open", "kaiak.backend.id", backendSecond)); err != nil {
 		r.fail(name, "%s's circuit did not go half-open within %s: %v", backendSecond, r.o.failoverWait, err)
 		return
 	}
@@ -196,10 +196,10 @@ func (r *run) checkFailover() {
 		if !ok {
 			return
 		}
-		if line["backend"] != backendSecond {
+		if line["kaiak.backend.id"] != backendSecond {
 			continue
 		}
-		if _, ok := r.gw.logs.find(msg("circuit closed", "backend", backendSecond, "trigger", "trial")); !ok {
+		if _, ok := r.gw.logs.find(msg("circuit closed", "kaiak.backend.id", backendSecond, "kaiak.trigger", "trial")); !ok {
 			r.fail(name, "%s served a request after its probe, but its circuit did not close", backendSecond)
 			return
 		}

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"kaiak/internal/config"
+	"kaiak/internal/logattr"
 	"kaiak/internal/state"
 )
 
@@ -248,7 +249,7 @@ func New(opts Options) *Client {
 		opts:    opts,
 		base:    base.String(),
 		http:    opts.HTTPClient,
-		logger:  opts.Logger.With("control_url", opts.URL.Redacted()),
+		logger:  opts.Logger.With("kaiak.control.url", opts.URL.Redacted()),
 		backoff: backoff{base: opts.BackoffBase, cap: opts.BackoffCap, random: opts.random},
 	}
 	c.lastContact.Store(time.Now().UnixNano())
@@ -349,7 +350,7 @@ func (c *Client) bootSnapshot(ctx context.Context) (ConfigSnapshot, error) {
 			}
 		}
 		c.logger.Log(ctx, level, "config snapshot not fetched at startup: retrying within the boot wait",
-			"attempt", attempt, "boot_wait_ms", c.opts.BootWait.Milliseconds(), "error", err)
+			"kaiak.control.attempt", attempt, logattr.Seconds("kaiak.control.boot_wait", c.opts.BootWait), "exception.message", err)
 		if c.opts.wait(bootCtx, retry.next()) != nil {
 			return snapshot, err // the wait is over
 		}
@@ -378,7 +379,7 @@ func unavailable(err error) bool {
 func (c *Client) bootFromSeed() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, err := c.opts.Applier.Apply(TriggerSeed, c.opts.SeedConfig, "file", c.opts.SeedFile)
+	_, err := c.opts.Applier.Apply(TriggerSeed, c.opts.SeedConfig, "file.path", c.opts.SeedFile)
 	return err == nil
 }
 
@@ -415,12 +416,12 @@ func (c *Client) takeTotals(t Totals, acked uint64) {
 	}
 	switch {
 	case slices.Contains(c.retired, t.Revision.ControlPlane):
-		c.logger.Info("totals ignored: from a control plane replaced since", "control_plane", t.Revision.ControlPlane,
-			"current", c.revision.ControlPlane)
+		c.logger.Info("totals ignored: from a control plane replaced since",
+			"kaiak.totals.control_plane", t.Revision.ControlPlane, "kaiak.totals.current_control_plane", c.revision.ControlPlane)
 	case c.revision == nil || t.Revision.NewerThan(*c.revision):
 		if c.revision != nil && t.Revision.ControlPlane != c.revision.ControlPlane {
-			c.logger.Info("totals from another control plane: ordering restarts", "control_plane", t.Revision.ControlPlane,
-				"previous", c.revision.ControlPlane)
+			c.logger.Info("totals from another control plane: ordering restarts",
+				"kaiak.totals.control_plane", t.Revision.ControlPlane, "kaiak.totals.previous_control_plane", c.revision.ControlPlane)
 			c.retired = append(c.retired, c.revision.ControlPlane)
 			if len(c.retired) > maxRetiredControlPlanes {
 				c.retired = slices.Delete(c.retired, 0, 1)
@@ -429,8 +430,8 @@ func (c *Client) takeTotals(t Totals, acked uint64) {
 		c.revision = &t.Revision
 		update.Totals = &t
 	default:
-		c.logger.Debug("totals ignored: not newer than the totals applied", "sequence", t.Revision.Sequence,
-			"applied_sequence", c.revision.Sequence)
+		c.logger.Debug("totals ignored: not newer than the totals applied", "kaiak.totals.sequence", t.Revision.Sequence,
+			"kaiak.totals.applied_sequence", c.revision.Sequence)
 	}
 	if c.opts.OnTotals != nil && (update.Totals != nil || update.Counted != 0) {
 		c.opts.OnTotals(update)
@@ -481,7 +482,7 @@ func positionRefused(err error) bool {
 // pause waits the next backoff delay, or until ctx is cancelled.
 func (c *Client) pause(ctx context.Context) {
 	d := c.backoff.next()
-	c.logger.Debug("control plane reconnect scheduled", "delay_ms", d.Milliseconds())
+	c.logger.Debug("control plane reconnect scheduled", logattr.Seconds("kaiak.control.delay", d))
 	_ = c.opts.wait(ctx, d) // cancelled: the loop sees ctx and stops
 }
 
@@ -506,13 +507,13 @@ func (c *Client) takeSnapshot(s ConfigSnapshot) bool {
 func (c *Client) takeStreamConfig(s ConfigSnapshot) {
 	position := c.currentPosition()
 	if s.ConfigEpoch == position.epoch && s.Version <= position.version {
-		c.logger.Debug("config event ignored: version already taken", "config_version", s.Version,
-			"position", position.version)
+		c.logger.Debug("config event ignored: version already taken", "kaiak.config.version", s.Version,
+			"kaiak.config.position", position.version)
 		return
 	}
 	if s.ConfigEpoch != position.epoch {
 		c.logger.Info("config event from another config epoch: applied whatever its version",
-			"config_epoch", s.ConfigEpoch, "previous_epoch", position.epoch)
+			"kaiak.config.epoch", s.ConfigEpoch, "kaiak.config.previous_epoch", position.epoch)
 	}
 	c.applyConfig(s)
 }
@@ -526,7 +527,7 @@ func (c *Client) applyConfig(s ConfigSnapshot) bool {
 	version := s.Version
 	c.mu.Lock()
 	_, err := c.opts.Applier.ApplyPublished(TriggerControl, s.Config, config.Version{Epoch: s.ConfigEpoch, Number: version},
-		"config_version", version, "config_epoch", s.ConfigEpoch)
+		"kaiak.config.version", version, "kaiak.config.epoch", s.ConfigEpoch)
 	c.position = configPosition{epoch: s.ConfigEpoch, version: version}
 	if err != nil {
 		c.rejection = &Rejection{Version: version, Codes: rejectionCodes(err)}
@@ -556,20 +557,20 @@ func (c *Client) logFetchFailure(msg string, err error) {
 	if errors.Is(err, errProtocolMismatch) {
 		level = slog.LevelError
 	}
-	c.logger.Log(context.Background(), level, msg, "error", err)
+	c.logger.Log(context.Background(), level, msg, "exception.message", err)
 }
 
 func (c *Client) logStreamEnd(r streamResult) {
-	attrs := []any{"lasted_ms", r.lasted.Milliseconds()}
+	attrs := []any{logattr.Seconds("kaiak.lasted", r.lasted)}
 	switch {
 	case r.resync:
 		c.logger.Info("config stream ended: resync", attrs...)
 	case r.err == nil:
 		c.logger.Info("config stream ended by the control plane", attrs...)
 	case errors.Is(r.err, errProtocolMismatch):
-		c.logger.Error("config stream failed", append(attrs, "error", r.err)...)
+		c.logger.Error("config stream failed", append(attrs, "exception.message", r.err)...)
 	default:
-		c.logger.Warn("config stream failed", append(attrs, "error", r.err)...)
+		c.logger.Warn("config stream failed", append(attrs, "exception.message", r.err)...)
 	}
 }
 

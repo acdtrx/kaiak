@@ -178,8 +178,8 @@ func TestDrainFinishesInFlightStreamsAndRefusesNewRequests(t *testing.T) {
 		}
 	}
 	logs := g.logText()
-	for _, want := range []string{`"msg":"draining"`, `"msg":"draining: refusing new requests","in_flight":1`,
-		`"msg":"drained"`, `"error_code":"server_shutting_down"`} {
+	for _, want := range []string{`"msg":"draining"`, `"msg":"draining: refusing new requests","kaiak.drain.in_flight":1`,
+		`"msg":"drained"`, `"error.type":"server_shutting_down"`} {
 		if !strings.Contains(logs, want) {
 			t.Errorf("log misses %s:\n%s", want, logs)
 		}
@@ -255,14 +255,14 @@ func TestDrainTimeoutCutsOffHungRequests(t *testing.T) {
 				t.Errorf("team tokens %d after the cut, want the settled %d", used, want)
 			}
 			logs := g.logText()
-			for _, want := range []string{`"reason":"timeout","requests":1`, `"cut_off":1`} {
+			for _, want := range []string{`"kaiak.reason":"timeout","kaiak.drain.in_flight":1`, `"kaiak.drain.cut_off":1`} {
 				if !strings.Contains(logs, want) {
 					t.Errorf("log misses %s:\n%s", want, logs)
 				}
 			}
-			wantEnd := `"relay_end":"shutdown"`
+			wantEnd := `"kaiak.relay_end":"shutdown"`
 			if c.reply.StallBeforeFirstByte {
-				wantEnd = `"error_code":"server_shutting_down"`
+				wantEnd = `"error.type":"server_shutting_down"`
 			}
 			if !strings.Contains(logs, wantEnd) {
 				t.Errorf("log misses %s:\n%s", wantEnd, logs)
@@ -300,7 +300,7 @@ func TestHurriedDrainSkipsTheWaitsAndCutsOff(t *testing.T) {
 	if records := g.usage.all(); len(records) != 1 || !records[0].Partial {
 		t.Errorf("records %+v, want one partial", records)
 	}
-	if logs := g.logText(); !strings.Contains(logs, `"reason":"hurried","requests":1`) {
+	if logs := g.logText(); !strings.Contains(logs, `"kaiak.reason":"hurried","kaiak.drain.in_flight":1`) {
 		t.Errorf("log misses the hurried cut:\n%s", logs)
 	}
 }
@@ -330,8 +330,8 @@ func TestDrainCutsTheReserveBeforeTheTimeout(t *testing.T) {
 	}
 	logs := g.logText()
 	for _, want := range []string{
-		`"msg":"draining","grace":"0s","timeout":"1h0m0s","flush_reserve":"59m59.98s","cut_after":"20ms","in_flight":1`,
-		`"reason":"timeout","requests":1`,
+		`"msg":"draining","kaiak.drain.grace":0,"kaiak.drain.timeout":3600,"kaiak.drain.flush_reserve":3599.98,"kaiak.drain.cut_after":0.02,"kaiak.drain.in_flight":1`,
+		`"kaiak.reason":"timeout","kaiak.drain.in_flight":1`,
 	} {
 		if !strings.Contains(logs, want) {
 			t.Errorf("log misses %s:\n%s", want, logs)

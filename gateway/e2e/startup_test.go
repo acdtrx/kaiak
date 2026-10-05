@@ -7,7 +7,6 @@ package e2e
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -68,8 +67,8 @@ func TestBootWaitsForAControlPlaneComingUp(t *testing.T) {
 	defer up.Stop()
 
 	g := startGatewayEnv(t, controlEnv(cp.URL(), startupToken, ""))
-	g.logs.wait(t, "a boot retry", msg("config snapshot not fetched at startup: retrying within the boot wait", "attempt", "1"))
-	g.logs.wait(t, "the boot from the control plane", msg("config applied", "trigger", "control", "config_version", "1"))
+	g.logs.wait(t, "a boot retry", msg("config snapshot not fetched at startup: retrying within the boot wait", "kaiak.control.attempt", "1"))
+	g.logs.wait(t, "the boot from the control plane", msg("config applied", "kaiak.trigger", "control", "kaiak.config.version", "1"))
 	if r := g.post(t, "/v1/chat/completions", evalKey, "", chatBody("chat", false, nil)); r.StatusCode != http.StatusOK {
 		t.Fatalf("chat: %d %s", r.StatusCode, r.body)
 	}
@@ -97,8 +96,8 @@ func TestReadinessWaitsForTheFirstTotals(t *testing.T) {
 	// The totals stay delayed for a second: the time a readiness probe needs to find a
 	// gateway that bound without them.
 	time.Sleep(time.Second)
-	if line, bound := g.logs.find(msg("listening", "listener", "api")); bound {
-		g.api = "http://" + fmt.Sprint(line["addr"])
+	if line, bound := g.logs.find(msg("listening", "kaiak.listener.name", "api")); bound {
+		g.api = listenerURL(line)
 		r := g.post(t, "/v1/chat/completions", evalKey, "", chatBody("priced", false, nil))
 		t.Fatalf("the API listener bound before the first totals; the priced request on a spent budget answered %d %s",
 			r.StatusCode, r.body)
@@ -106,8 +105,8 @@ func TestReadinessWaitsForTheFirstTotals(t *testing.T) {
 	g.logs.wait(t, "the wait", msg("waiting for the first totals"))
 
 	cp.PushCurrentTotals()
-	g.api = "http://" + fmt.Sprint(g.logs.wait(t, "the API listener", msg("listening", "listener", "api"))["addr"])
-	g.admin = "http://" + fmt.Sprint(g.logs.wait(t, "the admin listener", msg("listening", "listener", "admin"))["addr"])
+	g.api = listenerURL(g.logs.wait(t, "the API listener", msg("listening", "kaiak.listener.name", "api")))
+	g.admin = listenerURL(g.logs.wait(t, "the admin listener", msg("listening", "kaiak.listener.name", "admin")))
 	g.logs.wait(t, "the end of the wait", msg("first totals received"))
 	if status, body := g.get(t, "/readyz", ""); status != http.StatusOK {
 		t.Fatalf("/readyz = %d %s, want 200", status, body)

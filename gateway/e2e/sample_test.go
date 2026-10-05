@@ -79,7 +79,7 @@ func TestAcrossHalves(t *testing.T) {
 	a := startGatewayEnv(t, gatewayEnv("gw-a", dataA))
 	b := startGatewayEnv(t, gatewayEnv("gw-b", filepath.Join(dir, "gw-b")))
 	for _, g := range []*gateway{a, b} {
-		g.logs.wait(t, "the boot from the sample", msg("config applied", "trigger", "control", "config_version", "1"))
+		g.logs.wait(t, "the boot from the sample", msg("config applied", "kaiak.trigger", "control", "kaiak.config.version", "1"))
 	}
 
 	// tokens holds what the gateways served since the sample's store began: every
@@ -139,7 +139,7 @@ func TestAcrossHalves(t *testing.T) {
 		cfg["models"].(map[string]any)["chat-cm"] = cfg["models"].(map[string]any)["rpm"]
 		configMap.project(t, cfg)
 		for _, g := range []*gateway{a, b} {
-			g.logs.wait(t, "the swapped config", msg("config applied", "trigger", "control", "config_version", "2"))
+			g.logs.wait(t, "the swapped config", msg("config applied", "kaiak.trigger", "control", "kaiak.config.version", "2"))
 			if status, body := g.get(t, "/v1/models/chat-cm", evalKey); status != http.StatusOK {
 				t.Fatalf("/v1/models/chat-cm after the swap = %d %s", status, body)
 			}
@@ -151,7 +151,7 @@ func TestAcrossHalves(t *testing.T) {
 		cfg["models"].(map[string]any)["chat-2"] = cfg["models"].(map[string]any)["rpm"]
 		writeConfigFile(t, configFile, cfg)
 		for _, g := range []*gateway{a, b} {
-			g.logs.wait(t, "the pushed edit", msg("config applied", "trigger", "control", "config_version", "3"))
+			g.logs.wait(t, "the pushed edit", msg("config applied", "kaiak.trigger", "control", "kaiak.config.version", "3"))
 			if status, body := g.get(t, "/v1/models/chat-2", evalKey); status != http.StatusOK {
 				t.Fatalf("/v1/models/chat-2 after the edit = %d %s", status, body)
 			}
@@ -231,7 +231,7 @@ func TestAcrossHalves(t *testing.T) {
 		if r := chat(t, a, "down"); r.StatusCode != http.StatusBadGateway || r.errorCode(t) != "upstream_unavailable" {
 			t.Fatalf("down: %d %s, want 502 upstream_unavailable", r.StatusCode, r.body)
 		}
-		a.logs.wait(t, "the circuit opening", msg("circuit opened", "backend", "down"))
+		a.logs.wait(t, "the circuit opening", msg("circuit opened", "kaiak.backend.id", "down"))
 
 		pace := make(chan struct{})
 		capped.SetReply(fakebackend.Reply{Pace: pace})
@@ -301,7 +301,7 @@ func TestAcrossHalves(t *testing.T) {
 	a = startGatewayEnv(t, gatewayEnv("gw-a", dataA, "KAIAK_CONTROL_BOOT_WAIT_MS=500"))
 
 	t.Run("a gateway restarted in the outage boots from last-known-good", func(t *testing.T) {
-		a.logs.wait(t, "the last-known-good boot", msg("config applied", "trigger", "last-known-good", "config_version", "3"))
+		a.logs.wait(t, "the last-known-good boot", msg("config applied", "kaiak.trigger", "last-known-good", "kaiak.config.version", "3"))
 		a.logs.wait(t, "the restored spool", msg("usage spool restored"))
 		served(t, "chat-2 from last-known-good", chat(t, a, "chat-2"))
 	})
@@ -312,8 +312,8 @@ func TestAcrossHalves(t *testing.T) {
 	t.Run("the control plane back: resynced, serving, spool delivered", func(t *testing.T) {
 		// The new sample counts versions from 1 again: both gateways take its snapshot
 		// though they ran version 2.
-		a.logs.waitCount(t, "the resync", 1, recoverLimit, msg("config applied", "trigger", "control", "config_version", "1"))
-		b.logs.waitCount(t, "the resync", 2, recoverLimit, msg("config applied", "trigger", "control", "config_version", "1"))
+		a.logs.waitCount(t, "the resync", 1, recoverLimit, msg("config applied", "kaiak.trigger", "control", "kaiak.config.version", "1"))
+		b.logs.waitCount(t, "the resync", 2, recoverLimit, msg("config applied", "kaiak.trigger", "control", "kaiak.config.version", "1"))
 		for _, g := range []*gateway{a, b} {
 			g.waitMetricWithin(t, "the outage over", "kaiak_control_outage", recoverLimit, func(v float64) bool { return v == 0 })
 			g.waitMetricWithin(t, "the spool delivered", "kaiak_usage_spool_batches", recoverLimit, func(v float64) bool { return v == 0 })
@@ -325,7 +325,7 @@ func TestAcrossHalves(t *testing.T) {
 	t.Run("SIGTERM flushes the last records before exit", func(t *testing.T) {
 		served(t, "chat on gw-b", chat(t, b, "chat"))
 		b.stop(t) // well within the 5 s seal interval
-		b.logs.wait(t, "the flush", msg("usage flushed", "trigger", "drain"))
+		b.logs.wait(t, "the flush", msg("usage flushed", "kaiak.trigger", "drain"))
 		// Counted before gw-b exited (the flush was acknowledged); pushed to the
 		// observer within the second.
 		allCounted(t, waitLimit)

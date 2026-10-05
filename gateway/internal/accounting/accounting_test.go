@@ -350,8 +350,8 @@ func TestSettlementClampsUsageToTheProtocolBound(t *testing.T) {
 	if clamped != 1 {
 		t.Errorf("OutOfRange told %d times, want 1", clamped)
 	}
-	if out := logs.String(); !strings.Contains(out, "level=WARN") || !strings.Contains(out, "request_id=req-huge") ||
-		!strings.Contains(out, "clamped=\"[tokens_in cost_nano_usd]\"") {
+	if out := logs.String(); !strings.Contains(out, "level=WARN") || !strings.Contains(out, "kaiak.request.id=req-huge") ||
+		!strings.Contains(out, "kaiak.usage.clamped=\"[tokens_in cost_nano_usd]\"") {
 		t.Errorf("clamp not logged as a warning with the request ID and what was clamped:\n%s", out)
 	}
 

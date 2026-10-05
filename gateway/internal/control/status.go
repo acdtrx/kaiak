@@ -141,7 +141,7 @@ func (c *Client) ReportStatus(ctx context.Context, trigger string) error {
 	wasFailing := r.failing
 	r.failing = err != nil
 	r.mu.Unlock()
-	attrs := []any{"trigger", trigger, "state", s.State}
+	attrs := []any{"kaiak.trigger", trigger, "kaiak.status.state", s.State}
 	switch {
 	case err == nil && wasFailing:
 		c.logger.Info("status report delivered again", attrs...)
@@ -149,9 +149,9 @@ func (c *Client) ReportStatus(ctx context.Context, trigger string) error {
 		c.logger.Debug("status report delivered", attrs...)
 	case ctx.Err() != nil:
 	case !wasFailing || configProblem(err):
-		c.logger.Warn("status report not delivered; retried with the next report", append(attrs, "error", err)...)
+		c.logger.Warn("status report not delivered; retried with the next report", append(attrs, "exception.message", err)...)
 	default:
-		c.logger.Debug("status report not delivered", append(attrs, "error", err)...)
+		c.logger.Debug("status report not delivered", append(attrs, "exception.message", err)...)
 	}
 	return err
 }

@@ -98,20 +98,20 @@ func (c *ModelChecker) check(ctx context.Context, s *config.Snapshot) {
 				return
 			}
 			if pathErr, ok := errors.AsType[pathMissing](err); ok {
-				c.logger.Warn("the backend has no models list at its base_url", "backend", id, "base_url", b.BaseURL,
-					"hint", pathErr.BaseURLHint())
+				c.logger.Warn("the backend has no models list at its base_url", "kaiak.backend.id", id, "kaiak.backend.base_url", b.BaseURL,
+					"kaiak.backend.base_url_hint", pathErr.BaseURLHint())
 				return
 			}
 			if err != nil {
 				// A warning: config apply is infrequent, and a backend out of reach
 				// then (often a mistyped host) is what the operator needs to see.
-				c.logger.Warn("model check skipped: the backend did not answer", "backend", id, "error", err.Error())
+				c.logger.Warn("model check skipped: the backend did not answer", "kaiak.backend.id", id, "exception.message", err.Error())
 				return
 			}
 			slices.Sort(names)
 			for _, name := range names {
 				if !serves(name) {
-					c.logger.Warn("the backend does not list the deployment's model", "backend", id, "deployment_model", name)
+					c.logger.Warn("the backend does not list the deployment's model", "kaiak.backend.id", id, "kaiak.deployment.model", name)
 				}
 			}
 		})

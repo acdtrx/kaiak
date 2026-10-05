@@ -83,7 +83,7 @@ func TestSeriesStartAtZero(t *testing.T) {
 		t.Fatal(err)
 	}
 	g.signal(t, syscall.SIGHUP)
-	g.logs.wait(t, "the rejected reload", msg("config rejected", "trigger", "sighup"))
+	g.logs.wait(t, "the rejected reload", msg("config rejected", "kaiak.trigger", "sighup"))
 	want(`kaiak_config_loads_total{trigger="sighup",result="rejected"}`, 1)
 
 	// A reload adding backend c and a model on it: their series appear at 0.
@@ -96,7 +96,7 @@ func TestSeriesStartAtZero(t *testing.T) {
 		cfg["models"].(map[string]any)["chat-c"] = model
 	}))
 	g.signal(t, syscall.SIGHUP)
-	g.logs.wait(t, "the applied reload", msg("config applied", "trigger", "sighup"))
+	g.logs.wait(t, "the applied reload", msg("config applied", "kaiak.trigger", "sighup"))
 	modelSeries("chat-c")
 	deploymentSeries("chat-c", "c", "other")
 	want(`kaiak_config_loads_total{trigger="sighup",result="applied"}`, 1)

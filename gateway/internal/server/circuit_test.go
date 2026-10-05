@@ -190,11 +190,11 @@ func TestCircuitOpensAfterTheThresholdAndAllOpenIs503(t *testing.T) {
 		t.Errorf("the answer names the backend: %s", w.Body.String())
 	}
 	logs := g.logText()
-	if !strings.Contains(logs, `"msg":"circuit opened","backend":"down","deployment_model":"down","failures":3,"last_error":"upstream_unavailable: backend down:`) {
+	if !strings.Contains(logs, `"msg":"circuit opened","kaiak.backend.id":"down","kaiak.deployment.model":"down","kaiak.circuit.failures":3,"kaiak.circuit.last_error":"upstream_unavailable: backend down:`) {
 		t.Errorf("no circuit-opened line with the last failure:\n%s", logs)
 	}
 	line := logLine(t, g, "refused")
-	if strings.Contains(line, `"backend"`) || !strings.Contains(line, `"error_code":"no_healthy_deployment"`) {
+	if strings.Contains(line, `"kaiak.backend.id"`) || !strings.Contains(line, `"error.type":"no_healthy_deployment"`) {
 		t.Errorf("log line of the refused request: %s", line)
 	}
 	// Refused before routing: no usage record for it.
@@ -302,11 +302,11 @@ func TestOpenDeploymentIsSkippedAndProbedBackIn(t *testing.T) {
 	}
 
 	logs := g.logText()
-	for _, want := range []string{`"msg":"probe failed","backend":"local-b","trigger":"test"`,
-		`"msg":"probe succeeded","backend":"local-b","trigger":"test"`,
-		`"msg":"circuit kept open: the backend does not list the deployment's model","backend":"local-b","deployment_model":"pair-b","trigger":"test"`,
-		`"msg":"circuit half-open","backend":"local-b","deployment_model":"pair-b","trigger":"test"`,
-		`"msg":"circuit closed","backend":"local-b","deployment_model":"pair-b","trigger":"trial"`} {
+	for _, want := range []string{`"msg":"probe failed","kaiak.backend.id":"local-b","kaiak.trigger":"test"`,
+		`"msg":"probe succeeded","kaiak.backend.id":"local-b","kaiak.trigger":"test"`,
+		`"msg":"circuit kept open: the backend does not list the deployment's model","kaiak.backend.id":"local-b","kaiak.deployment.model":"pair-b","kaiak.trigger":"test"`,
+		`"msg":"circuit half-open","kaiak.backend.id":"local-b","kaiak.deployment.model":"pair-b","kaiak.trigger":"test"`,
+		`"msg":"circuit closed","kaiak.backend.id":"local-b","kaiak.deployment.model":"pair-b","kaiak.trigger":"trial"`} {
 		if !strings.Contains(logs, want) {
 			t.Errorf("log misses %s:\n%s", want, logs)
 		}

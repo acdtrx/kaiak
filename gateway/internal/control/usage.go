@@ -221,7 +221,7 @@ func (u *usageSender) seal(trigger string) {
 	u.mu.Lock()
 	u.sealLocked()
 	u.mu.Unlock()
-	u.logger.Debug("usage batches sealing", "trigger", trigger)
+	u.logger.Debug("usage batches sealing", "kaiak.trigger", trigger)
 	u.persist()
 }
 
@@ -374,7 +374,7 @@ func (u *usageSender) load(e spoolEntry) (UsageBatch, bool) {
 	}
 	if err != nil {
 		kept := u.setAside(e)
-		u.logger.Error("usage batch unreadable; set aside", append([]any{"sequence", e.id.Sequence, "error", err},
+		u.logger.Error("usage batch unreadable; set aside", append([]any{"kaiak.usage.sequence", e.id.Sequence, "exception.message", err},
 			fileAttr(kept)...)...)
 		return UsageBatch{}, false
 	}
@@ -387,9 +387,9 @@ func (u *usageSender) load(e spoolEntry) (UsageBatch, bool) {
 // totals' revision) and the batch leaves the store;
 // refused → set aside; anything else → the backoff delay, then the same batch again.
 func (u *usageSender) sendOutstanding(ctx context.Context, e spoolEntry, batch UsageBatch) {
-	attrs := []any{"epoch", e.id.Epoch, "sequence", e.id.Sequence, "records", e.records}
+	attrs := []any{"kaiak.usage.epoch", e.id.Epoch, "kaiak.usage.sequence", e.id.Sequence, "kaiak.usage.records", e.records}
 	if e.id.Instance != u.instance {
-		attrs = append(attrs, "batch_instance", e.id.Instance)
+		attrs = append(attrs, "kaiak.usage.batch_instance", e.id.Instance)
 	}
 	ack, err := u.post(ctx, batch)
 	if err != nil && ctx.Err() != nil {
@@ -402,7 +402,7 @@ func (u *usageSender) sendOutstanding(ctx context.Context, e spoolEntry, batch U
 		u.c.takeTotals(ack.Totals, e.generation)
 		if err := u.store.remove(e); err != nil {
 			u.logger.Warn("acknowledged usage batch not removed from the spool; a restart resends it and the control plane acknowledges it again without counting",
-				append(attrs, "error", err)...)
+				append(attrs, "exception.message", err)...)
 		}
 		u.dropHead(e)
 		u.backoff.reset()
@@ -413,14 +413,14 @@ func (u *usageSender) sendOutstanding(ctx context.Context, e spoolEntry, batch U
 		kept := u.setAside(e)
 		u.observe(BatchRejected)
 		u.logger.Error("usage batch refused by the control plane; set aside and the next one sent",
-			append(append(attrs, "status", refused.status, "code", refused.code), fileAttr(kept)...)...)
+			append(append(attrs, "http.response.status_code", refused.status, "error.type", refused.code), fileAttr(kept)...)...)
 	default:
 		u.observe(BatchFailed)
 		level := slog.LevelWarn
 		if configProblem(err) {
 			level = slog.LevelError
 		}
-		u.logger.Log(ctx, level, "usage batch not delivered; retrying", append(attrs, "error", err)...)
+		u.logger.Log(ctx, level, "usage batch not delivered; retrying", append(attrs, "exception.message", err)...)
 		_ = u.c.opts.wait(ctx, u.backoff.next()) // cancelled: the loop sees ctx and stops
 	}
 }
@@ -489,7 +489,7 @@ func (c *Client) FlushUsage(ctx context.Context, trigger string) bool {
 		changed := u.changed
 		u.mu.Unlock()
 		if empty {
-			c.logger.Info("usage flushed", "trigger", trigger)
+			c.logger.Info("usage flushed", "kaiak.trigger", trigger)
 			return true
 		}
 		select {
@@ -498,12 +498,12 @@ func (c *Client) FlushUsage(ctx context.Context, trigger string) bool {
 			// Batches lost at exit are billing data lost, logged at error level as the
 			// other losses are; spooled ones wait for the next start.
 			if u.store.inMemory() {
-				c.logger.Error("usage not flushed: lost at exit (no data directory)", "trigger", trigger,
-					"batches", batches, "records", records)
+				c.logger.Error("usage not flushed: lost at exit (no data directory)", "kaiak.trigger", trigger,
+					"kaiak.usage.batches", batches, "kaiak.usage.records", records)
 				return false
 			}
-			c.logger.Warn("usage not flushed: left in the spool for the next start", "trigger", trigger,
-				"batches", batches, "records", records)
+			c.logger.Warn("usage not flushed: left in the spool for the next start", "kaiak.trigger", trigger,
+				"kaiak.usage.batches", batches, "kaiak.usage.records", records)
 			return false
 		}
 	}

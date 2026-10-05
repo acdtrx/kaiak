@@ -92,10 +92,10 @@ func errorClass(rq *request) (metrics.ErrorClass, bool) {
 	return "", false
 }
 
-// errorCode is the request log line's error_code: the gateway's own error answer, or
+// errorCode is the request log line's error.type: the gateway's own error answer, or
 // for a backend error status relayed as it came, its class; "" for a request that
-// got neither — a success, or a response broken off after it started (relay_end
-// says how).
+// got neither — a success, or a response broken off after it started
+// (kaiak.relay_end says how).
 func errorCode(rq *request) string {
 	switch {
 	case rq.failure != nil:

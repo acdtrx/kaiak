@@ -234,7 +234,7 @@ svg .band { stroke: none; }
     <tr><td><code>control</code></td><td>Boot (snapshot → last-known-good → seed), the config stream with reconnect and resync, the usage batch sender, the status reporter, contact tracking.</td></tr>
     <tr><td><code>metrics</code></td><td>Small registry (counters, gauges, fixed-bucket histograms) and Prometheus text exposition.</td></tr>
     <tr><td><code>state</code></td><td>The optional data directory: versioned files, atomic writes, a <code>flock</code> so one gateway owns it.</td></tr>
-    <tr><td><code>sse</code>, <code>clip</code>, <code>schemacheck</code></td><td>Shared parts: SSE reader (backend streams and the config stream), bounding client strings before they are logged, strict JSON and schema-mirroring checks.</td></tr>
+    <tr><td><code>sse</code>, <code>clip</code>, <code>logattr</code>, <code>schemacheck</code></td><td>Shared parts: SSE reader (backend streams and the config stream), bounding client strings before they are logged, log durations in seconds, strict JSON and schema-mirroring checks.</td></tr>
     <tr><td><code>fakebackend</code>, <code>fakecontrol</code></td><td>Test doubles only; used by unit tests and the e2e suite in <code>gateway/e2e</code>.</td></tr>
   </tbody>
 </table>

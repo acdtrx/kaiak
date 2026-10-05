@@ -218,8 +218,8 @@ func TestRejectedConfigKeepsTheSpentBudget(t *testing.T) {
 	v2["global"].(map[string]any)["limits"] = []any{map[string]any{"type": "usd_per_month", "value": 0.0001,
 		"models": []any{"chat", "priced"}}}
 	publish(v2)
-	a.logs.wait(t, "gw-a applying v2", msg("config applied", "trigger", "control", "config_version", "2"))
-	b.logs.wait(t, "gw-b rejecting v2", msg("config rejected", "trigger", "control", "config_version", "2"))
+	a.logs.wait(t, "gw-a applying v2", msg("config applied", "kaiak.trigger", "control", "kaiak.config.version", "2"))
+	b.logs.wait(t, "gw-b rejecting v2", msg("config rejected", "kaiak.trigger", "control", "kaiak.config.version", "2"))
 	if got := b.metric(t, `kaiak_config_loads_total{trigger="control",result="rejected"}`); got != 1 {
 		t.Errorf("gw-b's rejected control loads = %v, want 1", got)
 	}

@@ -279,7 +279,7 @@ func TestUpstreamFailuresBeforeTheFirstByte(t *testing.T) {
 	}
 
 	logs := g.logs.String()
-	for _, want := range []string{`"error_code":"upstream_unavailable"`, `"error_code":"upstream_timeout"`, `"upstream_error":`, `"backend":"down"`} {
+	for _, want := range []string{`"error.type":"upstream_unavailable"`, `"error.type":"upstream_timeout"`, `"kaiak.upstream.error.message":`, `"kaiak.backend.id":"down"`} {
 		if !strings.Contains(logs, want) {
 			t.Errorf("log misses %s:\n%s", want, logs)
 		}
@@ -463,8 +463,8 @@ func TestBackendCutMidStreamCutsTheClient(t *testing.T) {
 		t.Errorf("client got %d events before the cut, want 2", n)
 	}
 	// The log line is written before the connection is cut.
-	if logs := g.logText(); !strings.Contains(logs, `"relay_end":"upstream_failed"`) {
-		t.Errorf("log misses relay_end:\n%s", logs)
+	if logs := g.logText(); !strings.Contains(logs, `"kaiak.relay_end":"upstream_failed"`) {
+		t.Errorf("log misses kaiak.relay_end:\n%s", logs)
 	}
 }
 

@@ -78,7 +78,7 @@ func TestGroupTreeEndToEnd(t *testing.T) {
 	}
 	cp.Publish(data)
 	g := startGatewayEnv(t, controlEnv(cp.URL(), token, filepath.Join(t.TempDir(), "data")))
-	g.logs.wait(t, "the boot from the control plane", msg("config applied", "trigger", "control", "config_version", "1"))
+	g.logs.wait(t, "the boot from the control plane", msg("config applied", "kaiak.trigger", "control", "kaiak.config.version", "1"))
 	g.waitMetric(t, "the first totals", "kaiak_control_totals_applied_timestamp_seconds", func(float64) bool { return true })
 
 	chat := func(t *testing.T, key, id, model string) *response {
@@ -104,7 +104,7 @@ func TestGroupTreeEndToEnd(t *testing.T) {
 			t.Errorf("refusal %s: want \"group limit\" with no group ID or label", body)
 		}
 		line := g.settled(t, id)
-		for field, want := range map[string]any{"limit_scope": "group", "limit_id": limitID, "group": group} {
+		for field, want := range map[string]any{"kaiak.limit.scope": "group", "kaiak.limit.id": limitID, "kaiak.key.group": group} {
 			if line[field] != want {
 				t.Errorf("log line %s = %v, want %v", field, line[field], want)
 			}

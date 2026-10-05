@@ -89,8 +89,9 @@ func TestNonStreamUsageIsRecordedExactlyAndPriced(t *testing.T) {
 		t.Errorf("record ID %q, time %v", r.RecordID, r.GatewayTime)
 	}
 	logs := g.logText()
-	for _, want := range []string{`"tokens_in":60`, `"tokens_cached":40`, `"tokens_cache_write":0`, `"tokens_out":10`,
-		`"tokens_reasoning":4`, `"cost_usd":0.00012`, `"estimated":false`, `"partial":false`} {
+	for _, want := range []string{`"gen_ai.usage.input_tokens":100`, `"gen_ai.usage.cache_read.input_tokens":40`,
+		`"gen_ai.usage.cache_write.input_tokens":0`, `"gen_ai.usage.output_tokens":10`,
+		`"gen_ai.usage.reasoning.output_tokens":4`, `"kaiak.usage.cost_usd":0.00012`, `"kaiak.usage.estimated":false`, `"kaiak.usage.partial":false`} {
 		if !strings.Contains(logs, want) {
 			t.Errorf("log misses %s:\n%s", want, logs)
 		}
@@ -133,8 +134,9 @@ func TestInputWrittenToTheCacheIsRecordedAndLogged(t *testing.T) {
 				t.Errorf("cost %d nano-USD, want 2054000", r.CostNanoUSD)
 			}
 			logs := g.logText()
-			for _, want := range []string{`"tokens_in":3`, `"tokens_cached":0`, `"tokens_cache_write":2033`,
-				`"tokens_out":9`} {
+			for _, want := range []string{`"gen_ai.usage.input_tokens":2036`, `"gen_ai.usage.cache_read.input_tokens":0`,
+				`"gen_ai.usage.cache_write.input_tokens":2033`,
+				`"gen_ai.usage.output_tokens":9`} {
 				if !strings.Contains(logs, want) {
 					t.Errorf("log misses %s:\n%s", want, logs)
 				}
@@ -221,7 +223,7 @@ func TestBackendCutMidStreamRecordsPartialUsage(t *testing.T) {
 	resp.Body.Close()
 
 	expectUnits(t, settledRecord(t, g), units(int64(len(body)+3)/4, 0, 0, 3, 0), true, true)
-	if logs := g.logText(); !strings.Contains(logs, `"estimated":true,"partial":true`) {
+	if logs := g.logText(); !strings.Contains(logs, `"kaiak.usage.estimated":true,"kaiak.usage.partial":true`) {
 		t.Errorf("log misses the flags:\n%s", logs)
 	}
 }

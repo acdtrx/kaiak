@@ -70,7 +70,7 @@ func TestRunWithoutADataDirectoryWritesNothing(t *testing.T) {
 		}
 		stopped()
 		out := logs.String()
-		for _, want := range []string{`msg="config applied" trigger=control`, "usage batches kept in memory until acknowledged",
+		for _, want := range []string{`msg="config applied" kaiak.trigger=control`, "usage batches kept in memory until acknowledged",
 			`msg="usage flushed"`} {
 			if !strings.Contains(out, want) {
 				t.Errorf("log misses %q:\n%s", want, out)
@@ -208,7 +208,7 @@ func TestRunBootsFromTheSeedWithTheControlPlaneDown(t *testing.T) {
 		t.Fatalf("run returned %v:\n%s", err, logs.String())
 	}
 	stopped()
-	if out := logs.String(); !strings.Contains(out, `msg="config applied" trigger=seed`) {
+	if out := logs.String(); !strings.Contains(out, `msg="config applied" kaiak.trigger=seed`) {
 		t.Errorf("no seed boot:\n%s", out)
 	}
 }

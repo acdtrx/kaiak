@@ -161,7 +161,7 @@ func TestClientThatStopsReadingIsCutOff(t *testing.T) {
 	}
 	// The client reads nothing.
 	deadline := time.Now().Add(waitTimeout)
-	for !strings.Contains(g.logText(), `"relay_end":"client_closed"`) {
+	for !strings.Contains(g.logText(), `"kaiak.relay_end":"client_closed"`) {
 		if time.Now().After(deadline) {
 			t.Fatalf("relay still running with a client that stopped reading:\n%s", g.logText())
 		}

@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -125,6 +126,12 @@ func (l *logLines) text() string {
 	return strings.Join(l.raw, "\n")
 }
 
+// listenerURL is the base URL of the listener a listening line names: its
+// server.address and server.port.
+func listenerURL(line map[string]any) string {
+	return "http://" + net.JoinHostPort(fmt.Sprint(line["server.address"]), fmt.Sprint(line["server.port"]))
+}
+
 // msg matches a log line by message and string fields.
 func msg(message string, fields ...string) func(map[string]any) bool {
 	return func(entry map[string]any) bool {
@@ -195,8 +202,8 @@ func startGatewayEnv(t *testing.T, env []string) *gateway {
 func startGatewayIn(t *testing.T, dir string, env []string) *gateway {
 	t.Helper()
 	g := startProcess(t, dir, env)
-	g.api = "http://" + fmt.Sprint(g.logs.wait(t, "the API listener", msg("listening", "listener", "api"))["addr"])
-	g.admin = "http://" + fmt.Sprint(g.logs.wait(t, "the admin listener", msg("listening", "listener", "admin"))["addr"])
+	g.api = listenerURL(g.logs.wait(t, "the API listener", msg("listening", "kaiak.listener.name", "api")))
+	g.admin = listenerURL(g.logs.wait(t, "the admin listener", msg("listening", "kaiak.listener.name", "admin")))
 	// Readiness is the config being loaded, which happens before the listeners bind
 	// in both modes (control-plane mode exits when it boots without a config), so the
 	// first probe answers 200.
@@ -326,7 +333,7 @@ func (g *gateway) post(t *testing.T, path, key, requestID string, body any) *res
 // last act, after its usage record and limit reservation settled.
 func (g *gateway) settled(t *testing.T, id string) map[string]any {
 	t.Helper()
-	return g.logs.wait(t, "request "+id, msg("request", "request_id", id))
+	return g.logs.wait(t, "request "+id, msg("request", "kaiak.request.id", id))
 }
 
 // metric returns the value of one series in the admin /metrics text (name plus

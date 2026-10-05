@@ -143,8 +143,8 @@ func TestClientTimeoutsOnARealListener(t *testing.T) {
 			t.Fatal(err)
 		}
 		// The client reads nothing: the relay ends as the client gone, its slot freed.
-		if line := g.settled(t, "never-read"); line["relay_end"] != "client_closed" {
-			t.Errorf("log line %v, want relay_end client_closed", line)
+		if line := g.settled(t, "never-read"); line["kaiak.relay_end"] != "client_closed" {
+			t.Errorf("log line %v, want kaiak.relay_end client_closed", line)
 		}
 		g.waitMetric(t, "the slot freed", `kaiak_backend_in_flight_requests{backend="fake"}`, func(v float64) bool { return v == 0 })
 	})
@@ -185,7 +185,7 @@ func TestStalledStreamEndsAndCountsTowardTheCircuit(t *testing.T) {
 		t.Errorf("stream ended %s after its first event, before the %s stall timeout", elapsed, stall)
 	}
 	line := g.settled(t, "stalled")
-	if line["relay_end"] != "upstream_stalled" || line["backend"] != "a" || line["attempts"] != 1.0 {
+	if line["kaiak.relay_end"] != "upstream_stalled" || line["kaiak.backend.id"] != "a" || line["kaiak.attempts"] != 1.0 {
 		t.Fatalf("log line %v, want one attempt on a ending upstream_stalled", line)
 	}
 	select {
@@ -193,7 +193,7 @@ func TestStalledStreamEndsAndCountsTowardTheCircuit(t *testing.T) {
 	case <-time.After(waitLimit):
 		t.Error("the stalled request was not cancelled upstream")
 	}
-	g.logs.wait(t, "a's circuit opening", msg("circuit opened", "backend", "a"))
+	g.logs.wait(t, "a's circuit opening", msg("circuit opened", "kaiak.backend.id", "a"))
 	if got := g.metric(t, circuitSeries("a")); got != 1 {
 		t.Errorf("a's circuit = %v, want open", got)
 	}
@@ -201,7 +201,7 @@ func TestStalledStreamEndsAndCountsTowardTheCircuit(t *testing.T) {
 		t.Errorf("a's broken-off attempts = %v, want the stall", got)
 	}
 	// a's circuit is open (its probe far off): the next request goes to b.
-	if line := chatOK(t, g, key, "after", "chat"); line["backend"] != "b" || line["attempts"] != 1.0 {
+	if line := chatOK(t, g, key, "after", "chat"); line["kaiak.backend.id"] != "b" || line["kaiak.attempts"] != 1.0 {
 		t.Errorf("after the stall: log line %v, want one attempt on b", line)
 	}
 	g.stop(t)

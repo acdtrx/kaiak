@@ -87,7 +87,7 @@ func TestLimitRefusalIs429WithRateLimitHeaders(t *testing.T) {
 	if n := len(g.backend.Requests()); n != 1 {
 		t.Errorf("backend got %d requests, want 1", n)
 	}
-	if !strings.Contains(g.logText(), `"error_code":"rate_limit_exceeded"`) {
+	if !strings.Contains(g.logText(), `"error.type":"rate_limit_exceeded"`) {
 		t.Errorf("refusal not logged:\n%s", g.logText())
 	}
 }

@@ -387,7 +387,7 @@ func TestRefusedBatchIsSetAsideAndTheNextSent(t *testing.T) {
 		t.Errorf("refused files %v, want %s", got, want)
 	}
 	if out := h.logs.String(); !strings.Contains(out, "level=ERROR") ||
-		!strings.Contains(out, "usage batch refused by the control plane") || !strings.Contains(out, "code=usage-batch-invalid") {
+		!strings.Contains(out, "usage batch refused by the control plane") || !strings.Contains(out, "error.type=usage-batch-invalid") {
 		t.Errorf("refusal not logged as an error with its code:\n%s", out)
 	}
 }
@@ -591,7 +591,7 @@ func TestOlderFormatSpoolIsDiscardedWithItsBatches(t *testing.T) {
 			if n := strings.Count(out, "discarded data file with a different format version"); n != 2 {
 				t.Errorf("%d discards logged, want 2 (index and batch):\n%s", n, out)
 			}
-			if !strings.Contains(out, fmt.Sprintf("found_version=%d", old.format)) {
+			if !strings.Contains(out, fmt.Sprintf("kaiak.data_file.found_version=%d", old.format)) {
 				t.Errorf("the discarded format is not logged:\n%s", out)
 			}
 		})
@@ -732,7 +732,7 @@ func TestInvalidRecordIsSetAsideAloneAtSeal(t *testing.T) {
 		t.Errorf("refused files %v, want the record's", got)
 	}
 	if out := h.logs.String(); !strings.Contains(out, "usage record refused by the protocol's checks") ||
-		!strings.Contains(out, "request_id="+bad.RequestID) {
+		!strings.Contains(out, "kaiak.request.id="+bad.RequestID) {
 		t.Errorf("refused record not logged with its request ID:\n%s", out)
 	}
 	// A batch of invalid records only is dropped whole: no empty batch, no sequence.

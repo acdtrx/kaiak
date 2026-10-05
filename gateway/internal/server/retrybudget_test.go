@@ -90,7 +90,7 @@ func TestRetryBudgetStopsRetries(t *testing.T) {
 	if w.Code != http.StatusInternalServerError || sent() != before+1 {
 		t.Fatalf("over the budget: status %d, %d attempts; want the first attempt's 500 alone", w.Code, sent()-before)
 	}
-	if line := logLine(t, g, "over"); !strings.Contains(line, `"attempts":1,"retry_refused":"retry_budget"`) {
+	if line := logLine(t, g, "over"); !strings.Contains(line, `"kaiak.attempts":1,"kaiak.retry_refused":"retry_budget"`) {
 		t.Errorf("log line: %s", line)
 	}
 }

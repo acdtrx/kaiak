@@ -124,7 +124,7 @@ func holdStream(t *testing.T, url, model string) (events *bufio.Reader, cancel f
 func logLine(t *testing.T, g *testGateway, id string) string {
 	t.Helper()
 	for line := range strings.SplitSeq(g.logText(), "\n") {
-		if strings.Contains(line, `"msg":"request"`) && strings.Contains(line, `"request_id":"`+id+`"`) {
+		if strings.Contains(line, `"msg":"request"`) && strings.Contains(line, `"kaiak.request.id":"`+id+`"`) {
 			return line
 		}
 	}
@@ -198,14 +198,14 @@ func TestCappedBackendQueuesInOrderAndRefusesWhenFull(t *testing.T) {
 	}
 
 	for _, id := range []string{"queued-1", "queued-2"} {
-		if line := logLine(t, g, id); !strings.Contains(line, `"queue_wait_ms":`) {
+		if line := logLine(t, g, id); !strings.Contains(line, `"kaiak.queue.wait_duration":`) {
 			t.Errorf("%s log line has no queue wait: %s", id, line)
 		}
 	}
-	if line := logLine(t, g, "refused"); strings.Contains(line, "queue_wait_ms") || !strings.Contains(line, `"error_code":"queue_full"`) {
+	if line := logLine(t, g, "refused"); strings.Contains(line, "kaiak.queue.wait_duration") || !strings.Contains(line, `"error.type":"queue_full"`) {
 		t.Errorf("refused log line: %s", line)
 	}
-	if line := logLine(t, g, "holder"); strings.Contains(line, "queue_wait_ms") {
+	if line := logLine(t, g, "holder"); strings.Contains(line, "kaiak.queue.wait_duration") {
 		t.Errorf("a request that never queued logs a wait: %s", line)
 	}
 	// The refused request never routed: no record, its reservation released.
@@ -258,10 +258,10 @@ func TestQueueTimeoutAndNoQueue(t *testing.T) {
 
 	cancelHolder()
 	srv.Close()
-	if line := logLine(t, g, "timed-out"); !strings.Contains(line, `"queue_wait_ms":`) || !strings.Contains(line, `"status":429`) {
+	if line := logLine(t, g, "timed-out"); !strings.Contains(line, `"kaiak.queue.wait_duration":`) || !strings.Contains(line, `"http.response.status_code":429`) {
 		t.Errorf("timed-out log line: %s", line)
 	}
-	if line := logLine(t, g, "no-queue"); strings.Contains(line, "queue_wait_ms") {
+	if line := logLine(t, g, "no-queue"); strings.Contains(line, "kaiak.queue.wait_duration") {
 		t.Errorf("no-queue log line: %s", line)
 	}
 	if n := len(g.usage.all()); n != 1 {
@@ -303,8 +303,8 @@ func TestLeavingTheQueueReleasesTheReservation(t *testing.T) {
 	cancelHolder()
 	srv.Close()
 	line := logLine(t, g, "gone")
-	if !strings.Contains(line, `"status":499`) || !strings.Contains(line, `"error_code":"client_closed"`) ||
-		!strings.Contains(line, `"queue_wait_ms":`) {
+	if !strings.Contains(line, `"http.response.status_code":499`) || !strings.Contains(line, `"error.type":"client_closed"`) ||
+		!strings.Contains(line, `"kaiak.queue.wait_duration":`) {
 		t.Errorf("gone log line: %s", line)
 	}
 	if n := len(g.usage.all()); n != 1 {
@@ -428,7 +428,7 @@ func TestDrainServesTheQueueOrCutsIt(t *testing.T) {
 			t.Errorf("queued request served after the cut")
 		}
 		line := logLine(t, g, "queued")
-		if !strings.Contains(line, `"error_code":"server_shutting_down"`) || !strings.Contains(line, `"queue_wait_ms":`) {
+		if !strings.Contains(line, `"error.type":"server_shutting_down"`) || !strings.Contains(line, `"kaiak.queue.wait_duration":`) {
 			t.Errorf("queued log line: %s", line)
 		}
 		if records := g.usage.all(); len(records) != 1 || !records[0].Partial {
@@ -437,7 +437,7 @@ func TestDrainServesTheQueueOrCutsIt(t *testing.T) {
 		if got, want := reservedTokens(t, g), settledTokens(g); got != want {
 			t.Errorf("team tokens %d, want the settled %d", got, want)
 		}
-		if logs := g.logText(); !strings.Contains(logs, `"reason":"timeout","requests":2`) {
+		if logs := g.logText(); !strings.Contains(logs, `"kaiak.reason":"timeout","kaiak.drain.in_flight":2`) {
 			t.Errorf("log misses the cut of both requests:\n%s", logs)
 		}
 	})

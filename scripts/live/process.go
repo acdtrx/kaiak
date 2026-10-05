@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -89,15 +90,15 @@ func startGateway(ctx context.Context, o options, ws *workspace, configFile stri
 
 // waitReady learns the listener addresses from the log and checks /readyz.
 func (g *gateway) waitReady(ctx context.Context) error {
-	api, err := g.logs.wait(ctx, msg("listening", "listener", "api"))
+	api, err := g.logs.wait(ctx, msg("listening", "kaiak.listener.name", "api"))
 	if err != nil {
 		return fmt.Errorf("gateway did not start: %w", err)
 	}
-	admin, err := g.logs.wait(ctx, msg("listening", "listener", "admin"))
+	admin, err := g.logs.wait(ctx, msg("listening", "kaiak.listener.name", "admin"))
 	if err != nil {
 		return fmt.Errorf("gateway did not start: %w", err)
 	}
-	g.api, g.admin = "http://"+fmt.Sprint(api["addr"]), "http://"+fmt.Sprint(admin["addr"])
+	g.api, g.admin = listenerURL(api), listenerURL(admin)
 	// The config is loaded before the listeners bind, so the gateway is ready now.
 	status, body, err := httpGet(ctx, newClient(10*time.Second), g.admin+"/readyz", "")
 	if err != nil || status != 200 {
@@ -212,6 +213,12 @@ func (l *logLines) text() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return strings.Join(l.raw, "\n")
+}
+
+// listenerURL is the base URL of the listener a listening line names: its
+// server.address and server.port.
+func listenerURL(line map[string]any) string {
+	return "http://" + net.JoinHostPort(fmt.Sprint(line["server.address"]), fmt.Sprint(line["server.port"]))
 }
 
 // msg matches a log line by message and fields.

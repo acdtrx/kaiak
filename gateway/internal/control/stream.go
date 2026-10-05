@@ -58,7 +58,7 @@ func (c *Client) followStream(ctx context.Context) streamResult {
 	c.touch()
 	c.streamOpen.Store(true)
 	defer c.streamOpen.Store(false)
-	c.logger.Info("config stream connected", "since", since.version, "config_epoch", since.epoch)
+	c.logger.Info("config stream connected", "kaiak.config.since", since.version, "kaiak.config.epoch", since.epoch)
 	c.status.requestReport(statusTriggerConnect)
 
 	errIdle := fmt.Errorf("config stream silent for %s", c.opts.IdleTimeout)
@@ -88,14 +88,14 @@ func (c *Client) followStream(ctx context.Context) streamResult {
 		case eventConfig:
 			snapshot, err := DecodeConfigSnapshot(block.Data)
 			if err != nil {
-				c.logger.Error("config event ignored: malformed", "error", err)
+				c.logger.Error("config event ignored: malformed", "exception.message", err)
 				continue
 			}
 			c.takeStreamConfig(snapshot)
 		case eventTotals:
 			totals, err := DecodeTotals(block.Data)
 			if err != nil {
-				c.logger.Error("totals event ignored: malformed", "error", err)
+				c.logger.Error("totals event ignored: malformed", "exception.message", err)
 				continue
 			}
 			c.takeTotals(totals, 0)
@@ -103,7 +103,7 @@ func (c *Client) followStream(ctx context.Context) streamResult {
 			// The event name is the whole instruction; its data is {}.
 			return streamResult{resync: true, lasted: time.Since(start)}
 		default:
-			c.logger.Debug("stream event ignored: unknown event", "event", block.Event)
+			c.logger.Debug("stream event ignored: unknown event", "kaiak.control.event", block.Event)
 		}
 	}
 }

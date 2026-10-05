@@ -15,6 +15,7 @@ import (
 	"kaiak/internal/clip"
 	"kaiak/internal/config"
 	"kaiak/internal/limits"
+	"kaiak/internal/logattr"
 	"kaiak/internal/metrics"
 	"kaiak/internal/provider"
 	"kaiak/internal/routing"
@@ -154,67 +155,75 @@ func (a *API) begin(w http.ResponseWriter, r *http.Request) *request {
 	return rq
 }
 
-// logRequest writes the one log line per request. It never carries the key, a
-// header value or any request or response content; strings the client controls
-// (method, path, model) are clipped.
+// logRequest writes the one log line per request, in the log vocabulary
+// (docs/specs/GATEWAY.md, Observability: Logs → the request line). It never carries
+// the key, a header value or any request or response content; strings the client
+// controls (method, path, model) are clipped.
 func (a *API) logRequest(rq *request) {
-	attrs := []slog.Attr{
-		slog.String("request_id", rq.id),
-		slog.String("method", clip.String(rq.r.Method)),
-		slog.String("path", clip.String(rq.r.URL.Path)),
-		slog.Int("status", rq.w.status),
-		slog.Float64("latency_ms", float64(time.Since(rq.start).Microseconds())/1000),
-	}
+	attrs := []slog.Attr{slog.String("kaiak.request.id", rq.id)}
+	attrs = append(attrs, methodAttrs(rq.r.Method)...)
+	attrs = append(attrs,
+		slog.String("url.path", clip.String(rq.r.URL.Path)),
+		slog.Int("http.response.status_code", rq.w.status),
+		logattr.SecondsMicro("kaiak.request.duration", time.Since(rq.start)),
+	)
 	if rq.keyID != "" {
-		attrs = append(attrs, slog.String("key_id", rq.keyID))
+		attrs = append(attrs, slog.String("kaiak.key.id", rq.keyID))
 	}
 	// The key's group: its config ID, as on the usage metrics; never its labels.
 	if g := rq.identity.Group; g != nil {
-		attrs = append(attrs, slog.String("group", g.ID))
+		attrs = append(attrs, slog.String("kaiak.key.group", g.ID))
 	}
 	if rq.model != "" {
-		attrs = append(attrs, slog.String("model", clip.String(rq.model)))
+		attrs = append(attrs, slog.String("gen_ai.request.model", clip.String(rq.model)))
 	}
 	if rq.modelAllowed && rq.endpoint.takesBody() {
-		attrs = append(attrs, slog.Bool("stream", rq.inbound.Stream))
+		attrs = append(attrs, slog.Bool("gen_ai.request.stream", rq.inbound.Stream))
 	}
-	if rq.deployment.Backend != nil {
-		attrs = append(attrs, slog.String("backend", rq.deployment.Backend.ID),
-			slog.String("deployment_model", rq.deployment.Model),
-			slog.Int("attempts", len(rq.attempts)))
+	if op := rq.endpoint.operationName(); op != "" {
+		attrs = append(attrs, slog.String("gen_ai.operation.name", op))
+	}
+	if b := rq.deployment.Backend; b != nil {
+		attrs = append(attrs, slog.String("kaiak.backend.id", b.ID),
+			slog.String("kaiak.backend.type", string(b.Type)))
+		if name := providerName(b.Type); name != "" {
+			attrs = append(attrs, slog.String("gen_ai.provider.name", name))
+		}
+		attrs = append(attrs, slog.String("kaiak.deployment.model", rq.deployment.Model),
+			slog.Int("kaiak.attempts", len(rq.attempts)))
 	}
 	if len(rq.attempts) > 1 {
-		attrs = append(attrs, slog.String("tried", triedAttempts(rq)))
+		attrs = append(attrs, slog.String("kaiak.tried", triedAttempts(rq)))
 	}
 	if rq.retryRefusal != "" {
-		attrs = append(attrs, slog.String("retry_refused", rq.retryRefusal))
+		attrs = append(attrs, slog.String("kaiak.retry_refused", rq.retryRefusal))
 	}
 	if rq.queueWait.Queued {
-		attrs = append(attrs, slog.Float64("queue_wait_ms", float64(rq.queueWait.Duration.Microseconds())/1000))
+		attrs = append(attrs, logattr.SecondsMicro("kaiak.queue.wait_duration", rq.queueWait.Duration))
 	}
 	if code := errorCode(rq); code != "" {
-		attrs = append(attrs, slog.String("error_code", code))
+		attrs = append(attrs, slog.String("error.type", code))
 	}
 	if rej := rq.rejection; rej != nil {
 		attrs = append(attrs, limitAttrs(rej)...)
 	}
 	if !rq.firstContent.IsZero() {
-		attrs = append(attrs, slog.Float64("ttft_ms", float64(rq.ttft.Microseconds())/1000))
+		attrs = append(attrs, logattr.SecondsMicro("kaiak.time_to_first_token", rq.ttft))
 	}
 	if rq.relayEnd != "" {
-		attrs = append(attrs, slog.String("relay_end", rq.relayEnd))
+		attrs = append(attrs, slog.String("kaiak.relay_end", rq.relayEnd))
 	}
 	if rq.upstreamErr != nil {
-		attrs = append(attrs, slog.String("upstream_error", rq.upstreamErr.Error()))
+		attrs = append(attrs, slog.String("kaiak.upstream.error.message", rq.upstreamErr.Error()))
 	}
 	if rq.upstreamErrorCode != "" {
-		attrs = append(attrs, slog.String("upstream_error_code", rq.upstreamErrorCode))
+		attrs = append(attrs, slog.String("kaiak.upstream.error.code", rq.upstreamErrorCode))
 	}
 	if rq.upstreamErrorType != "" {
-		attrs = append(attrs, slog.String("upstream_error_type", rq.upstreamErrorType))
+		attrs = append(attrs, slog.String("kaiak.upstream.error.type", rq.upstreamErrorType))
 	}
 	if rq.authFailure != "" {
-		attrs = append(attrs, slog.String("auth_failure", string(rq.authFailure)))
+		attrs = append(attrs, slog.String("kaiak.auth.failure", string(rq.authFailure)))
 	}
 	if u := rq.usage; u != nil {
 		// Units and cost are the request's: every record's (one per attempt that
@@ -227,17 +236,47 @@ func (a *API) logRequest(rq *request) {
 			}
 			cost += rec.CostNanoUSD
 		}
+		// gen_ai.usage.input_tokens is all input, as the GenAI convention means it:
+		// the input neither read from nor written to the cache, plus its two cache
+		// parts.
+		cached, cacheWrite := units[config.UnitTokensCached], units[config.UnitTokensCacheWrite]
 		attrs = append(attrs,
-			slog.Int64("tokens_in", units[config.UnitTokensIn]),
-			slog.Int64("tokens_cached", units[config.UnitTokensCached]),
-			slog.Int64("tokens_cache_write", units[config.UnitTokensCacheWrite]),
-			slog.Int64("tokens_out", units[config.UnitTokensOut]),
-			slog.Int64("tokens_reasoning", units[config.UnitTokensReasoning]),
-			slog.Float64("cost_usd", float64(cost)/1e9),
-			slog.Bool("estimated", u.Estimated),
-			slog.Bool("partial", u.Partial))
+			slog.Int64("gen_ai.usage.input_tokens", units[config.UnitTokensIn]+cached+cacheWrite),
+			slog.Int64("gen_ai.usage.cache_read.input_tokens", cached),
+			slog.Int64("gen_ai.usage.cache_write.input_tokens", cacheWrite),
+			slog.Int64("gen_ai.usage.output_tokens", units[config.UnitTokensOut]),
+			slog.Int64("gen_ai.usage.reasoning.output_tokens", units[config.UnitTokensReasoning]),
+			slog.Float64("kaiak.usage.cost_usd", float64(cost)/1e9),
+			slog.Bool("kaiak.usage.estimated", u.Estimated),
+			slog.Bool("kaiak.usage.partial", u.Partial))
 	}
 	a.logger.LogAttrs(rq.r.Context(), slog.LevelInfo, "request", attrs...)
+}
+
+// methodAttrs are the request method's log fields: http.request.method — a method
+// the HTTP semantic convention names, else _OTHER — and, for _OTHER,
+// http.request.method_original, the method as sent (clipped).
+func methodAttrs(method string) []slog.Attr {
+	switch method {
+	case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodHead,
+		http.MethodOptions, http.MethodPatch, http.MethodConnect, http.MethodTrace, "QUERY":
+		return []slog.Attr{slog.String("http.request.method", method)}
+	}
+	return []slog.Attr{slog.String("http.request.method", "_OTHER"),
+		slog.String("http.request.method_original", clip.String(method))}
+}
+
+// providerName is gen_ai.provider.name for a backend type: the GenAI convention's
+// well-known value where one fits, else "" — the self-hosted types have none, and
+// kaiak.backend.type names every type.
+func providerName(t config.BackendType) string {
+	switch t {
+	case config.BackendOpenAI:
+		return "openai"
+	case config.BackendAzureOpenAI:
+		return "azure.ai.openai"
+	}
+	return ""
 }
 
 // limitAttrs are a limit refusal's log fields: the limit's kind of scope (global or
@@ -245,7 +284,7 @@ func (a *API) logRequest(rq *request) {
 // share among the live gateways) and the value configured, what the window had used
 // (unknown for a budget refused as unavailable) and, for a token limit, what the
 // request asked for. Counts are in the limit's unit; USD limits are in dollars, as
-// cost_usd.
+// kaiak.usage.cost_usd.
 func limitAttrs(rej *limits.Rejection) []slog.Attr {
 	id := rej.ID
 	if rej.Scope == limits.ScopeGlobal {
@@ -257,14 +296,15 @@ func limitAttrs(rej *limits.Rejection) []slog.Attr {
 		}
 		return slog.Int64(key, v)
 	}
-	attrs := []slog.Attr{slog.String("limit_scope", string(rej.Scope)), slog.String("limit_id", id),
-		slog.String("limit_type", string(rej.Type)), value("limit", rej.Limit), value("limit_configured", rej.Max)}
+	attrs := []slog.Attr{slog.String("kaiak.limit.scope", string(rej.Scope)), slog.String("kaiak.limit.id", id),
+		slog.String("kaiak.limit.type", string(rej.Type)), value("kaiak.limit.enforced", rej.Limit),
+		value("kaiak.limit.configured", rej.Max)}
 	if rej.Unavailable {
 		return attrs
 	}
-	attrs = append(attrs, value("used", rej.Used))
+	attrs = append(attrs, value("kaiak.limit.used", rej.Used))
 	if rej.Measure == limits.MeasureTokens {
-		attrs = append(attrs, slog.Int64("requested", rej.Requested))
+		attrs = append(attrs, slog.Int64("kaiak.limit.requested", rej.Requested))
 	}
 	return attrs
 }

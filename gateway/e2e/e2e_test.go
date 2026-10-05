@@ -109,8 +109,8 @@ func TestGatewayEndToEnd(t *testing.T) {
 	g := startGateway(t, configFile, dataDir)
 
 	t.Run("a deployment whose model the backend does not list is warned about", func(t *testing.T) {
-		line := g.logs.wait(t, "the model check", msg("the backend does not list the deployment's model", "backend", "fake"))
-		if line["deployment_model"] != backendEmbedModel {
+		line := g.logs.wait(t, "the model check", msg("the backend does not list the deployment's model", "kaiak.backend.id", "fake"))
+		if line["kaiak.deployment.model"] != backendEmbedModel {
 			t.Errorf("model check line %v, want %s", line, backendEmbedModel)
 		}
 	})
@@ -174,7 +174,7 @@ func TestGatewayEndToEnd(t *testing.T) {
 			t.Errorf("backend got model %v, max_completion_tokens %v", upstream["model"], upstream["max_completion_tokens"])
 		}
 		line := g.settled(t, "e2e-chat")
-		if line["tokens_in"] != 7.0 || line["tokens_out"] != 4.0 || line["estimated"] != false || line["cost_usd"] != 0.000015 {
+		if line["gen_ai.usage.input_tokens"] != 7.0 || line["gen_ai.usage.output_tokens"] != 4.0 || line["kaiak.usage.estimated"] != false || line["kaiak.usage.cost_usd"] != 0.000015 {
 			t.Errorf("log line %v", line)
 		}
 	})
@@ -212,7 +212,7 @@ func TestGatewayEndToEnd(t *testing.T) {
 		if opts, _ := upstream["stream_options"].(map[string]any); opts["include_usage"] != true {
 			t.Errorf("backend got stream_options %v", upstream["stream_options"])
 		}
-		if line := g.settled(t, "e2e-stream"); line["estimated"] != false || line["tokens_out"] != 4.0 {
+		if line := g.settled(t, "e2e-stream"); line["kaiak.usage.estimated"] != false || line["gen_ai.usage.output_tokens"] != 4.0 {
 			t.Errorf("log line %v", line)
 		}
 	})
@@ -248,7 +248,7 @@ func TestGatewayEndToEnd(t *testing.T) {
 		if upstream := lastRequest(t, backend); upstream["model"] != backendEmbedModel {
 			t.Errorf("backend got model %v", upstream["model"])
 		}
-		if line := g.settled(t, "e2e-embed"); line["tokens_in"] != 7.0 || line["key_id"] != "k-ann" {
+		if line := g.settled(t, "e2e-embed"); line["gen_ai.usage.input_tokens"] != 7.0 || line["kaiak.key.id"] != "k-ann" {
 			t.Errorf("log line %v", line)
 		}
 	})
@@ -290,14 +290,14 @@ func TestGatewayEndToEnd(t *testing.T) {
 			t.Fatal(err)
 		}
 		g.signal(t, syscall.SIGHUP)
-		g.logs.wait(t, "the rejected reload", msg("config rejected", "trigger", "sighup", "running_config", "kept"))
+		g.logs.wait(t, "the rejected reload", msg("config rejected", "kaiak.trigger", "sighup", "kaiak.config.running", "kept"))
 		if r := g.post(t, "/v1/chat/completions", evalKey, "", chatBody("chat", false, nil)); r.StatusCode != http.StatusOK {
 			t.Fatalf("chat after a rejected reload: %d %s", r.StatusCode, r.body)
 		}
 
 		writeJSON(t, configFile, testConfig(backend.URL(), evalHash, annHash, "chat-2"))
 		g.signal(t, syscall.SIGHUP)
-		g.logs.wait(t, "the applied reload", msg("config applied", "trigger", "sighup"))
+		g.logs.wait(t, "the applied reload", msg("config applied", "kaiak.trigger", "sighup"))
 		if status, body := g.get(t, "/v1/models/chat-2", evalKey); status != http.StatusOK {
 			t.Fatalf("/v1/models/chat-2 after reload = %d %s", status, body)
 		}
@@ -339,7 +339,7 @@ func TestGatewayEndToEnd(t *testing.T) {
 	})
 
 	g.stop(t)
-	g.logs.wait(t, "the shutdown snapshot", msg("limits snapshot written", "trigger", "shutdown"))
+	g.logs.wait(t, "the shutdown snapshot", msg("limits snapshot written", "kaiak.trigger", "shutdown"))
 	if _, err := os.Stat(filepath.Join(dataDir, "limits.json")); err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
@@ -401,10 +401,10 @@ func TestGatewayEndToEnd(t *testing.T) {
 			t.Fatalf("stream did not end with [DONE]: %q", rest)
 		}
 		g.waitExit(t)
-		if line := g.settled(t, "e2e-drain"); line["partial"] != false || line["relay_end"] != nil {
+		if line := g.settled(t, "e2e-drain"); line["kaiak.usage.partial"] != false || line["kaiak.relay_end"] != nil {
 			t.Errorf("drained stream's log line %v", line)
 		}
-		g.logs.wait(t, "the drain end", func(e map[string]any) bool { return e["msg"] == "drained" && e["cut_off"] == nil })
+		g.logs.wait(t, "the drain end", func(e map[string]any) bool { return e["msg"] == "drained" && e["kaiak.drain.cut_off"] == nil })
 	})
 }
 
@@ -437,7 +437,7 @@ func TestTieredPrices(t *testing.T) {
 	for _, c := range []struct {
 		name           string
 		prompt, cached int
-		want           float64 // cost_usd
+		want           float64 // kaiak.usage.cost_usd
 	}{
 		{"below the threshold", 50, 0, 0.00007},         // 50×1 + 10×2
 		{"exactly at the threshold", 100, 0, 0.00012},   // 100×1 + 10×2
@@ -452,9 +452,9 @@ func TestTieredPrices(t *testing.T) {
 				t.Fatalf("status %d %s", r.StatusCode, r.body)
 			}
 			line := g.settled(t, id)
-			if line["tokens_in"] != float64(c.prompt-c.cached) || line["tokens_cached"] != float64(c.cached) ||
-				line["tokens_out"] != 10.0 || line["cost_usd"] != c.want {
-				t.Errorf("log line %v, want cost_usd %v", line, c.want)
+			if line["gen_ai.usage.input_tokens"] != float64(c.prompt) || line["gen_ai.usage.cache_read.input_tokens"] != float64(c.cached) ||
+				line["gen_ai.usage.output_tokens"] != 10.0 || line["kaiak.usage.cost_usd"] != c.want {
+				t.Errorf("log line %v, want kaiak.usage.cost_usd %v", line, c.want)
 			}
 		})
 	}
@@ -504,7 +504,7 @@ func TestInputWrittenToTheCache(t *testing.T) {
 		model                   string
 		stream                  bool
 		prompt, cached, written int
-		want                    float64 // cost_usd
+		want                    float64 // kaiak.usage.cost_usd
 	}{
 		{"written", "written", false, 60, 0, 40, 0.00009},                       // 20×1 + 40×1.25 + 10×2
 		{"written and read streamed", "written", true, 60, 10, 40, 0.000081},    // 10×1 + 10×0.1 + 40×1.25 + 10×2
@@ -519,10 +519,10 @@ func TestInputWrittenToTheCache(t *testing.T) {
 				t.Fatalf("status %d %s", r.StatusCode, r.body)
 			}
 			line := g.settled(t, id)
-			if line["tokens_in"] != float64(c.prompt-c.cached-c.written) || line["tokens_cached"] != float64(c.cached) ||
-				line["tokens_cache_write"] != float64(c.written) || line["tokens_out"] != 10.0 ||
-				line["estimated"] != false || line["cost_usd"] != c.want {
-				t.Errorf("log line %v, want cost_usd %v", line, c.want)
+			if line["gen_ai.usage.input_tokens"] != float64(c.prompt) || line["gen_ai.usage.cache_read.input_tokens"] != float64(c.cached) ||
+				line["gen_ai.usage.cache_write.input_tokens"] != float64(c.written) || line["gen_ai.usage.output_tokens"] != 10.0 ||
+				line["kaiak.usage.estimated"] != false || line["kaiak.usage.cost_usd"] != c.want {
+				t.Errorf("log line %v, want kaiak.usage.cost_usd %v", line, c.want)
 			}
 		})
 	}

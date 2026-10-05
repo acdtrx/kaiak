@@ -139,8 +139,8 @@ func (r *Recorder) Settle(rq Request, meter *Meter, complete bool) UsageRecord {
 	}
 	if clamped := clampToProtocol(&rec); len(clamped) > 0 {
 		if r.opts.Logger != nil {
-			r.opts.Logger.Warn("usage out of the protocol's range: clamped to 2^53-1", "request_id", rec.RequestID,
-				"record_id", rec.RecordID, "deployment", rec.Deployment.Backend, "clamped", clamped)
+			r.opts.Logger.Warn("usage out of the protocol's range: clamped to 2^53-1", "kaiak.request.id", rec.RequestID,
+				"kaiak.usage.record_id", rec.RecordID, "kaiak.backend.id", rec.Deployment.Backend, "kaiak.usage.clamped", clamped)
 		}
 		if r.opts.OutOfRange != nil {
 			r.opts.OutOfRange()

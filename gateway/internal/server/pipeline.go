@@ -66,6 +66,20 @@ func (e endpoint) name() string {
 	return ""
 }
 
+// operationName is the endpoint's gen_ai.operation.name on the log line: the GenAI
+// convention's well-known value, "" for the model endpoints, which have none.
+func (e endpoint) operationName() string {
+	switch e {
+	case endpointChatCompletions:
+		return "chat"
+	case endpointCompletions:
+		return "text_completion"
+	case endpointEmbeddings:
+		return "embeddings"
+	}
+	return ""
+}
+
 // takesBody reports whether the endpoint is a POST carrying a JSON request body.
 func (e endpoint) takesBody() bool {
 	return e == endpointChatCompletions || e == endpointCompletions || e == endpointEmbeddings

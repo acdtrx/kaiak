@@ -162,7 +162,7 @@ func (d *Dir) ReadVersioned(name string, version int, into any) (bool, error) {
 			return false, fmt.Errorf("discard %s: %w", name, err)
 		}
 		d.logger.Warn("discarded data file with a different format version",
-			"file", path, "found_version", envelope.FormatVersion, "want_version", version)
+			"file.path", path, "kaiak.data_file.found_version", envelope.FormatVersion, "kaiak.data_file.want_version", version)
 		return false, nil
 	}
 	if err := json.Unmarshal(envelope.Data, into); err != nil {

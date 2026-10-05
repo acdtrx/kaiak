@@ -66,14 +66,14 @@ func TestInlineImageKeepsItsDefaultOutput(t *testing.T) {
 		t.Fatalf("too-large: %d %s, want 429 rate_limit_exceeded", r.StatusCode, r.body)
 	}
 	line := g.settled(t, "too-large")
-	for field, want := range map[string]any{"limit_scope": "group", "limit_id": "w",
-		"limit_type": "tokens_per_minute", "limit_configured": 100000.0, "group": "w"} {
+	for field, want := range map[string]any{"kaiak.limit.scope": "group", "kaiak.limit.id": "w",
+		"kaiak.limit.type": "tokens_per_minute", "kaiak.limit.configured": 100000.0, "kaiak.key.group": "w"} {
 		if line[field] != want {
 			t.Errorf("log line %s = %v, want %v", field, line[field], want)
 		}
 	}
-	if requested, _ := line["requested"].(float64); requested <= 100000 {
-		t.Errorf("log line requested = %v, want above the limit", line["requested"])
+	if requested, _ := line["kaiak.limit.requested"].(float64); requested <= 100000 {
+		t.Errorf("log line requested = %v, want above the limit", line["kaiak.limit.requested"])
 	}
 	if got := g.metric(t, `kaiak_limit_rejections_total{scope_kind="group",type="tokens_per_minute"}`); got != 1 {
 		t.Errorf("limit rejections = %v, want 1", got)

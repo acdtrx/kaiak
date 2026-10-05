@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"kaiak/internal/logattr"
 	"kaiak/internal/schemacheck"
 )
 
@@ -80,17 +81,12 @@ func (a *Applier) apply(trigger string, data []byte, v Version, attrs []any) (*S
 	snapshot.Version = v
 	a.holder.Swap(snapshot)
 	load := Load{Trigger: trigger, Applied: true, Document: true, Bytes: len(data), Duration: time.Since(start)}
-	a.logger.Info("config applied", append(append([]any{"trigger", trigger}, attrs...),
-		"backends", len(snapshot.Backends), "models", len(snapshot.Models), "keys", len(snapshot.Keys),
-		"bytes", load.Bytes, durationMS(load.Duration))...)
+	a.logger.Info("config applied", append(append([]any{"kaiak.trigger", trigger}, attrs...),
+		"kaiak.config.backends", len(snapshot.Backends), "kaiak.config.models", len(snapshot.Models),
+		"kaiak.config.keys", len(snapshot.Keys), "kaiak.config.size", load.Bytes,
+		logattr.SecondsMicro("kaiak.duration", load.Duration))...)
 	a.report(load)
 	return snapshot, nil
-}
-
-// durationMS is a load's duration as a log attribute, in milliseconds to the
-// microsecond, as the gateway logs its other durations.
-func durationMS(d time.Duration) slog.Attr {
-	return slog.Float64("duration_ms", float64(d.Microseconds())/1000)
 }
 
 // Loaded reports whether a config is in force.
@@ -120,16 +116,16 @@ func (a *Applier) Reject(trigger string, err error, attrs ...any) error {
 
 // reject logs and counts a failed load. Callers hold a.mu.
 func (a *Applier) reject(load Load, err error, attrs []any) {
-	logAttrs := append(append([]any{"trigger", load.Trigger}, attrs...), "error", err)
+	logAttrs := append(append([]any{"kaiak.trigger", load.Trigger}, attrs...), "exception.message", err)
 	var invalid *ValidationError
 	if errors.As(err, &invalid) {
-		logAttrs = append(logAttrs, "codes", invalid.Codes())
+		logAttrs = append(logAttrs, "kaiak.config.issue_codes", invalid.Codes())
 	}
 	if a.holder.Loaded() {
-		logAttrs = append(logAttrs, "running_config", "kept")
+		logAttrs = append(logAttrs, "kaiak.config.running", "kept")
 	}
 	if load.Document {
-		logAttrs = append(logAttrs, "bytes", load.Bytes, durationMS(load.Duration))
+		logAttrs = append(logAttrs, "kaiak.config.size", load.Bytes, logattr.SecondsMicro("kaiak.duration", load.Duration))
 	}
 	a.logger.Error("config rejected", logAttrs...)
 	a.report(load)
@@ -162,9 +158,9 @@ func NewFileLoader(path string, applier *Applier) *FileLoader {
 func (l *FileLoader) Load(trigger string) error {
 	data, err := os.ReadFile(l.path)
 	if err != nil {
-		return fmt.Errorf("load config %s: %w", l.path, l.applier.Reject(trigger, err, "file", l.path))
+		return fmt.Errorf("load config %s: %w", l.path, l.applier.Reject(trigger, err, "file.path", l.path))
 	}
-	if _, err := l.applier.Apply(trigger, data, "file", l.path); err != nil {
+	if _, err := l.applier.Apply(trigger, data, "file.path", l.path); err != nil {
 		return fmt.Errorf("load config %s: %w", l.path, err)
 	}
 	return nil

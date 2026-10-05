@@ -70,7 +70,7 @@ func (s diskStore) open(instance string) (spoolIndex, []spoolEntry, string) {
 	var idx spoolIndex
 	found, err := s.dir.ReadVersioned(SpoolFile, spoolFormat, &idx)
 	if err != nil {
-		s.logger.Error("usage spool index unreadable: starting a new epoch", "file", SpoolFile, "error", err)
+		s.logger.Error("usage spool index unreadable: starting a new epoch", "file.name", SpoolFile, "exception.message", err)
 		found = false
 	}
 	entries := s.readQueuedBatches()
@@ -96,7 +96,7 @@ func (s diskStore) open(instance string) (spoolIndex, []spoolEntry, string) {
 		idx = freshIndex(instance)
 	}
 	if err := s.dir.WriteVersioned(SpoolFile, spoolFormat, idx); err != nil {
-		s.logger.Error("usage spool index not written; retried with the next batch", "file", SpoolFile, "error", err)
+		s.logger.Error("usage spool index not written; retried with the next batch", "file.name", SpoolFile, "exception.message", err)
 	}
 	return idx, entries, reason
 }
@@ -106,19 +106,19 @@ func (s diskStore) open(instance string) (spoolIndex, []spoolEntry, string) {
 func (s diskStore) readQueuedBatches() []spoolEntry {
 	files, err := s.dir.List(spoolBatchPrefix)
 	if err != nil {
-		s.logger.Error("usage spool not listed: queued batches wait for the next start", "error", err)
+		s.logger.Error("usage spool not listed: queued batches wait for the next start", "exception.message", err)
 		return nil
 	}
 	var entries []spoolEntry
 	for _, f := range files {
 		if _, _, ok := parseBatchFileName(spoolBatchPrefix, f.Name); !ok {
-			s.logger.Warn("usage spool: file name not understood; left alone", "file", f.Name)
+			s.logger.Warn("usage spool: file name not understood; left alone", "file.name", f.Name)
 			continue
 		}
 		var batch UsageBatch
 		found, err := s.dir.ReadVersioned(f.Name, spoolFormat, &batch)
 		if err != nil || (found && len(batch.Records) == 0) {
-			s.logger.Error("usage spool: batch file unreadable; set aside", "file", f.Name, "error", err)
+			s.logger.Error("usage spool: batch file unreadable; set aside", "file.name", f.Name, "exception.message", err)
 			s.moveAside(f.Name, strings.Replace(f.Name, spoolBatchPrefix, spoolRejectedPrefix, 1))
 			continue
 		}
@@ -172,7 +172,7 @@ func (s diskStore) setAside(e spoolEntry) string {
 func (s diskStore) setAsideRecord(rec accounting.UsageRecord, issues string) string {
 	name := spoolRejectedPrefix + "record-" + rec.RecordID + ".json"
 	if err := s.dir.WriteVersioned(name, spoolFormat, refusedRecord{Record: rec, Issues: issues}); err != nil {
-		s.logger.Error("refused usage record not written", "file", name, "error", err)
+		s.logger.Error("refused usage record not written", "file.name", name, "exception.message", err)
 		return ""
 	}
 	s.pruneRejected()
@@ -186,7 +186,7 @@ func (diskStore) inMemory() bool { return false }
 func (s diskStore) pruneRejected() {
 	files, err := s.dir.List(spoolRejectedPrefix)
 	if err != nil {
-		s.logger.Warn("refused usage batches not listed; older ones are not pruned", "error", err)
+		s.logger.Warn("refused usage batches not listed; older ones are not pruned", "exception.message", err)
 		return
 	}
 	if len(files) <= rejectedKept {
@@ -195,16 +195,16 @@ func (s diskStore) pruneRejected() {
 	slices.SortStableFunc(files, func(a, b state.File) int { return a.ModTime.Compare(b.ModTime) })
 	for _, f := range files[:len(files)-rejectedKept] {
 		if err := s.dir.Remove(f.Name); err != nil {
-			s.logger.Warn("refused usage batch not pruned", "file", f.Name, "error", err)
+			s.logger.Warn("refused usage batch not pruned", "file.name", f.Name, "exception.message", err)
 		}
 	}
 }
 
 func (s diskStore) moveAside(from, to string) {
 	if err := s.dir.Rename(from, to); err != nil {
-		s.logger.Error("usage batch file not set aside; removed instead", "file", from, "error", err)
+		s.logger.Error("usage batch file not set aside; removed instead", "file.name", from, "exception.message", err)
 		if err := s.dir.Remove(from); err != nil {
-			s.logger.Error("usage batch file not removed", "file", from, "error", err)
+			s.logger.Error("usage batch file not removed", "file.name", from, "exception.message", err)
 		}
 	}
 }

@@ -56,7 +56,7 @@ func TestUnknownPathIsTheDeploymentsFailure(t *testing.T) {
 				t.Errorf("second deployment got %d requests, want 1", len(other.Requests()))
 			}
 			line := logLine(t, g, "r")
-			if want := `"tried":"local/first:upstream_path_missing,local-b/second:200"`; !strings.Contains(line, want) {
+			if want := `"kaiak.tried":"local/first:upstream_path_missing,local-b/second:200"`; !strings.Contains(line, want) {
 				t.Errorf("log line misses %s:\n%s", want, line)
 			}
 			records := recordsOf(g, "r")
@@ -119,7 +119,7 @@ func TestUnknownPathRefusesTheBackendForTheRequest(t *testing.T) {
 	if n := len(other.Requests()); n != 1 {
 		t.Errorf("local-b got %d requests, want 1", n)
 	}
-	if want := `"attempts":2,"tried":"local/first:upstream_path_missing,local-b/second:200"`; !strings.Contains(logLine(t, g, "r"), want) {
+	if want := `"kaiak.attempts":2,"kaiak.tried":"local/first:upstream_path_missing,local-b/second:200"`; !strings.Contains(logLine(t, g, "r"), want) {
 		t.Errorf("log line misses %s:\n%s", want, logLine(t, g, "r"))
 	}
 }

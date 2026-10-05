@@ -109,7 +109,7 @@ func TestBackendTypes(t *testing.T) {
 					t.Fatalf("%d %s, want 200", r.StatusCode, r.body)
 				}
 				line := g.settled(t, id)
-				if line["backend"] != b.name || line["tokens_out"] != 4.0 {
+				if line["kaiak.backend.id"] != b.name || line["gen_ai.usage.output_tokens"] != 4.0 {
 					t.Errorf("log line %v, want backend %s and the fake's 4 tokens out", line, b.name)
 				}
 				reqs := backend.Requests()
@@ -167,9 +167,9 @@ func TestWrongBaseURLIsWarnedAtApply(t *testing.T) {
 	g := startGatewayEnv(t, append(gatewayEnv(configFile, ""),
 		openAIKeyEnv+"=sk-e2e-openai", azureKeyEnv+"=e2e-azure"))
 
-	line := g.logs.wait(t, "the base_url warning", msg("the backend has no models list at its base_url", "backend", "lost"))
-	if line["level"] != "WARN" || line["base_url"] != backend.URL() ||
-		line["hint"] != "base_url should end in the API version path, e.g. /v1" {
+	line := g.logs.wait(t, "the base_url warning", msg("the backend has no models list at its base_url", "kaiak.backend.id", "lost"))
+	if line["level"] != "WARN" || line["kaiak.backend.base_url"] != backend.URL() ||
+		line["kaiak.backend.base_url_hint"] != "base_url should end in the API version path, e.g. /v1" {
 		t.Errorf("warning %v, want WARN naming base_url %s with the version-path hint", line, backend.URL())
 	}
 	if strings.Count(g.logs.text(), "no models list at its base_url") != 1 {

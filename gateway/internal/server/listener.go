@@ -11,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"kaiak/internal/logattr"
 )
 
 // readHeaderTimeout bounds how long a client may take to send request headers, so
@@ -62,7 +64,11 @@ func Listen(name, addr string, handler http.Handler, timeouts ClientTimeouts, lo
 	if err != nil {
 		return nil, fmt.Errorf("%s listener: %w", name, err)
 	}
-	logger.Info("listening", "listener", name, "addr", ln.Addr().String())
+	// server.address and server.port: the bound address split, as the HTTP
+	// convention has them.
+	host, _, _ := net.SplitHostPort(ln.Addr().String()) // a TCP listener's address always splits
+	logger.Info("listening", "kaiak.listener.name", name, "server.address", host,
+		"server.port", ln.Addr().(*net.TCPAddr).Port)
 	base, cancel := context.WithCancelCause(context.Background())
 	return &Listener{
 		name: name,
@@ -162,7 +168,8 @@ func (l *Listener) Shutdown(timeout time.Duration) {
 	defer cancel()
 	// Shutdown's only other error is from closing a listening socket already closed.
 	if err := l.server.Shutdown(ctx); errors.Is(err, context.DeadlineExceeded) {
-		l.logger.Warn("shutdown timed out; closing open connections", "listener", l.name, "timeout", timeout.String())
+		l.logger.Warn("shutdown timed out; closing open connections", "kaiak.listener.name", l.name,
+			logattr.Seconds("kaiak.listener.shutdown_timeout", timeout))
 		l.cut()
 	}
 }

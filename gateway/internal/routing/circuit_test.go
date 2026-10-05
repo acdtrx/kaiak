@@ -744,16 +744,16 @@ func TestModelCheckWarnsPerMissingModel(t *testing.T) {
 	stop()
 	<-stopped
 	out := logs.String()
-	if !strings.Contains(out, `msg="the backend does not list the deployment's model" backend=x deployment_model=wrong@x`) ||
+	if !strings.Contains(out, `msg="the backend does not list the deployment's model" kaiak.backend.id=x kaiak.deployment.model=wrong@x`) ||
 		strings.Count(out, "does not list") != 1 {
 		t.Errorf("log:\n%s\nwant one warning, for wrong@x", out)
 	}
-	if !strings.Contains(out, `level=WARN msg="model check skipped: the backend did not answer" backend=down error="connection refused"`) {
+	if !strings.Contains(out, `level=WARN msg="model check skipped: the backend did not answer" kaiak.backend.id=down exception.message="connection refused"`) {
 		t.Errorf("log:\n%s\nwant the unreachable backend named", out)
 	}
 	// A models list answering 404: the backend is up and its base_url likely wrong.
-	if !strings.Contains(out, `level=WARN msg="the backend has no models list at its base_url" backend=nopath base_url=http://vllm:8000 hint="base_url should end in /v1"`) ||
-		strings.Contains(out, "skipped: the backend did not answer\" backend=nopath") {
+	if !strings.Contains(out, `level=WARN msg="the backend has no models list at its base_url" kaiak.backend.id=nopath kaiak.backend.base_url=http://vllm:8000 kaiak.backend.base_url_hint="base_url should end in /v1"`) ||
+		strings.Contains(out, "skipped: the backend did not answer\" kaiak.backend.id=nopath") {
 		t.Errorf("log:\n%s\nwant a warning naming nopath's base_url, with the hint", out)
 	}
 	if probed["x"] != 1 || probed["y"] != 1 || probed["down"] != 1 || probed["nopath"] != 1 {

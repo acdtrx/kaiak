@@ -179,7 +179,8 @@ the rest in the reserve. Usage batches keep going out every 5 s throughout the
 drain; then a final status (≤ 2 s), the admin listener closes (≤ 5 s for a scrape
 still open), with log export on the last queued log lines are sent (at least 1 s),
 and the process exits 0. The `draining` log line names the times in
-force: `grace`, `timeout`, `flush_reserve` and `cut_after` — when requests still
+force, in seconds: `kaiak.drain.grace`, `kaiak.drain.timeout`,
+`kaiak.drain.flush_reserve` and `kaiak.drain.cut_after` — when requests still
 running are cut, counted from the grace's end (the timeout less the reserve; the
 whole timeout in file mode).
 
@@ -490,10 +491,10 @@ the document (a script, or the control plane) rather than editing it by hand.
   Keep `output_limit.default` near what answers need (not the ceiling): clients
   that set no limit reserve the default. Hourly token limits reserve the same
   way. The refusal's log line carries
-  `limit_scope`, `limit_id`, `limit_type`, `limit` (the share enforced),
-  `limit_configured`, `used` and `requested`: `requested` above
-  `limit_configured` is a request too large for the limit, otherwise the window is
-  full.
+  `kaiak.limit.scope`, `kaiak.limit.id`, `kaiak.limit.type`, `kaiak.limit.enforced`
+  (the share enforced), `kaiak.limit.configured`, `kaiak.limit.used` and
+  `kaiak.limit.requested`: `kaiak.limit.requested` above `kaiak.limit.configured`
+  is a request too large for the limit, otherwise the window is full.
 - **vLLM: add `--enable-prompt-tokens-details`** to `vllm serve` for the cached-token
   count. Without it vLLM reports no `prompt_tokens_details`, so prefix-cache hits
   count as ordinary input (`tokens_cached` 0 in usage and metrics): a
@@ -612,7 +613,7 @@ the document (a script, or the control plane) rather than editing it by hand.
 - **Config load cost** (`GATEWAY.md` → Observability: Config load cost): with a large
   config, read `kaiak_config_size_bytes`, the apply time
   (`histogram_quantile(0.99, sum by (le) (rate(kaiak_config_apply_duration_seconds_bucket{result="applied"}[1h])))`,
-  or the `duration_ms` and `bytes` on each `config applied` line) and the limiter's
+  or the `kaiak.duration` and `kaiak.config.size` on each `config applied` line) and the limiter's
   resync after each new config (`kaiak_limits_sync_duration_seconds` — the pause the
   first requests on a new config feel). They are there to measure, not to alert on:
   no threshold is known yet.
@@ -638,14 +639,19 @@ the document (a script, or the control plane) rather than editing it by hand.
   usage — e.g. `sum by (code) (increase(kaiak_request_errors_total{root_group="team-a"}[1h]))`.
   Requests without a valid key count with no key labels. It follows the same two
   switches; its series are the keys that met an error, times the codes they met.
-- **Logs**: one JSON line per request (message `request`, with the request ID, key
-  ID and its `group`, model, backend, status,
-  `ttft_ms` for streams and, on failure, the error code); never keys, prompts or
-  responses. A limit refusal names the limit (`limit_scope`, `limit_id`,
-  `limit_type`, `limit`, `limit_configured`, `used`, `requested`); a relayed backend
-  `4xx` carries `upstream_error_code`/`upstream_error_type` from the backend's error;
-  a retried request lists every attempt in `tried` (`GATEWAY.md` → Observability:
-  Logs).
+- **Logs**: one JSON line per request (message `request`), its attributes named
+  after OpenTelemetry's conventions where they fit — `kaiak.request.id`,
+  `kaiak.key.id` and `kaiak.key.group`, `gen_ai.request.model`, `kaiak.backend.id`,
+  `http.response.status_code`, `kaiak.request.duration` and
+  `kaiak.time_to_first_token` for streams (seconds), the `gen_ai.usage.*` token
+  counts (`gen_ai.usage.input_tokens` is all input, cache reads and writes
+  included) and, on failure, `error.type`; never keys, prompts or responses. A
+  limit refusal names the limit (`kaiak.limit.scope`, `kaiak.limit.id`,
+  `kaiak.limit.type`, `kaiak.limit.enforced`, `kaiak.limit.configured`,
+  `kaiak.limit.used`, `kaiak.limit.requested`); a relayed backend `4xx` carries
+  `kaiak.upstream.error.code`/`kaiak.upstream.error.type` from the backend's error;
+  a retried request lists every attempt in `kaiak.tried` (`GATEWAY.md` →
+  Observability: Logs, the field tables).
 - **Log export to an OpenTelemetry collector** (`GATEWAY.md` → Observability: OTLP
   log export), for a platform that cannot read container output: set
   `OTEL_EXPORTER_OTLP_ENDPOINT` (or the `LOGS` variable) and every log line — the

@@ -147,6 +147,8 @@ enforce the boundaries.
   Without a data directory nothing opens it: `cmd/kaiak` passes none.
 - `clip` — bounds a client-controlled string (path, method, model name) before it is
   logged or echoed in an error message; `server` and `auth` use it.
+- `logattr` — log attribute values in the units the log vocabulary fixes (a duration
+  in seconds); every package that logs a duration uses it.
 - `sse` — the server-sent events reader (WHATWG format): splits a stream into blocks
   with their raw bytes, data, event name and ID, bounded in size. The provider relays
   backend streams with it; `control` follows the config stream with it.

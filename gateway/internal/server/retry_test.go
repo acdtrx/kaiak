@@ -119,7 +119,7 @@ func TestRetrySucceedsOnTheOtherDeployment(t *testing.T) {
 				t.Errorf("second deployment got %d requests, want 1", len(other.Requests()))
 			}
 			line := logLine(t, g, "r")
-			want := `"backend":"local-b","deployment_model":"second","attempts":2,"tried":"` + c.first + `/first:` + c.outcome + `,local-b/second:200"`
+			want := `"kaiak.backend.id":"local-b","kaiak.backend.type":"openai-compatible","kaiak.deployment.model":"second","kaiak.attempts":2,"kaiak.tried":"` + c.first + `/first:` + c.outcome + `,local-b/second:200"`
 			if !strings.Contains(line, want) {
 				t.Errorf("log line misses %s:\n%s", want, line)
 			}
@@ -181,8 +181,8 @@ func TestTimedOutAttemptIsRecordedAndLimitsSettleTheSum(t *testing.T) {
 	// The log line carries the request's totals, the answer's flags; usage metrics
 	// count each record, the ops metrics the one client request.
 	line := logLine(t, g, "r")
-	if !strings.Contains(line, `"tokens_in":`+strconv.FormatInt(accounting.EstimateTokens(int64(len(body)))+30, 10)+`,`) ||
-		!strings.Contains(line, `"tokens_out":12,`) || !strings.Contains(line, `"estimated":false,"partial":false`) {
+	if !strings.Contains(line, `"gen_ai.usage.input_tokens":`+strconv.FormatInt(accounting.EstimateTokens(int64(len(body)))+30, 10)+`,`) ||
+		!strings.Contains(line, `"gen_ai.usage.output_tokens":12,`) || !strings.Contains(line, `"kaiak.usage.estimated":false,"kaiak.usage.partial":false`) {
 		t.Errorf("log line: %s", line)
 	}
 	expectMetricLines(t, scrape(g),
@@ -200,14 +200,14 @@ func TestSingleDeploymentIsNotRetried(t *testing.T) {
 	if n := len(g.backend.Requests()); n != 1 {
 		t.Errorf("backend got %d requests, want 1", n)
 	}
-	if line := logLine(t, g, "r500"); !strings.Contains(line, `"attempts":1,"retry_refused":"no_deployment_left"`) {
+	if line := logLine(t, g, "r500"); !strings.Contains(line, `"kaiak.attempts":1,"kaiak.retry_refused":"no_deployment_left"`) {
 		t.Errorf("log line: %s", line)
 	}
 
 	// Connect refused: one attempt, its error answers.
 	w := post(t, g, "down", `{"model":"down"}`)
 	expectError(t, w, http.StatusBadGateway, "upstream_unavailable")
-	if line := logLine(t, g, "down"); !strings.Contains(line, `"attempts":1,"retry_refused":"no_deployment_left"`) {
+	if line := logLine(t, g, "down"); !strings.Contains(line, `"kaiak.attempts":1,"kaiak.retry_refused":"no_deployment_left"`) {
 		t.Errorf("log line: %s", line)
 	}
 	if records := recordsOf(g, "down"); len(records) != 1 || !records[0].Partial {
@@ -229,9 +229,9 @@ func TestAllAttemptsFailingAnswerTheLastError(t *testing.T) {
 	if w.Header().Get("Retry-After") != "9" {
 		t.Errorf("Retry-After %q, want the second attempt's", w.Header().Get("Retry-After"))
 	}
-	if line := logLine(t, g, "r"); !strings.Contains(line, `"retry_refused":"no_deployment_left"`) ||
-		!strings.Contains(line, `"tried":"local/first:500,local-b/second:503"`) ||
-		!strings.Contains(line, `"upstream_error_type":"server_error"`) || strings.Contains(line, "disk full") {
+	if line := logLine(t, g, "r"); !strings.Contains(line, `"kaiak.retry_refused":"no_deployment_left"`) ||
+		!strings.Contains(line, `"kaiak.tried":"local/first:500,local-b/second:503"`) ||
+		!strings.Contains(line, `"kaiak.upstream.error.type":"server_error"`) || strings.Contains(line, "disk full") {
 		t.Errorf("log line: %s", line)
 	}
 	expectMetricLines(t, scrape(g), `kaiak_retries_total{model="retry",backend="local",reason="server_error"} 1`,
@@ -252,7 +252,7 @@ func TestNotRetried(t *testing.T) {
 			t.Errorf("backend got %d requests, want 1", n)
 		}
 		line := logLine(t, g, "r")
-		if !strings.Contains(line, `"attempts":1,"retry_refused":"no_deployment_left"`) {
+		if !strings.Contains(line, `"kaiak.attempts":1,"kaiak.retry_refused":"no_deployment_left"`) {
 			t.Errorf("log line: %s", line)
 		}
 	})
@@ -339,7 +339,7 @@ func TestMaxAttempts(t *testing.T) {
 				return c.edit(fiveDownDeployments(doc))
 			})
 			expectError(t, post(t, g, "r", `{"model":"down"}`), http.StatusBadGateway, "upstream_unavailable")
-			if line := logLine(t, g, "r"); !strings.Contains(line, `"attempts":`+strconv.Itoa(c.want)+`,`) {
+			if line := logLine(t, g, "r"); !strings.Contains(line, `"kaiak.attempts":`+strconv.Itoa(c.want)+`,`) {
 				t.Errorf("log line: %s, want %d attempts", line, c.want)
 			}
 		})
@@ -368,7 +368,7 @@ func TestEachAttemptFeedsTheCircuitBreaker(t *testing.T) {
 			t.Fatalf("after request %d: circuit open %v", i, open)
 		}
 	}
-	if post(t, g, "r2", `{"model":"retry"}`); !strings.Contains(logLine(t, g, "r2"), `"attempts":1,`) {
+	if post(t, g, "r2", `{"model":"retry"}`); !strings.Contains(logLine(t, g, "r2"), `"kaiak.attempts":1,`) {
 		t.Errorf("with local open, want one attempt on local-b: %s", logLine(t, g, "r2"))
 	}
 	if n, m := len(g.backend.Requests()), len(other.Requests()); n != 2 || m != 3 {
@@ -399,7 +399,7 @@ func TestNoRetryWhenTheOtherDeploymentIsOpen(t *testing.T) {
 	if n := len(g.backend.Requests()); n != 1 || len(other.Requests()) != 0 {
 		t.Errorf("local got %d, local-b %d; want one attempt on local", n, len(other.Requests()))
 	}
-	if line := logLine(t, g, "r"); !strings.Contains(line, `"attempts":1,"retry_refused":"no_deployment_left"`) {
+	if line := logLine(t, g, "r"); !strings.Contains(line, `"kaiak.attempts":1,"kaiak.retry_refused":"no_deployment_left"`) {
 		t.Errorf("log line: %s", line)
 	}
 }
@@ -438,7 +438,7 @@ func TestRetryQueuesForACappedBackend(t *testing.T) {
 		}
 		srv.Close()
 		line := logLine(t, g, "r")
-		if !strings.Contains(line, `"attempts":2,"tried":"local-b/first:500,local/second:200","queue_wait_ms":`) {
+		if !strings.Contains(line, `"kaiak.attempts":2,"kaiak.tried":"local-b/first:500,local/second:200","kaiak.queue.wait_duration":`) {
 			t.Errorf("log line: %s", line)
 		}
 		expectMetricLines(t, scrape(g), `kaiak_queue_wait_seconds_count{model="retry"} 1`)
@@ -459,8 +459,8 @@ func TestRetryQueuesForACappedBackend(t *testing.T) {
 		cancelHolder()
 		srv.Close()
 		line := logLine(t, g, "r")
-		if !strings.Contains(line, `"status":499`) || !strings.Contains(line, `"error_code":"client_closed"`) ||
-			!strings.Contains(line, `"attempts":1,`) {
+		if !strings.Contains(line, `"http.response.status_code":499`) || !strings.Contains(line, `"error.type":"client_closed"`) ||
+			!strings.Contains(line, `"kaiak.attempts":1,`) {
 			t.Errorf("log line: %s", line)
 		}
 		if n := len(other.Requests()); n != 1 {
@@ -491,7 +491,7 @@ func TestRetryQueuesForACappedBackend(t *testing.T) {
 		}
 		cancelHolder()
 		srv.Close()
-		if line := logLine(t, g, "r"); !strings.Contains(line, `"retry_refused":"queue_timeout"`) {
+		if line := logLine(t, g, "r"); !strings.Contains(line, `"kaiak.retry_refused":"queue_timeout"`) {
 			t.Errorf("log line: %s", line)
 		}
 		expectMetricLines(t, scrape(g), `kaiak_queue_rejections_total{model="retry",reason="timeout"} 1`)
@@ -521,7 +521,7 @@ func TestDrainCutsARetryWaitingInTheQueue(t *testing.T) {
 		t.Error("retry served after the cut")
 	}
 	line := logLine(t, g, "r")
-	if !strings.Contains(line, `"error_code":"server_shutting_down"`) || !strings.Contains(line, `"attempts":1,`) {
+	if !strings.Contains(line, `"error.type":"server_shutting_down"`) || !strings.Contains(line, `"kaiak.attempts":1,`) {
 		t.Errorf("log line: %s", line)
 	}
 	if n := g.router.InFlightByBackend(); len(n) != 0 {

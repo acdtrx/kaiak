@@ -56,10 +56,10 @@ func TestApplierReportsEveryLoadToTheObserver(t *testing.T) {
 	}
 
 	before := time.Now()
-	if _, err := applier.Apply("control", valid, "config_version", 3); err != nil {
+	if _, err := applier.Apply("control", valid, "kaiak.config.version", 3); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := applier.Apply("control", []byte(`{`), "config_version", 4); err == nil {
+	if _, err := applier.Apply("control", []byte(`{`), "kaiak.config.version", 4); err == nil {
 		t.Fatal("a broken document was applied")
 	}
 	_ = applier.Reject("sighup", os.ErrNotExist, "file", "x.json")
@@ -87,9 +87,9 @@ func TestApplierReportsEveryLoadToTheObserver(t *testing.T) {
 	}
 	out := logs.String()
 	for _, line := range []string{
-		fmt.Sprintf(`msg="config applied" trigger=control config_version=3 backends=1 models=1 keys=1 bytes=%d duration_ms=`, len(valid)),
-		`msg="config rejected" trigger=control config_version=4`,
-		"codes=[syntax] running_config=kept bytes=1 duration_ms=",
+		fmt.Sprintf(`msg="config applied" kaiak.trigger=control kaiak.config.version=3 kaiak.config.backends=1 kaiak.config.models=1 kaiak.config.keys=1 kaiak.config.size=%d kaiak.duration=`, len(valid)),
+		`msg="config rejected" kaiak.trigger=control kaiak.config.version=4`,
+		"kaiak.config.issue_codes=[syntax] kaiak.config.running=kept kaiak.config.size=1 kaiak.duration=",
 	} {
 		if !strings.Contains(out, line) {
 			t.Errorf("log misses %q:\n%s", line, out)
@@ -97,9 +97,9 @@ func TestApplierReportsEveryLoadToTheObserver(t *testing.T) {
 	}
 	// A load with no document has no size or duration to log.
 	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if last := lines[len(lines)-1]; !strings.Contains(last, "trigger=sighup") ||
-		strings.Contains(last, "bytes=") || strings.Contains(last, "duration_ms=") {
-		t.Errorf("the unreadable file's line %q: want no bytes or duration_ms", last)
+	if last := lines[len(lines)-1]; !strings.Contains(last, "kaiak.trigger=sighup") ||
+		strings.Contains(last, "kaiak.config.size=") || strings.Contains(last, "kaiak.duration=") {
+		t.Errorf("the unreadable file's line %q: want no kaiak.config.size or kaiak.duration", last)
 	}
 }
 
@@ -113,7 +113,7 @@ func TestLoadAppliesAValidFile(t *testing.T) {
 	if !holder.Loaded() || len(holder.Current().Models) != 4 {
 		t.Fatal("snapshot not applied")
 	}
-	if out := logs.String(); !strings.Contains(out, "config applied") || !strings.Contains(out, "trigger=startup") {
+	if out := logs.String(); !strings.Contains(out, "config applied") || !strings.Contains(out, "kaiak.trigger=startup") {
 		t.Errorf("log misses the applied line:\n%s", out)
 	}
 	if strings.Contains(logs.String(), "secret-value") {
@@ -143,7 +143,7 @@ func TestFailedReloadKeepsTheRunningSnapshot(t *testing.T) {
 		t.Error("a rejected config replaced the running one")
 	}
 	out := logs.String()
-	for _, want := range []string{"config rejected", "trigger=sighup", "codes=[schema]", "running_config=kept", "/models/llama/metadata/context_length"} {
+	for _, want := range []string{"config rejected", "kaiak.trigger=sighup", "kaiak.config.issue_codes=[schema]", "kaiak.config.running=kept", "/models/llama/metadata/context_length"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("log misses %q:\n%s", want, out)
 		}

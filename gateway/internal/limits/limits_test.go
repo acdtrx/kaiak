@@ -623,7 +623,7 @@ func TestSnapshotWithAnotherVersionIsDiscarded(t *testing.T) {
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Error("the file with another version was kept")
 	}
-	if !strings.Contains(logs.String(), "found_version=1") || !strings.Contains(logs.String(), "want_version=2") {
+	if !strings.Contains(logs.String(), "kaiak.data_file.found_version=1") || !strings.Contains(logs.String(), "kaiak.data_file.want_version=2") {
 		t.Errorf("discard not logged:\n%s", logs)
 	}
 	// No file at all restores nothing, without error.

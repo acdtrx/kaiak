@@ -66,7 +66,7 @@ func TestWithoutADataDirectoryAnUndeliveredFlushIsLoggedAsLost(t *testing.T) {
 	logged := false
 	for line := range strings.SplitSeq(h.logs.String(), "\n") {
 		logged = logged || strings.Contains(line, `level=ERROR msg="usage not flushed: lost at exit (no data directory)"`) &&
-			strings.HasSuffix(line, "trigger=drain batches=1 records=1")
+			strings.HasSuffix(line, "kaiak.trigger=drain kaiak.usage.batches=1 kaiak.usage.records=1")
 	}
 	if !logged {
 		t.Errorf("no error-level loss line for 1 batch, 1 record:\n%s", h.logs.String())

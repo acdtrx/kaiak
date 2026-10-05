@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"kaiak/internal/config"
+	"kaiak/internal/logattr"
 )
 
 // Control-plane mode (docs/specs/GATEWAY.md, Limits → Control-plane mode). The hour
@@ -103,8 +104,9 @@ func (l *Limiter) warnSmallSharesLocked() {
 				continue
 			}
 			l.logger.Warn("per-minute share below the model's default output: a request at the default is admitted only while this gateway's window is empty",
-				"scope", c.key.scope(), "group", c.key.group, "model", name, "tokens_per_minute", effectiveLimit(c.limit),
-				"live_gateways", l.live, "share", c.w.limit, "output_default", m.OutputLimit.Default)
+				"kaiak.limit.scope", c.key.scope(), "kaiak.limit.group", c.key.group, "kaiak.model.name", name,
+				"kaiak.limit.configured", effectiveLimit(c.limit), "kaiak.limit.live_gateways", l.live,
+				"kaiak.limit.enforced", c.w.limit, "kaiak.model.output_default", m.OutputLimit.Default)
 		}
 	}
 }
@@ -151,8 +153,9 @@ func (l *Limiter) warnAheadLocked(w PushedWindow, now time.Time) {
 		return
 	}
 	l.aheadWarned = w.Start
-	l.logger.Warn("pushed window ahead of the gateway's clock", "scope", scopeOf(w.Group), "group", w.Group, "type", w.Type,
-		"window_start", w.Start.UTC(), "gateway_time", now.UTC())
+	l.logger.Warn("pushed window ahead of the gateway's clock", "kaiak.limit.scope", scopeOf(w.Group),
+		"kaiak.limit.group", w.Group, "kaiak.limit.type", w.Type,
+		"kaiak.limit.window_start", w.Start.UTC(), "kaiak.gateway_time", now.UTC())
 }
 
 // retireCountedLocked drops the generations shown counted from the counters' own
@@ -269,15 +272,15 @@ func (l *Limiter) outageLocked(now time.Time) bool {
 	switch {
 	case reason != "" && l.outageSince.IsZero():
 		l.outageSince = began
-		attrs := []any{"reason", reason, "since_contact", now.Sub(c.Last).Round(time.Second).String(),
-			"grace", grace.String()}
+		attrs := []any{"kaiak.reason", reason, logattr.Seconds("kaiak.control.since_contact", now.Sub(c.Last)),
+			logattr.Seconds("kaiak.control.outage_grace", grace)}
 		if !c.UsageWaitingSince.IsZero() {
-			attrs = append(attrs, "usage_waiting", now.Sub(c.UsageWaitingSince).Round(time.Second).String())
+			attrs = append(attrs, logattr.Seconds("kaiak.control.usage_waiting", now.Sub(c.UsageWaitingSince)))
 		}
 		l.logger.Warn("control plane outage: priced USD-limited models refused", attrs...)
 	case reason == "" && !l.outageSince.IsZero():
 		l.logger.Info("control plane outage over: contact is back",
-			"lasted", now.Sub(l.outageSince).Round(time.Second).String())
+			logattr.Seconds("kaiak.lasted", now.Sub(l.outageSince)))
 		l.outageSince = time.Time{}
 	}
 	return reason != ""

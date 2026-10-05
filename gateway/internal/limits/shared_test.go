@@ -553,7 +553,7 @@ func TestShareNeverMakesARequestImpossible(t *testing.T) {
 	if n := strings.Count(logs.String(), "per-minute share below the model's default output"); n != 1 {
 		t.Errorf("%d share warnings, want 1:\n%s", n, logs.String())
 	}
-	if !strings.Contains(logs.String(), "model=m1") || !strings.Contains(logs.String(), "scope=group") {
+	if !strings.Contains(logs.String(), "kaiak.model.name=m1") || !strings.Contains(logs.String(), "kaiak.limit.scope=group") {
 		t.Errorf("warning names the model and scope kind:\n%s", logs.String())
 	}
 	// The same live count again: no new warning.
@@ -598,14 +598,14 @@ func TestOutageStartAndEndAreLoggedOnce(t *testing.T) {
 		refused(t, l, workload, 10)
 		l.Outage()
 	}
-	if got := lines(started); len(got) != 1 || got[0] != `reason="no contact" since_contact=1m0s grace=1m0s` {
+	if got := lines(started); len(got) != 1 || got[0] != `kaiak.reason="no contact" kaiak.control.since_contact=60.001 kaiak.control.outage_grace=60` {
 		t.Errorf("start lines %q, want one, with the reason, the time since contact and the grace", got)
 	}
 	c.advance(30 * time.Second)
 	contact.set(true, c.t)
 	admitN(t, l, workload, 2, 10)
 	l.Outage()
-	if got := lines(over); len(got) != 1 || got[0] != "lasted=30s" {
+	if got := lines(over); len(got) != 1 || got[0] != "kaiak.lasted=30.001" {
 		t.Errorf("end lines %q, want one, with how long it lasted", got)
 	}
 
@@ -617,12 +617,12 @@ func TestOutageStartAndEndAreLoggedOnce(t *testing.T) {
 	refused(t, l, workload, 10)
 	refused(t, l, workload, 10)
 	if got := lines(started); len(got) != 1 ||
-		got[0] != `reason="usage not acknowledged" since_contact=0s grace=1m0s usage_waiting=1m1s` {
+		got[0] != `kaiak.reason="usage not acknowledged" kaiak.control.since_contact=0 kaiak.control.outage_grace=60 kaiak.control.usage_waiting=61` {
 		t.Errorf("start lines %q, want one, for the unacknowledged usage", got)
 	}
 	contact.setWaiting(time.Time{})
 	admitN(t, l, workload, 1, 10)
-	if got := lines(over); len(got) != 1 || got[0] != "lasted=1s" {
+	if got := lines(over); len(got) != 1 || got[0] != "kaiak.lasted=1" {
 		t.Errorf("end lines %q, want one", got)
 	}
 
@@ -704,7 +704,7 @@ func TestModelSetEditKeepsTheSpend(t *testing.T) {
 	if got := used(t, l2, "t", config.LimitTokensPerHour); got != 500 {
 		t.Errorf("team hour used %d, want the larger predecessor's 500", got)
 	}
-	if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "predecessors=2") {
+	if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "kaiak.limit.predecessors=2") {
 		t.Errorf("ambiguous carry-over not logged as a warning:\n%s", logs.String())
 	}
 }
@@ -919,7 +919,7 @@ func TestSharedStateOfAnotherVersionIsDiscarded(t *testing.T) {
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Error("the file with another version was kept")
 	}
-	if !strings.Contains(logs.String(), "found_version=1") || !strings.Contains(logs.String(), "want_version=2") {
+	if !strings.Contains(logs.String(), "kaiak.data_file.found_version=1") || !strings.Contains(logs.String(), "kaiak.data_file.want_version=2") {
 		t.Errorf("discard not logged:\n%s", logs)
 	}
 }

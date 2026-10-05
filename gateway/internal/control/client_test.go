@@ -291,7 +291,7 @@ func TestBootAppliesTheSnapshotAndSendsTheProtocolHeaders(t *testing.T) {
 			t.Errorf("%s = %q, want %q", name, got, want)
 		}
 	}
-	if !strings.Contains(h.logs.String(), `msg="config applied" trigger=control config_version=1`) {
+	if !strings.Contains(h.logs.String(), `msg="config applied" kaiak.trigger=control kaiak.config.version=1`) {
 		t.Errorf("applied line missing:\n%s", h.logs.String())
 	}
 }
@@ -455,8 +455,8 @@ func TestRejectedConfigIsKeptOutAndReported(t *testing.T) {
 	if got := h.savedVersion(); got != 1 {
 		t.Errorf("last-known-good version %d, want 1: a rejected config is never saved", got)
 	}
-	if out := h.logs.String(); !strings.Contains(out, `msg="config rejected" trigger=control config_version=2`) ||
-		!strings.Contains(out, "running_config=kept") {
+	if out := h.logs.String(); !strings.Contains(out, `msg="config rejected" kaiak.trigger=control kaiak.config.version=2`) ||
+		!strings.Contains(out, "kaiak.config.running=kept") {
 		t.Errorf("rejection not logged:\n%s", out)
 	}
 
@@ -551,7 +551,7 @@ func TestBootFromLastKnownGoodWhenTheControlPlaneIsDown(t *testing.T) {
 	if got, want := h.holder.Current().Version, (config.Version{Epoch: h.cp.ConfigEpoch(), Number: 2}); got != want {
 		t.Errorf("last-known-good snapshot version %+v, want %+v", got, want)
 	}
-	if !strings.Contains(h.logs.String(), `msg="config applied" trigger=last-known-good config_version=2`) {
+	if !strings.Contains(h.logs.String(), `msg="config applied" kaiak.trigger=last-known-good kaiak.config.version=2`) {
 		t.Errorf("last-known-good load not logged:\n%s", h.logs.String())
 	}
 

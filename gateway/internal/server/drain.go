@@ -8,6 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"kaiak/internal/logattr"
 )
 
 // Drain phases (docs/specs/GATEWAY.md, Lifecycle).
@@ -118,8 +120,9 @@ func (d *Drain) Run(l *Listener, t DrainTimes, hurry <-chan struct{}, logger *sl
 func (d *Drain) begin(t DrainTimes, logger *slog.Logger) {
 	d.phase.Store(phaseDraining)
 	_, n := d.idleNow()
-	logger.Info("draining", "grace", t.Grace.String(), "timeout", t.Timeout.String(),
-		"flush_reserve", t.Reserve.String(), "cut_after", (t.Timeout - t.Reserve).String(), "in_flight", n)
+	logger.Info("draining", logattr.Seconds("kaiak.drain.grace", t.Grace), logattr.Seconds("kaiak.drain.timeout", t.Timeout),
+		logattr.Seconds("kaiak.drain.flush_reserve", t.Reserve), logattr.Seconds("kaiak.drain.cut_after", t.Timeout-t.Reserve),
+		"kaiak.drain.in_flight", n)
 }
 
 // refuse stops l accepting connections and refuses requests still arriving on open
@@ -128,7 +131,7 @@ func (d *Drain) refuse(l *Listener, logger *slog.Logger) {
 	d.phase.Store(phaseRefusing)
 	l.stopAccepting()
 	_, n := d.idleNow()
-	logger.Info("draining: refusing new requests", "in_flight", n)
+	logger.Info("draining: refusing new requests", "kaiak.drain.in_flight", n)
 }
 
 // finish waits up to timeout for the requests in flight, cuts off those left (at
@@ -168,12 +171,12 @@ func (d *Drain) finish(l *Listener, timeout time.Duration, hurry <-chan struct{}
 		return
 	}
 	idle, n := d.idleNow()
-	logger.Warn("drain: cutting off in-flight requests", "reason", reason, "requests", n)
+	logger.Warn("drain: cutting off in-flight requests", "kaiak.reason", reason, "kaiak.drain.in_flight", n)
 	l.cut()
 	// Bounded: a cut-off handler's upstream call is cancelled and its client
 	// connection closed, so whatever it was blocked on returns.
 	<-idle
-	logger.Info("drained", "cut_off", n)
+	logger.Info("drained", "kaiak.drain.cut_off", n)
 }
 
 // errShuttingDown answers a request that arrives once the drain refuses new ones.

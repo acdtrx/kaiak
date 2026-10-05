@@ -79,8 +79,8 @@ func TestRunLoadsConfigAndReturnsWhenContextIsCancelled(t *testing.T) {
 	}
 
 	out := logs.String()
-	for _, want := range []string{"kaiak starting", "instance_id=test-1", "config applied", "trigger=startup",
-		"listener=api", "listener=admin", "limits snapshot restored", `msg="limits snapshot written" trigger=shutdown`,
+	for _, want := range []string{"kaiak starting", "service.instance.id=test-1", "config applied", "kaiak.trigger=startup",
+		"kaiak.listener.name=api", "kaiak.listener.name=admin", "limits snapshot restored", `msg="limits snapshot written" kaiak.trigger=shutdown`,
 		"kaiak stopped"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("log misses %q:\n%s", want, out)
@@ -116,7 +116,7 @@ func stopWhenServing(logs *syncBuffer, stop chan<- os.Signal) (wait func()) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		for !strings.Contains(logs.String(), "listener=api") {
+		for !strings.Contains(logs.String(), "kaiak.listener.name=api") {
 			time.Sleep(5 * time.Millisecond)
 		}
 		stop <- syscall.SIGTERM
@@ -155,8 +155,8 @@ func TestStopSignalDrainsThenWritesTheSnapshot(t *testing.T) {
 	}
 	out := logs.String()
 	last := -1
-	for _, want := range []string{`msg="kaiak stopping" reason="signal terminated"`, `msg=draining grace=0s timeout=1h0m0s`,
-		`msg="draining: refusing new requests"`, `msg=drained`, `msg="limits snapshot written" trigger=shutdown`,
+	for _, want := range []string{`msg="kaiak stopping" kaiak.reason="signal terminated"`, `msg=draining kaiak.drain.grace=0 kaiak.drain.timeout=3600`,
+		`msg="draining: refusing new requests"`, `msg=drained`, `msg="limits snapshot written" kaiak.trigger=shutdown`,
 		`msg="kaiak stopped"`} {
 		i := strings.Index(out, want)
 		if i < 0 {
@@ -189,8 +189,8 @@ func TestSecondStopSignalSkipsTheRemainingDrain(t *testing.T) {
 		t.Errorf("goroutines left after run returned:\n%s", strings.Join(left, "\n\n"))
 	}
 	out := logs.String()
-	for _, want := range []string{`msg="second stop signal: skipping the remaining drain" signal=interrupt`,
-		`msg=drained`, `msg="limits snapshot written" trigger=shutdown`, `msg="kaiak stopped"`} {
+	for _, want := range []string{`msg="second stop signal: skipping the remaining drain" kaiak.signal=interrupt`,
+		`msg=drained`, `msg="limits snapshot written" kaiak.trigger=shutdown`, `msg="kaiak stopped"`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("log misses %q:\n%s", want, out)
 		}
@@ -359,7 +359,7 @@ func TestSignalTriggersReloadAndStopsWithContext(t *testing.T) {
 	if got := strings.Count(out, `msg="config rejected"`); got != 2 {
 		t.Errorf("%d rejected reloads logged, want 2:\n%s", got, out)
 	}
-	if !strings.Contains(out, "trigger=sighup") || !strings.Contains(out, "running_config=kept") {
+	if !strings.Contains(out, "kaiak.trigger=sighup") || !strings.Contains(out, "kaiak.config.running=kept") {
 		t.Errorf("reload not logged as a kept config:\n%s", out)
 	}
 	var exposition bytes.Buffer
@@ -490,7 +490,7 @@ func TestRunInControlModeBootsFromTheControlPlane(t *testing.T) {
 		t.Errorf("goroutines left after run returned:\n%s", strings.Join(left, "\n\n"))
 	}
 	out := logs.String()
-	for _, want := range []string{"control_url=" + cp.URL(), `msg="config applied" trigger=control config_version=1`,
+	for _, want := range []string{"kaiak.control.url=" + cp.URL(), `msg="config applied" kaiak.trigger=control kaiak.config.version=1`,
 		`msg="kaiak stopped"`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("log misses %q:\n%s", want, out)
@@ -506,7 +506,7 @@ func TestRunInControlModeBootsFromTheControlPlane(t *testing.T) {
 	if len(statuses) == 0 || !strings.Contains(string(statuses[len(statuses)-1]), `"state":"draining"`) {
 		t.Errorf("statuses %s, want the last one draining", statuses)
 	}
-	if !strings.Contains(out, `msg="usage flushed" control_url=`+cp.URL()+` trigger=drain`) {
+	if !strings.Contains(out, `msg="usage flushed" kaiak.control.url=`+cp.URL()+` kaiak.trigger=drain`) {
 		t.Errorf("no usage flush in the drain:\n%s", out)
 	}
 	// The control plane owns hour and month totals: no file-mode snapshot.
@@ -642,10 +642,10 @@ func TestStopSignalDuringTheBootWaitExits(t *testing.T) {
 				t.Errorf("goroutines left after run returned:\n%s", strings.Join(left, "\n\n"))
 			}
 			out := logs.String()
-			if !strings.Contains(out, `msg="kaiak stopped" reason="signal terminated during boot"`) {
+			if !strings.Contains(out, `msg="kaiak stopped" kaiak.reason="signal terminated during boot"`) {
 				t.Errorf("no stop logged:\n%s", out)
 			}
-			if strings.Contains(out, "listener=api") {
+			if strings.Contains(out, "kaiak.listener.name=api") {
 				t.Errorf("a listener bound after the stop signal:\n%s", out)
 			}
 		})

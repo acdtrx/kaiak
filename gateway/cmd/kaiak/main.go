@@ -21,6 +21,7 @@ import (
 	"kaiak/internal/config"
 	"kaiak/internal/control"
 	"kaiak/internal/limits"
+	"kaiak/internal/logattr"
 	"kaiak/internal/metrics"
 	"kaiak/internal/provider"
 	"kaiak/internal/routing"
@@ -44,7 +45,7 @@ func main() {
 	signal.Notify(reload, syscall.SIGHUP)
 
 	if err := run(context.Background(), logger, os.LookupEnv, reload, stop); err != nil {
-		logger.Error("kaiak stopped with an error", "error", err)
+		logger.Error("kaiak stopped with an error", "exception.message", err)
 		os.Exit(1)
 	}
 }
@@ -309,12 +310,12 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 	if err != nil {
 		return err
 	}
-	source := []any{"config_file", s.configFile}
+	source := []any{"kaiak.config.file", s.configFile}
 	if s.control != nil {
-		source = []any{"control_url", s.control.url.Redacted()}
+		source = []any{"kaiak.control.url", s.control.url.Redacted()}
 	}
-	logger.Info("kaiak starting", append([]any{"pid", os.Getpid(), "instance_id", s.instanceID,
-		"data_dir", s.dataDir}, source...)...)
+	logger.Info("kaiak starting", append([]any{"process.pid", os.Getpid(), "service.instance.id", s.instanceID,
+		"kaiak.data_dir", s.dataDir}, source...)...)
 
 	// With no data directory nothing is written anywhere: usage batches wait in
 	// memory, and there is no last-known-good copy, totals cache or limits snapshot.
@@ -327,7 +328,7 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 		// the process dies first).
 		defer func() {
 			if err := dir.Close(); err != nil {
-				logger.Warn("data directory lock not released", "error", err)
+				logger.Warn("data directory lock not released", "exception.message", err)
 			}
 		}()
 	}
@@ -359,7 +360,7 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 			modelChecker.Check(holder.Current())
 			if bodyCap := holder.Current().MaxRequestBodyBytes; bodyCap > s.bodyMemory {
 				logger.Warn("max_request_body_bytes exceeds the body budget: bodies above the budget are refused as too large",
-					"max_request_body_bytes", bodyCap, "body_memory_bytes", s.bodyMemory)
+					"kaiak.config.max_request_body_size", bodyCap, "kaiak.body_budget.size", s.bodyMemory)
 			}
 		}
 		ops.ConfigLoaded(load)
@@ -422,7 +423,7 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 			}
 		}
 		if sig := endBoot(); sig != nil {
-			logger.Info("kaiak stopped", "reason", "signal "+sig.String()+" during boot")
+			logger.Info("kaiak stopped", "kaiak.reason", "signal "+sig.String()+" during boot")
 			return nil
 		}
 		if err != nil {
@@ -489,7 +490,7 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 	case cause = <-failed:
 		reason = "listener failed"
 	}
-	logger.Info("kaiak stopping", "reason", reason)
+	logger.Info("kaiak stopping", "kaiak.reason", reason)
 
 	// The drain's own waits (grace, then timeout) bound the usage flush too. In
 	// control-plane mode in-flight requests are cut the flush reserve before the
@@ -509,7 +510,7 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 		background.Go(func() {
 			select {
 			case sig := <-stop:
-				logger.Warn("second stop signal: skipping the remaining drain", "signal", sig.String())
+				logger.Warn("second stop signal: skipping the remaining drain", "kaiak.signal", sig.String())
 			case <-ctx.Done():
 			case <-drained:
 				return
@@ -540,7 +541,7 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 	if cause != nil {
 		return cause
 	}
-	logger.Info("kaiak stopped", "reason", reason)
+	logger.Info("kaiak stopped", "kaiak.reason", reason)
 	return nil
 }
 
@@ -575,7 +576,7 @@ func stopOnSignal(ctx context.Context, stop <-chan os.Signal) (context.Context, 
 func waitFirstTotals(ctx context.Context, limiter *limits.Limiter, deadline time.Time, logger *slog.Logger) {
 	started := time.Now()
 	wait := max(time.Until(deadline), 0)
-	logger.Info("waiting for the first totals", "wait_ms", wait.Milliseconds())
+	logger.Info("waiting for the first totals", logattr.Seconds("kaiak.control.totals_wait", wait))
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
 	received := false
@@ -592,11 +593,11 @@ func waitFirstTotals(ctx context.Context, limiter *limits.Limiter, deadline time
 		return
 	}
 	if received {
-		logger.Info("first totals received", "waited_ms", time.Since(started).Milliseconds())
+		logger.Info("first totals received", logattr.Seconds("kaiak.control.totals_waited", time.Since(started)))
 		return
 	}
 	logger.Warn("first totals not received within the boot wait: priced USD-limited requests are refused until they arrive",
-		"waited_ms", time.Since(started).Milliseconds())
+		logattr.Seconds("kaiak.control.totals_waited", time.Since(started)))
 }
 
 // finalStatusTimeout bounds the last status report of a drain.
@@ -754,10 +755,10 @@ func restoreLimits(limiter *limits.Limiter, dir *state.Dir, logger *slog.Logger)
 	}
 	restored, dropped, err := limiter.LoadSnapshot(dir)
 	if err != nil {
-		logger.Warn("limits snapshot not restored", "file", limits.SnapshotFile, "error", err)
+		logger.Warn("limits snapshot not restored", "file.name", limits.SnapshotFile, "exception.message", err)
 		return
 	}
-	logger.Info("limits snapshot restored", "file", limits.SnapshotFile, "windows", restored, "dropped", dropped)
+	logger.Info("limits snapshot restored", "file.name", limits.SnapshotFile, "kaiak.limit.windows", restored, "kaiak.limit.windows_dropped", dropped)
 }
 
 // saveLimits writes the file-mode usage snapshot; trigger names what asked for it
@@ -765,15 +766,15 @@ func restoreLimits(limiter *limits.Limiter, dir *state.Dir, logger *slog.Logger)
 func saveLimits(limiter *limits.Limiter, dir *state.Dir, logger *slog.Logger, trigger string) {
 	n, err := limiter.SaveSnapshot(dir)
 	if err != nil {
-		logger.Error("limits snapshot not written", "trigger", trigger, "file", limits.SnapshotFile, "error", err)
+		logger.Error("limits snapshot not written", "kaiak.trigger", trigger, "file.name", limits.SnapshotFile, "exception.message", err)
 		return
 	}
 	level := slog.LevelInfo
 	if trigger == "interval" {
 		level = slog.LevelDebug
 	}
-	logger.Log(context.Background(), level, "limits snapshot written", "trigger", trigger,
-		"file", limits.SnapshotFile, "windows", n)
+	logger.Log(context.Background(), level, "limits snapshot written", "kaiak.trigger", trigger,
+		"file.name", limits.SnapshotFile, "kaiak.limit.windows", n)
 }
 
 // restoreShared loads the control-plane-mode limits state before traffic starts, when
@@ -787,12 +788,12 @@ func restoreShared(limiter *limits.Limiter, dir *state.Dir, logger *slog.Logger,
 	r, err := limiter.LoadShared(dir, restoredGeneration)
 	switch {
 	case err != nil:
-		logger.Warn("limits totals not restored", "file", limits.SharedFile, "error", err)
+		logger.Warn("limits totals not restored", "file.name", limits.SharedFile, "exception.message", err)
 	case !r.Found:
 	case r.Discarded != "":
-		logger.Info("limits totals discarded", "file", limits.SharedFile, "reason", r.Discarded)
+		logger.Info("limits totals discarded", "file.name", limits.SharedFile, "kaiak.reason", r.Discarded)
 	default:
-		logger.Info("limits totals restored", "file", limits.SharedFile, "windows", r.Restored, "dropped", r.Dropped)
+		logger.Info("limits totals restored", "file.name", limits.SharedFile, "kaiak.limit.windows", r.Restored, "kaiak.limit.windows_dropped", r.Dropped)
 	}
 }
 
@@ -804,15 +805,15 @@ func saveShared(limiter *limits.Limiter, dir *state.Dir, logger *slog.Logger, tr
 	}
 	n, err := limiter.SaveShared(dir)
 	if err != nil {
-		logger.Error("limits totals not written", "trigger", trigger, "file", limits.SharedFile, "error", err)
+		logger.Error("limits totals not written", "kaiak.trigger", trigger, "file.name", limits.SharedFile, "exception.message", err)
 		return
 	}
 	level := slog.LevelInfo
 	if trigger == "totals" {
 		level = slog.LevelDebug
 	}
-	logger.Log(context.Background(), level, "limits totals written", "trigger", trigger,
-		"file", limits.SharedFile, "windows", n)
+	logger.Log(context.Background(), level, "limits totals written", "kaiak.trigger", trigger,
+		"file.name", limits.SharedFile, "kaiak.limit.windows", n)
 }
 
 // saveLimitsPeriodically is the interval trigger for the usage snapshot, stopped by

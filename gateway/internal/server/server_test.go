@@ -534,21 +534,22 @@ func TestLogLineCarriesKeyIDNeverKeyOrContent(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	want := map[string]any{"msg": "request", "request_id": "req-1", "key_id": "k-ann", "model": "open",
-		"status": float64(200), "method": "POST", "path": "/v1/chat/completions",
-		"backend": "local", "deployment_model": "open"}
+	want := map[string]any{"msg": "request", "kaiak.request.id": "req-1", "kaiak.key.id": "k-ann",
+		"gen_ai.request.model": "open", "http.response.status_code": float64(200), "http.request.method": "POST",
+		"url.path": "/v1/chat/completions", "kaiak.backend.id": "local", "kaiak.deployment.model": "open"}
 	for k, v := range want {
 		if first[k] != v {
 			t.Errorf("log field %s = %v, want %v", k, first[k], v)
 		}
 	}
-	if _, ok := first["latency_ms"].(float64); !ok {
-		t.Errorf("log misses latency_ms: %v", first)
+	if _, ok := first["kaiak.request.duration"].(float64); !ok {
+		t.Errorf("log misses kaiak.request.duration: %v", first)
 	}
-	if expired["key_id"] != "k-old" || expired["auth_failure"] != "expired_key" || expired["status"] != float64(401) {
+	if expired["kaiak.key.id"] != "k-old" || expired["kaiak.auth.failure"] != "expired_key" ||
+		expired["http.response.status_code"] != float64(401) {
 		t.Errorf("expired key logged as %v", expired)
 	}
-	if _, ok := unknown["key_id"]; ok || unknown["auth_failure"] != "unknown_key" {
+	if _, ok := unknown["kaiak.key.id"]; ok || unknown["kaiak.auth.failure"] != "unknown_key" {
 		t.Errorf("unknown key logged as %v", unknown)
 	}
 }
