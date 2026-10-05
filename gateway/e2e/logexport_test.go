@@ -2,12 +2,13 @@ package e2e
 
 // OTLP log export through the built binary (docs/specs/GATEWAY.md, Observability →
 // OTLP log export): a fake collector receives exactly the lines stderr shows, with
-// the resource; the metric follows; problems stay on stderr; nothing goes out when
-// export is off.
+// the resource; the metric follows; problems stay on stderr; a redirect is not
+// followed; nothing goes out when export is off.
 
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -581,5 +583,74 @@ func TestLogExportStalledCollectorAtExit(t *testing.T) {
 	}
 	if n := collector.count(); n != 0 {
 		t.Errorf("collector accepted %d records", n)
+	}
+}
+
+// A collector that answers 307 to another server (the review's M1): the redirect is
+// not followed — the other server receives nothing, neither the batch nor the
+// credential header — the batch counts failed, and stderr reports the status alone:
+// none of the answer's text, its Location, or the header's value.
+func TestLogExportRedirectIsNotFollowed(t *testing.T) {
+	backend := fakebackend.New()
+	defer backend.Close()
+	dir := t.TempDir()
+	configFile := filepath.Join(dir, "config.json")
+	_, evalHash := newKey()
+	_, annHash := newKey()
+	writeJSON(t, configFile, testConfig(backend.URL(), evalHash, annHash, ""))
+
+	var elsewhereHits atomic.Int64
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		elsewhereHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(elsewhere.Close)
+	const secret = "s3cret-redirected-header"
+	const remoteText = "moved-by-the-collector-remote-text"
+	var redirects atomic.Int64
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		if r.Header.Get("X-Api-Key") != secret {
+			t.Errorf("export with x-api-key %q, want the configured header", r.Header.Get("X-Api-Key"))
+		}
+		redirects.Add(1)
+		w.Header().Set("Location", elsewhere.URL+"/v1/logs")
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusTemporaryRedirect)
+		_, _ = io.WriteString(w, remoteText+": x-api-key "+secret)
+	}))
+	t.Cleanup(collector.Close)
+
+	g := startGatewayEnv(t, append(gatewayEnv(configFile, ""),
+		"OTEL_EXPORTER_OTLP_ENDPOINT="+collector.URL,
+		"OTEL_EXPORTER_OTLP_HEADERS=x-api-key="+secret))
+
+	report := g.logs.wait(t, "the failure report", msg("log export failing"))
+	if report["http.response.status_code"] != 307.0 || report["kaiak.log_export.dropped"] != 0.0 ||
+		report["exception.message"] != "collector answered 307 Temporary Redirect: redirects are not followed" {
+		t.Errorf("failure report %v", report)
+	}
+	failed, _ := report["kaiak.log_export.failed"].(float64)
+	if failed == 0 {
+		t.Errorf("failure report counts no failed records: %v", report)
+	}
+	// Every export is redirected: later batches may have failed since the report.
+	g.waitMetric(t, "failed records counted", logExportSeries("failed"), func(v float64) bool { return v >= failed })
+	if v, ok := g.metricValue(t, logExportSeries("exported")); !ok || v != 0 {
+		t.Errorf("%s = %v (exposed %v), want 0", logExportSeries("exported"), v, ok)
+	}
+	g.stop(t)
+
+	if n := redirects.Load(); n == 0 {
+		t.Error("the collector received no export")
+	}
+	if n := elsewhereHits.Load(); n != 0 {
+		t.Errorf("the redirect's target received %d requests, want none", n)
+	}
+	text := g.logs.text()
+	for _, leak := range []string{secret, remoteText, elsewhere.URL, strings.TrimPrefix(elsewhere.URL, "http://")} {
+		if strings.Contains(text, leak) {
+			t.Errorf("the stderr log holds %q", leak)
+		}
 	}
 }

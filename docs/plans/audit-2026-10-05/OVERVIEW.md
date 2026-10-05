@@ -94,4 +94,21 @@ new `OTEL_` fixtures (cleared by step 3); nothing else.
   agent admitted within the short `Retry-After`.
 - `scripts/check-all.sh` green three times, Go test cache cleared before each.
 
-**Verification status:** not started.
+**Verification status:** done (2026-10-06); phase 1 green.
+
+- [x] Every Codex repro ported, failing before its fix and passing after: B1–B8 and
+  `audit-b.test.ts` (`STEP-2-exporter.md`, `STEP-3-credentials-and-remote-text.md`,
+  `STEP-4-limits-and-vocabulary.md`); all re-run at the end (`STEP-5-verify.md`).
+- [x] [X] repros as tests: a redirect to another host and to a login page answering
+  200, `Retry-After: 0` and a past date, a panicking `Error()` (`STEP-2-exporter.md`).
+- [x] [L] repro as a test: a refused request admitted within the short
+  `Retry-After`, minute and hour windows (`STEP-4-limits-and-vocabulary.md`).
+- [x] [V] items as tests: `kaiak.limit.group` everywhere, no status code for a
+  response never sent, `kaiak.limit.used` in dollars (`STEP-4-limits-and-vocabulary.md`).
+- [x] Gateway e2e: the exporter against a collector answering 307 — nothing reaches
+  the target, the batch counts failed, stderr reports the status only; a token
+  refusal blocked only by a running request answers `Retry-After: 2` and is admitted
+  once it settles (`STEP-5-verify.md`).
+- [x] Review implementation notes: `docs/reviews/2026-10-05/AUDIT.md` → Implementation.
+- [x] `scripts/check-all.sh` green 3× in a row, Go test cache cleared before each
+  (`STEP-5-verify.md`).

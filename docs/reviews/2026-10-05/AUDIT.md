@@ -155,3 +155,35 @@ problem with the token-limit change: `Retry-After` on token refusals is far too 
 H1, M1–M5, L1–L6, D1–D5: everything that is daily, occasional or a credential path,
 plus the two vocabulary choices (L5, L6) that cost a rename after release. L7–L9 stay
 recorded here.
+
+## Implementation
+
+Plan `docs/plans/audit-2026-10-05/`, branch `audit-2026-10-05`, anchored at `v0.9.2`.
+Commits: `7adfead` contract (specs, schemas, fixtures, docs); `35544cb` exporter;
+`d03c5ad` credentials and remote text; `e7d6e72` limits and vocabulary; the step-5
+commit (`test(e2e): audit fixes end to end; review implementation notes`) adds the
+end-to-end tests for M1 and M4. Each repro, ported as a regression test, fails before
+its fix and passes after (the step files' Results).
+
+| Finding | Status | Commits | Regression tests |
+| --- | --- | --- | --- |
+| H1 | fixed | `7adfead` (schema `^(KAIAK\|OTEL)_`, fixtures, specs), `d03c5ad` (gateway validator and provider guard) | `provider` `TestLogExportVariablesAreNeverSentAsACredential`; `config` `TestInvalidFixtures/api-key-env-otel-*`; kaiak-control `config.test.ts` |
+| M1 | fixed | `7adfead`, `35544cb` | `otlplog` `TestRedirectIsNotFollowed`, `TestRedirectToAPageAnsweringOKIsNotExported`; e2e `TestLogExportRedirectIsNotFollowed` |
+| M2 | fixed | `7adfead`, `35544cb` | `otlplog` `TestCollectorTextIsNeverReported`, `TestTransportErrorTextIsNeverReported` |
+| M3 | fixed | `7adfead`, `35544cb` | `otlplog` `TestUnreadableAnswerFailsUnretried`, `TestAnswersThatDeliver` |
+| M4 | fixed — a fixed 2 s | `7adfead`, `e7d6e72` | `limits` `TestRefusalBlockedOnlyByRunningRequestsAnswersAShortRetry`, `TestRefusalBlockedBySettledUsageKeepsItsTime`, `TestSlidingMinuteCopyDropsReservations`; e2e `TestTokenRefusalBlockedByARunningRequestRetriesSoon` |
+| M5 | fixed — errors classified where they are built (`internal/netfail`); control-plane error codes logged only in the protocol's code shape | `7adfead`, `d03c5ad` | `provider` `TestBackendBytesNeverReachAProviderError`; `control` `TestProtocolMismatchLogsNoHeaderValue`, `TestErrorCodesAreLoggedOnlyInTheirShape`, `TestTransportFailuresAreLoggedAsTheirClass` |
+| L1 | fixed | `7adfead`, `35544cb` | `otlplog` `TestRetryAfterBelowTheBackoffWaitsTheBackoff`, `TestLongRetryAfterFailsTheBatch` |
+| L2 | fixed, with the exit report never rate-limited | `7adfead`, `35544cb` | `cmd/kaiak` `TestSecondSignalCutsTheFinalLogFlush`; e2e `TestLogExportStalledCollectorAtExit` |
+| L3 | fixed | `7adfead`, `35544cb` | `otlplog` `TestPanickingValuesAreRenderedAsSlogDoes` |
+| L4 | fixed | `7adfead`, `e7d6e72` | `limits` `TestCarryOverLogsUsedInDollars` |
+| L5 | fixed — `kaiak.limit.group` everywhere, absent for a global limit; `kaiak.limit.id` removed | `7adfead`, `e7d6e72` | `limits` `TestGlobalLimitLinesCarryNoGroup`; `server` `TestRequestLineKeysFollowTheFieldTable` |
+| L6 | fixed — no status code when no response was sent; the metric keeps 499 | `7adfead`, `e7d6e72` | `server` `TestRequestLineKeysFollowTheFieldTable` |
+| L7 | recorded, not fixed | — | — |
+| L8 | recorded, not fixed | — | — |
+| L9 | recorded, not fixed (mostly closed by M5) | — | — |
+| D1 | fixed (`GUIDE.md`) | `7adfead` | — |
+| D2 | drafted as a release note (`STEP-1-contract.md`, "For the release notes") | `7adfead` | — |
+| D3 | fixed (`DEPLOYMENT.md`) | `7adfead` | — |
+| D4 | fixed (`DEPLOYMENT.md`, `BACKLOG.md`, `LIVE-BACKENDS.md`, `GATEWAY.md` Units, cache-write decision 8 marked superseded) | `7adfead` | — |
+| D5 | fixed (`DEPLOYMENT.md`) | `7adfead` | — |

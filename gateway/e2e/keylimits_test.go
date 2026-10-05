@@ -1,8 +1,9 @@
 package e2e
 
 // The request guards the follow-up audit added, through the built binary
-// (docs/specs/GATEWAY.md, Limits): the per-key concurrency limit and an output limit
-// above the model's context.
+// (docs/specs/GATEWAY.md, Limits): the per-key concurrency limit, an output limit
+// above the model's context, and the short retry of a token refusal blocked only by
+// running requests.
 
 import (
 	"bytes"
@@ -139,6 +140,62 @@ func TestOutputLimitAboveTheContextIsRefused(t *testing.T) {
 	}
 	if sent["max_tokens"] != float64(128) {
 		t.Errorf("max_tokens sent %v, want the ceiling 128", sent["max_tokens"])
+	}
+	g.stop(t)
+}
+
+// A token limit blocked only by a request still running (the review's M4) answers the
+// short fixed retry — Retry-After 2, x-ratelimit-reset-tokens 2s — instead of the
+// minute's slot expiry, and the same request is admitted once the running one has
+// settled (docs/specs/GATEWAY.md, Limits → Refusal).
+func TestTokenRefusalBlockedByARunningRequestRetriesSoon(t *testing.T) {
+	backend := fakebackend.New()
+	defer backend.Close()
+	dir := t.TempDir()
+	configFile := filepath.Join(dir, "config.json")
+	evalKey, evalHash := newKey()
+	_, annHash := newKey()
+	cfg := testConfig(backend.URL(), evalHash, annHash, "")
+	// A request reserves its input estimate (about 20 tokens) plus the default output
+	// limit (64): one reservation fits 120 tokens, two do not; a settled answer (7 in,
+	// 4 out) beside one reservation still fits.
+	eval := cfg["groups"].(map[string]any)["eval"].(map[string]any)
+	eval["limits"] = append(eval["limits"].([]any),
+		map[string]any{"type": "tokens_per_minute", "value": 120, "models": []any{"chat"}})
+	writeJSON(t, configFile, cfg)
+	g := startGateway(t, configFile, "")
+
+	// The first request is held after its first event until pace closes.
+	pace := make(chan struct{})
+	backend.QueueReplies(fakebackend.Reply{Pace: pace})
+	running := holdStream(t, g, evalKey, "m4-running")
+	<-backend.Arrivals()
+
+	r := g.post(t, "/v1/chat/completions", evalKey, "m4-refused", chatBody("chat", true, nil))
+	if r.StatusCode != http.StatusTooManyRequests || r.errorCode(t) != "rate_limit_exceeded" {
+		t.Fatalf("beside a running request: %d %s, want 429 rate_limit_exceeded", r.StatusCode, r.body)
+	}
+	for name, want := range map[string]string{"Retry-After": "2", "X-Ratelimit-Reset-Tokens": "2s"} {
+		if got := r.Header.Get(name); got != want {
+			t.Errorf("refusal %s %q, want %q: only a running request blocks", name, got, want)
+		}
+	}
+	if line := g.settled(t, "m4-refused"); line["kaiak.limit.type"] != "tokens_per_minute" {
+		t.Errorf("refusal's log line %v, want the tokens_per_minute limit", line)
+	}
+
+	close(pace)
+	<-running.done
+	g.settled(t, "m4-running")
+	r = g.post(t, "/v1/chat/completions", evalKey, "m4-again", chatBody("chat", true, nil))
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("the same request once the running one settled: %d %s, want 200", r.StatusCode, r.body)
+	}
+	if got := r.Header.Get("X-Ratelimit-Reset-Tokens"); got == "2s" {
+		t.Errorf("admitted response x-ratelimit-reset-tokens %q, want the window's reset", got)
+	}
+	if n := len(backend.Requests()); n != 2 {
+		t.Errorf("backend received %d requests, want the running one and the admitted retry", n)
 	}
 	g.stop(t)
 }
