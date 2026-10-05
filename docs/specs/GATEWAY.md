@@ -719,8 +719,8 @@ own, and a client sending repeats is broken either way.
     `kaiak.circuit.trial: true` when a half-open trial failed, or the probe's
     `kaiak.trigger` when a failed probe re-opened a half-open circuit —,
     `kaiak.circuit.last_error` — the failure that opened it), `circuit half-open`
-    (info: trigger, `kaiak.circuit.open_ms`), `circuit closed` (info: trigger
-    `trial`, `kaiak.circuit.open_ms`), `probe succeeded` (info when it made circuits
+    (info: trigger, `kaiak.circuit.open_duration`), `circuit closed` (info: trigger
+    `trial`, `kaiak.circuit.open_duration`), `probe succeeded` (info when it made circuits
     half-open, debug for the repeats while they wait for a trial: trigger, duration,
     circuits made half-open),
     `probe failed` (info for the first failure after the circuits opened, debug for
@@ -782,7 +782,7 @@ own, and a client sending repeats is broken either way.
     `Retry-After: 1` (a slot may free any moment; the smallest whole value);
     `queue_timeout` carries none — the gateway has no estimate better than the wait
     that just ran out. The `x-ratelimit-*` headers of the admitted reservation stay.
-  - The request log line carries `kaiak.queue_wait_ms` for every request that entered its
+  - The request log line carries `kaiak.queue.wait_duration` for every request that entered its
     model's queue, whatever the outcome.
 - **Reliability settings** (settled 2026-09-24; schema: `config.schema.json`):
   - backend `max_in_flight` — integer ≥ 1, for the backend as a whole (split among
@@ -1222,9 +1222,9 @@ own, and a client sending repeats is broken either way.
     outage's start and end are logged once each, never per request:
     `control plane outage: priced USD-limited models refused` (warn: `kaiak.reason` — `no
     contact`, or `usage not acknowledged` (below) with
-    `kaiak.control.usage_waiting_ms` — `kaiak.control.since_contact_ms`,
-    `kaiak.control.outage_grace_ms`) and `control plane outage over: contact is
-    back` (info: `kaiak.lasted_ms`, from the grace running out). Nothing signals the grace running
+    `kaiak.control.usage_waiting` — `kaiak.control.since_contact`,
+    `kaiak.control.outage_grace`) and `control plane outage over: contact is
+    back` (info: `kaiak.lasted`, from the grace running out). Nothing signals the grace running
     out, so each transition is logged when the outage is next decided — by a
     request or a metrics scrape (`kaiak_control_outage`) — and can lag it on an
     idle, unscraped gateway; the fields give the true times. Rejected: a timer of
@@ -1496,7 +1496,7 @@ own, and a client sending repeats is broken either way.
   result: `config applied`, or `config rejected` with the issue codes and
   `kaiak.config.running=kept` when an older config stays in force. Control-plane
   loads also log `kaiak.config.version`. Both lines carry `kaiak.config.bytes` (the
-  document's size) and `kaiak.duration_ms` (its validation and snapshot build, to
+  document's size) and `kaiak.duration` (its validation and snapshot build, to
   the swap or the rejection),
   except a rejection with no document — the file could not be read. SIGHUP in
   control-plane mode is logged and ignored.
@@ -1541,7 +1541,8 @@ own, and a client sending repeats is broken either way.
       attempt made every gateway that started meanwhile exit and crash-loop on its
       supervisor's growing backoff. The first failed attempt logs `config snapshot
       not fetched at startup: retrying within the boot wait` (warn; error for a
-      protocol mismatch) with `attempt` and `boot_wait_ms`, later ones at debug; the
+      protocol mismatch) with `kaiak.control.attempt` and `kaiak.control.boot_wait`,
+      later ones at debug; the
       last failure is logged as before. The retry step is shorter than the
       reconnect backoff's (nothing serves yet), and jittered so gateways starting
       together do not ask together. What waiting cannot fix — a refused token, a
@@ -1585,8 +1586,9 @@ own, and a client sending repeats is broken either way.
     plane and the **listeners bind only once the first totals arrive** — they
     follow the config on the stream's connect (`CONTROL-PROTOCOL.md`, Config
     stream), so the wait is normally milliseconds — or once what is left of the
-    boot wait runs out. Logged: `waiting for the first totals` (`wait_ms`), then
-    `first totals received` (`waited_ms`) or `first totals not received within the
+    boot wait runs out. Logged: `waiting for the first totals`
+    (`kaiak.control.totals_wait`), then `first totals received`
+    (`kaiak.control.totals_waited`) or `first totals not received within the
     boot wait: priced USD-limited requests are refused until they arrive` (warn).
     Totals for another config than the applied one end the wait too (the control
     plane has answered; matching ones may take until the operator fixes a config),
@@ -1984,7 +1986,7 @@ own, and a client sending repeats is broken either way.
 - **Config load cost** (settled 2026-10-01): large configs (some 20 models over 30
   deployments, thousands of keys) are measured before anything about loading them
   is optimized — `kaiak_config_size_bytes`, `kaiak_config_apply_duration_seconds`,
-  `kaiak_limits_sync_duration_seconds` and the `kaiak.config.bytes` / `kaiak.duration_ms` fields on the
+  `kaiak_limits_sync_duration_seconds` and the `kaiak.config.bytes` / `kaiak.duration` fields on the
   load lines. The apply is timed from the start of its validation, after any wait for
   another load, to the swap or the rejection; the limiter's resync is timed on its
   own, since it runs later, on the request path, and is the cost requests feel. Both
@@ -2070,14 +2072,18 @@ own, and a client sending repeats is broken either way.
     attributes as nested objects cannot hold a value and an object at one path.
     Attribute keys are flat dotted strings in the code, never `slog` groups, so
     stderr shows the keys OTLP carries.
-  - **Units** (settled 2026-10-05): a duration is a number of milliseconds under a
-    name ending `_ms` — the request line's to the microsecond (`12.345`), the
-    others whole; sizes in bytes end `_bytes`; money is dollars, ending `_usd`;
-    times are RFC 3339 strings in UTC. Rejected: seconds as doubles —
-    OpenTelemetry's unit for metrics (the gateway's Prometheus metrics use it) and
-    for `gen_ai.response.time_to_first_chunk`, but no standard attribute here
-    holds a duration, so it would buy no standard name and cost the line's
-    readability; Go duration strings (`1m0s`) — a query cannot compare them.
+  - **Units** (settled 2026-10-05, after review): a duration is **seconds as a
+    decimal number** (a double), with no unit in its name — the request line's to
+    the microsecond (`0.012345`), the others to the millisecond. Seconds are
+    OpenTelemetry's unit for durations (`http.server.request.duration`,
+    `gen_ai.response.time_to_first_chunk`) and the gateway's Prometheus metrics'
+    (`_seconds`), so a log line and a metric read the same number. Sizes in bytes
+    end `_bytes`; money is dollars, ending `_usd`; times are RFC 3339 strings in
+    UTC. Rejected: integer milliseconds under `_ms` names — a second unit beside the
+    metrics' and the conventions'; Go duration strings (`1m0s`) — a query cannot
+    compare them. The rule is for log attributes only: configuration keeps its
+    names and units (`KAIAK_*_MS` variables and the config's `*_ms` fields are
+    whole milliseconds).
   - **The request line**: one per client request, message `request`, written after
     settlement as the request's last act. It is not an OpenTelemetry event: its
     OTLP record carries no `eventName` (settled 2026-10-05) — a collector picks
@@ -2092,7 +2098,7 @@ own, and a client sending repeats is broken either way.
     | `http.request.method_original` | `method` | the method is `_OTHER` | The method as sent, clipped |
     | `url.path` | `path` | always | The path, clipped |
     | `http.response.status_code` | `status` | always | The status answered — `499` for a client that left before any answer (logged only, never sent) |
-    | `kaiak.request.duration_ms` | `latency_ms` | always | Arrival to the end of the response |
+    | `kaiak.request.duration` | `latency_ms` | always | Arrival to the end of the response, in seconds |
     | `kaiak.key.id` | `key_id` | once known | The key ID — a refused key's too, when it has one |
     | `kaiak.key.group` | `group` | once authenticated (settled 2026-09-27) | The key's group: its config ID, the usage metrics' `key_group`; never its `labels` |
     | `kaiak.auth.failure` | `auth_failure` | a `401` | `missing_key`, `malformed_key`, `unknown_key`, `disabled_key`, `expired_key` |
@@ -2114,8 +2120,8 @@ own, and a client sending repeats is broken either way.
     | `kaiak.attempts` | `attempts` | once routed | Attempts made, the first included |
     | `kaiak.tried` | `tried` | more than one attempt | Every attempt in order as `backend/deployment_model:outcome`, the outcome the backend's status or the gateway's error code (`down/m:upstream_unavailable,local/m:200`) |
     | `kaiak.retry_refused` | `retry_refused` | a retry got no slot, or the model's retry budget was spent | `queue_full`, `queue_timeout`, `no_deployment_left`, `retry_budget` |
-    | `kaiak.queue_wait_ms` | `queue_wait_ms` | the request entered its model's queue, whatever the outcome | Every attempt's wait, summed |
-    | `kaiak.ttft_ms` | `ttft_ms` | a stream that carried generated content | Time to first token as the metric measures it: from the answering attempt's send to the first event carrying generated content. Not `gen_ai.response.time_to_first_chunk`: that counts any first chunk, a role-only one included |
+    | `kaiak.queue.wait_duration` | `queue_wait_ms` | the request entered its model's queue, whatever the outcome | Every attempt's wait, summed, in seconds |
+    | `kaiak.time_to_first_token` | `ttft_ms` | a stream that carried generated content | Time to first token in seconds, as the metric measures it: from the answering attempt's send to the first event carrying generated content. Not `gen_ai.response.time_to_first_chunk`: that counts any first chunk, a role-only one included |
     | `kaiak.relay_end` | `relay_end` | a response that stopped early | `client_closed` (the client left or stopped reading), `upstream_failed`, `upstream_stalled`, `upstream_incomplete`, `upstream_timeout` (Providers: upstream failures), `shutdown` (cut off by the drain) |
     | `kaiak.upstream.error.message` | `upstream_error` | an upstream failure | The failure as the gateway saw it; may name the backend address, never a credential |
     | `kaiak.upstream.error.code` | `upstream_error_code` | a backend error status — a `5xx` answered `upstream_error`, a `4xx` relayed — whose body names it | The backend's error `code` — never its message (Providers: backend error bodies) |
@@ -2147,8 +2153,8 @@ own, and a client sending repeats is broken either way.
     | `file.path` | `file`, for a path | A file named by its path: the config file and the seed on their load lines, a data file discarded for its format version |
     | `kaiak.backend.id` | `backend`; `deployment` on `usage out of the protocol's range` | A backend's config ID |
     | `kaiak.deployment.model` | `deployment_model` | A deployment's model name on its backend |
-    | `kaiak.duration_ms` | `duration_ms` | How long the line's operation took: a config load (its validation and snapshot build, to the swap or the rejection; to the microsecond), a probe |
-    | `kaiak.lasted_ms` | `lasted_ms`; `lasted` (a duration string) | How long what ended lasted: a config stream, a control-plane outage (from the grace running out) |
+    | `kaiak.duration` | `duration_ms` | How long the line's operation took, in seconds: a config load (its validation and snapshot build, to the swap or the rejection; to the microsecond), a probe |
+    | `kaiak.lasted` | `lasted_ms`; `lasted` (a duration string) | How long what ended lasted, in seconds: a config stream, a control-plane outage (from the grace running out) |
     | `process.pid` | `pid` | `kaiak starting`: the process ID |
     | `service.instance.id` | `instance_id` | `kaiak starting`: the instance ID (`KAIAK_INSTANCE_ID`); with OTLP export on, also every record's resource |
     | `kaiak.data_dir` | `data_dir` | `kaiak starting`: the data directory, empty without one |
@@ -2157,8 +2163,8 @@ own, and a client sending repeats is broken either way.
     | `kaiak.log_export.endpoint` | — (added) | `kaiak starting` with OTLP log export on: the endpoint's `host:port`; absent when export is off. Never a header |
     | `kaiak.signal` | `signal` | `second stop signal: skipping the remaining drain` |
     | `kaiak.config.max_request_body_bytes`, `kaiak.body_memory_bytes` | `max_request_body_bytes`, `body_memory_bytes` | The warning that the config's body cap exceeds the body budget |
-    | `kaiak.control.totals_wait_ms` | `wait_ms` | `waiting for the first totals`: the wait's bound |
-    | `kaiak.control.totals_waited_ms` | `waited_ms` | `first totals received`, `first totals not received within the boot wait…` |
+    | `kaiak.control.totals_wait` | `wait_ms` | `waiting for the first totals`: the wait's bound, in seconds |
+    | `kaiak.control.totals_waited` | `waited_ms` | `first totals received`, `first totals not received within the boot wait…`: the time waited, in seconds |
     | `kaiak.config.version`, `kaiak.config.epoch` | `config_version`, `config_epoch` | A control-plane config's version and epoch: control-plane loads, the last-known-good copy, stream events, `config stream connected` (epoch) |
     | `kaiak.config.backends`, `kaiak.config.models`, `kaiak.config.keys` | `backends`, `models`, `keys` | `config applied`: what the config holds |
     | `kaiak.config.bytes` | `bytes` | `config applied`, `config rejected` with a document: its size |
@@ -2167,10 +2173,10 @@ own, and a client sending repeats is broken either way.
     | `kaiak.config.since` | `since` | `config stream connected`: the version the stream resumes after |
     | `kaiak.config.position` | `position` | `config event ignored: version already taken`: the version taken |
     | `kaiak.config.previous_epoch` | `previous_epoch` | `config event from another config epoch…` |
-    | `kaiak.control.attempt`, `kaiak.control.boot_wait_ms` | `attempt`, `boot_wait_ms` | `config snapshot not fetched at startup…`: the attempt, the boot wait |
-    | `kaiak.control.delay_ms` | `delay_ms` | `control plane reconnect scheduled` |
+    | `kaiak.control.attempt`, `kaiak.control.boot_wait` | `attempt`, `boot_wait_ms` | `config snapshot not fetched at startup…`: the attempt, the boot wait (seconds) |
+    | `kaiak.control.delay` | `delay_ms` | `control plane reconnect scheduled`: the delay, in seconds |
     | `kaiak.control.event` | `event` | `stream event ignored: unknown event`: the event's name |
-    | `kaiak.control.since_contact_ms`, `kaiak.control.outage_grace_ms`, `kaiak.control.usage_waiting_ms` | `since_contact`, `grace`, `usage_waiting` (duration strings) | `control plane outage: …` (Limits → Control-plane mode: Outage log lines) |
+    | `kaiak.control.since_contact`, `kaiak.control.outage_grace`, `kaiak.control.usage_waiting` | `since_contact`, `grace`, `usage_waiting` (duration strings) | `control plane outage: …` (Limits → Control-plane mode: Outage log lines): time since the last contact, the outage grace, how long usage has waited for an ack — in seconds |
     | `kaiak.totals.control_plane`, `kaiak.totals.current_control_plane`, `kaiak.totals.previous_control_plane` | `control_plane`, `current`, `previous` | Totals from a replaced or another control plane: theirs, the one current, the one before |
     | `kaiak.totals.sequence`, `kaiak.totals.applied_sequence` | `sequence`, `applied_sequence` | `totals ignored: not newer than the totals applied` |
     | `kaiak.status.state` | `state` | Status report lines: the state reported |
@@ -2189,15 +2195,15 @@ own, and a client sending repeats is broken either way.
     | `kaiak.limit.window_start`, `kaiak.gateway_time` | `window_start`, `gateway_time` | `pushed window ahead of the gateway's clock` |
     | `kaiak.limit.windows`, `kaiak.limit.windows_dropped` | `windows`, `dropped` | The limits snapshot or totals cache restored or written: windows kept, windows dropped |
     | `kaiak.circuit.failures`, `kaiak.circuit.last_error`, `kaiak.circuit.trial` | `failures`, `last_error`, `trial` | `circuit opened`: the failures in a row, the failure that opened it, `true` when a half-open trial failed |
-    | `kaiak.circuit.open_ms` | `open_ms` | `circuit half-open`, `circuit closed`: how long it was open |
+    | `kaiak.circuit.open_duration` | `open_ms` | `circuit half-open`, `circuit closed`: how long it was open, in seconds |
     | `kaiak.circuit.half_opened` | `circuits_half_open` | `probe succeeded`: circuits it made half-open |
     | `kaiak.backend.base_url`, `kaiak.backend.base_url_hint` | `base_url`, `hint` | `the backend has no models list at its base_url`: the URL and the suggested fix |
-    | `kaiak.drain.grace_ms`, `kaiak.drain.timeout_ms`, `kaiak.drain.flush_reserve_ms`, `kaiak.drain.cut_after_ms` | `grace`, `timeout`, `flush_reserve`, `cut_after` (duration strings) | `draining`: the times in force (Lifecycle → Draining) |
+    | `kaiak.drain.grace`, `kaiak.drain.timeout`, `kaiak.drain.flush_reserve`, `kaiak.drain.cut_after` | `grace`, `timeout`, `flush_reserve`, `cut_after` (duration strings) | `draining`: the times in force, in seconds (Lifecycle → Draining) |
     | `kaiak.drain.in_flight` | `in_flight`; `requests` on `drain: cutting off in-flight requests` | Requests in flight |
     | `kaiak.drain.cut_off` | `cut_off` | `drained`: requests cut off |
     | `kaiak.listener.name` | `listener` | `api` or `admin` |
     | `server.address`, `server.port` | `addr` (`host:port`) | `listening`: the bound address and port, split |
-    | `kaiak.listener.shutdown_timeout_ms` | `timeout` (a duration string) | `shutdown timed out; closing open connections` |
+    | `kaiak.listener.shutdown_timeout` | `timeout` (a duration string) | `shutdown timed out; closing open connections`: the timeout, in seconds |
     | `kaiak.data_file.found_version`, `kaiak.data_file.want_version` | `found_version`, `want_version` | `discarded data file with a different format version` |
     | `kaiak.log_export.failed`, `kaiak.log_export.dropped` | — (added) | `log export failing` (stderr only; OTLP log export, below): records failed and dropped since the previous such line; with `http.response.status_code` (the collector's last answer, when it answered) and `exception.message` (the last error) |
 
@@ -2326,9 +2332,9 @@ own, and a client sending repeats is broken either way.
      (control-plane mode). From here every API response carries `Connection: close`, so keep-alive
      clients reconnect — to another instance once this one is out of rotation. The
      log line `draining` names the times in force (settled 2026-10-01; the
-     2026-09-30 review's O8): `kaiak.drain.grace_ms`, `kaiak.drain.timeout_ms`
-     (`KAIAK_DRAIN_TIMEOUT_MS` as set), `kaiak.drain.flush_reserve_ms` (0 in file
-     mode) and `kaiak.drain.cut_after_ms` — timeout less reserve,
+     2026-09-30 review's O8), in seconds: `kaiak.drain.grace`, `kaiak.drain.timeout`
+     (`KAIAK_DRAIN_TIMEOUT_MS` as set), `kaiak.drain.flush_reserve` (0 in file
+     mode) and `kaiak.drain.cut_after` — timeout less reserve,
      counted from the grace's end: when requests still running are cut (step 4);
   2. new requests are still accepted for the **grace period** (`KAIAK_DRAIN_GRACE_MS`,
      default 5 s): endpoint removal propagates slowly — failing fast here drops

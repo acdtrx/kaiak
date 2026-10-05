@@ -79,7 +79,7 @@ step writes.
     flush after usage and `kaiak stopped`.
   - Every other mention of a log field in the spec moved to the new names
     (`kaiak.relay_end=…`, `kaiak.retry_refused`, `kaiak.upstream.error.*`,
-    `kaiak.queue_wait_ms`, `kaiak.circuit.*`, `error.type`, `kaiak.limit.*`, the
+    `kaiak.queue.wait_duration`, `kaiak.circuit.*`, `error.type`, `kaiak.limit.*`, the
     outage line, the config-load line, the drain line, `kaiak.reason`, the
     `kaiak_circuit_open` note, Errors by key, Config load cost).
 - `docs/DEPLOYMENT.md`: Environment table rows for the `OTEL_*` variables; the
@@ -111,13 +111,13 @@ step writes.
   `embeddings`), `kaiak.backend.type`, `gen_ai.provider.name` (`openai`,
   `azure.ai.openai` only).
 - Request line, `kaiak.*`: `request_id` → `kaiak.request.id`; `latency_ms` →
-  `kaiak.request.duration_ms`; `key_id` → `kaiak.key.id`; `group` →
+  `kaiak.request.duration` (seconds); `key_id` → `kaiak.key.id`; `group` →
   `kaiak.key.group`; `auth_failure` → `kaiak.auth.failure`; `limit_scope|limit_id|
   limit_type|limit|limit_configured|used|requested` → `kaiak.limit.scope|id|type|
   enforced|configured|used|requested`; `backend` → `kaiak.backend.id`;
   `deployment_model` → `kaiak.deployment.model`; `attempts`, `tried`,
-  `retry_refused`, `queue_wait_ms`, `ttft_ms`, `relay_end` → `kaiak.` + the same
-  name; `upstream_error|_code|_type` → `kaiak.upstream.error.message|code|type`;
+  `retry_refused`, `relay_end` → `kaiak.` + the same name; `queue_wait_ms` →
+  `kaiak.queue.wait_duration`, `ttft_ms` → `kaiak.time_to_first_token` (seconds); `upstream_error|_code|_type` → `kaiak.upstream.error.message|code|type`;
   `cost_usd|estimated|partial` → `kaiak.usage.cost_usd|estimated|partial`.
 - Operational events: `error` → `exception.message`; `pid` → `process.pid`;
   `instance_id` → `service.instance.id`; `file` → `file.name` (data-directory
@@ -127,10 +127,25 @@ step writes.
   `kaiak.totals.*`, `kaiak.usage.*`, `kaiak.limit.*`, `kaiak.model.*`,
   `kaiak.circuit.*`, `kaiak.drain.*`, `kaiak.listener.*`, `kaiak.data_file.*`,
   `kaiak.log_export.*`, with shared `kaiak.reason`, `kaiak.trigger`,
-  `kaiak.backend.id`, `kaiak.deployment.model`, `kaiak.duration_ms`,
-  `kaiak.lasted_ms`. Duration strings (`grace`, `timeout`, `flush_reserve`,
-  `cut_after`, `since_contact`, `usage_waiting`, `lasted`, the listener's
-  `timeout`) become `_ms` numbers.
+  `kaiak.backend.id`, `kaiak.deployment.model`, `kaiak.duration`,
+  `kaiak.lasted`. Every duration is seconds as a double, no unit in its name
+  (amended 2026-10-05, below).
+- **Durations, old → new** (all seconds, doubles):
+
+  | Old | New | Line |
+  |---|---|---|
+  | `latency_ms` | `kaiak.request.duration` | request (to the µs) |
+  | `queue_wait_ms` | `kaiak.queue.wait_duration` | request (to the µs) |
+  | `ttft_ms` | `kaiak.time_to_first_token` | request (to the µs) |
+  | `duration_ms` | `kaiak.duration` | config applied / rejected (to the µs), probe |
+  | `lasted_ms`, `lasted` (string) | `kaiak.lasted` | config stream ended, outage over |
+  | `wait_ms`, `waited_ms` | `kaiak.control.totals_wait`, `kaiak.control.totals_waited` | first totals |
+  | `boot_wait_ms` | `kaiak.control.boot_wait` | config snapshot not fetched at startup |
+  | `delay_ms` | `kaiak.control.delay` | control plane reconnect scheduled |
+  | `since_contact`, `grace`, `usage_waiting` (strings) | `kaiak.control.since_contact`, `kaiak.control.outage_grace`, `kaiak.control.usage_waiting` | control plane outage |
+  | `open_ms` | `kaiak.circuit.open_duration` | circuit half-open, circuit closed |
+  | `grace`, `timeout`, `flush_reserve`, `cut_after` (strings) | `kaiak.drain.grace`, `kaiak.drain.timeout`, `kaiak.drain.flush_reserve`, `kaiak.drain.cut_after` | draining |
+  | `timeout` (string) | `kaiak.listener.shutdown_timeout` | shutdown timed out |
 - Conventions: `semantic-conventions` v1.44.0 (2026-08-04; the attributes used
   are unchanged on `main` 2026-10-05); `semantic-conventions-genai` `main` at
   `e07f4eb` (2026-10-02; no release yet).
@@ -143,12 +158,19 @@ step writes.
   low-cardinality, `error.message` is deprecated, and `exception.message` is what
   OTel's Go `RecordError` writes. `error_code` → `error.type` (a low-cardinality
   class the request ended with — matches).
-- Durations stay milliseconds, `_ms` names (rejected: seconds as doubles — no
-  standard attribute applies; Go duration strings — not comparable). The request
-  line's to the microsecond, others whole.
+- **Durations in seconds** (amended 2026-10-05 after the user's review, replacing
+  this step's first choice of `_ms` milliseconds): every duration attribute is
+  seconds as a double with no unit in its name — the request line's to the
+  microsecond, the others to the millisecond. Seconds match the conventions
+  (`http.server.request.duration`, `gen_ai.response.time_to_first_chunk`) and the
+  gateway's Prometheus metrics (`_seconds`). Rejected: integer milliseconds under
+  `_ms` names; Go duration strings. `KAIAK_*_MS` variables and the config's
+  `*_ms` fields are configuration, not log fields, and keep their names and units
+  (said in the spec's Units bullet). Sizes keep `_bytes`, money `_usd`.
 - Not standard on purpose: `deployment_model` (not `gen_ai.response.model`, which
   is what the backend's answer reports), `ttft_ms` (not
-  `gen_ai.response.time_to_first_chunk`: any chunk, in seconds), `backend` (not
+  `gen_ai.response.time_to_first_chunk`: that counts any first chunk, a role-only
+  one included), `backend` (not
   `server.address`: a config ID, not an address), `latency_ms` (no attribute
   standard for a log record's duration).
 - `gen_ai.provider.name` only where a well-known value fits (`openai`,
@@ -180,8 +202,9 @@ step writes.
 
 - OVERVIEW's Goal says the content is exactly today's: the request line gains three
   fields (`gen_ai.operation.name`, `kaiak.backend.type`, `gen_ai.provider.name`),
-  and `kaiak starting` gains `kaiak.log_export.endpoint` (step 4's). Operational
-  durations change from strings to `_ms` numbers.
+  and `kaiak starting` gains `kaiak.log_export.endpoint` (step 4's). Every
+  duration becomes seconds as a double — the operational ones were Go duration
+  strings or integer milliseconds.
 - Decision 6: export is also on with `OTEL_LOGS_EXPORTER=otlp` and no endpoint
   (default endpoint), beyond "on when either endpoint is set".
 - Decision 9 says "default 10 000": the queue is fixed, not configurable.
@@ -203,6 +226,13 @@ record fields, not log fields, and stay):
   `internal/limits/{limits,shared}.go`, `internal/routing/{circuit,modelcheck}.go`,
   `internal/accounting/accounting.go`, `internal/state/state.go`,
   `cmd/kaiak/main.go`.
+- Values that change, not only names — every duration to seconds as a double:
+  `internal/server/api.go` (latency, queue wait, time to first token),
+  `internal/config/loader.go` (`durationMS`), `internal/control/client.go` (boot
+  wait, reconnect delay, stream lasted), `internal/limits/shared.go` (outage
+  times, as duration strings today), `internal/routing/circuit.go` (open time,
+  probe duration), `internal/server/drain.go` and `listener.go` (duration
+  strings today), `cmd/kaiak/main.go` (first-totals wait).
 - Comments naming them: `internal/server/metrics.go:95-97` (`error_code`,
   `relay_end`), `internal/server/upstream.go:611,622` (`relay_end`),
   `internal/metrics/ops.go:396-397`.
@@ -242,3 +272,8 @@ record fields, not log fields, and stay):
 ==> cross-half e2e: ok kaiak/e2e 43.879s
 all checks passed
 ```
+
+**Suite after the seconds amendment** — `scripts/check-all.sh`, green: gofmt, vet,
+staticcheck; `go test -race` ok for every package (cached: no Go file changed);
+live-test kit self-test passed; control `npm test` 574 pass, 0 fail; lint
+`boundaries ok`; cross-half e2e `ok kaiak/e2e 59.159s`; `all checks passed`.
