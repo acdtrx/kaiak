@@ -166,7 +166,22 @@ step writes.
   gateway's Prometheus metrics (`_seconds`). Rejected: integer milliseconds under
   `_ms` names; Go duration strings. `KAIAK_*_MS` variables and the config's
   `*_ms` fields are configuration, not log fields, and keep their names and units
-  (said in the spec's Units bullet). Sizes keep `_bytes`, money `_usd`.
+  (said in the spec's Units bullet).
+- **Sizes in bytes, no suffix; money keeps `_usd`** (amended 2026-10-05 after
+  review): names carry no unit — sizes take OpenTelemetry's `size` form
+  (`http.request.body.size`), in bytes; `kaiak.usage.cost_usd` keeps its currency,
+  since OpenTelemetry has no currency convention and a currency is not a unit the
+  conventions leave out of names. Rejected: a `_bytes` suffix. `KAIAK_*_BYTES` and
+  the config's `*_bytes` fields keep their names.
+- **Sizes, old → new** (all bytes):
+
+  | Old | New | Line |
+  |---|---|---|
+  | `bytes` | `kaiak.config.size` | config applied / rejected |
+  | `kept_bytes` | `kaiak.usage.kept_size` | usage dropped to bound memory |
+  | `bound_bytes` | `kaiak.usage.max_size` | usage dropped to bound memory |
+  | `max_request_body_bytes` | `kaiak.config.max_request_body_size` | body cap above the body budget |
+  | `body_memory_bytes` | `kaiak.body_budget.size` | body cap above the body budget |
 - Not standard on purpose: `deployment_model` (not `gen_ai.response.model`, which
   is what the backend's answer reports), `ttft_ms` (not
   `gen_ai.response.time_to_first_chunk`: that counts any first chunk, a role-only
@@ -277,3 +292,8 @@ all checks passed
 staticcheck; `go test -race` ok for every package (cached: no Go file changed);
 live-test kit self-test passed; control `npm test` 574 pass, 0 fail; lint
 `boundaries ok`; cross-half e2e `ok kaiak/e2e 59.159s`; `all checks passed`.
+
+**Suite after the sizes amendment** — `scripts/check-all.sh`, green: gofmt, vet,
+staticcheck; `go test -race` ok for every package (cached: no Go file changed);
+live-test kit self-test passed; control `npm test` 574 pass, 0 fail; lint
+`boundaries ok`; cross-half e2e `ok kaiak/e2e 74.073s`; `all checks passed`.

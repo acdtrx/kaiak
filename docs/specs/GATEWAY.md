@@ -1495,7 +1495,7 @@ own, and a client sending repeats is broken either way.
   (`startup`, `sighup`; in control-plane mode `control`, `last-known-good` and `seed`) and
   result: `config applied`, or `config rejected` with the issue codes and
   `kaiak.config.running=kept` when an older config stays in force. Control-plane
-  loads also log `kaiak.config.version`. Both lines carry `kaiak.config.bytes` (the
+  loads also log `kaiak.config.version`. Both lines carry `kaiak.config.size` (the
   document's size) and `kaiak.duration` (its validation and snapshot build, to
   the swap or the rejection),
   except a rejection with no document — the file could not be read. SIGHUP in
@@ -1986,7 +1986,7 @@ own, and a client sending repeats is broken either way.
 - **Config load cost** (settled 2026-10-01): large configs (some 20 models over 30
   deployments, thousands of keys) are measured before anything about loading them
   is optimized — `kaiak_config_size_bytes`, `kaiak_config_apply_duration_seconds`,
-  `kaiak_limits_sync_duration_seconds` and the `kaiak.config.bytes` / `kaiak.duration` fields on the
+  `kaiak_limits_sync_duration_seconds` and the `kaiak.config.size` / `kaiak.duration` fields on the
   load lines. The apply is timed from the start of its validation, after any wait for
   another load, to the swap or the rejection; the limiter's resync is timed on its
   own, since it runs later, on the request path, and is the cost requests feel. Both
@@ -2072,18 +2072,27 @@ own, and a client sending repeats is broken either way.
     attributes as nested objects cannot hold a value and an object at one path.
     Attribute keys are flat dotted strings in the code, never `slog` groups, so
     stderr shows the keys OTLP carries.
-  - **Units** (settled 2026-10-05, after review): a duration is **seconds as a
-    decimal number** (a double), with no unit in its name — the request line's to
-    the microsecond (`0.012345`), the others to the millisecond. Seconds are
-    OpenTelemetry's unit for durations (`http.server.request.duration`,
-    `gen_ai.response.time_to_first_chunk`) and the gateway's Prometheus metrics'
-    (`_seconds`), so a log line and a metric read the same number. Sizes in bytes
-    end `_bytes`; money is dollars, ending `_usd`; times are RFC 3339 strings in
-    UTC. Rejected: integer milliseconds under `_ms` names — a second unit beside the
-    metrics' and the conventions'; Go duration strings (`1m0s`) — a query cannot
-    compare them. The rule is for log attributes only: configuration keeps its
-    names and units (`KAIAK_*_MS` variables and the config's `*_ms` fields are
-    whole milliseconds).
+  - **Units** (settled 2026-10-05, after review): **names carry no unit**, as in
+    OpenTelemetry's conventions; each unit is fixed by kind and stated in the
+    tables.
+    - A duration is **seconds as a decimal number** (a double) — the request
+      line's to the microsecond (`0.012345`), the others to the millisecond.
+      Seconds are OpenTelemetry's unit for durations
+      (`http.server.request.duration`, `gen_ai.response.time_to_first_chunk`) and
+      the gateway's Prometheus metrics' (`_seconds`), so a log line and a metric
+      read the same number. Rejected: integer milliseconds under `_ms` names — a
+      second unit beside the metrics' and the conventions'; Go duration strings
+      (`1m0s`) — a query cannot compare them.
+    - A size is **bytes**, under OpenTelemetry's `size` form
+      (`http.request.body.size`): `kaiak.config.size`, `kaiak.usage.kept_size`.
+      Rejected: a `_bytes` suffix.
+    - **Money keeps its currency in the name**: `kaiak.usage.cost_usd`, in
+      dollars. OpenTelemetry has no convention for currency, and a currency is not
+      a unit the conventions leave out of names — a cost without one is ambiguous.
+    - Times are RFC 3339 strings in UTC.
+    - The rule is for log attributes only: configuration keeps its names and
+      units (`KAIAK_*_MS` and `KAIAK_*_BYTES` variables, and the config's `*_ms`
+      and `*_bytes` fields, are whole milliseconds and bytes).
   - **The request line**: one per client request, message `request`, written after
     settlement as the request's last act. It is not an OpenTelemetry event: its
     OTLP record carries no `eventName` (settled 2026-10-05) — a collector picks
@@ -2162,12 +2171,12 @@ own, and a client sending repeats is broken either way.
     | `kaiak.control.url` | `control_url` | `kaiak starting` in control-plane mode, and every line of the control-plane client: the control plane's URL, credentials redacted |
     | `kaiak.log_export.endpoint` | — (added) | `kaiak starting` with OTLP log export on: the endpoint's `host:port`; absent when export is off. Never a header |
     | `kaiak.signal` | `signal` | `second stop signal: skipping the remaining drain` |
-    | `kaiak.config.max_request_body_bytes`, `kaiak.body_memory_bytes` | `max_request_body_bytes`, `body_memory_bytes` | The warning that the config's body cap exceeds the body budget |
+    | `kaiak.config.max_request_body_size`, `kaiak.body_budget.size` | `max_request_body_bytes`, `body_memory_bytes` | The warning that the config's body cap (`max_request_body_bytes`) exceeds the body budget (`KAIAK_BODY_MEMORY_BYTES`) — both in bytes |
     | `kaiak.control.totals_wait` | `wait_ms` | `waiting for the first totals`: the wait's bound, in seconds |
     | `kaiak.control.totals_waited` | `waited_ms` | `first totals received`, `first totals not received within the boot wait…`: the time waited, in seconds |
     | `kaiak.config.version`, `kaiak.config.epoch` | `config_version`, `config_epoch` | A control-plane config's version and epoch: control-plane loads, the last-known-good copy, stream events, `config stream connected` (epoch) |
     | `kaiak.config.backends`, `kaiak.config.models`, `kaiak.config.keys` | `backends`, `models`, `keys` | `config applied`: what the config holds |
-    | `kaiak.config.bytes` | `bytes` | `config applied`, `config rejected` with a document: its size |
+    | `kaiak.config.size` | `bytes` | `config applied`, `config rejected` with a document: its size, in bytes |
     | `kaiak.config.issue_codes` | `codes` | `config rejected`: the issue codes (an array) |
     | `kaiak.config.running` | `running_config` | `config rejected` while an older config stays in force: `kept` |
     | `kaiak.config.since` | `since` | `config stream connected`: the version the stream resumes after |
@@ -2183,7 +2192,7 @@ own, and a client sending repeats is broken either way.
     | `kaiak.usage.batches`, `kaiak.usage.records` | `batches`, `records` | Usage batches and records a line is about (sealed, sent, spooled, flushed, dropped) |
     | `kaiak.usage.epoch`, `kaiak.usage.sequence`, `kaiak.usage.next_sequence` | `epoch`, `sequence`, `next_sequence` | A usage batch's ID; the spool's next one |
     | `kaiak.usage.batch_instance` | `batch_instance` | A batch spooled under another instance ID |
-    | `kaiak.usage.kept_records`, `kaiak.usage.kept_bytes`, `kaiak.usage.bound_bytes` | `kept_records`, `kept_bytes`, `bound_bytes` | Usage dropped to bound memory: what stays, and the bound |
+    | `kaiak.usage.kept_records`, `kaiak.usage.kept_size`, `kaiak.usage.max_size` | `kept_records`, `kept_bytes`, `bound_bytes` | Usage dropped to bound memory: the records that stay and their encoded size, and the bound (`KAIAK_USAGE_MEMORY_BYTES`) — sizes in bytes |
     | `kaiak.usage.record_id`, `kaiak.request.id` | `record_id`, `request_id` | A usage record refused by the checks or clamped, and its request |
     | `kaiak.usage.issues` | `issues` | `usage record refused by the protocol's checks…`: what failed |
     | `kaiak.usage.clamped` | `clamped` | `usage out of the protocol's range…`: the units clamped (an array) |
