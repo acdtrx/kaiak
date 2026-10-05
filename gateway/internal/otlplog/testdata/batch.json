@@ -1,0 +1,58 @@
+{
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          {"key": "service.name", "value": {"stringValue": "kaiak-eu"}},
+          {"key": "service.version", "value": {"stringValue": "1.2.3"}},
+          {"key": "service.instance.id", "value": {"stringValue": "gw-1"}},
+          {"key": "deployment.environment.name", "value": {"stringValue": "prod"}},
+          {"key": "k8s.pod.name", "value": {"stringValue": "gw,1"}}
+        ]
+      },
+      "scopeLogs": [
+        {
+          "scope": {"name": "kaiak"},
+          "logRecords": [
+            {
+              "timeUnixNano": "1791201600123456789",
+              "observedTimeUnixNano": "1791201600123456789",
+              "severityNumber": 9,
+              "severityText": "INFO",
+              "body": {"stringValue": "request"},
+              "attributes": [
+                {"key": "kaiak.request.id", "value": {"stringValue": "req-1"}},
+                {"key": "http.response.status_code", "value": {"intValue": "200"}},
+                {"key": "kaiak.request.duration", "value": {"doubleValue": 0.012345}},
+                {"key": "gen_ai.request.stream", "value": {"boolValue": true}},
+                {"key": "kaiak.config.issue_codes", "value": {"arrayValue": {"values": [{"stringValue": "a"}, {"stringValue": "b"}]}}},
+                {"key": "exception.message", "value": {"stringValue": "dial tcp: connection refused"}},
+                {"key": "kaiak.limit.used", "value": {"intValue": "5"}}
+              ]
+            },
+            {
+              "timeUnixNano": "1791201601000000000",
+              "observedTimeUnixNano": "1791201601000000000",
+              "severityNumber": 13,
+              "severityText": "WARN",
+              "body": {"stringValue": "circuit opened"},
+              "attributes": [
+                {"key": "kaiak.big", "value": {"stringValue": "18446744073709551615"}},
+                {"key": "kaiak.at", "value": {"stringValue": "2026-10-05T12:00:00.5Z"}},
+                {"key": "kaiak.wait", "value": {"intValue": "1500000000"}},
+                {"key": "kaiak.ratio", "value": {"doubleValue": "NaN"}}
+              ]
+            },
+            {
+              "timeUnixNano": "1791201601000000001",
+              "observedTimeUnixNano": "1791201601000000001",
+              "severityNumber": 17,
+              "severityText": "ERROR",
+              "body": {"stringValue": "kaiak stopped with an error"}
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
