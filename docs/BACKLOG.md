@@ -115,6 +115,17 @@ Group entries under headings as themes emerge.
   completions or embeddings client gets an answer it cannot read. (ruled 2026-09-30: deferred;
   the `llama-server` type comes first.)
 
+## Pricing
+
+- **Prices per deployment or region** — a price list per deployment (or per Azure
+  deployment type) instead of per model. Today every deployment of a model shares
+  the model's `prices`; Azure Data Zone (EU/US) costs about 10% above Global for the
+  same model, so a model mixing the two is priced at one rate (`GUIDE.md` → Azure
+  deployment types price differently: price at the rate its deployments use).
+  Revisit trigger: one model is served from deployment types or regions with
+  different prices, and the difference matters for budgets. (parked by the user
+  2026-09-29, recorded 2026-10-06.)
+
 ## Pipeline stages
 
 - **Response caching.** Revisit trigger: repeated identical requests show up in usage
