@@ -94,12 +94,10 @@ const controlPlane: ControlPlane = createControlPlane({
   onExpirySweep: (run) => {
     if (!run.ok) app.log.error({ err: run.error }, "gateway expiry sweep failed");
   },
-  onLimitCarriedOver: (carry) => app.log.info({ carry }, "limit keeps its spend across a model-set change"),
-  // onStoreLeaseLost: default rethrows (the process stops) — keep that.
 });
 
 // Mounts GET /v1/config, GET /v1/stream, POST /v1/usage, POST /v1/status.
-// Starts the core (takes the lease, runs the expiry sweep) when the app is ready,
+// Starts the core (runs the expiry sweep) when the app is ready,
 // ends open streams and stops the core on app.close().
 app.register(controlProtocolPlugin, { controlPlane });
 
@@ -122,9 +120,8 @@ await app.listen({ host: "0.0.0.0", port: 8090 });
   `stalledStreamTimeoutMs` (30 000).
 - Core options worth knowing: `configHistorySize` (100 versions a stream can resume
   across), `recentRecordsSize` (100), `gatewayLiveTimeoutMs` (30 000),
-  `gatewayForgetAfterMs` (1 h), `batchCursorRetentionMs` (7 days),
-  `storeLeaseTtlMs` (30 000). Defaults match the gateway's timings; change them only
-  with a reason.
+  `gatewayForgetAfterMs` (1 h), `batchCursorRetentionMs` (7 days). Defaults match
+  the gateway's timings; change them only with a reason.
 
 ## 5. Implementing the store
 
@@ -253,7 +250,7 @@ edit which group or mint keys in it is your app's business, never config.
 - `allowed_models` intersect down the path; no list anywhere on a path = every model.
 - `child_defaults` (`allowed_models`, `limits`) apply to **direct children** only; a
   child's own list replaces the default list, a child's limit replaces the default
-  limit with the same type and model set.
+  limit of the same type.
 - **`child_defaults` is a default, not a ceiling**: since a child's own list or limit
   replaces it, a child can be given more models or a higher value. A hard
   restriction for a whole subtree goes on the parent's **own** `allowed_models` and
@@ -273,14 +270,11 @@ edit which group or mint keys in it is your app's business, never config.
   so a group deleted and created again with the same ID within the same hour or
   month — a move included, whatever its new parent — gets that window's spend back.
   **For a fresh budget, use a new ID.**
-- **Model-set edits keep the spend**: a limit whose model set changed (same group or
-  global, same type) takes over the dropped limit's window; each carry fires
-  `onLimitCarriedOver` once the publish has succeeded. The carry is written before
-  the version is stored: a store write failing (the database down) fails the
-  publish with nothing stored — retry it; nothing is carried twice. The core
-  carries against the previously published version, a gateway against the config
-  it applied before — they differ for a while when a gateway skipped versions; the
-  totals computed under the new config settle it.
+- **Editing a limit keeps its spend**: a scope holds at most one limit per type, so a
+  limit is its scope and type; a new value keeps the window. Usage counts toward
+  every scope on a record's path whatever the config's limits, so **a limit added
+  mid-window starts with the window's usage so far**, and one removed and added back
+  shows everything counted meanwhile.
 
 **Prices** (`CONTROL-PROTOCOL.md` → Config → Prices, Tiered prices, Units and price
 units): a model's `prices` is a list of `{ effective_from, tiers }` in increasing date
@@ -462,9 +456,9 @@ if (current && totals) {
   push rather than queueing values.
 - A listener that throws goes to `onListenerError`; by default that rethrows and
   crashes the process — keep listeners total, or log in `onListenerError`. The
-  event says which: `config-published`, `totals-changed`, `gateways-changed`, or
-  `limit-carried-over` (an `onLimitCarriedOver` that threw, with its carry); the
-  publish, count or status it came from has succeeded either way.
+  event says which: `config-published`, `totals-changed` or `gateways-changed`; the
+  publish, count or status it came from has succeeded either way. Listeners hear the
+  changes of every process over the store, not only this one's.
 
 ## 10. Operating it
 
