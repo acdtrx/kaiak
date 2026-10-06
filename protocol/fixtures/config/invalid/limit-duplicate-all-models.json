@@ -1,5 +1,5 @@
 {
-  "format_version": 4,
+  "format_version": 5,
   "global": {
     "limits": [{ "type": "usd_per_month", "value": 100 }, { "type": "usd_per_month", "value": 200 }]
   },

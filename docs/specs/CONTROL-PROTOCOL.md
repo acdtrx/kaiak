@@ -32,8 +32,8 @@
   whatever its port or scheme — and logs the 3xx as an error;
   `KAIAK_CONTROL_URL` must be the address that answers.
 - **Protocol version** travels as a `Kaiak-Protocol` header on every request and
-  response (the SSE stream's response included); the current version is `4`
-  (settled 2026-10-02, with the cache-write unit).
+  response (the SSE stream's response included); the current version is `5`
+  (settled 2026-10-06, with config format 5: model `defaults` removed).
 
 ## Endpoints (provisional)
 
@@ -64,11 +64,11 @@ the `{ error, detail }` body, `error` being the stable code:
 | Check | Code | Status |
 | --- | --- | --- |
 | `Authorization: Bearer <token>` carries the token (missing, not a bearer token, or wrong) | `unauthorized` | 401 |
-| `Kaiak-Protocol` is the current version, `4` (other or missing) | `protocol-version-mismatch` | 400 |
+| `Kaiak-Protocol` is the current version, `5` (other or missing) | `protocol-version-mismatch` | 400 |
 | `Kaiak-Instance` is an instance ID (Messages; missing or malformed) | `instance-invalid` | 400 |
 
 - **Repeated headers** (settled 2026-09-25): Node's HTTP layer joins a repeated
-  `Kaiak-Protocol` or `Kaiak-Instance` into one value (`4, 4`), which fails its check
+  `Kaiak-Protocol` or `Kaiak-Instance` into one value (`5, 5`), which fails its check
   as any other wrong value does, and keeps only the first of repeated `Authorization`
   headers — so the checks see one value per header and have no "repeated" case of
   their own.
@@ -370,7 +370,8 @@ the `{ error, detail }` body, `error` being the stable code:
 
 - One JSON document: backends (with an optional concurrency cap), models
   (deployments, metadata, output-limit default and ceiling, prices, queue and retry
-  overrides), the group tree (groups with their allowed models, limits, defaults for
+  overrides — no request defaults: `GATEWAY.md`, Model metadata → No model defaults,
+  settled 2026-10-06), the group tree (groups with their allowed models, limits, defaults for
   their children and labels), keys (hashes, each in one group), global settings
   (global limits, and the queue, retry and circuit-breaker settings — their defaults
   and bounds: `GATEWAY.md`, Routing and reliability). The schema is the source of
@@ -378,32 +379,19 @@ the `{ error, detail }` body, `error` being the stable code:
   `protocol/fixtures/config/` (settled 2026-09-24): `valid/`, `invalid/` (with
   `cases.json`: kind, code, reason) and `resolved/` (The group tree → Resolution
   fixtures).
-- **Top-level shape**: `format_version` (the integer `4`; settled 2026-10-02, with
-  the cache-write unit), `global`, `backends`, `models`, `keys` (required), `groups`
+- **Top-level shape**: `format_version` (the integer `5`; settled 2026-10-06, with
+  model `defaults` removed — a format-4 document with them is refused as an unknown
+  field), `global`, `backends`, `models`, `keys` (required), `groups`
   (optional, omitted = none).
   Collections are **objects keyed by ID** — uniqueness comes for free; the model key is
   the public model name clients send.
 - **Conventions**: snake_case field names (as in the OpenAI API); durations are integer
   milliseconds named `*_ms`; timestamps are RFC 3339 in UTC (`Z`); price dates are
   `YYYY-MM-DD`, read as UTC; key hashes are `sha256:` + 64 lowercase hex.
-- **Strict everywhere but one place**: a model's `defaults` is an open map of request
-  parameter → any JSON value except `null`, because backends accept parameters the
-  gateway does not know (vLLM `top_k`, `min_p`, `chat_template_kwargs`, …) and
-  passthrough preserves them. Object values are allowed (settled 2026-09-24) — vLLM's
-  `chat_template_kwargs: {"enable_thinking": false}` is how a thinking model's
-  reasoning is switched off; a default fills an unset parameter whole and is never
-  merged into one the client sent. Fields the gateway owns or that carry request
-  content (`model`, `messages`, `prompt`, `input`, `stream`, `stream_options`,
-  `max_tokens`, `max_completion_tokens`, `n`, `best_of`, `service_tier`) are refused
-  there — the output limit is set through `output_limit`, `n`/`best_of` multiply the
-  output reservation, so only the client sets them (settled 2026-09-25, H10), and the
-  service tier is the gateway's on `openai` and `azure-openai` and the client's on
-  every other type (`GATEWAY.md`, Providers → Service tier; settled 2026-09-29, by
-  type 2026-09-30). **Numbers in `defaults` must fit a JavaScript number**
-  (settled 2026-09-25): `kaiak-control` holds the document as JavaScript values, so a
-  number past the double range (`1e400`, at any depth) is refused by both halves — it
-  would become `Infinity`, which JSON cannot carry back — and a number with more
-  precision than a double (an integer above 2^53) reaches gateways rounded.
+- **Strict everywhere** (settled 2026-10-06): every object has a closed set of
+  fields. The one open map there was, a model's `defaults`, went with model defaults
+  (`GATEWAY.md`, Model metadata → No model defaults): the gateway sets no request
+  parameter but the output limit, so the config names none.
 - **Integers are bounded** (settled 2026-09-25): every config integer (and every limit
   `value`) is at most 2^53 − 1, so both halves read it exactly — `kaiak-control` as a
   JavaScript number, the gateway as an `int64`. An integer may be spelled with a
@@ -420,10 +408,11 @@ the `{ error, detail }` body, `error` being the stable code:
   (`/models/qwen3-embedding-0.6b-q8_0.gguf`) included. ASCII keeps the byte and
   character counts equal in both halves and the names safe in logs and metric
   labels; a name outside it gets an alias on the backend (llama-server `--alias`).
-- **Backend types** (settled 2026-09-30): a backend's `type` is one of
-  `openai-compatible` (the generic type), `openai`, `azure-openai`, `vllm`,
-  `llama-server` — what each does: `GATEWAY.md`, Providers. `openai` and
-  `azure-openai` require `api_key_env`. **Types bump no version** (settled
+- **Backend types** (settled 2026-09-30; the Anthropic types 2026-10-06): a backend's
+  `type` is one of `openai-compatible` (the generic type), `openai`, `azure-openai`,
+  `vllm`, `llama-server`, `anthropic`, `azure-anthropic` — what each does and which
+  client API endpoints it serves: `GATEWAY.md`, Providers. `openai`,
+  `azure-openai`, `anthropic` and `azure-anthropic` require `api_key_env`. **Types bump no version** (settled
   2026-10-01): adding types is additive — every config of the current format stays
   valid — and a gateway that does not know a type rejects the config with a schema
   error, which the control plane sees like any rejection; no protocol message

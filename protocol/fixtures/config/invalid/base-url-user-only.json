@@ -1,5 +1,5 @@
 {
-  "format_version": 4,
+  "format_version": 5,
   "global": {},
   "backends": {
     "local": { "type": "openai-compatible", "base_url": "https://token@localhost:8080" }

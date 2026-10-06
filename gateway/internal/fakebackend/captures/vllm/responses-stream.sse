@@ -1,0 +1,162 @@
+event: response.created
+data: {"response":{"id":"resp_91d4cc204da1056c","created_at":1791285455,"incomplete_details":null,"instructions":"Answer briefly.","metadata":null,"model":"unsloth/Qwen3.8-27B-NVFP4","object":"response","output":[],"parallel_tool_calls":true,"temperature":1.0,"tool_choice":"none","tools":[],"top_p":0.95,"background":false,"max_output_tokens":200,"max_tool_calls":null,"previous_response_id":null,"prompt":null,"reasoning":null,"service_tier":"auto","status":"in_progress","text":null,"top_logprobs":null,"truncation":"disabled","usage":null,"user":null,"presence_penalty":0.0,"frequency_penalty":0.0,"kv_transfer_params":null,"ec_transfer_params":null,"input_messages":null,"output_messages":null},"sequence_number":0,"type":"response.created"}
+
+event: response.in_progress
+data: {"response":{"id":"resp_91d4cc204da1056c","created_at":1791285455,"incomplete_details":null,"instructions":"Answer briefly.","metadata":null,"model":"unsloth/Qwen3.8-27B-NVFP4","object":"response","output":[],"parallel_tool_calls":true,"temperature":1.0,"tool_choice":"none","tools":[],"top_p":0.95,"background":false,"max_output_tokens":200,"max_tool_calls":null,"previous_response_id":null,"prompt":null,"reasoning":null,"service_tier":"auto","status":"in_progress","text":null,"top_logprobs":null,"truncation":"disabled","usage":null,"user":null,"presence_penalty":0.0,"frequency_penalty":0.0,"kv_transfer_params":null,"ec_transfer_params":null,"input_messages":null,"output_messages":null},"sequence_number":1,"type":"response.in_progress"}
+
+event: response.output_item.added
+data: {"item":{"id":"bbf11475f09c17ab","summary":[],"type":"reasoning","content":null,"encrypted_content":null,"status":"in_progress"},"output_index":0,"sequence_number":2,"type":"response.output_item.added"}
+
+event: response.reasoning_part.added
+data: {"content_index":0,"item_id":"bbf11475f09c17ab","output_index":0,"part":{"text":"","type":"reasoning_text"},"sequence_number":3,"type":"response.reasoning_part.added"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":"The","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":4,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":" user wants me","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":5,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":" to say hello","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":6,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":" in exactly three","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":7,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":" words. Let","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":8,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":" me think of","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":9,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":" options","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":10,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":":\n\n","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":11,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":"- \"Hello","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":12,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":" there friend","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":13,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":"\" \n","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":14,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":"- \"Hi","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":15,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":" there buddy","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":16,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":"\" \n-","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":17,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":" \"Hello to","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":18,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":" you\" \n","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":19,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":"- \"Hey","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":20,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":" there friend","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":21,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":"\" \nAll","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":22,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":" valid","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":23,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":". I'll","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":24,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":" go with \"","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":25,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":"Hello there friend","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":26,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":"\"","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":27,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":" — warm","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":28,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":", natural","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":29,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":", exactly","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":30,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":" three words.","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":31,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":"\n\n","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":32,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":"The user","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":33,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":" also said \"","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":34,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":"Answer briefly\"","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":35,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":" in","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":36,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":" the system,","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":37,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":" so I'll","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":38,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":" just","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":39,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":" output","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":40,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":" the three words","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":41,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":".\n","item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":42,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.done
+data: {"content_index":0,"item_id":"bbf11475f09c17ab","output_index":0,"sequence_number":43,"text":"The user wants me to say hello in exactly three words. Let me think of options:\n\n- \"Hello there friend\" \n- \"Hi there buddy\" \n- \"Hello to you\" \n- \"Hey there friend\" \nAll valid. I'll go with \"Hello there friend\" — warm, natural, exactly three words.\n\nThe user also said \"Answer briefly\" in the system, so I'll just output the three words.\n","type":"response.reasoning_text.done"}
+
+event: response.reasoning_part.done
+data: {"content_index":0,"item_id":"bbf11475f09c17ab","output_index":0,"part":{"text":"The user wants me to say hello in exactly three words. Let me think of options:\n\n- \"Hello there friend\" \n- \"Hi there buddy\" \n- \"Hello to you\" \n- \"Hey there friend\" \nAll valid. I'll go with \"Hello there friend\" — warm, natural, exactly three words.\n\nThe user also said \"Answer briefly\" in the system, so I'll just output the three words.\n","type":"reasoning_text"},"sequence_number":44,"type":"response.reasoning_part.done"}
+
+event: response.output_item.done
+data: {"item":{"id":"bbf11475f09c17ab","summary":[],"type":"reasoning","content":[{"text":"The user wants me to say hello in exactly three words. Let me think of options:\n\n- \"Hello there friend\" \n- \"Hi there buddy\" \n- \"Hello to you\" \n- \"Hey there friend\" \nAll valid. I'll go with \"Hello there friend\" — warm, natural, exactly three words.\n\nThe user also said \"Answer briefly\" in the system, so I'll just output the three words.\n","type":"reasoning_text"}],"encrypted_content":null,"status":"completed"},"output_index":0,"sequence_number":45,"type":"response.output_item.done"}
+
+event: response.output_item.added
+data: {"item":{"id":"86562653c5aad513","content":[],"role":"assistant","status":"in_progress","type":"message","phase":null},"output_index":1,"sequence_number":46,"type":"response.output_item.added"}
+
+event: response.content_part.added
+data: {"content_index":0,"item_id":"86562653c5aad513","output_index":1,"part":{"annotations":[],"text":"","type":"output_text","logprobs":[]},"sequence_number":47,"type":"response.content_part.added"}
+
+event: response.output_text.delta
+data: {"content_index":0,"delta":"\n\nHello there","item_id":"86562653c5aad513","logprobs":[],"output_index":1,"sequence_number":48,"type":"response.output_text.delta"}
+
+event: response.output_text.delta
+data: {"content_index":0,"delta":" friend.","item_id":"86562653c5aad513","logprobs":[],"output_index":1,"sequence_number":49,"type":"response.output_text.delta"}
+
+event: response.output_text.done
+data: {"content_index":0,"item_id":"86562653c5aad513","logprobs":[],"output_index":1,"sequence_number":50,"text":"\n\nHello there friend.","type":"response.output_text.done"}
+
+event: response.content_part.done
+data: {"content_index":0,"item_id":"86562653c5aad513","output_index":1,"part":{"annotations":[],"text":"\n\nHello there friend.","type":"output_text","logprobs":null},"sequence_number":51,"type":"response.content_part.done"}
+
+event: response.output_item.done
+data: {"item":{"id":"86562653c5aad513","content":[{"annotations":[],"text":"\n\nHello there friend.","type":"output_text","logprobs":null}],"role":"assistant","status":"completed","type":"message","phase":null,"summary":[]},"output_index":1,"sequence_number":52,"type":"response.output_item.done"}
+
+event: response.completed
+data: {"response":{"id":"resp_91d4cc204da1056c","created_at":1791285455,"incomplete_details":null,"instructions":"Answer briefly.","metadata":null,"model":"unsloth/Qwen3.8-27B-NVFP4","object":"response","output":[{"id":"rs_85bb42c7116a41d2","summary":[],"type":"reasoning","content":[{"text":"The user wants me to say hello in exactly three words. Let me think of options:\n\n- \"Hello there friend\" \n- \"Hi there buddy\" \n- \"Hello to you\" \n- \"Hey there friend\" \nAll valid. I'll go with \"Hello there friend\" — warm, natural, exactly three words.\n\nThe user also said \"Answer briefly\" in the system, so I'll just output the three words.\n","type":"reasoning_text"}],"encrypted_content":null,"status":null},{"id":"msg_850261f876656dc9","content":[{"annotations":[],"text":"\n\nHello there friend.","type":"output_text","logprobs":null}],"role":"assistant","status":"completed","type":"message","phase":null}],"parallel_tool_calls":true,"temperature":1.0,"tool_choice":"none","tools":[],"top_p":0.95,"background":false,"max_output_tokens":200,"max_tool_calls":null,"previous_response_id":null,"prompt":null,"reasoning":null,"service_tier":"auto","status":"completed","text":null,"top_logprobs":null,"truncation":"disabled","usage":{"input_tokens":62,"input_tokens_details":{"cached_tokens":0,"input_tokens_per_turn":[],"cached_tokens_per_turn":[]},"output_tokens":98,"output_tokens_details":{"reasoning_tokens":91,"tool_output_tokens":0,"output_tokens_per_turn":[],"tool_output_tokens_per_turn":[]},"total_tokens":160},"user":null,"presence_penalty":0.0,"frequency_penalty":0.0,"kv_transfer_params":null,"ec_transfer_params":null,"input_messages":null,"output_messages":null},"sequence_number":53,"type":"response.completed"}
+

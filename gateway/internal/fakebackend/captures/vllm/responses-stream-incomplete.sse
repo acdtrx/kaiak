@@ -1,0 +1,42 @@
+event: response.created
+data: {"response":{"id":"resp_96dafd9e0305944d","created_at":1791285460,"incomplete_details":null,"instructions":null,"metadata":null,"model":"unsloth/Qwen3.8-27B-NVFP4","object":"response","output":[],"parallel_tool_calls":true,"temperature":1.0,"tool_choice":"none","tools":[],"top_p":0.95,"background":false,"max_output_tokens":16,"max_tool_calls":null,"previous_response_id":null,"prompt":null,"reasoning":null,"service_tier":"auto","status":"in_progress","text":null,"top_logprobs":null,"truncation":"disabled","usage":null,"user":null,"presence_penalty":0.0,"frequency_penalty":0.0,"kv_transfer_params":null,"ec_transfer_params":null,"input_messages":null,"output_messages":null},"sequence_number":0,"type":"response.created"}
+
+event: response.in_progress
+data: {"response":{"id":"resp_96dafd9e0305944d","created_at":1791285460,"incomplete_details":null,"instructions":null,"metadata":null,"model":"unsloth/Qwen3.8-27B-NVFP4","object":"response","output":[],"parallel_tool_calls":true,"temperature":1.0,"tool_choice":"none","tools":[],"top_p":0.95,"background":false,"max_output_tokens":16,"max_tool_calls":null,"previous_response_id":null,"prompt":null,"reasoning":null,"service_tier":"auto","status":"in_progress","text":null,"top_logprobs":null,"truncation":"disabled","usage":null,"user":null,"presence_penalty":0.0,"frequency_penalty":0.0,"kv_transfer_params":null,"ec_transfer_params":null,"input_messages":null,"output_messages":null},"sequence_number":1,"type":"response.in_progress"}
+
+event: response.output_item.added
+data: {"item":{"id":"9c48f69b108b9938","summary":[],"type":"reasoning","content":null,"encrypted_content":null,"status":"in_progress"},"output_index":0,"sequence_number":2,"type":"response.output_item.added"}
+
+event: response.reasoning_part.added
+data: {"content_index":0,"item_id":"9c48f69b108b9938","output_index":0,"part":{"text":"","type":"reasoning_text"},"sequence_number":3,"type":"response.reasoning_part.added"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":"We","item_id":"9c48f69b108b9938","output_index":0,"sequence_number":4,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":" need to respond","item_id":"9c48f69b108b9938","output_index":0,"sequence_number":5,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":" to user:","item_id":"9c48f69b108b9938","output_index":0,"sequence_number":6,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":" \"Count to","item_id":"9c48f69b108b9938","output_index":0,"sequence_number":7,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":" fifty.\" Need","item_id":"9c48f69b108b9938","output_index":0,"sequence_number":8,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.delta
+data: {"content_index":0,"delta":" final answer probably","item_id":"9c48f69b108b9938","output_index":0,"sequence_number":9,"type":"response.reasoning_text.delta"}
+
+event: response.reasoning_text.done
+data: {"content_index":0,"item_id":"9c48f69b108b9938","output_index":0,"sequence_number":10,"text":"We need to respond to user: \"Count to fifty.\" Need final answer probably","type":"response.reasoning_text.done"}
+
+event: response.reasoning_part.done
+data: {"content_index":0,"item_id":"9c48f69b108b9938","output_index":0,"part":{"text":"We need to respond to user: \"Count to fifty.\" Need final answer probably","type":"reasoning_text"},"sequence_number":11,"type":"response.reasoning_part.done"}
+
+event: response.output_item.done
+data: {"item":{"id":"9c48f69b108b9938","summary":[],"type":"reasoning","content":[{"text":"We need to respond to user: \"Count to fifty.\" Need final answer probably","type":"reasoning_text"}],"encrypted_content":null,"status":"completed"},"output_index":0,"sequence_number":12,"type":"response.output_item.done"}
+
+event: response.completed
+data: {"response":{"id":"resp_96dafd9e0305944d","created_at":1791285460,"incomplete_details":{"reason":"max_output_tokens"},"instructions":null,"metadata":null,"model":"unsloth/Qwen3.8-27B-NVFP4","object":"response","output":[{"id":"rs_b78a1cef23f3b46b","summary":[],"type":"reasoning","content":[{"text":"We need to respond to user: \"Count to fifty.\" Need final answer probably","type":"reasoning_text"}],"encrypted_content":null,"status":null}],"parallel_tool_calls":true,"temperature":1.0,"tool_choice":"none","tools":[],"top_p":0.95,"background":false,"max_output_tokens":16,"max_tool_calls":null,"previous_response_id":null,"prompt":null,"reasoning":null,"service_tier":"auto","status":"incomplete","text":null,"top_logprobs":null,"truncation":"disabled","usage":{"input_tokens":56,"input_tokens_details":{"cached_tokens":0,"input_tokens_per_turn":[],"cached_tokens_per_turn":[]},"output_tokens":16,"output_tokens_details":{"reasoning_tokens":16,"tool_output_tokens":0,"output_tokens_per_turn":[],"tool_output_tokens_per_turn":[]},"total_tokens":72},"user":null,"presence_penalty":0.0,"frequency_penalty":0.0,"kv_transfer_params":null,"ec_transfer_params":null,"input_messages":null,"output_messages":null},"sequence_number":13,"type":"response.completed"}
+

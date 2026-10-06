@@ -1,7 +1,7 @@
 {
   "reason": "child_defaults limits merge under each direct child's own: a child's limit replaces the default with the same type and model set (order ignored) in place, the rest are appended; grandchildren get nothing from it",
   "config": {
-    "format_version": 4,
+    "format_version": 5,
     "global": {},
     "backends": { "local": { "type": "openai-compatible", "base_url": "http://localhost:8000/v1" } },
     "models": {

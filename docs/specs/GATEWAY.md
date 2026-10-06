@@ -8,11 +8,64 @@
 
 ## Client API
 
-- **Endpoints (v1)**: `POST /v1/chat/completions`, `POST /v1/completions`,
-  `POST /v1/embeddings`, `GET /v1/models`, `GET /v1/models/{id}`,
-  `GET /v1/models/{id}/props`. Streaming responses are SSE, exactly as OpenAI streams
-  them.
-- **Auth**: `Authorization: Bearer <key>` (scheme case-insensitive). Keys carry a
+- **Endpoints**: `POST /v1/chat/completions`, `POST /v1/completions`,
+  `POST /v1/embeddings`, `POST /v1/messages`, `POST /v1/messages/count_tokens`,
+  `POST /v1/responses`, `POST /v1/responses/input_tokens`, `GET /v1/models`,
+  `GET /v1/models/{id}`, `GET /v1/models/{id}/props`. Streaming responses are SSE,
+  exactly as the API's own server streams them. Messages and Responses settled
+  2026-10-06.
+- **Client APIs** (settled 2026-10-06): three formats, each endpoint in one of them —
+  **OpenAI** (chat completions, completions, embeddings, the model endpoints),
+  **Anthropic Messages** (`/v1/messages`, `/v1/messages/count_tokens`, and the
+  Anthropic-shaped model list below) and **OpenAI Responses** (`/v1/responses`,
+  `/v1/responses/input_tokens`). Every request is **passed through** to a backend
+  that serves its endpoint natively; the gateway never translates between formats.
+  So a model is reachable through the endpoints its deployments' backends serve
+  (Providers → Endpoint support): a Claude model on `anthropic` backends through
+  Messages only, an OpenAI model through the OpenAI and Responses endpoints, a
+  vLLM or llama-server model through all three. Rejected: translating through
+  Chat Completions — it loses each format's own fields (thinking signatures, cache
+  markers, typed output items) and the backends serving self-hosted models already
+  speak all three; translation stays in `docs/BACKLOG.md` for a client that must
+  reach a model its backends cannot serve in its format.
+- **Responses is stateless** (settled 2026-10-06): the gateway keeps no conversation
+  and lets no backend keep one. Every Responses request is sent with `store: false`
+  (a client's `true` is replaced, not refused: clients default to it and work
+  without it); `previous_response_id`, `conversation` and `background: true` are
+  refused (`400 stateful_responses_unsupported`, `param` naming the field); there
+  are no `/v1/responses/{id}` routes (retrieve, delete, cancel, input items: `404
+  unknown_url`) and no Conversations API. A `null` value counts as absent, as for
+  every owned field. Rejected: a conversation store in the gateway — it would hold
+  prompt content and state, against principles 1 and 9; routing follow-ups back to
+  the backend that stored the response — no failover, per-replica stores on
+  vLLM, and every translated or replaced deployment loses the conversation.
+- **Hosted tools are refused** (settled 2026-10-06): a tool the backend would run
+  itself (web search, web fetch, code execution, file search, remote MCP,
+  computer-use toolsets run server-side, image generation) is refused before
+  routing, `400 hosted_tool_unsupported`, `param` naming the tool's position
+  (`tools[2].type`), on every backend type — on local backends there are none to
+  run, and on cloud ones they would bill units kaiak does not price. An allowlist
+  of tool types the client runs itself, so a new server tool is refused until it is
+  judged:
+  - Messages: a tool with no `type`, or `custom`, or a type starting `bash_`,
+    `text_editor_`, `computer_` or `memory_` (Anthropic's client-run tools);
+    `mcp_servers` and `container` are refused the same way (`param` naming them).
+  - Responses: `function`, `custom`, `local_shell`, `shell`, `apply_patch`; a
+    `tool_choice` naming any other type (`{"type": "web_search"}`, …) is refused
+    too.
+
+  Clients that attach a hosted tool by default need it turned off (Codex:
+  `web_search = "disabled"`; `docs/testing/LIVE-BACKENDS.md`).
+- **Token-counting endpoints** (settled 2026-10-06): `/v1/messages/count_tokens` and
+  `/v1/responses/input_tokens` run the whole pipeline — auth, model access, limits,
+  routing, the backend — and count toward requests-per-minute limits; they reserve
+  no tokens and produce **no usage record** (nothing is generated or billed). They
+  are logged and counted in the ops metrics like any request, and routed only to
+  deployments whose backend has them (Providers → Endpoint support).
+- **Auth**: `Authorization: Bearer <key>` (scheme case-insensitive), or `x-api-key:
+  <key>` when the request has no `Authorization` header (settled 2026-10-06: the
+  Anthropic SDKs send it, on every endpoint; with both headers `Authorization` is the
+  one read). Keys carry a
   recognizable prefix; the gateway stores and compares SHA-256 hashes only (keys are
   long and random, so a slow hash buys nothing). Everywhere past authentication, a key
   is its **key ID**. A key is valid through its `expires_at` instant and expired after
@@ -32,12 +85,22 @@
   client libraries handle them natively. Limit rejections are `429` with `Retry-After`
   and OpenAI-style `x-ratelimit-*` headers; a queue refusal is `429` (type
   `server_error`, below), no healthy deployment is `503`. This deviates from CODING-RULES §5's `{ error, detail? }` on purpose — the
-  API being implemented dictates the shape. Codes the gateway answers with so far
-  (settled 2026-09-24):
+  API being implemented dictates the shape. **On the Messages endpoints** every
+  answer the gateway gives itself uses Anthropic's shape instead (settled
+  2026-10-06): `{"type": "error", "error": {"type", "message", "code"}}` — `code` is
+  kaiak's stable code from the table, a member Anthropic's SDKs ignore — with the
+  same status and headers (`Retry-After` and the `x-ratelimit-*` headers included).
+  Its `type` follows the status, as Anthropic's do: 400 `invalid_request_error`,
+  401 `authentication_error`, 403 `permission_error`, 404 `not_found_error`, 413
+  `request_too_large`, 429 `rate_limit_error`, 503 and 529 `overloaded_error`, any
+  other 5xx `api_error`. The Responses endpoints keep the OpenAI shape, which is theirs.
+  Rejected: carrying kaiak's code in a header only — clients log the body. Codes the
+  gateway answers with so far (settled 2026-09-24, later rows as dated where they
+  are specified):
 
   | Situation | Status | `type` | `code` |
   |---|---|---|---|
-  | No `Authorization` header | 401 | `invalid_request_error` | `missing_api_key` |
+  | No `Authorization` or `x-api-key` header | 401 | `invalid_request_error` | `missing_api_key` |
   | Not `Bearer <key>`; unknown, disabled or expired key | 401 | `invalid_request_error` | `invalid_api_key` |
   | Unknown model, or model not allowed for the key | 404 | `invalid_request_error` | `model_not_found` |
   | Body is not a JSON object | 400 | `invalid_request_error` | `invalid_json` |
@@ -49,12 +112,17 @@
   | `max_tokens` or `max_completion_tokens` below 0 or above the model's `context_length` (`param` names it; Limits → Output limit out of range) | 400 | `invalid_request_error` | `invalid_value` |
   | More generated sequences than `global.max_sequences_per_request` (`param`: `prompt`, `n` or `best_of`), or more embeddings inputs than `global.max_embedding_inputs` (`param: "input"`; Limits → Output multiplicity) | 400 | `invalid_request_error` | `invalid_value` |
   | Body over `max_request_body_bytes`, or over the whole body budget (`KAIAK_BODY_MEMORY_BYTES`) when that is smaller | 413 | `invalid_request_error` | `request_too_large` |
+  | A Responses request sets `previous_response_id`, `conversation` or `background: true` (`param` names it; Client API → Responses is stateless) | 400 | `invalid_request_error` | `stateful_responses_unsupported` |
+  | A tool type the backend would run, `mcp_servers`, `container`, or a Responses `tool_choice` naming such a type (`param` names it; Client API → Hosted tools are refused) | 400 | `invalid_request_error` | `hosted_tool_unsupported` |
+  | A Messages request to an `anthropic` or `azure-anthropic` deployment asks for a price option the gateway does not price (`param` names it; Providers → Standard price on Anthropic types) | 400 | `invalid_request_error` | `price_option_unsupported` |
+  | No deployment of the model is on a backend that serves the endpoint (Providers → Endpoint support) | 400 | `invalid_request_error` | `endpoint_not_served` |
   | Path matches no endpoint | 404 | `invalid_request_error` | `unknown_url` |
   | Known path, wrong method (`Allow` header set) | 405 | `invalid_request_error` | `method_not_allowed` |
   | Backend unreachable: connect refused or timed out, DNS, TLS, connection lost before the first event | 502 | `server_error` | `upstream_unavailable` |
   | Backend refused the gateway's own credential (backend `401`/`403`) | 502 | `server_error` | `upstream_auth_failed` |
   | Backend answered `404` saying the deployment's model does not exist there (Providers: wrong model on a host) | 502 | `server_error` | `upstream_model_missing` |
   | Backend answered `404` the way its server answers a path it does not have — the backend's `base_url` is wrong (Providers: wrong path to a host) | 502 | `server_error` | `upstream_path_missing` |
+  | The same answer on an endpoint beyond OpenAI's three: the server version lacks an endpoint its type serves (Providers → An endpoint missing from a server) | 502 | `server_error` | `upstream_endpoint_missing` |
   | A stream got no first event within the backend's first-event timeout, or a non-stream response did not arrive within its response timeout | 504 | `server_error` | `upstream_timeout` |
   | Backend answered a `5xx` (its error code and type logged, its text neither logged nor relayed; its `Retry-After` kept) | the backend's `5xx` | `server_error` | `upstream_error` |
   | Gateway fault building the upstream request | 500 | `server_error` | `internal_error` |
@@ -75,11 +143,22 @@
   (settled 2026-09-24). A client string an error message echoes (the method, the
   path, the model name) is clipped to its first 256 bytes, then `…` (settled
   2026-09-25, L3).
-  A `401` carries `WWW-Authenticate: Bearer`. Owned fields are `model`, `stream`,
-  `max_tokens`, `max_completion_tokens`, `stream_options.include_usage`, `n` and
-  `best_of` (chat and completions), `prompt` (completions; only how many prompts it holds),
-  `input` (embeddings; only how many inputs it holds),
-  read by exact key; a `null` value counts as absent.
+  A `401` carries `WWW-Authenticate: Bearer`. **Owned fields**, per format, read by
+  exact key; a `null` value counts as absent:
+  - OpenAI: `model`, `stream`, `max_tokens`, `max_completion_tokens`,
+    `stream_options.include_usage`, `n` and `best_of` (chat and completions),
+    `prompt` (completions; only how many prompts it holds), `input` (embeddings;
+    only how many inputs it holds).
+  - Messages (settled 2026-10-06): `model`, `stream`, `max_tokens`, each
+    `tools[].type`, `mcp_servers`, `container`; on Anthropic types also
+    `service_tier`, `speed`, `inference_geo` and every `cache_control.ttl` (Providers
+    → Standard price on Anthropic types).
+  - Responses (settled 2026-10-06): `model`, `stream`, `max_output_tokens`, `store`,
+    `previous_response_id`, `conversation`, `background`, each `tools[].type`,
+    `tool_choice` (its `type` only), and `service_tier` on `openai` and
+    `azure-openai`.
+  - The token-counting endpoints own `model` and the tool fields of their format;
+    they take no output limit and no `stream`.
 - **Request IDs**: `x-request-id` is accepted (or generated), forwarded to the backend,
   returned to the client, and stamped on the log line and the usage record. A client
   ID is kept when it is 1–128 characters of `[A-Za-z0-9._:-]`; any other value is
@@ -93,17 +172,32 @@
   {"id": "qwen3-32b", "object": "model", "created": 0, "owned_by": "kaiak",
    "context_length": 32768,
    "capabilities": {"streaming": true, "tools": true, "vision": false, "reasoning": true},
-   "reasoning_efforts": ["low", "high"]}
+   "reasoning_efforts": ["low", "high"],
+   "endpoints": ["chat_completions", "completions", "embeddings", "messages",
+                 "messages_count_tokens", "responses", "responses_input_tokens"]}
   ```
 
   `id` is the public model name; `created` is always `0` — models are declared, not
   created at a moment the gateway knows, and a fixed value keeps listings identical
   across reloads and replicas; `owned_by` is always `"kaiak"`; `reasoning_efforts` is
-  `[]` when none are declared.
-- **`/v1/models/{id}/props`** is the entry plus what the gateway applies to requests
-  (settled 2026-09-24): `defaults` — the declared defaults exactly as configured (`{}`
-  when none) — and `output_limit` — `{"default": n, "ceiling": n}`, or `null` when the
-  model declares none.
+  `[]` when none are declared. `endpoints` (settled 2026-10-06) lists the body
+  endpoints some deployment of the model serves (Providers → Endpoint support), by
+  their metric names, sorted — how a client sees which API reaches the model. It is
+  information, derived from the config; it says nothing about health.
+- **Anthropic-shaped model list** (settled 2026-10-06): `GET /v1/models` and
+  `GET /v1/models/{id}` with an `anthropic-version` request header (Anthropic's SDKs
+  always send it; OpenAI's never do) answer in Anthropic's shape, over the models
+  the key may use **whose `endpoints` include `messages`**:
+  `{"data": [<entry>, …], "has_more": false, "first_id", "last_id"}` (the ids `null`
+  for an empty list), an entry `{"type": "model", "id", "display_name", "created_at",
+  …kaiak's fields}` with `display_name` the public name and `created_at`
+  `"1970-01-01T00:00:00Z"` (the fixed `created` above). One page, always:
+  `limit`, `before_id` and `after_id` are ignored. A model without Messages answers
+  `404 model_not_found` here, as an unknown one does. Errors take the Messages shape.
+- **`/v1/models/{id}/props`** is the entry plus `output_limit` — `{"default": n,
+  "ceiling": n}`, or `null` when the model declares none — what the gateway applies
+  to a request's output (settled 2026-09-24; `defaults` removed 2026-10-06 with model
+  defaults, Model metadata).
 
 ## Model metadata
 
@@ -112,19 +206,21 @@
   `kaiak-control`'s `verifyBackend` (`docs/specs/BACKEND-VERIFY.md`) reads what a
   backend reports when an operator adds it or a model (settled 2026-09-29).
   Gateway-side discovery is not planned.
-- **The gateway applies declared defaults**: parameters a request omits are filled in
-  from the model's declared defaults, so `props` describes what actually runs. Defaults
-  are top-level request parameters, any name, any non-null JSON value (the config
-  leaves them open so backend-specific parameters pass through); a parameter the
-  request sets is never touched — an object default is not merged into the client's
-  object. A model with no `output_limit` (e.g. an embedding model) gets no output
-  limit set or lowered.
-- **Defaults rule** (settled 2026-09-24): every body endpoint — chat, completions and
-  embeddings — gets each declared default the request leaves unset; a `null` value
-  counts as unset (as it does for OpenAI) and is replaced. Defaults are declared per
-  model, and a model serves the endpoints its kind has, so they are not filtered by
-  endpoint: an embedding model declares embedding parameters (`encoding_format`,
-  `dimensions`, …) and the backend judges them. Defaults are added in key order.
+- **Metadata is information** (settled 2026-10-06): `context_length`,
+  `capabilities` and `reasoning_efforts` tell clients what a model is; the gateway
+  acts on `context_length` alone — an output limit above it is refused and the
+  injected default is fitted under it (Limits). The output limit (`output_limit`,
+  default and ceiling) is the one request parameter a model's config sets.
+- **No model defaults** (settled 2026-10-06): the gateway sets no other request
+  parameter. Each backend applies its own defaults — vLLM from the model's
+  generation config, llama-server from its flags, cloud APIs their own — and the
+  config has no `defaults` field. Rejected: keeping declared defaults — they are
+  parameter names of one client API (`reasoning_effort` in chat, `reasoning.effort`
+  in Responses, `output_config.effort` or `thinking` in Messages), so a model served
+  in three formats would need three declarations or a mapping between them, which
+  is translation; and the backends already own defaults. What an app wants to show
+  as suggested settings belongs to the app. The cost: no gateway-side lever for a
+  cloud model's settings (a lower reasoning effort, say) — the client sets them.
 
 ## Request pipeline
 
@@ -140,19 +236,22 @@ prompt logging later plug in:
    2026-09-24). Then the key's **concurrency limit** (Limits → Per-key concurrency,
    settled 2026-09-25): the request counts against its key from here, still before
    the body is read, to its end.
-2. **Inbound format** — parse the client API (v1: OpenAI): read the body up to the cap
-   (request bodies, below), parse only the fields the gateway owns, keep the raw bytes for passthrough. Later
-   formats (Anthropic Messages, Responses) are additional inbound plugs. Then the
+2. **Inbound format** — parse the request in its endpoint's format (Client API →
+   Client APIs: OpenAI, Messages or Responses; settled 2026-10-06, each format one
+   plug): read the body up to the cap (request bodies, below), parse only the fields
+   that format's owned fields name, keep the raw bytes for passthrough, refuse what
+   the gateway does not serve (stateful Responses fields, hosted tools). Then the
    model-access check (Client API) — the second half of auth, which needs the model —
-   and the model's request parameters: declared defaults and the output limit (Model
-   metadata, Limits), which fix the request's effective output limit before limits
-   reserve it.
+   and the model's output limit (Model metadata, Limits), which fixes the request's
+   effective output limit before limits reserve it.
 3. **Limits** — check every applicable scope; reserve the output limit (below). The
    reservation settles in a request finisher that runs after accounting's settlement
    and reads its usage record (settled 2026-09-24).
-4. **Routing** — resolve alias → deployment; queue for a concurrency slot.
-5. **Provider** — send upstream. Same-format pairs pass through (principle 4); others
-   translate.
+4. **Routing** — resolve alias → deployment, among the deployments whose backend
+   serves the endpoint (Providers → Endpoint support; none: `400
+   endpoint_not_served`, before queueing); queue for a concurrency slot.
+5. **Provider** — send upstream. Every request passes through in its own format
+   (principle 4); translating providers (Bedrock) are later plugs.
 6. **Accounting** — settle usage, compute cost, emit metrics and a usage record (from
    which limits settle their reservation). The stage sits between routing and the provider — it opens the
    request's meter, which the relay feeds — and settles in a request finisher, so it
@@ -210,18 +309,46 @@ the body (inside `messages`, say) are the backend's business and pass untouched.
 Rejected: collapsing repeats to one member — it rewrites bytes the gateway does not
 own, and a client sending repeats is broken either way.
 
-## Providers (v1)
+## Providers
 
-- **Backend types**, one per server, all speaking the OpenAI wire format (streaming
-  requests get `stream_options.include_usage` set so the final chunk reports tokens):
+- **Backend types**, one per server (OpenAI streams get `stream_options.include_usage`
+  set so the final chunk reports tokens):
   - **openai** — OpenAI's API.
   - **azure-openai** — Azure's OpenAI-compatible `/openai/v1/` API: the same wire
     format and model naming, `api-key` header auth, no `api-version`. The classic
     deployment-in-URL API is not supported.
   - **vllm** — vLLM.
   - **llama-server** — llama.cpp's server.
+  - **anthropic** — Anthropic's API (settled 2026-10-06).
+  - **azure-anthropic** — Claude in Microsoft Foundry: Anthropic's Messages API on
+    an Azure resource, `https://{resource}.services.ai.azure.com/anthropic/v1/*`,
+    with the Foundry deployment name as the model (settled 2026-10-06). Claude
+    models only; OpenAI models on Azure are `azure-openai`.
   - **openai-compatible** — the generic type: any other server speaking the OpenAI
-    format (SGLang, …). It carries no server's own rules.
+    format (SGLang, …). It carries no server's own rules and serves OpenAI's three
+    endpoints only: a server that serves Messages or Responses gets a type of its
+    own (A type per server, below).
+- **Endpoint support** (settled 2026-10-06) is fixed per backend type, by its module
+  — no config field. What each type serves, checked against the servers on
+  2026-10-06 (vLLM 0.30.0's route list; llama.cpp build b9917, each route called;
+  OpenAI's and Anthropic's API references; Microsoft Foundry's Claude page;
+  `docs/plans/messages-responses/STEP-1-contract.md` records the sources):
+
+  | Type | chat, completions, embeddings | messages | messages_count_tokens | responses | responses_input_tokens |
+  |---|---|---|---|---|---|
+  | `openai` | yes | — | — | yes | yes |
+  | `azure-openai` | yes | — | — | yes | — (Azure's v1 API answers `404` for it) |
+  | `vllm` | yes | yes | yes | yes | — (not in 0.30.0) |
+  | `llama-server` | yes | yes | yes | yes | yes |
+  | `anthropic` | — | yes | yes | — | — |
+  | `azure-anthropic` | — | yes | yes | — | — |
+  | `openai-compatible` | yes | — | — | — | — |
+
+  Routing takes only the deployments whose backend's type serves the request's
+  endpoint (Request pipeline, stage 4); a type gains an endpoint when its server
+  does, in its module. Rejected: a per-backend `endpoints` config field — the
+  operator would declare what the type already knows, and `openai-compatible`
+  servers that serve more deserve their own type.
 - **A module per backend type over one OpenAI wire core** (settled 2026-09-29): each
   backend type is a module that is the provider for that type — its URL layout,
   credential, body edits, what its models list says, which error code means a
@@ -251,12 +378,19 @@ own, and a client sending repeats is broken either way.
   URL); the gateway appends the endpoint path (`/chat/completions`, …). An
   azure-openai `base_url` is the resource endpoint
   (`https://<resource>.openai.azure.com`); the gateway appends `/openai/v1/` and the
-  endpoint path.
+  endpoint path. An `anthropic` `base_url` is what an Anthropic client would use with
+  the version path, `https://api.anthropic.com/v1`; an `azure-anthropic` `base_url` is
+  the resource endpoint (`https://<resource>.services.ai.azure.com`) and the gateway
+  appends `/anthropic/v1/` (settled 2026-10-06, the two Azure types alike). The
+  endpoint paths are `chat/completions`, `completions`, `embeddings`, `messages`,
+  `messages/count_tokens`, `responses`, `responses/input_tokens`, `models`.
 - Credentials are referenced by environment-variable name in config, never inline:
-  azure-openai sends `api-key: <value>`, every other type `Authorization: Bearer
-  <value>` (nothing when the backend has no `api_key_env`). `openai` and
-  `azure-openai` require `api_key_env` (schema, both halves): neither answers without
-  a key. An `api_key_env` starting with `KAIAK_` is refused by the schema, both halves
+  azure-openai and azure-anthropic send `api-key: <value>`, anthropic `x-api-key:
+  <value>`, every other type `Authorization: Bearer <value>` (nothing when the backend
+  has no `api_key_env`). `openai`, `azure-openai`, `anthropic` and `azure-anthropic`
+  require `api_key_env` (schema, both halves): none answers without a key. The two
+  Anthropic types also send `anthropic-version: 2023-06-01`, the API's one version
+  (settled 2026-10-06). An `api_key_env` starting with `KAIAK_` is refused by the schema, both halves
   (settled 2026-09-25, N-S2): those variables hold the gateway's own settings and
   tokens (`KAIAK_CONTROL_TOKEN`, `KAIAK_METRICS_TOKEN`), and a backend credential is
   sent to the backend's URL — which the config author chooses, and the background
@@ -284,13 +418,19 @@ own, and a client sending repeats is broken either way.
   does (settled 2026-09-24): the pipeline hands a provider the client's request as
   received plus the routing decision, and gets back status, headers and a sequence of
   events already in the client's format; relaying and observing those events is the
-  pipeline's job, the same for every provider.
-- **Passthrough edits** (settled 2026-09-24) are the only changes to the client's
-  body: `model` becomes the deployment's model name; on `openai` and `azure-openai`,
-  `service_tier` becomes `"default"` (Service tier, below); a stream whose client did
-  not set `stream_options.include_usage: true` gets it set (other `stream_options`
-  members kept); declared defaults and the output limit are set as the Model metadata
-  and Limits sections say. Edits splice the owned values into the raw bytes — every
+  pipeline's job, the same for every provider. A provider can also refuse a request
+  as the caller's mistake before sending it (settled 2026-10-06: Standard price on
+  Anthropic types, below) — an answer the pipeline gives as a `400`, never retried,
+  never counted toward the circuit.
+- **Passthrough edits** (settled 2026-09-24; per format 2026-10-06) are the only
+  changes to the client's body: `model` becomes the deployment's model name; the
+  output limit is set as the Limits section says; on `openai` and `azure-openai`,
+  `service_tier` becomes `"default"` (Service tier, below); an OpenAI stream whose
+  client did not set `stream_options.include_usage: true` gets it set (other
+  `stream_options` members kept) — Messages and Responses always report usage, so
+  they get no such edit; a Responses request gets `store: false` (Client API →
+  Responses is stateless); a Messages request to an `anthropic` backend gets
+  `service_tier: "standard_only"` (Standard price on Anthropic types). Edits splice the owned values into the raw bytes — every
   other byte (unknown fields, their values, key order, whitespace) reaches the backend
   unchanged. Each owned key is edited once: a body repeating a top-level member never
   gets here (Request pipeline → duplicate members), and the editor refuses a repeated
@@ -300,17 +440,18 @@ own, and a client sending repeats is broken either way.
   standard-tier rates, and OpenAI and Azure bill priority processing at about twice
   that (flex at half), so a client choosing its tier would spend budgets at a rate
   its records do not show. A `service_tier` the client sent becomes `"default"`, on
-  every endpoint, and every chat completions request carries
-  `"service_tier": "default"` even when the client sent none: an absent tier (`auto`)
-  means the deployment's own setting on Azure (which may be priority) and the
-  project's on OpenAI. Completions and embeddings requests without one are left
-  without one: OpenAI refuses a parameter an endpoint does not define.
+  every generating endpoint, and every chat completions and Responses request
+  carries `"service_tier": "default"` even when the client sent none (Responses
+  settled 2026-10-06, the same reasoning): an absent tier (`auto`) means the
+  deployment's own setting on Azure (which may be priority) and the project's on
+  OpenAI. Completions and embeddings requests without one are left without one:
+  OpenAI refuses a parameter an endpoint does not define. `responses/input_tokens`
+  is left as the client sent it — nothing is generated or billed there.
   `openai-compatible`, `vllm` and `llama-server` pass the client's `service_tier`
   untouched and add none (settled 2026-09-30): no tier is billed there, and a strict
   server that refuses unknown fields would refuse one it did not ask for. An OpenAI
   backend configured as `openai-compatible` therefore runs on the tier the client
-  asks for, or the project's — OpenAI takes the `openai` type. `service_tier` cannot
-  be a model default. Rejected: forcing the tier on `openai-compatible` too, for
+  asks for, or the project's — OpenAI takes the `openai` type. Rejected: forcing the tier on `openai-compatible` too, for
   OpenAI backends left under the generic type — the generic type would carry one
   server's rule to every other; removing the client's field (`auto` again); adding it
   on every endpoint (OpenAI's completions and embeddings would refuse it); Azure's
@@ -318,15 +459,45 @@ own, and a client sending repeats is broken either way.
   never forwarded, so a client cannot send it either); pricing the tier the response
   reports — per-tier price tables and a rule for who may ask for priority, not built
   until a deployment needs priority or flex.
-- **Usage chunk** (settled 2026-09-24): when the gateway set `include_usage` for a
-  client that did not ask, the usage-only chunk (`choices: []`, non-null `usage`) is
+- **Standard price on Anthropic types** (settled 2026-10-06): the `anthropic` and
+  `azure-anthropic` modules refuse, before sending, every Messages option that bills
+  above the standard rates the price table holds — `400 price_option_unsupported`,
+  `param` naming it (a caller's mistake: never retried, never a circuit failure):
+  - `speed` other than `"standard"` (fast mode: about 2× the standard price; Claude
+    API only);
+  - `inference_geo` other than `"global"` (`"us"`: 1.1× on Claude 4.6 and later; the
+    Claude API only — Foundry has no such parameter, its US Data Zone is a deployment
+    type and its price a deployment matter, `docs/BACKLOG.md` → prices per deployment
+    or region);
+  - a `cache_control` with `ttl: "1h"` anywhere in `system`, `messages[].content[]`,
+    `tools[]` or the top level (a 1-hour cache write costs 2× input, a 5-minute one
+    1.25×, and `tokens_cache_write` is one unit).
+
+  The `anthropic` module also sets `service_tier: "standard_only"` on every Messages
+  request, the client's value replaced: `auto`, the API's default, draws on Priority
+  Tier capacity where the organization has a commitment, billed outside the price
+  table. `azure-anthropic` adds none and passes the client's untouched: Foundry has
+  no Priority Tier. Self-hosted types pass all of these untouched — they price
+  nothing and accept the fields (vLLM 0.30.0, llama-server b9917, checked
+  2026-10-06). Rejected: refusing them on every backend in the inbound stage — a
+  client like Claude Code that asks for 1-hour caching would then fail on vLLM, where
+  the option means nothing; pricing them — new units and per-request multipliers,
+  not built until a client needs one (`docs/BACKLOG.md`). An operator workspace whose
+  `default_inference_geo` is `"us"` bills 1.1× without any request asking: that is
+  the deployment's price, set in the price table.
+- **Usage chunk** (settled 2026-09-24; OpenAI streams only): when the gateway set
+  `include_usage` for a client that did not ask, the usage-only chunk (`choices: []`, non-null `usage`) is
   withheld from the client; accounting still sees it. Other chunks may carry
   `"usage": null` (OpenAI adds it once `include_usage` is set); they pass as they are.
 - **Headers** (settled 2026-09-24), both ways an allowlist:
   - to the backend: `Content-Type: application/json`, `Accept`, `User-Agent: kaiak`,
-    `X-Request-Id`, and the backend credential. No client header is forwarded — the
-    client's `Authorization` (its kaiak key), cookies and vendor headers never reach
-    a backend.
+    `X-Request-Id`, the backend credential, and on Anthropic types
+    `anthropic-version`. No client header is forwarded — the client's
+    `Authorization` or `x-api-key` (its kaiak key), cookies and vendor headers never
+    reach a backend. That includes Anthropic's `anthropic-beta` and the client's
+    `anthropic-version` (settled 2026-10-06): a beta can change what a request does
+    and costs on an Anthropic backend, and which ones to let through is an open
+    decision (`docs/BACKLOG.md`).
   - to the client: the backend's `Content-Type`, `Retry-After` and `Retry-After-Ms`
     (Azure's, in milliseconds; settled 2026-09-25, L1 — the rest of Azure's
     rate-limit headers stay behind, the gateway's own `x-ratelimit-*` are its
@@ -343,13 +514,21 @@ own, and a client sending repeats is broken either way.
   replaced; every other byte passes as the backend sent it. JSON bodies are edited
   while they stream through (never collected whole — embeddings answers can be
   large); a nested `model`, a non-string value and non-JSON bodies pass unchanged.
-  Observers (accounting) read stream payloads as the backend sent them.
+  Observers (accounting) read stream payloads as the backend sent them. Where a
+  format's stream carries the model one level down (settled 2026-10-06), that one is
+  replaced as well: `message.model` in a Messages `message_start` event, and
+  `response.model` in a Responses `response.*` event (`response.created`,
+  `response.in_progress`, `response.completed`, `response.incomplete`,
+  `response.failed`, …). A Messages or Responses JSON body carries it at the top
+  level, as OpenAI's does.
 - **Upstream failures** (settled 2026-09-24; timeouts and completeness 2026-09-25):
   before the first event, failures are gateway errors (Client API table) — a
   stream's first-event timeout runs until its first event (not just response
   headers), a non-stream response's response timeout until its body ends (Routing and
   reliability: timeouts). A backend `4xx` is relayed as is, body included
-  (backends answer in the OpenAI error shape), except `401`/`403`: the client
+  (backends answer in their API's error shape, mostly — vLLM 0.30.0 answers a
+  Messages request that fails validation in OpenAI's; relayed as it came, settled
+  2026-10-06), except `401`/`403`: the client
   authenticated to the gateway, so a refused backend credential is the gateway's
   fault (`502 upstream_auth_failed`). **Backend error bodies** (settled 2026-09-25,
   L5): a `4xx` is the caller's actionable error (context too long, a bad parameter)
@@ -397,7 +576,13 @@ own, and a client sending repeats is broken either way.
   backend-side model as a whole word (vLLM: ``The model `…` does not exist.``), or
   the code is the backend module's: `model_not_found` (`openai-compatible`, `openai`,
   `vllm`, `llama-server`), or `DeploymentNotFound` or `model_not_found`
-  (`azure-openai`, whose v1 API is OpenAI's shape). Any other
+  (`azure-openai`, whose v1 API is OpenAI's shape). Anthropic's shape
+  (`{"type": "error", "error": {"type", "message"}}`) is read the same way (settled
+  2026-10-06): vLLM's Messages endpoints answer a missing model in it (``The model
+  `…` does not exist.``, type `NotFoundError`, run on 0.30.0), and so do the
+  `anthropic` type (a `not_found_error` naming the model) and `azure-anthropic`
+  (that, or Azure's `DeploymentNotFound` code) — the last two from the documentation,
+  not verified live. Any other
   `404` stays the caller's and is relayed as it came. The probe checks the model too
   (Routing and reliability → Circuit mechanics), and every applied config is checked
   once in the background: each backend's models list is fetched (up to 8 backends at
@@ -441,6 +626,12 @@ own, and a client sending repeats is broken either way.
     URL (POST /chat/completions)`) — OpenAI's known answer, not verified live.
   - `azure-openai`: `{"error": {"code": "404", "message": "Resource not found"}}` —
     the resource's answer to a path it does not have, not verified live.
+  - `anthropic` (settled 2026-10-06): a `not_found_error` in Anthropic's shape whose
+    message is `Not Found` — the API's answer to a route it does not have, from the
+    documentation, not verified live.
+  - `azure-anthropic` (settled 2026-10-06): `{"error": {"code": "404", "message":
+    "Resource not found"}}`, the Azure resource's answer as for `azure-openai`, not
+    verified live.
   - `openai-compatible`, whose server is unknown: a `404` whose body is not an
     OpenAI-shaped error (`{"error": {...}}` or `{"error": "<text>"}`) — plain text,
     HTML, other JSON (older vLLM's top-level `{"message": …}` included), an empty
@@ -456,6 +647,24 @@ own, and a client sending repeats is broken either way.
   one alert either way, but the operator could not tell a wrong URL from a wrong
   model; reading every `openai-compatible` `404` as the deployment's — a caller's
   `404` (an unknown adapter) would fail over and open the circuit.
+- **An endpoint missing from a server** (settled 2026-10-06): each type has core
+  endpoints — OpenAI's three for the OpenAI-format types, `messages` for the
+  Anthropic types — whose wrong-path answer means a wrong `base_url` (above). On any
+  other endpoint the type serves (Messages and Responses on vLLM and llama-server,
+  Responses on OpenAI and Azure, the token-counting endpoints), the same answer
+  means the server's version predates the endpoint: an older vLLM without
+  `/v1/messages` answers `{"detail": "Not Found"}` there while chat works. It
+  answers `502 upstream_endpoint_missing` (the backend's text not relayed), is
+  retried on deployments of other backends (every deployment on that backend runs
+  the same server and is refused for the request's retries), produces no usage and
+  is **not a circuit failure** — the deployment keeps serving its other endpoints.
+  Logged at warning level with the backend and the endpoint, attempt outcome
+  `endpoint_missing`. vLLM's `405 {"detail": "Method Not Allowed"}` on these
+  endpoints reads the same way: its `POST /v1/responses/input_tokens` lands on the
+  `GET /v1/responses/{id}` route (0.30.0), which is why `vllm` does not claim that
+  endpoint. Rejected: a circuit failure — chat on a healthy server would stop for
+  want of an endpoint it never had; a wrong-path answer — the operator would look
+  for a URL mistake that is not there.
 - **Complete responses** (settled 2026-09-25; the audit's M13): HTTP framing ending
   cleanly does not make an answer whole — a backend whose generator dies can end its
   response on an event boundary. A successful (`2xx`) stream is complete once it
@@ -473,6 +682,30 @@ own, and a client sending repeats is broken either way.
   completeness.
   Rejected: counting `content_filter` or other finish reasons differently — any
   finish reason is the backend saying the choice ended.
+  **Per format** (settled 2026-10-06; the end events checked on vLLM 0.30.0 and
+  llama-server b9917): a Messages stream is complete once it carried
+  `message_stop`; a Responses stream once it carried `response.completed` or
+  `response.incomplete` — vLLM ends a stream cut by `max_output_tokens` with
+  `response.completed` whose `status` is `incomplete`, OpenAI with
+  `response.incomplete`; both are whole. Neither format sends `[DONE]`. A
+  stream that carries an **error event** — Messages `event: error` (Anthropic's
+  `overloaded_error` mid-stream), a Responses `error` or `response.failed` event —
+  is a backend failure once relayed: the event reaches the client as the backend
+  sent it, then the stream ends as an incomplete one does
+  (`kaiak.relay_end=upstream_incomplete`, a circuit failure, usage settled
+  partial). As the first event, before anything reached the client, it is a
+  backend failure the attempt loop may retry, answered like a `5xx` when it is the
+  last attempt (`502 upstream_error`). Rejected: relaying an error event and
+  ending cleanly — the client would see a finished answer from a stream the
+  backend abandoned.
+- **Probe and model check for the new types** (settled 2026-10-06): `anthropic`
+  lists its models at `GET <base_url>/models?limit=1000` with its credential and
+  `anthropic-version` (the list is paged, 20 by default; `data[].id`).
+  `azure-anthropic` has no models list (Foundry offers no Models API): its probe
+  always succeeds, so an open circuit turns half-open after each probe interval and
+  the half-open trial decides (Routing and reliability → Circuit mechanics), and the
+  config-time model check skips its backends with an info line, `model check not
+  available for this backend type`. A better check is in `docs/BACKLOG.md`.
 - **Connections** (settled 2026-09-24): one connection pool per backend, kept across
   config reloads (a new pool only when the connect timeout changes), up to 256 idle
   connections per host so many concurrent streams reuse connections; HTTP/2 when the
@@ -520,6 +753,7 @@ own, and a client sending repeats is broken either way.
     | Backend `401`/`403` (`upstream_auth_failed`) | yes — `auth_failed`; every deployment of the model on that backend is refused for the request |
     | Backend `404` naming the deployment's model (`upstream_model_missing`) | yes — `model_missing` |
     | Backend `404` at a path its server does not have (`upstream_path_missing`) | yes — `path_missing`; every deployment of the model on that backend is refused for the request |
+    | The same on an endpoint beyond the type's core ones (`upstream_endpoint_missing`, settled 2026-10-06) | yes — `endpoint_missing`; every deployment of the model on that backend is refused for the request |
     | A response relayed (`2xx`, a caller's `4xx`), anything after the first event | no |
     | Client gone, the drain's cut, a gateway fault | no |
 
@@ -619,6 +853,8 @@ own, and a client sending repeats is broken either way.
   | Backend `401`/`403` (`upstream_auth_failed`) | failure |
   | Backend `404` naming the deployment's model (`upstream_model_missing`) | failure |
   | Backend `404` at a path its server does not have (`upstream_path_missing`) | failure |
+  | The same on an endpoint beyond the type's core ones (`upstream_endpoint_missing`, settled 2026-10-06) | neutral — the deployment serves its other endpoints |
+  | A provider's refusal before sending (`price_option_unsupported`) | neutral — nothing was sent |
   | Response broken off upstream after the first event (`kaiak.relay_end=upstream_failed`) | failure |
   | Stream silent for the stall timeout after the first event (`kaiak.relay_end=upstream_stalled`) | failure |
   | Successful response ended before it was complete (`kaiak.relay_end=upstream_incomplete`) | failure |
@@ -887,6 +1123,12 @@ own, and a client sending repeats is broken either way.
     estimate that settlement replaces anyway.
   - **each token ID** in a completion's `prompt` or an embeddings `input` counts one
     token.
+  - **Messages and Responses** (settled 2026-10-06): the same rules over their
+    bodies — text by bytes wherever it is (`system`, `instructions`, content
+    blocks, tool definitions, tool results, function-call outputs), and a flat 1000
+    tokens per media item: a Messages `image` or `document` block whose `source` is
+    `base64` (its raw `data`), `url` or `file`; a Responses `input_image` or
+    `input_file` part (its data URL, URL or file ID).
   - The estimate has two figures: the **total** (every prompt of a completion batch —
     what limits reserve and estimated records bill) and the **input one sequence
     sees** (the request less every prompt of a batch but the largest — what the
@@ -907,7 +1149,13 @@ own, and a client sending repeats is broken either way.
   the client set is checked on its own: above the ceiling, it is lowered to the
   ceiling (negative or above the context: refused, below). The request's **effective
   output limit** is the largest of its keys after these edits (none when the model
-  declares no limit and the client sent none).
+  declares no limit and the client sent none). **Messages** reads and writes
+  `max_tokens`, **Responses** `max_output_tokens` (settled 2026-10-06), each its
+  format's one key, under the same rules: out of range refused, above the ceiling
+  lowered, absent filled with the default fitted to the context. Messages requires
+  the field, so a model with an `output_limit` always sends one; on a model without
+  one, a request that omits it reaches the backend without it, which answers as it
+  does. The token-counting endpoints have no output limit.
 - **Output limit out of range** — above the context (settled 2026-09-25, E9; the
   follow-up audit's N-M1): a key the client set (chat: either key, each checked on its own;
   completions: `max_tokens`) above the model's `context_length` is refused — `400`,
@@ -949,7 +1197,7 @@ own, and a client sending repeats is broken either way.
   reservation. The input estimate reserved is the total (The input estimate). The arithmetic
   saturates, and the reservation is capped at 2^53 − 1 (the largest amount the
   protocol carries), so an absurd product is "request too large", never a wrapped
-  small number. `n` and `best_of` cannot be model defaults. Rejected: a per-model
+  small number. Rejected: a per-model
   `max_n` — one global ceiling is enough until a model needs its own.
   **Batch caps** (settled 2026-09-25; the independent audit's finding 4): the
   request's sequences (the product above) are at most
@@ -1292,7 +1540,8 @@ own, and a client sending repeats is broken either way.
   backend in full and got no answer (Routing and reliability: usage across
   attempts).
   Requests refused before routing (auth, unknown model, bad or oversize body, unknown
-  path) and the model endpoints produce none.
+  path), the model endpoints and the token-counting endpoints (settled 2026-10-06:
+  nothing is generated or billed) produce none.
 - Token counts come from the backend's usage report, read from the response in the
   client's format as it is relayed (settled 2026-09-24): a non-stream body's top-level
   `usage`, or a stream's last non-null `usage` — the usage chunk the gateway withholds
@@ -1305,6 +1554,22 @@ own, and a client sending repeats is broken either way.
   fields count 0; inconsistent ones are clamped — cached ≤ prompt first, then
   written ≤ prompt − cached, so the three input units always add up to
   `prompt_tokens`; reasoning ≤ completion. Embeddings count `prompt_tokens` only.
+- **Messages usage** (settled 2026-10-06): a body's top-level `usage`; a stream's
+  `message_start.message.usage`, then each `message_delta.usage`, the latest value
+  of each field winning (vLLM repeats `input_tokens` there; llama-server sends only
+  `output_tokens`). `input_tokens` → `tokens_in` (Anthropic's `input_tokens` already
+  leaves out cache reads and writes — llama-server's too, run on b9917);
+  `cache_read_input_tokens` → `tokens_cached`; `cache_creation_input_tokens` →
+  `tokens_cache_write`; `output_tokens` → `tokens_out`, thinking included;
+  `tokens_reasoning` 0 (the format does not report it). Missing fields count 0.
+- **Responses usage** (settled 2026-10-06): a body's top-level `usage`, or the
+  `response.usage` of a stream's `response.completed` or `response.incomplete`.
+  `input_tokens` includes the cache, as OpenAI's `prompt_tokens` does:
+  `input_tokens_details.cached_tokens` → `tokens_cached`,
+  `input_tokens_details.cache_write_tokens` → `tokens_cache_write` (OpenAI's field,
+  read wherever reported), `input_tokens` minus both → `tokens_in` (clamped as
+  above); `output_tokens` → `tokens_out`; `output_tokens_details.reasoning_tokens` →
+  `tokens_reasoning`.
 - **The record's scopes** (settled 2026-09-27): a record carries the key's group
   path (`groups`, top-level first) as the request's config snapshot had it at
   authentication — the control plane counts it toward those groups and global
@@ -1315,8 +1580,11 @@ own, and a client sending repeats is broken either way.
   estimate — the same figure limits reserved before the request ran), output about 4
   bytes per token (rounded up) over the generated content only — as decoded UTF-8: chat
   `content`, `refusal`, reasoning text (`reasoning_content` or `reasoning`, one of
-  them), tool-call names and arguments; completions `text`. JSON structure, roles,
-  finish reasons and indexes do not count. A non-stream body's choices are kept up to
+  them), tool-call names and arguments; completions `text`; Messages `text`,
+  `thinking` and `tool_use` inputs (stream deltas `text_delta`, `thinking_delta`,
+  `input_json_delta`); Responses `output_text`, reasoning text and summaries, and
+  function-call arguments (stream deltas likewise) — settled 2026-10-06. JSON
+  structure, roles, signatures, finish reasons and indexes do not count. A non-stream body's choices are kept up to
   4 MiB to be read; past that their raw size counts. The estimated input is all
   `tokens_in`; `tokens_cached`, `tokens_cache_write` and `tokens_reasoning` are 0.
 - **Partial** (settled 2026-09-24): a response that stopped early (client disconnect,
@@ -1672,7 +1940,7 @@ own, and a client sending repeats is broken either way.
     (`version`, `codes`) is kept for the status report until a later config from the
     control plane is applied (`CONTROL-PROTOCOL.md`, Messages → Status).
   - **Last-known-good** (with a data directory only; `last-known-good.json`, format
-    version 5 — settled 2026-10-02, the config format 4 inside): the config
+    version 6 — settled 2026-10-06, the config format 5 inside): the config
     document exactly as the control plane sent it, its version and config epoch
     (so the stream after a last-known-good boot resumes in that epoch, and a control
     plane on another store answers `resync`), written after each
@@ -1838,7 +2106,7 @@ own, and a client sending repeats is broken either way.
   | `kaiak_queued_requests` | gauge | `model` | Requests waiting in the model's queue; every configured model present, 0 when empty |
   | `kaiak_queue_wait_seconds` | histogram | `model` | Time queued requests waited before getting a slot (refused ones are counted below instead) |
   | `kaiak_queue_rejections_total` | counter | `model`, `reason` | Requests the model's queue refused: `full` (`queue_full`), `timeout` (`queue_timeout`) |
-  | `kaiak_retries_total` | counter | `model`, `backend`, `reason` | Retries sent — attempts after an earlier attempt of the same request failed, counted as each is sent — by that attempt's backend and failure: `unavailable`, `timeout`, `server_error`, `rate_limited`, `auth_failed`, `model_missing`, `path_missing` |
+  | `kaiak_retries_total` | counter | `model`, `backend`, `reason` | Retries sent — attempts after an earlier attempt of the same request failed, counted as each is sent — by that attempt's backend and failure: `unavailable`, `timeout`, `server_error`, `rate_limited`, `auth_failed`, `model_missing`, `path_missing`, `endpoint_missing` |
   | `kaiak_upstream_attempts_total` | counter | `backend`, `deployment_model`, `outcome` | Every upstream attempt (first attempts and retries) by its outcome — the circuit breaker's classification, named (below) |
   | `kaiak_upstream_attempt_duration_seconds` | histogram | `backend` | Every upstream attempt from its send to its end: a relayed response to the end of its relay (stream or not), a retried or failed attempt to its failure (a held backend error: its status and first event) |
   | `kaiak_request_attempts` | histogram | `model` | Attempts per routed request, the first included (buckets 1–10) |
@@ -1905,7 +2173,7 @@ own, and a client sending repeats is broken either way.
     `success`; failures — `unavailable`, `timeout` (a stream's first-event
     timeout), `auth_failed`, `model_missing`, `path_missing`, `server_error` (a backend `5xx`),
     `broke_off` (broken off, stalled or incomplete after the first event); neutral
-    — `response_timeout` (a non-stream response timeout, before or after the first
+    — `endpoint_missing` (settled 2026-10-06), `response_timeout` (a non-stream response timeout, before or after the first
     bytes; before them it is a failure for a half-open trial and from the 3rd in a
     row — Routing and reliability: outcome classes), `rate_limited` (a backend `429`), `client_error` (another backend `4xx`),
     `canceled` (the client left, or the drain cut, before the first event),
@@ -1938,8 +2206,10 @@ own, and a client sending repeats is broken either way.
     family of their own: bodies refused are `kaiak_errors_total`
     (`invalid_request`, `server_busy`), oversize headers are answered `431` by the
     HTTP server before the pipeline and not counted.
-  - `endpoint`: `chat_completions`, `completions`, `embeddings`, `list_models`,
-    `get_model`, `model_props`. `status_class`: `2xx`, `4xx` (499 included), `5xx`.
+  - `endpoint`: `chat_completions`, `completions`, `embeddings`, `messages`,
+    `messages_count_tokens`, `responses`, `responses_input_tokens` (settled
+    2026-10-06), `list_models`, `get_model`, `model_props` (the Anthropic-shaped
+    model list counts under `list_models` and `get_model`). `status_class`: `2xx`, `4xx` (499 included), `5xx`.
     **A client that left before any answer stays `4xx`** (settled 2026-10-05): the
     request line leaves out its status (Logs: the request line), the metric keeps
     its own rule — every client request lands in one `status_class`, so `_count`
@@ -1956,7 +2226,7 @@ own, and a client sending repeats is broken either way.
     `no_healthy_deployment` (every deployment's circuit open — platform-side: the
     backends are failing; its own class because nothing was sent upstream),
     `upstream_unavailable`,
-    `upstream_timeout`, `upstream_error` (`upstream_auth_failed`, `upstream_model_missing`, `upstream_path_missing`, a backend
+    `upstream_timeout`, `upstream_error` (`upstream_auth_failed`, `upstream_model_missing`, `upstream_path_missing`, `upstream_endpoint_missing`, a backend
     `5xx` — answered `upstream_error` —, a response that broke off upstream), `upstream_rate_limited` (a relayed
     backend `429`), `upstream_client_error` (a relayed backend `4xx` other than
     `429`), `client_closed`, `shutting_down` (`server_shutting_down`, a response the
@@ -2168,7 +2438,7 @@ own, and a client sending repeats is broken either way.
     | `kaiak.auth.failure` | `auth_failure` | a `401` | `missing_key`, `malformed_key`, `unknown_key`, `disabled_key`, `expired_key` |
     | `gen_ai.request.model` | `model` | once known | The model the client asked for — the public name, or a refused name — clipped |
     | `gen_ai.request.stream` | `stream` | once the model passed its access check (body endpoints) | The client's `stream` flag |
-    | `gen_ai.operation.name` | — (added) | once the path matched a body endpoint | `chat` (chat completions), `text_completion` (completions), `embeddings` — the convention's well-known values. The model endpoints have none |
+    | `gen_ai.operation.name` | — (added) | once the path matched a body endpoint | `chat` (chat completions, Messages, Responses), `text_completion` (completions), `embeddings` — the convention's well-known values. The model endpoints and the token-counting endpoints have none (settled 2026-10-06: the convention's `chat` is a chat operation in any of its APIs; counting tokens is no GenAI operation it names) |
     | `error.type` | `error_code` | the request ended in an error | The gateway's error code (Client API table); a relayed backend error status has no gateway error code, so its class: `upstream_client_error`, `upstream_rate_limited` (settled 2026-09-25, D6). A response broken off after it started has `kaiak.relay_end` instead. Low-cardinality, as the convention requires |
     | `kaiak.limit.scope` | `limit_scope` | a limit refusal: `rate_limit_exceeded`, `budget_exceeded`, `budget_unavailable` (settled 2026-09-25, D6 — the line held only the code, and the operator could not tell which of the scopes' limits refused) | `global` or `group` (settled 2026-09-27) |
     | `kaiak.limit.group` | `limit_id` | a refusal by a group's limit | The group's ID — never a key. Absent for a global limit: `kaiak.limit.scope` says `global` (settled 2026-10-05, the 2026-10-05 review's L5): one key for a limit's group on every line, operational ones included, and one way to say "global". Rejected: `kaiak.limit.id`, with `global` for a global limit, beside the operational lines' `kaiak.limit.group` — one concept under two keys and two spellings |
@@ -2178,8 +2448,8 @@ own, and a client sending repeats is broken either way.
     | `kaiak.limit.used` | `used` | a limit refusal but `budget_unavailable` (its spend is unknown) | What the window held — in dollars for a USD limit, on every line that carries it (settled 2026-10-05, the 2026-10-05 review's L4) |
     | `kaiak.limit.requested` | `requested` | a token limit's refusal | The request's reservation: above `kaiak.limit.configured`, a request too large for the limit, not a full window |
     | `kaiak.backend.id` | `backend` | once routed | The last attempt's backend (config ID) |
-    | `kaiak.backend.type` | — (added) | once routed | Its type: `openai`, `azure-openai`, `vllm`, `llama-server`, `openai-compatible` |
-    | `gen_ai.provider.name` | — (added) | once routed to an `openai` or `azure-openai` backend | `openai`, `azure.ai.openai` — the convention's well-known values for those two. The self-hosted types have no well-known value and leave it out: `kaiak.backend.type` names every type |
+    | `kaiak.backend.type` | — (added) | once routed | Its type: `openai`, `azure-openai`, `vllm`, `llama-server`, `anthropic`, `azure-anthropic`, `openai-compatible` |
+    | `gen_ai.provider.name` | — (added) | once routed to an `openai`, `azure-openai`, `anthropic` or `azure-anthropic` backend | `openai`, `azure.ai.openai`, `anthropic`, `anthropic` — the convention's well-known values. Claude in Foundry is Anthropic's service and API on Azure, and no Azure value names it (`azure.ai.inference` is Azure's Model Inference API), so it is `anthropic` too (settled 2026-10-06). The self-hosted types have no well-known value and leave it out: `kaiak.backend.type` names every type |
     | `kaiak.deployment.model` | `deployment_model` | once routed | The last attempt's model name on its backend (`deployment_model` on the metrics). Not `gen_ai.response.model`: that is the name the backend's answer reports, which the gateway does not read |
     | `kaiak.attempts` | `attempts` | once routed | Attempts made, the first included |
     | `kaiak.tried` | `tried` | more than one attempt | Every attempt in order as `backend/deployment_model:outcome`, the outcome the backend's status or the gateway's error code (`down/m:upstream_unavailable,local/m:200`) |

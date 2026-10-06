@@ -17,11 +17,38 @@ Group entries under headings as themes emerge.
   does not split (`docs/specs/CONTROL-PROTOCOL.md`, Config → Units and price units).
   Revisit trigger: a Bedrock-only model is needed by a real user.
   (ruled 2026-09-24: deferred from v1.)
-- **Anthropic Messages inbound** — second inbound format (`/v1/messages`, `x-api-key`
-  auth). Revisit trigger: a client that only speaks the Anthropic API needs access.
-- **OpenAI Responses API inbound** — used by newer clients (e.g. Codex CLI, Agents SDK).
-  Needs sticky routing: `previous_response_id` state lives on one backend, so follow-ups
-  must return to it. Revisit trigger: a client in use requires `/v1/responses`.
+- **Messages ⇄ Chat Completions translation** — serve Messages clients from backends
+  that speak only Chat Completions (OpenAI, Azure OpenAI, `openai-compatible`), and
+  Chat Completions clients from Anthropic backends. The gateway passes every request
+  through in its own format (`docs/specs/GATEWAY.md`, Client API → Client APIs;
+  settled 2026-10-06): request mapping is mechanical (system, content blocks,
+  `tool_use` ⇄ `tool_calls`, `tool_result` ⇄ `role: tool`, stop reasons); the stream
+  needs a stateful converter; thinking signatures, cache markers and documents do not
+  survive. Revisit trigger: a client must reach a model whose backends do not serve
+  its API.
+- **Responses ⇄ Chat Completions translation** — the stateless Responses subset
+  (`instructions` + `input` items, function calls, typed output items and stream
+  events) served from Chat-Completions-only backends; reasoning items with
+  `encrypted_content` cannot pass. Revisit trigger: as above, for a Responses client.
+- **Client `anthropic-beta` / `anthropic-version` forwarding** — a decision is needed:
+  today no client header reaches a backend (settled 2026-10-06), so a client feature
+  behind a beta (Claude Code sends several) does not reach `anthropic` or
+  `azure-anthropic` backends. Options: forward both to the Anthropic types only;
+  forward an allowlist of betas; keep forwarding none. Some betas change behaviour or
+  price, so a forwarded one must be judged like a price option. Revisit trigger: a
+  client feature needs a beta on an Anthropic backend.
+- **`azure-anthropic` health checks** — Microsoft Foundry has no models list, so its
+  probe always succeeds (the half-open trial decides) and the config-time model
+  check skips it (settled 2026-10-06). A probe could be a token-counting call, which
+  costs nothing. Revisit trigger: Foundry deployments misconfigured without a
+  warning, or a circuit that closes on a trial too late.
+- **Pricing Anthropic price options** — fast mode (`speed`), US-only inference
+  (`inference_geo: "us"`, 1.1×) and 1-hour cache writes (2× input, against 1.25× for
+  5 minutes) are refused on the Anthropic types (settled 2026-10-06). Pricing them
+  needs per-request multipliers and a cache-write unit per lifetime (Anthropic reports
+  `usage.cache_creation.ephemeral_5m_input_tokens` and `ephemeral_1h_input_tokens`).
+  Revisit trigger: a client needs one of them, or refusing 1-hour caching breaks a
+  client in use.
 - **Image and audio models** — OpenAI-shaped `/v1/images/generations`,
   `/v1/audio/speech`, `/v1/audio/transcriptions`; new usage units (`images`,
   `audio_seconds`, `characters`). Job-queue APIs (ComfyUI-style) need a separate adapter

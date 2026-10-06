@@ -1,7 +1,7 @@
 {
   "reason": "a four-level tree (team, project, env, workload) with labels, a key on a group that has children and a leaf's child_defaults that reach no one",
   "config": {
-    "format_version": 4,
+    "format_version": 5,
     "global": {
       "limits": [
         { "type": "requests_per_minute", "value": 3000 },

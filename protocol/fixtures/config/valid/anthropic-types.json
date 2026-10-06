@@ -1,0 +1,48 @@
+{
+  "format_version": 5,
+  "global": {},
+  "backends": {
+    "anthropic": {
+      "type": "anthropic",
+      "base_url": "https://api.anthropic.com/v1",
+      "api_key_env": "ANTHROPIC_API_KEY"
+    },
+    "foundry": {
+      "type": "azure-anthropic",
+      "base_url": "https://my-resource.services.ai.azure.com",
+      "api_key_env": "AZURE_FOUNDRY_API_KEY"
+    }
+  },
+  "models": {
+    "claude": {
+      "deployments": [
+        { "backend": "anthropic", "model": "claude-sonnet-5-5" },
+        { "backend": "foundry", "model": "claude-sonnet-5-5" }
+      ],
+      "metadata": {
+        "context_length": 1000000,
+        "capabilities": { "streaming": true, "tools": true, "vision": true, "reasoning": true },
+        "reasoning_efforts": ["low", "medium", "high", "xhigh", "max"]
+      },
+      "output_limit": { "default": 16384, "ceiling": 128000 },
+      "prices": [
+        {
+          "effective_from": "2026-01-01",
+          "tiers": [
+            {
+              "above_input_tokens": 0,
+              "usd_per_million": { "tokens_in": 2, "tokens_cached": 0.2, "tokens_cache_write": 2.5, "tokens_out": 10 }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "groups": { "me": {} },
+  "keys": {
+    "k-me": {
+      "hash": "sha256:59f8f6709d858b919a10541cd215a0de7b4299bbc6c11a2e0bf4ca03ec6df717",
+      "group": "me"
+    }
+  }
+}

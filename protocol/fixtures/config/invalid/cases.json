@@ -23,6 +23,10 @@
     "code": "allowed-models-wildcard-mixed",
     "reason": "\"*\" is listed alongside model names"
   },
+  "anthropic-without-api-key-env.json": {
+    "kind": "schema",
+    "reason": "anthropic backends need api_key_env"
+  },
   "api-key-env-invalid.json": {
     "kind": "schema",
     "reason": "api_key_env must be an environment variable name"
@@ -42,6 +46,10 @@
   "api-key-env-otel-logs-headers.json": {
     "kind": "schema",
     "reason": "api_key_env must not name an OTEL_ variable: OTEL_EXPORTER_OTLP_LOGS_HEADERS holds the log export's credentials, which would reach the backend's URL"
+  },
+  "azure-anthropic-without-api-key-env.json": {
+    "kind": "schema",
+    "reason": "azure-anthropic backends need api_key_env"
   },
   "azure-without-api-key-env.json": {
     "kind": "schema",
@@ -119,38 +127,6 @@
     "kind": "schema",
     "reason": "control_outage_grace_ms is a number of milliseconds, not a duration string"
   },
-  "defaults-best-of.json": {
-    "kind": "schema",
-    "reason": "best_of is owned by the gateway (it multiplies the output reservation), not a default"
-  },
-  "defaults-n.json": {
-    "kind": "schema",
-    "reason": "n is owned by the gateway (it multiplies the output reservation), not a default"
-  },
-  "defaults-nested-number-out-of-range.json": {
-    "kind": "schema",
-    "reason": "numbers inside a default's objects and arrays must be finite too"
-  },
-  "defaults-null-value.json": {
-    "kind": "schema",
-    "reason": "a null default means nothing; rejected"
-  },
-  "defaults-number-out-of-range.json": {
-    "kind": "schema",
-    "reason": "a default's number must be finite as JavaScript reads it (1e400 would become Infinity)"
-  },
-  "defaults-owned-field.json": {
-    "kind": "schema",
-    "reason": "the output limit is set through output_limit, not defaults"
-  },
-  "defaults-service-tier.json": {
-    "kind": "schema",
-    "reason": "service_tier is owned by the gateway (it keeps every request on standard processing), not a default"
-  },
-  "defaults-stream.json": {
-    "kind": "schema",
-    "reason": "stream is the client's choice, not a default"
-  },
   "deployment-backend-unknown.json": {
     "kind": "semantic",
     "code": "deployment-backend-unknown",
@@ -208,9 +184,9 @@
     "kind": "schema",
     "reason": "the first-event timeout is a positive integer"
   },
-  "format-version-3.json": {
+  "format-version-4.json": {
     "kind": "schema",
-    "reason": "format_version must be 4"
+    "reason": "format_version must be 5"
   },
   "format-version-missing.json": {
     "kind": "schema",
@@ -436,6 +412,10 @@
   "metrics-unknown-field.json": {
     "kind": "schema",
     "reason": "global.metrics holds only key_id_label and group_label"
+  },
+  "model-defaults.json": {
+    "kind": "schema",
+    "reason": "models have no defaults: the backends apply their own (format 5)"
   },
   "model-name-props-suffix.json": {
     "kind": "schema",

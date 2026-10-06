@@ -17,8 +17,7 @@
             { "above_input_tokens": 0, "usd_per_million": { "tokens_in": 0.5, "tokens_out": 1.5 } }
           ]
         }
-      ],
-      "defaults": { "stream": true }
+      ]
     }
   },
   "groups": {

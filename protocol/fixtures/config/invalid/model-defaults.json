@@ -1,5 +1,5 @@
 {
-  "format_version": 4,
+  "format_version": 5,
   "global": {},
   "backends": { "local": { "type": "openai-compatible", "base_url": "http://localhost:8080/v1" } },
   "models": {
@@ -9,7 +9,7 @@
         "context_length": 8192,
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }
       },
-      "defaults": { "temperature": 1e400 }
+      "defaults": { "temperature": 0.6 }
     }
   },
   "groups": { "me": {} },

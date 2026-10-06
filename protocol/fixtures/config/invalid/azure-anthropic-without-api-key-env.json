@@ -1,7 +1,7 @@
 {
-  "format_version": 4,
+  "format_version": 5,
   "global": {},
-  "backends": { "vllm": { "type": "openai-compatible", "base_url": "http://vllm:8000/v1" } },
+  "backends": { "vllm": { "type": "azure-anthropic", "base_url": "https://res.services.ai.azure.com" } },
   "models": {
     "chat": {
       "deployments": [{ "backend": "vllm", "model": "org/chat-model" }],
@@ -17,8 +17,7 @@
             { "above_input_tokens": 0, "usd_per_million": { "tokens_in": 0.5, "tokens_out": 1.5 } }
           ]
         }
-      ],
-      "defaults": { "seed": null }
+      ]
     }
   },
   "groups": {

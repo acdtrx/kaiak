@@ -1,5 +1,5 @@
 {
-  "format_version": 4,
+  "format_version": 5,
   "global": { "control_outage_grace_ms": 1500.5 },
   "backends": { "vllm": { "type": "openai-compatible", "base_url": "http://vllm:8000/v1" } },
   "models": {

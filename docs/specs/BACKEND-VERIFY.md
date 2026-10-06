@@ -41,7 +41,7 @@
 
 | Option | Required | Meaning |
 | --- | --- | --- |
-| `type` | yes | The config's backend `type`: `"openai-compatible"`, `"openai"`, `"azure-openai"`, `"vllm"` or `"llama-server"` (settled 2026-09-30). |
+| `type` | yes | The config's backend `type`: `"openai-compatible"`, `"openai"`, `"azure-openai"`, `"vllm"`, `"llama-server"`, `"anthropic"` or `"azure-anthropic"` (settled 2026-09-30; the Anthropic types 2026-10-06). |
 | `baseUrl` | yes | The backend's `base_url`, exactly as config spells it. |
 | `credential` | no | The credential **value** (not an env name), passed by the app. Omitted: nothing is sent. |
 | `model` | no | A backend-side model name (a deployment's `model`) to check and describe. |
@@ -70,6 +70,14 @@ way by the gateway:
 | --- | --- | --- |
 | `openai-compatible`, `openai`, `vllm`, `llama-server` | `GET <baseUrl>/models` | `Authorization: Bearer <credential>` |
 | `azure-openai` | `GET <baseUrl>/openai/v1/models` | `api-key: <credential>` |
+| `anthropic` | `GET <baseUrl>/models?limit=1000` | `x-api-key: <credential>`, plus `anthropic-version: 2023-06-01` |
+| `azure-anthropic` | none — no request is sent | — |
+
+- **The Anthropic types** (settled 2026-10-06): Anthropic's models list is paged
+  (20 by default), so one request asks for the most a page holds. Claude in
+  Microsoft Foundry has no Models API, so an `azure-anthropic` report sends nothing
+  and says so (Sources); its reachability and credential stay unchecked until the
+  gateway's first request.
 
 - Every request sends `Accept: application/json`, `User-Agent: kaiak-control` and the
   credential header when a credential was given; nothing else of its own (Node's
@@ -87,7 +95,8 @@ way by the gateway:
 
 ## Server recognition
 
-From the models list's `data[*].owned_by`, every type but azure-openai:
+From the models list's `data[*].owned_by`, every type but azure-openai and the
+Anthropic types:
 
 | Every entry's `owned_by` | `server` |
 | --- | --- |
@@ -95,7 +104,8 @@ From the models list's `data[*].owned_by`, every type but azure-openai:
 | `"llamacpp"` | `"llama-server"` |
 | anything else, mixed values, or an empty list | `"unknown"` |
 
-An azure-openai backend reports `"unknown"`: its type already says what it is.
+An azure-openai, anthropic or azure-anthropic backend reports `"unknown"`: its type
+already says what it is.
 
 - **Recognition follows the answer, not the declared type**: what is read (`/props`,
   Sources) depends on the recognized `server`, whatever `type` was given.
@@ -122,6 +132,8 @@ inferred from names or other fields.
 | llama-server | `capabilities.reasoning` | `/props` `chat_template_caps.supports_reasoning_effort` | yes |
 | unknown (OpenAI, SGLang, …) | — | reachability, credential and the listed ids only | — |
 | azure-openai | — | reachability and credential only | — |
+| anthropic | `context_length` | the model's list entry, `max_input_tokens` (Anthropic's Models API, from the documentation; not verified live) | no |
+| azure-anthropic | — | nothing: `models: []` and a top-level note, `Microsoft Foundry has no models list: the backend was not contacted` | — |
 
 - **llama-server context comes from `/props`**, not the list's `meta.n_ctx`
   (settled 2026-09-29): the server splits its context across slots, and
@@ -134,7 +146,8 @@ inferred from names or other fields.
 - **Azure lists base models, not deployments** — the names requests carry are
   deployment names. So an azure-openai report has `models: []` and a top-level note,
   and `model-not-listed` never applies there: as in the gateway's model check, every
-  name counts as served.
+  name counts as served. The same holds for `azure-anthropic`, which has no list at
+  all (settled 2026-10-06).
 - A `/props` that fails (no answer, timeout, non-`2xx`, over the read cap, not JSON)
   is a note on each model, not a failure: the backend answered and accepted the
   credential. Its values are then absent.

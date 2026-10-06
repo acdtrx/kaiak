@@ -9,7 +9,7 @@
   "properties": {
     "format_version": {
       "description": "Version of this document format. A different version is rejected, never migrated.",
-      "const": 4
+      "const": 5
     },
     "global": { "$ref": "#/$defs/global" },
     "backends": {
@@ -204,16 +204,16 @@
       "required": ["type", "base_url"],
       "properties": {
         "type": {
-          "description": "The server, which picks the gateway's module for it: openai (OpenAI's API), azure-openai (Azure's OpenAI-compatible /openai/v1/ API), vllm, llama-server (llama.cpp), or openai-compatible for any other server speaking the OpenAI format (SGLang, …). openai and azure-openai run every request on the standard service tier; the others pass the client's service_tier untouched (docs/specs/GATEWAY.md, Providers).",
-          "enum": ["openai-compatible", "openai", "azure-openai", "vllm", "llama-server"]
+          "description": "The server, which picks the gateway's module for it and the client API endpoints it serves: openai (OpenAI's API), azure-openai (Azure's OpenAI-compatible /openai/v1/ API), vllm, llama-server (llama.cpp), anthropic (Anthropic's API), azure-anthropic (Claude in Microsoft Foundry), or openai-compatible for any other server speaking the OpenAI format (SGLang, …). openai and azure-openai run every request on the standard service tier, and the Anthropic types on standard prices; the others pass the client's service_tier untouched (docs/specs/GATEWAY.md, Providers).",
+          "enum": ["openai-compatible", "openai", "azure-openai", "vllm", "llama-server", "anthropic", "azure-anthropic"]
         },
         "base_url": {
-          "description": "openai-compatible, openai, vllm, llama-server: the base URL an OpenAI client would use, API version path included (e.g. http://vllm:8000/v1); the gateway appends the endpoint path (/chat/completions). azure-openai: the resource endpoint (e.g. https://my-resource.openai.azure.com); the gateway appends /openai/v1/. No credentials (user:password@ — provider secrets travel only through api_key_env), trailing slash, query or fragment.",
+          "description": "openai-compatible, openai, vllm, llama-server: the base URL an OpenAI client would use, API version path included (e.g. http://vllm:8000/v1); the gateway appends the endpoint path (/chat/completions). anthropic: the base URL with the version path (https://api.anthropic.com/v1). azure-openai: the resource endpoint (e.g. https://my-resource.openai.azure.com); the gateway appends /openai/v1/. azure-anthropic: the resource endpoint (e.g. https://my-resource.services.ai.azure.com); the gateway appends /anthropic/v1/. No credentials (user:password@ — provider secrets travel only through api_key_env), trailing slash, query or fragment.",
           "type": "string",
           "pattern": "^https?://[^/\\s?#@]+(/[^\\s?#]*[^/\\s?#])?$"
         },
         "api_key_env": {
-          "description": "Name of the environment variable holding the backend's API key. Omitted = unauthenticated (self-hosted backends only; required for openai and azure-openai). Names starting with KAIAK_ or OTEL_ are refused: they hold the gateway's own settings and tokens and its log export's headers and endpoints, which must never be sent to a backend.",
+          "description": "Name of the environment variable holding the backend's API key. Omitted = unauthenticated (self-hosted backends only; required for openai, azure-openai, anthropic and azure-anthropic). Names starting with KAIAK_ or OTEL_ are refused: they hold the gateway's own settings and tokens and its log export's headers and endpoints, which must never be sent to a backend.",
           "type": "string",
           "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
           "not": { "type": "string", "pattern": "^(KAIAK|OTEL)_" }
@@ -254,7 +254,7 @@
         }
       },
       "if": {
-        "properties": { "type": { "enum": ["openai", "azure-openai"] } },
+        "properties": { "type": { "enum": ["openai", "azure-openai", "anthropic", "azure-anthropic"] } },
         "required": ["type"]
       },
       "then": { "required": ["api_key_env"] }
@@ -312,29 +312,6 @@
               "items": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" }
             }
           }
-        },
-        "defaults": {
-          "description": "Request parameters the gateway fills in when a request omits them. Deliberately open: backends accept parameters the gateway does not know (vLLM top_k, min_p, chat_template_kwargs, ...) and passthrough preserves them, so any parameter name is accepted. Values are any JSON value except null (objects included, e.g. chat_template_kwargs: {\"enable_thinking\": false}); a default replaces an unset parameter whole, never merged. Fields the gateway owns or that carry request content are not allowed; the output limit is set through output_limit.",
-          "type": "object",
-          "propertyNames": {
-            "pattern": "^[a-z][a-z0-9_]*$",
-            "not": {
-              "enum": [
-                "model",
-                "messages",
-                "prompt",
-                "input",
-                "stream",
-                "stream_options",
-                "max_tokens",
-                "max_completion_tokens",
-                "n",
-                "best_of",
-                "service_tier"
-              ]
-            }
-          },
-          "additionalProperties": { "$ref": "#/$defs/default_value" }
         },
         "output_limit": {
           "description": "default: applied when a request sets no output limit. ceiling: larger requested limits are lowered to it. Omitted (e.g. embedding models): the gateway sets and lowers nothing.",
@@ -402,18 +379,6 @@
           }
         }
       }
-    },
-    "default_value": {
-      "description": "A model default's value: any JSON value but null. Numbers must be finite as JavaScript reads them (a number past the double range, such as 1e400, is refused at any depth); kaiak-control holds every number as a JavaScript number.",
-      "type": ["string", "number", "boolean", "array", "object"],
-      "items": { "$ref": "#/$defs/json_value" },
-      "additionalProperties": { "$ref": "#/$defs/json_value" }
-    },
-    "json_value": {
-      "description": "Any JSON value inside a model default, null included; numbers finite as for default_value.",
-      "type": ["null", "string", "number", "boolean", "array", "object"],
-      "items": { "$ref": "#/$defs/json_value" },
-      "additionalProperties": { "$ref": "#/$defs/json_value" }
     },
     "group": {
       "description": "A node of the group tree. Its limits apply to every request of a key in it or below it; the gateway gives levels no meaning.",

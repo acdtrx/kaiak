@@ -84,9 +84,9 @@
     "code": "timestamp-invalid",
     "reason": "opened_at names a real instant"
   },
-  "protocol-version-3.json": {
+  "protocol-version-4.json": {
     "kind": "schema",
-    "reason": "the protocol version is 4"
+    "reason": "the protocol version is 5"
   },
   "queued-negative.json": {
     "kind": "schema",

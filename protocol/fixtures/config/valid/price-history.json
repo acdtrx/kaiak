@@ -1,5 +1,5 @@
 {
-  "format_version": 4,
+  "format_version": 5,
   "global": {},
   "backends": {
     "openai": {
@@ -16,7 +16,6 @@
         "capabilities": { "streaming": true, "tools": true, "vision": true, "reasoning": true },
         "reasoning_efforts": ["low", "medium", "high"]
       },
-      "defaults": { "reasoning_effort": "medium" },
       "output_limit": { "default": 16384, "ceiling": 100000 },
       "prices": [
         {

@@ -1,6 +1,6 @@
 {
   "instance": "gw-1",
-  "protocol_version": 4,
+  "protocol_version": 5,
   "state": "ready",
   "started_at": "2026-09-24T09:58:12.5Z",
   "applied_config_epoch": "0f1e2d3c4b5a69788796a5b4c3d2e1f0",

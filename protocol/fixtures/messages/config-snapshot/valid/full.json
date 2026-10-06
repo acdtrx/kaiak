@@ -2,7 +2,7 @@
   "config_epoch": "3b2c9d8e7f6a5b4c3d2e1f0a9b8c7d6e",
   "version": 42,
   "config": {
-    "format_version": 4,
+    "format_version": 5,
     "global": {
       "limits": [
         { "type": "requests_per_minute", "value": 3000 },
@@ -46,14 +46,6 @@
           "context_length": 32768,
           "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": true },
           "reasoning_efforts": ["low", "medium", "high"]
-        },
-        "defaults": {
-          "temperature": 0.6,
-          "top_p": 0.95,
-          "top_k": 20,
-          "min_p": 0,
-          "stop": ["<|im_end|>"],
-          "chat_template_kwargs": { "enable_thinking": false }
         },
         "output_limit": { "default": 4096, "ceiling": 16384 }
       },

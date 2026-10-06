@@ -101,14 +101,17 @@ Made while planning (confirm in review):
     - Step 1 checks each server's sources for the new endpoints and records what each
       type claims.
 
-    | Type | Chat, completions, embeddings | Messages, count_tokens | Responses, input_tokens |
-    |---|---|---|---|
-    | `vllm`, `llama-server` | yes | yes | yes |
-    | `openai`, `azure-openai` | yes | no | yes |
-    | `anthropic`, `azure-anthropic` | no | yes | no |
-    | `openai-compatible` | yes | no | no |
+    | Type | Chat, completions, embeddings | Messages, count_tokens | Responses | input_tokens |
+    |---|---|---|---|---|
+    | `llama-server` | yes | yes | yes | yes |
+    | `vllm` | yes | yes | yes | no (not in 0.30.0) |
+    | `openai` | yes | no | yes | yes |
+    | `azure-openai` | yes | no | yes | no (Azure's v1 API answers `404`) |
+    | `anthropic`, `azure-anthropic` | no | yes | no | no |
+    | `openai-compatible` | yes | no | no | no |
 
-    The token-counting endpoints are claimed only where the server has them.
+    The token-counting endpoints are claimed only where the server has them (step 1
+    checked; `docs/specs/GATEWAY.md`, Providers → Endpoint support).
 13. **Routing takes only deployments that serve the endpoint.** A model with none
     answers `400 endpoint_not_served`, naming the endpoint: it already passed the
     model-access check, so naming it leaks nothing.
@@ -148,8 +151,9 @@ Made while planning (confirm in review):
     not retried, not a circuit failure). Other types price none of them, so they pass
     the fields untouched, as with `service_tier` today.
 20. **Service tier.**
-    - Anthropic types always send `service_tier: "standard_only"`, replacing the
-      client's value.
+    - `anthropic` always sends `service_tier: "standard_only"`, replacing the
+      client's value. `azure-anthropic` adds none (Foundry has no Priority Tier; step
+      1 changed this from "both Anthropic types").
     - `openai` and `azure-openai` force `"default"` on Responses as they do on chat.
 21. **Token-counting endpoints** run the whole pipeline.
     - They count toward requests-per-minute limits and reserve no output.
