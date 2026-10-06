@@ -1,28 +1,25 @@
-// The in-memory store: state lives as long as the process, so each store has its own
-// config epoch. Several cores of one process may share one store; every write below
+// The in-memory store: state lives as long as the process. Several cores of one process
+// may share one store; every write below
 // runs synchronously from its comparison to its notification, so no other call sees
 // part of a write or writes between the comparison and the write.
-
-import { randomBytes } from "node:crypto";
 
 import type { BatchId } from "../messages/index.ts";
 
 import type {
   ControlPlaneStore,
+  CurrentConfig,
   CurrentWindows,
   ReceivedRecord,
   StoreChange,
   StoreChangeListener,
-  StoredConfig,
   StoredGateway,
   WindowKey,
   WindowTotal,
 } from "./types.ts";
 
 export function createMemoryStore(): ControlPlaneStore {
-  const epoch = randomBytes(16).toString("hex");
-  // Oldest first; the last entry is the newest version.
-  const configs: StoredConfig[] = [];
+  // The current config, replaced by every publish.
+  let config: CurrentConfig | undefined;
   // The last counted batch per instance and when it was counted.
   const lastBatches = new Map<string, { batch: BatchId; countedAt: number }>();
   const totals = new Map<string, WindowTotal>();
@@ -44,8 +41,6 @@ export function createMemoryStore(): ControlPlaneStore {
   const isCurrent = (total: WindowTotal, current: CurrentWindows): boolean =>
     total.windowStart === (total.type === "tokens_per_hour" ? current.hourStart : current.monthStart);
 
-  const latestVersion = (): number | undefined => configs.at(-1)?.version;
-
   const liveCount = (): number => [...gateways.values()].filter((gateway) => gateway.live).length;
 
   // Every listener hears of the change even if an earlier one throws; a listener's
@@ -63,31 +58,17 @@ export function createMemoryStore(): ControlPlaneStore {
   };
 
   return {
-    async configEpoch() {
-      return epoch;
+    async currentConfig() {
+      return structuredClone(config);
     },
 
-    async latestConfig() {
-      return structuredClone(configs.at(-1));
-    },
-
-    async publishConfig(entry, expectedVersion, keep) {
-      if (latestVersion() !== expectedVersion) return { saved: false, latestVersion: latestVersion() };
-      if (entry.version !== (expectedVersion ?? 0) + 1) {
-        throw Object.assign(new Error(`version ${entry.version} does not follow ${expectedVersion ?? "none"}`), {
-          code: "config-version-out-of-order",
-        });
-      }
-      // A copy, so a caller changing its document afterwards cannot change what is stored.
-      configs.push(structuredClone(entry));
-      if (configs.length > keep) configs.splice(0, configs.length - keep);
+    async publishConfig(entry, expectedHash) {
+      if (config?.hash !== expectedHash) return { saved: false, current: structuredClone(config) };
       sequence += 1;
-      notify({ type: "config-published", version: entry.version, sequence });
+      // A copy, so a caller changing its document afterwards cannot change what is stored.
+      config = { ...structuredClone(entry), sequence };
+      notify({ type: "config-published", hash: entry.hash, sequence });
       return { saved: true, sequence };
-    },
-
-    async configsAfter(version) {
-      return structuredClone(configs.filter((entry) => entry.version > version));
     },
 
     async lastBatch(instance) {
@@ -111,7 +92,7 @@ export function createMemoryStore(): ControlPlaneStore {
       const last = instance === undefined ? undefined : lastBatches.get(instance)?.batch;
       return {
         sequence,
-        config: structuredClone(configs.at(-1)),
+        config: structuredClone(config),
         last: last && { ...last },
         windows: [...totals.values()].filter((total) => isCurrent(total, current)).map((total) => structuredClone(total)),
         liveGateways: liveCount(),
