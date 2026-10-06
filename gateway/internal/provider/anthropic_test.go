@@ -220,6 +220,50 @@ func TestAnthropicTypesRefusePriceOptions(t *testing.T) {
 	}
 }
 
+// A 1-hour cache write is refused wherever a Messages request can carry a
+// cache_control — inside a tool result's content, a document's content source, a
+// search result's content, at any depth — and a cache_control or ttl named twice in
+// one object is refused, since the gateway and the backend could read different ones
+// (the pre-merge review's M2): here the 1-hour one comes second, past the one a
+// first-wins reader would stop at.
+func TestAnthropicTypesRefuseNestedOneHourCacheWrites(t *testing.T) {
+	const oneHour = `"cache_control":{"type":"ephemeral","ttl":"1h"}`
+	refused := []struct{ body, code, param string }{
+		{`{"model":"pub","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":[{"type":"text","text":"r",` + oneHour + `}]}]}]}`,
+			"price_option_unsupported", "messages[0].content[0].content[0].cache_control.ttl"},
+		{`{"model":"pub","messages":[{"role":"user","content":[{"type":"document","source":{"type":"content","content":[{"type":"text","text":"d",` + oneHour + `}]}}]}]}`,
+			"price_option_unsupported", "messages[0].content[0].source.content[0].cache_control.ttl"},
+		{`{"model":"pub","messages":[{"role":"user","content":[{"type":"search_result","source":"s","title":"t","content":[{"type":"text","text":"x",` + oneHour + `}]}]}]}`,
+			"price_option_unsupported", "messages[0].content[0].content[0].cache_control.ttl"},
+		{`{"model":"pub","messages":[{"role":"user","content":[{"type":"text","text":"a","cache_control":{"type":"ephemeral"},` + oneHour + `}]}]}`,
+			"duplicate_member", "messages[0].content[0].cache_control"},
+		{`{"model":"pub","messages":[{"role":"user","content":[{"type":"text","text":"a","cache_control":{"type":"ephemeral","ttl":"5m","ttl":"1h"}}]}]}`,
+			"duplicate_member", "messages[0].content[0].cache_control.ttl"},
+		// The orders a last-wins reader missed: the 1-hour one first.
+		{`{"model":"pub","messages":[{"role":"user","content":[{"type":"text","text":"a",` + oneHour + `,"cache_control":{"type":"ephemeral"}}]}]}`,
+			"price_option_unsupported", "messages[0].content[0].cache_control.ttl"},
+		{`{"model":"pub","messages":[{"role":"user","content":[{"type":"text","text":"a","cache_control":{"type":"ephemeral","ttl":"1h","ttl":"5m"}}]}]}`,
+			"price_option_unsupported", "messages[0].content[0].cache_control.ttl"},
+	}
+	r := moduleRegistry()
+	for _, typ := range []config.BackendType{config.BackendAnthropic, config.BackendAzureAnthropic} {
+		t.Run(string(typ), func(t *testing.T) {
+			s := newWireServer(t)
+			b := wireBackend(s, typ)
+			for _, c := range refused {
+				_, err := sendTo(r, b, Messages, c.body)
+				refusal, ok := errors.AsType[*RefusalError](err)
+				if !ok || refusal.Code != c.code || refusal.Param != c.param {
+					t.Errorf("%s: %v, want a %s refusal naming %s", c.body, err, c.code, c.param)
+				}
+			}
+			if n := len(s.requests()); n != 0 {
+				t.Errorf("%d requests reached the backend, want none", n)
+			}
+		})
+	}
+}
+
 // Self-hosted types price nothing: the price options pass to their Messages
 // endpoint untouched.
 func TestSelfHostedTypesPassPriceOptions(t *testing.T) {
@@ -333,5 +377,40 @@ func TestAnthropicTypesProbe(t *testing.T) {
 	}
 	if ListsModels(config.BackendAzureAnthropic) || !ListsModels(config.BackendAnthropic) {
 		t.Error("ListsModels: azure-anthropic must have none, anthropic one")
+	}
+}
+
+// On the cloud types a missing model is read from the answer's structured fields
+// only — OpenAI's and Azure's error code, Anthropic's not_found_error whose message
+// begins "model:" — never from a message that merely names the model: a request can
+// make these backends echo an ID it chose (a Responses item_reference, a file_id),
+// and a client naming the backend model there must not open the deployment's circuit
+// (the pre-merge review's M1). Such a 404 is the caller's, relayed.
+func TestCloudTypesReadAMissingModelByItsFieldsOnly(t *testing.T) {
+	openAIEcho := `{"error":{"message":"Item with id 'backend-model' not found.","type":"invalid_request_error","param":"input","code":null}}`
+	anthropicEcho := `{"type":"error","error":{"type":"not_found_error","message":"File not found: backend-model"}}`
+	r := moduleRegistry()
+	for _, c := range []struct {
+		typ      config.BackendType
+		endpoint Endpoint
+		body     string
+		echo     string
+	}{
+		{config.BackendOpenAI, Responses, `{"model":"pub","input":"hi"}`, openAIEcho},
+		{config.BackendAzureOpenAI, Responses, `{"model":"pub","input":"hi"}`, openAIEcho},
+		{config.BackendAnthropic, Messages, messagesBody, anthropicEcho},
+		{config.BackendAzureAnthropic, Messages, messagesBody, anthropicEcho},
+	} {
+		t.Run(string(c.typ), func(t *testing.T) {
+			s := newWireServer(t)
+			s.set(http.StatusNotFound, c.echo)
+			resp, err := sendTo(r, wireBackend(s, c.typ), c.endpoint, c.body)
+			if err != nil {
+				t.Fatalf("an echoed ID naming the model = %v, want the 404 relayed", err)
+			}
+			if got := readAll(resp); resp.Status() != http.StatusNotFound || got != c.echo {
+				t.Errorf("relayed %d %q, want 404 %q", resp.Status(), got, c.echo)
+			}
+		})
 	}
 }

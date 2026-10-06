@@ -156,7 +156,7 @@
     only how many inputs it holds).
   - Messages (settled 2026-10-06): `model`, `stream`, `max_tokens`, each
     `tools[].type`, `mcp_servers`, `container`; on Anthropic types also
-    `service_tier`, `speed`, `inference_geo` and every `cache_control.ttl` (Providers
+    `service_tier` (on `anthropic`), `speed`, `inference_geo` and every `cache_control.ttl` (Providers
     → Standard price on Anthropic types).
   - Responses (settled 2026-10-06): `model`, `stream`, `max_output_tokens`, `store`,
     `previous_response_id`, `conversation`, `background`, each `tools[].type`,
@@ -479,9 +479,14 @@ own, and a client sending repeats is broken either way.
     Claude API only — Foundry has no such parameter, its US Data Zone is a deployment
     type and its price a deployment matter, `docs/BACKLOG.md` → prices per deployment
     or region);
-  - a `cache_control` with `ttl: "1h"` anywhere in `system`, `messages[].content[]`,
-    `tools[]` or the top level (a 1-hour cache write costs 2× input, a 5-minute one
-    1.25×, and `tokens_cache_write` is one unit).
+  - a `cache_control` with `ttl: "1h"` at the top level or anywhere under `system`,
+    `messages` or `tools`, at any depth — a tool result's content, a document's
+    content source, a search result's content (settled 2026-10-06, the pre-merge
+    review's M2) — `param` its path (`messages[0].content[0].content[0].cache_control.ttl`).
+    A 1-hour cache write costs 2× input, a 5-minute one 1.25×, and
+    `tokens_cache_write` is one unit. A `cache_control` or `ttl` named twice in one
+    object is refused as `400 duplicate_member`: the gateway and the backend could
+    read different ones. One streaming pass over the body, nothing copied.
 
   `messages/count_tokens` is neither refused nor edited: nothing is generated or
   billed there (settled 2026-10-06, as `responses/input_tokens` keeps its tier).
@@ -584,17 +589,25 @@ own, and a client sending repeats is broken either way.
   counts toward the circuit and produces no usage (nothing was
   processed). Matched conservatively, over the error shapes servers use
   (`{"error": {"message", "code"}}` — OpenAI, vLLM; `{"message", "code"}` — older
-  vLLM; `{"error": "<text>"}` — Ollama): the message names the deployment's
-  backend-side model as a whole word (vLLM: ``The model `…` does not exist.``), or
-  the code is the backend module's: `model_not_found` (`openai-compatible`, `openai`,
-  `vllm`, `llama-server`), or `DeploymentNotFound` or `model_not_found`
-  (`azure-openai`, whose v1 API is OpenAI's shape). Anthropic's shape
-  (`{"type": "error", "error": {"type", "message"}}`) is read the same way (settled
-  2026-10-06): vLLM's Messages endpoints answer a missing model in it (``The model
-  `…` does not exist.``, type `NotFoundError`, run on 0.30.0), and so do the
-  `anthropic` type (a `not_found_error` naming the model) and `azure-anthropic`
-  (that, or Azure's `DeploymentNotFound` code) — the last two from the documentation,
-  not verified live. Any other
+  vLLM; `{"error": "<text>"}` — Ollama; Anthropic's `{"type": "error", "error":
+  {"type", "message"}}`), by each module's rule:
+  - the self-hosted types (`openai-compatible`, `vllm`, `llama-server`): the message
+    names the deployment's backend-side model as a whole word (vLLM: ``The model `…`
+    does not exist.``, in either format — vLLM's Messages endpoints answer it in
+    Anthropic's shape, type `NotFoundError`, run on 0.30.0), or the code is
+    `model_not_found`;
+  - the cloud types, by structured fields only (settled 2026-10-06, the pre-merge
+    review's M1): `openai`, code `model_not_found`; `azure-openai` (OpenAI's shape),
+    `DeploymentNotFound` or `model_not_found`; `anthropic`, a `not_found_error` whose
+    message begins `model:`; `azure-anthropic`, that or `DeploymentNotFound` — the
+    Anthropic two from the documentation, not verified live. Their messages are not
+    read: a request can make these APIs echo an ID it chose in a `404` (a Responses
+    `item_reference`, a `file_id` — refused anyway, Client API → stored objects), and a
+    client naming the backend-side model there would open the deployment's circuit.
+    Rejected: the whole-word match on every type — five such requests could open
+    every deployment of a model.
+
+  Any other
   `404` stays the caller's and is relayed as it came. The probe checks the model too
   (Routing and reliability → Circuit mechanics), and every applied config is checked
   once in the background: each backend's models list is fetched (up to 8 backends at

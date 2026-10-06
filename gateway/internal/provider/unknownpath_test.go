@@ -126,9 +126,17 @@ func TestUnknownPathByModule(t *testing.T) {
 				t.Errorf("caller's 404 relayed as %q", got)
 			}
 
-			// A missing model is read first, whatever shape it comes in — here vLLM's
-			// older one, which is not the OpenAI error shape.
-			answer(`{"object":"error","message":"The model ` + "`backend-model`" + ` does not exist.","type":"NotFoundError","code":404}`)
+			// A missing model is read first, whatever shape it comes in — on a
+			// self-hosted type vLLM's older one, which is not the OpenAI error shape; on
+			// a cloud type its API's code (the message alone is not read there).
+			missing := `{"object":"error","message":"The model ` + "`backend-model`" + ` does not exist.","type":"NotFoundError","code":404}`
+			switch m.typ {
+			case config.BackendOpenAI:
+				missing = `{"error":{"message":"The model 'backend-model' does not exist","type":"invalid_request_error","param":"model","code":"model_not_found"}}`
+			case config.BackendAzureOpenAI:
+				missing = `{"error":{"code":"DeploymentNotFound","message":"The API deployment for this resource does not exist."}}`
+			}
+			answer(missing)
 			_, err = sendFor(r, b)
 			var perr *Error
 			if !errors.As(err, &perr) || perr.Code != CodeModelMissing {

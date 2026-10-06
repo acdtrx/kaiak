@@ -39,9 +39,9 @@ type wireCall struct {
 	// usage-only chunk that edit asked for as hidden.
 	body       []byte
 	stripUsage bool
-	// missingModelCodes are the error codes by which the backend says, in a 404, that
-	// the model does not exist there.
-	missingModelCodes []string
+	// missingModel reports whether a 404 answer (its first maxNotFoundBody bytes) says
+	// the deployment's backend-side model does not exist there.
+	missingModel func(answer []byte, model string) bool
 	// unknownPath reports whether a 404 answer (its first maxNotFoundBody bytes) is
 	// the server's answer to a path it does not have: the request reached the
 	// server but no endpoint.
@@ -130,7 +130,7 @@ func sendWire(ctx context.Context, req *Request, call wireCall) (Response, error
 		// an unknown path.
 		var deploymentErr *Error
 		switch answer, ok := readNotFound(resp); {
-		case ok && resp.StatusCode == http.StatusNotFound && modelMissing(answer, req.Deployment.Model, call.missingModelCodes):
+		case ok && resp.StatusCode == http.StatusNotFound && call.missingModel(answer, req.Deployment.Model):
 			deploymentErr = &Error{Code: CodeModelMissing, Err: fmt.Errorf("backend %s answered 404: model %q does not exist there",
 				call.backend.ID, req.Deployment.Model)}
 		case ok && call.unknownPath(answer) && call.core:
@@ -295,35 +295,71 @@ func readNotFound(resp *http.Response) (answer []byte, ok bool) {
 	return head, err == nil
 }
 
-// modelMissing reports whether a 404 answer says the deployment's model does not
-// exist on the backend: its error message names model as a whole word, or its error
-// code is one of codes, the module's. The answer's shapes vary by server —
-// {"error": {"message", "code"}} (OpenAI, vLLM), {"message", "code"} at the top
-// level (older vLLM), {"error": "<message>"} (Ollama).
-func modelMissing(answer []byte, model string, codes []string) bool {
+// notFoundFields are the parts of a 404 answer a missing model is read from: its
+// error message, code and type, wherever the server's shape puts them —
+// {"error": {"message", "code", "type"}} (OpenAI, vLLM, and Anthropic's
+// {"type": "error", "error": {...}}), {"message", "code"} at the top level (older
+// vLLM), {"error": "<message>"} (Ollama). Fields that are not strings read as none.
+type notFoundFields struct {
+	message, code, errorType string
+}
+
+func readNotFoundFields(answer []byte) (f notFoundFields, ok bool) {
 	var top struct {
 		Error   json.RawMessage `json:"error"`
-		Message string          `json:"message"`
+		Message json.RawMessage `json:"message"`
 		Code    json.RawMessage `json:"code"`
 	}
 	if json.Unmarshal(answer, &top) != nil {
-		return false
+		return notFoundFields{}, false
 	}
-	message, code := top.Message, top.Code
+	message, code, errorType := top.Message, top.Code, json.RawMessage(nil)
 	var nested struct {
-		Message string          `json:"message"`
+		Message json.RawMessage `json:"message"`
 		Code    json.RawMessage `json:"code"`
+		Type    json.RawMessage `json:"type"`
 	}
 	switch {
-	case json.Unmarshal(top.Error, &message) == nil:
-	case json.Unmarshal(top.Error, &nested) == nil:
-		message, code = nested.Message, nested.Code
+	case json.Unmarshal(top.Error, new(string)) == nil:
+		message = top.Error
+	case json.Unmarshal(top.Error, &nested) == nil && len(top.Error) > 0:
+		message, code, errorType = nested.Message, nested.Code, nested.Type
 	}
-	var codeName string
-	if json.Unmarshal(code, &codeName) == nil && slices.Contains(codes, codeName) {
-		return true
+	_ = json.Unmarshal(message, &f.message)
+	_ = json.Unmarshal(code, &f.code)
+	_ = json.Unmarshal(errorType, &f.errorType)
+	return f, true
+}
+
+// missingModelNamedOrCoded is a self-hosted server's missing-model rule: the answer's
+// message names the model as a whole word (vLLM: "The model `…` does not exist."),
+// or its code is one of codes. These servers answer a request's own IDs only for
+// what the gateway's clients cannot store there, so the name is a safe signal.
+func missingModelNamedOrCoded(codes ...string) func(answer []byte, model string) bool {
+	return func(answer []byte, model string) bool {
+		f, ok := readNotFoundFields(answer)
+		return ok && (slices.Contains(codes, f.code) || namesWord(f.message, model))
 	}
-	return namesWord(message, model)
+}
+
+// missingModelCoded is a cloud API's missing-model rule: the answer's code is one of
+// codes. The message is not read: a request can make these APIs echo an ID it chose
+// in a 404 (a Responses item_reference, a file_id), and a client naming the
+// backend-side model there must not count as the deployment's failure
+// (docs/specs/GATEWAY.md, Providers: wrong model on a host).
+func missingModelCoded(codes ...string) func(answer []byte, model string) bool {
+	return func(answer []byte, _ string) bool {
+		f, ok := readNotFoundFields(answer)
+		return ok && slices.Contains(codes, f.code)
+	}
+}
+
+// anthropicModelMissing is Anthropic's missing model: a not_found_error whose message
+// begins "model:" (the API names the model it lacks so; a file or other object it
+// lacks reads otherwise).
+func anthropicModelMissing(answer []byte, _ string) bool {
+	f, ok := readNotFoundFields(answer)
+	return ok && f.errorType == "not_found_error" && strings.HasPrefix(f.message, "model:")
 }
 
 // errorAnswer is what the core reads of an error answer in the OpenAI format.

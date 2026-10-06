@@ -48,7 +48,7 @@ func (m *anthropic) header() http.Header {
 // "standard_only" replaces the client's, since the API's default ("auto") draws on
 // Priority Tier capacity where the organization has a commitment, billed outside the
 // price table (docs/specs/GATEWAY.md, Providers → Standard price on Anthropic types).
-// A missing model is a not_found_error naming it, read by its message.
+// A missing model is a not_found_error whose message begins "model:".
 func (m *anthropic) Send(ctx context.Context, req *Request) (Response, error) {
 	var edits []memberEdit
 	if req.Endpoint == Messages {
@@ -63,7 +63,8 @@ func (m *anthropic) Send(ctx context.Context, req *Request) (Response, error) {
 	}
 	return sendWire(ctx, req, wireCall{
 		backend: m.backend, client: m.client, url: m.url(req.Endpoint.path()), header: m.header(),
-		body: body, stripUsage: stripUsage, unknownPath: m.unknownPath, core: req.Endpoint == Messages,
+		body: body, stripUsage: stripUsage, missingModel: anthropicModelMissing, unknownPath: m.unknownPath,
+		core: req.Endpoint == Messages,
 	})
 }
 
