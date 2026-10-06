@@ -66,8 +66,10 @@ flowchart LR
   cache, unsent usage — locked to one process), which needs a volume per pod and a
   stable instance ID (settled 2026-09-25; `docs/specs/GATEWAY.md`, Configuration
   sources).
-- **Control plane**: one process per store (a store lease enforces it), never in the
-  request path.
+- **Control plane**: any number of processes over one store whose implementation holds
+  the store contract (one totals sequence, conditional writes, consistent reads, change
+  notification — `docs/specs/CONTROL-PROTOCOL.md`, Control-plane processes); one process
+  with the in-memory store. Never in the request path.
 - **Admin port** (`9090`: probes, `/metrics`) stays inside the cluster; only the API
   port (`8080`) is exposed to clients.
 - Details, sizing and alerts: `docs/DEPLOYMENT.md`.
@@ -288,9 +290,12 @@ Test tooling outside the binary:
     message.
   - `storage` — the storage interface every piece of control-plane state goes
     through (async, so a database implements it) and the in-memory store, its
-    reference implementation and the sample's store. The store owns the config
-    epoch, the lease that keeps it to one control-plane process, and the conditional
-    batch write that makes counting exactly-once.
+    reference implementation and the sample's store. The store is where
+    control-plane processes agree: the config epoch, the totals sequence every
+    totals-changing write moves, conditional writes (publish on the version, batch on
+    the instance's last batch, gateway records on their revision), the consistent
+    totals snapshot, and `subscribe()`, which tells every core of every change. The
+    contract ships as tests (`store-contract`, a second package entry).
   - `config-versions` — publishing (validate, refuse a changed group parent, then
     store as the next version),
     the current version, resuming from a version within the bounded history or
@@ -327,7 +332,8 @@ Test tooling outside the binary:
   - `control-plane` — the core the host app builds (`createControlPlane`): store,
     token, clock, history and recent-records sizes, live-set timings in; the
     operations of the subsystems above out, the live set's size wired into totals;
-    `start`/`stop` take and give up the store's lease and run the expiry sweep.
+    `start`/`stop` run and stop the expiry sweep (every core sweeps; its writes are
+    conditional). Listener events come from the store's notifications.
     HTTP adapters and the host app use it; it knows nothing of HTTP.
   - `fastify` — the HTTP adapter: a Fastify plugin (`controlProtocolPlugin`) the host
     registers with a core instance. It mounts the gateway endpoints (default under

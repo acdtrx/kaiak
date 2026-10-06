@@ -410,10 +410,9 @@ svg .band { stroke: none; }
 
 <ul>
   <li><strong>Totals follow their config</strong>: every totals message names the <code>config_epoch</code> and <code>config_version</code> it was computed under; a gateway applies them only if they match the config it runs.</li>
-  <li><strong>Ordering</strong>: pushes and acks travel on different connections, so each carries a <code>revision</code> (<code>control_plane</code> ID + <code>sequence</code>). Older revisions are ignored; a new <code>control_plane</code> (a restart) is adopted, and the gateway never goes back to one it moved away from.</li>
+  <li><strong>Ordering</strong>: pushes and acks travel on different connections, and may come from different control-plane processes, so each carries a <code>revision</code>: the store's totals sequence, which every counted batch, publish and live-set change moves by one. Within the config epoch the gateway runs, older revisions are ignored; restarts and replicas need no special case.</li>
   <li><strong>Exact sums</strong>: <code>used</code> travels as a decimal string (nano-USD for money), summed as <code>BigInt</code> — a month of spend can exceed what a JavaScript number holds exactly.</li>
-  <li><strong>Model-set edits keep their spend</strong>: a limit whose only change is its model set carries its current windows' spend across the publish, on both sides — each against the config it last held; the next totals settle any difference.</li>
-  <li><strong>Totals per scope</strong>: a limit's identity is (group, type, model set); a totals window names its <code>group</code>, or none for a global limit. A record's <code>groups</code> path decides which windows it adds to.</li>
+  <li><strong>Totals per scope</strong>: a scope (global or a group) holds at most one limit per type, and a limit's identity is (scope, type); a totals window names its <code>group</code>, or none for a global limit. A record adds to the windows of every scope on its <code>groups</code> path, whether or not a limit is there: an edited limit keeps its spend, a limit added mid-window starts with the window's usage, and publishing never waits on counting.</li>
 </ul>
 
 <h3>Budgets on the group tree</h3>
@@ -496,7 +495,7 @@ svg .band { stroke: none; }
 <section id="inside">
 <h2>Inside the control plane</h2>
 <figure>
-<svg viewBox="0 0 960 360" role="img" aria-label="Inside a control plane: the host app registers kaiak-control's Fastify plugin, which serves the gateway endpoints over the core; the host's own UI and config editor call the same core; the core runs config versions, usage, gateways and request checks over one store, which the host supplies and which holds a lease so only one process uses it.">
+<svg viewBox="0 0 960 360" role="img" aria-label="Inside a control plane: the host app registers kaiak-control's Fastify plugin, which serves the gateway endpoints over the core; the host's own UI and config editor call the same core; the core runs config versions, usage, gateways and request checks over one store, which the host supplies; any number of processes may run the core over one store that holds the contract.">
   <defs>
     <marker id="i-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker>
   </defs>
@@ -528,21 +527,21 @@ svg .band { stroke: none; }
 
   <rect x="640" y="190" width="280" height="64" rx="8" class="box"/>
   <text x="780" y="216" text-anchor="middle" class="t">createKey · validateConfig</text>
-  <text x="780" y="236" text-anchor="middle" class="s">resolveScopes · limitIdentity</text>
+  <text x="780" y="236" text-anchor="middle" class="s">resolveScopes · store-contract tests</text>
 
   <line x1="165" y1="130" x2="165" y2="168" class="edge" marker-end="url(#i-a)"/>
   <line x1="465" y1="130" x2="465" y2="168" class="edge" marker-end="url(#i-a)"/>
   <line x1="320" y1="254" x2="320" y2="288" class="edge" marker-end="url(#i-a)"/>
-  <text x="330" y="276" class="s">async · lease · conditional batch write</text>
+  <text x="330" y="276" class="s">async · one sequence · conditional writes · subscribe</text>
   <line x1="600" y1="100" x2="638" y2="100" class="edge-dash"/>
   <path d="M600,120 C620,150 700,160 720,188" class="edge-dash" marker-end="url(#i-a)"/>
 </svg>
-<figcaption>The core knows nothing of HTTP; the Fastify plugin is its adapter. One core per store — a lease taken at start and renewed every 10 s keeps a second process off it, because config versions, totals ordering and stream subscriptions live in one process. The sample control plane is exactly this picture with a config file as the "editor" and a read-only page as the "UI". How to build the real one: <code>control/kaiak-control/GUIDE.md</code>.</figcaption>
+<figcaption>The core knows nothing of HTTP; the Fastify plugin is its adapter. The core keeps nothing replicas must agree on: the store holds the totals sequence, decides every change by a conditional write, reads totals in one snapshot and tells every core of every change. So a store that holds that contract across processes (a database with transactions and a change channel) runs any number of control-plane replicas behind a load balancer; the in-memory store, one process. The sample control plane is exactly this picture with a config file as the "editor" and a read-only page as the "UI" (its protocol replicas show several cores over its one store, inside one process). How to build the real one: <code>control/kaiak-control/GUIDE.md</code>.</figcaption>
 </figure>
 </section>
 
 <footer>
-  Overview only — the contract is <code>docs/specs/CONTROL-PROTOCOL.md</code> (with schemas and fixtures in <code>protocol/</code>); gateway behavior in <code>docs/specs/GATEWAY.md</code>; operations in <code>docs/DEPLOYMENT.md</code>. Written 2026-09-26 against 0.6.0; describes the group tree with the 2026-09-27 review's fixes (after 0.7.1), tiered prices (2026-09-29), the cache-write unit (2026-10-02) and the Anthropic backend types with model defaults removed (2026-10-06, config format and protocol version 5). Back to <a href="gateway.html">gateway internals</a>.
+  Overview only — the contract is <code>docs/specs/CONTROL-PROTOCOL.md</code> (with schemas and fixtures in <code>protocol/</code>); gateway behavior in <code>docs/specs/GATEWAY.md</code>; operations in <code>docs/DEPLOYMENT.md</code>. Written 2026-09-26 against 0.6.0; describes the group tree with the 2026-09-27 review's fixes (after 0.7.1), tiered prices (2026-09-29), the cache-write unit (2026-10-02) the Anthropic backend types with model defaults removed, and several control-plane processes over one store with limits by scope and type (2026-10-06, config format and protocol version 5). Back to <a href="gateway.html">gateway internals</a>.
 </footer>
 </main>
 </body>

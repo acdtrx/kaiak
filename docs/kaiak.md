@@ -105,8 +105,9 @@ The name reads the same both ways (the gateway carries traffic in both direction
 - **Global** — the implicit root above every top-level group: limits across
   everything.
 - **Limits** — any scope (a group, or global) × any type (requests/min, tokens/min,
-  tokens/hour, USD/month, …) × a set of models. A request must pass the limits of
-  every scope on its key's path — its group, each ancestor, global. Months are
+  tokens/hour, USD/month, …), at most one per type in a scope, covering every model.
+  A request must pass the limits of every scope on its key's path — its group, each
+  ancestor, global. Months are
   calendar months in UTC. Unpriced models cost 0 and are held by request and token
   limits.
 

@@ -157,7 +157,9 @@ The whole loop runs locally, with a fake backend standing in for a model server.
 
    Every save of the config file is validated, published as a new version and pushed
    to the gateways; an invalid file is rejected and the current version stays.
-   Optional: `KAIAK_SAMPLE_LISTEN` (default `127.0.0.1:8090`), `KAIAK_LOG_FORMAT`.
+   Optional: `KAIAK_SAMPLE_LISTEN` (default `127.0.0.1:8090`), `KAIAK_LOG_FORMAT`,
+   `KAIAK_SAMPLE_PROTOCOL_PORTS` (protocol replicas over the same store: a
+   demonstration of several control-plane processes).
 
 4. **A gateway in control-plane mode**, from `gateway/`:
 
@@ -181,8 +183,10 @@ plane (with your UI, your users and your database) is a separate application tha
 imports `kaiak-control`. The library does the whole protocol side. You supply:
 
 - **a store**: an implementation of the `ControlPlaneStore` interface on your
-  database. Its contract covers exactly-once usage counting, a lease that keeps one
-  control-plane process per store, and a config history;
+  database. Its contract covers exactly-once usage counting, one totals sequence,
+  conditional writes and change notification — what lets any number of
+  control-plane processes run over one store — and a config history. The library ships
+  the contract as tests your store runs;
 - **a config source**: your UI or API builds whole config documents and publishes
   them through the library, which validates them and assigns versions;
 - **everything a human touches**: login, roles, audit, reports and key management.

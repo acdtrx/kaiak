@@ -25,19 +25,19 @@ flowchart LR
 - **Gateways**: N identical, **stateless** replicas — a Deployment behind one
   Service. Clients reach them through an ingress or the Service on the API port
   (`8080`). The admin port (`9090`) is never routed through an ingress.
-- **Control plane**: exactly **one process per store**, `replicas: 1`, and a
-  `Recreate` update strategy (a rolling update briefly runs two). The config version
-  order, the totals revision and the live-gateway set live in one process; a second
-  process on the same store refuses to start (`store-lease-held` — the store lease,
-  `CONTROL-PROTOCOL.md` → Control-plane processes). Running gateways never wait on
-  it: an outage does not stop traffic (Control-plane outages, below) — but a
-  gateway **starting** needs it, or a seed config (Boot).
+- **Control plane**: as many processes as its store allows. With a store that holds
+  the contract across processes (a database with conditional writes and a change
+  channel — `CONTROL-PROTOCOL.md` → Control-plane processes), run replicas behind a
+  Service, no stickiness, rolling updates included: a gateway whose replica goes away
+  reconnects to another and resumes. With the in-memory store, one process. Running
+  gateways never wait on it: an outage does not stop traffic (Control-plane outages,
+  below) — but a gateway **starting** needs it, or a seed config (Boot).
 - **The sample control plane is not a billing system.** Its store is in memory:
   budgets, usage totals and batch de-duplication reset every time it restarts (it
   says so in its log and on its page). Use it to validate the deployment. For real
   budgets, a control plane built on `kaiak-control` implements the storage interface
-  (`control/kaiak-control/src/storage/types.ts`) on a durable store — including the
-  lease and the conditional batch write.
+  (`control/kaiak-control/src/storage/types.ts`) on a durable store, and runs the
+  library's store contract tests against it.
 - **File mode is single-replica.** Without a control plane every replica enforces
   every limit and every backend cap in full — N replicas admit N × each limit. Run
   file mode as one gateway, or use a control plane.
@@ -279,7 +279,9 @@ Nothing else is lost: config and totals come back from the control plane.
 - **Monthly budgets reset at the UTC month boundary** (hours are UTC hours too —
   `GATEWAY.md` → Limits): a group whose people work in UTC+3 sees its budget reset at
   03:00 on the 1st.
-- **The sample control plane**: `replicas: 1`, `strategy: Recreate`. It has **no
+- **The sample control plane**: `replicas: 1`, `strategy: Recreate` — its store is in
+  memory, one process (its `KAIAK_SAMPLE_PROTOCOL_PORTS` replicas share that one
+  process: a demonstration, not a deployment). It has **no
   health endpoint** — use a TCP probe on 8090 for readiness and liveness (its page,
   `GET /`, renders every gateway and spend, heavier than a probe needs). Starting
   resources: 100m CPU, 256 MiB memory (its store keeps a bounded number of recent
@@ -345,6 +347,7 @@ backends, the control plane and the collector in `NO_PROXY`.
 | `KAIAK_SAMPLE_CONFIG` | — (required) | The config file it serves and watches (mount the ConfigMap's directory, not a `subPath` file). |
 | `KAIAK_CONTROL_TOKEN` | — (required) | The token gateways must present. |
 | `KAIAK_SAMPLE_LISTEN` | `127.0.0.1:8090` (the image sets `0.0.0.0:8090`) | `host:port`; `[addr]:port` for IPv6. |
+| `KAIAK_SAMPLE_PROTOCOL_PORTS` | none | Comma-separated ports on the `KAIAK_SAMPLE_LISTEN` host, each a protocol replica: another control-plane core over the sample's one in-memory store, serving only the gateway endpoints (`0` picks a free port). A demonstration of several control-plane processes over one store, inside one process. |
 | `KAIAK_LOG_FORMAT` | `json` | `json`, or `text` (not in the image: needs a dev dependency). |
 
 **Image build** (`scripts/build-images.sh`; flags win): `KAIAK_DOCKER_CONTEXT`
@@ -489,8 +492,8 @@ the document (a script, or the control plane) rather than editing it by hand.
   fit the prompt's room in `context_length`, never below 256; each client API takes
   it under its own key (`max_completion_tokens`, `max_tokens`, `max_output_tokens`).
 - **`child_defaults` is a default, not a ceiling** (`CONTROL-PROTOCOL.md` → Config:
-  The group tree): a child's own `allowed_models` or limit of the same type and model
-  set replaces the default, so it can loosen it. Put a hard restriction for a
+  The group tree): a child's own `allowed_models` or limit of the same type replaces
+  the default, so it can loosen it. Put a hard restriction for a
   subtree — the models and budget no person under `users` may exceed — on the
   parent's **own** `allowed_models` and `limits`, which bind every group below it.
 - **Effective limits are bounded at 50 000** (`effective-limits-exceeded`): global's
@@ -985,7 +988,14 @@ directory's owner must be the gateway's user:
 - **Config format 5** (this release, protocol 5): models carry no `defaults` — a
   config with them is refused. Bump `format_version` to 5 and delete every model's
   `defaults` before publishing (the parameters move to the backends' own settings:
-  vLLM's generation config or flags, llama-server's flags).
+  vLLM's generation config or flags, llama-server's flags). **Limits carry no
+  `models`**: a scope (global or a group) holds at most one limit per type, counting
+  every model (USD limits count priced models only, as before); delete `models` from
+  every limit and merge limits of one type in one scope. An edited limit keeps its
+  window's spend, and a limit added mid-window starts with the window's usage so far.
+  The data-directory files `limits.json` and `totals.json` move to format 3: their
+  old copies are discarded at the first start (file mode's windows start empty;
+  control-plane mode takes the totals from the next push).
 
 ## Images
 
