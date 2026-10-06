@@ -20,6 +20,7 @@ test("defaults: loopback port 8090, JSON logs, the config path resolved against 
   assert.deepEqual(readSettings(REQUIRED, "/work"), {
     configFile: "/work/config.json",
     listen: { host: "127.0.0.1", port: 8090 },
+    protocolPorts: [],
     token: "secret",
     logFormat: "json",
   });
@@ -39,6 +40,13 @@ test("listen addresses: host:port, port 0, all interfaces, IPv6", () => {
   assert.deepEqual(listen("[::1]:8090"), { host: "::1", port: 8090 });
 });
 
+test("protocol replicas: a comma-separated list of ports, port 0 included", () => {
+  const ports = (value: string) => readSettings({ ...REQUIRED, KAIAK_SAMPLE_PROTOCOL_PORTS: value }, "/work").protocolPorts;
+  assert.deepEqual(ports(""), []);
+  assert.deepEqual(ports("8091"), [8091]);
+  assert.deepEqual(ports("8091, 8092,0"), [8091, 8092, 0]);
+});
+
 test("text logs on request", () => {
   assert.equal(readSettings({ ...REQUIRED, KAIAK_LOG_FORMAT: "text" }, "/work").logFormat, "text");
 });
@@ -49,6 +57,9 @@ test("missing or invalid settings name the variable", () => {
   assert.match(settingsError({ ...REQUIRED, KAIAK_CONTROL_TOKEN: "" }), /KAIAK_CONTROL_TOKEN is required/);
   for (const value of ["8090", "127.0.0.1", "127.0.0.1:65536", "127.0.0.1:x", "::1:8090", "host:80:80"]) {
     assert.match(settingsError({ ...REQUIRED, KAIAK_SAMPLE_LISTEN: value }), /KAIAK_SAMPLE_LISTEN=/, value);
+  }
+  for (const value of ["x", "8091,", "65536", "8091;8092", "-1"]) {
+    assert.match(settingsError({ ...REQUIRED, KAIAK_SAMPLE_PROTOCOL_PORTS: value }), /KAIAK_SAMPLE_PROTOCOL_PORTS=/, value);
   }
   assert.match(settingsError({ ...REQUIRED, KAIAK_LOG_FORMAT: "pretty" }), /KAIAK_LOG_FORMAT="pretty": want json or text/);
 });

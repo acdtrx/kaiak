@@ -15,10 +15,11 @@ try {
   process.exit(1);
 }
 
-const { app } = createSampleApp({
+const { app, replicas } = createSampleApp({
   configFile: settings.configFile,
   token: settings.token,
   logger: loggerOptions(settings.logFormat),
+  protocolReplicas: settings.protocolPorts.length,
 });
 
 let closing = false;
@@ -28,7 +29,7 @@ const close = (signal: NodeJS.Signals): void => {
   app.log.info({ signal }, "closing");
   // kaiak-control's hooks end the gateway streams and stop the expiry sweep; the app's stop
   // the config file watcher.
-  app.close().then(
+  Promise.all([app.close(), ...replicas.map((replica) => replica.app.close())]).then(
     () => process.exit(0),
     (error: unknown) => {
       app.log.error({ err: error }, "close failed");
@@ -43,6 +44,11 @@ try {
   const url = await app.listen({ host: settings.listen.host, port: settings.listen.port });
   // One line naming the bound address, for scripts waiting on the server.
   app.log.info({ url, configFile: settings.configFile }, `sample control plane listening on ${url}`);
+  for (const [i, port] of settings.protocolPorts.entries()) {
+    const replica = replicas[i]!;
+    const replicaUrl = await replica.app.listen({ host: settings.listen.host, port });
+    replica.app.log.info({ url: replicaUrl, replica: i + 1 }, `sample protocol replica ${i + 1} listening on ${replicaUrl}`);
+  }
 } catch (error) {
   app.log.error({ err: error }, "startup failed");
   process.exit(1);

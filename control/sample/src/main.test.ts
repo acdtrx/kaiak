@@ -60,6 +60,29 @@ test("the server logs its address once listening, serves gateways and exits 0 on
   assert.deepEqual(await exited, [0, null]);
 });
 
+test("protocol replicas each log their address and serve the gateway endpoints over the one store", { timeout: 10000 }, async () => {
+  const child = start({ KAIAK_SAMPLE_CONFIG: configFile(), KAIAK_SAMPLE_PROTOCOL_PORTS: "0,0" });
+  const headers = { authorization: `Bearer ${TOKEN}`, "kaiak-protocol": "5", "kaiak-instance": "gw-1" };
+  const urls: string[] = [];
+  assert.ok(child.stdout);
+  for await (const line of createInterface({ input: child.stdout })) {
+    if (/listening on http:/.test(line)) urls.push((JSON.parse(line) as { url: string }).url);
+    if (urls.length === 3) break;
+  }
+  assert.equal(new Set(urls).size, 3);
+  const epochs = new Set<string>();
+  for (const url of urls) {
+    const response = await fetch(`${url}/v1/config`, { headers });
+    assert.equal(response.status, 200);
+    epochs.add(((await response.json()) as { config_epoch: string }).config_epoch);
+  }
+  assert.equal(epochs.size, 1, "one store behind every port");
+
+  const exited = once(child, "exit");
+  child.kill("SIGTERM");
+  assert.deepEqual(await exited, [0, null]);
+});
+
 test("text logs go through pino-pretty on one line each", { timeout: 10000 }, async () => {
   const child = start({ KAIAK_SAMPLE_CONFIG: configFile(), KAIAK_LOG_FORMAT: "text" });
   const line = await lineMatching(child, /sample control plane listening on http:/);

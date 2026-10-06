@@ -16,6 +16,9 @@ export interface Settings {
   // Absolute path of the config file.
   configFile: string;
   listen: ListenAddress;
+  // Ports of the protocol replicas: each another core over the same store, serving
+  // only the gateway endpoints on the listen host. Empty for none.
+  protocolPorts: number[];
   token: string;
   logFormat: LogFormat;
 }
@@ -37,11 +40,16 @@ export function readSettings(env: Environment, cwd: string): Settings {
   if (!listen) {
     throw invalid(`KAIAK_SAMPLE_LISTEN=${JSON.stringify(listenValue)}: want host:port (port 0 to 65535; [addr]:port for IPv6)`);
   }
+  const portsValue = env["KAIAK_SAMPLE_PROTOCOL_PORTS"] || "";
+  const protocolPorts = parsePorts(portsValue);
+  if (!protocolPorts) {
+    throw invalid(`KAIAK_SAMPLE_PROTOCOL_PORTS=${JSON.stringify(portsValue)}: want a comma-separated list of ports (0 to 65535; 0 picks a free one)`);
+  }
   const logFormat = env["KAIAK_LOG_FORMAT"] || "json";
   if (logFormat !== "json" && logFormat !== "text") {
     throw invalid(`KAIAK_LOG_FORMAT=${JSON.stringify(logFormat)}: want json or text`);
   }
-  return { configFile: path.resolve(env["INIT_CWD"] || cwd, configFile), listen, token, logFormat };
+  return { configFile: path.resolve(env["INIT_CWD"] || cwd, configFile), listen, protocolPorts, token, logFormat };
 }
 
 const LISTEN = /^(?:\[([^\]]+)\]|([^:[\]]*)):([0-9]{1,5})$/;
@@ -54,6 +62,18 @@ function parseListenAddress(value: string): ListenAddress | undefined {
   if (port > 65535) return undefined;
   const host = match[1] ?? match[2] ?? "";
   return { host: host === "" ? "0.0.0.0" : host, port };
+}
+
+// "8091,8092", or "" for none.
+function parsePorts(value: string): number[] | undefined {
+  if (value.trim() === "") return [];
+  const ports: number[] = [];
+  for (const part of value.split(",")) {
+    const text = part.trim();
+    if (!/^[0-9]{1,5}$/.test(text) || Number(text) > 65535) return undefined;
+    ports.push(Number(text));
+  }
+  return ports;
 }
 
 function invalid(message: string): Error & { code: string } {

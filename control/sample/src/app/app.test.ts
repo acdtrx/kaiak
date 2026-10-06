@@ -9,6 +9,7 @@ import { createSampleApp } from "./index.ts";
 import type { SampleApp } from "./index.ts";
 
 const MINIMAL = path.resolve(import.meta.dirname, "../../../../protocol/fixtures/config/valid/minimal.json");
+const USAGE_BATCH = path.resolve(import.meta.dirname, "../../../../protocol/fixtures/messages/usage-batch/valid/one-record.json");
 const TOKEN = "sample-token";
 const GATEWAY_HEADERS = { authorization: `Bearer ${TOKEN}`, "kaiak-protocol": "5", "kaiak-instance": "gw-1" };
 
@@ -37,7 +38,7 @@ afterEach(async () => {
 // Quiet time after a change before the app reloads its config file.
 const CONFIG_DEBOUNCE_MS = 20;
 
-function setUp(initial: string): Fixture {
+function setUp(initial: string, protocolReplicas = 0): Fixture {
   const dir = mkdtempSync(path.join(tmpdir(), "kaiak-sample-app-"));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, "config.json");
@@ -59,8 +60,15 @@ function setUp(initial: string): Fixture {
       done();
     },
   });
-  const sample = createSampleApp({ configFile: file, token: TOKEN, logger: { level: "info", stream }, configDebounceMs: CONFIG_DEBOUNCE_MS });
+  const sample = createSampleApp({
+    configFile: file,
+    token: TOKEN,
+    logger: { level: "info", stream },
+    configDebounceMs: CONFIG_DEBOUNCE_MS,
+    protocolReplicas,
+  });
   cleanups.push(() => sample.app.close());
+  for (const replica of sample.replicas) cleanups.push(() => replica.app.close());
   const nextLog = (match: (line: LogLine) => boolean) =>
     new Promise<LogLine>((resolve) => waiters.push({ match, resolve }));
   return { ...sample, file, logs, nextLog };
@@ -109,6 +117,35 @@ test("the app serves the config file to gateways through kaiak-control's plugin"
 
   const refused = await app.inject({ method: "GET", url: "/v1/config", headers: { ...GATEWAY_HEADERS, authorization: "Bearer wrong" } });
   assert.equal(refused.statusCode, 401);
+});
+
+test("protocol replicas share the app's store: a batch counts once for all, a publish reaches them", async () => {
+  const fixture = setUp(configText(1), 2);
+  await fixture.app.ready();
+  const [one, two] = fixture.replicas;
+  assert.ok(one && two);
+  await Promise.all([one.app.ready(), two.app.ready()]);
+
+  const snapshot = await one.app.inject({ method: "GET", url: "/v1/config", headers: GATEWAY_HEADERS });
+  assert.equal(snapshot.statusCode, 200);
+  assert.deepEqual(
+    { epoch: snapshot.json<{ config_epoch: string }>().config_epoch, version: snapshot.json<{ version: number }>().version },
+    { epoch: await fixture.controlPlane.configEpoch(), version: 1 },
+  );
+
+  const batch = readFileSync(USAGE_BATCH, "utf8");
+  const post = (replica: { app: Fixture["app"] }) =>
+    replica.app.inject({ method: "POST", url: "/v1/usage", headers: { ...GATEWAY_HEADERS, "content-type": "application/json" }, payload: batch });
+  assert.equal((await post(two)).statusCode, 200);
+  // The same batch resent to another core is acknowledged, not counted again.
+  assert.equal((await post(fixture)).statusCode, 200);
+  assert.equal((await fixture.controlPlane.recentRecords()).length, 1);
+  const totals = await one.controlPlane.totals("gw-1");
+  assert.deepEqual(totals?.counted_through, { epoch: "5d41402abc4b2a76b9719d911017c592", sequence: 1 });
+
+  writeFileSync(fixture.file, configText(2));
+  await fixture.configFile.reload("test");
+  for (const replica of [one, two]) assert.equal((await replica.controlPlane.currentConfig())?.version, 2);
 });
 
 test("an edit to the file is pushed on the gateway stream as a new version", { timeout: 5000 }, async () => {

@@ -1,12 +1,13 @@
 // The sample control plane's app: a Fastify instance with the kaiak-control plugin
 // mounted over a core on the in-memory store, fed by the watched config file, and the
-// read-only status page. Built
-// here with injected options; a thin main reads the environment and listens.
+// read-only status page; optionally protocol replicas — further cores over the same
+// store, each in a Fastify instance serving only the gateway endpoints. Built here
+// with injected options; a thin main reads the environment and listens.
 
 import Fastify from "fastify";
 import type { FastifyBaseLogger, FastifyInstance } from "fastify";
 import { controlProtocolPlugin, createControlPlane, createMemoryStore } from "kaiak-control";
-import type { ControlPlane, ExpirySweepRun, ListenerEvent } from "kaiak-control";
+import type { ControlPlane, ControlPlaneStore, ExpirySweepRun, ListenerEvent } from "kaiak-control";
 
 import { createConfigFile } from "../config-file/index.ts";
 import type { ConfigFile, ReloadRun } from "../config-file/index.ts";
@@ -22,12 +23,25 @@ export interface SampleAppOptions {
   logger: LoggerOptions;
   // Quiet time after the last change to the file before it is reloaded. Default 200.
   configDebounceMs?: number;
+  // How many protocol replicas to build. Default 0.
+  protocolReplicas?: number;
 }
 
 export interface SampleApp {
   app: FastifyInstance;
   controlPlane: ControlPlane;
   configFile: ConfigFile;
+  // The protocol replicas, each with its own core over the app's store: a
+  // demonstration of several control-plane processes over one store, inside one
+  // process (the in-memory store cannot be shared between processes). The page and
+  // the config file stay with `app`; a publish reaches the replicas' gateways
+  // through the store.
+  replicas: ProtocolReplica[];
+}
+
+export interface ProtocolReplica {
+  app: FastifyInstance;
+  controlPlane: ControlPlane;
 }
 
 export const STARTUP_TRIGGER = "startup";
@@ -41,15 +55,10 @@ const IN_MEMORY_WARNING =
 // at startup does not stop the app: gateways get 503 config-unavailable until the file
 // is fixed.
 export function createSampleApp(options: SampleAppOptions): SampleApp {
+  const store = createMemoryStore();
   const app = Fastify({ logger: options.logger });
   const log = app.log;
-  const controlPlane = createControlPlane({
-    store: createMemoryStore(),
-    token: options.token,
-    onListenerError: (error: unknown, event: ListenerEvent) =>
-      log.error({ err: error, event: event.type }, "control-plane listener failed"),
-    onExpirySweep: (run) => logExpirySweep(log, run),
-  });
+  const controlPlane = createCore(store, options.token, log);
   const page = registerStatusPage(app, { controlPlane, configFile: () => configFile.state() });
   const configFile = createConfigFile({
     path: options.configFile,
@@ -74,7 +83,24 @@ export function createSampleApp(options: SampleAppOptions): SampleApp {
     configFile.stopWatching();
   });
 
-  return { app, controlPlane, configFile };
+  const replicas = Array.from({ length: options.protocolReplicas ?? 0 }, () => {
+    const replica = Fastify({ logger: options.logger });
+    const core = createCore(store, options.token, replica.log);
+    replica.register(controlProtocolPlugin, { controlPlane: core });
+    return { app: replica, controlPlane: core };
+  });
+
+  return { app, controlPlane, configFile, replicas };
+}
+
+function createCore(store: ControlPlaneStore, token: string, log: FastifyBaseLogger): ControlPlane {
+  return createControlPlane({
+    store,
+    token,
+    onListenerError: (error: unknown, event: ListenerEvent) =>
+      log.error({ err: error, event: event.type }, "control-plane listener failed"),
+    onExpirySweep: (run) => logExpirySweep(log, run),
+  });
 }
 
 function logReload(log: FastifyBaseLogger, run: ReloadRun): void {
