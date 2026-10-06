@@ -104,7 +104,7 @@
   | Not `Bearer <key>`; unknown, disabled or expired key | 401 | `invalid_request_error` | `invalid_api_key` |
   | Unknown model, or model not allowed for the key | 404 | `invalid_request_error` | `model_not_found` |
   | Body is not a JSON object | 400 | `invalid_request_error` | `invalid_json` |
-  | The top-level object, or `stream_options`, names a member twice (`param` names it; Request pipeline → duplicate members) | 400 | `invalid_request_error` | `duplicate_member` |
+  | The top-level object, or `stream_options`, names a member twice — or a Messages `tools` entry its `type` (`param` names it; Request pipeline → duplicate members) | 400 | `invalid_request_error` | `duplicate_member` |
   | Body could not be read | 400 | `invalid_request_error` | `invalid_body` |
   | `model` missing or empty (`param: "model"`) | 400 | `invalid_request_error` | `missing_required_parameter` |
   | An owned field has the wrong type (`param` names it) | 400 | `invalid_request_error` | `invalid_type` |
@@ -297,7 +297,9 @@ above both.
 
 **Duplicate members** (settled 2026-09-25; the independent audit's finding 2). A
 body whose top-level object names a member twice — or whose `stream_options`, the
-one owned object the provider edits, does — is refused, `400 duplicate_member`,
+one owned object the provider edits, does; or a Messages `tools` entry naming its
+`type` twice (settled 2026-10-06: the hosted-tool check and the backend could read
+different types) — is refused, `400 duplicate_member`,
 `param` naming the member (clipped like any echoed client string), before any
 rewrite and before the backend sees anything. Names compare after decoding
 (`"model"` and `"mod\u0065l"` are one). JSON leaves a repeat's meaning open: the
@@ -750,7 +752,7 @@ own, and a client sending repeats is broken either way.
     | Connect error, connection lost before the first event (`upstream_unavailable`) | yes — reason `unavailable` |
     | A stream's first-event timeout (`upstream_timeout`) | yes — `timeout` |
     | A non-stream response timeout (`upstream_timeout`) | no — the backend was working on a long answer; another would take as long (D2, 2026-09-25) |
-    | Backend `5xx` | yes — `server_error` |
+    | Backend `5xx`, or a successful stream whose first event is an error event (answered `502 upstream_error`, settled 2026-10-06) | yes — `server_error` |
     | Backend `429` | yes — `rate_limited`; the deployment cools down (429 cooldown, below) |
     | Backend `401`/`403` (`upstream_auth_failed`) | yes — `auth_failed`; every deployment of the model on that backend is refused for the request |
     | Backend `404` naming the deployment's model (`upstream_model_missing`) | yes — `model_missing` |
@@ -851,7 +853,7 @@ own, and a client sending repeats is broken either way.
   |---|---|
   | Connect error (refused, DNS, connect timeout, TLS), connection lost before the first event (`upstream_unavailable`) | failure |
   | A stream's first-event timeout (`upstream_timeout`) | failure |
-  | Backend `5xx` (answered `upstream_error`) | failure |
+  | Backend `5xx` (answered `upstream_error`), or a successful stream opening with an error event (settled 2026-10-06) | failure |
   | Backend `401`/`403` (`upstream_auth_failed`) | failure |
   | Backend `404` naming the deployment's model (`upstream_model_missing`) | failure |
   | Backend `404` at a path its server does not have (`upstream_path_missing`) | failure |
@@ -1129,7 +1131,9 @@ own, and a client sending repeats is broken either way.
     bodies — text by bytes wherever it is (`system`, `instructions`, content
     blocks, tool definitions, tool results, function-call outputs), and a flat 1000
     tokens per media item: a Messages `image` or `document` block whose `source` is
-    `base64` (its raw `data`), `url` or `file`; a Responses `input_image` or
+    `base64` (its raw `data`), `url` or `file` — the whole source counts as the item,
+    whatever order its members come in; a `text` or `content` source is text, a
+    `content` source's own blocks read by the same rules; a Responses `input_image` or
     `input_file` part (its data URL, URL or file ID).
   - The estimate has two figures: the **total** (every prompt of a completion batch —
     what limits reserve and estimated records bill) and the **input one sequence
@@ -2173,7 +2177,8 @@ own, and a client sending repeats is broken either way.
     2026-09-25, D6; the independent daily-operations review's finding 5), and
     exactly once however the request then ends. Outcomes, a fixed set: success —
     `success`; failures — `unavailable`, `timeout` (a stream's first-event
-    timeout), `auth_failed`, `model_missing`, `path_missing`, `server_error` (a backend `5xx`),
+    timeout), `auth_failed`, `model_missing`, `path_missing`, `server_error` (a backend `5xx`, or a
+    stream opening with an error event),
     `broke_off` (broken off, stalled or incomplete after the first event); neutral
     — `endpoint_missing` (settled 2026-10-06), `response_timeout` (a non-stream response timeout, before or after the first
     bytes; before them it is a failure for a half-open trial and from the 3rd in a

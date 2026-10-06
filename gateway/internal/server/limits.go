@@ -18,7 +18,8 @@ import (
 // effective output limit once per sequence it asks for, in tokens (the input estimate
 // alone when the output is unbounded), capped at accounting.MaxAmount — no amount the
 // protocol carries is larger, and the limiter's arithmetic stays far from int64's
-// edge. The reservation settles in a finisher registered before the attempt
+// edge. A token-counting request reserves no tokens: nothing is generated or billed
+// there, and it counts as a request only. The reservation settles in a finisher registered before the attempt
 // loop's, so it runs after settlement and reads the request's usage records — the
 // sum of its attempts'.
 func checkLimits(rq *request, limiter *limits.Limiter) *apiError {
@@ -26,6 +27,9 @@ func checkLimits(rq *request, limiter *limits.Limiter) *apiError {
 		return nil
 	}
 	tokens := rq.input.Total
+	if rq.endpoint.counts() {
+		tokens = 0
+	}
 	if rq.outputLimit != nil {
 		tokens = saturatingAdd(tokens, saturatingMul(*rq.outputLimit, rq.inbound.Sequences))
 	}

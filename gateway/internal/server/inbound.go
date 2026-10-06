@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	"slices"
 
 	"kaiak/internal/accounting"
 	"kaiak/internal/config"
@@ -72,6 +73,8 @@ func parseOwnedFields(rq *request) *apiError {
 	switch providerEndpoint(rq.endpoint).Format() {
 	case provider.FormatOpenAI:
 		return parseOpenAIFields(rq, top)
+	case provider.FormatMessages:
+		return parseMessagesFields(rq, top)
 	}
 	// The endpoint table routes only the formats the inbound stage reads.
 	panic("server: no inbound parser for the endpoint's format")
@@ -81,21 +84,10 @@ func parseOwnedFields(rq *request) *apiError {
 // output-limit keys, the sequence count, an embeddings request's inputs and
 // stream_options.include_usage.
 func parseOpenAIFields(rq *request, top map[string]json.RawMessage) *apiError {
-	model, apiErr := optionalField[string](top, "model", "model", "a string")
+	apiErr := readModelAndStream(rq, top)
 	if apiErr != nil {
 		return apiErr
 	}
-	if model == nil || *model == "" {
-		return errMissingModel()
-	}
-	rq.model = *model
-
-	stream, apiErr := optionalField[bool](top, "stream", "stream", "a boolean")
-	if apiErr != nil {
-		return apiErr
-	}
-	rq.inbound.Stream = stream != nil && *stream
-
 	if rq.inbound.MaxTokens, apiErr = optionalField[int64](top, "max_tokens", "max_tokens", "an integer"); apiErr != nil {
 		return apiErr
 	}
@@ -132,38 +124,75 @@ func parseOpenAIFields(rq *request, top map[string]json.RawMessage) *apiError {
 	return nil
 }
 
+// readModelAndStream reads the two owned fields every generating format shares:
+// model, which must be a non-empty string, and stream.
+func readModelAndStream(rq *request, top map[string]json.RawMessage) *apiError {
+	if apiErr := readModel(rq, top); apiErr != nil {
+		return apiErr
+	}
+	stream, apiErr := optionalField[bool](top, "stream", "stream", "a boolean")
+	if apiErr != nil {
+		return apiErr
+	}
+	rq.inbound.Stream = stream != nil && *stream
+	return nil
+}
+
+// readModel reads the model the request names, which must be a non-empty string.
+func readModel(rq *request, top map[string]json.RawMessage) *apiError {
+	model, apiErr := optionalField[string](top, "model", "model", "a string")
+	if apiErr != nil {
+		return apiErr
+	}
+	if model == nil || *model == "" {
+		return errMissingModel()
+	}
+	rq.model = *model
+	return nil
+}
+
 // decodeMembers decodes data, which must hold exactly one JSON object, into its members'
 // raw values; ok is false when it does not. repeated names the first member that
 // appears twice ("" if none) — names compare after decoding, as every JSON decoder
 // reads them.
 func decodeMembers(data []byte) (members map[string]json.RawMessage, repeated string, ok bool) {
+	members, repeats, ok := decodeMembersRepeats(data)
+	if len(repeats) > 0 {
+		repeated = repeats[0]
+	}
+	return members, repeated, ok
+}
+
+// decodeMembersRepeats is decodeMembers naming every member that appears more than
+// once, in the order their repeats appear.
+func decodeMembersRepeats(data []byte) (members map[string]json.RawMessage, repeats []string, ok bool) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
-		return nil, "", false
+		return nil, nil, false
 	}
 	members = make(map[string]json.RawMessage)
 	for dec.More() {
 		tok, err := dec.Token()
 		if err != nil {
-			return nil, "", false
+			return nil, nil, false
 		}
 		name, _ := tok.(string) // inside an object, More() true means a name comes next
 		var value json.RawMessage
 		if err := dec.Decode(&value); err != nil {
-			return nil, "", false
+			return nil, nil, false
 		}
-		if _, seen := members[name]; seen && repeated == "" {
-			repeated = name
+		if _, seen := members[name]; seen && !slices.Contains(repeats, name) {
+			repeats = append(repeats, name)
 		}
 		members[name] = value
 	}
 	if _, err := dec.Token(); err != nil {
-		return nil, "", false
+		return nil, nil, false
 	}
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return nil, "", false
+		return nil, nil, false
 	}
-	return members, repeated, true
+	return members, repeats, true
 }
 
 // sequences reads the owned fields that multiply generation (docs/specs/GATEWAY.md,

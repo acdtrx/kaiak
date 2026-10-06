@@ -50,8 +50,35 @@ func TestModelRewriterEditsOnlyTopLevelModelStrings(t *testing.T) {
 	}
 }
 
+// With a nested member, the model of that member's object is rewritten too — a
+// Messages message_start's message.model — and no other nested one.
+func TestNestedModelRewriter(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"message_start", `{"type":"message_start","message":{"id":"m","model":"back","usage":{"model":"x"}}}`,
+			`{"type":"message_start","message":{"id":"m","model":"pub","usage":{"model":"x"}}}`},
+		{"top level too", `{"model":"a","message":{"model":"b"}}`, `{"model":"pub","message":{"model":"pub"}}`},
+		{"other members untouched", `{"other":{"model":"x"},"message":{"content":[{"model":"y"}],"model":"z"}}`,
+			`{"other":{"model":"x"},"message":{"content":[{"model":"y"}],"model":"pub"}}`},
+		{"nested not an object", `{"message":"model","x":{"model":"y"}}`, `{"message":"model","x":{"model":"y"}}`},
+		{"nested key as a value", `{"k":"message","v":{"model":"y"}}`, `{"k":"message","v":{"model":"y"}}`},
+		{"escaped nested key", `{"m\u0065ssage":{"model":"b"}}`, `{"m\u0065ssage":{"model":"pub"}}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			for cut := 0; cut <= len(c.in); cut++ {
+				m := newNestedModelRewriter([]byte(`"pub"`), "message")
+				out := m.rewrite(nil, []byte(c.in[:cut]))
+				out = m.rewrite(out, []byte(c.in[cut:]))
+				if string(out) != c.want {
+					t.Fatalf("cut at %d:\ngot  %s\nwant %s", cut, out, c.want)
+				}
+			}
+		})
+	}
+}
+
 func TestChunkModelRewriteKeepsTheEventFraming(t *testing.T) {
-	r := &upstreamResponse{publicModel: []byte(`"pub"`)}
+	r := &upstreamResponse{publicModel: []byte(`"pub"`), ending: &openAIStreamEnd{}}
 	for _, c := range []struct{ in, want string }{
 		{"data: {\"id\":1,\"model\":\"back\"}\n\n", "data: {\"id\":1,\"model\":\"pub\"}\n\n"},
 		{"event: x\r\ndata:{\"model\":\r\ndata:  \"back\",\"a\":1}\r\nid: 3\r\n\r\n",

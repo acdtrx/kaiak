@@ -1,7 +1,6 @@
 package accounting
 
 import (
-	"bytes"
 	"encoding/json"
 	"sync/atomic"
 
@@ -37,22 +36,26 @@ func EstimateTokens(n int64) int64 {
 }
 
 // Limits on the non-stream body members kept for settlement. A usage object is a few
-// hundred bytes; choices are kept only to estimate output when usage is missing, and
-// past the limit the estimate falls back to their raw size.
+// hundred bytes; the generated content (OpenAI's choices, a Messages content list) is
+// kept only to estimate output when usage is missing, and past the limit the estimate
+// falls back to its raw size.
 const (
 	maxUsageBytes   = 64 << 10
-	maxChoicesBytes = 4 << 20
+	maxContentBytes = 4 << 20
 )
 
 // Meter watches one routed attempt's response on its way to the client and works out
-// its usage when it is over. It reads responses in the client's format (OpenAI JSON
-// and SSE), which every provider hands back. A Meter belongs to one attempt and is
-// used from that request's goroutine only — except Sent, which the transport calls.
+// its usage when it is over. It reads responses in the client's format, which every
+// provider hands back: its endpoint's format reader (usageReader) knows where that
+// format reports usage and carries generated content. A Meter belongs to one attempt
+// and is used from that request's goroutine only — except Sent, which the transport
+// calls.
 type Meter struct {
-	endpoint provider.Endpoint
 	// input is the request's input estimate (EstimateInput), billed when the backend
 	// reports no usage.
 	input int64
+	// reader reads the endpoint's format.
+	reader usageReader
 
 	// sent: the upstream request was written to the backend in full.
 	sent atomic.Bool
@@ -63,18 +66,36 @@ type Meter struct {
 	// refused: the backend answered by refusing the gateway's credential.
 	refused bool
 
-	// reported is the latest usage the backend reported; nil when none yet.
-	reported Units
-	// contentBytes counts generated content seen in stream chunks.
-	contentBytes int64
 	// body scans a successful non-stream body.
 	body *memberScanner
+}
+
+// usageReader reads one client API format's responses for the meter
+// (docs/specs/GATEWAY.md, Accounting): where the backend reports usage, and where the
+// generated content an estimate counts lives.
+type usageReader interface {
+	// streamEvent reads one stream event's payload as the backend sent it.
+	streamEvent(payload []byte)
+	// contentMember is the non-stream body member holding the generated content.
+	contentMember() string
+	// bodyUsage reads a non-stream body's usage member.
+	bodyUsage(raw json.RawMessage)
+	// bodyContentBytes counts the generated content in the body's content member.
+	bodyContentBytes(raw json.RawMessage) int64
+	// reported is the latest usage the backend reported; nil when none.
+	reported() Units
+	// streamContentBytes is the generated content seen in stream events.
+	streamContentBytes() int64
 }
 
 // NewMeter returns the meter for a request to ep whose input is estimated at input
 // tokens (EstimateInput).
 func NewMeter(ep provider.Endpoint, input int64) *Meter {
-	return &Meter{endpoint: ep, input: input}
+	var reader usageReader = &openAIUsage{endpoint: ep}
+	if ep.Format() == provider.FormatMessages {
+		reader = &messagesUsage{}
+	}
+	return &Meter{input: input, reader: reader}
 }
 
 // Answered records that the backend answered with status; stream reports whether the
@@ -84,7 +105,7 @@ func (m *Meter) Answered(status int, stream bool) {
 	m.status = status
 	m.stream = stream
 	if !stream && m.succeeded() {
-		m.body = newMemberScanner(map[string]int{"usage": maxUsageBytes, "choices": maxChoicesBytes})
+		m.body = newMemberScanner(map[string]int{"usage": maxUsageBytes, m.reader.contentMember(): maxContentBytes})
 	}
 }
 
@@ -97,8 +118,8 @@ func (m *Meter) Sent() {
 }
 
 // Refused records that the backend refused the request outright — the gateway's
-// credential, a model it does not serve, a path it does not have: an answer, with
-// nothing processed.
+// credential, a model it does not serve, a path it does not have, a stream it gave up
+// before its first event: an answer, with nothing processed.
 func (m *Meter) Refused() {
 	m.refused = true
 }
@@ -118,7 +139,9 @@ func (m *Meter) Observe(ev provider.Event) {
 		return
 	}
 	if m.stream {
-		m.observeChunk(ev.Payload)
+		if len(ev.Payload) > 0 {
+			m.reader.streamEvent(ev.Payload)
+		}
 		return
 	}
 	if m.body != nil {
@@ -130,33 +153,11 @@ func (m *Meter) Observe(ev provider.Event) {
 // yet (text, reasoning, refusal or tool calls — not role-only or usage chunks): the
 // moment it turns true is the stream's first token.
 func (m *Meter) StreamContentSeen() bool {
-	return m.contentBytes > 0
+	return m.reader.streamContentBytes() > 0
 }
 
 func (m *Meter) succeeded() bool {
 	return m.status >= 200 && m.status < 300
-}
-
-// observeChunk reads one stream chunk: its usage when not null (the last report wins —
-// backends that report on every chunk report running totals), and its generated
-// content for the estimate.
-func (m *Meter) observeChunk(payload []byte) {
-	if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
-		return
-	}
-	var chunk struct {
-		Usage   json.RawMessage   `json:"usage"`
-		Choices []json.RawMessage `json:"choices"`
-	}
-	// A member of an unexpected type is skipped; the others are still read. Invalid
-	// JSON fills nothing.
-	_ = json.Unmarshal(payload, &chunk)
-	if units, ok := m.parseUsage(chunk.Usage); ok {
-		m.reported = units
-	}
-	for _, c := range chunk.Choices {
-		m.contentBytes += choiceContentBytes(c)
-	}
 }
 
 // Flags qualify a record's units.
@@ -192,86 +193,28 @@ func (m *Meter) Settle(complete bool) (Units, Flags) {
 	}
 	if !m.stream && m.body != nil {
 		if raw, ok := m.body.member("usage"); ok {
-			if units, ok := m.parseUsage(raw); ok {
-				m.reported = units
-			}
+			m.reader.bodyUsage(raw)
 		}
 	}
-	if m.reported != nil {
-		return m.reported, flags
+	if units := m.reader.reported(); units != nil {
+		return units, flags
 	}
 	flags.Estimated = true
 	return tokenUnits(m.input, 0, 0, EstimateTokens(m.outputBytes()), 0), flags
 }
 
-// outputBytes is the generated content seen: stream chunk content, or the content of a
-// non-stream body's choices (their raw size when they could not be read whole).
-// Embeddings generate nothing.
+// outputBytes is the generated content seen: stream content, or the content member of
+// a non-stream body (its raw size when it could not be kept whole).
 func (m *Meter) outputBytes() int64 {
-	if m.endpoint == provider.Embeddings {
-		return 0
-	}
 	if m.stream || m.body == nil {
-		return m.contentBytes
+		return m.reader.streamContentBytes()
 	}
-	raw, ok := m.body.member("choices")
+	member := m.reader.contentMember()
+	raw, ok := m.body.member(member)
 	if !ok {
-		return int64(m.body.memberSize("choices"))
+		return int64(m.body.memberSize(member))
 	}
-	var choices []json.RawMessage
-	if json.Unmarshal(raw, &choices) != nil {
-		return int64(len(raw))
-	}
-	var n int64
-	for _, c := range choices {
-		n += choiceContentBytes(c)
-	}
-	return n
-}
-
-// usageReport is the OpenAI usage object. Detail fields are optional: many backends
-// omit them.
-type usageReport struct {
-	PromptTokens        *int64 `json:"prompt_tokens"`
-	CompletionTokens    *int64 `json:"completion_tokens"`
-	PromptTokensDetails *struct {
-		CachedTokens     int64 `json:"cached_tokens"`
-		CacheWriteTokens int64 `json:"cache_write_tokens"`
-	} `json:"prompt_tokens_details"`
-	CompletionTokensDetails *struct {
-		ReasoningTokens int64 `json:"reasoning_tokens"`
-	} `json:"completion_tokens_details"`
-}
-
-// parseUsage maps a usage object onto the units (docs/specs/CONTROL-PROTOCOL.md,
-// Units and price units): tokens_cached = cached, tokens_cache_write = written,
-// tokens_in = prompt − cached − written, tokens_out = completion (reasoning
-// included), tokens_reasoning = the reasoning share of it. Cached is clamped to
-// prompt first, then written to what remains, so the three input units add up to
-// prompt. Embeddings count prompt tokens only. A null, missing or malformed usage, or
-// one with neither token count, is no report.
-func (m *Meter) parseUsage(raw json.RawMessage) (Units, bool) {
-	if len(raw) == 0 || raw[0] != '{' {
-		return nil, false
-	}
-	var u usageReport
-	if json.Unmarshal(raw, &u) != nil || (u.PromptTokens == nil && u.CompletionTokens == nil) {
-		return nil, false
-	}
-	prompt := nonNegative(u.PromptTokens)
-	if m.endpoint == provider.Embeddings {
-		return tokenUnits(prompt, 0, 0, 0, 0), true
-	}
-	completion := nonNegative(u.CompletionTokens)
-	var cached, written, reasoning int64
-	if d := u.PromptTokensDetails; d != nil {
-		cached = min(max(d.CachedTokens, 0), prompt)
-		written = min(max(d.CacheWriteTokens, 0), prompt-cached)
-	}
-	if d := u.CompletionTokensDetails; d != nil {
-		reasoning = min(max(d.ReasoningTokens, 0), completion)
-	}
-	return tokenUnits(prompt-cached-written, cached, written, completion, reasoning), true
+	return m.reader.bodyContentBytes(raw)
 }
 
 func nonNegative(n *int64) int64 {
@@ -279,49 +222,4 @@ func nonNegative(n *int64) int64 {
 		return 0
 	}
 	return *n
-}
-
-// generatedContent is where a choice carries generated text: a chat message (non-
-// stream) or delta (stream), or a completion's text.
-type generatedContent struct {
-	Text    string       `json:"text"`
-	Message *chatContent `json:"message"`
-	Delta   *chatContent `json:"delta"`
-}
-
-type chatContent struct {
-	Content string `json:"content"`
-	Refusal string `json:"refusal"`
-	// Reasoning text from reasoning parsers (vLLM, SGLang); some servers send the
-	// same text under both names, so only one is counted.
-	Reasoning        string `json:"reasoning"`
-	ReasoningContent string `json:"reasoning_content"`
-	ToolCalls        []struct {
-		Function struct {
-			Name      string `json:"name"`
-			Arguments string `json:"arguments"`
-		} `json:"function"`
-	} `json:"tool_calls"`
-}
-
-// choiceContentBytes counts the generated content in one choice: text, message or
-// delta content, refusal, reasoning text and tool-call names and arguments, as UTF-8
-// bytes after JSON decoding. Structure (keys, roles, finish reasons, indexes) is not
-// generated content and is not counted. A field of an unexpected type counts nothing;
-// the rest of the choice still counts.
-func choiceContentBytes(raw json.RawMessage) int64 {
-	var c generatedContent
-	// Unmarshal fills every field it can before reporting a type mismatch.
-	_ = json.Unmarshal(raw, &c)
-	n := int64(len(c.Text))
-	for _, msg := range []*chatContent{c.Message, c.Delta} {
-		if msg == nil {
-			continue
-		}
-		n += int64(len(msg.Content) + len(msg.Refusal) + max(len(msg.Reasoning), len(msg.ReasoningContent)))
-		for _, call := range msg.ToolCalls {
-			n += int64(len(call.Function.Name) + len(call.Function.Arguments))
-		}
-	}
-	return n
 }

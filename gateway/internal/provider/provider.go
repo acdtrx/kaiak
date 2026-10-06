@@ -200,6 +200,11 @@ const (
 	// — the server's version predates the endpoint, which its other endpoints do not
 	// (docs/specs/GATEWAY.md, Providers: an endpoint missing from a server).
 	CodeEndpointMissing Code = "upstream_endpoint_missing"
+	// CodeErrorEvent: a successful stream's first event was an error event (a
+	// Messages event: error, Anthropic's overloaded_error) — the backend gave up
+	// before anything reached the client, a failure answered and retried as a 5xx is
+	// (docs/specs/GATEWAY.md, Providers: complete responses).
+	CodeErrorEvent Code = "upstream_error_event"
 )
 
 // Error is a failure before any part of the response reached the client. Its message
@@ -416,6 +421,8 @@ var (
 	// response timeout.
 	ErrResponseTimeout = errors.New("response timeout")
 	// ErrIncomplete: a successful response ended before it was complete — a stream
-	// without [DONE] or every choice's finish_reason, a JSON body cut short.
+	// short of its format's end (an OpenAI stream without [DONE] or every choice's
+	// finish_reason, a Messages stream without message_stop) or broken off by an error
+	// event, a JSON body cut short.
 	ErrIncomplete = errors.New("response ended incomplete")
 )

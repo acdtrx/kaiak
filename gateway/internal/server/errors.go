@@ -18,8 +18,8 @@ const (
 	typeServer         = "server_error"
 )
 
-// apiError is a client-facing failure, written in the OpenAI error shape
-// (docs/specs/GATEWAY.md, Error responses).
+// apiError is a client-facing failure, written in the error shape of the client API
+// the request speaks (errorShape; docs/specs/GATEWAY.md, Client API → Errors).
 type apiError struct {
 	status  int
 	errType string
@@ -40,14 +40,94 @@ type errorBody struct {
 	} `json:"error"`
 }
 
-// writeError writes e as the whole response.
-func writeError(w http.ResponseWriter, e *apiError) {
-	var body errorBody
-	body.Error.Message = e.message
-	body.Error.Type = e.errType
-	body.Error.Code = e.code
-	if e.param != "" {
-		body.Error.Param = &e.param
+// errorShape is the error envelope of a client API.
+type errorShape int
+
+const (
+	// shapeOpenAI: {"error": {"message", "type", "param", "code"}} — the OpenAI and
+	// Responses endpoints.
+	shapeOpenAI errorShape = iota
+	// shapeAnthropic: {"type": "error", "error": {"type", "message", "code"}} — the
+	// Messages endpoints and the Anthropic-shaped model list. Its type follows the
+	// status, as Anthropic's do; code is kaiak's, a member Anthropic's SDKs ignore.
+	shapeAnthropic
+)
+
+// anthropicErrorBody is Anthropic's error envelope, with kaiak's code beside its type.
+type anthropicErrorBody struct {
+	Type  string `json:"type"`
+	Error struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+		Code    string `json:"code"`
+	} `json:"error"`
+}
+
+// anthropicErrorType is the Anthropic error type of an answer with status
+// (docs/specs/GATEWAY.md, Client API → Errors).
+func anthropicErrorType(status int) string {
+	switch {
+	case status == http.StatusUnauthorized:
+		return "authentication_error"
+	case status == http.StatusForbidden:
+		return "permission_error"
+	case status == http.StatusNotFound:
+		return "not_found_error"
+	case status == http.StatusRequestEntityTooLarge:
+		return "request_too_large"
+	case status == http.StatusTooManyRequests:
+		return "rate_limit_error"
+	case status == http.StatusServiceUnavailable || status == statusOverloaded:
+		return "overloaded_error"
+	case status >= 500:
+		return "api_error"
+	}
+	return typeInvalidRequest
+}
+
+// statusOverloaded is Anthropic's status for an overloaded API.
+const statusOverloaded = 529
+
+// errorShapeOf is the error shape of a request r to ep: Anthropic's on the Messages
+// endpoints, and on the model list and entry when the request carries an
+// anthropic-version header (the Anthropic-shaped model list); OpenAI's everywhere
+// else.
+func errorShapeOf(ep endpoint, r *http.Request) errorShape {
+	switch ep {
+	case endpointMessages, endpointMessagesCountTokens:
+		return shapeAnthropic
+	case endpointListModels, endpointGetModel:
+		if wantsAnthropicModels(r) {
+			return shapeAnthropic
+		}
+	}
+	return shapeOpenAI
+}
+
+// errorShape is the error shape of the request's answers.
+func (rq *request) errorShape() errorShape {
+	return errorShapeOf(rq.endpoint, rq.r)
+}
+
+// writeError writes e as the whole response, in shape.
+func writeError(w http.ResponseWriter, e *apiError, shape errorShape) {
+	var body any
+	if shape == shapeAnthropic {
+		var b anthropicErrorBody
+		b.Type = "error"
+		b.Error.Type = anthropicErrorType(e.status)
+		b.Error.Message = e.message
+		b.Error.Code = e.code
+		body = b
+	} else {
+		var b errorBody
+		b.Error.Message = e.message
+		b.Error.Type = e.errType
+		b.Error.Code = e.code
+		if e.param != "" {
+			b.Error.Param = &e.param
+		}
+		body = b
 	}
 	// Messages are plain text for API clients: < > & stay as written, not \u003c.
 	var data bytes.Buffer
@@ -196,6 +276,9 @@ func errUpstream(code provider.Code) *apiError {
 	case provider.CodeEndpointMissing:
 		return &apiError{status: http.StatusBadGateway, errType: typeServer, code: string(code),
 			message: "The model backend's server does not have this endpoint."}
+	case provider.CodeErrorEvent:
+		// The backend gave up before its answer started: answered as a 5xx is.
+		return errUpstreamFault(http.StatusBadGateway)
 	}
 	return &apiError{status: http.StatusBadGateway, errType: typeServer, code: string(provider.CodeUnavailable),
 		message: "The model backend could not be reached."}
@@ -267,4 +350,20 @@ func errNoHealthyDeployment() *apiError {
 func errQueueTimeout(timeout time.Duration) *apiError {
 	return &apiError{status: http.StatusTooManyRequests, errType: typeServer, code: "queue_timeout",
 		message: fmt.Sprintf("The model's backends stayed at capacity for the queue timeout of %s; retry the request.", timeout)}
+}
+
+// errHostedTool refuses a tool the backend would run itself (docs/specs/GATEWAY.md,
+// Client API → hosted tools are refused); param names its type's position, and the
+// message names the type, clipped: the client wrote it.
+func errHostedTool(param, toolType string) *apiError {
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "hosted_tool_unsupported", param: param,
+		message: fmt.Sprintf("'%s' is %q, a tool the backend runs itself; the gateway serves only tools the client runs.",
+			param, clip.String(toolType))}
+}
+
+// errHostedMember refuses a request member that hands the backend tools to run itself
+// (Messages mcp_servers and container).
+func errHostedMember(param string) *apiError {
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "hosted_tool_unsupported", param: param,
+		message: fmt.Sprintf("'%s' asks the backend to run tools itself; the gateway serves only tools the client runs.", param)}
 }

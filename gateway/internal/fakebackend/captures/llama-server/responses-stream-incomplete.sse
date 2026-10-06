@@ -1,0 +1,63 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_IikvrrHVUBXLCBj1crvROdW70RCW6Q9z","object":"response","status":"in_progress"}}
+
+event: response.in_progress
+data: {"type":"response.in_progress","response":{"id":"resp_IikvrrHVUBXLCBj1crvROdW70RCW6Q9z","object":"response","status":"in_progress"}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","item":{"id":"rs_oElhtPbCMTTQhXeRSGIzNETdgWvLbTYf","summary":[],"type":"reasoning","content":[],"encrypted_content":"","status":"in_progress"}}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":"The","item_id":"rs_oElhtPbCMTTQhXeRSGIzNETdgWvLbTYf"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" user","item_id":"rs_oElhtPbCMTTQhXeRSGIzNETdgWvLbTYf"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" wants","item_id":"rs_oElhtPbCMTTQhXeRSGIzNETdgWvLbTYf"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" me","item_id":"rs_oElhtPbCMTTQhXeRSGIzNETdgWvLbTYf"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" to","item_id":"rs_oElhtPbCMTTQhXeRSGIzNETdgWvLbTYf"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" count","item_id":"rs_oElhtPbCMTTQhXeRSGIzNETdgWvLbTYf"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" to","item_id":"rs_oElhtPbCMTTQhXeRSGIzNETdgWvLbTYf"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" fifty","item_id":"rs_oElhtPbCMTTQhXeRSGIzNETdgWvLbTYf"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":".","item_id":"rs_oElhtPbCMTTQhXeRSGIzNETdgWvLbTYf"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" This","item_id":"rs_oElhtPbCMTTQhXeRSGIzNETdgWvLbTYf"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" is","item_id":"rs_oElhtPbCMTTQhXeRSGIzNETdgWvLbTYf"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" straightforward","item_id":"rs_oElhtPbCMTTQhXeRSGIzNETdgWvLbTYf"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" -","item_id":"rs_oElhtPbCMTTQhXeRSGIzNETdgWvLbTYf"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" I","item_id":"rs_oElhtPbCMTTQhXeRSGIzNETdgWvLbTYf"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" just","item_id":"rs_oElhtPbCMTTQhXeRSGIzNETdgWvLbTYf"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" need","item_id":"rs_oElhtPbCMTTQhXeRSGIzNETdgWvLbTYf"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"id":"rs_oElhtPbCMTTQhXeRSGIzNETdgWvLbTYf","summary":[],"type":"reasoning","content":[{"text":"The user wants me to count to fifty. This is straightforward - I just need","type":"reasoning_text"}],"encrypted_content":""}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_IikvrrHVUBXLCBj1crvROdW70RCW6Q9z","object":"response","created_at":1791289044,"status":"completed","model":"unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL","output":[{"id":"rs_oElhtPbCMTTQhXeRSGIzNETdgWvLbTYf","summary":[],"type":"reasoning","content":[{"text":"The user wants me to count to fifty. This is straightforward - I just need","type":"reasoning_text"}],"encrypted_content":""}],"usage":{"input_tokens":14,"output_tokens":16,"total_tokens":30,"input_tokens_details":{"cached_tokens":10}}},"timings":{"cache_n":10,"prompt_n":4,"prompt_ms":100.669,"prompt_per_token_ms":25.16725,"prompt_per_second":39.73417834685951,"predicted_n":16,"predicted_ms":1209.671,"predicted_per_token_ms":80.64473333333333,"predicted_per_second":12.400065803015861}}
+

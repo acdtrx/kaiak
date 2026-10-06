@@ -1,0 +1,143 @@
+package accounting
+
+import (
+	"bytes"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"kaiak/internal/provider"
+	"kaiak/internal/sse"
+)
+
+// recordedStreamMeter is a meter fed a recorded Messages stream (fakebackend/captures)
+// event by event.
+func recordedStreamMeter(t *testing.T, server, name string) *Meter {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "fakebackend", "captures", server, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewMeter(provider.Messages, 99)
+	m.Answered(200, true)
+	events := sse.NewReader(bytes.NewReader(data), 1<<20)
+	for {
+		block, err := events.Next()
+		if err != nil {
+			break
+		}
+		if block.HasData {
+			m.Observe(provider.Event{Data: block.Raw, Payload: block.Data})
+		}
+	}
+	return m
+}
+
+// Messages usage maps straight onto the units — input_tokens already leaves out the
+// cache — reading message_start and then message_delta, the latest value of each
+// field winning (docs/specs/GATEWAY.md, Accounting → Messages usage).
+func TestMessagesUsage(t *testing.T) {
+	for _, c := range []struct {
+		server, name string
+		want         Units
+	}{
+		// vLLM repeats input_tokens in message_delta.
+		{"vllm", "messages-stream.sse", tokenUnits(62, 0, 0, 171, 0)},
+		{"vllm", "messages-stream-tool.sse", tokenUnits(315, 0, 0, 46, 0)},
+		// llama-server sends only output_tokens there; cache reads come apart.
+		{"llama-server", "messages-stream.sse", tokenUnits(24, 0, 0, 104, 0)},
+		{"llama-server", "messages-stream-tool.sse", tokenUnits(277, 0, 0, 61, 0)},
+	} {
+		t.Run(c.server+"/"+c.name, func(t *testing.T) {
+			m := recordedStreamMeter(t, c.server, c.name)
+			if !m.StreamContentSeen() {
+				t.Error("no content seen")
+			}
+			units, flags := m.Settle(true)
+			expect(t, units, flags, c.want, Flags{})
+		})
+	}
+
+	t.Run("cache read and written, the latest value of each field", func(t *testing.T) {
+		m := streamMeter(provider.Messages, 40,
+			`{"type":"message_start","message":{"usage":{"input_tokens":5,"cache_read_input_tokens":20,"cache_creation_input_tokens":7,"output_tokens":1}}}`,
+			`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`,
+			`{"type":"message_delta","usage":{"output_tokens":9}}`,
+			`{"type":"message_delta","usage":{"output_tokens":12,"cache_read_input_tokens":null}}`,
+			`{"type":"message_stop"}`)
+		units, flags := m.Settle(true)
+		expect(t, units, flags, tokenUnits(5, 20, 7, 12, 0), Flags{})
+	})
+	t.Run("body", func(t *testing.T) {
+		body := `{"id":"m","type":"message","content":[{"type":"text","text":"x"}],` +
+			`"usage":{"input_tokens":3,"cache_read_input_tokens":2,"output_tokens":4}}`
+		units, flags := bodyMeter(provider.Messages, 40, 200, body).Settle(true)
+		expect(t, units, flags, tokenUnits(3, 2, 0, 4, 0), Flags{})
+	})
+}
+
+// Without a usage report, Messages output is estimated from the generated content
+// alone: text, thinking and tool-call input — streamed as deltas (in any block order)
+// or in a body's content list; signatures and structure do not count.
+func TestMessagesEstimatedOutput(t *testing.T) {
+	t.Run("stream", func(t *testing.T) {
+		m := streamMeter(provider.Messages, 40,
+			`{"type":"message_start","message":{"usage":null}}`,
+			`{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`,
+			`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"abcd"}}`,
+			`{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t","name":"f"}}`,
+			`{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"a\":1}"}}`,
+			`{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"zzzzzzzzzzzz"}}`,
+			`{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"héllo"}}`,
+			`{"type":"message_stop"}`)
+		// abcd 4 + {"a":1} 7 + héllo 6 = 17 bytes → 5.
+		units, flags := m.Settle(true)
+		expect(t, units, flags, tokenUnits(10, 0, 0, 5, 0), Flags{Estimated: true})
+	})
+	t.Run("body", func(t *testing.T) {
+		body := `{"content":[{"type":"thinking","thinking":"abcd","signature":"zzzz"},{"type":"text","text":"efgh"},` +
+			`{"type":"tool_use","id":"t","name":"f","input":{"a":1}}]}`
+		// abcd 4 + efgh 4 + {"a":1} 7 = 15 bytes → 4.
+		units, flags := bodyMeter(provider.Messages, 40, 200, body).Settle(true)
+		expect(t, units, flags, tokenUnits(10, 0, 0, 4, 0), Flags{Estimated: true})
+	})
+}
+
+// A Messages image or document source counts as one media item when it is data, a
+// URL or a file; a text source is text.
+func TestEstimateMessagesMedia(t *testing.T) {
+	const m = InlineMediaTokens
+	payload := strings.Repeat("QUJD", 100_000)
+	text := func(s string) int64 { return EstimateTokens(int64(len(s))) }
+	for _, c := range []struct {
+		name  string
+		body  string
+		total int64
+	}{
+		{"base64 image", `{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + payload + `"}}]}]}`,
+			text(`{"messages":[{"role":"user","content":[{"type":"image","source"}]}]}`) + m},
+		{"data before type", `{"messages":[{"role":"user","content":[{"type":"document","source":{"data":"` + payload + `","type":"base64"}}]}]}`,
+			text(`{"messages":[{"role":"user","content":[{"type":"document","source"}]}]}`) + m},
+		{"url", `{"messages":[{"content":[{"type":"image","source":{"type":"url","url":"https://example.com/a.png"}}]}]}`,
+			text(`{"messages":[{"content":[{"type":"image","source"}]}]}`) + m},
+		{"file", `{"messages":[{"content":[{"type":"document","source":{"type":"file","file_id":"file_1"}}]}]}`,
+			text(`{"messages":[{"content":[{"type":"document","source"}]}]}`) + m},
+		{"text source is text", `{"messages":[{"content":[{"type":"document","source":{"type":"text","media_type":"text/plain","data":"some text"}}]}]}`,
+			text(`{"messages":[{"content":[{"type":"document","source":{"type":"text","media_type":"text/plain","data":"some text"}}]}]}`)},
+		{"content source holding an image", `{"messages":[{"content":[{"type":"document","source":{"type":"content","content":[{"type":"image","source":{"type":"base64","data":"` + payload + `"}}]}}]}]}`,
+			text(`{"messages":[{"content":[{"type":"document","source":{"type":"content","content":[{"type":"image","source"}]}}]}]}`) + m},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := EstimateInput(provider.Messages, []byte(c.body))
+			if got.Total != c.total || got.LargestPrompt != c.total {
+				t.Errorf("estimate %+v, want %d", got, c.total)
+			}
+		})
+	}
+	// Outside Messages, a member named source is plain text.
+	body := `{"messages":[{"source":{"type":"base64","data":"` + payload + `"}}]}`
+	if got := EstimateInput(provider.ChatCompletions, []byte(body)); got.Total != text(body) {
+		t.Errorf("chat body: %+v, want %d", got, text(body))
+	}
+}

@@ -1,0 +1,1 @@
+{"id":"chatcmpl-807iXl3f5NiElTXYZe2m491HImdk4spj","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"The user is simply saying","signature":""}],"model":"unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL","stop_reason":"max_tokens","stop_sequence":null,"usage":{"cache_read_input_tokens":0,"input_tokens":11,"output_tokens":5}}

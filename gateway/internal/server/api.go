@@ -57,25 +57,22 @@ func NewAPI(holder *config.Holder, drain *Drain, bodies *BodyBudget, providers *
 	})
 	a.mux.HandleFunc("GET /v1/models/{rest...}", a.serveModelPath)
 
-	// Method-less patterns catch the other methods on known paths; "/" catches
-	// unknown paths. ServeMux's own 404 and 405 answers are plain text, so they never
-	// reach clients.
-	paths := []string{"/v1/models", "/v1/models/{rest...}"}
-	for _, ep := range bodyEndpoints {
-		paths = append(paths, ep.path())
-	}
-	for _, path := range paths {
-		allow := http.MethodPost
-		if strings.HasPrefix(path, "/v1/models") {
-			allow = "GET, HEAD"
-		}
+	// Method-less patterns catch the other methods on known paths, answered in the
+	// path's error shape; "/" catches unknown paths. ServeMux's own 404 and 405
+	// answers are plain text, so they never reach clients.
+	refuseMethod := func(path, allow string, ep endpoint) {
 		a.mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Allow", allow)
-			a.refuse(w, r, errMethodNotAllowed(r))
+			a.refuse(w, r, errMethodNotAllowed(r), errorShapeOf(ep, r))
 		})
 	}
+	refuseMethod("/v1/models", "GET, HEAD", endpointListModels)
+	refuseMethod("/v1/models/{rest...}", "GET, HEAD", endpointGetModel)
+	for _, ep := range bodyEndpoints {
+		refuseMethod(ep.path(), http.MethodPost, ep)
+	}
 	a.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		a.refuse(w, r, errUnknownURL(r))
+		a.refuse(w, r, errUnknownURL(r), shapeOpenAI)
 	})
 	return a
 }
@@ -102,7 +99,7 @@ func (a *API) serveModelPath(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if rest == "" {
-		a.refuse(w, r, errUnknownURL(r))
+		a.refuse(w, r, errUnknownURL(r), shapeOpenAI)
 		return
 	}
 	a.serve(w, r, endpointGetModel, rest)
@@ -124,7 +121,7 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request, ep endpoint, pathMod
 	for _, st := range a.stages {
 		if err := st.run(r.Context(), rq); err != nil {
 			rq.failure = err
-			writeError(rq.w, err)
+			writeError(rq.w, err, rq.errorShape())
 			break
 		}
 	}
@@ -134,11 +131,11 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request, ep endpoint, pathMod
 	}
 }
 
-// refuse answers a request that matches no client API endpoint.
-func (a *API) refuse(w http.ResponseWriter, r *http.Request, err *apiError) {
+// refuse answers a request that matches no client API endpoint, in shape.
+func (a *API) refuse(w http.ResponseWriter, r *http.Request, err *apiError, shape errorShape) {
 	rq := a.begin(w, r)
 	rq.failure = err
-	writeError(rq.w, err)
+	writeError(rq.w, err, shape)
 	a.observeRequest(rq)
 	a.logRequest(rq)
 }

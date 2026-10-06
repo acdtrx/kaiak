@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"slices"
 
+	"kaiak/internal/auth"
 	"kaiak/internal/config"
 )
 
@@ -94,10 +95,88 @@ func servedEndpoints(m *config.Model) []string {
 	return names
 }
 
+// anthropicModelEntry is one model as the Anthropic-shaped list describes it
+// (docs/specs/GATEWAY.md, Client API → Anthropic-shaped model list): Anthropic's
+// fields, then kaiak's metadata.
+type anthropicModelEntry struct {
+	Type        string `json:"type"`
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+	CreatedAt   string `json:"created_at"`
+
+	ContextLength    int64            `json:"context_length"`
+	Capabilities     capabilitiesJSON `json:"capabilities"`
+	ReasoningEfforts []string         `json:"reasoning_efforts"`
+	Endpoints        []string         `json:"endpoints"`
+}
+
+// anthropicModelList is Anthropic's model list: always one page. first_id and last_id
+// are null for an empty list.
+type anthropicModelList struct {
+	Data    []anthropicModelEntry `json:"data"`
+	HasMore bool                  `json:"has_more"`
+	FirstID *string               `json:"first_id"`
+	LastID  *string               `json:"last_id"`
+}
+
+// anthropicModelCreated is every Anthropic-shaped entry's created_at: modelCreated as
+// an RFC 3339 time.
+const anthropicModelCreated = "1970-01-01T00:00:00Z"
+
+// wantsAnthropicModels reports whether a model-list or model-entry request asks for
+// Anthropic's shape: Anthropic's SDKs send anthropic-version on every request, and
+// OpenAI's never do.
+func wantsAnthropicModels(r *http.Request) bool {
+	return r.Header.Get("Anthropic-Version") != ""
+}
+
+func newAnthropicModelEntry(m *config.Model) anthropicModelEntry {
+	e := newModelEntry(m)
+	return anthropicModelEntry{
+		Type: "model", ID: e.ID, DisplayName: e.ID, CreatedAt: anthropicModelCreated,
+		ContextLength: e.ContextLength, Capabilities: e.Capabilities, ReasoningEfforts: e.ReasoningEfforts,
+		Endpoints: e.Endpoints,
+	}
+}
+
+// servesMessages reports whether some deployment of m serves Messages: the models an
+// Anthropic client can use.
+func servesMessages(m *config.Model) bool {
+	return slices.ContainsFunc(m.Deployments, func(d config.Deployment) bool { return serves(d, endpointMessages) })
+}
+
+// answerAnthropicModels answers the Anthropic-shaped model list and entry, over the
+// models the key may use that some deployment serves through Messages. A model without
+// Messages is as unknown here as one that does not exist.
+func answerAnthropicModels(rq *request) *apiError {
+	if rq.endpoint == endpointGetModel {
+		m := rq.snapshot.Models[rq.model]
+		if !servesMessages(m) {
+			return authError(auth.ModelNotFound(rq.model))
+		}
+		writeJSON(rq.w, newAnthropicModelEntry(m))
+		return nil
+	}
+	list := anthropicModelList{Data: []anthropicModelEntry{}}
+	for _, name := range rq.identity.AllowedModels() {
+		if m := rq.snapshot.Models[name]; servesMessages(m) {
+			list.Data = append(list.Data, newAnthropicModelEntry(m))
+		}
+	}
+	if n := len(list.Data); n > 0 {
+		list.FirstID, list.LastID = &list.Data[0].ID, &list.Data[n-1].ID
+	}
+	writeJSON(rq.w, list)
+	return nil
+}
+
 // answerModelEndpoint is the terminal stage for the model endpoints; the body
 // endpoints never reach it (the provider stage answers them). model_access has
 // checked a named model exists and is allowed.
 func answerModelEndpoint(_ context.Context, rq *request) *apiError {
+	if (rq.endpoint == endpointListModels || rq.endpoint == endpointGetModel) && wantsAnthropicModels(rq.r) {
+		return answerAnthropicModels(rq)
+	}
 	switch rq.endpoint {
 	case endpointListModels:
 		names := rq.identity.AllowedModels()

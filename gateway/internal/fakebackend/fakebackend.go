@@ -1,6 +1,7 @@
-// Package fakebackend is an OpenAI-compatible model server for tests. It serves chat
-// completions, completions, embeddings and the models list (the gateway's probe)
-// under /v1/ (the OpenAI layout) and /openai/v1/ (Azure layout), answers as
+// Package fakebackend is a model server for tests. It serves chat completions,
+// completions, embeddings, Anthropic Messages with its token counting, and the models
+// list (the gateway's probe) under /v1/ (the OpenAI and Anthropic layout),
+// /openai/v1/ (Azure OpenAI's) and /anthropic/v1/ (Claude in Foundry's), answers as
 // scripted by the test, and records every request it receives. Test tooling only: nothing in the gateway binary imports it;
 // cmd/fakebackend runs it as a process for the e2e test and the live-test kit.
 package fakebackend
@@ -68,20 +69,30 @@ type Reply struct {
 	// CutAfter > 0: a stream sends that many text events, then drops the connection.
 	CutAfter int
 	// EndAfter > 0: a stream sends that many text events, then ends the response
-	// cleanly — no finish_reason, no usage, no [DONE] (a generator that died).
+	// cleanly — no finish_reason, no usage, no [DONE] (a generator that died); a
+	// Messages stream ends without message_delta and message_stop.
 	EndAfter int
+	// ErrorEvent makes a Messages stream send an error event (Anthropic's
+	// overloaded_error) after ErrorEventAfter text events — 0: as its first event —
+	// and end there.
+	ErrorEvent      bool
+	ErrorEventAfter int
 	// EventDelay, when set, makes a stream wait that long before each event after
 	// the first (a slow model).
 	EventDelay time.Duration
 	// HonorMaxTokens: generate at most the request's max_completion_tokens or
 	// max_tokens chunks (the smaller when both are set), one token each, and finish
-	// with "length" when that cut the answer short — as a real model server does.
+	// with "length" ("max_tokens" in Messages) when that cut the answer short — as a
+	// real model server does.
 	HonorMaxTokens bool
 }
 
 // Usage is a token report. CachedTokens, CacheWriteTokens and ReasoningTokens, when
 // set, are reported in prompt_tokens_details and completion_tokens_details, as OpenAI
-// and Azure OpenAI do.
+// and Azure OpenAI do. A Messages answer reports them as Anthropic does: input_tokens
+// is PromptTokens less the cached and written tokens, which are
+// cache_read_input_tokens and cache_creation_input_tokens; reasoning is not reported
+// apart.
 type Usage struct {
 	PromptTokens     int
 	CompletionTokens int
@@ -154,8 +165,8 @@ func NewAt(addr string) (*Backend, error) {
 	return b, nil
 }
 
-// URL is the backend's root URL (no path): an azure-openai base_url is URL(); every
-// other type's is URL() + "/v1".
+// URL is the backend's root URL (no path): an azure-openai or azure-anthropic
+// base_url is URL(); every other type's is URL() + "/v1".
 func (b *Backend) URL() string { return b.server.URL }
 
 // Close stops the backend, cancelling any request still running.
@@ -220,11 +231,28 @@ func (b *Backend) Arrivals() <-chan *Request { return b.arrivals }
 
 // Endpoints the backend serves, as paths below the version prefix.
 const (
-	chatPath       = "chat/completions"
-	completionPath = "completions"
-	embeddingPath  = "embeddings"
-	modelsPath     = "models"
+	chatPath        = "chat/completions"
+	completionPath  = "completions"
+	embeddingPath   = "embeddings"
+	messagesPath    = "messages"
+	countTokensPath = "messages/count_tokens"
+	modelsPath      = "models"
 )
+
+// layouts are the version prefixes the backend serves its endpoints under: OpenAI's
+// and Anthropic's, Azure OpenAI's, Claude in Foundry's.
+var layouts = []string{"/v1/", "/openai/v1/", "/anthropic/v1/"}
+
+// servedEndpoint is the endpoint a request's path names below one of the layouts; ok
+// is false for any other path.
+func servedEndpoint(path string) (endpoint string, ok bool) {
+	for _, prefix := range layouts {
+		if endpoint, ok = strings.CutPrefix(path, prefix); ok {
+			return endpoint, true
+		}
+	}
+	return "", false
+}
 
 // serveModels answers the models list as scripted by SetModelsStatus.
 func (b *Backend) serveModels(w http.ResponseWriter, req *Request) {
@@ -250,10 +278,7 @@ func (b *Backend) serveModels(w http.ResponseWriter, req *Request) {
 func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	req := &Request{Method: r.Method, Path: r.URL.Path, Header: r.Header.Clone(), Body: body, canceled: make(chan struct{})}
-	endpoint, ok := strings.CutPrefix(r.URL.Path, "/v1/")
-	if !ok {
-		endpoint, ok = strings.CutPrefix(r.URL.Path, "/openai/v1/")
-	}
+	endpoint, ok := servedEndpoint(r.URL.Path)
 	if ok && endpoint == modelsPath && r.Method == http.MethodGet {
 		b.serveModels(w, req)
 		return
@@ -271,13 +296,23 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 	case b.arrivals <- req:
 	default:
 	}
-	if !ok || r.Method != http.MethodPost || (endpoint != chatPath && endpoint != completionPath && endpoint != embeddingPath) {
+	switch endpoint {
+	case chatPath, completionPath, embeddingPath, messagesPath, countTokensPath:
+	default:
+		ok = false
+	}
+	if !ok || r.Method != http.MethodPost {
 		writeJSON(w, http.StatusNotFound, errorBody("unknown path "+r.URL.Path))
 		return
 	}
+	// A Messages endpoint answers its errors in Anthropic's shape.
+	errorAnswer := errorBody
+	if endpoint == messagesPath || endpoint == countTokensPath {
+		errorAnswer = messagesErrorBody
+	}
 
 	if reply.RequireHeader != "" && r.Header.Get(reply.RequireHeader) != reply.RequireValue {
-		writeJSON(w, http.StatusUnauthorized, errorBody("missing or wrong "+reply.RequireHeader+" header"))
+		writeJSON(w, http.StatusUnauthorized, errorAnswer("missing or wrong "+reply.RequireHeader+" header"))
 		return
 	}
 	for name, value := range reply.Header {
@@ -310,7 +345,7 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusOK
 		}
 		if reply.Body == "" {
-			writeJSON(w, status, errorBody(fmt.Sprintf("scripted failure %d", status)))
+			writeJSON(w, status, errorAnswer(fmt.Sprintf("scripted failure %d", status)))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -327,7 +362,7 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(body, &top); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorBody("body is not a JSON object"))
+		writeJSON(w, http.StatusBadRequest, errorAnswer("body is not a JSON object"))
 		return
 	}
 	_ = json.Unmarshal(top["model"], &params.model)
@@ -358,6 +393,12 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch {
+	case endpoint == countTokensPath:
+		writeJSON(w, http.StatusOK, map[string]any{"input_tokens": usage.PromptTokens})
+	case endpoint == messagesPath && params.stream:
+		b.writeMessagesStream(w, r, req, reply, params.model, chunks, finish == "length", usage)
+	case endpoint == messagesPath:
+		writeMessage(w, params.model, strings.Join(chunks, ""), finish == "length", usage, reply.OmitUsage)
 	case endpoint == embeddingPath:
 		b.writeEmbeddings(w, params.model, usage, reply.OmitUsage)
 	case params.stream:
@@ -399,61 +440,100 @@ func (b *Backend) pingUntilCancel(w http.ResponseWriter, r *http.Request, req *R
 	}
 }
 
-func (b *Backend) writeStream(w http.ResponseWriter, r *http.Request, req *Request, reply Reply,
-	endpoint, model string, chunks []string, finish string, usage Usage, includeUsage bool) {
+// streamWriter writes one stream's events as a Reply paces them.
+type streamWriter struct {
+	b       *Backend
+	w       http.ResponseWriter
+	r       *http.Request
+	req     *Request
+	reply   Reply
+	flusher *http.ResponseController
+	sent    int
+}
+
+// startStream answers 200 with an event stream, opening with a ": ping" comment
+// block when the reply asks; ok is false when the client is gone.
+func (b *Backend) startStream(w http.ResponseWriter, r *http.Request, req *Request, reply Reply) (*streamWriter, bool) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
-	flusher := http.NewResponseController(w)
+	s := &streamWriter{b: b, w: w, r: r, req: req, reply: reply, flusher: http.NewResponseController(w)}
 	if reply.PingFirst {
-		if _, err := io.WriteString(w, ": ping\n\n"); err != nil || flusher.Flush() != nil {
-			return
+		if _, err := io.WriteString(w, ": ping\n\n"); err != nil || s.flusher.Flush() != nil {
+			return nil, false
 		}
 	}
-	sent := 0
-	send := func(payload []byte) bool {
-		if (sent > 0 || reply.PingFirst) && reply.Pace != nil {
-			select {
-			case <-reply.Pace:
-			case <-r.Context().Done():
-				close(req.canceled)
-				return false
-			case <-b.done:
-				return false
-			}
-		}
-		if sent > 0 && reply.EventDelay > 0 {
-			timer := time.NewTimer(reply.EventDelay)
-			select {
-			case <-timer.C:
-			case <-r.Context().Done():
-				timer.Stop()
-				close(req.canceled)
-				return false
-			case <-b.done:
-				timer.Stop()
-				return false
-			}
-		}
-		sent++
-		if _, err := fmt.Fprintf(w, "data: %s\n\n", payload); err != nil {
+	return s, true
+}
+
+// send writes one event — an "event:" line when name is set, then the data — after
+// the pace and delay the reply asks for; false when the stream must stop.
+func (s *streamWriter) send(name string, payload []byte) bool {
+	reply, r, req := s.reply, s.r, s.req
+	if (s.sent > 0 || reply.PingFirst) && reply.Pace != nil {
+		select {
+		case <-reply.Pace:
+		case <-r.Context().Done():
+			close(req.canceled)
+			return false
+		case <-s.b.done:
 			return false
 		}
-		return flusher.Flush() == nil
 	}
+	if s.sent > 0 && reply.EventDelay > 0 {
+		timer := time.NewTimer(reply.EventDelay)
+		select {
+		case <-timer.C:
+		case <-r.Context().Done():
+			timer.Stop()
+			close(req.canceled)
+			return false
+		case <-s.b.done:
+			timer.Stop()
+			return false
+		}
+	}
+	s.sent++
+	if name != "" {
+		if _, err := fmt.Fprintf(s.w, "event: %s\n", name); err != nil {
+			return false
+		}
+	}
+	if _, err := fmt.Fprintf(s.w, "data: %s\n\n", payload); err != nil {
+		return false
+	}
+	return s.flusher.Flush() == nil
+}
 
+// interrupt applies the reply's text-event faults before text event i: it hangs, cuts
+// the connection or ends the stream cleanly where the reply says. It returns false
+// when the stream ends here.
+func (s *streamWriter) interrupt(i int) bool {
+	reply := s.reply
+	switch {
+	case reply.HangAfter > 0 && i == reply.HangAfter:
+		if reply.PingEvery > 0 {
+			s.b.pingUntilCancel(s.w, s.r, s.req, reply.PingEvery)
+			return false
+		}
+		s.b.waitForCancel(s.r, s.req)
+		return false
+	case reply.CutAfter > 0 && i == reply.CutAfter:
+		panic(http.ErrAbortHandler)
+	case reply.EndAfter > 0 && i == reply.EndAfter:
+		return false
+	}
+	return true
+}
+
+func (b *Backend) writeStream(w http.ResponseWriter, r *http.Request, req *Request, reply Reply,
+	endpoint, model string, chunks []string, finish string, usage Usage, includeUsage bool) {
+	s, ok := b.startStream(w, r, req, reply)
+	if !ok {
+		return
+	}
+	send := func(payload []byte) bool { return s.send("", payload) }
 	for i, text := range chunks {
-		if reply.HangAfter > 0 && i == reply.HangAfter {
-			if reply.PingEvery > 0 {
-				b.pingUntilCancel(w, r, req, reply.PingEvery)
-				return
-			}
-			b.waitForCancel(r, req)
-			return
-		}
-		if reply.CutAfter > 0 && i == reply.CutAfter {
-			panic(http.ErrAbortHandler)
-		}
-		if reply.EndAfter > 0 && i == reply.EndAfter {
+		if !s.interrupt(i) {
 			return
 		}
 		if !send(textChunk(endpoint, model, text, i == 0, nil, includeUsage)) {

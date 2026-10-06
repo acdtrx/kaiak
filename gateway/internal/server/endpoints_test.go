@@ -90,8 +90,8 @@ func TestModelEntriesListServedEndpoints(t *testing.T) {
 	g := newTestGateway(t)
 	withAnthropicModels(t, g)
 	for model, want := range map[string]string{
-		"claude-only": `"endpoints":[]`,
-		"mixed":       `"endpoints":["chat_completions","completions","embeddings"]`,
+		"claude-only": `"endpoints":["messages","messages_count_tokens"]`,
+		"mixed":       `"endpoints":["chat_completions","completions","embeddings","messages","messages_count_tokens"]`,
 	} {
 		w := do(t, g.h, call{method: "GET", path: "/v1/models/" + model, key: workloadKey})
 		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), want) {

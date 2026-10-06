@@ -149,9 +149,17 @@ func sendWire(ctx context.Context, req *Request, call wireCall) (Response, error
 	}
 
 	publicModel, _ := json.Marshal(req.PublicModel) // a string always encodes
-	r := newUpstreamResponse(upstreamCtx, cancel, resp, call.stripUsage, publicModel)
+	r := newUpstreamResponse(upstreamCtx, cancel, resp, req.Endpoint.Format(), call.stripUsage, publicModel)
 	r.backendID = call.backend.ID
 	first, err := r.read()
+	if err == nil && r.errorEvent {
+		// The backend gave up before anything reached the client: a failure the
+		// attempt loop may retry, as a 5xx is (docs/specs/GATEWAY.md, Providers:
+		// complete responses).
+		timer.Stop()
+		r.Close()
+		return nil, &Error{Code: CodeErrorEvent, Err: fmt.Errorf("backend %s: its stream began with an error event", call.backend.ID)}
+	}
 	if err != nil && !errors.Is(err, io.EOF) {
 		if !r.succeeded() && ctx.Err() == nil {
 			// An error answer broken before its first byte (the connection lost, a
@@ -453,11 +461,11 @@ type upstreamResponse struct {
 	silence         time.Duration
 	responseTimer   *time.Timer
 	responseTimeout time.Duration
-	// done: the stream carried [DONE]; choices maps each choice index seen in a
-	// stream to whether its finish_reason arrived (docs/specs/GATEWAY.md, Providers:
-	// complete responses).
-	done    bool
-	choices map[int64]bool
+	// ending reads a stream's events for its end (docs/specs/GATEWAY.md, Providers:
+	// complete responses); errorEvent: a successful stream carried an error event,
+	// relayed as the backend sent it, after which the stream ends incomplete.
+	ending     streamEnd
+	errorEvent bool
 	// stripUsage marks the usage-only chunk Hidden.
 	stripUsage bool
 	// publicModel (encoded JSON) replaces the backend's model name in every stream
@@ -481,8 +489,8 @@ const maxSSEBlockBytes = 16 << 20
 // pieceSize is how much of a non-stream body is read per event.
 const pieceSize = 32 << 10
 
-func newUpstreamResponse(ctx context.Context, cancel context.CancelCauseFunc, resp *http.Response, stripUsage bool,
-	publicModel []byte) *upstreamResponse {
+func newUpstreamResponse(ctx context.Context, cancel context.CancelCauseFunc, resp *http.Response, format Format,
+	stripUsage bool, publicModel []byte) *upstreamResponse {
 	r := &upstreamResponse{
 		status:      resp.StatusCode,
 		header:      make(http.Header),
@@ -502,6 +510,7 @@ func newUpstreamResponse(ctx context.Context, cancel context.CancelCauseFunc, re
 	switch {
 	case r.stream:
 		r.events = sse.NewReader(resp.Body, maxSSEBlockBytes)
+		r.ending = newStreamEnd(format)
 	default:
 		r.buf = make([]byte, pieceSize)
 		if mediaType == "application/json" || strings.HasSuffix(mediaType, "+json") {
@@ -530,8 +539,12 @@ func (r *upstreamResponse) Next() (Event, error) {
 // read reads the next event from the backend. For a streaming request the stall
 // timer runs while it waits, for what is left of the stall timeout since the last
 // data event: keep-alive comments are relayed but do not reset it (a backend
-// pinging while it serves nothing has stalled).
+// pinging while it serves nothing has stalled). After an error event nothing more is
+// read: the stream ends there, incomplete.
 func (r *upstreamResponse) read() (Event, error) {
+	if r.errorEvent {
+		return Event{}, fmt.Errorf("backend %s: the stream carried an error event: %w", r.backendID, ErrIncomplete)
+	}
 	var waitStart time.Time
 	if r.stall != nil {
 		waitStart = time.Now()
@@ -581,7 +594,7 @@ func (r *upstreamResponse) readEvent() (ev Event, data bool, err error) {
 		ev = Event{Data: block.Raw}
 		if block.HasData {
 			ev.Payload = block.Data
-			r.observeTerminal(block.Data)
+			r.errorEvent = r.succeeded() && r.ending.observe(block.Data)
 			ev.Hidden = r.stripUsage && isUsageOnlyChunk(block.Data)
 			if !ev.Hidden {
 				ev.Data = r.rewriteChunkModel(block)
@@ -629,56 +642,15 @@ func (r *upstreamResponse) succeeded() bool {
 	return r.status >= 200 && r.status < 300
 }
 
-// observeTerminal reads what a stream chunk says about the stream's end: [DONE], or
-// a choice's finish_reason.
-func (r *upstreamResponse) observeTerminal(payload []byte) {
-	if !r.succeeded() {
-		return
-	}
-	if bytes.Equal(payload, []byte("[DONE]")) {
-		r.done = true
-		return
-	}
-	var chunk struct {
-		Choices []struct {
-			Index        int64           `json:"index"`
-			FinishReason json.RawMessage `json:"finish_reason"`
-		} `json:"choices"`
-	}
-	// A chunk that does not decode says nothing about the end.
-	if json.Unmarshal(payload, &chunk) != nil {
-		return
-	}
-	for _, c := range chunk.Choices {
-		if r.choices == nil {
-			r.choices = make(map[int64]bool)
-		}
-		finished := len(c.FinishReason) > 0 && !bytes.Equal(c.FinishReason, []byte("null"))
-		r.choices[c.Index] = r.choices[c.Index] || finished
-	}
-}
-
 // complete reports whether a response that reached its end was whole. A successful
-// stream is complete once it carried [DONE], or once every choice it carried has its
-// finish_reason (servers that end without [DONE]); a successful JSON body once its
-// top-level value closed. Other answers are complete when they end.
+// stream is complete as its format's events say (streamEnd); a successful JSON body
+// once its top-level value closed. Other answers are complete when they end.
 func (r *upstreamResponse) complete() bool {
 	if !r.succeeded() {
 		return true
 	}
 	if r.stream {
-		if r.done {
-			return true
-		}
-		if len(r.choices) == 0 {
-			return false
-		}
-		for _, finished := range r.choices {
-			if !finished {
-				return false
-			}
-		}
-		return true
+		return r.ending.complete()
 	}
 	if r.bodyModel != nil {
 		return r.bodyModel.closed()
@@ -686,12 +658,13 @@ func (r *upstreamResponse) complete() bool {
 	return true
 }
 
-// rewriteChunkModel returns the block's raw bytes with the chunk's top-level model
-// replaced by the public name. The chunk's JSON is spread over the block's data line
+// rewriteChunkModel returns the block's raw bytes with the chunk's model replaced by
+// the public name: the top-level model, and the one a format carries one level down
+// (streamEnd.nestedModel). The chunk's JSON is spread over the block's data line
 // values (joined by line breaks, which JSON reads as whitespace), so each value is
 // edited in place and everything around it is kept.
 func (r *upstreamResponse) rewriteChunkModel(block sse.Block) []byte {
-	m := newModelRewriter(r.publicModel)
+	m := newNestedModelRewriter(r.publicModel, r.ending.nestedModel())
 	out := make([]byte, 0, len(block.Raw)+len(r.publicModel))
 	pos := 0
 	for _, span := range block.DataSpans {

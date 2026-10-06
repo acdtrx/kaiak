@@ -107,6 +107,14 @@ func (id Identity) AuthorizeModel(model string) *Error {
 	if id.allowed.Allows(model) {
 		return nil
 	}
+	return ModelNotFound(model)
+}
+
+// ModelNotFound is the refusal of a model the caller may not use or that does not
+// exist — one answer for both, built only from the requested name (clipped: the
+// client controls it). An endpoint that serves only some of the allowed models (the
+// Anthropic-shaped model list) refuses the others with it too.
+func ModelNotFound(model string) *Error {
 	return &Error{Code: CodeModelNotFound,
 		Message: fmt.Sprintf("The model `%s` does not exist or you do not have access to it.", clip.String(model))}
 }

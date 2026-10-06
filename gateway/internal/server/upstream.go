@@ -220,7 +220,8 @@ func sendAttempt(ctx context.Context, rq *request, providers *provider.Registry,
 		failure := upstreamFailure(ctx, rq, err)
 		if perr, ok := errors.AsType[*provider.Error](rq.upstreamErr); ok &&
 			(perr.Code == provider.CodeAuthFailed || perr.Code == provider.CodeModelMissing ||
-				perr.Code == provider.CodePathMissing || perr.Code == provider.CodeEndpointMissing) {
+				perr.Code == provider.CodePathMissing || perr.Code == provider.CodeEndpointMissing ||
+				perr.Code == provider.CodeErrorEvent) {
 			rq.meter.Refused()
 			if perr.Code == provider.CodeEndpointMissing {
 				// Not a circuit failure, so it shows here: the operator upgrades the
@@ -243,7 +244,8 @@ func sendAttempt(ctx context.Context, rq *request, providers *provider.Registry,
 // retryReason is the one retry decision (docs/specs/GATEWAY.md, Routing and
 // reliability: retries), for the current attempt, which has sent nothing to the
 // client yet: a connect error or a connection lost before the first event, a
-// stream's first-event timeout, a backend 5xx or 429, the backend refusing the
+// stream's first-event timeout, a backend 5xx or 429 (or a stream whose first event
+// was an error event, a 5xx in all but status), the backend refusing the
 // gateway's credential (another backend has its own), the backend not serving the
 // deployment's model and the backend's base_url leading to no endpoint (another
 // deployment does serve) may be retried; "" otherwise —
@@ -277,6 +279,8 @@ func retryReason(rq *request) string {
 		return retryPathMissing
 	case provider.CodeEndpointMissing:
 		return retryEndpointMissing
+	case provider.CodeErrorEvent:
+		return retryServerError
 	}
 	return retryUnavailable
 }
@@ -400,14 +404,15 @@ func (rq *request) releaseAttempt(at *attempt) {
 // attempts), once. A retried attempt has a record only when its request reached the
 // backend in full and got no answer (the first-event timeout, a connection lost after
 // sending): estimated input, no output, estimated and partial. The request's last
-// attempt always has one, as every routed request settles. rq.usage is the latest
-// record.
+// attempt always has one, as every routed request settles — except on a
+// token-counting endpoint, where nothing is generated or billed and no attempt has a
+// record. rq.usage is the latest record.
 func (rq *request) settleAttempt(at *attempt, recorder *accounting.Recorder) {
 	if at.settled {
 		return
 	}
 	at.settled = true
-	if at.retryReason != "" && !at.meter.SentUnanswered() {
+	if rq.endpoint.counts() || (at.retryReason != "" && !at.meter.SentUnanswered()) {
 		return
 	}
 	rec := recorder.Settle(accounting.Request{
@@ -443,8 +448,9 @@ func (rq *request) endAttempt(recorder *accounting.Recorder) {
 // reason of a failure. Failures: no response (connect error, broken before the
 // first event), a stream's first-event timeout, the backend refusing the gateway's
 // credential (every request would fail the same way), the backend not serving the
-// deployment's model, the backend's base_url leading to no endpoint, a backend 5xx, a response broken off upstream, stalled or
-// ended incomplete. A non-stream response timeout before the first bytes is its own
+// deployment's model, the backend's base_url leading to no endpoint, a backend 5xx (a
+// stream opening with an error event among them), a response broken off upstream,
+// stalled or ended incomplete. A non-stream response timeout before the first bytes is its own
 // class, neutral but for a half-open trial and a run of them (routing.ResponseTimeout).
 // Neutral: a non-stream response timeout after the first bytes (a large body still
 // arriving: the backend was working), a backend 429 (busy,
@@ -480,6 +486,8 @@ func classifyAttempt(rq *request) (metrics.AttemptOutcome, routing.Outcome, stri
 		case provider.CodeEndpointMissing:
 			// The deployment serves its other endpoints.
 			return metrics.AttemptEndpointMissing, routing.Neutral, ""
+		case provider.CodeErrorEvent:
+			return metrics.AttemptServerError, routing.Failure, rq.upstreamErr.Error()
 		}
 		return metrics.AttemptUnavailable, routing.Failure, rq.upstreamErr.Error()
 	}
@@ -507,6 +515,10 @@ func providerEndpoint(ep endpoint) provider.Endpoint {
 		return provider.Completions
 	case endpointEmbeddings:
 		return provider.Embeddings
+	case endpointMessages:
+		return provider.Messages
+	case endpointMessagesCountTokens:
+		return provider.MessagesCountTokens
 	}
 	return provider.ChatCompletions
 }
@@ -669,7 +681,7 @@ func (rq *request) answerBackendFault(resp provider.Response) {
 		}
 	}
 	rq.failure = errUpstreamFault(resp.Status())
-	writeError(rq.w, rq.failure)
+	writeError(rq.w, rq.failure, rq.errorShape())
 }
 
 // Why a relayed response stopped early (the log line's kaiak.relay_end;

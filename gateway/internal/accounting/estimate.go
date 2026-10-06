@@ -39,15 +39,17 @@ const maxEstimateDepth = 10000
 //     image_url part's URL whatever its form (the backend fetches a remote image and
 //     bills it all the same), and an input_audio part's data (raw base64);
 //   - a token ID in a completion's prompt or an embeddings request's input counts
-//     one token.
+//     one token;
+//   - in a Messages request, an image or document block's source counts
+//     InlineMediaTokens when it is base64 data, a URL or a file ID (a text or content
+//     source is text, its own content scanned by these rules).
 //
 // One pass over the body, bounded by its size. A body that does not scan (the parse
 // before this refuses those) is estimated by its size alone.
 func EstimateInput(ep provider.Endpoint, body []byte) InputEstimate {
 	whole := EstimateTokens(int64(len(body)))
 	fallback := InputEstimate{Total: whole, LargestPrompt: whole}
-	s := &inputScan{dec: json.NewDecoder(bytes.NewReader(body))}
-	s.dec.UseNumber()
+	s := newInputScan(body, ep.Format() == provider.FormatMessages)
 
 	if tok, err := s.dec.Token(); err != nil || tok != json.Delim('{') {
 		return fallback
@@ -112,6 +114,14 @@ func (p part) tokens() int64 {
 
 type inputScan struct {
 	dec *json.Decoder
+	// messages: the body is a Messages request, whose media live in block sources.
+	messages bool
+}
+
+func newInputScan(data []byte, messages bool) *inputScan {
+	s := &inputScan{dec: json.NewDecoder(bytes.NewReader(data)), messages: messages}
+	s.dec.UseNumber()
+	return s
 }
 
 // measured completes p, scanned from the body offset start to the decoder's offset.
@@ -167,6 +177,9 @@ func (s *inputScan) promptList() ([]part, bool) {
 // the text are subtracted from p.text; tokens it counts directly are added to
 // p.fixed. It returns the value's first token.
 func (s *inputScan) value(key, parent string, tokenIDs bool, depth int, p *part) (json.Token, bool) {
+	if s.messages && key == "source" {
+		return nil, s.messagesSource(depth, p)
+	}
 	start := s.dec.InputOffset()
 	tok, err := s.dec.Token()
 	if err != nil {
@@ -211,6 +224,36 @@ func (s *inputScan) handle(tok json.Token, span int64, key, parent string, token
 		}
 	}
 	return true
+}
+
+// messagesSource scans a Messages block's source (docs/specs/GATEWAY.md, Limits: the
+// input estimate): base64 data, a URL or a file ID is one media item, whatever its
+// size; a text or content source — or a source that is not an object — is scanned as
+// any other value. The source is read whole first: its type may come after its data.
+func (s *inputScan) messagesSource(depth int, p *part) bool {
+	start := s.dec.InputOffset()
+	var raw json.RawMessage
+	if err := s.dec.Decode(&raw); err != nil {
+		return false
+	}
+	span := s.dec.InputOffset() - start
+	var source struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(raw, &source) == nil {
+		switch source.Type {
+		case "base64", "url", "file":
+			p.text -= span
+			p.fixed += InlineMediaTokens
+			return true
+		}
+	}
+	inner := newInputScan(raw, true)
+	tok, err := inner.dec.Token()
+	if err != nil {
+		return false
+	}
+	return inner.handle(tok, inner.dec.InputOffset(), "", "source", false, depth, p)
 }
 
 // isMedia reports whether the string s, the value of member key in an object that is

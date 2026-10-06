@@ -1,0 +1,129 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_H89DjiEz6GawFO2ZhnllTaxYvIJqkmk5","object":"response","status":"in_progress"}}
+
+event: response.in_progress
+data: {"type":"response.in_progress","response":{"id":"resp_H89DjiEz6GawFO2ZhnllTaxYvIJqkmk5","object":"response","status":"in_progress"}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","item":{"id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE","summary":[],"type":"reasoning","content":[],"encrypted_content":"","status":"in_progress"}}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":"The","item_id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" user","item_id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" wants","item_id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" to","item_id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" know","item_id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" the","item_id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" weather","item_id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" in","item_id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" Paris","item_id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" and","item_id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" explicitly","item_id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" asked","item_id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" me","item_id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" to","item_id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" use","item_id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" the","item_id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" tool","item_id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":".","item_id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" I","item_id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":"'ll","item_id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" call","item_id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" the","item_id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" get","item_id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":"_weather","item_id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" function","item_id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" with","item_id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" city","item_id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":" \"","item_id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":"Paris","item_id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":"\".","item_id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE"}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":"\n","item_id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE"}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","item":{"id":"fc_xpGk890Sm9ix7yCPjCRtl1IuuFw440pa","arguments":"","call_id":"call_xpGk890Sm9ix7yCPjCRtl1IuuFw440pa","name":"get_weather","type":"function_call","status":"in_progress"}}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"{","item_id":"fc_xpGk890Sm9ix7yCPjCRtl1IuuFw440pa"}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\"city\":\"","item_id":"fc_xpGk890Sm9ix7yCPjCRtl1IuuFw440pa"}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"Paris","item_id":"fc_xpGk890Sm9ix7yCPjCRtl1IuuFw440pa"}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\"","item_id":"fc_xpGk890Sm9ix7yCPjCRtl1IuuFw440pa"}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"}","item_id":"fc_xpGk890Sm9ix7yCPjCRtl1IuuFw440pa"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE","summary":[],"type":"reasoning","content":[{"text":"The user wants to know the weather in Paris and explicitly asked me to use the tool. I'll call the get_weather function with city \"Paris\".\n","type":"reasoning_text"}],"encrypted_content":""}}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"id":"fc_xpGk890Sm9ix7yCPjCRtl1IuuFw440pa","type":"function_call","status":"completed","arguments":"{\"city\":\"Paris\"}","call_id":"call_xpGk890Sm9ix7yCPjCRtl1IuuFw440pa","name":"get_weather"}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_H89DjiEz6GawFO2ZhnllTaxYvIJqkmk5","object":"response","created_at":1791289042,"status":"completed","model":"unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL","output":[{"id":"rs_axskwDIgK8UQwEhmlzRs7LiglgKnEoEE","summary":[],"type":"reasoning","content":[{"text":"The user wants to know the weather in Paris and explicitly asked me to use the tool. I'll call the get_weather function with city \"Paris\".\n","type":"reasoning_text"}],"encrypted_content":""},{"id":"fc_xpGk890Sm9ix7yCPjCRtl1IuuFw440pa","type":"function_call","status":"completed","arguments":"{\"city\":\"Paris\"}","call_id":"call_xpGk890Sm9ix7yCPjCRtl1IuuFw440pa","name":"get_weather"}],"usage":{"input_tokens":277,"output_tokens":59,"total_tokens":336,"input_tokens_details":{"cached_tokens":273}}},"timings":{"cache_n":273,"prompt_n":4,"prompt_ms":101.999,"prompt_per_token_ms":25.49975,"prompt_per_second":39.216070745791626,"predicted_n":59,"predicted_ms":4638.37,"predicted_per_token_ms":79.97189655172414,"predicted_per_second":12.50439270692075}}
+
