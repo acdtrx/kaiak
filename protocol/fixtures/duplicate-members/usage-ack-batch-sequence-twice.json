@@ -6,10 +6,7 @@
     "sequence": 1
   },
   "totals": {
-    "revision": {
-      "control_plane": "9f86d081884c7d659a2feaa0c55ad015",
-      "sequence": 17
-    },
+    "revision": 17,
     "config_epoch": "c0ffee00c0ffee00c0ffee00c0ffee00",
     "config_version": 42,
     "live_gateways": 2,

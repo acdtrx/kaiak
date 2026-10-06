@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://kaiak.invalid/protocol/schema/totals.schema.json",
   "title": "kaiak usage totals",
-  "description": "The control plane's usage totals as one gateway gets them: the data of a totals event on that gateway's stream, and part of every usage ack it gets. A consistent snapshot: its windows include every batch the control plane had counted when it took the revision, and no other. Complete: it lists every hour and month limit window with usage in the control plane's current window; a limit it does not list has used nothing there. Per-minute limits are not listed (each gateway enforces its share locally).",
+  "description": "The control plane's usage totals as one gateway gets them: the data of a totals event on that gateway's stream, and part of every usage ack it gets. A consistent snapshot: its windows include every batch the control plane had counted at its revision, and no other. Complete: it lists every hour and month limit window with usage in the control plane's current window; a limit it does not list has used nothing there. Per-minute limits are not listed (each gateway enforces its share locally).",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -15,8 +15,8 @@
   ],
   "properties": {
     "revision": {
-      "description": "Orders totals messages: a gateway applies one only when it is newer than the last applied — the same control plane and a higher sequence, or another control plane (a restarted one).",
-      "$ref": "#/$defs/revision"
+      "description": "The store's totals sequence: one more with every change to the totals (a counted batch, a publish, a change to the live set), whichever control-plane process made it, and never lower while the store keeps its config epoch. Orders totals messages: a gateway applies one only when its config_epoch is the epoch of the config the gateway runs and its revision is higher than the last applied in that epoch.",
+      "$ref": "common.schema.json#/$defs/count"
     },
     "config_epoch": {
       "description": "The epoch of the store the config version counts in (config-snapshot.schema.json). With config_version, the config the totals were computed under: a gateway applies the totals only when both equal its applied config's.",
@@ -49,25 +49,6 @@
     }
   },
   "$defs": {
-    "revision": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "control_plane",
-        "sequence"
-      ],
-      "properties": {
-        "control_plane": {
-          "description": "Random, 128 bits, lowercase hex; created when the control-plane process starts.",
-          "type": "string",
-          "pattern": "^[0-9a-f]{32}$"
-        },
-        "sequence": {
-          "description": "Increases with every change to the totals in that process (a counted batch, a publish, a change to the live set).",
-          "$ref": "common.schema.json#/$defs/count"
-        }
-      }
-    },
     "batch_position": {
       "description": "A batch within its gateway's epochs: the epoch and the sequence (usage-batch.schema.json, batch_id).",
       "type": "object",

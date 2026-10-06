@@ -47,17 +47,17 @@
     "kind": "schema",
     "reason": "per-minute limits stay local to each gateway and are never pushed"
   },
-  "revision-control-plane-uppercase.json": {
-    "kind": "schema",
-    "reason": "the control-plane ID is 32 lowercase hex digits"
-  },
   "revision-missing.json": {
     "kind": "schema",
     "reason": "totals carry a revision, so a gateway can order them"
   },
-  "revision-sequence-negative.json": {
+  "revision-negative.json": {
     "kind": "schema",
-    "reason": "the revision sequence is 0 or more"
+    "reason": "the revision is 0 or more"
+  },
+  "revision-object.json": {
+    "kind": "schema",
+    "reason": "the revision is the store's totals sequence, an integer — not a per-process object"
   },
   "used-19-digits.json": {
     "kind": "schema",

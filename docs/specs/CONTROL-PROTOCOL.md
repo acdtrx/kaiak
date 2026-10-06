@@ -97,6 +97,11 @@ the `{ error, detail }` body, `error` being the stable code:
 - The control plane assigns versions: `1` for the first config published, then one
   more with every publish. A config that fails validation (schema or semantic rules)
   is refused with its issues and never gets a version; the current version stays.
+- **One order across processes** (settled 2026-10-06): a publish is stored only as
+  the version after the one it was checked against. Two publishes racing — in one
+  control-plane process or in two over one store (Control-plane processes) — never
+  share a version: the one that loses is checked again against the winner, the
+  parents rule included, and takes the next version or is refused.
 - **Parents never change** (settled 2026-09-27): a publish that gives a group the
   current version defines another `parent` than it has there — a top-level group
   given a parent and a child made top-level included — is refused like a config that
@@ -147,8 +152,9 @@ the `{ error, detail }` body, `error` being the stable code:
 - **Resume without gaps or doubles**: the control plane subscribes to new versions
   *before* it reads the ones to replay, then sends the replay (every version newer
   than `since`, oldest first — Config versions), then every version published while
-  the stream stays open. A version is sent at most once per stream, in increasing
-  order; each `config` event's `id:` is its version.
+  the stream stays open, by whichever control-plane process (Control-plane
+  processes). A version is sent at most once per stream, in increasing order; each
+  `config` event's `id:` is its version.
 - **`resync` ends the stream**: when `since` cannot be resumed from (Config
   versions; `config_epoch` not the store's included), the stream carries one `resync`
   event (`{}`) and closes. The gateway
@@ -162,8 +168,9 @@ the `{ error, detail }` body, `error` being the stable code:
 - **Totals** (settled 2026-09-24): a `totals` event (`data:` the totals on one line,
   no `id:` — resume is by config version only) follows the replay when a config
   exists, then goes out whenever the totals change (a counted batch, a publish — new
-  `config_version` and limits — or a gateway joining or leaving the live set), **at
-  most one per second per stream**: the first change after a quiet second is pushed
+  `config_version` and limits — or a gateway joining or leaving the live set), made by
+  whichever control-plane process (Control-plane processes), **at most one per second
+  per stream**: the first change after a quiet second is pushed
   at once, later ones within the second become one trailing push. A push reads the
   totals when it is written, so it carries the newest; the gateway orders pushes and
   acks by their revision (Messages → Totals).
@@ -201,7 +208,7 @@ the `{ error, detail }` body, `error` being the stable code:
 | Message (fixture kind) | Shape |
 | --- | --- |
 | config snapshot (`config-snapshot`) | `{ config_epoch, version, config }` — `config` is a full config document |
-| totals (`totals`) | `{ revision: { control_plane, sequence }, config_epoch, config_version, live_gateways, counted_through, windows: [window…] }` |
+| totals (`totals`) | `{ revision, config_epoch, config_version, live_gateways, counted_through, windows: [window…] }` |
 | totals window | `{ group?, type, models?, window_start, used }` |
 | resync (`resync`) | `{}` |
 | usage record (`usage-record`) | the record (Usage records) |
@@ -230,27 +237,25 @@ the `{ error, detail }` body, `error` being the stable code:
   `counted_through` is at or past the batch).
 - **Totals** — the `totals` event's data and every ack's `totals`, one shape, made
   for one gateway (the stream's, or the acknowledged batch's instance):
-  - `revision` — orders totals messages (settled 2026-09-24): `control_plane` is 32
-    random lowercase hex digits created when the control-plane process starts,
-    `sequence` an integer from 0 increasing with every change to the totals in that
-    process (a counted batch, a publish, a change to the live set). The gateway
-    applies a message's totals only when it is **newer** than the last applied: the
-    same `control_plane` and a higher `sequence`, or another `control_plane` (a
-    restarted control plane — adopted, and ordering starts again from it). Pushes and
-    acks travel on different connections, so without it a push read before an ack
-    could arrive after it and take the gateway back to older totals. **Replaced
-    processes** (settled 2026-09-25, the independent audit's finding 5): the gateway
-    remembers the `control_plane` values it moved away from (the last 16) and never
-    applies totals from one again — a delayed ack from the process a restart
-    replaced, arriving after the new process's push, would otherwise count as
-    another restart and take the gateway back to older totals (A 100 → B 200 → A
-    150). Such a message's `counted_through` still counts (below): its process
-    counted those batches before it was replaced, so the replacement's totals
-    include them. The case served is one control plane restarting, not several
-    running at once; the config epoch and version cannot order processes (both
-    serve the same config). Rejected: a durable term in the store (a stored
-    counter every start increments) — a protocol and store change for a case the
-    gateway can settle alone.
+  - `revision` — orders totals messages (settled 2026-09-24; the store's sequence
+    2026-10-06): an integer from 0, the store's **totals sequence**, which moves on by
+    one with every change to the totals — a counted batch, a publish, a change to the
+    live set — whichever control-plane process made it, and never goes back while the
+    store keeps its config epoch (Control-plane processes). Pushes and acks travel on
+    different connections — with several processes, to different processes — so a
+    push read before an ack can arrive after it; the revision keeps the gateway from
+    going back to older totals. The gateway applies a message's totals only when its
+    `config_epoch` is the epoch of the config the gateway runs and its revision is
+    **higher** than the last applied in that epoch (the first in an epoch is applied
+    whatever its revision). A message of another epoch is not applied: its windows
+    could not be used (they follow their config, below), and its revision orders
+    nothing in this store — a delayed answer from a store that started over is
+    ignored that way, and the totals of a new store arrive again on the stream that
+    opens after the gateway takes that store's config. What any message shows
+    counted still counts (`counted_through`, below). Rejected: a revision per
+    control-plane process (`{ control_plane, sequence }`, with the gateway
+    remembering the processes it moved away from) — it ordered one process
+    restarting, never several running at once, whose sequences cannot be compared.
   - `config_epoch`, `config_version` — the config whose limits the totals were
     computed under: the store's epoch and the version in it, as a snapshot names a
     config (settled 2026-09-25, H3). A gateway applies the windows only when both
@@ -269,13 +274,15 @@ the `{ error, detail }` body, `error` being the stable code:
     whose ack has not arrived works like that ack, and nothing is counted twice. The
     ack stays the only thing that removes a batch from the spool.
   - **Consistent snapshot**: a message's windows include exactly the batches the
-    control plane had counted when it took the revision — `counted_through` among
-    them. `kaiak-control` takes batch counting and totals reads in turns to hold it
-    (a batch's store write and its sequence step, against a read of the sequence,
-    `counted_through` and the windows); it is what lets the gateway act on
-    `counted_through` from a message older than the totals it holds. Rejected: a
-    sequence without that guarantee, where a message could show a batch counted that
-    the applied totals lack — usage dropped from enforcement until the next push.
+    control plane had counted at its revision — `counted_through` among them. The
+    store guarantees it (settled 2026-10-06, Control-plane processes): a batch's
+    counting and its step of the sequence are one store write, and a message's
+    revision, `counted_through` and windows are read from one store snapshot, so it
+    holds whichever process counted and whichever reads. It is what lets the gateway
+    act on `counted_through` from a message older than the totals it holds.
+    Rejected: a sequence without that guarantee, where a message could show a batch
+    counted that the applied totals lack — usage dropped from enforcement until the
+    next push.
   - `windows` — **complete**: every hour and month limit with usage in the control
     plane's current window, one entry per limit. A limit not listed has used nothing
     in the control plane's current window. Per-minute limits are never listed.
@@ -731,11 +738,19 @@ How the control plane takes `POST /v1/usage`, as `kaiak-control` implements it.
   must not stall on them); same epoch and a sequence at or below the last → acked
   again, not counted (a resend, or a straggler behind a later batch); a different epoch
   → counted and logged (a fresh spool). Batches from one instance are taken one at a
-  time, so two copies racing (a retry beside the original) are counted once.
+  time within a control-plane process; across processes the store's conditional
+  write (below) decides, so two copies racing (a retry beside the original) are
+  counted once either way.
 - **Counted atomically**: the batch ID becomes the instance's last, its amounts join
-  the totals and its records join the recent records in one store write — a batch is
-  counted and remembered, or neither. Rejected: separate writes, where a crash between
-  them loses a batch or counts it twice.
+  the totals, its records join the recent records and the totals sequence moves on by
+  one (Messages → Totals: `revision`) in one store write — a batch is counted and
+  remembered, or neither. Rejected: separate writes, where a crash between them loses
+  a batch or counts it twice.
+- **Counted under the config in force** (settled 2026-10-06): a batch's amounts are
+  computed under the latest published config, and the write is conditional on that
+  version still being the latest — a publish in between (by any control-plane
+  process) makes the write fail, and the batch is computed again under the new
+  limits. So no batch counts toward limits a publish already replaced.
 - **Exactly once in the store** (settled 2026-09-25, D7): the write is conditional on
   the last batch ID the decision was made against — the store compares and writes in
   one atomic operation, and when another writer counted a batch of the instance in
@@ -824,10 +839,11 @@ How the control plane takes `POST /v1/usage`, as `kaiak-control` implements it.
   month window is raised to the largest predecessor's amount there (it may hold its
   own already, from when that identity last existed in the window). Several
   predecessors are ambiguous: the largest is carried and the host hears of it
-  (`onLimitCarriedOver`, `ambiguous`; the sample logs a warning). `kaiak-control`
-  runs every publish in the totals' turn, so no batch counts between the publish
-  and the carry, and batches count under the config in force when their turn comes.
-  The gateway carries its counters the same way (`GATEWAY.md`, Limits → Model-set
+  (`onLimitCarriedOver`, `ambiguous`; the sample logs a warning). No batch counts
+  between the carry and the publish, and every batch counts under the config in
+  force when it is counted — whichever control-plane process counts or publishes
+  (settled 2026-10-06; the writes below and Usage intake → Counted under the config
+  in force). The gateway carries its counters the same way (`GATEWAY.md`, Limits → Model-set
   edits keep the spend). **Each side carries against the config it last held**
   (settled 2026-09-27): `kaiak-control` against the previously published version,
   a gateway against the config it applied before — which differ when a gateway
@@ -835,16 +851,20 @@ How the control plane takes `POST /v1/usage`, as `kaiak-control` implements it.
   predecessors for a while. The totals computed under the new config settle the
   difference: once they reach the gateway, they are its base for every limit
   (`GATEWAY.md`, Limits → Control-plane mode). Rejected: a new identity starting
-  at 0 — adding a model to a spent monthly budget forgave the month. **The carry is
-  written before the version is stored** (settled 2026-10-01; the 2026-09-30
-  review's C4 and B2): a store write that fails fails the publish with nothing
-  stored or announced, and the host retries; a carry only raises a window up to its
-  predecessor's amount, so a retry after a carry written and a version not stored
-  adds nothing twice. The host hears of each carry (`onLimitCarriedOver`) once the
-  publish has succeeded; a callback that throws goes to `onListenerError` and never
-  fails it. Rejected: storing the version first — a failed carry then left the new
-  config live with the spend lost, and the retry, comparing against the stored
-  version, found nothing to carry.
+  at 0 — adding a model to a spent monthly budget forgave the month. **The carry and
+  the version are one store write** (settled 2026-10-01, the 2026-09-30 review's C4
+  and B2; one write 2026-10-06), conditional on the latest version and the totals
+  sequence the carry was computed from: a batch counted or a version published in
+  between (by any control-plane process) makes it fail with nothing written, and the
+  publish is checked and its carry computed again. A store write that fails for
+  any other reason fails the publish with nothing stored or announced, and the host
+  retries. The write moves the totals sequence on by one. The host hears of each
+  carry (`onLimitCarriedOver`) once the publish has succeeded; a callback that
+  throws goes to `onListenerError` and never fails it. Rejected: storing the version
+  first — a failed carry then left the new config live with the spend lost, and the
+  retry, comparing against the stored version, found nothing to carry; the carry
+  and the version as two writes — a batch another process counts between them is
+  missed by the carry.
 - **Per-minute windows** stay local to each gateway; the control plane pushes only the
   number of live gateways, and each gateway enforces limit ÷ live gateways, rounded
   down, 0 counting as 1, never below 1 unless the limit is 0 (`GATEWAY.md`, Limits →
@@ -881,17 +901,25 @@ How the control plane takes `POST /v1/status`, as `kaiak-control` implements it.
 - **Accepted before any config is published**: a starting gateway reports with
   nothing applied, and the live set must know it before its first batch.
 - The latest status per instance is kept with its receipt time (the control plane's
-  clock); a newer receipt replaces it whatever it says.
+  clock); a newer receipt replaces it whatever it says. The write is conditional on
+  the record the status was judged against (settled 2026-10-06): a status another
+  control-plane process took in between makes it fail, and the status is judged
+  again against that one, so joining the live set and the conflict rule below hold
+  across processes.
 - **Live set**: an instance joins with its first accepted status and leaves when an
   expiry sweep finds it silent for 30 s (configurable). The live-gateway count is the
-  set's size. A **draining** gateway stays live until it stops reporting: it still
-  serves its in-flight requests under its per-minute share, and dropping it early
-  would raise the other gateways' shares while it still spends. Rejected: leaving the
-  set on `draining`.
-- **Expiry sweep**: an invocable run (manual, or the core's timer every 5 s by
-  default, so a gateway leaves between 30 and 35 s after its last status); each run
-  reports its trigger, time and result (expired and forgotten instances, or the
-  failure) to the host. A gateway expired and still silent after an hour
+  set's size, the same for every control-plane process; a gateway joining or leaving
+  moves the totals sequence on by one, in the same store write. A **draining**
+  gateway stays live until it stops reporting: it still serves its in-flight requests
+  under its per-minute share, and dropping it early would raise the other gateways'
+  shares while it still spends. Rejected: leaving the set on `draining`.
+- **Expiry sweep**: an invocable run (manual, or each control-plane process's timer
+  every 5 s by default, so a gateway leaves between 30 and 35 s after its last
+  status); each run reports its trigger, time and result (expired and forgotten
+  instances, or the failure) to the host. **Every process sweeps** (settled
+  2026-10-06): each expiry or forgetting is a write conditional on the record the
+  sweep read, so a status taken meanwhile by any process keeps its gateway live, and
+  two sweeps racing expire a gateway once. A gateway expired and still silent after an hour
   (configurable) is forgotten — instance names churn with pods, and the list must not
   grow without bound. A forgotten gateway that reports again simply joins again.
 - **Batch cursor retention** (settled 2026-09-25): an instance's last counted batch
@@ -915,24 +943,49 @@ How the control plane takes `POST /v1/status`, as `kaiak-control` implements it.
   spool. Rejected: flagging any start-time change while the old one is fresh — every
   restart within 30 s would flag.
 
-## Control-plane processes (settled 2026-09-25, D7)
+## Control-plane processes (settled 2026-10-06)
 
-- **One control-plane process per store.** The config versions' order, the totals
-  revision and its consistent snapshots, the subscriptions that feed the streams and
-  the expiry sweep's timer all live in one process: a second process on the same store
-  would assign clashing versions, push totals out of order and miss the other's
-  publishes. Several replicas behind a load balancer need a store (and a core) built
-  for it — not this one.
-- **Enforced by a store lease**: `kaiak-control`'s core takes the store's lease when it
-  starts (the Fastify plugin starts it when the app is ready), renews it every third
-  of its time to live (default 30 s) and gives it up when it stops. A core that finds
-  the lease held by another, unexpired, refuses to start (`store-lease-held`, naming
-  the holder and the lease's end) — a startup error, not a silent second writer. A
-  lease a crashed process left behind expires, so a replacement starts once it has
-  run out. A renewal that fails (another holder took it after this process stalled
-  past the lease, or the store failed) is reported to the host, which by default
-  stops the process. The in-memory store implements the lease too; it is one per
-  process by construction, so the lease matters for stores that outlive a process.
+- **Any number of control-plane processes over one store.** Gateways may reach any of
+  them — through a load balancer, one connection to one process and the next to
+  another — and see one control plane. What makes them agree lives in the store, not
+  in a process: the store is where processes coordinate, and a deployment that runs
+  several processes provides a store that holds the guarantees below across them.
+  `kaiak-control` holds every protocol rule on top of its store contract; its
+  in-memory store serves one process (`control/kaiak-control/GUIDE.md`, the store).
+- **What the store guarantees**, to every process:
+  - **One totals sequence** per store (Messages → Totals: `revision`): it moves on by
+    one with every change to the totals — a counted batch, a publish, a gateway
+    joining or leaving the live set — in the same write as the change, and never goes
+    back while the store keeps its config epoch. A store that loses or rolls back its
+    state (a restore from a backup included) takes a new config epoch, as its
+    versions would otherwise clash too (Config versions → Config epoch).
+  - **Conditional writes**: every write that changes the totals, the config versions
+    or the live set is made only if what it was computed from is still the store's
+    state, else nothing is written and the process computes again — a counted batch
+    on its instance's last batch and the latest config version (Usage intake), a
+    publish on the latest version and the totals sequence (Config versions; Budgets →
+    Model-set edits), a status or an expiry on the gateway record it read (Status
+    intake).
+  - **Consistent reads**: a totals message's revision, `counted_through` and windows
+    come from one store snapshot (Messages → Totals: consistent snapshot).
+  - **Change notification**: every process hears of every publish, totals change and
+    live-set change any process made, so each pushes to the streams it holds (Config
+    stream). A process that misses one leaves its streams' totals stale until the next
+    change; usage acks carry fresh totals whatever the stream does.
+- **Processes start and stop freely**: no process owns the store, so rolling updates,
+  restarts and replicas need no ordering. The expiry sweep runs on every process
+  (Status intake). What a process keeps for itself — the streams it holds, the
+  batches of one instance it takes one at a time — needs no agreement with the others.
+- Rejected:
+  - one process per store, enforced by a store lease (settled 2026-09-25, D7) — it
+    kept deployments from running replicas, and a process that stalled past the
+    lease had to stop;
+  - a leader for the sweep — conditional writes make running it everywhere safe;
+  - a revision per process (`{ control_plane, sequence }`) — it ordered one process
+    restarting, never several running at once (Messages → Totals);
+  - the core polling the store for changes made elsewhere — change notification is
+    the store's guarantee, and a second mechanism for the same concern would stack a
+    safety net on it.
 - **Trust model**: gateways share one token (Shape → Auth). A token holder can report
   usage and status under **any** instance ID — the body's instance is checked against
   the header, not against the caller's identity. The token is an operator secret like

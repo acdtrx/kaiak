@@ -1517,7 +1517,11 @@ own, and a client sending repeats is broken either way.
     not delivered yet — the bases and `own` stay as they are: generations the message
     shows counted leave `own` only once totals that include them are applied, and
     the message waits, applied as soon as its config is (replaced by newer totals
-    meanwhile). Its live-gateway count applies at once. While the newest totals are
+    meanwhile). Its live-gateway count applies at once. A message of another config
+    epoch than the config the gateway runs does not wait (settled 2026-10-06): it is
+    not applied at all (`CONTROL-PROTOCOL.md`, Messages → Totals: `revision`), and the
+    totals of that store arrive again on the stream that opens once its config is
+    applied. While the newest totals are
     for another config for longer than `global.control_outage_grace_ms`, a request
     for a priced model covered by a `usd_per_month` limit is refused `503
     budget_unavailable`, as in an
@@ -2068,8 +2072,11 @@ own, and a client sending repeats is broken either way.
     the snapshot is fetched and the stream reopens after its position (settled
     2026-09-25, N-P10) — retrying the same position would be refused forever.
     `totals` events are decoded and handed to the limits
-    consumer — their totals only when their revision is newer than the last applied,
-    what they show counted always (`CONTROL-PROTOCOL.md`, Messages → Totals);
+    consumer — their totals only when they are of the config epoch the gateway runs
+    and their revision is higher than the last applied in that epoch (settled
+    2026-10-06: the revision is the store's sequence, the same for every
+    control-plane process), what they show counted always (`CONTROL-PROTOCOL.md`,
+    Messages → Totals);
     malformed events are logged and skipped. Heartbeats only prove the
     connection alive: a stream silent for 45 s (three missed heartbeats) is closed
     and reopened — a connection that died without a close never ends on its own.
@@ -2658,7 +2665,7 @@ own, and a client sending repeats is broken either way.
     | `kaiak.config.max_request_body_size`, `kaiak.body_budget.size` | `max_request_body_bytes`, `body_memory_bytes` | The warning that the config's body cap (`max_request_body_bytes`) exceeds the body budget (`KAIAK_BODY_MEMORY_BYTES`) — both in bytes |
     | `kaiak.control.totals_wait` | `wait_ms` | `waiting for the first totals`: the wait's bound, in seconds |
     | `kaiak.control.totals_waited` | `waited_ms` | `first totals received`, `first totals not received within the boot wait…`: the time waited, in seconds |
-    | `kaiak.config.version`, `kaiak.config.epoch` | `config_version`, `config_epoch` | A control-plane config's version and epoch: control-plane loads, the last-known-good copy, stream events, `config stream connected` (epoch) |
+    | `kaiak.config.version`, `kaiak.config.epoch` | `config_version`, `config_epoch` | A control-plane config's version and epoch: control-plane loads, the last-known-good copy, stream events, `config stream connected` (epoch), `totals ignored: from another config epoch` (the running config's epoch) |
     | `kaiak.config.backends`, `kaiak.config.models`, `kaiak.config.keys` | `backends`, `models`, `keys` | `config applied`: what the config holds |
     | `kaiak.config.size` | `bytes` | `config applied`, `config rejected` with a document: its size, in bytes |
     | `kaiak.config.issue_codes` | `codes` | `config rejected`: the issue codes (an array) |
@@ -2670,7 +2677,7 @@ own, and a client sending repeats is broken either way.
     | `kaiak.control.delay` | `delay_ms` | `control plane reconnect scheduled`: the delay, in seconds |
     | `kaiak.control.event` | `event` | `stream event ignored: unknown event`: the event's name |
     | `kaiak.control.since_contact`, `kaiak.control.outage_grace`, `kaiak.control.usage_waiting` | `since_contact`, `grace`, `usage_waiting` (duration strings) | `control plane outage: …` (Limits → Control-plane mode: Outage log lines): time since the last contact, the outage grace, how long usage has waited for an ack — in seconds |
-    | `kaiak.totals.control_plane`, `kaiak.totals.current_control_plane`, `kaiak.totals.previous_control_plane` | `control_plane`, `current`, `previous` | Totals from a replaced or another control plane: theirs, the one current, the one before |
+    | `kaiak.totals.config_epoch` | — (added 2026-10-06) | `totals ignored: from another config epoch`: the totals' epoch — with `kaiak.config.epoch`, the epoch of the config the gateway runs |
     | `kaiak.totals.sequence`, `kaiak.totals.applied_sequence` | `sequence`, `applied_sequence` | `totals ignored: not newer than the totals applied` |
     | `kaiak.status.state` | `state` | Status report lines: the state reported |
     | `kaiak.usage.batches`, `kaiak.usage.records` | `batches`, `records` | Usage batches and records a line is about (sealed, sent, spooled, flushed, dropped) |
