@@ -79,7 +79,7 @@ func TestAcrossHalves(t *testing.T) {
 	a := startGatewayEnv(t, gatewayEnv("gw-a", dataA))
 	b := startGatewayEnv(t, gatewayEnv("gw-b", filepath.Join(dir, "gw-b")))
 	for _, g := range []*gateway{a, b} {
-		g.logs.wait(t, "the boot from the sample", msg("config applied", "kaiak.trigger", "control", "kaiak.config.version", "1"))
+		g.logs.wait(t, "the boot from the sample", msg("config applied", "kaiak.trigger", "control"))
 	}
 
 	// tokens holds what the gateways served since the sample's store began: every
@@ -142,7 +142,7 @@ func TestAcrossHalves(t *testing.T) {
 		cfg["models"].(map[string]any)["chat-cm"] = cfg["models"].(map[string]any)["rpm"]
 		configMap.project(t, cfg)
 		for _, g := range []*gateway{a, b} {
-			g.logs.wait(t, "the swapped config", msg("config applied", "kaiak.trigger", "control", "kaiak.config.version", "2"))
+			g.logs.waitCount(t, "the swapped config", 2, waitLimit, msg("config applied", "kaiak.trigger", "control"))
 			if status, body := g.get(t, "/v1/models/chat-cm", evalKey); status != http.StatusOK {
 				t.Fatalf("/v1/models/chat-cm after the swap = %d %s", status, body)
 			}
@@ -154,7 +154,7 @@ func TestAcrossHalves(t *testing.T) {
 		cfg["models"].(map[string]any)["chat-2"] = cfg["models"].(map[string]any)["rpm"]
 		writeConfigFile(t, configFile, cfg)
 		for _, g := range []*gateway{a, b} {
-			g.logs.wait(t, "the pushed edit", msg("config applied", "kaiak.trigger", "control", "kaiak.config.version", "3"))
+			g.logs.waitCount(t, "the pushed edit", 3, waitLimit, msg("config applied", "kaiak.trigger", "control"))
 			if status, body := g.get(t, "/v1/models/chat-2", evalKey); status != http.StatusOK {
 				t.Fatalf("/v1/models/chat-2 after the edit = %d %s", status, body)
 			}
@@ -365,7 +365,7 @@ func TestAcrossHalves(t *testing.T) {
 	a = startGatewayEnv(t, gatewayEnv("gw-a", dataA, "KAIAK_CONTROL_BOOT_WAIT_MS=500"))
 
 	t.Run("a gateway restarted in the outage boots from last-known-good", func(t *testing.T) {
-		a.logs.wait(t, "the last-known-good boot", msg("config applied", "kaiak.trigger", "last-known-good", "kaiak.config.version", "3"))
+		a.logs.wait(t, "the last-known-good boot", msg("config applied", "kaiak.trigger", "last-known-good"))
 		a.logs.wait(t, "the restored spool", msg("usage spool restored"))
 		served(t, "chat-2 from last-known-good", chat(t, a, "chat-2"))
 	})
@@ -373,11 +373,9 @@ func TestAcrossHalves(t *testing.T) {
 	sample = startSample(t, node, root, configFile, token)
 	proxy.setUpstream(t, sample.url)
 
-	t.Run("the control plane back: resynced, serving, spool delivered", func(t *testing.T) {
-		// The new sample counts versions from 1 again: both gateways take its snapshot
-		// though they ran version 2.
-		a.logs.waitCount(t, "the resync", 1, recoverLimit, msg("config applied", "kaiak.trigger", "control", "kaiak.config.version", "1"))
-		b.logs.waitCount(t, "the resync", 2, recoverLimit, msg("config applied", "kaiak.trigger", "control", "kaiak.config.version", "1"))
+	t.Run("the control plane back: reconnected, serving, spool delivered", func(t *testing.T) {
+		// The new sample's current config is the one both gateways run (the file did
+		// not change): its config event is skipped by its hash, and nothing reloads.
 		for _, g := range []*gateway{a, b} {
 			g.waitMetricWithin(t, "the outage over", "kaiak_control_outage", recoverLimit, func(v float64) bool { return v == 0 })
 			g.waitMetricWithin(t, "the spool delivered", "kaiak_usage_spool_batches", recoverLimit, func(v float64) bool { return v == 0 })
@@ -634,10 +632,9 @@ type totalsWatch struct {
 // observerInstance names the test's stream to the control plane.
 const observerInstance = "e2e-observer"
 
-// watchTotals opens GET /v1/stream?since=0 on the control plane at baseURL, in the
-// config epoch its snapshot names: every config is replayed, then totals follow on
-// every change. The stream is closed at test cleanup, and ends by itself when the
-// control plane stops.
+// watchTotals opens GET /v1/stream on the control plane at baseURL: the current
+// config, then totals on every change. The stream is closed at test cleanup, and ends
+// by itself when the control plane stops.
 func watchTotals(t *testing.T, baseURL, token string) *totalsWatch {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -651,21 +648,7 @@ func watchTotals(t *testing.T, baseURL, token string) *totalsWatch {
 		req.Header.Set("Kaiak-Instance", observerInstance)
 		return http.DefaultClient.Do(req)
 	}
-	snapshot, err := get("/v1/config")
-	if err != nil {
-		cancel()
-		t.Fatal(err)
-	}
-	var current struct {
-		ConfigEpoch string `json:"config_epoch"`
-	}
-	err = json.NewDecoder(snapshot.Body).Decode(&current)
-	snapshot.Body.Close()
-	if err != nil || snapshot.StatusCode != http.StatusOK {
-		cancel()
-		t.Fatalf("config snapshot: %d %v", snapshot.StatusCode, err)
-	}
-	resp, err := get("/v1/stream?since=0&config_epoch=" + current.ConfigEpoch)
+	resp, err := get("/v1/stream")
 	if err != nil {
 		cancel()
 		t.Fatal(err)
@@ -697,7 +680,7 @@ func (w *totalsWatch) read(events *sse.Reader) {
 			break
 		}
 		if block.Event != "totals" {
-			continue // config replays and pushes; heartbeats
+			continue // config events; heartbeats
 		}
 		var totals control.Totals
 		if totals, err = control.DecodeTotals(block.Data); err != nil {
@@ -833,31 +816,3 @@ func pollUntil(t *testing.T, what string, limit time.Duration, check func() bool
 	}
 }
 
-// waitCount waits, up to limit, for the n-th line matching match.
-func (l *logLines) waitCount(t *testing.T, what string, n int, limit time.Duration, match func(map[string]any) bool) {
-	t.Helper()
-	deadline := time.NewTimer(limit)
-	defer deadline.Stop()
-	for {
-		l.mu.Lock()
-		seen := 0
-		for _, entry := range l.lines {
-			if match(entry) {
-				seen++
-			}
-		}
-		changed, eof := l.changed, l.eof
-		l.mu.Unlock()
-		switch {
-		case seen >= n:
-			return
-		case eof:
-			t.Fatalf("process exited before logging %s", what)
-		}
-		select {
-		case <-changed:
-		case <-deadline.C:
-			t.Fatalf("%s not logged within %s (%d of %d)", what, limit, seen, n)
-		}
-	}
-}

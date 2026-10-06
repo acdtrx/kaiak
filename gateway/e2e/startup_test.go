@@ -67,8 +67,8 @@ func TestBootWaitsForAControlPlaneComingUp(t *testing.T) {
 	defer up.Stop()
 
 	g := startGatewayEnv(t, controlEnv(cp.URL(), startupToken, ""))
-	g.logs.wait(t, "a boot retry", msg("config snapshot not fetched at startup: retrying within the boot wait", "kaiak.control.attempt", "1"))
-	g.logs.wait(t, "the boot from the control plane", msg("config applied", "kaiak.trigger", "control", "kaiak.config.version", "1"))
+	g.logs.wait(t, "a boot retry", msg("config not received at startup: retrying within the boot wait", "kaiak.control.attempt", "1"))
+	g.logs.wait(t, "the boot from the control plane", msg("config applied", "kaiak.trigger", "control"))
 	if r := g.post(t, "/v1/chat/completions", evalKey, "", chatBody("chat", false, nil)); r.StatusCode != http.StatusOK {
 		t.Fatalf("chat: %d %s", r.StatusCode, r.body)
 	}
@@ -76,9 +76,10 @@ func TestBootWaitsForAControlPlaneComingUp(t *testing.T) {
 }
 
 // D8, the independent review's reproduction: a fresh stateless gateway against a
-// control plane whose budget is spent, the totals that follow the stream's replay held
-// back. The gateway must not be ready before they arrive — ready, it admitted the
-// priced request as if nothing were spent — and once they arrive it refuses it.
+// control plane whose budget is spent, the totals that follow the stream's first
+// config held back. The gateway must not be ready before they arrive — ready, it
+// admitted the priced request as if nothing were spent — and once they arrive it
+// refuses it.
 func TestReadinessWaitsForTheFirstTotals(t *testing.T) {
 	backend := fakebackend.New()
 	defer backend.Close()

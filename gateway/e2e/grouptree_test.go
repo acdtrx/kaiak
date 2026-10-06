@@ -77,7 +77,7 @@ func TestGroupTreeEndToEnd(t *testing.T) {
 	}
 	cp.Publish(data)
 	g := startGatewayEnv(t, controlEnv(cp.URL(), token, filepath.Join(t.TempDir(), "data")))
-	g.logs.wait(t, "the boot from the control plane", msg("config applied", "kaiak.trigger", "control", "kaiak.config.version", "1"))
+	g.logs.wait(t, "the boot from the control plane", msg("config applied", "kaiak.trigger", "control"))
 	g.waitMetric(t, "the first totals", "kaiak_control_totals_applied_timestamp_seconds", func(float64) bool { return true })
 
 	chat := func(t *testing.T, key, id, model string) *response {

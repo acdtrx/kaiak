@@ -17,8 +17,8 @@ import (
 // store (the sample with a protocol replica), each gateway behind a proxy of its own
 // standing in for a load balancer: usage from both counts once, both cores serve the
 // same totals, a config published through one core reaches the gateway of the other,
-// and a gateway whose core goes away carries on with the other core without a resync
-// while the first gateway is undisturbed (CONTROL-PROTOCOL.md, Control-plane
+// and a gateway whose core goes away carries on with the other core while the first
+// gateway is undisturbed (CONTROL-PROTOCOL.md, Control-plane
 // processes).
 func TestAcrossHalvesReplicas(t *testing.T) {
 	root, err := filepath.Abs(filepath.Join("..", ".."))
@@ -51,7 +51,7 @@ func TestAcrossHalvesReplicas(t *testing.T) {
 	a := startGatewayEnv(t, gatewayEnv(proxyA, "gw-a"))
 	b := startGatewayEnv(t, gatewayEnv(proxyB, "gw-b"))
 	for _, g := range []*gateway{a, b} {
-		g.logs.wait(t, "the boot from its core", msg("config applied", "kaiak.trigger", "control", "kaiak.config.version", "1"))
+		g.logs.wait(t, "the boot from its core", msg("config applied", "kaiak.trigger", "control"))
 	}
 
 	var tokens servedTokens
@@ -104,7 +104,7 @@ func TestAcrossHalvesReplicas(t *testing.T) {
 		cfg["models"].(map[string]any)["chat-2"] = cfg["models"].(map[string]any)["rpm"]
 		writeConfigFile(t, configFile, cfg)
 		for _, g := range []*gateway{a, b} {
-			g.logs.wait(t, "the published edit", msg("config applied", "kaiak.trigger", "control", "kaiak.config.version", "2"))
+			g.logs.waitCount(t, "the published edit", 2, waitLimit, msg("config applied", "kaiak.trigger", "control"))
 		}
 		serve(t, b, "chat-2")
 		bothCount(t)
@@ -112,7 +112,8 @@ func TestAcrossHalvesReplicas(t *testing.T) {
 
 	t.Run("a gateway whose core goes away carries on with the other, the first undisturbed", func(t *testing.T) {
 		// The load balancer in front of the replica loses it and sends gw-b to the app's
-		// core: the open stream breaks, the gateway reconnects there and resumes.
+		// core: the open stream breaks, the gateway reconnects there and takes the
+		// current config (the one it runs: skipped) and totals.
 		proxyB.setUpstream(t, sample.url)
 		proxyB.server.CloseClientConnections()
 		b.logs.wait(t, "the broken stream", func(entry map[string]any) bool {
@@ -125,15 +126,11 @@ func TestAcrossHalvesReplicas(t *testing.T) {
 		cfg["models"].(map[string]any)["chat-3"] = cfg["models"].(map[string]any)["rpm"]
 		writeConfigFile(t, configFile, cfg)
 		for _, g := range []*gateway{a, b} {
-			g.logs.wait(t, "the next edit", msg("config applied", "kaiak.trigger", "control", "kaiak.config.version", "3"))
+			g.logs.waitCount(t, "the next edit", 3, waitLimit, msg("config applied", "kaiak.trigger", "control"))
 		}
 		serve(t, b, "chat-3")
 		bothCount(t)
 
-		for _, g := range []*gateway{a, b} {
-			never(t, g, "a resync", msg("config stream ended: resync"))
-			never(t, g, "totals refused", msg("totals ignored: from another config epoch"))
-		}
 		never(t, a, "a broken stream on the undisturbed gateway", msg("config stream failed"))
 	})
 }

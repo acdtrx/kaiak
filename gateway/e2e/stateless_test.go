@@ -112,7 +112,7 @@ func TestMinimalControlPlaneSetup(t *testing.T) {
 	cwd := readOnlyDir(t)
 
 	g := startGatewayIn(t, cwd, minimalControlEnv(cp.URL(), token))
-	g.logs.wait(t, "the boot from the control plane", msg("config applied", "kaiak.trigger", "control", "kaiak.config.version", "1"))
+	g.logs.wait(t, "the boot from the control plane", msg("config applied", "kaiak.trigger", "control"))
 	g.logs.wait(t, "memory mode", msg("usage batches kept in memory until acknowledged: no data directory"))
 	if r := g.post(t, "/v1/chat/completions", evalKey, "e2e-minimal-1", chatBody("chat", false, nil)); r.StatusCode != http.StatusOK {
 		t.Fatalf("chat: %d %s", r.StatusCode, r.body)
@@ -154,7 +154,7 @@ func TestNoConfigAtBootExits(t *testing.T) {
 	if took := time.Since(started); took < 2*time.Second || took > 2*time.Second+3*time.Second {
 		t.Errorf("gave up after %s, want about the 2 s boot wait", took)
 	}
-	g.logs.wait(t, "the retries", msg("config snapshot not fetched at startup: retrying within the boot wait", "kaiak.control.attempt", "1"))
+	g.logs.wait(t, "the retries", msg("config not received at startup: retrying within the boot wait", "kaiak.control.attempt", "1"))
 	if e := g.exitError(t); !strings.Contains(e, "no config: control plane unavailable and no seed") {
 		t.Errorf("exit error %q", e)
 	}
@@ -242,7 +242,7 @@ func TestDrainReserveDeliversTheCutRequestsUsage(t *testing.T) {
 
 	g := startGatewayEnv(t, append(controlEnv(cp.URL(), token, ""),
 		"KAIAK_DRAIN_TIMEOUT_MS=8000", "KAIAK_DRAIN_FLUSH_RESERVE_MS=1500"))
-	g.logs.wait(t, "the stream", msg("config stream connected", "kaiak.config.since", "1"))
+	g.logs.waitCount(t, "the stream", 2, waitLimit, msg("config stream connected"))
 
 	pace := make(chan struct{})
 	backend.QueueReplies(fakebackend.Reply{Pace: pace, Chunks: []string{"a", "b"}}, fakebackend.Reply{HangAfter: 1})

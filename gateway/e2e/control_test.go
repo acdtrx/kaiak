@@ -13,7 +13,7 @@ import (
 )
 
 // TestControlModeEndToEnd runs kaiak from a control plane (the Go test double; the
-// sample control plane joins in its own end-to-end test): boot from the snapshot, a
+// sample control plane joins in its own end-to-end test): boot from the stream, a
 // served request, a config pushed on the stream; usage batches reaching the control
 // plane, a batch whose ack was lost resent with its ID after the gateway is killed,
 // the drain flushing the last records; then a restart with the control plane gone
@@ -37,15 +37,16 @@ func TestControlModeEndToEnd(t *testing.T) {
 	publish("")
 
 	g := startGatewayEnv(t, controlEnv(cp.URL(), token, dataDir))
-	g.logs.wait(t, "the boot from the control plane", msg("config applied", "kaiak.trigger", "control", "kaiak.config.version", "1"))
+	g.logs.wait(t, "the boot from the control plane", msg("config applied", "kaiak.trigger", "control"))
 
 	t.Run("serves from the pushed config", func(t *testing.T) {
 		if r := g.post(t, "/v1/chat/completions", evalKey, "", chatBody("chat", false, nil)); r.StatusCode != http.StatusOK {
 			t.Fatalf("chat: %d %s", r.StatusCode, r.body)
 		}
-		g.logs.wait(t, "the stream", msg("config stream connected", "kaiak.config.since", "1"))
+		// The boot's stream, then the one the gateway follows.
+		g.logs.waitCount(t, "the stream", 2, waitLimit, msg("config stream connected"))
 		publish("chat-2")
-		g.logs.wait(t, "the pushed config", msg("config applied", "kaiak.trigger", "control", "kaiak.config.version", "2"))
+		g.logs.waitCount(t, "the pushed config", 2, waitLimit, msg("config applied", "kaiak.trigger", "control"))
 		if status, body := g.get(t, "/v1/models/chat-2", evalKey); status != http.StatusOK {
 			t.Fatalf("/v1/models/chat-2 after the push = %d %s", status, body)
 		}
@@ -55,6 +56,9 @@ func TestControlModeEndToEnd(t *testing.T) {
 	})
 
 	t.Run("usage batches reach the control plane", func(t *testing.T) {
+		const acked = `kaiak_usage_batch_sends_total{result="acked"}`
+		ackedBefore, _ := g.metricValue(t, acked)
+		totalsBefore := g.metric(t, "kaiak_control_totals_applied_timestamp_seconds")
 		if r := g.post(t, "/v1/chat/completions", evalKey, "e2e-usage-1", chatBody("chat", false, nil)); r.StatusCode != http.StatusOK {
 			t.Fatalf("chat: %d %s", r.StatusCode, r.body)
 		}
@@ -62,6 +66,15 @@ func TestControlModeEndToEnd(t *testing.T) {
 		waitUsage(t, cp, "the batch with e2e-usage-1", func(e fakecontrol.UsageEvent) bool {
 			return e.Outcome == fakecontrol.OutcomeCounted && countedIDs(t, cp)["e2e-usage-1"] == 1
 		})
+		// The ack carries no totals: taken, it leaves the applied totals as they were;
+		// the stream's next totals are applied.
+		g.waitMetric(t, "the ack taken", acked, func(v float64) bool { return v > ackedBefore })
+		if got := g.metric(t, "kaiak_control_totals_applied_timestamp_seconds"); got != totalsBefore {
+			t.Errorf("totals applied at %v after the ack, want %v: an ack carries none", got, totalsBefore)
+		}
+		cp.PushCurrentTotals()
+		g.waitMetric(t, "the pushed totals applied", "kaiak_control_totals_applied_timestamp_seconds",
+			func(v float64) bool { return v > totalsBefore })
 		rec := countedRecord(t, cp, "e2e-usage-1")
 		units, _ := rec["units"].(map[string]any)
 		if rec["gateway_instance"] != "e2e" || rec["model"] != "chat" || rec["key_id"] == "" ||
@@ -133,7 +146,7 @@ func TestControlModeEndToEnd(t *testing.T) {
 		g := startGatewayEnv(t, append(controlEnv(cp.URL(), token, dataDir), "KAIAK_DRAIN_TIMEOUT_MS=500",
 			"KAIAK_CONTROL_BOOT_WAIT_MS=1000"))
 		g.logs.wait(t, "the last-known-good boot",
-			msg("config applied", "kaiak.trigger", "last-known-good", "kaiak.config.version", "2"))
+			msg("config applied", "kaiak.trigger", "last-known-good"))
 		if status, body := g.get(t, "/v1/models/chat-2", evalKey); status != http.StatusOK {
 			t.Fatalf("/v1/models/chat-2 from last-known-good = %d %s", status, body)
 		}
@@ -218,7 +231,7 @@ func TestRestartWithTheControlPlaneDownKeepsASpentBudget(t *testing.T) {
 	cp.Publish(data)
 
 	g := startGatewayEnv(t, controlEnv(cp.URL(), token, dataDir))
-	g.logs.wait(t, "the stream", msg("config stream connected", "kaiak.config.since", "1"))
+	g.logs.waitCount(t, "the stream", 2, waitLimit, msg("config stream connected"))
 	// The group budgeted's budget (0.0001 USD) is spent this month.
 	month := time.Now().UTC().Format("2006-01") + "-01T00:00:00Z"
 	cp.SetWindows([]byte(`[{"group":"budgeted","type":"usd_per_month","window_start":"` + month +
@@ -240,10 +253,47 @@ func TestRestartWithTheControlPlaneDownKeepsASpentBudget(t *testing.T) {
 
 	g = startGatewayEnv(t, append(controlEnv(cp.URL(), token, dataDir), "KAIAK_DRAIN_TIMEOUT_MS=500",
 		"KAIAK_CONTROL_BOOT_WAIT_MS=1000"))
-	g.logs.wait(t, "the last-known-good boot", msg("config applied", "kaiak.trigger", "last-known-good", "kaiak.config.version", "1"))
+	g.logs.wait(t, "the last-known-good boot", msg("config applied", "kaiak.trigger", "last-known-good"))
 	r := g.post(t, "/v1/chat/completions", budgetKey, "", chatBody("priced", false, nil))
 	if r.StatusCode != http.StatusTooManyRequests || !strings.Contains(string(r.body), "budget_exceeded") {
 		t.Errorf("after the restart: %d %s, want the spent budget still refusing", r.StatusCode, r.body)
+	}
+	g.stop(t)
+}
+
+// A control plane restored to an older config — a backup, an in-memory store started
+// over — sends it on the stream, and the gateway applies it: the control plane is the
+// authority on which config is current, whatever the gateway ran before.
+func TestRestoredOlderConfigIsApplied(t *testing.T) {
+	backend := fakebackend.New()
+	defer backend.Close()
+	const token = "e2e-control-token"
+	cp := fakecontrol.New(token)
+	defer cp.Close()
+	evalKey, evalHash := newKey()
+	_, annHash := newKey()
+	publish := func(extraModel string) string {
+		data, err := json.Marshal(testConfig(backend.URL(), evalHash, annHash, extraModel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cp.Publish(data)
+	}
+	older := publish("")
+	g := startGatewayEnv(t, controlEnv(cp.URL(), token, ""))
+	g.logs.wait(t, "the boot", msg("config applied", "kaiak.trigger", "control", "kaiak.config.hash", older))
+	newer := publish("chat-2")
+	g.logs.wait(t, "the newer config", msg("config applied", "kaiak.trigger", "control", "kaiak.config.hash", newer))
+	if status, body := g.get(t, "/v1/models/chat-2", evalKey); status != http.StatusOK {
+		t.Fatalf("/v1/models/chat-2 under the newer config = %d %s", status, body)
+	}
+
+	cp.Restart() // the store comes back with the older config only
+	publish("")
+	g.logs.waitCount(t, "the older config applied again", 2, waitLimit,
+		msg("config applied", "kaiak.trigger", "control", "kaiak.config.hash", older))
+	if status, _ := g.get(t, "/v1/models/chat-2", evalKey); status != http.StatusNotFound {
+		t.Errorf("/v1/models/chat-2 after the restore = %d, want 404: the older config serves", status)
 	}
 	g.stop(t)
 }

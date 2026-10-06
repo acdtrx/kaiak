@@ -120,6 +120,35 @@ func (l *logLines) wait(t *testing.T, what string, match func(map[string]any) bo
 	}
 }
 
+// waitCount waits, up to limit, for the n-th line matching match.
+func (l *logLines) waitCount(t *testing.T, what string, n int, limit time.Duration, match func(map[string]any) bool) {
+	t.Helper()
+	deadline := time.NewTimer(limit)
+	defer deadline.Stop()
+	for {
+		l.mu.Lock()
+		seen := 0
+		for _, entry := range l.lines {
+			if match(entry) {
+				seen++
+			}
+		}
+		changed, eof := l.changed, l.eof
+		l.mu.Unlock()
+		switch {
+		case seen >= n:
+			return
+		case eof:
+			t.Fatalf("process exited before logging %s", what)
+		}
+		select {
+		case <-changed:
+		case <-deadline.C:
+			t.Fatalf("%s not logged within %s (%d of %d)", what, limit, seen, n)
+		}
+	}
+}
+
 func (l *logLines) text() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()

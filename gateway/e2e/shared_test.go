@@ -143,14 +143,14 @@ func TestSharedLimitsAcrossGateways(t *testing.T) {
 	b.stop(t)
 }
 
-// H3 at process level: two gateways on one control plane, a config version only one
-// of them can apply (a backend whose api_key_env is set on gw-a alone). The totals
-// then describe v2's limits: gw-a takes them, gw-b — still on v1 — keeps the spent
-// v1 budget it last had totals for instead of reading v2's windows as its own.
-func TestRejectedConfigKeepsTheSpentBudget(t *testing.T) {
+// Two gateways on one control plane, a config only one of them can apply (a backend
+// whose api_key_env is set on gw-a alone). Totals apply whatever config a gateway runs
+// — windows are counted per group and type — so gw-b, still on v1, keeps enforcing
+// v1's budget on the stream's totals, while gw-a enforces v2's on the same windows.
+func TestRejectedConfigKeepsBudgetsEnforcedFromStreamTotals(t *testing.T) {
 	backend := fakebackend.New()
 	defer backend.Close()
-	const token = "e2e-mismatch-token"
+	const token = "e2e-rejected-token"
 	const keyEnv = "E2E_ONLY_ON_GW_A"
 	cp := fakecontrol.New(token)
 	defer cp.Close()
@@ -158,12 +158,12 @@ func TestRejectedConfigKeepsTheSpentBudget(t *testing.T) {
 	cp.SetLiveGateways(2)
 	_, evalHash := newKey()
 	_, annHash := newKey()
-	publish := func(cfg map[string]any) {
+	publish := func(cfg map[string]any) string {
 		data, err := json.Marshal(cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
-		cp.Publish(data)
+		return cp.Publish(data)
 	}
 	v1 := testConfig(backend.URL(), evalHash, annHash, "")
 	v1["backends"].(map[string]any)["fake"].(map[string]any)["max_in_flight"] = 4
@@ -178,8 +178,8 @@ func TestRejectedConfigKeepsTheSpentBudget(t *testing.T) {
 	}
 	a, b := start("gw-a", keyEnv+"=secret"), start("gw-b")
 	// liveMarker sets the live count carried by every totals message from now on and
-	// waits for both gateways to take such totals: the live count applies whatever
-	// config the totals are for, and the cap share shows it (max_in_flight 4 ÷ live).
+	// waits for both gateways to take such totals: the cap share shows it
+	// (max_in_flight 4 ÷ live).
 	liveMarker := func(t *testing.T, live int64) {
 		t.Helper()
 		cp.SetLiveGateways(live)
@@ -209,43 +209,50 @@ func TestRejectedConfigKeepsTheSpentBudget(t *testing.T) {
 		budgetExceeded(t, g, "v1's spent budget")
 	}
 
-	// v2 adds a backend whose key only gw-a has, and raises the budget: the control
-	// plane's count for v2 (scripted here) shows it unspent.
+	// v2 adds a backend whose key only gw-a has, and raises the budget tenfold.
 	v2 := testConfig(backend.URL(), evalHash, annHash, "")
 	v2["backends"].(map[string]any)["fake"].(map[string]any)["max_in_flight"] = 4
 	v2["backends"].(map[string]any)["keyed"] = map[string]any{"type": "openai-compatible",
 		"base_url": backend.URL() + "/v1", "api_key_env": keyEnv}
 	v2["groups"].(map[string]any)["budgeted"].(map[string]any)["limits"] = []any{
 		map[string]any{"type": "usd_per_month", "value": 0.001}}
-	publish(v2)
-	a.logs.wait(t, "gw-a applying v2", msg("config applied", "kaiak.trigger", "control", "kaiak.config.version", "2"))
-	b.logs.wait(t, "gw-b rejecting v2", msg("config rejected", "kaiak.trigger", "control", "kaiak.config.version", "2"))
+	hashV2 := publish(v2)
+	a.logs.wait(t, "gw-a applying v2", msg("config applied", "kaiak.trigger", "control", "kaiak.config.hash", hashV2))
+	b.logs.wait(t, "gw-b rejecting v2", msg("config rejected", "kaiak.trigger", "control", "kaiak.config.hash", hashV2))
 	if got := b.metric(t, `kaiak_config_loads_total{trigger="control",result="rejected"}`); got != 1 {
 		t.Errorf("gw-b's rejected control loads = %v, want 1", got)
 	}
 
-	// The control plane counts v2's limits now.
-	cp.SetWindows(fmt.Appendf(nil, `[{"group":"budgeted","type":"usd_per_month","window_start":%q,"used":"0"}]`, month()))
+	// The month's spend is 0.0005 USD: above v1's budget, below v2's. Both gateways
+	// read the same window; each judges it against the limit of the config it runs.
+	cp.SetWindows(fmt.Appendf(nil, `[{"group":"budgeted","type":"usd_per_month","window_start":%q,"used":"500000"}]`, month()))
 	liveMarker(t, 2)
 	if r := chat(a, "priced"); r.StatusCode != http.StatusOK {
-		t.Errorf("gw-a under v2's unspent budget: %d %s, want 200", r.StatusCode, r.body)
+		t.Errorf("gw-a under v2's budget: %d %s, want 200", r.StatusCode, r.body)
 	}
-	budgetExceeded(t, b, "gw-b after v2's totals")
+	budgetExceeded(t, b, "gw-b under v1's budget on the stream's totals")
 	if r := chat(b, "rpm"); r.StatusCode != http.StatusOK {
 		t.Errorf("gw-b on an unpriced model, which no budget refuses: %d %s, want 200", r.StatusCode, r.body)
 	}
-	// The mismatch is reported: gw-b's status names the rejected version.
+	// Nothing spent: gw-b serves under v1's budget too — the stream's totals, not stale
+	// bases, decide.
+	cp.SetWindows(fmt.Appendf(nil, `[{"group":"budgeted","type":"usd_per_month","window_start":%q,"used":"0"}]`, month()))
+	liveMarker(t, 1)
+	if r := chat(b, "priced"); r.StatusCode != http.StatusOK {
+		t.Errorf("gw-b with nothing spent: %d %s, want 200", r.StatusCode, r.body)
+	}
+	// The rejection is reported: gw-b's status names v2 by its hash.
 	var rejected bool
 	for _, body := range cp.Statuses() {
 		var st struct {
 			Instance string `json:"instance"`
 			Rejected *struct {
-				Version int64    `json:"version"`
-				Codes   []string `json:"codes"`
+				ConfigHash string   `json:"config_hash"`
+				Codes      []string `json:"codes"`
 			} `json:"last_rejection"`
 		}
-		if json.Unmarshal(body, &st) == nil && st.Instance == "gw-b" && st.Rejected != nil && st.Rejected.Version == 2 &&
-			slices.Contains(st.Rejected.Codes, config.CodeAPIKeyEnvUnset) {
+		if json.Unmarshal(body, &st) == nil && st.Instance == "gw-b" && st.Rejected != nil &&
+			st.Rejected.ConfigHash == hashV2 && slices.Contains(st.Rejected.Codes, config.CodeAPIKeyEnvUnset) {
 			rejected = true
 		}
 	}
