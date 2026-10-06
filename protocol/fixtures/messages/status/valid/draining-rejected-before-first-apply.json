@@ -3,10 +3,9 @@
   "protocol_version": 5,
   "state": "draining",
   "started_at": "2026-09-24T09:58:12.5Z",
-  "applied_config_version": null,
-  "applied_config_epoch": null,
+  "applied_config_hash": null,
   "last_rejection": {
-    "version": 1,
+    "config_hash": "1d4a7c0f3e6b9d2a5c8f1e4b7a0d3c6f9e2b5a8d1c4f7e0a3b6d9c2f5e8a1b4d",
     "codes": [
       "schema"
     ]

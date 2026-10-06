@@ -14,15 +14,15 @@
     "path": "/global/max_n",
     "reason": "names compare after decoding: max\\u005fn is max_n"
   },
-  "config-snapshot-version-twice.json": {
-    "kind": "config-snapshot",
-    "path": "/version",
+  "config-event-config-hash-twice.json": {
+    "kind": "config-event",
+    "path": "/config_hash",
     "reason": "a repeated envelope member"
   },
-  "config-snapshot-inner-config-member-twice.json": {
-    "kind": "config-snapshot",
+  "config-event-inner-config-member-twice.json": {
+    "kind": "config-event",
     "path": "/config/keys/k-me/group",
-    "reason": "a repeated member inside the config the snapshot carries"
+    "reason": "a repeated member inside the config the event carries"
   },
   "totals-window-used-twice.json": {
     "kind": "totals",

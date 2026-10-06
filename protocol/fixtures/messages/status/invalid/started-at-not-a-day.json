@@ -3,8 +3,7 @@
   "protocol_version": 5,
   "state": "ready",
   "started_at": "2026-04-31T00:00:00Z",
-  "applied_config_version": 42,
-  "applied_config_epoch": "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+  "applied_config_hash": "9f2c8a1e4b7d6c3f0a5e8b2d1c4f7a9e6b3d0c8f5a2e7b4d1c9f6a3e0b8d5c2f",
   "last_rejection": null,
   "backends": {
     "vllm-a": {

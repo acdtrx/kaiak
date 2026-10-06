@@ -1,23 +1,11 @@
 {
-  "applied-epoch-missing.json": {
+  "applied-config-hash-missing.json": {
     "kind": "schema",
-    "reason": "the applied epoch is explicit, null before the first apply"
+    "reason": "a status always states the applied config's hash, null when none"
   },
-  "applied-epoch-shape.json": {
+  "applied-config-hash-shape.json": {
     "kind": "schema",
-    "reason": "a config epoch is 32 lowercase hex digits"
-  },
-  "applied-epoch-without-version.json": {
-    "kind": "schema",
-    "reason": "the applied epoch is null exactly when the applied version is"
-  },
-  "applied-version-missing.json": {
-    "kind": "schema",
-    "reason": "the applied version is explicit, null before the first apply"
-  },
-  "applied-version-without-epoch.json": {
-    "kind": "schema",
-    "reason": "an applied version names the epoch it counts in"
+    "reason": "a config hash is 64 lowercase hex digits"
   },
   "backend-health.json": {
     "kind": "schema",

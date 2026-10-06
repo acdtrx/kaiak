@@ -9,16 +9,10 @@
       "type": "string",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$"
     },
-    "config_epoch": {
-      "description": "The control-plane store's config epoch: 32 random lowercase hex digits, created with the store and kept for its life. Config versions count within an epoch, so a version number alone never compares across stores.",
+    "config_hash": {
+      "description": "A config's content hash: the lowercase hex SHA-256 of the config's JSON text exactly as the control plane sends it. It identifies content and carries no order.",
       "type": "string",
-      "pattern": "^[0-9a-f]{32}$"
-    },
-    "config_version": {
-      "description": "A config version: assigned by the control plane, increasing with every config change.",
-      "type": "integer",
-      "minimum": 1,
-      "maximum": 9007199254740991
+      "pattern": "^[0-9a-f]{64}$"
     },
     "count": {
       "description": "A non-negative integer a JavaScript number holds exactly (at most 2^53 - 1).",

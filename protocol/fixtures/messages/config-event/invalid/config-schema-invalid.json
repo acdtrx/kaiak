@@ -1,6 +1,5 @@
 {
-  "config_epoch": "3b2c9d8e7f6a5b4c3d2e1f0a9b8c7d6e",
-  "version": 1,
+  "config_hash": "38c71f699860b72490cad7109f6c39fe7c091ac9a5f4d9a07b23fa6ed1d6d2eb",
   "config": {
     "format_version": 5,
     "global": {},
@@ -31,13 +30,6 @@
     },
     "groups": {
       "me": {}
-    },
-    "keys": {
-      "k-me": {
-        "hash": "sha256:59f8f6709d858b919a10541cd215a0de7b4299bbc6c11a2e0bf4ca03ec6df717",
-        "group": "someone-else",
-        "group": "me"
-      }
     }
   }
 }

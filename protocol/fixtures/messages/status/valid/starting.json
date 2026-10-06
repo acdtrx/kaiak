@@ -3,8 +3,7 @@
   "protocol_version": 5,
   "state": "starting",
   "started_at": "2026-09-24T09:58:12.5Z",
-  "applied_config_version": null,
-  "applied_config_epoch": null,
+  "applied_config_hash": null,
   "last_rejection": null,
   "backends": {},
   "models": {}

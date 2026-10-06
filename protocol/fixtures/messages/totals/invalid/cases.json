@@ -1,16 +1,4 @@
 {
-  "config-epoch-missing.json": {
-    "kind": "schema",
-    "reason": "totals name the config epoch their config version counts in"
-  },
-  "config-epoch-uppercase.json": {
-    "kind": "schema",
-    "reason": "a config epoch is 32 lowercase hex digits"
-  },
-  "config-version-missing.json": {
-    "kind": "schema",
-    "reason": "totals name the config version they were computed under"
-  },
   "counted-through-instance.json": {
     "kind": "schema",
     "reason": "counted_through is the recipient's own: epoch and sequence, no instance"
@@ -42,18 +30,6 @@
   "per-minute-type.json": {
     "kind": "schema",
     "reason": "per-minute limits stay local to each gateway and are never pushed"
-  },
-  "revision-missing.json": {
-    "kind": "schema",
-    "reason": "totals carry a revision, so a gateway can order them"
-  },
-  "revision-negative.json": {
-    "kind": "schema",
-    "reason": "the revision is 0 or more"
-  },
-  "revision-object.json": {
-    "kind": "schema",
-    "reason": "the revision is the store's totals sequence, an integer — not a per-process object"
   },
   "used-19-digits.json": {
     "kind": "schema",

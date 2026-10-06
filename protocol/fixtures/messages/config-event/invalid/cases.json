@@ -1,11 +1,11 @@
 {
-  "config-epoch-missing.json": {
+  "config-hash-missing.json": {
     "kind": "schema",
-    "reason": "a snapshot names the epoch its version counts in"
+    "reason": "a config event carries its config's hash"
   },
-  "config-epoch-uppercase.json": {
+  "config-hash-uppercase.json": {
     "kind": "schema",
-    "reason": "a config epoch is 32 lowercase hex digits"
+    "reason": "a config hash is 64 lowercase hex digits"
   },
   "config-schema-invalid.json": {
     "kind": "schema",
@@ -19,17 +19,5 @@
   "protocol-version-field.json": {
     "kind": "schema",
     "reason": "the protocol version travels in the Kaiak-Protocol header, not the body"
-  },
-  "version-missing.json": {
-    "kind": "schema",
-    "reason": "a snapshot carries its version"
-  },
-  "version-string.json": {
-    "kind": "schema",
-    "reason": "versions are integers"
-  },
-  "version-zero.json": {
-    "kind": "schema",
-    "reason": "config versions start at 1"
   }
 }

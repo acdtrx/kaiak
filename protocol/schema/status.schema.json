@@ -10,33 +10,11 @@
     "protocol_version",
     "state",
     "started_at",
-    "applied_config_version",
-    "applied_config_epoch",
+    "applied_config_hash",
     "last_rejection",
     "backends",
     "models"
   ],
-  "if": {
-    "properties": {
-      "applied_config_version": {
-        "type": "null"
-      }
-    }
-  },
-  "then": {
-    "properties": {
-      "applied_config_epoch": {
-        "type": "null"
-      }
-    }
-  },
-  "else": {
-    "properties": {
-      "applied_config_epoch": {
-        "type": "string"
-      }
-    }
-  },
   "properties": {
     "instance": {
       "$ref": "common.schema.json#/$defs/instance"
@@ -56,30 +34,19 @@
       "description": "When the gateway process started.",
       "$ref": "config.schema.json#/$defs/timestamp"
     },
-    "applied_config_version": {
-      "description": "The config version in force; null before the first config is applied, and while the seed config (which carries no version) is in force. Null exactly when applied_config_epoch is.",
+    "applied_config_hash": {
+      "description": "The config_hash of the config in force; null before the first config from the control plane (or its last-known-good copy) is applied, and while the seed config is in force.",
       "anyOf": [
         {
           "type": "null"
         },
         {
-          "$ref": "common.schema.json#/$defs/config_version"
-        }
-      ]
-    },
-    "applied_config_epoch": {
-      "description": "The config epoch applied_config_version counts in: a version compares with the control plane's only within its epoch. Null exactly when applied_config_version is.",
-      "anyOf": [
-        {
-          "type": "null"
-        },
-        {
-          "$ref": "common.schema.json#/$defs/config_epoch"
+          "$ref": "common.schema.json#/$defs/config_hash"
         }
       ]
     },
     "last_rejection": {
-      "description": "The latest config received from the control plane, when the gateway rejected it; null once a later config is applied (whatever the versions: a restarted control plane counts from 1 again), and before any rejection.",
+      "description": "The latest config received from the control plane, when the gateway rejected it; null once a later config is applied, and before any rejection.",
       "anyOf": [
         {
           "type": "null"
@@ -88,12 +55,12 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "version",
+            "config_hash",
             "codes"
           ],
           "properties": {
-            "version": {
-              "$ref": "common.schema.json#/$defs/config_version"
+            "config_hash": {
+              "$ref": "common.schema.json#/$defs/config_hash"
             },
             "codes": {
               "description": "The rejection's issue codes: syntax, schema, a semantic rule code, or a gateway-only code.",

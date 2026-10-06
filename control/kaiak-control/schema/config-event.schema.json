@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kaiak.invalid/protocol/schema/config-event.schema.json",
+  "title": "kaiak config event",
+  "description": "The data of a config event on the stream: the control plane's current config and its content hash (docs/specs/CONTROL-PROTOCOL.md, Current config).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "config_hash",
+    "config"
+  ],
+  "properties": {
+    "config_hash": {
+      "$ref": "common.schema.json#/$defs/config_hash"
+    },
+    "config": {
+      "$ref": "config.schema.json"
+    }
+  }
+}

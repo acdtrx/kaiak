@@ -1,7 +1,5 @@
 {
-  "config_epoch": "3b2c9d8e7f6a5b4c3d2e1f0a9b8c7d6e",
-  "version": 99,
-  "version": 1,
+  "config_hash": "aca6f7ecfc05ab5a41524c797e9880427fc68b67f7ecf5a4bbb27e96f555ebf3",
   "config": {
     "format_version": 5,
     "global": {},

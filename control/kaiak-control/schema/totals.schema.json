@@ -2,36 +2,21 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://kaiak.invalid/protocol/schema/totals.schema.json",
   "title": "kaiak usage totals",
-  "description": "The control plane's usage totals as one gateway gets them: the data of a totals event on that gateway's stream, and part of every usage ack it gets. A consistent snapshot: its windows include every batch the control plane had counted at its revision, and no other. Complete: it lists every hour and month limit window with usage in the control plane's current window; a limit it does not list has used nothing there. Per-minute limits are not listed (each gateway enforces its share locally).",
+  "description": "The control plane's usage totals as one gateway gets them: the data of a totals event on that gateway's stream, the only way totals travel. A consistent snapshot: its windows include every batch the control plane had counted when it read them, and no other. Complete: it lists every hour and month limit window of the current config with usage in the control plane's current window; a limit it does not list has used nothing there. Per-minute limits are not listed (each gateway enforces its share locally).",
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "revision",
-    "config_epoch",
-    "config_version",
     "live_gateways",
     "counted_through",
     "windows"
   ],
   "properties": {
-    "revision": {
-      "description": "The store's totals sequence: one more with every change to the totals (a counted batch, a publish, a change to the live set), whichever control-plane process made it, and never lower while the store keeps its config epoch. Orders totals messages: a gateway applies one only when its config_epoch is the epoch of the config the gateway runs and its revision is higher than the last applied in that epoch.",
-      "$ref": "common.schema.json#/$defs/count"
-    },
-    "config_epoch": {
-      "description": "The epoch of the store the config version counts in (config-snapshot.schema.json). With config_version, the config the totals were computed under: a gateway applies the totals only when both equal its applied config's.",
-      "$ref": "common.schema.json#/$defs/config_epoch"
-    },
-    "config_version": {
-      "description": "The config version whose limits the totals were computed under.",
-      "$ref": "common.schema.json#/$defs/config_version"
-    },
     "live_gateways": {
       "description": "Gateways in the live set. Each divides its per-minute limits by this count (at least 1), and enforces its share of every backend max_in_flight cap: ceil(max_in_flight / live_gateways), at least 1.",
       "$ref": "common.schema.json#/$defs/count"
     },
     "counted_through": {
-      "description": "The last usage batch the control plane has counted for the recipient gateway's instance (the stream's, or the acknowledged batch's); null before its first. Included in the windows: the gateway stops counting that batch and every earlier one of the epoch as its own.",
+      "description": "The last usage batch the control plane has counted for the stream's gateway instance; null before its first. Included in the windows: the gateway stops counting that batch and every earlier one of the epoch as its own.",
       "anyOf": [
         {
           "type": "null"

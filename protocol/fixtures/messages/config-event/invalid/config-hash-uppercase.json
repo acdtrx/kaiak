@@ -1,0 +1,41 @@
+{
+  "config_hash": "ACA6F7ECFC05AB5A41524C797E9880427FC68B67F7ECF5A4BBB27E96F555EBF3",
+  "config": {
+    "format_version": 5,
+    "global": {},
+    "backends": {
+      "local": {
+        "type": "openai-compatible",
+        "base_url": "http://localhost:8080/v1"
+      }
+    },
+    "models": {
+      "llama": {
+        "deployments": [
+          {
+            "backend": "local",
+            "model": "llama"
+          }
+        ],
+        "metadata": {
+          "context_length": 8192,
+          "capabilities": {
+            "streaming": true,
+            "tools": false,
+            "vision": false,
+            "reasoning": false
+          }
+        }
+      }
+    },
+    "groups": {
+      "me": {}
+    },
+    "keys": {
+      "k-me": {
+        "hash": "sha256:59f8f6709d858b919a10541cd215a0de7b4299bbc6c11a2e0bf4ca03ec6df717",
+        "group": "me"
+      }
+    }
+  }
+}
