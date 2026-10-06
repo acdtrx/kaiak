@@ -334,26 +334,6 @@ func (c *Checker) IntegerAtLeast(minimum float64) func(v any, path string) {
 	return c.IntegerBetween(minimum, MaxSafeInteger)
 }
 
-// FiniteNumbers checks every number inside v, at any depth, is finite as JavaScript
-// reads it: a number past the double range (1e400) would become Infinity there, and
-// JSON has no way to write it back.
-func (c *Checker) FiniteNumbers(v any, path string) {
-	switch v := v.(type) {
-	case json.Number:
-		if math.IsNaN(NumberValue(v)) {
-			c.Fail(path, "must be a finite number (within a JavaScript number's range)")
-		}
-	case []any:
-		for i, item := range v {
-			c.FiniteNumbers(item, Pointer(path, i))
-		}
-	case map[string]any:
-		for _, name := range slices.Sorted(maps.Keys(v)) {
-			c.FiniteNumbers(v[name], Pointer(path, name))
-		}
-	}
-}
-
 // IntegerBetween checks an integer in [minimum, maximum].
 func (c *Checker) IntegerBetween(minimum, maximum float64) func(v any, path string) {
 	return func(v any, path string) {

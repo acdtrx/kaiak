@@ -44,7 +44,7 @@ english.
   gateway — all checks `scripts/check-gateway.sh` (gofmt, vet, staticcheck, race
   tests incl. the e2e test in `gateway/e2e`, then lint and self-test of the live-test
   kit in `scripts/live`; any cwd) · run `go run ./cmd/kaiak` from `gateway/`;
-  live backends (opt-in) `go -C scripts/live run . -kind vllm|llama-server|openai|azure-openai …`
+  live backends (opt-in) `go -C scripts/live run . -kind vllm|llama-server|openai|azure-openai|anthropic|azure-anthropic …`
   (`docs/testing/LIVE-BACKENDS.md`);
   control — from `control/`: `npm test` · `npm run lint` (`tsc` + boundary lint) ·
   sample control plane `KAIAK_SAMPLE_CONFIG=<file> KAIAK_CONTROL_TOKEN=<token> npm run dev -w sample`
@@ -279,10 +279,11 @@ Replace this section with a compatibility policy when the project graduates.
 - **Only named code talks to backends.** In the gateway, only provider packages open
   a connection to a model server or cloud API. In `control/`, only `kaiak-control`'s
   `backend-verify` does, and only when the app calls it (`docs/specs/BACKEND-VERIFY.md`).
-- **Passthrough preserves what it doesn't understand.** OpenAI-format requests going to
-  an OpenAI-compatible backend are forwarded with the minimal edits the gateway owns
-  (model name, output-limit defaults/ceiling, usage reporting flags, service tier);
-  unknown fields survive untouched.
+- **Passthrough preserves what it doesn't understand.** A request going to a backend
+  that speaks its API (OpenAI, Messages, Responses) is forwarded with the minimal
+  edits the gateway owns (model name, output-limit defaults/ceiling, usage reporting
+  flags, service tier — `standard_only` on Anthropic — and `store: false` on
+  Responses); unknown fields survive untouched.
 - **No blocking control-plane I/O on the request path.** Usage and status reports are
   queued and sent in the background.
 - **Nothing sensitive in logs, metrics or usage records**: no client keys (key IDs

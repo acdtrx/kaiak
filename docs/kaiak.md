@@ -7,9 +7,11 @@
 ## What it is
 
 kaiak is a self-contained LLM gateway: one binary that sits between clients and model
-backends, speaks the OpenAI API to clients, routes to self-hosted servers (vLLM,
-llama-server, SGLang) and cloud providers (OpenAI, Azure OpenAI; Bedrock later), and
-enforces access keys, rate limits and budgets while counting every token and dollar.
+backends, speaks the OpenAI API, Anthropic Messages and OpenAI Responses to clients —
+each passed through to backends that speak it natively — routes to self-hosted
+servers (vLLM, llama-server, SGLang) and cloud providers (OpenAI, Azure OpenAI,
+Anthropic, Claude in Microsoft Foundry; Bedrock later), and enforces access keys, rate
+limits and budgets while counting every token and dollar.
 
 It has **no UI and no admin API of its own**. Everything it needs to know — backends,
 models, prices, keys, groups, limits — comes from a **control plane** over a small
@@ -84,7 +86,9 @@ The name reads the same both ways (the gateway carries traffic in both direction
   backend reports when the model is added; the gateway discovers nothing);
   output-limit default and ceiling; prices (per usage unit, with an effective date,
   tiered by input size); which limit types apply. Request defaults are the backends'
-  own: the gateway sets none but the output limit (settled 2026-10-06). The client
+  own: of the request's parameters the model's config sets only the output limit
+  (settled 2026-10-06; the passthrough edits the gateway owns — the model name, the
+  standard service tier, `store: false` — are `GATEWAY.md`'s, Providers). The client
   APIs a model is reachable through follow from its deployments' backend types.
 - **Key** — belongs to one **group**; hashed; can expire or be disabled. Keys are
   created by the control plane and reach the gateway as hashes in config. A key has

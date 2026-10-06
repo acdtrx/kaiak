@@ -132,8 +132,8 @@
   pushes and releases use the runner's `docker` and `gh` directly — no third-party
   actions. `actionlint` checks the workflows (run with `go run`, never in `go.mod`).
 - **Testing**: `go test -race`; `net/http/httptest` for servers; an in-repo **fake
-  OpenAI-compatible backend** that can stream, stall, fail, hang, and omit usage on
-  demand — the tool for retries, fallbacks, circuit breaking, draining and accounting
+  backend** speaking the OpenAI API, Messages and Responses that can stream, stall,
+  fail, hang, send error events and omit usage on demand — the tool for retries, fallbacks, circuit breaking, draining and accounting
   tests. Integration runs against a real llama-server/vLLM are opt-in, never required
   for green.
 - **Cross-half e2e** (settled 2026-09-24): `TestAcrossHalves` in `gateway/e2e`
@@ -228,7 +228,8 @@
   **snapshot + subscribe** — a GET snapshot carries a version cursor, the stream resumes
   from it, a gateway too far behind re-fetches the snapshot. Contract in
   `docs/specs/CONTROL-PROTOCOL.md`.
-- **Client ↔ gateway**: the OpenAI HTTP API; SSE for streaming responses.
+- **Client ↔ gateway**: the OpenAI HTTP API, Anthropic Messages and OpenAI
+  Responses; SSE for streaming responses.
 - **Sample page**: one SSE connection per browser, same snapshot + subscribe shape.
 
 ## Dependency inventory

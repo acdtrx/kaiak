@@ -388,10 +388,10 @@ the `{ error, detail }` body, `error` being the stable code:
 - **Conventions**: snake_case field names (as in the OpenAI API); durations are integer
   milliseconds named `*_ms`; timestamps are RFC 3339 in UTC (`Z`); price dates are
   `YYYY-MM-DD`, read as UTC; key hashes are `sha256:` + 64 lowercase hex.
-- **Strict everywhere** (settled 2026-10-06): every object has a closed set of
-  fields. The one open map there was, a model's `defaults`, went with model defaults
-  (`GATEWAY.md`, Model metadata → No model defaults): the gateway sets no request
-  parameter but the output limit, so the config names none.
+- **Strict everywhere** (settled 2026-10-06): every object but the ID-keyed
+  collections and a group's `labels` (an open map whose keys follow a pattern) has a
+  closed set of fields. A model names no request parameters: the one its config sets
+  is the output limit (`GATEWAY.md`, Model metadata → no model defaults).
 - **Integers are bounded** (settled 2026-09-25): every config integer (and every limit
   `value`) is at most 2^53 − 1, so both halves read it exactly — `kaiak-control` as a
   JavaScript number, the gateway as an `int64`. An integer may be spelled with a

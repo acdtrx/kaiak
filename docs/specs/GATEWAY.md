@@ -236,8 +236,7 @@
   `404 model_not_found` here, as an unknown one does. Errors take the Messages shape.
 - **`/v1/models/{id}/props`** is the entry plus `output_limit` — `{"default": n,
   "ceiling": n}`, or `null` when the model declares none — what the gateway applies
-  to a request's output (settled 2026-09-24; `defaults` removed 2026-10-06 with model
-  defaults, Model metadata).
+  to a request's output (settled 2026-09-24; Model metadata → no model defaults).
 
 ## Model metadata
 
@@ -378,7 +377,8 @@ own, and a client sending repeats is broken either way.
     own (A type per server, below).
 - **Endpoint support** (settled 2026-10-06) is fixed per backend type, by its module
   — no config field. What each type serves, checked against the servers on
-  2026-10-06 (vLLM 0.30.0's route list; llama.cpp build b9917, each route called;
+  2026-10-06 (vLLM 0.30.0's route list; llama.cpp builds b9917 and b10802, each route
+  called;
   OpenAI's and Anthropic's API references; Microsoft Foundry's Claude page;
   `docs/plans/messages-responses/STEP-1-contract.md` records the sources):
 
@@ -533,7 +533,7 @@ own, and a client sending repeats is broken either way.
   Tier capacity where the organization has a commitment, billed outside the price
   table. `azure-anthropic` adds none and passes the client's untouched: Foundry has
   no Priority Tier. Self-hosted types pass all of these untouched — they price
-  nothing and accept the fields (vLLM 0.30.0, llama-server b9917, checked
+  nothing and accept the fields (vLLM 0.30.0, llama-server b9917 and b10802, checked
   2026-10-06). Rejected: refusing them on every backend in the inbound stage — a
   client like Claude Code that asks for 1-hour caching would then fail on vLLM, where
   the option means nothing; pricing them — new units and per-request multipliers,
@@ -691,7 +691,9 @@ own, and a client sending repeats is broken either way.
   - `llama-server`: `{"error": {"message": "File Not Found", "type":
     "not_found_error", "code": 404}}` (run on build 11146). Its HTTP layer gives
     every `404` that body, so in router mode a model the server does not have reads
-    as a wrong path too — the deployment's failure either way. llama-server serves
+    as a wrong path too — the deployment's failure on the core endpoints; on
+    Messages and Responses the same body reads as an endpoint missing (below),
+    neutral for the circuit. llama-server serves
     chat completions and its models list without `/v1` as well, so a `base_url`
     missing it gives no `404` there (`docs/BACKLOG.md`, llama-server quirks).
   - `openai`: an `invalid_request_error` whose message starts `Invalid URL` (`Invalid
@@ -760,7 +762,8 @@ own, and a client sending repeats is broken either way.
   Rejected: counting `content_filter` or other finish reasons differently — any
   finish reason is the backend saying the choice ended.
   **Per format** (settled 2026-10-06; the end events checked on vLLM 0.30.0 and
-  llama-server b9917): a Messages stream is complete once it carried
+  llama-server b9917 and b10802 — the recorded streams in
+  `gateway/internal/fakebackend/captures/` are b10802's): a Messages stream is complete once it carried
   `message_stop`; a Responses stream once it carried `response.completed` or
   `response.incomplete` — vLLM ends a stream cut by `max_output_tokens` with
   `response.completed` whose `status` is `incomplete`, OpenAI with
@@ -1692,7 +1695,7 @@ own, and a client sending repeats is broken either way.
   `message_start.message.usage`, then each `message_delta.usage`, the latest value
   of each field winning (vLLM repeats `input_tokens` there; llama-server sends only
   `output_tokens`). `input_tokens` → `tokens_in` (Anthropic's `input_tokens` already
-  leaves out cache reads and writes — llama-server's too, run on b9917);
+  leaves out cache reads and writes — llama-server's too, run on b9917 and b10802);
   `cache_read_input_tokens` → `tokens_cached`; `cache_creation_input_tokens` →
   `tokens_cache_write`; `output_tokens` → `tokens_out`, thinking included;
   `tokens_reasoning` 0 (the format does not report it). Missing fields count 0.
@@ -2431,9 +2434,9 @@ own, and a client sending repeats is broken either way.
     (below). Ops series: request duration `endpoint` × `model` × `status_class` ×
     18 lines (15 buckets + `+Inf`, sum, count); first-token and decode-rate
     histograms model × backend × 15 and 13 lines; queue wait model × 17 lines;
-    attempts model × 13 lines; retries model × backend × 6 reasons; limit
+    attempts model × 13 lines; retries model × backend × 8 reasons; limit
     rejections 8 (2 scope kinds × 4 types); upstream attempts
-    deployments × ≤ 12 outcomes; attempt duration backends × 18 lines; config apply
+    deployments × ≤ 14 outcomes; attempt duration backends × 18 lines; config apply
     duration 10 × 18 lines (5 triggers × 2 results) and limiter sync 18 — all bounded
     by the config, never by clients or keys.
 - **Config load cost** (settled 2026-10-01): large configs (some 20 models over 30
@@ -2688,6 +2691,8 @@ own, and a client sending repeats is broken either way.
     | `kaiak.circuit.open_duration` | `open_ms` | `circuit half-open`, `circuit closed`: how long it was open, in seconds |
     | `kaiak.circuit.half_opened` | `circuits_half_open` | `probe succeeded`: circuits it made half-open |
     | `kaiak.backend.base_url`, `kaiak.backend.base_url_hint` | `base_url`, `hint` | `the backend has no models list at its base_url`: the URL and the suggested fix |
+    | `kaiak.endpoint`, `kaiak.request.id` | — (added 2026-10-06) | `the backend's server lacks an endpoint its type serves: an older version?` (once per probe interval and backend; Providers → An endpoint missing from a server): the endpoint, by its metric name (`messages`, `responses`, …), and the request that found it — with `kaiak.backend.id` and `kaiak.deployment.model` |
+    | `kaiak.backend.type` | — (added 2026-10-06) | `model check not available for this backend type` (`azure-anthropic`, which has no models list): the type — with `kaiak.backend.id`; the request line's field of the same name (above) |
     | `kaiak.drain.grace`, `kaiak.drain.timeout`, `kaiak.drain.flush_reserve`, `kaiak.drain.cut_after` | `grace`, `timeout`, `flush_reserve`, `cut_after` (duration strings) | `draining`: the times in force, in seconds (Lifecycle → Draining) |
     | `kaiak.drain.in_flight` | `in_flight`; `requests` on `drain: cutting off in-flight requests` | Requests in flight |
     | `kaiak.drain.cut_off` | `cut_off` | `drained`: requests cut off |

@@ -378,8 +378,9 @@ default builder), `KAIAK_IMAGE_REPO` (required: the registry and namespace, e.g.
     WebSearch tool is refused (a hosted tool); on Anthropic and Foundry backends a
     1-hour prompt cache is refused too — keep its default 5-minute cache.
   - Codex: a custom provider with `base_url = "https://<gateway>/v1"` and
-    `wire_api = "responses"`, and **`web_search = "disabled"`** — its default
-    attaches a hosted search tool to every request, which is refused.
+    `wire_api = "responses"`; if its requests are refused naming `web_search`, set
+    **`web_search = "disabled"`** — its default may attach a hosted search tool,
+    which is refused (not yet checked live against a custom provider).
 - **An older server version** that lacks an endpoint its type serves (vLLM before
   `/v1/messages`) answers `502 upstream_endpoint_missing`: the request fails over to
   another backend of the model, and the deployment keeps serving its other
@@ -657,6 +658,19 @@ the document (a script, or the control plane) rather than editing it by hand.
 - **Messages only**: Claude models are reachable through `/v1/messages` (and
   `count_tokens`), not through OpenAI's endpoints or Responses — translation is in
   `docs/BACKLOG.md`.
+- **Name models by the ids the models list returns** (`anthropic`): the circuit probe
+  and the config-time check look the deployment's `model` up in the list, whole; an
+  alias the list does not return draws the config-time warning and keeps an opened
+  circuit open. `verifyBackend` lists the ids.
+- **Thinking budgets and the output ceiling**: a request thinking with
+  `budget_tokens` at or above the `max_tokens` the gateway would set (the model's
+  ceiling or default) is refused `400 invalid_value` naming the model's limit —
+  Anthropic requires the budget below `max_tokens`. Claude Code sends `max_tokens`
+  32000 with a budget of 31999: give Claude models a ceiling above the budgets your
+  clients use.
+- **Stored objects are refused**: a file stored at Anthropic or OpenAI (`file_id`), a
+  stored Responses item or prompt — `400 stored_object_unsupported` /
+  `stateful_responses_unsupported`. Clients send the content itself.
 - **Standard price only** (`GATEWAY.md` → Providers: Standard price on Anthropic
   types): a request asking for `speed` other than `"standard"`, `inference_geo`
   other than `"global"` or a 1-hour cache write (`cache_control.ttl: "1h"`) is
@@ -958,14 +972,20 @@ directory's owner must be the gateway's user:
   Other data files with another format version are deleted at startup and the
   deletion logged:
 
-  | File | Format | Losing it costs |
-  |---|---|---|
-  | `usage-spool.json`, `usage-batch-*.json` | 1 | unsent usage — billing data |
-  | `last-known-good.json` | 2 | a boot during a control-plane outage falls back to the seed, or exits |
-  | `totals.json` | 1 | a restart during an outage forgets spent budgets until the control plane answers |
-  | `limits.json` (file mode) | 1 | hour and month windows start empty |
+  | File | Losing it costs |
+  |---|---|
+  | `usage-spool.json`, `usage-batch-*.json` | unsent usage — billing data |
+  | `last-known-good.json` | a boot during a control-plane outage falls back to the seed, or exits |
+  | `totals.json` | a restart during an outage forgets spent budgets until the control plane answers |
+  | `limits.json` (file mode) | hour and month windows start empty |
 
+  Each file's current format version is in `docs/specs/GATEWAY.md`, beside the file;
+  the startup log names a discarded file's version and the one wanted.
   `kaiak.lock` has no content; `usage-rejected-*.json` are kept for inspection only.
+- **Config format 5** (this release, protocol 5): models carry no `defaults` — a
+  config with them is refused. Bump `format_version` to 5 and delete every model's
+  `defaults` before publishing (the parameters move to the backends' own settings:
+  vLLM's generation config or flags, llama-server's flags).
 
 ## Images
 

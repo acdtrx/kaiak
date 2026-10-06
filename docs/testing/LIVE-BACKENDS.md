@@ -81,7 +81,9 @@ flag or variable is missing.
 
 The kit checks the gateway's own behavior; these check that real clients work
 through it. Start a gateway in front of a backend that serves the client's API —
-any config with a key works (`README.md`; `examples/local-config.json` is a start),
+any config with a key and a model on such a backend works (`README.md`;
+`examples/config.json` has vLLM models — `examples/local-config.json`'s
+`openai-compatible` backend serves neither Messages nor Responses),
 or run a kit kind with `-keep` and reuse the config and key it generated — then run
 one small task in each client and send back the gateway's log lines for it (they
 hold no prompt or response content).
@@ -116,9 +118,11 @@ hold no prompt or response content).
 **Known client settings.** The gateway refuses a few things clients may send by
 default; each refusal names the parameter, so the fix is one setting:
 
-- **Codex attaches its hosted `web_search` tool** unless `web_search = "disabled"`
-  (its default is `"cached"`): kaiak answers `400 hosted_tool_unsupported` naming
-  `web_search`. Search runs on OpenAI's side, which kaiak does not serve.
+- **Codex may attach its hosted `web_search` tool**: its default is `"cached"`, and
+  whether it sends the tool to a custom provider is not yet checked live (the client
+  checks above say). If it does, kaiak answers `400 hosted_tool_unsupported` naming
+  `web_search`; set `web_search = "disabled"`. Search runs on OpenAI's side, which
+  kaiak does not serve.
 - **Claude Code with a 1-hour prompt cache** on Anthropic or Foundry: a
   `cache_control` with `ttl: "1h"` is refused, `400 price_option_unsupported` — the
   1-hour cache write is priced above the standard one. Leave Claude Code's cache at
@@ -143,7 +147,8 @@ default; each refusal names the parameter, so the fix is one setting:
   (`api_key_env`), never the value; the value never appears in its output or in the
   gateway log.
 - Each run sends a few small requests per API the backend serves (one asks for a long
-  story, cut at 16 tokens) and one embeddings request; a Messages backend also gets
+  story, cut at 16 tokens) and, with `-embeddings-model`, one embeddings request; a
+  Messages backend also gets
   the cache check's two requests of about 8,000 input tokens each. On a paid API a
   run costs cents (Claude Haiku 4.5 at $1 / $5 per million tokens: under $0.05).
 

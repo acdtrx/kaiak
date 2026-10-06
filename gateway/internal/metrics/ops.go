@@ -171,7 +171,7 @@ func NewOps(reg *Registry, router *routing.Router, holder *config.Holder) *Ops {
 		queueRejections: reg.Counter("kaiak_queue_rejections_total",
 			"Requests refused by their model's queue, by reason (full, timeout).", "model", "reason"),
 		retries: reg.Counter("kaiak_retries_total",
-			"Retries: attempts sent after an earlier attempt of the same request failed, by the backend of that attempt and its failure (unavailable, timeout, server_error, rate_limited, auth_failed, model_missing, path_missing).",
+			"Retries: attempts sent after an earlier attempt of the same request failed, by the backend of that attempt and its failure (unavailable, timeout, server_error, rate_limited, auth_failed, model_missing, path_missing, endpoint_missing).",
 			"model", "backend", "reason"),
 		attempts: reg.Histogram("kaiak_request_attempts",
 			"Attempts per routed request, the first included.", attemptBuckets, "model"),

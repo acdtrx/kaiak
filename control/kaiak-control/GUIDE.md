@@ -238,8 +238,9 @@ gateway's module for it. `BACKEND_TYPES` lists them, for a form's choices.
 such as temperature or a chat template's switches are the backends' to set — the
 gateway applies none, and the config has no field for them. `metadata`
 (`context_length`, `capabilities`, `reasoning_efforts`) is information for clients;
-`output_limit` is the one request parameter the gateway sets, because limits reserve
-it. Suggested settings your UI shows people are your app's data, outside config.
+`output_limit` is the one request parameter a model's config sets, because limits
+reserve it (the gateway's own passthrough edits — model name, standard tier, `store:
+false` — are `GATEWAY.md`'s, Providers). Suggested settings your UI shows people are your app's data, outside config.
 
 **The group tree** (`CONTROL-PROTOCOL.md` → Config → The group tree): each group is
 `{ parent?, labels?, allowed_models?, limits?, child_defaults? }`; no `parent` = a
