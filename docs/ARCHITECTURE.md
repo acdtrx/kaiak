@@ -22,8 +22,8 @@
 
 ```mermaid
 flowchart LR
-    client[Clients<br/>OpenAI API] -->|requests, SSE streams| gw[kaiak gateway<br/>N replicas]
-    gw -->|passthrough or translated| be[Backends<br/>vLLM, llama-server, SGLang,<br/>OpenAI, Azure OpenAI]
+    client[Clients<br/>OpenAI chat/completions/embeddings,<br/>Anthropic Messages, OpenAI Responses] -->|requests, SSE streams| gw[kaiak gateway<br/>N replicas]
+    gw -->|passthrough: the same API<br/>at both ends| be[Backends<br/>vLLM, llama-server, SGLang,<br/>OpenAI, Azure OpenAI,<br/>Anthropic, Claude in Foundry]
     cp[Control plane<br/>kaiak-control] -->|config snapshot + SSE stream<br/>config, usage totals, live count| gw
     gw -->|usage records, status| cp
     cp -.->|backend verify: GETs,<br/>when the app calls it| be
@@ -32,11 +32,16 @@ flowchart LR
     gw -.->|log lines, OTLP/HTTP JSON,<br/>when configured| otel[OpenTelemetry<br/>collector]
 ```
 
-- Client → gateway → backend is the only request path. The control plane feeds it
-  config and receives usage and status in the background; a gateway with no control
-  plane reachable keeps serving (file mode; in control-plane mode once booted, or
-  from the seed config at boot) — except models under a USD limit, refused once the
-  outage passes its grace.
+- Client → gateway → backend is the only request path. A request reaches only a
+  backend that speaks its client API natively (Anthropic Messages, OpenAI Responses or
+  OpenAI's chat, completions and embeddings): the gateway passes it through with the
+  edits it owns and never translates between APIs (settled 2026-10-06; translation is
+  in `docs/BACKLOG.md`). Each backend type fixes the endpoints it serves
+  (`docs/specs/GATEWAY.md`, Providers → Endpoint support).
+- The control plane feeds the gateways config and receives usage and status in the
+  background; a gateway with no control plane reachable keeps serving (file mode; in
+  control-plane mode once booted, or from the seed config at boot) — except models
+  under a USD limit, refused once the outage passes its grace.
 - The control plane reaches a backend only when the app verifies one
   (`verifyBackend`, `docs/specs/BACKEND-VERIFY.md`): a few `GET`s to read what it
   reports about its models, off the request path, never on a schedule.
@@ -83,7 +88,10 @@ enforce the boundaries.
   (admission, in-flight count, the shutdown sequence `cmd/kaiak` triggers on
   SIGTERM/SIGINT) and the request pipeline: a fixed ordered list of stages over one
   per-request struct (admission → auth → key concurrency → inbound → model access →
-  model parameters → limits → attempts), plus the model endpoints' answers. The attempts stage is
+  model parameters → limits → attempts), plus the model endpoints' answers. Each
+  endpoint has a client API format; the format decides the owned fields the inbound
+  stage reads, the output-limit key, and the error shape of every answer the gateway
+  gives on that route. The attempts stage is
   routing → accounting → provider run once per attempt: an attempt that failed before
   anything reached the client is retried — through all three again, the queue
   included — on another deployment when there is one; limits reserve once per client
@@ -120,12 +128,16 @@ enforce the boundaries.
   reporter, and its circuit events to `metrics` through an observer interface
   `routing` defines.
 - `provider` — the only code that talks to backends: a module per backend type
-  (openai, azure-openai, vllm, llama-server, and the generic openai-compatible), each
-  self-contained over a shared OpenAI wire core, passthrough body edits, per-backend
-  connection pools, the circuit breaker's probe (`GET …/models`);
-  it reads backend streams with `sse`. It returns response events in the client's format; `server`
-  relays them to the client, and observers (accounting) read them on the way.
-- `accounting` — meters each attempt's response as it is relayed, settles usage and
+  (openai, azure-openai, vllm, llama-server, anthropic, azure-anthropic, and the
+  generic openai-compatible), each self-contained over a shared wire core, the one
+  table of which endpoints each type serves, passthrough body edits per client API,
+  when a stream is whole per format, per-backend connection pools, the circuit
+  breaker's probe (`GET …/models`; none for azure-anthropic, which has no models
+  list); it reads backend streams with `sse`. It returns response events in the
+  client's format; `server` relays them to the client, and observers (accounting)
+  read them on the way.
+- `accounting` — meters each attempt's response as it is relayed — reading usage as
+  each client API reports it (OpenAI, Messages, Responses) into the same units —, settles usage and
   cost into usage records (each naming the key's group path) — one per routed
   request, plus one per retried attempt whose request reached the backend and got
   no answer — clamps them to the
@@ -198,7 +210,9 @@ enforce the boundaries.
   usage flush and the final status into the drain; `metrics` gets the delivery
   metrics through an observer interface `control` defines, and the connection state
   through one `metrics` defines.
-- `fakebackend` — an OpenAI-compatible test backend that can stream, stall, hang, cut,
+- `fakebackend` — a test backend speaking OpenAI's chat, completions and embeddings,
+  Anthropic Messages and OpenAI Responses (with recorded answers of real servers in
+  `captures/` for tests that need their exact bytes), that can stream, stall, hang, cut,
   fail (also for a scripted sequence of requests) and omit usage on demand, serves a
   models list whose status the test sets, and records every request it receives; used by tests
   only. `fakebackend/cmd/fakebackend` runs it as a process (listen address, behavior

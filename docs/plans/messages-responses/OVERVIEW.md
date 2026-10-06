@@ -311,3 +311,32 @@ Expected reds inside phase 1:
   - The `anthropic`, `azure-anthropic`, `openai` and `azure-openai` kinds, run by a
     tester with access.
   - Claude Code and Codex each running one task through a local kaiak.
+
+**Verification status:** done (2026-10-06); every phase ended green. Waiting on a
+tester with access: the cloud kinds and the client checks.
+
+- [x] Component tests per format: owned fields and refusals, output limit, input
+  estimate, usage mapping streamed and not, completeness, model rewriting, error
+  shapes (`STEP-4-messages.md`, `STEP-5-responses.md`).
+- [x] Routing: endpoint support per type, `endpoint_not_served`,
+  `upstream_endpoint_missing` retried and neutral for the circuit
+  (`STEP-3-gateway-groundwork.md`; e2e in steps 4–5).
+- [x] Anthropic modules: URLs, headers, `standard_only`, price-option refusals, 529,
+  wrong model and path, probes (`STEP-3-gateway-groundwork.md`).
+- [x] Shared fixtures run by both halves: the new types, `defaults` refused, the
+  version checks (`STEP-1-contract.md`, steps 2–3).
+- [x] Gateway e2e against the fake backend: each new endpoint streamed and not,
+  records' units, limit refusals in each API's shape, token counting without a
+  record, Anthropic-shaped `/v1/models` (`STEP-4-messages.md`, `STEP-5-responses.md`).
+- [x] Cross-half e2e: a Messages and a Responses request, streamed and not, settle at
+  the sample with the right units and count toward its totals; token counting on
+  both APIs leaves no record (`STEP-7-e2e-and-docs.md`).
+- [x] `scripts/check-all.sh` green at every phase end, and three times in a row at
+  the end (`STEP-7-e2e-and-docs.md`).
+- [x] Live on the DGX: vLLM 0.30.0 27 passed / 0 failed / 3 skipped, llama-server
+  b10802 28 / 0 / 3 (`STEP-6-live-kit.md`).
+- [ ] Live, cloud kinds: `anthropic`, `azure-anthropic`, `openai`, `azure-openai` —
+  pending, run by a tester with access (`docs/testing/LIVE-BACKENDS.md` → For a
+  tester with access).
+- [ ] Client checks: Claude Code and Codex each running one task through a local
+  kaiak — pending (`docs/testing/LIVE-BACKENDS.md` → Client checks).

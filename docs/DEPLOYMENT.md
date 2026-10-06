@@ -1,7 +1,7 @@
 # Deployment
 
 > The operator's guide: running kaiak for real — several gateway replicas on
-> Kubernetes in front of many vLLM hosts and Azure OpenAI, fed by one control plane.
+> Kubernetes in front of many vLLM hosts, Azure OpenAI and Claude, fed by one control plane.
 > It says what to set and why; the contracts it relies on live in
 > `docs/specs/GATEWAY.md` and `docs/specs/CONTROL-PROTOCOL.md`, linked rather than
 > restated. Kubernetes manifests are not part of this repo (the cluster setup is the
@@ -16,6 +16,7 @@ flowchart LR
     ing --> gw0[kaiak pod] & gw1[kaiak pod] & gw2[kaiak pod]
     gw0 & gw1 & gw2 --> vllm[vLLM hosts<br/>one backend per process]
     gw0 & gw1 & gw2 --> az[Azure OpenAI<br/>one backend per resource]
+    gw0 & gw1 & gw2 --> claude[Claude: Anthropic API<br/>or Microsoft Foundry]
     gw0 & gw1 & gw2 <-->|config, totals / usage, status| cp[Control plane<br/>1 process per store]
     cp --- store[(Store)]
     prom[Prometheus] -->|:9090 /metrics| gw0 & gw1 & gw2
@@ -351,6 +352,39 @@ backends, the control plane and the collector in `NO_PROXY`.
 default builder), `KAIAK_IMAGE_REPO` (required: the registry and namespace, e.g.
 `registry.example.com/team`).
 
+## Clients
+
+- **Three client APIs on the one API port** (`GATEWAY.md` → Client API): OpenAI's
+  chat completions, completions, embeddings and models; Anthropic Messages
+  (`/v1/messages`, `/v1/messages/count_tokens`, and `/v1/models` in Anthropic's shape
+  when the request carries `anthropic-version`); OpenAI Responses (`/v1/responses`,
+  `/v1/responses/input_tokens`). One key works on all of them, as
+  `Authorization: Bearer` or `x-api-key`.
+- **Passthrough only** (settled 2026-10-06): a request reaches only the deployments
+  whose backend type serves its endpoint (`GATEWAY.md` → Providers: Endpoint
+  support); a model with none answers `400 endpoint_not_served`. So a Claude model on
+  `anthropic` or `azure-anthropic` is reachable through Messages only, an OpenAI or
+  Azure OpenAI model through OpenAI's endpoints and Responses, a vLLM or
+  llama-server model through all three. `/v1/models` lists each model's
+  `endpoints`. Responses `input_tokens` is served by `llama-server` and `openai`
+  only.
+- **Responses is stateless**: every request goes out with `store: false`, and
+  `previous_response_id`, `conversation` and `background` are refused — clients
+  send the whole conversation each turn. **Tools a backend would run** (web search,
+  code execution, remote MCP, …) are refused on both APIs.
+- **Client settings** (`docs/testing/LIVE-BACKENDS.md` → Client checks):
+  - Claude Code: `ANTHROPIC_BASE_URL=https://<gateway>` (no `/v1`),
+    `ANTHROPIC_AUTH_TOKEN=<kaiak key>`, `ANTHROPIC_MODEL=<public model>`. Its
+    WebSearch tool is refused (a hosted tool); on Anthropic and Foundry backends a
+    1-hour prompt cache is refused too — keep its default 5-minute cache.
+  - Codex: a custom provider with `base_url = "https://<gateway>/v1"` and
+    `wire_api = "responses"`, and **`web_search = "disabled"`** — its default
+    attaches a hosted search tool to every request, which is refused.
+- **An older server version** that lacks an endpoint its type serves (vLLM before
+  `/v1/messages`) answers `502 upstream_endpoint_missing`: the request fails over to
+  another backend of the model, and the deployment keeps serving its other
+  endpoints (no circuit failure). Upgrade the server.
+
 ## Config for many hosts
 
 The config document's fields and defaults: `protocol/schema/config.schema.json`;
@@ -360,12 +394,16 @@ the document (a script, or the control plane) rather than editing it by hand.
 
 - **A backend's `type` is its server's** (`GATEWAY.md` → Providers): `vllm`,
   `llama-server` (llama.cpp), `openai` (OpenAI's API, `https://api.openai.com/v1`),
-  `azure-openai` (Azure OpenAI, below), and `openai-compatible` only for a server
-  without a type of its own (SGLang, …). A backend answers the same under any of the
-  OpenAI-format types, but only its own type carries that server's rules. `openai`
+  `azure-openai` (Azure OpenAI, below), `anthropic` and `azure-anthropic` (Claude,
+  below), and `openai-compatible` only for a server without a type of its own
+  (SGLang, …). A backend answers the same under any of the OpenAI-format types, but
+  only its own type carries that server's rules — and **the type decides which client
+  APIs reach the model** (Clients, below): `openai-compatible` serves OpenAI's chat,
+  completions and embeddings only, so a vLLM or llama-server host listed under it
+  loses Messages and Responses. `openai`
   and `azure-openai` require `api_key_env` and **force the standard service tier**: a
-  client's `service_tier` becomes `"default"` and every chat request carries it, so
-  requests are billed at the standard rates `prices` holds. `vllm`, `llama-server`
+  client's `service_tier` becomes `"default"` and every chat and Responses request
+  carries it, so requests are billed at the standard rates `prices` holds. `vllm`, `llama-server`
   and `openai-compatible` pass the client's `service_tier` untouched and add none —
   **an OpenAI deployment kept as `openai-compatible` runs on the tier the client asks
   for, or the project's own**, and priority bills about twice the configured prices.
@@ -396,7 +434,7 @@ the document (a script, or the control plane) rather than editing it by hand.
   the same one: the client's SDK retries that), open circuits and deployments
   cooling down after a `429` are skipped. A single-deployment model is not retried
   by the gateway. Two public models may share deployments (the example's
-  `qwen3-32b` and `qwen3-32b-thinking`: same hosts, different defaults).
+  `qwen3-32b` and `qwen3-32b-thinking`: same hosts, different output limits).
 - **A deployment's `model` is the name the backend lists** (`GET <base_url>/models`),
   in its own naming: vLLM's `--served-model-name`, Azure's deployment name,
   llama-server's model id — by default its file path
@@ -439,12 +477,16 @@ the document (a script, or the control plane) rather than editing it by hand.
   key may have open at once on one gateway, past it `429
   concurrency_limit_exceeded`. Per gateway, so N replicas allow N × it. Raise it
   for a batch workload that runs many requests in parallel on one key.
-- **Model defaults** (`GATEWAY.md` → Model metadata): parameters a request leaves
-  unset are filled in; an object value fills the whole parameter. For Qwen3 on vLLM,
-  a non-thinking public model is `"chat_template_kwargs": {"enable_thinking": false}`
-  plus Qwen's recommended sampling; the thinking one leaves it out. Set
-  `output_limit` `default` and `ceiling` per model — the default is lowered to fit
-  the prompt's room in `context_length`, never below 256.
+- **Request defaults are the backend's** (`GATEWAY.md` → Model metadata, settled
+  2026-10-06): the gateway fills in no sampling or template parameters — the models
+  carry no `defaults` — so set them where the model runs: vLLM's
+  `--generation-config` (the model's own `generation_config.json` by default) and its
+  chat-template options, llama-server's sampling flags and `--chat-template-kwargs`.
+  A host whose defaults differ from another's is another model, not another
+  deployment of it. What the gateway still sets is the output
+  limit: `output_limit` `default` and `ceiling` per model — the default is lowered to
+  fit the prompt's room in `context_length`, never below 256; each client API takes
+  it under its own key (`max_completion_tokens`, `max_tokens`, `max_output_tokens`).
 - **`child_defaults` is a default, not a ceiling** (`CONTROL-PROTOCOL.md` → Config:
   The group tree): a child's own `allowed_models` or limit of the same type and model
   set replaces the default, so it can loosen it. Put a hard restriction for a
@@ -601,6 +643,40 @@ the document (a script, or the control plane) rather than editing it by hand.
   and check the provider's assumptions in the order `docs/testing/LIVE-BACKENDS.md`
   lists them (Azure: assumptions made without access) — the provider was written
   without an Azure subscription.
+
+## Claude (Anthropic and Microsoft Foundry)
+
+- **Two types** (`GATEWAY.md` → Providers): `anthropic` for Anthropic's API —
+  `base_url` `https://api.anthropic.com/v1`, the key sent as `x-api-key` — and
+  `azure-anthropic` for Claude in Microsoft Foundry — `base_url` the resource
+  endpoint (`https://<resource>.services.ai.azure.com`; the gateway appends
+  `/anthropic/v1/…`), the key sent as `api-key`, a deployment's `model` the Foundry
+  deployment name. Both require `api_key_env` and send `anthropic-version:
+  2023-06-01`. Foundry's Claude serves Claude models only; OpenAI models on Azure are
+  `azure-openai`.
+- **Messages only**: Claude models are reachable through `/v1/messages` (and
+  `count_tokens`), not through OpenAI's endpoints or Responses — translation is in
+  `docs/BACKLOG.md`.
+- **Standard price only** (`GATEWAY.md` → Providers: Standard price on Anthropic
+  types): a request asking for `speed` other than `"standard"`, `inference_geo`
+  other than `"global"` or a 1-hour cache write (`cache_control.ttl: "1h"`) is
+  refused `400 price_option_unsupported`; `anthropic` also sends
+  `service_tier: "standard_only"`. Price every Claude model at its standard rates,
+  `tokens_cache_write` at the 5-minute write price (1.25× input) and
+  `tokens_cached` at the read price. A workspace whose default inference region is
+  `us` bills 1.1× without any request asking — price the model accordingly.
+- **No client headers reach Anthropic**: `anthropic-beta` from clients is not
+  forwarded (a decision is pending, `docs/BACKLOG.md`), so features behind a beta
+  header are unavailable through kaiak.
+- **Foundry has no models list**: the config-time model check skips
+  `azure-anthropic` backends (the log says so), and the circuit probe makes no
+  request — an open circuit turns half-open after the probe interval and the next
+  request is its trial. A mistyped deployment name shows only on traffic
+  (`upstream_model_missing`); check each deployment with the live kit before go-live.
+- **Before go-live, run the live kit** against the real API or resource
+  (`-kind anthropic` or `-kind azure-anthropic`; `docs/testing/LIVE-BACKENDS.md`, For
+  a tester with access): both modules were written from the providers'
+  documentation, without access.
 
 ## Observability
 
@@ -760,7 +836,7 @@ before priced models are refused. Scale the 300 with the grace if you change it.
 | Config rejected | ticket | `sum(increase(kaiak_config_loads_total{result="rejected"}[15m])) > 0` | — | The gateways kept their running config; the log line has the issue codes (an unset `api_key_env` is the usual one). |
 | Circuit open | ticket | `max by (backend, deployment_model) (kaiak_circuit_open) == 1` | 5m | A deployment is out of rotation, its backend failing the probe; the model's other deployments carry its load (none left: No healthy deployment pages). A half-open circuit (the backend answers its probe; the next request is the trial) reads 0 here and 1 on `kaiak_circuit_half_open`: a recovered deployment with no traffic stays half-open indefinitely and must not alert. |
 | Circuit flapping | ticket | `max by (backend, deployment_model) (increase(kaiak_circuit_transitions_total{to="open"}[30m])) > 3` | — | Probes half-open it and trials fail (the host answers its models list but cannot serve), or its models list comes and goes (a failed probe re-opens a half-open circuit). |
-| Wrong model, path or credential | ticket | `sum by (backend, deployment_model, outcome) (increase(kaiak_upstream_attempts_total{outcome=~"model_missing\|path_missing\|auth_failed"}[10m])) > 0` | — | A host serves another model than the config says, its `base_url` leads to no endpoint (`path_missing`: typically the API version path left out; the gateway also warns `the backend has no models list at its base_url` when the config is applied), or it refuses the gateway's key. |
+| Wrong model, path or credential | ticket | `sum by (backend, deployment_model, outcome) (increase(kaiak_upstream_attempts_total{outcome=~"model_missing\|path_missing\|endpoint_missing\|auth_failed"}[10m])) > 0` | — | A host serves another model than the config says, its `base_url` leads to no endpoint (`path_missing`: typically the API version path left out; the gateway also warns `the backend has no models list at its base_url` when the config is applied), its server version lacks an endpoint its type serves (`endpoint_missing`: upgrade it), or it refuses the gateway's key. |
 | Backend failure rate | ticket | `sum by (backend) (rate(kaiak_upstream_attempts_total{outcome=~"unavailable\|timeout\|server_error\|broke_off"}[5m])) / sum by (backend) (rate(kaiak_upstream_attempts_total[5m])) > 0.05 and sum by (backend) (rate(kaiak_upstream_attempts_total[5m])) > 0.1` | 5m | A struggling host, before its circuit opens. The second clause needs about 30 attempts in 5 minutes, so one failed request on a quiet backend is not a 50% rate. On an Azure backend, `broke_off` or `timeout` from reasoning models means their stream timeouts are too short (Azure OpenAI). |
 | Deployment often cooling down | ticket | `max by (backend, deployment_model) (avg_over_time(kaiak_deployment_cooling_down[30m])) > 0.25` | — | The deployment answered `429` often enough to spend a quarter of the last 30 minutes cooling down: its quota (Azure tokens or requests per minute) is too small for its share of the traffic. Raise the quota, or deploy the model in another resource or region and list it (Azure OpenAI: quota). Clients see it only when every deployment of the model cools at once (`kaiak_errors_total{class="upstream_rate_limited"}`). |
 | Queue rejections | ticket | `sum by (model) (rate(kaiak_queue_rejections_total[10m])) / sum by (model) (rate(kaiak_request_duration_seconds_count[10m])) > 0.01` | 10m | Over 1% of a model's requests refused by its queue (`reason="full"` or `timeout`) for 10 minutes: capacity. Compare `kaiak_backend_in_flight_requests` with `kaiak_backend_max_in_flight` across replicas (uneven shares), and the backends' own load. A burst that clears within minutes does not alert. |

@@ -307,8 +307,8 @@ use the price of their day.
   changes nothing.
 - **Prices are standard-tier rates.** On `openai` and `azure-openai` backends the
   gateway keeps every request on standard processing: a client's `service_tier`
-  becomes `"default"`, and every chat request carries it even when the client sent
-  none, since the default (`auto`) follows the Azure deployment's or OpenAI
+  becomes `"default"`, and every chat and Responses request carries it even when the
+  client sent none, since the default (`auto`) follows the Azure deployment's or OpenAI
   project's setting, which may be Priority (`GATEWAY.md` → Providers → Service
   tier). Priority, flex and batch rates never apply there. On `anthropic` and
   `azure-anthropic` the gateway refuses fast mode (`speed`), a non-global

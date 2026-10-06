@@ -1,10 +1,11 @@
 # kaiak
 
 A self-contained LLM gateway. One static Go binary sits between your clients and your
-model backends: it speaks the **OpenAI API** to clients, routes to self-hosted model
-servers (vLLM, llama-server, SGLang) and cloud providers (OpenAI, Azure OpenAI), and
-enforces **access keys, rate limits and budgets** while counting every token and
-dollar.
+model backends: it speaks the **OpenAI API**, **Anthropic Messages** and **OpenAI
+Responses** to clients, routes to self-hosted model servers (vLLM, llama-server,
+SGLang) and cloud providers (OpenAI, Azure OpenAI, Anthropic, Claude in Microsoft
+Foundry), and enforces **access keys, rate limits and budgets** while counting every
+token and dollar.
 
 kaiak has no UI and no admin API of its own. Its config comes either from a file or
 from a **control plane** that pushes changes live and receives usage and status back.
@@ -21,7 +22,7 @@ a small sample control plane shows how.
 - **The contract** (`protocol/`): JSON Schemas and shared fixtures both halves test
   against.
 
-> **Status:** pre-1.0. Config format and protocol are at version 4. There is no
+> **Status:** pre-1.0. Config format and protocol are at version 5. There is no
 > backwards compatibility between versions yet: gateways and control plane upgrade
 > together.
 
@@ -37,7 +38,7 @@ a small sample control plane shows how.
 | Know exactly what the gateway does (API, limits, routing, lifecycle) | [`docs/specs/GATEWAY.md`](docs/specs/GATEWAY.md) |
 | Run it in production (Kubernetes, sizing, alerts, secrets) | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) |
 | Find your way around the code | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/TECH-STACK.md`](docs/TECH-STACK.md) |
-| Test against a real vLLM / llama-server / Azure OpenAI / OpenAI backend | [`docs/testing/LIVE-BACKENDS.md`](docs/testing/LIVE-BACKENDS.md) |
+| Test against a real vLLM / llama-server / OpenAI / Azure OpenAI / Anthropic / Foundry backend, or point Claude Code or Codex at kaiak | [`docs/testing/LIVE-BACKENDS.md`](docs/testing/LIVE-BACKENDS.md) |
 | See what is deliberately not built yet, and when it would be | [`docs/BACKLOG.md`](docs/BACKLOG.md) |
 | Contribute (or point a coding agent at the project) | [`AGENTS.md`](AGENTS.md), [`docs/CODING-RULES.md`](docs/CODING-RULES.md) |
 
@@ -50,6 +51,11 @@ from a clone, or serve `docs/` with GitHub Pages.
   name clients send, served by one or more deployments (backend + backend-side model
   name). Requests are load-balanced across deployments, retried on another deployment
   before the first byte, and kept away from failing deployments by a circuit breaker.
+- **Client APIs.** OpenAI's chat completions, completions and embeddings, Anthropic
+  Messages and OpenAI Responses (stateless), on one port with one key (`Authorization:
+  Bearer` or `x-api-key`). A request is passed through to a backend that speaks its
+  API — never translated — so the backend types behind a model decide which APIs
+  reach it (`docs/DEPLOYMENT.md` → Clients).
 - **Groups.** Who may use which models, and under which limits, is a tree of groups
   of any depth: team → project → env → workload, or whatever shape your organization
   has. A key belongs to one group. A request must pass the limits of every group on
@@ -90,7 +96,8 @@ stable).
    `users` group whose `child_defaults` give every person the same models and
    limits), and example limits. Replace the backend URLs and the placeholder key
    hashes. A backend's `type` names its server — `vllm`, `llama-server`, `openai`,
-   `azure-openai`, or `openai-compatible` for any other OpenAI-format server
+   `azure-openai`, `anthropic`, `azure-anthropic` (Claude in Microsoft Foundry), or
+   `openai-compatible` for any other OpenAI-format server
    (`docs/DEPLOYMENT.md` → Config for many hosts). Backend credentials are named by
    environment variable (`api_key_env`), never written in the file.
 
@@ -107,6 +114,15 @@ stable).
    curl -s localhost:8080/v1/chat/completions -H "Authorization: Bearer $key" \
      -H 'Content-Type: application/json' \
      -d '{"model": "qwen3-32b", "messages": [{"role": "user", "content": "Hello"}]}'
+   ```
+
+   The same model through Anthropic Messages (vLLM serves it natively; the key works
+   as `x-api-key` too):
+
+   ```sh
+   curl -s localhost:8080/v1/messages -H "x-api-key: $key" -H 'anthropic-version: 2023-06-01' \
+     -H 'Content-Type: application/json' \
+     -d '{"model": "qwen3-32b", "max_tokens": 256, "messages": [{"role": "user", "content": "Hello"}]}'
    ```
 
    `kill -HUP` reloads the config file (a bad one is rejected and the running one

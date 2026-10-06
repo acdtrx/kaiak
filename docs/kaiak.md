@@ -79,11 +79,13 @@ The name reads the same both ways (the gateway carries traffic in both direction
   reference, concurrency cap and queue, health check).
 - **Model** — the public name clients use; one or more **deployments** (backend +
   backend-side model name), identical copies load-balanced among; metadata (context
-  length, default sampling parameters, supported reasoning efforts, capabilities) —
+  length, supported reasoning efforts, capabilities) — information for clients,
   declared in config (`kaiak-control`'s `verifyBackend` fills it in from what the
   backend reports when the model is added; the gateway discovers nothing);
   output-limit default and ceiling; prices (per usage unit, with an effective date,
-  tiered by input size); which limit types apply.
+  tiered by input size); which limit types apply. Request defaults are the backends'
+  own: the gateway sets none but the output limit (settled 2026-10-06). The client
+  APIs a model is reachable through follow from its deployments' backend types.
 - **Key** — belongs to one **group**; hashed; can expire or be disabled. Keys are
   created by the control plane and reach the gateway as hashes in config. A key has
   **no limits of its own**: its usage counts toward its group and every ancestor.
@@ -107,10 +109,15 @@ The name reads the same both ways (the gateway carries traffic in both direction
 ## v1 scope
 
 - Inbound: OpenAI `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`,
-  `/v1/models` (extended with metadata), `/v1/models/{id}/props`.
+  `/v1/models` (extended with metadata), `/v1/models/{id}/props`; Anthropic
+  Messages `/v1/messages` and `/v1/messages/count_tokens` (`x-api-key` accepted,
+  Anthropic-shaped `/v1/models`); OpenAI Responses `/v1/responses` and
+  `/v1/responses/input_tokens`, stateless (added 2026-10-06). Every API is passed
+  through only to backends that speak it; tools a backend would run are refused.
 - Providers: a module per server — OpenAI, Azure OpenAI (its OpenAI-compatible
-  `/openai/v1/` API), vLLM, llama-server — and a generic OpenAI-compatible type for
-  any other server speaking the OpenAI format (SGLang, …).
+  `/openai/v1/` API), vLLM, llama-server, Anthropic, Claude in Microsoft Foundry —
+  and a generic OpenAI-compatible type for any other server speaking the OpenAI
+  format (SGLang, …).
 - Routing: aliases, multiple deployments, load balancing, retries before the
   first byte, circuit breaker driven by real-traffic failures (probing only while open),
   per-backend concurrency cap with a bounded queue.
@@ -125,9 +132,15 @@ The name reads the same both ways (the gateway carries traffic in both direction
 
 ## Out of v1 (see `docs/BACKLOG.md`)
 
-Bedrock; Anthropic Messages inbound; OpenAI Responses API; image and audio models;
+Bedrock; translation between client APIs (Messages or Responses to a backend that
+does not speak them); image and audio models;
 response caching, guardrails, prompt templating, prompt logging; output limit derived
 from remaining budget; cloud workload identity (AWS IRSA / Azure managed identity);
 reasoning-effort discovery; interim usage reports for long streams; always-on active
 health checks; demand-weighted per-minute limit shares.
 Never planned: OpenAI Batch API, Assistants API.
+
+Kept out of the gateway for now, with no backlog entry (settled 2026-10-06):
+stateful Responses (stored responses, conversations) and tools a backend runs (web
+search, code execution, remote MCP). They need state and calls to outside services a
+stateless gateway does not make; an agent runtime in front of kaiak would hold them.

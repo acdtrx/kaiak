@@ -72,10 +72,8 @@ Group entries under headings as themes emerge.
   ahead.
 - **More from llama-server in `verifyBackend`** — router mode (one server, several
   models; `/props?model=<name>` describes each — today `/props` is read only when the
-  list has one model) and the server's default sampling parameters
-  (`default_generation_settings.params`) as candidate model `defaults`. Revisit
-  trigger: a router-mode llama-server is deployed, or operators copy sampling
-  defaults by hand. (ruled 2026-09-29: out of the first `verifyBackend`.)
+  list has one model). Revisit trigger: a router-mode llama-server is deployed.
+  (ruled 2026-09-29: out of the first `verifyBackend`.)
 - **Backend credentials in config** — the key value in config instead of an
   `api_key_env` naming a gateway environment variable. Gains: one place to manage
   keys, rotation by config push instead of a gateway rollout, gateways need only the

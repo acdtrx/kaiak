@@ -107,7 +107,7 @@ svg .band { stroke: none; }
   </tbody>
 </table>
 </div>
-<div class="callout"><p>The gateway only makes <strong>outbound</strong> calls. There is one shared bearer token (<code>KAIAK_CONTROL_TOKEN</code>), every request and response carries <code>Kaiak-Protocol: 4</code>, and the gateway names itself in <code>Kaiak-Instance</code> (default: the hostname / pod name). A version mismatch is refused on both sides — the halves move together.</p></div>
+<div class="callout"><p>The gateway only makes <strong>outbound</strong> calls. There is one shared bearer token (<code>KAIAK_CONTROL_TOKEN</code>), every request and response carries <code>Kaiak-Protocol: 5</code>, and the gateway names itself in <code>Kaiak-Instance</code> (default: the hostname / pod name). A version mismatch is refused on both sides — the halves move together.</p></div>
 </section>
 
 <section id="endpoints">
@@ -161,7 +161,7 @@ svg .band { stroke: none; }
   <line x1="738" y1="320" x2="212" y2="320" class="edge" marker-end="url(#e-a)"/>
   <text x="474" y="336" text-anchor="middle" class="s">204, no body</text>
 
-  <text x="480" y="384" text-anchor="middle" class="s">Every request: Authorization: Bearer &lt;token&gt; · Kaiak-Protocol: 4 · Kaiak-Instance: &lt;id&gt; — checked in that order (401, 400, 400)</text>
+  <text x="480" y="384" text-anchor="middle" class="s">Every request: Authorization: Bearer &lt;token&gt; · Kaiak-Protocol: 5 · Kaiak-Instance: &lt;id&gt; — checked in that order (401, 400, 400)</text>
 </svg>
 <figcaption>Control plane → gateway is a snapshot plus one SSE stream that resumes from the snapshot's version. Gateway → control plane is plain POSTs. Every body is a JSON message with a schema in <code>protocol/schema/</code>; both halves test against the same fixtures in <code>protocol/fixtures/</code>. Errors use <code>{ error, detail? }</code>.</figcaption>
 </figure>
@@ -542,7 +542,7 @@ svg .band { stroke: none; }
 </section>
 
 <footer>
-  Overview only — the contract is <code>docs/specs/CONTROL-PROTOCOL.md</code> (with schemas and fixtures in <code>protocol/</code>); gateway behavior in <code>docs/specs/GATEWAY.md</code>; operations in <code>docs/DEPLOYMENT.md</code>. Written 2026-09-26 against 0.6.0; describes the group tree with the 2026-09-27 review's fixes (after 0.7.1), tiered prices (2026-09-29) and the cache-write unit (2026-10-02, protocol version 4). Back to <a href="gateway.html">gateway internals</a>.
+  Overview only — the contract is <code>docs/specs/CONTROL-PROTOCOL.md</code> (with schemas and fixtures in <code>protocol/</code>); gateway behavior in <code>docs/specs/GATEWAY.md</code>; operations in <code>docs/DEPLOYMENT.md</code>. Written 2026-09-26 against 0.6.0; describes the group tree with the 2026-09-27 review's fixes (after 0.7.1), tiered prices (2026-09-29), the cache-write unit (2026-10-02) and the Anthropic backend types with model defaults removed (2026-10-06, config format and protocol version 5). Back to <a href="gateway.html">gateway internals</a>.
 </footer>
 </main>
 </body>

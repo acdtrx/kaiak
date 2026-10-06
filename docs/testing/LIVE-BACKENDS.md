@@ -546,8 +546,8 @@ gateway started from `examples/config.json`):
   them; Messages reports no reasoning count, so it stays 0 there. Reasoning is
   always inside `gen_ai.usage.output_tokens` (the record's `tokens_out`), which is
   what is priced.
-- **Unknown sampling parameters pass through** — `top_k`, `min_p` as defaults reach
-  vLLM untouched (the backend log shows each request's parameters when request
+- **Unknown sampling parameters pass through** — `top_k`, `min_p` sent with
+  `-chat-params` reach vLLM untouched (the backend log shows each request's parameters when request
   logging is enabled on the vLLM server).
 
 ## Anthropic and Foundry: assumptions made without access
