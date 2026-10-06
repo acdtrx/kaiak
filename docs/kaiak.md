@@ -26,8 +26,9 @@ The name reads the same both ways (the gateway carries traffic in both direction
 - **Gateway** (`kaiak`) — the data plane. Serves client traffic, enforces what the
   control plane decided, reports what happened. Deployed as N identical replicas.
 - **`kaiak-control`** — a library implementing the control-plane side of the protocol:
-  serving config, taking in usage, keeping totals, deciding budgets, tracking gateway
-  status. Storage is pluggable.
+  validating the config the app publishes and broadcasting the current one, taking in
+  usage, keeping totals, deciding budgets, tracking gateway status. The app owns its
+  config — its parts, history and editing (settled 2026-10-07). Storage is pluggable.
 - **Sample control plane** — a thin app on `kaiak-control`: config from a file, state in
   memory, one read-only page showing the config and everything the gateways report.
   For local runs, demos and validating the gateway end to end.

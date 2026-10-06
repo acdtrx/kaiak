@@ -155,8 +155,8 @@ The whole loop runs locally, with a fake backend standing in for a model server.
    KAIAK_SAMPLE_CONFIG=../data/sample-config.json KAIAK_CONTROL_TOKEN=dev-token npm run dev -w sample
    ```
 
-   Every save of the config file is validated, published as a new version and pushed
-   to the gateways; an invalid file is rejected and the current version stays.
+   Every save of the config file is validated, published as the current config and
+   pushed to the gateways; an invalid file is rejected and the current config stays.
    Optional: `KAIAK_SAMPLE_LISTEN` (default `127.0.0.1:8090`), `KAIAK_LOG_FORMAT`,
    `KAIAK_SAMPLE_PROTOCOL_PORTS` (protocol replicas over the same store: a
    demonstration of several control-plane processes).
@@ -170,7 +170,7 @@ The whole loop runs locally, with a fake backend standing in for a model server.
 
 5. **A request** with the key from step 2, model `demo`, as above. Then edit
    `data/sample-config.json` (add a limit, another key) and watch the sample publish
-   version 2 and the gateway apply it.
+   it and the gateway apply it.
 
 6. **The status page** at <http://127.0.0.1:8090/>: gateways and their backends and
    circuits, the config and its group tree, totals against every limit, and recent
@@ -183,12 +183,14 @@ plane (with your UI, your users and your database) is a separate application tha
 imports `kaiak-control`. The library does the whole protocol side. You supply:
 
 - **a store**: an implementation of the `ControlPlaneStore` interface on your
-  database. Its contract covers exactly-once usage counting, one totals sequence,
+  database. Its contract covers exactly-once usage counting, one sequence,
   conditional writes and change notification — what lets any number of
-  control-plane processes run over one store — and a config history. The library ships
-  the contract as tests your store runs;
-- **a config source**: your UI or API builds whole config documents and publishes
-  them through the library, which validates them and assigns versions;
+  control-plane processes run over one store — and the current config. The library
+  ships the contract as tests your store runs;
+- **a config source**: your app is the source of truth for config. It builds whole
+  config documents from its own data (and keeps any history) and publishes them
+  through the library, which validates them and broadcasts the current one to the
+  gateways;
 - **everything a human touches**: login, roles, audit, reports and key management.
 
 What to read, in order:

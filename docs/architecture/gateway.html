@@ -231,7 +231,7 @@ svg .band { stroke: none; }
     <tr><td><code>accounting</code></td><td>Meters each attempt's response as it is relayed; settles usage and cost into records, each naming the key's group path; hands them to the control client's batcher and the usage-metrics sink.</td></tr>
     <tr><td><code>provider</code></td><td>A module per backend type (OpenAI, Azure OpenAI, vLLM, llama-server, Anthropic, Claude in Foundry, and the generic OpenAI-compatible) over a shared wire core, the table of which endpoints each type serves, passthrough body edits per client API, per-backend connection pools, the circuit probe (<code>GET …/models</code>; none for Foundry, which has no models list).</td></tr>
     <tr><td><code>config</code></td><td>Strict decoding, validation, resolution into an immutable snapshot (each group's path, allowed models and effective limits), the holder that swaps it atomically, the one apply path, the file loader.</td></tr>
-    <tr><td><code>control</code></td><td>Boot (snapshot → last-known-good → seed), the config stream with reconnect and resync, the usage batch sender, the status reporter, contact tracking.</td></tr>
+    <tr><td><code>control</code></td><td>Boot (the stream's first config → last-known-good → seed), the config stream with reconnect (every config the control plane sends is applied, unless its hash is the running or last rejected one), totals from the stream only, the usage batch sender, the status reporter, contact tracking.</td></tr>
     <tr><td><code>metrics</code></td><td>Small registry (counters, gauges, fixed-bucket histograms) and Prometheus text exposition.</td></tr>
     <tr><td><code>otlplog</code></td><td>Optional OTLP log export (<code>OTEL_*</code> variables): an <code>slog</code> handler beside the stderr one queues a copy of every line; one sender posts OTLP/HTTP JSON batches with retries, drops the newest when its queue is full, and flushes at exit after usage. Its own problems go to stderr only. Not drawn: <code>cmd/kaiak</code> wraps the logger with it.</td></tr>
     <tr><td><code>state</code></td><td>The optional data directory: versioned files, atomic writes, a <code>flock</code> so one gateway owns it.</td></tr>
@@ -435,7 +435,7 @@ svg .band { stroke: none; }
   <rect x="20" y="20" width="200" height="40" rx="8" class="ext"/>
   <text x="120" y="45" text-anchor="middle" class="l">file · startup, SIGHUP</text>
   <rect x="20" y="75" width="200" height="40" rx="8" class="ext"/>
-  <text x="120" y="100" text-anchor="middle" class="l">control plane · snapshot, stream</text>
+  <text x="120" y="100" text-anchor="middle" class="l">control plane · stream</text>
   <rect x="20" y="130" width="200" height="40" rx="8" class="ext"/>
   <text x="120" y="155" text-anchor="middle" class="l">last-known-good (data dir)</text>
   <rect x="20" y="185" width="200" height="40" rx="8" class="ext"/>
@@ -475,7 +475,7 @@ svg .band { stroke: none; }
 <h3>Boot</h3>
 <ul>
   <li><strong>File mode</strong>: load the file; failure exits. Listeners bind once the config is in force.</li>
-  <li><strong>Control-plane mode</strong>: fetch the snapshot, retrying for up to <code>KAIAK_CONTROL_BOOT_WAIT_MS</code> (60 s); if the control plane stays unavailable, use the last-known-good copy (with a data dir), then the seed config, else exit so the supervisor restarts it. Readiness also waits for the first totals (normally milliseconds — they follow the config on the stream). Details on <a href="control-plane.html#boot">the integration page</a>.</li>
+  <li><strong>Control-plane mode</strong>: take the first config from the control plane's stream, retrying for up to <code>KAIAK_CONTROL_BOOT_WAIT_MS</code> (60 s); if the control plane stays unavailable, use the last-known-good copy (with a data dir), then the seed config, else exit so the supervisor restarts it. Readiness also waits for the first totals (normally milliseconds — they follow the config on the stream). Details on <a href="control-plane.html#boot">the integration page</a>.</li>
   <li>Listeners bind only when ready, so probes see a closed port during boot — size the startup probe for the boot wait.</li>
 </ul>
 
@@ -774,7 +774,7 @@ svg .band { stroke: none; }
 <h2>Observability</h2>
 <ul>
   <li><strong>Logs</strong>: one line per request (JSON by default, <code>KAIAK_LOG_FORMAT=text</code> for development); config loads log their trigger and result. Never a client key, provider secret, prompt or response. Attribute names follow OpenTelemetry's conventions where they fit. With an OTLP endpoint in the standard <code>OTEL_*</code> variables every line also goes to an OpenTelemetry collector (OTLP/HTTP JSON) — stderr is always written; the export is queued off the request path and counted in <code>kaiak_log_export_records_total</code>.</li>
-  <li><strong>Metrics</strong> on the admin port (optionally behind <code>KAIAK_METRICS_TOKEN</code>): ops metrics from the pipeline, usage metrics from accounting (labelled <code>key_group</code> — the key's group; not <code>group</code>, a common scrape target label —, <code>root_group</code> — its top-level group —, <code>key_id</code>, <code>model</code>, <code>status</code>; <code>global.metrics.group_label</code> and <code>key_id_label</code> switch the first and third off to bound series), control-plane connection state (<code>kaiak_control_outage</code>, <code>kaiak_control_config_mismatch</code>), delivery metrics from the batch sender. Every series with config-bounded labels exists at 0 from startup; usage series appear with traffic.</li>
+  <li><strong>Metrics</strong> on the admin port (optionally behind <code>KAIAK_METRICS_TOKEN</code>): ops metrics from the pipeline, usage metrics from accounting (labelled <code>key_group</code> — the key's group; not <code>group</code>, a common scrape target label —, <code>root_group</code> — its top-level group —, <code>key_id</code>, <code>model</code>, <code>status</code>; <code>global.metrics.group_label</code> and <code>key_id_label</code> switch the first and third off to bound series), control-plane connection state (<code>kaiak_control_connected</code>, <code>kaiak_control_outage</code>), delivery metrics from the batch sender. Every series with config-bounded labels exists at 0 from startup; usage series appear with traffic.</li>
   <li><strong>Limit refusals</strong> carry <code>Retry-After</code> and rate-limit headers; <code>X-Request-Id</code> ties a response to its log line and usage record.</li>
 </ul>
 </section>

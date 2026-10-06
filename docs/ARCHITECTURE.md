@@ -24,7 +24,7 @@
 flowchart LR
     client[Clients<br/>OpenAI chat/completions/embeddings,<br/>Anthropic Messages, OpenAI Responses] -->|requests, SSE streams| gw[kaiak gateway<br/>N replicas]
     gw -->|passthrough: the same API<br/>at both ends| be[Backends<br/>vLLM, llama-server, SGLang,<br/>OpenAI, Azure OpenAI,<br/>Anthropic, Claude in Foundry]
-    cp[Control plane<br/>kaiak-control] -->|config snapshot + SSE stream<br/>config, usage totals, live count| gw
+    cp[Control plane<br/>kaiak-control] -->|SSE stream: current config,<br/>usage totals, live count| gw
     gw -->|usage records, status| cp
     cp -.->|backend verify: GETs,<br/>when the app calls it| be
     file[(Config file)] -.->|file mode| gw
@@ -192,11 +192,11 @@ enforce the boundaries.
   `provider` is for backends: no other package opens a connection to it). The
   control-protocol messages: Go types, strict decoding and validation against
   `protocol/schema/`, fixture parity with `kaiak-control` (the usage record is
-  `accounting`'s type). The client: boot from the config snapshot, the
+  `accounting`'s type). The client: boot from the stream's first config, the
   last-known-good copy (through `state`, with a data directory) or, with the control
   plane unavailable, the seed config — else an error `cmd/kaiak` exits on; the
-  config stream (read with `sse`) with
-  reconnect backoff and resync, every config handed to `config`'s apply path; the
+  config stream (read with `sse`) with reconnect backoff, every config handed to
+  `config`'s apply path unless its hash is the running or last rejected config; the
   usage batch sender — accounting's batcher, which only appends in memory and
   returns the filling batch's usage generation, a goroutine sealing batches into the
   batch store — the spool (one file per batch, through `state`) with a data
@@ -205,9 +205,9 @@ enforce the boundaries.
   sealed ones while the spool cannot be written, queued ones without a spool) —
   another sending them one outstanding at a time; the status reporter (on start,
   on change, on a stream connecting, every 10 s; routing changes at most one a
-  second). Totals from stream events and
-  usage acks go to one consumer (the limiter), ordered by revision, with the usage
-  generations they show counted; the client also tracks contact with the control
+  second). Totals come from stream events only and go to one consumer (the
+  limiter), in stream order, with the usage generations they show counted (an ack
+  only lets a batch leave the store); the client also tracks contact with the control
   plane (read by the limiter's outage check and the metrics). `cmd/kaiak` wires the
   usage flush and the final status into the drain; `metrics` gets the delivery
   metrics through an observer interface `control` defines, and the connection state
@@ -219,12 +219,12 @@ enforce the boundaries.
   models list whose status the test sets, and records every request it receives; used by tests
   only. `fakebackend/cmd/fakebackend` runs it as a process (listen address, behavior
   profile, credential check) for scripts and the live-test kit's self-test.
-- `fakecontrol` — a control plane for tests: config snapshot and stream from versions
-  the test publishes, the request checks, and scripted events, outages, restarts and
+- `fakecontrol` — a control plane for tests: the stream of the current config the
+  test publishes, the request checks, and scripted events, outages, restarts and
   protocol versions; takes usage batches (de-duplicated by batch ID as the protocol
   settles, with scripted failures: error answers, acks dropped after counting) and
-  status reports; scripted totals (windows, live count) under a revision and
-  per-instance `counted_through`, optionally pushed on every change; records every
+  status reports; scripted totals (windows, live count) with per-instance
+  `counted_through`, optionally pushed on every change; records every
   request. Tests only; it imports nothing from the gateway, so `control`'s own tests
   use it.
 
@@ -263,7 +263,7 @@ Test tooling outside the binary:
   gateways against two control-plane cores over one store (the sample with a protocol
   replica, each gateway behind a proxy of its own): usage counted once in totals both
   cores serve, a publish reaching the other core's gateway, a gateway moved to the
-  other core resuming without a resync. Needs Node and `control/`'s dependencies, so
+  other core carrying on with the current config. Needs Node and `control/`'s dependencies, so
   `go test ./...` leaves them out and `scripts/check-all.sh` runs them.
 - `scripts/live` — the live-test kit, a separate Go module (standard library only,
   imports nothing from the gateway): generates a config for a real vLLM,
@@ -288,34 +288,31 @@ Test tooling outside the binary:
     the semantic rules (`docs/specs/CONTROL-PROTOCOL.md`, Config — the group tree
     included); resolves each scope — global and every group — to its path,
     effective limits and allowed models (`child_defaults` merged, down the path),
-    as the gateway's config snapshot does.
+    as the gateway's config does.
   - `messages` — validates each control-protocol message: its schema, then the
     message rules (`docs/specs/CONTROL-PROTOCOL.md`, Messages); one validator per
     message.
   - `storage` — the storage interface every piece of control-plane state goes
     through (async, so a database implements it) and the in-memory store, its
     reference implementation and the sample's store. The store is where
-    control-plane processes agree: the config epoch, the totals sequence every
-    totals-changing write moves, conditional writes (publish on the version, batch on
-    the instance's last batch, gateway records on their revision), the consistent
-    totals snapshot, and `subscribe()`, which tells every core of every change. The
-    contract ships as tests (`store-contract`, a second package entry).
-  - `config-versions` — publishing (validate, refuse a changed group parent, then
-    store as the next version),
-    the current version, resuming from a version within the bounded history or
-    `resync`, and subscriptions to published versions.
+    control-plane processes agree: the current config, the sequence every write moves
+    (internal: it orders what each core sends on its streams), conditional writes
+    (publish on the hash of the config it was checked against, batch on the
+    instance's last batch, gateway records on their revision), the consistent totals
+    snapshot, and `subscribe()`, which tells every core of every change. The contract
+    ships as tests (`store-contract`, a second package entry).
+  - `config-publishing` — publishing (validate, refuse a changed group parent, then
+    replace the current config conditionally), the current config and its hash, and
+    the delivery of each new current config to the core's listeners.
   - `usage` — usage intake and totals (`docs/specs/CONTROL-PROTOCOL.md`, Usage
     intake): validates a batch, de-duplicates it by the instance's last counted batch
     ID (one batch at a time per instance, the store's write conditional on that ID),
-    stamps it with the receipt time, adds each
-    record to the hour and month windows of global and each group of its path the
-    current config still defines (the
-    record's `gateway_time` window when that is the current or previous one), and
-    answers the ack with the totals of the current windows; recent records; a
-    subscription to counted batches for pushes. Totals are made per gateway
-    (`counted_through`) under a per-process revision, and counting, publishes and
-    totals reads take turns so each message is a consistent snapshot; a publish
-    carries a model-set-edited limit's spend to its new identity in its turn.
+    stamps it with the receipt time, adds each record to the hour and month windows
+    of global and each group of its path, whatever the config (the record's
+    `gateway_time` window when that is the current or previous one), and answers an
+    ack naming the batch; recent records; a subscription to counted batches for
+    pushes. Totals are made per gateway (`counted_through`) from one store snapshot,
+    listing the current config's limits.
   - `gateways` — gateway status and the live set (`docs/specs/CONTROL-PROTOCOL.md`,
     Status intake): validates a status, keeps the latest per instance with its
     receipt time, joins the instance to the live set, flags two processes sharing an
@@ -334,7 +331,7 @@ Test tooling outside the binary:
     instance) as framework-agnostic functions returning structured errors with the
     status an adapter answers with; the protocol version and header names.
   - `control-plane` — the core the host app builds (`createControlPlane`): store,
-    token, clock, history and recent-records sizes, live-set timings in; the
+    token, clock, recent-records size, live-set timings in; the
     operations of the subsystems above out, the live set's size wired into totals;
     `start`/`stop` run and stop the expiry sweep (every core sweeps; its writes are
     conditional). Listener events come from the store's notifications.
@@ -342,9 +339,10 @@ Test tooling outside the binary:
   - `fastify` — the HTTP adapter: a Fastify plugin (`controlProtocolPlugin`) the host
     registers with a core instance. It mounts the gateway endpoints (default under
     `/v1`), runs the request checks and adds the protocol header on every response,
-    answers the config snapshot, and writes the stream straight to the socket
-    (subscribe, replay, live config pushes, totals coalesced per stream and held for
-    slow readers, heartbeat, the stall bound); takes usage batches and statuses;
+    and writes the stream straight to the socket (subscribe, the current config, live
+    config pushes, totals coalesced per stream and held for slow readers, each stream
+    kept in order, all streams ended on a rollback, heartbeat, the stall bound); takes
+    usage batches and statuses;
     starts the core with the app and stops it on close. Routes only — logging and the rest of
     the app are the host's.
 

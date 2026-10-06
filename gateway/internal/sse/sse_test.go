@@ -112,14 +112,14 @@ func TestReaderBoundsBlockSize(t *testing.T) {
 const testMaxBlock = 1 << 20
 
 func TestReaderNamesEventsAndIDs(t *testing.T) {
-	blocks, err := readBlocks(t, "event: config\nid: 7\ndata: {}\n\n: heartbeat\n\nevent:resync\ndata: {}\n\nid\ndata: x\n\nevent: a\nevent: b\nid: 1\nid: 2\ndata: y\n\n")
+	blocks, err := readBlocks(t, "event: config\nid: 7\ndata: {}\n\n: heartbeat\n\nevent:ping\ndata: {}\n\nid\ndata: x\n\nevent: a\nevent: b\nid: 1\nid: 2\ndata: y\n\n")
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []struct {
 		event, id string
 		hasID     bool
-	}{{"config", "7", true}, {"", "", false}, {"resync", "", false}, {"", "", true}, {"b", "2", true}}
+	}{{"config", "7", true}, {"", "", false}, {"ping", "", false}, {"", "", true}, {"b", "2", true}}
 	if len(blocks) != len(want) {
 		t.Fatalf("%d blocks, want %d", len(blocks), len(want))
 	}

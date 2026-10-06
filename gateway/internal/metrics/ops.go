@@ -82,7 +82,7 @@ var (
 	// Attempts per request: one bucket per possible count (max_attempts is at most
 	// config.MaxAttemptsCeiling).
 	attemptBuckets = []float64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
-	// Config work — an apply, a limiter resync — spans a small config's fraction of a
+	// Config work — an apply, a limiter sync — spans a small config's fraction of a
 	// millisecond to a large one's seconds.
 	configWorkBuckets = []float64{0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30}
 )
@@ -495,7 +495,7 @@ func (o *Ops) ConfigLoaded(l config.Load) {
 	o.configLoads.Inc(l.Trigger, result)
 }
 
-// ObserveLimitsSync records one limiter resync to a new config (a limits sync
+// ObserveLimitsSync records one limiter sync to a new config (a limits sync
 // observer).
 func (o *Ops) ObserveLimitsSync(d time.Duration) {
 	o.limitsSync.Observe(d.Seconds())

@@ -2622,8 +2622,6 @@ own, and a client sending repeats is broken either way.
     | `kaiak.config.size` | `bytes` | `config applied`, `config rejected` with a document: its size, in bytes |
     | `kaiak.config.issue_codes` | `codes` | `config rejected`: the issue codes (an array) |
     | `kaiak.config.running` | `running_config` | `config rejected` while an older config stays in force: `kept` |
-    | `kaiak.config.since` | `since` | `config stream connected`: the version the stream resumes after |
-    | `kaiak.config.position` | `position` | `config event ignored: version already taken`: the version taken |
     | `kaiak.control.attempt`, `kaiak.control.boot_wait` | `attempt`, `boot_wait_ms` | `config not received at startup…`: the attempt, the boot wait (seconds) |
     | `kaiak.control.delay` | `delay_ms` | `control plane reconnect scheduled`: the delay, in seconds |
     | `kaiak.control.event` | `event` | `stream event ignored: unknown event`: the event's name |

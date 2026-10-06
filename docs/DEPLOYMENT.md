@@ -94,11 +94,12 @@ root filesystem is read-only. The fields a manifest needs:
 
 `GATEWAY.md` → Control-plane mode: Boot has the full table. In short:
 
-- The gateway fetches its config from the control plane. While the control plane
-  is **unavailable** (down, timing out, any `5xx`, `503 config-unavailable` before
-  the first publish) it asks again every 0.25–2 s (jittered) for up to
-  `KAIAK_CONTROL_BOOT_WAIT_MS` (default 60 s); the first failure logs `config
-  snapshot not fetched at startup: retrying within the boot wait`.
+- The gateway opens the control plane's stream and takes its first config. While
+  the control plane is **unavailable** (down, timing out, any `5xx`) it opens the
+  stream again every 0.25–2 s (jittered) for up to `KAIAK_CONTROL_BOOT_WAIT_MS`
+  (default 60 s); the first failure logs `config not received at startup: retrying
+  within the boot wait`. A control plane with nothing published keeps the stream
+  open: a config published within the wait arrives on it.
 - With the config, it waits for the **first totals** (normally milliseconds: they
   follow the config on the stream) so it never serves a spent budget as unspent,
   then binds and serves (`waiting for the first totals` → `first totals
@@ -113,8 +114,8 @@ root filesystem is read-only. The fields a manifest needs:
   that came back up waits for its next try, not for the control plane.
 - **Refused token (`401`), another `4xx`, or a config the gateway rejects**: it
   exits at once, seed or not — no retry. These are errors to fix, not outages to
-  ride out: the log line names the cause (`… answered 401 unauthorized …`, `…
-  config version N was rejected (codes …)`).
+  ride out: the log line names the cause (`… answered 401 unauthorized …`, `… the
+  control plane's config was rejected (codes …)`).
 - **During a control-plane restart** (a rollout, a crash, a node drain — back
   within the minute): running pods keep serving and reconnect on their own. A pod
   starting meanwhile shows `retrying within the boot wait`, stays unready (the
@@ -710,7 +711,7 @@ the document (a script, or the control plane) rather than editing it by hand.
   config, read `kaiak_config_size_bytes`, the apply time
   (`histogram_quantile(0.99, sum by (le) (rate(kaiak_config_apply_duration_seconds_bucket{result="applied"}[1h])))`,
   or the `kaiak.duration` and `kaiak.config.size` on each `config applied` line) and the limiter's
-  resync after each new config (`kaiak_limits_sync_duration_seconds` — the pause the
+  sync to each new config (`kaiak_limits_sync_duration_seconds` — the pause the
   first requests on a new config feel). They are there to measure, not to alert on:
   no threshold is known yet.
 - **Cardinality** (`GATEWAY.md` → Observability: Cardinality): usage series per
@@ -843,8 +844,7 @@ before priced models are refused. Scale the 300 with the grace if you change it.
 | Control plane unreachable (lead time) | page | `count(kaiak_control_connected == 0 and time() - kaiak_control_last_contact_timestamp_seconds > 300) > 0` | — | No contact for 5 minutes: config updates and key revocations have stopped, and priced USD-limited models are refused when the grace ends. Check the control plane. |
 | Control-plane outage | page | `count(kaiak_control_outage == 1) > 0` | — | The grace has passed: priced models under a USD limit are being refused. |
 | Usage not acknowledged | page | `count(kaiak_usage_spool_batches > 0 unless time() - kaiak_usage_last_ack_timestamp_seconds <= 300) > 0` | 2m | Batches wait and nothing was acknowledged for 5 minutes (or ever, on a new pod): the control plane takes the stream but not `/v1/usage` — spend is not shared, usage piles up in memory, and unanswered batches become an outage at the grace. The `for` matters: a pod idle for 5 minutes has an old last ack when its next batch seals, true for the few seconds until its ack. |
-| Totals for another config | page | `count(kaiak_control_config_mismatch == 1) > 0` | 5m | The control plane's totals are for another config than the one these gateways run (typically one they rejected: see Config rejected). Past the grace this refuses priced USD-limited models like an outage; `kaiak_control_outage` stays 0. A few seconds of mismatch while a new config reaches the gateways are normal. |
-| Budget refusals | page | `sum(increase(kaiak_errors_total{class="budget_unavailable"}[5m])) > 0` | — | Clients refused because spend is unknown. Three causes: a control-plane outage (`kaiak_control_outage == 1`); a **config mismatch** (the row above), usually after the gateways rejected a config: see Config rejected; or **no totals yet** — a pod started and its first totals were late (`first totals not received within the boot wait` in its log; `kaiak_control_totals_applied_timestamp_seconds` absent). |
+| Budget refusals | page | `sum(increase(kaiak_errors_total{class="budget_unavailable"}[5m])) > 0` | — | Clients refused because spend is unknown. Two causes: a control-plane outage (`kaiak_control_outage == 1`); or **no totals yet** — a pod started and its first totals were late (`first totals not received within the boot wait` in its log; `kaiak_control_totals_applied_timestamp_seconds` absent). |
 | No healthy deployment | page | `sum(increase(kaiak_errors_total{class="no_healthy_deployment"}[5m])) > 0` | — | Every deployment of a model has its circuit open: its requests are refused `503`. `kaiak_circuit_open` names them. |
 | Pods crash-looping | page | `kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff", container="kaiak"} == 1` (kube-state-metrics) | — | A gateway cannot boot: the control plane stayed unavailable through the boot wait and there is no seed, or the token or config is refused. The pod's last log line names the cause. |
 | Usage near the memory bound | ticket | `kaiak_usage_queued_bytes > 33554432` | — | Per pod: half the default 64 MiB bound (scale with `KAIAK_USAGE_MEMORY_BYTES`); records start dropping when it is reached — during a long outage the page above already fired. With a data directory it counts only records the spool could not write — watch `kaiak_usage_spool_batches` and the volume's free space as well. |
@@ -912,9 +912,9 @@ Boot).
 - **As a ConfigMap** holding one file (`seed.json`), mounted read-only as a
   directory (`/etc/kaiak/seed`, say) with `KAIAK_SEED_CONFIG_FILE` naming the file
   in it; the root filesystem stays read-only.
-- On the seed a pod reports `ready` with no applied config version, and keeps
-  fetching the control plane's config in the background; the first one it gets
-  replaces the seed.
+- On the seed a pod reports `ready` with no applied config hash, and keeps opening
+  the control plane's stream in the background; the first config it gets replaces
+  the seed.
 - **The seed goes stale.** It holds key hashes like any config: a key revoked since
   the seed was written works again on a pod that boots from it, until the control
   plane answers. Regenerate it from the control plane's config (its free models)
@@ -993,9 +993,13 @@ directory's owner must be the gateway's user:
   every model (USD limits count priced models only, as before); delete `models` from
   every limit and merge limits of one type in one scope. An edited limit keeps its
   window's spend, and a limit added mid-window starts with the window's usage so far.
-  The data-directory files `limits.json` and `totals.json` move to format 3: their
+  The data-directory files `limits.json` (format 3), `totals.json` (format 4) and
+  `last-known-good.json` (format 7: the config and its hash) change format: their
   old copies are discarded at the first start (file mode's windows start empty;
-  control-plane mode takes the totals from the next push).
+  control-plane mode takes the totals from the next push and the config from the
+  stream). **The control plane broadcasts its current config**: no config versions —
+  a gateway applies the config the control plane sends, and reports configs by
+  their `config_hash`.
 
 ## Images
 
