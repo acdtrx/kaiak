@@ -1,6 +1,6 @@
 # Step 5 — gateway
 
-**Status:** not started
+**Status:** done (2026-10-06)
 
 ## Intent
 
@@ -46,4 +46,66 @@ step 3's shape: no model sets, a limit identified by its scope and type.
 
 ## Result
 
-(filled in when the step is done)
+**What changed** (`b44b13b`)
+
+- **Totals ordering** (`internal/control/`):
+  - `Revision` is the integer.
+  - `takeTotals` applies totals only when their `config_epoch` is the epoch of the
+    config in force (`appliedEpoch`), and then only with a higher revision; the first
+    in an epoch whatever its revision. The "from another config epoch" line logs
+    `kaiak.totals.config_epoch` and `kaiak.config.epoch`, as the spec's table says.
+  - `counted_through` counts whatever the epoch, unchanged.
+  - The retired-process list and its two log lines are gone.
+  - The totals schema takes an integer `revision` and windows without `models`. The
+    window identity rule is (group, type).
+- **The fake control plane:** an integer revision, one sequence per config epoch.
+  `Restart` starts a new epoch at 0; `Revision()` returns the sequence.
+- **Limits without model sets** (`internal/config/`, `internal/limits/`):
+  - The limit schema has no `models`; `limit-model-unknown` is gone; `limit-duplicate`
+    is by type.
+  - `child_defaults` limits merge by type, and the effective-limits count follows.
+  - `config.Limit` has no `Models` or `Covers`.
+  - Counters are keyed by (group, type). The reload's carry-over (`carryOver`,
+    `dropBucket`, its log line) is replaced by `newCounter`: a limit the old config
+    lacked starts empty.
+  - Every limit of a scope applies to every request; USD limits still only to priced
+    ones.
+  - The per-minute share warning checks every model's default output.
+  - `PushedWindow`, the snapshot and the totals cache lose `models`. `limits.json` and
+    `totals.json` are format 3.
+- **Tests:**
+  - Ordering within an epoch.
+  - `TestTotalsFollowTheRunningConfigEpoch`, replacing the replaced-process test:
+    another epoch's totals wait for its config, a delayed answer from the old store
+    is ignored, and `counted_through` counts across.
+  - Every limit of a scope counting every model.
+  - An edited limit value keeping its window, in file and control-plane mode.
+  - Merging by type.
+  - The global-scope log line through the share warning.
+  - The fixture totals pushed in the running config's epoch.
+- **e2e:** every limit counts every model of its scope, so the checks that spend a
+  limit got keys of their own.
+  - `testConfig` gains the group `metered` (2 requests a minute, key `k-rpm`) and the
+    group `budgeted` (0.0001 USD a month, key `k-budget`); global and `eval` carry no
+    limits.
+  - The group-tree test's limits are one per type: env 2 a minute; project 4 a minute
+    and the budget. Its refusals are recounted (2).
+  - The cross-half config's research budget counts only priced models, with "chat"
+    unpriced there so its total is exact. `eval` has 1000 a minute.
+  - The seed config drops the budgeted group.
+- **Live kit:** a second key and group, `live-metered`, holds the 1-request-a-minute
+  limit the rate-limit checks spend (chat and Messages). The runbook says so.
+  `-self-test` passes for every kind.
+
+**Deviation:** totals of another config epoch are compared against the epoch of the
+config *applied*, not the latest taken. A rejected config's epoch therefore never lets
+its totals apply, which the spec's "the config epoch the gateway runs" means.
+
+**Spec/code:** no disagreement found. The log lines and fields the gateway emits match
+`GATEWAY.md` (no `kaiak.limit.models`, `kaiak.totals.control_plane` or carry-over line
+remains).
+
+**Suite** (2026-10-06): `scripts/check-all.sh` passed in full. That covers gofmt, vet,
+staticcheck, `go test -race` with the gateway e2e, the live kit's lint and self-test
+(all seven configurations), control `npm test` (593 pass, 0 fail) and lint, and the
+cross-half e2e. **Phase 1 ends green.**
