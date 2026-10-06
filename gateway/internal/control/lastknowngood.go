@@ -27,7 +27,7 @@ func (c *Client) saveLastKnownGood(e ConfigEvent) {
 		return
 	}
 	if err := c.opts.Dir.WriteVersioned(LastKnownGoodFile, lastKnownGoodFormat,
-		lastKnownGood{ConfigHash: e.ConfigHash, Config: e.Config}); err != nil {
+		lastKnownGood(e)); err != nil {
 		c.logger.Error("last-known-good config not written", "file.name", LastKnownGoodFile,
 			"kaiak.config.hash", e.ConfigHash, "exception.message", err)
 		return
