@@ -81,6 +81,9 @@ type Reply struct {
 	// its first event — and end there.
 	ErrorEvent      bool
 	ErrorEventAfter int
+	// ErrorEventCode, when set, is the error event's Anthropic error type (Messages)
+	// or code (Responses) in place of overloaded_error and server_error.
+	ErrorEventCode string
 	// EventDelay, when set, makes a stream wait that long before each event after
 	// the first (a slow model).
 	EventDelay time.Duration

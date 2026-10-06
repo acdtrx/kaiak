@@ -152,13 +152,14 @@ func sendWire(ctx context.Context, req *Request, call wireCall) (Response, error
 	r := newUpstreamResponse(upstreamCtx, cancel, resp, req.Endpoint.Format(), call.stripUsage, publicModel)
 	r.backendID = call.backend.ID
 	first, err := r.read()
-	if err == nil && r.errorEvent {
-		// The backend gave up before anything reached the client: a failure the
-		// attempt loop may retry, as a 5xx is (docs/specs/GATEWAY.md, Providers:
-		// complete responses).
+	if err == nil && r.errorEvent != nil {
+		// The backend gave up before anything reached the client: the attempt loop
+		// answers it as the HTTP status its kind matches would be (docs/specs/GATEWAY.md,
+		// Providers: error events).
 		timer.Stop()
 		r.Close()
-		return nil, &Error{Code: CodeErrorEvent, Err: fmt.Errorf("backend %s: its stream began with an error event", call.backend.ID)}
+		return nil, &Error{Code: CodeErrorEvent, Event: r.errorEvent,
+			Err: fmt.Errorf("backend %s: its stream began with an error event", call.backend.ID)}
 	}
 	if err != nil && !errors.Is(err, io.EOF) {
 		if !r.succeeded() && ctx.Err() == nil {
@@ -508,9 +509,10 @@ type upstreamResponse struct {
 	responseTimeout time.Duration
 	// ending reads a stream's events for its end (docs/specs/GATEWAY.md, Providers:
 	// complete responses); errorEvent: a successful stream carried an error event,
-	// relayed as the backend sent it, after which the stream ends incomplete.
+	// relayed with the gateway's message in place of the backend's, after which the
+	// stream ends incomplete.
 	ending     streamEnd
-	errorEvent bool
+	errorEvent *ErrorEvent
 	// stripUsage marks the usage-only chunk Hidden.
 	stripUsage bool
 	// publicModel (encoded JSON) replaces the backend's model name in every stream
@@ -587,8 +589,8 @@ func (r *upstreamResponse) Next() (Event, error) {
 // pinging while it serves nothing has stalled). After an error event nothing more is
 // read: the stream ends there, incomplete.
 func (r *upstreamResponse) read() (Event, error) {
-	if r.errorEvent {
-		return Event{}, fmt.Errorf("backend %s: the stream carried an error event: %w", r.backendID, ErrIncomplete)
+	if r.errorEvent != nil {
+		return Event{}, &ErrorEventEnd{Event: r.errorEvent, backend: r.backendID}
 	}
 	var waitStart time.Time
 	if r.stall != nil {
@@ -639,9 +641,14 @@ func (r *upstreamResponse) readEvent() (ev Event, data bool, err error) {
 		ev = Event{Data: block.Raw}
 		if block.HasData {
 			ev.Payload = block.Data
-			r.errorEvent = r.succeeded() && r.ending.observe(block.Data)
+			if r.succeeded() {
+				r.errorEvent = r.ending.observe(block.Data)
+			}
 			ev.Hidden = r.stripUsage && isUsageOnlyChunk(block.Data)
-			if !ev.Hidden {
+			switch {
+			case r.errorEvent != nil:
+				ev.Data = r.relayedErrorEvent(block)
+			case !ev.Hidden:
 				ev.Data = r.rewriteChunkModel(block)
 			}
 		}
@@ -718,6 +725,54 @@ func (r *upstreamResponse) rewriteChunkModel(block sse.Block) []byte {
 		pos = span[1]
 	}
 	return append(out, block.Raw[pos:]...)
+}
+
+// errorEventMessage replaces the backend's text in a relayed error event: like a 5xx
+// body's, it can name hosts, engine internals or the backend-side model
+// (docs/specs/GATEWAY.md, Providers: error events). Its type and code stay.
+const errorEventMessage = "The model backend ended the response with an error."
+
+// relayedErrorEvent is an error event block as the client gets it: every message the
+// event carries — at the top level (a Responses error), in its error object (a
+// Messages error), in its response's error (response.failed) — becomes
+// errorEventMessage, and the model name is rewritten as in any event. An event whose
+// members cannot be edited (one named twice) is replaced by a plain one of the format.
+func (r *upstreamResponse) relayedErrorEvent(block sse.Block) []byte {
+	message, _ := json.Marshal(errorEventMessage) // a string always encodes
+	replace := func(current []byte) ([]byte, error) {
+		if current == nil {
+			return nil, nil
+		}
+		return message, nil
+	}
+	inObject := func(edits ...memberEdit) func([]byte) ([]byte, error) {
+		return func(current []byte) ([]byte, error) {
+			if !startsWith(current, '{') {
+				return current, nil
+			}
+			return editObject(current, edits...)
+		}
+	}
+	errorMessage := memberEdit{key: "error", set: inObject(memberEdit{key: "message", set: replace})}
+	payload, err := editObject(block.Data, memberEdit{key: "message", set: replace}, errorMessage,
+		memberEdit{key: "response", set: inObject(errorMessage)})
+	if err != nil {
+		payload = []byte(`{"type":"error","error":{"type":"api_error","message":` + string(message) + `}}`)
+		if _, isResponses := r.ending.(*responsesStreamEnd); isResponses {
+			payload = []byte(`{"type":"error","code":"server_error","message":` + string(message) + `,"param":null}`)
+		}
+	}
+	payload = newNestedModelRewriter(r.publicModel, r.ending.nestedModel()).rewrite(nil, payload)
+	var out []byte
+	if block.Event != "" {
+		out = append(out, "event: "+block.Event+"\n"...)
+	}
+	if block.HasID {
+		out = append(out, "id: "+block.ID+"\n"...)
+	}
+	out = append(out, "data: "...)
+	out = append(out, payload...)
+	return append(out, "\n\n"...)
 }
 
 func (r *upstreamResponse) Close() {

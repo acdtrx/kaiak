@@ -6,6 +6,7 @@ import (
 
 	"kaiak/internal/config"
 	"kaiak/internal/metrics"
+	"kaiak/internal/provider"
 )
 
 // observeRequest feeds the ops metrics once a request is over (after settlement, so
@@ -79,7 +80,15 @@ func errorClass(rq *request) (metrics.ErrorClass, bool) {
 	switch rq.relayEnd {
 	case relayClientClosed:
 		return metrics.ErrorClientClosed, true
-	case relayUpstreamFailed, relayUpstreamStalled, relayUpstreamIncomplete:
+	case relayUpstreamIncomplete:
+		switch errorEventKind(rq.upstreamErr) {
+		case provider.ErrorEventBusy:
+			return metrics.ErrorUpstreamRateLimited, true
+		case provider.ErrorEventCaller:
+			return metrics.ErrorUpstreamClientError, true
+		}
+		return metrics.ErrorUpstreamError, true
+	case relayUpstreamFailed, relayUpstreamStalled:
 		return metrics.ErrorUpstreamError, true
 	case relayUpstreamTimeout:
 		return metrics.ErrorUpstreamTimeout, true
@@ -132,7 +141,7 @@ func errorCodeClass(code string) metrics.ErrorClass {
 		return metrics.ErrorNotFound
 	case "invalid_json", "duplicate_member", "invalid_body", "missing_required_parameter", "invalid_type",
 		"invalid_value", "n_too_large", "request_too_large", "method_not_allowed", "stateful_responses_unsupported",
-		"hosted_tool_unsupported", "price_option_unsupported", "endpoint_not_served":
+		"hosted_tool_unsupported", "price_option_unsupported", "endpoint_not_served", "stored_object_unsupported":
 		return metrics.ErrorInvalidRequest
 	case "rate_limit_exceeded", "concurrency_limit_exceeded":
 		return metrics.ErrorRateLimited
@@ -151,6 +160,10 @@ func errorCodeClass(code string) metrics.ErrorClass {
 	case "upstream_auth_failed", "upstream_model_missing", "upstream_path_missing", "upstream_endpoint_missing",
 		"upstream_error":
 		return metrics.ErrorUpstreamError
+	case "upstream_overloaded":
+		return metrics.ErrorUpstreamRateLimited
+	case "upstream_refused":
+		return metrics.ErrorUpstreamClientError
 	case "client_closed":
 		return metrics.ErrorClientClosed
 	case "server_shutting_down":

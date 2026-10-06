@@ -259,8 +259,8 @@ func errClientClosed() *apiError {
 
 // errUpstream answers a failure to get a response from the backend. Messages never
 // name the backend: its address is not the client's business.
-func errUpstream(code provider.Code) *apiError {
-	switch code {
+func errUpstream(perr *provider.Error) *apiError {
+	switch code := perr.Code; code {
 	case provider.CodeTimeout, provider.CodeResponseTimeout:
 		return &apiError{status: http.StatusGatewayTimeout, errType: typeServer, code: string(provider.CodeTimeout),
 			message: "The model backend did not respond in time."}
@@ -277,7 +277,14 @@ func errUpstream(code provider.Code) *apiError {
 		return &apiError{status: http.StatusBadGateway, errType: typeServer, code: string(code),
 			message: "The model backend's server does not have this endpoint."}
 	case provider.CodeErrorEvent:
-		// The backend gave up before its answer started: answered as a 5xx is.
+		// The backend gave up before its answer started: answered as the HTTP status
+		// the event's kind matches (docs/specs/GATEWAY.md, Providers: error events).
+		switch perr.Event.Kind {
+		case provider.ErrorEventBusy:
+			return errUpstreamOverloaded(http.StatusServiceUnavailable)
+		case provider.ErrorEventCaller:
+			return errUpstreamRefused(backendIdentifier(perr.Event.Code))
+		}
 		return errUpstreamFault(http.StatusBadGateway)
 	}
 	return &apiError{status: http.StatusBadGateway, errType: typeServer, code: string(provider.CodeUnavailable),
@@ -289,6 +296,26 @@ func errUpstream(code provider.Code) *apiError {
 func errUpstreamFault(status int) *apiError {
 	return &apiError{status: status, errType: typeServer, code: "upstream_error",
 		message: "The model backend failed to process the request."}
+}
+
+// errUpstreamOverloaded answers a backend busy rather than broken: Anthropic's 529
+// (overloaded_error) under its status, or a stream whose first event said the backend
+// was overloaded or rate-limiting, under 503. Its own code, so clients and the
+// error metrics tell a busy backend from a failing one.
+func errUpstreamOverloaded(status int) *apiError {
+	return &apiError{status: status, errType: typeServer, code: "upstream_overloaded",
+		message: "The model backend is overloaded; retry later."}
+}
+
+// errUpstreamRefused answers a stream whose first event said the request itself was at
+// fault (an invalid prompt or image, a policy): a 400 naming the backend's error code
+// when it is a plain identifier (backendIdentifier), never its message.
+func errUpstreamRefused(code string) *apiError {
+	message := "The model backend refused the request."
+	if code != "" {
+		message = fmt.Sprintf("The model backend refused the request (%s).", code)
+	}
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "upstream_refused", message: message}
 }
 
 // errRefused answers a provider's refusal of the request before sending: the caller's

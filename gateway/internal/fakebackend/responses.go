@@ -69,9 +69,14 @@ func writeResponse(w http.ResponseWriter, top map[string]json.RawMessage, model,
 	writeJSON(w, http.StatusOK, response)
 }
 
-// responsesErrorEvent is the error event a Responses stream sends when the backend
-// gives up mid-stream.
-var responsesErrorEvent = []byte(`{"type":"error","code":"server_error","message":"The server had an error.","param":null}`)
+// responsesError is the error event a Responses stream sends when the backend gives
+// up: code, or server_error when it is "".
+func responsesError(code string) []byte {
+	if code == "" {
+		code = "server_error"
+	}
+	return []byte(`{"type":"error","code":"` + code + `","message":"The server had an error.","param":null}`)
+}
 
 // writeResponsesStream streams a Responses answer: response.created and
 // response.in_progress, one message item with one output_text part and a delta per
@@ -90,7 +95,7 @@ func (b *Backend) writeResponsesStream(w http.ResponseWriter, r *http.Request, r
 		return s.send(v["type"].(string), payload)
 	}
 	if reply.ErrorEvent && reply.ErrorEventAfter == 0 {
-		s.send("error", responsesErrorEvent)
+		s.send("error", responsesError(reply.ErrorEventCode))
 		return
 	}
 	response := responseObject(model, "in_progress", top)
@@ -106,7 +111,7 @@ func (b *Backend) writeResponsesStream(w http.ResponseWriter, r *http.Request, r
 	text := ""
 	for i, chunk := range chunks {
 		if reply.ErrorEvent && i == reply.ErrorEventAfter {
-			s.send("error", responsesErrorEvent)
+			s.send("error", responsesError(reply.ErrorEventCode))
 			return
 		}
 		if !s.interrupt(i) {

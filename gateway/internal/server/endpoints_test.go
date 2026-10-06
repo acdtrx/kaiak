@@ -174,3 +174,68 @@ func TestRefusalAndEndpointMissingClassification(t *testing.T) {
 		}
 	}
 }
+
+// An error event is classified by what it names, as the HTTP status it matches would
+// be (docs/specs/GATEWAY.md, Providers: error events; the pre-merge review's M4):
+// the backend failing is a 5xx — retried, a circuit failure; the backend busy
+// (overloaded, rate-limiting) a 429 — retried as rate-limited, neutral; the caller's
+// fault a 4xx — not retried, neutral. Anthropic's 529 is busy too. Before the first
+// event the gateway answers as that status; after it the stream ends incomplete and
+// only its classification follows the kind.
+func TestErrorEventsAndOverloadClassification(t *testing.T) {
+	for _, c := range []struct {
+		name               string
+		kind               provider.ErrorEventKind
+		code               string
+		status             int
+		answerCode, reason string
+		outcome            metrics.AttemptOutcome
+		class              routing.Outcome
+		midOutcome         metrics.AttemptOutcome
+		midClass           routing.Outcome
+		midError           metrics.ErrorClass
+	}{
+		{"failure", provider.ErrorEventFailure, `"server_error"`, http.StatusBadGateway, "upstream_error", retryServerError,
+			metrics.AttemptServerError, routing.Failure, metrics.AttemptBrokeOff, routing.Failure, metrics.ErrorUpstreamError},
+		{"busy", provider.ErrorEventBusy, `"overloaded_error"`, http.StatusServiceUnavailable, "upstream_overloaded", retryRateLimited,
+			metrics.AttemptRateLimited, routing.Neutral, metrics.AttemptRateLimited, routing.Neutral, metrics.ErrorUpstreamRateLimited},
+		{"caller", provider.ErrorEventCaller, `"failed_to_download_image"`, http.StatusBadRequest, "upstream_refused", "",
+			metrics.AttemptClientError, routing.Neutral, metrics.AttemptClientError, routing.Neutral, metrics.ErrorUpstreamClientError},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			event := &provider.ErrorEvent{Kind: c.kind, Code: json.RawMessage(c.code)}
+			rq := &request{}
+			failure := upstreamFailure(context.Background(), rq,
+				&provider.Error{Code: provider.CodeErrorEvent, Event: event, Err: errors.New("error event first")})
+			if failure.status != c.status || failure.code != c.answerCode {
+				t.Errorf("first event answered %d %s, want %d %s", failure.status, failure.code, c.status, c.answerCode)
+			}
+			if c.kind == provider.ErrorEventCaller && !strings.Contains(failure.message, "failed_to_download_image") {
+				t.Errorf("refusal message %q does not name the backend's code", failure.message)
+			}
+			if reason := retryReason(rq); reason != c.reason {
+				t.Errorf("first event retry reason %q, want %q", reason, c.reason)
+			}
+			if outcome, class, _ := classifyAttempt(rq); outcome != c.outcome || class != c.class {
+				t.Errorf("first event classified %s, %v; want %s, %v", outcome, class, c.outcome, c.class)
+			}
+
+			mid := &request{w: &statusWriter{ResponseWriter: httptest.NewRecorder()}, upstreamStatus: http.StatusOK,
+				relayEnd: relayUpstreamIncomplete, upstreamErr: &provider.ErrorEventEnd{Event: event}}
+			if outcome, class, _ := classifyAttempt(mid); outcome != c.midOutcome || class != c.midClass {
+				t.Errorf("mid-stream classified %s, %v; want %s, %v", outcome, class, c.midOutcome, c.midClass)
+			}
+			if class, _ := errorClass(mid); class != c.midError {
+				t.Errorf("mid-stream error class %s, want %s", class, c.midError)
+			}
+		})
+	}
+
+	overloaded := &request{upstreamStatus: 529}
+	if reason := retryReason(overloaded); reason != retryRateLimited {
+		t.Errorf("529 retry reason %q, want %q", reason, retryRateLimited)
+	}
+	if outcome, class, _ := classifyAttempt(overloaded); outcome != metrics.AttemptRateLimited || class != routing.Neutral {
+		t.Errorf("529 classified %s, %v", outcome, class)
+	}
+}

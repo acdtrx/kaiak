@@ -130,6 +130,8 @@
   | The same answer on an endpoint beyond OpenAI's three: the server version lacks an endpoint its type serves (Providers → An endpoint missing from a server) | 502 | `server_error` | `upstream_endpoint_missing` |
   | A stream got no first event within the backend's first-event timeout, or a non-stream response did not arrive within its response timeout | 504 | `server_error` | `upstream_timeout` |
   | Backend answered a `5xx` (its error code and type logged, its text neither logged nor relayed; its `Retry-After` kept) | the backend's `5xx` | `server_error` | `upstream_error` |
+  | Backend answered `529` (Anthropic's `overloaded_error`), or a successful stream's first event was an error event naming the backend busy (settled 2026-10-06; Providers: error events) | `529`, or `503` for the event | `server_error` | `upstream_overloaded` |
+  | A successful stream's first event was an error event naming the request's own fault; the message names the backend's code when it is a plain identifier (settled 2026-10-06; Providers: error events) | 400 | `invalid_request_error` | `upstream_refused` |
   | Gateway fault building the upstream request | 500 | `server_error` | `internal_error` |
   | Client left before any answer (never sent: the request line carries no status, the request metric counts it as `4xx`) | 499 | `invalid_request_error` | `client_closed` |
   | A requests-per-minute limit is full | 429 | `requests` | `rate_limit_exceeded` |
@@ -715,14 +717,43 @@ own, and a client sending repeats is broken either way.
   `response.incomplete`; both are whole. Neither format sends `[DONE]`. A
   stream that carries an **error event** — Messages `event: error` (Anthropic's
   `overloaded_error` mid-stream), a Responses `error` or `response.failed` event —
-  is a backend failure once relayed: the event reaches the client as the backend
-  sent it, then the stream ends as an incomplete one does
-  (`kaiak.relay_end=upstream_incomplete`, a circuit failure, usage settled
-  partial). As the first event, before anything reached the client, it is a
-  backend failure the attempt loop may retry, answered like a `5xx` when it is the
-  last attempt (`502 upstream_error`). Rejected: relaying an error event and
-  ending cleanly — the client would see a finished answer from a stream the
-  backend abandoned.
+  ends there: once relayed, the stream ends as an incomplete one does
+  (`kaiak.relay_end=upstream_incomplete`, usage settled partial). Rejected: relaying
+  an error event and ending cleanly — the client would see a finished answer from a
+  stream the backend abandoned.
+- **Error events** (settled 2026-10-06, the pre-merge review's M4 and [S] L4): an
+  error event is classified by what it names, as the HTTP status it matches would be:
+  - **busy** — Anthropic `overloaded_error` and `rate_limit_error`, Responses
+    `rate_limit_exceeded`: as a `429`;
+  - **the caller's** — Anthropic `invalid_request_error`, `request_too_large`,
+    `not_found_error`; the Responses codes naming the request's own fault (an
+    invalid prompt or image, a policy): `invalid_prompt`, `bio_policy`,
+    `misalignment_policy_violation`, `invalid_image`, `invalid_image_format`,
+    `invalid_base64_image`, `invalid_image_url`, `image_too_large`,
+    `image_too_small`, `image_parse_error`, `image_content_policy_violation`,
+    `invalid_image_mode`, `image_file_too_large`, `unsupported_image_media_type`,
+    `empty_image_file`, `failed_to_download_image`, `image_file_not_found` (OpenAI's
+    `ResponseError` codes, openai-python `src/openai/types/responses/response_error.py`,
+    `main` on 2026-10-06): as a `4xx`;
+  - **a failure** — anything else (`api_error`, `server_error`,
+    `vector_store_timeout`, `data_residency_mismatch`, a type or code unknown or
+    missing): as a `5xx`.
+
+  As the **first event**, before anything reached the client, the gateway answers as
+  that status: a failure `502 upstream_error`, retried (`server_error`), a circuit
+  failure; busy `503 upstream_overloaded`, retried as `rate_limited`, the
+  deployment cooling down (429 cooldown, its default wait), neutral; the caller's
+  `400 upstream_refused` naming the backend's code when it is a plain identifier
+  (never its message), not retried, neutral. None bills anything: nothing was
+  generated. **After the first event** the event is relayed and the stream ends
+  incomplete; the circuit and the metrics follow its kind — a failure is `broke_off`,
+  a failure for the circuit; busy is `rate_limited` and the caller's `client_error`,
+  both neutral. A relayed error event keeps its type and code, but **every message
+  it carries becomes the gateway's** (`The model backend ended the response with an
+  error.`): like a `5xx` body, its text can name hosts, engine internals or the
+  backend-side model. Rejected: counting every error event as a failure — one
+  Anthropic-wide overload opened every circuit, and a few undownloadable images
+  opened a deployment's; relaying the backend's text.
 - **Probe and model check for the new types** (settled 2026-10-06): `anthropic`
   lists its models at `GET <base_url>/models?limit=1000` with its credential and
   `anthropic-version` (the list is paged, 20 by default; `data[].id`).
@@ -773,8 +804,9 @@ own, and a client sending repeats is broken either way.
     | Connect error, connection lost before the first event (`upstream_unavailable`) | yes — reason `unavailable` |
     | A stream's first-event timeout (`upstream_timeout`) | yes — `timeout` |
     | A non-stream response timeout (`upstream_timeout`) | no — the backend was working on a long answer; another would take as long (D2, 2026-09-25) |
-    | Backend `5xx`, or a successful stream whose first event is an error event (answered `502 upstream_error`, settled 2026-10-06) | yes — `server_error` |
-    | Backend `429` | yes — `rate_limited`; the deployment cools down (429 cooldown, below) |
+    | Backend `5xx` (but `529`), or a successful stream whose first event is an error event naming a failure (answered `502 upstream_error`, settled 2026-10-06) | yes — `server_error` |
+    | Backend `429`, Anthropic's `529` (`overloaded_error`), or a first error event naming the backend busy (answered `503 upstream_overloaded`) — settled 2026-10-06 for the last two | yes — `rate_limited`; the deployment cools down (429 cooldown, below) |
+    | A first error event naming the caller's fault (`400 upstream_refused`, settled 2026-10-06) | no |
     | Backend `401`/`403` (`upstream_auth_failed`) | yes — `auth_failed`; every deployment of the model on that backend is refused for the request |
     | Backend `404` naming the deployment's model (`upstream_model_missing`) | yes — `model_missing` |
     | Backend `404` at a path its server does not have (`upstream_path_missing`) | yes — `path_missing`; every deployment of the model on that backend is refused for the request |
@@ -874,7 +906,7 @@ own, and a client sending repeats is broken either way.
   |---|---|
   | Connect error (refused, DNS, connect timeout, TLS), connection lost before the first event (`upstream_unavailable`) | failure |
   | A stream's first-event timeout (`upstream_timeout`) | failure |
-  | Backend `5xx` (answered `upstream_error`), or a successful stream opening with an error event (settled 2026-10-06) | failure |
+  | Backend `5xx` but `529` (answered `upstream_error`), or a successful stream opening with an error event naming a failure (settled 2026-10-06) | failure |
   | Backend `401`/`403` (`upstream_auth_failed`) | failure |
   | Backend `404` naming the deployment's model (`upstream_model_missing`) | failure |
   | Backend `404` at a path its server does not have (`upstream_path_missing`) | failure |
@@ -882,10 +914,12 @@ own, and a client sending repeats is broken either way.
   | A provider's refusal before sending (`price_option_unsupported`) | neutral — nothing was sent |
   | Response broken off upstream after the first event (`kaiak.relay_end=upstream_failed`) | failure |
   | Stream silent for the stall timeout after the first event (`kaiak.relay_end=upstream_stalled`) | failure |
-  | Successful response ended before it was complete (`kaiak.relay_end=upstream_incomplete`) | failure |
+  | Successful response ended before it was complete (`kaiak.relay_end=upstream_incomplete`), an error event naming a failure among the ways | failure |
+  | The same ended by an error event naming the backend busy, or the caller's fault (settled 2026-10-06; Providers: error events) | neutral |
   | Non-stream response timeout before the first bytes (`upstream_timeout`) | neutral — but a failure for a half-open trial, and from the 3rd in a row on the deployment with no success between |
   | Non-stream response timeout after the first bytes (`kaiak.relay_end=upstream_timeout`) | neutral |
-  | Backend `429` | neutral |
+  | Backend `429`, Anthropic's `529` (settled 2026-10-06), a first error event naming the backend busy | neutral |
+  | A first error event naming the caller's fault (`upstream_refused`, settled 2026-10-06) | neutral |
   | Other backend `4xx` (the caller's) | neutral |
   | Client gone or the drain's cut, before the first event | neutral |
   | Gateway fault building the upstream request | neutral |
@@ -2221,13 +2255,15 @@ own, and a client sending repeats is broken either way.
     2026-09-25, D6; the independent daily-operations review's finding 5), and
     exactly once however the request then ends. Outcomes, a fixed set: success —
     `success`; failures — `unavailable`, `timeout` (a stream's first-event
-    timeout), `auth_failed`, `model_missing`, `path_missing`, `server_error` (a backend `5xx`, or a
-    stream opening with an error event),
+    timeout), `auth_failed`, `model_missing`, `path_missing`, `server_error` (a backend `5xx` but
+    `529`, or a stream opening with an error event naming a failure),
     `broke_off` (broken off, stalled or incomplete after the first event); neutral
     — `endpoint_missing` (settled 2026-10-06), `response_timeout` (a non-stream response timeout, before or after the first
     bytes; before them it is a failure for a half-open trial and from the 3rd in a
-    row — Routing and reliability: outcome classes), `rate_limited` (a backend `429`), `client_error` (another backend `4xx`, or
-    a provider's refusal before sending — `price_option_unsupported`, settled 2026-10-06),
+    row — Routing and reliability: outcome classes), `rate_limited` (a backend `429` or `529`,
+    or an error event naming the backend busy), `client_error` (another backend `4xx`, a
+    provider's refusal before sending — `price_option_unsupported`, settled 2026-10-06 —
+    or an error event naming the caller's fault),
     `canceled` (the client left, or the drain cut, before the first event),
     `internal` (a gateway fault building the upstream request). Label values are
     config names and the fixed outcomes only, never client input; every configured
@@ -2280,8 +2316,10 @@ own, and a client sending repeats is broken either way.
     `upstream_unavailable`,
     `upstream_timeout`, `upstream_error` (`upstream_auth_failed`, `upstream_model_missing`, `upstream_path_missing`, `upstream_endpoint_missing`, a backend
     `5xx` — answered `upstream_error` —, a response that broke off upstream), `upstream_rate_limited` (a relayed
-    backend `429`), `upstream_client_error` (a relayed backend `4xx` other than
-    `429`), `client_closed`, `shutting_down` (`server_shutting_down`, a response the
+    backend `429`, `upstream_overloaded`, a stream ended by an error event naming the
+    backend busy), `upstream_client_error` (a relayed backend `4xx` other than
+    `429`, `upstream_refused`, a stream ended by an error event naming the caller's
+    fault — settled 2026-10-06), `client_closed`, `shutting_down` (`server_shutting_down`, a response the
     drain cut off), `not_ready` (`config_not_loaded`), `server_busy` (the body
     budget spent — platform-side; its own class because its remedy is memory, not
     backend capacity), `internal`. Every class is present from startup, at 0.

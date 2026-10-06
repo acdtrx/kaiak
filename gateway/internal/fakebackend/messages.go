@@ -44,8 +44,15 @@ func writeMessage(w http.ResponseWriter, model, text string, cut bool, usage Usa
 	writeJSON(w, http.StatusOK, answer)
 }
 
-// overloadedEvent is the error event Anthropic's API sends when it gives up mid-stream.
-var overloadedEvent = []byte(`{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`)
+// messagesErrorEvent is the error event a Messages stream sends when the backend gives
+// up: errorType, or overloaded_error (what Anthropic's API sends mid-stream) when it
+// is "".
+func messagesErrorEvent(errorType string) []byte {
+	if errorType == "" {
+		errorType = "overloaded_error"
+	}
+	return []byte(`{"type":"error","error":{"type":"` + errorType + `","message":"Overloaded"}}`)
+}
 
 // writeMessagesStream streams a Messages answer: message_start, one text block with a
 // delta per chunk, message_delta with the stop reason and output usage, message_stop.
@@ -62,7 +69,7 @@ func (b *Backend) writeMessagesStream(w http.ResponseWriter, r *http.Request, re
 		return s.send(name, payload)
 	}
 	if reply.ErrorEvent && reply.ErrorEventAfter == 0 {
-		s.send("error", overloadedEvent)
+		s.send("error", messagesErrorEvent(reply.ErrorEventCode))
 		return
 	}
 	message := map[string]any{"id": "msg_fake_1", "type": "message", "role": "assistant", "content": []any{},
@@ -77,7 +84,7 @@ func (b *Backend) writeMessagesStream(w http.ResponseWriter, r *http.Request, re
 	}
 	for i, text := range chunks {
 		if reply.ErrorEvent && i == reply.ErrorEventAfter {
-			s.send("error", overloadedEvent)
+			s.send("error", messagesErrorEvent(reply.ErrorEventCode))
 			return
 		}
 		if !s.interrupt(i) {

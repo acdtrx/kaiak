@@ -115,8 +115,11 @@ func sendAttempts(ctx context.Context, rq *request, router *routing.Router, reco
 			budget.retry(rq.model)
 		}
 		resp, failure := sendAttempt(ctx, rq, providers, logger)
-		if rq.upstreamStatus == http.StatusTooManyRequests {
+		switch {
+		case busyStatus(rq.upstreamStatus):
 			slot.Throttled(throttleCooldown(resp.Header(), time.Now()))
+		case errorEventKind(rq.upstreamErr) == provider.ErrorEventBusy:
+			slot.Throttled(throttleCooldownDefault)
 		}
 		reason := retryReason(rq)
 		retry := reason != "" && len(rq.attempts) < m.MaxAttempts
@@ -255,7 +258,7 @@ func sendAttempt(ctx context.Context, rq *request, providers *provider.Registry,
 func retryReason(rq *request) string {
 	if status := rq.upstreamStatus; status != 0 {
 		switch {
-		case status == http.StatusTooManyRequests:
+		case busyStatus(status):
 			return retryRateLimited
 		case status >= 500:
 			return retryServerError
@@ -280,9 +283,35 @@ func retryReason(rq *request) string {
 	case provider.CodeEndpointMissing:
 		return retryEndpointMissing
 	case provider.CodeErrorEvent:
+		switch perr.Event.Kind {
+		case provider.ErrorEventBusy:
+			return retryRateLimited
+		case provider.ErrorEventCaller:
+			return ""
+		}
 		return retryServerError
 	}
 	return retryUnavailable
+}
+
+// busyStatus reports whether a backend status says busy rather than broken: a 429,
+// or Anthropic's 529 (overloaded_error) — retried on another deployment, a cooldown
+// on this one, neutral for the circuit (docs/specs/GATEWAY.md, Routing and
+// reliability: outcome classes).
+func busyStatus(status int) bool {
+	return status == http.StatusTooManyRequests || status == statusOverloaded
+}
+
+// errorEventKind is the kind of the error event an attempt's error carries — before
+// the first event (a CodeErrorEvent) or ending a relayed stream (ErrorEventEnd) — or 0.
+func errorEventKind(err error) provider.ErrorEventKind {
+	if perr, ok := errors.AsType[*provider.Error](err); ok && perr.Event != nil {
+		return perr.Event.Kind
+	}
+	if end, ok := errors.AsType[*provider.ErrorEventEnd](err); ok {
+		return end.Event.Kind
+	}
+	return 0
 }
 
 // avoidAfter adds what the failed attempt at rules out for the request's next
@@ -487,25 +516,47 @@ func classifyAttempt(rq *request) (metrics.AttemptOutcome, routing.Outcome, stri
 			// The deployment serves its other endpoints.
 			return metrics.AttemptEndpointMissing, routing.Neutral, ""
 		case provider.CodeErrorEvent:
+			if outcome, class, ok := errorEventOutcome(perr.Event.Kind); ok {
+				return outcome, class, ""
+			}
 			return metrics.AttemptServerError, routing.Failure, rq.upstreamErr.Error()
 		}
 		return metrics.AttemptUnavailable, routing.Failure, rq.upstreamErr.Error()
 	}
 	switch rq.relayEnd {
-	case relayUpstreamFailed, relayUpstreamStalled, relayUpstreamIncomplete:
+	case relayUpstreamIncomplete:
+		if outcome, class, ok := errorEventOutcome(errorEventKind(rq.upstreamErr)); ok {
+			return outcome, class, ""
+		}
+		return metrics.AttemptBrokeOff, routing.Failure, "response broke off: " + rq.upstreamErr.Error()
+	case relayUpstreamFailed, relayUpstreamStalled:
 		return metrics.AttemptBrokeOff, routing.Failure, "response broke off: " + rq.upstreamErr.Error()
 	case relayUpstreamTimeout:
 		return metrics.AttemptResponseTimeout, routing.Neutral, ""
 	}
 	switch status := rq.upstreamStatus; {
+	case busyStatus(status):
+		return metrics.AttemptRateLimited, routing.Neutral, ""
 	case status >= 500:
 		return metrics.AttemptServerError, routing.Failure, fmt.Sprintf("backend answered %d", status)
-	case status == http.StatusTooManyRequests:
-		return metrics.AttemptRateLimited, routing.Neutral, ""
 	case status >= 400:
 		return metrics.AttemptClientError, routing.Neutral, ""
 	}
 	return metrics.AttemptSuccess, routing.Success, ""
+}
+
+// errorEventOutcome classifies an error event that is not the backend failing, as
+// the HTTP status its kind matches would be: busy as a 429 (rate_limited, neutral),
+// the caller's as a 4xx (client_error, neutral); ok is false for a failure, which
+// classifies as the break it is.
+func errorEventOutcome(kind provider.ErrorEventKind) (metrics.AttemptOutcome, routing.Outcome, bool) {
+	switch kind {
+	case provider.ErrorEventBusy:
+		return metrics.AttemptRateLimited, routing.Neutral, true
+	case provider.ErrorEventCaller:
+		return metrics.AttemptClientError, routing.Neutral, true
+	}
+	return "", routing.Neutral, false
 }
 
 // providerEndpoint maps a body endpoint to the provider's operation.
@@ -539,7 +590,10 @@ func upstreamFailure(ctx context.Context, rq *request, err error) *apiError {
 		return errRefused(refusal)
 	}
 	if perr, ok := errors.AsType[*provider.Error](err); ok {
-		return errUpstream(perr.Code)
+		if perr.Event != nil {
+			rq.upstreamErrorCode = backendIdentifier(perr.Event.Code)
+		}
+		return errUpstream(perr)
 	}
 	return errInternal()
 }
@@ -685,6 +739,9 @@ func (rq *request) answerBackendFault(resp provider.Response) {
 		}
 	}
 	rq.failure = errUpstreamFault(resp.Status())
+	if resp.Status() == statusOverloaded {
+		rq.failure = errUpstreamOverloaded(statusOverloaded)
+	}
 	writeError(rq.w, rq.failure, rq.errorShape())
 }
 

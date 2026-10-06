@@ -6,6 +6,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -201,9 +202,9 @@ const (
 	// (docs/specs/GATEWAY.md, Providers: an endpoint missing from a server).
 	CodeEndpointMissing Code = "upstream_endpoint_missing"
 	// CodeErrorEvent: a successful stream's first event was an error event (a
-	// Messages event: error, Anthropic's overloaded_error) — the backend gave up
-	// before anything reached the client, a failure answered and retried as a 5xx is
-	// (docs/specs/GATEWAY.md, Providers: complete responses).
+	// Messages error event, a Responses error or response.failed) — the backend gave
+	// up before anything reached the client; Error.Event says what it named
+	// (docs/specs/GATEWAY.md, Providers: error events).
 	CodeErrorEvent Code = "upstream_error_event"
 )
 
@@ -212,7 +213,44 @@ const (
 type Error struct {
 	Code Code
 	Err  error
+	// Event is the error event of a CodeErrorEvent.
+	Event *ErrorEvent
 }
+
+// ErrorEventKind is what an error event in a successful stream says about its
+// cause, read from its error code or type as the matching HTTP status would be
+// (docs/specs/GATEWAY.md, Providers: error events).
+type ErrorEventKind int
+
+const (
+	// ErrorEventFailure: the backend failing (a server error, a code unknown or
+	// missing) — as a 5xx.
+	ErrorEventFailure ErrorEventKind = iota + 1
+	// ErrorEventBusy: the backend overloaded or rate-limiting — as a 429 or 529.
+	ErrorEventBusy
+	// ErrorEventCaller: the request's own fault — an invalid prompt or image, a
+	// policy — as a 4xx.
+	ErrorEventCaller
+)
+
+// ErrorEvent is an error event a successful stream carried: its kind, and its code
+// as the backend sent it (raw JSON, for the caller to take only as an identifier).
+type ErrorEvent struct {
+	Kind ErrorEventKind
+	Code json.RawMessage
+}
+
+// ErrorEventEnd is the error a Response's Next returns once a stream that carried an
+// error event after its first event has ended: an ErrIncomplete, carrying the event.
+type ErrorEventEnd struct {
+	Event   *ErrorEvent
+	backend string
+}
+
+func (e *ErrorEventEnd) Error() string {
+	return fmt.Sprintf("backend %s: the stream carried an error event: %v", e.backend, ErrIncomplete)
+}
+func (e *ErrorEventEnd) Unwrap() error { return ErrIncomplete }
 
 func (e *Error) Error() string { return fmt.Sprintf("%s: %v", e.Code, e.Err) }
 func (e *Error) Unwrap() error { return e.Err }

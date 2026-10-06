@@ -252,3 +252,9 @@ func (r *upstreamBodyReader) held() bool {
 	defer r.mu.Unlock()
 	return r.data != nil
 }
+
+// startsWith reports whether a JSON value, past leading whitespace, begins with c.
+func startsWith(raw []byte, c byte) bool {
+	raw = bytes.TrimLeft(raw, " \t\r\n")
+	return len(raw) > 0 && raw[0] == c
+}

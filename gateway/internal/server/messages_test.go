@@ -288,8 +288,10 @@ func TestMessagesStream(t *testing.T) {
 }
 
 // A Messages stream broken off by an error event reaches the client up to and with
-// the event, then the connection is cut: the stream ended incomplete. An error event
-// as the first event is a backend failure answered as a 5xx, in Anthropic's shape.
+// the event — its type kept, its message the gateway's — then the connection is cut:
+// the stream ended incomplete. An error event as the first event is answered as the
+// status its type matches, in Anthropic's shape: overloaded_error a 503
+// upstream_overloaded, api_error a 502 upstream_error.
 func TestMessagesErrorEvents(t *testing.T) {
 	g := newTestGateway(t)
 	withMessagesModels(t, g, nil)
@@ -303,7 +305,8 @@ func TestMessagesErrorEvents(t *testing.T) {
 	if err == nil {
 		t.Errorf("the stream ended cleanly; want the connection cut:\n%s", data)
 	}
-	if !strings.Contains(string(data), "overloaded_error") || strings.Contains(string(data), "message_stop") {
+	if !strings.Contains(string(data), "overloaded_error") || strings.Contains(string(data), "message_stop") ||
+		strings.Contains(string(data), `"Overloaded"`) || !strings.Contains(string(data), "The model backend ended the response with an error.") {
 		t.Errorf("relayed:\n%s", data)
 	}
 	if rec := settledRecord(t, g); !rec.Partial {
@@ -313,6 +316,11 @@ func TestMessagesErrorEvents(t *testing.T) {
 
 	g.backend.SetReply(fakebackend.Reply{ErrorEvent: true})
 	w := do(t, g.h, call{method: "POST", path: "/v1/messages", key: workloadKey,
+		body: `{"model":"msg","max_tokens":32,"stream":true,"messages":[]}`})
+	expectAnthropicError(t, w, http.StatusServiceUnavailable, "overloaded_error", "upstream_overloaded")
+
+	g.backend.SetReply(fakebackend.Reply{ErrorEvent: true, ErrorEventCode: "api_error"})
+	w = do(t, g.h, call{method: "POST", path: "/v1/messages", key: workloadKey,
 		body: `{"model":"msg","max_tokens":32,"stream":true,"messages":[]}`})
 	expectAnthropicError(t, w, http.StatusBadGateway, "api_error", "upstream_error")
 }
