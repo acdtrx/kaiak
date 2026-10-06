@@ -12,8 +12,10 @@ Four read-only reviewers worked on a detached worktree at `f653939`, one per are
 - **[A]** the Anthropic types and security;
 - **[C]** the contract across both halves, and the docs.
 
-An independent review of a plain copy (Codex, no git history) joins as **[B]** once
-it has run (pending).
+An independent review of a plain copy (Codex, no git history) joins as **[B]**; its
+report is `AUDIT-independent.md`. Its 11 reproduction tests were re-run by the main
+session against the pre-fix copy: all fail as claimed. They are in the branch as
+regression tests (`review_test.go` in `accounting`, `server` and `provider`).
 
 Every finding is tagged by frequency under legitimate use: `daily` / `occasional` /
 `rare` / `adversarial`. Findings that two reviewers reached separately name both.
@@ -29,10 +31,11 @@ Every finding is tagged by frequency under legitimate use: `daily` / `occasional
   incomplete.
 - No client header reaches a backend, and credentials never leave.
 
-**Three problems need fixing before the merge:**
+**Four problems need fixing before the merge:**
 - A cut-off Messages stream bills almost no output.
 - Nested bodies make the input estimate quadratic.
 - OpenAI's `shell` tool can still run in a hosted container.
+- Responses input items can bring in hosted tools past the allowlist ([B]).
 
 **Several occasional edges** sit in how new failure kinds meet the circuit breaker and
 the limits.
@@ -41,7 +44,7 @@ the limits.
 
 ### High
 
-- **H1 — A cut-off Messages stream records output ≈ 0, not flagged as estimated** [S]
+- **H1 — A cut-off Messages stream records output ≈ 0, not flagged as estimated** [S][B]
   `daily`
   - `accounting/messages_usage.go:82-85,134-139`, `accounting/meter.go:204-206`.
   - `message_start` already carries usage (`output_tokens` 0 or 1), so `reported()`
@@ -71,7 +74,7 @@ the limits.
     media only directly under an image or document block, which also fixes [S] L1
     below.
 - **H3 — OpenAI's `shell` tool with a hosted `environment` passes the hosted-tool
-  allowlist** [A] `adversarial` / `occasional`
+  allowlist** [A][B] (both `container_auto` and `container_reference`) `adversarial` / `occasional`
   - `server/inbound_responses.go:66`, `server/inbound.go:138-163`. Only `type` is
     judged.
   - `{"type": "shell", "environment": {"type": "container_auto"}}` runs in an
@@ -82,6 +85,16 @@ the limits.
   - Fix: `shell` passes only without `environment`, or with `environment.type`
     `"local"`. Allowlisted types are judged by their members, not their name alone.
     Spec: Hosted tools.
+
+- **H4 — Responses input items can add hosted tools past the allowlist** [B]
+  `occasional`
+  - `server/inbound_responses.go`: only the top-level `tools` and `tool_choice` were
+    judged. A developer `additional_tools` input item (and `tool_search_output.tools`)
+    carries executable tool definitions: `input: [{"type": "additional_tools",
+    "role": "developer", "tools": [{"type": "web_search"}]}]` reached the backend, on
+    `/v1/responses` and `input_tokens`.
+  - Confirmed by [B]'s reproduction test.
+  - Fix: judge those items' `tools` as the top-level list is, duplicates included.
 
 ### Medium
 
@@ -102,7 +115,7 @@ the limits.
 
   Self-hosted types keep the name match (vLLM's message is the only signal). M5
   below removes most echo vectors too.
-- **M2 — 1-hour cache writes in nested blocks escape the price refusal** [A][P]
+- **M2 — 1-hour cache writes in nested blocks escape the price refusal** [A][P][B]
   `occasional`
   - `provider/anthropic_price.go:55-77` walks only the top level, `system[]`,
     `messages[].content[]` and `tools[]`.
@@ -140,7 +153,8 @@ the limits.
     - overload and rate limit → neutral with the cooldown (as `429`);
     - caller codes and Anthropic `invalid_request_error` → neutral, not retried;
     - `server_error`, `api_error`, unknown or missing → failure.
-- **M5 — Responses and Messages references to server-stored objects pass** (decided 2026-10-06: refuse) [A][P]
+- **M5 — Responses and Messages references to server-stored objects pass** (decided 2026-10-06: refuse) [A][P][B]
+  (including the type-less `{"id": "msg_…"}` item-reference form)
   `rare` / `adversarial`
   - `server/inbound_responses.go:42`.
   - Responses:
@@ -176,6 +190,21 @@ the limits.
     (endpoint missing; `model check not available`) are undocumented there.
   - Fix: add the rows.
 
+- **M9 — The input estimate keys on member names, not the formats' content paths**
+  [B] `occasional`
+  - `accounting/estimate.go`: a `content` list inside a function's JSON Schema, or a
+    tool argument named `source`, read as media parts (kilobytes of text counted as
+    1000 tokens); media in a Responses `function_call_output.output` list were missed.
+  - Fix: count media only at the documented content paths (folded into H2's one-pass
+    rewrite); the [S] L1 case is the same defect.
+- **M10 — A leading SSE comment ends the first-event window** [B] `occasional`
+  (supersedes L7)
+  - `provider/wire.go`: Send took the first SSE block — a comment too — as the first
+    event: it stopped the first-event timer and committed the response, so an error
+    event right after it was unretryable.
+  - Fix: first-event semantics until the first data event, the comments before it
+    held (bounded) and relayed ahead of it.
+
 ### Low
 
 Fixes are cheap unless noted.
@@ -202,8 +231,8 @@ Fixes are cheap unless noted.
   "verified". Fix: report it as not checkable (an `ok: false` code or a distinct
   status). Decide in review.
 - **L7 — Only the first block is checked for a retryable error event** [S] `rare`.
-  A comment block first makes an error event unretried. No current server does
-  this. Record only.
+  A comment block first makes an error event unretried. Superseded by M10 ([B]
+  found it `occasional`), fixed there.
 - **L8 — A future vLLM could double-count cache reads on Messages** [S] none today.
   Record. Add a live-kit check that `input_tokens + cache_read` stays near
   `count_tokens`.
@@ -229,6 +258,18 @@ Fixes are cheap unless noted.
   - Codex's `web_search` default is stated as fact for custom providers.
 - **L10 — Dead `FiniteNumbers`** [C] (`schemacheck.go:337`), left by the `defaults`
   removal. Delete it.
+
+- **L11 — Responses stream estimates omit tool names** [B] `occasional`. A streamed
+  tool call's name (in `response.output_item.added`) was not counted toward the
+  output estimate, as the body's is. Fix: count it once when its item is added.
+- **L12 — Unknown stream events had their nested model rewritten** [B] `rare`. The
+  nested rewrite (`message.model`, `response.model`) applied to every event,
+  extension events included. Fix: only in `message_start` and the Responses
+  lifecycle events.
+- **L13 — Duplicate nested policy members leave unchecked alternatives on the wire**
+  [B] `adversarial`. A `tool_choice` naming `tools` twice (one list unchecked), a
+  repeated `ttl` / `cache_control` (with M2), a repeated enclosing `content`. Fix:
+  refuse a repeat of every member the gateway reads to enforce its rules.
 
 ## Checked and sound
 
@@ -278,16 +319,21 @@ Fixes are cheap unless noted.
 - **`backend-verify`** for `anthropic`: GET only, manual redirects, the credential
   never echoed [A].
 
-## Triage proposal
+## Outcome
 
-**Fix before the merge** (as a review-fix step on the branch):
-- H1–H3;
-- M1–M4 and M6–M8;
-- M5, once decided;
-- L1–L4, L9, L10;
-- L6, once decided.
+All fixed on the branch in step 8 (`docs/plans/messages-responses/STEP-8-review-fixes.md`),
+each with a regression test that failed before its fix, except L8 (recorded):
 
-**Record only:** L5 (docs line), L7, L8.
+| Finding | Commit |
+|---|---|
+| H1, H2 (with [S] L1) | `a282e6b` |
+| M1, M2 (with [A] L1 and L6 of [A]: one streaming scan) | `cb2f5d7` |
+| M4, L4 | `d437d74` |
+| H3, H4, M3, M5, M6, M9, L1, L2, L3, L11, L13 (inbound) | `5c2b27b` |
+| M10 (and L7), L12 | `bc70173` |
+| L6 | `43f4bbe` |
+| M7, M8, L5, L9, L10 | `bc367cf` |
+| L8 | recorded only: no vLLM reports the cache fields today; the captures README says to record again on a version change |
 
-**[B]** adds its own findings when it has run; they are verified by re-running its
-reproduction tests before they join this list.
+L13's repeated `ttl` / `cache_control` is refused by M2's scan (`cb2f5d7`), the rest
+of it by the inbound fixes (`5c2b27b`).
