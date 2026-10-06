@@ -138,4 +138,3 @@ func errorCodeOf(t *testing.T, w *httptest.ResponseRecorder) string {
 	code, _ := errorFields(t, w)
 	return code
 }
-

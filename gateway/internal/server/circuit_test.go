@@ -389,7 +389,9 @@ func TestLongStreamingTrialDoesNotBlockItsDeployment(t *testing.T) {
 }
 
 // A half-open trial is decided at its first data event, not at a comment block: a
-// backend that pings before its first token has not shown it can generate.
+// backend that pings before its first token has not shown it can generate. The ping
+// reaches the client ahead of that first data event: until it, the response is still
+// in its first-event window (Providers: complete responses).
 func TestTrialIsDecidedAtItsFirstDataEvent(t *testing.T) {
 	g := newCircuitGateway(t, 1, nil)
 	url := serveGateway(t, g)
@@ -400,16 +402,25 @@ func TestTrialIsDecidedAtItsFirstDataEvent(t *testing.T) {
 	}
 	pace := make(chan struct{})
 	g.backend.SetReply(fakebackend.Reply{PingFirst: true, Pace: pace})
-	resp := streamRequest(t, context.Background(), url, `{"model":"open","stream":true}`)
+	type streamed struct {
+		resp *http.Response
+	}
+	started := make(chan streamed, 1)
+	go func() {
+		started <- streamed{streamRequest(t, context.Background(), url, `{"model":"open","stream":true}`)}
+	}()
+	// The backend has the request and has sent its ping, holding its first token.
+	waitFor(t, func() bool { return len(g.backend.Requests()) == 1 })
+	if !circuitOpen(g, "local", "open") {
+		t.Fatal("circuit closed by the trial's comment block")
+	}
+	pace <- struct{}{}
+	resp := (<-started).resp
 	defer resp.Body.Close()
 	body := bufio.NewReader(resp.Body)
 	if line, err := body.ReadString('\n'); err != nil || line != ": ping\n" {
 		t.Fatalf("trial's first line %q, %v; want the ping", line, err)
 	}
-	if !circuitOpen(g, "local", "open") {
-		t.Fatal("circuit closed by the trial's comment block")
-	}
-	pace <- struct{}{}
 	for {
 		line, err := body.ReadString('\n')
 		if err != nil {

@@ -572,10 +572,19 @@ own, and a client sending repeats is broken either way.
   Observers (accounting) read stream payloads as the backend sent them. Where a
   format's stream carries the model one level down (settled 2026-10-06), that one is
   replaced as well: `message.model` in a Messages `message_start` event, and
-  `response.model` in a Responses `response.*` event (`response.created`,
-  `response.in_progress`, `response.completed`, `response.incomplete`,
-  `response.failed`, …). A Messages or Responses JSON body carries it at the top
-  level, as OpenAI's does.
+  `response.model` in a Responses lifecycle event (`response.created`,
+  `response.queued`, `response.in_progress`, `response.completed`,
+  `response.incomplete`, `response.failed`) — only there, by the event's `type`
+  (settled 2026-10-06, the pre-merge review's [B] L3): an unknown or extension
+  event's nested members pass untouched. A Messages or Responses JSON body carries it
+  at the top level, as OpenAI's does.
+- **The first event of a stream is its first data event** (settled 2026-10-06, the
+  pre-merge review's [B] M3): comment and keep-alive blocks the backend sends ahead
+  of it (up to 64) are held and relayed just before it, so the first-event window —
+  the first-event timeout, a retry of an error event, the client's headers held
+  back — lasts until the backend has said something. Rejected: taking a comment as
+  the first event — a backend pinging before an error event made the error
+  unretryable, and its silence afterwards a stall rather than a first-event timeout.
 - **Upstream failures** (settled 2026-09-24; timeouts and completeness 2026-09-25):
   before the first event, failures are gateway errors (Client API table) — a
   stream's first-event timeout runs until its first event (not just response

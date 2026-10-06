@@ -59,6 +59,7 @@ func TestRelayedErrorEventCarriesTheGatewaysMessage(t *testing.T) {
 			[]string{`"server_error"`, errorEventMessage}, []string{`"a"`, `"b"`}},
 	} {
 		r := &upstreamResponse{ending: newStreamEnd(c.format), publicModel: publicModel}
+		r.ending.observe([]byte(c.data)) // as readEvent does, before relaying the block
 		raw := "event: " + c.event + "\ndata: " + c.data + "\n\n"
 		out := string(r.relayedErrorEvent(sse.Block{Raw: []byte(raw), Data: []byte(c.data), HasData: true, Event: c.event}))
 		if !strings.HasPrefix(out, "event: "+c.event+"\ndata: ") || !strings.HasSuffix(out, "\n\n") {

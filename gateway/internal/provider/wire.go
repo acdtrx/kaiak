@@ -151,7 +151,7 @@ func sendWire(ctx context.Context, req *Request, call wireCall) (Response, error
 	publicModel, _ := json.Marshal(req.PublicModel) // a string always encodes
 	r := newUpstreamResponse(upstreamCtx, cancel, resp, req.Endpoint.Format(), call.stripUsage, publicModel)
 	r.backendID = call.backend.ID
-	first, err := r.read()
+	preamble, first, err := r.readFirst()
 	if err == nil && r.errorEvent != nil {
 		// The backend gave up before anything reached the client: the attempt loop
 		// answers it as the HTTP status its kind matches would be (docs/specs/GATEWAY.md,
@@ -188,12 +188,33 @@ func sendWire(ctx context.Context, req *Request, call wireCall) (Response, error
 	} else {
 		r.responseTimer, r.responseTimeout = timer, limit
 	}
+	r.peeked = preamble
 	if err != nil {
 		r.pending = err
 	} else {
-		r.peeked = &first
+		r.peeked = append(r.peeked, first)
 	}
 	return r, nil
+}
+
+// maxPreambleBlocks bounds the comment and keep-alive blocks read ahead of a stream's
+// first data event; past it the next block is taken as the first event.
+const maxPreambleBlocks = 64
+
+// readFirst reads the response's first event: for a stream, its first data event —
+// comment and keep-alive blocks before it (up to maxPreambleBlocks) are returned
+// apart, to be relayed ahead of it — so the first-event window (its timer, the retry
+// of an error event, the headers held back) lasts until the backend has said
+// something (docs/specs/GATEWAY.md, Providers: complete responses; the pre-merge
+// review's [B] M3).
+func (r *upstreamResponse) readFirst() (preamble []Event, first Event, err error) {
+	for {
+		first, err = r.read()
+		if err != nil || !r.stream || first.Payload != nil || len(preamble) == maxPreambleBlocks {
+			return preamble, first, err
+		}
+		preamble = append(preamble, first)
+	}
 }
 
 // probeReadTimeout bounds a probe's wait for the answer once connected; the
@@ -520,9 +541,10 @@ type upstreamResponse struct {
 	publicModel []byte
 	bodyModel   *modelRewriter
 
-	// peeked is the first event, read by Send; pending is an error to return once
-	// the events read before it have been handed out.
-	peeked  *Event
+	// peeked are the first event and the comment blocks before it, read by Send;
+	// pending is an error to return once the events read before it have been handed
+	// out.
+	peeked  []Event
 	pending error
 }
 
@@ -572,9 +594,9 @@ func (r *upstreamResponse) Header() http.Header { return r.header }
 func (r *upstreamResponse) Stream() bool        { return r.stream }
 
 func (r *upstreamResponse) Next() (Event, error) {
-	if r.peeked != nil {
-		ev := *r.peeked
-		r.peeked = nil
+	if len(r.peeked) > 0 {
+		ev := r.peeked[0]
+		r.peeked = r.peeked[1:]
 		return ev, nil
 	}
 	if r.pending != nil {
@@ -641,8 +663,10 @@ func (r *upstreamResponse) readEvent() (ev Event, data bool, err error) {
 		ev = Event{Data: block.Raw}
 		if block.HasData {
 			ev.Payload = block.Data
-			if r.succeeded() {
-				r.errorEvent = r.ending.observe(block.Data)
+			// Every data event is observed — it names the event the model rewrite
+			// reads — but only a successful stream ends on an error event.
+			if errorEvent := r.ending.observe(block.Data); r.succeeded() {
+				r.errorEvent = errorEvent
 			}
 			ev.Hidden = r.stripUsage && isUsageOnlyChunk(block.Data)
 			switch {

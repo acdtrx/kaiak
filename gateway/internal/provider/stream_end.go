@@ -20,8 +20,10 @@ type streamEnd interface {
 	observe(payload []byte) (errorEvent *ErrorEvent)
 	// complete reports whether the events read so far make the stream whole.
 	complete() bool
-	// nestedModel names the top-level member of an event whose object carries the
-	// model name one level down ("" when events carry it at the top level only).
+	// nestedModel names the top-level member whose object carries the model name one
+	// level down in the event last observed — only the format's envelope events carry
+	// one: an unknown or extension event's members pass untouched ("" for events
+	// that carry the model at the top level only).
 	nestedModel() string
 }
 
@@ -94,6 +96,9 @@ func (e *openAIStreamEnd) nestedModel() string { return "" }
 // so nothing here depends on their order.
 type messagesStreamEnd struct {
 	stopped bool
+	// envelope: the event last observed is message_start, whose message carries the
+	// model name.
+	envelope bool
 }
 
 func (e *messagesStreamEnd) observe(payload []byte) *ErrorEvent {
@@ -104,9 +109,11 @@ func (e *messagesStreamEnd) observe(payload []byte) *ErrorEvent {
 		} `json:"error"`
 	}
 	// An event that does not decode says nothing about the end.
+	e.envelope = false
 	if json.Unmarshal(payload, &event) != nil {
 		return nil
 	}
+	e.envelope = event.Type == "message_start"
 	switch event.Type {
 	case "message_stop":
 		e.stopped = true
@@ -136,7 +143,12 @@ func messagesErrorKind(errorType string) ErrorEventKind {
 func (e *messagesStreamEnd) complete() bool { return e.stopped }
 
 // The model name is message_start's message.model.
-func (e *messagesStreamEnd) nestedModel() string { return "message" }
+func (e *messagesStreamEnd) nestedModel() string {
+	if e.envelope {
+		return "message"
+	}
+	return ""
+}
 
 // responsesStreamEnd: a Responses stream is complete once it carried
 // response.completed or response.incomplete — vLLM ends a stream cut by
@@ -147,7 +159,14 @@ func (e *messagesStreamEnd) nestedModel() string { return "message" }
 // its reasoning item is done), so nothing here depends on their order.
 type responsesStreamEnd struct {
 	ended bool
+	// envelope: the event last observed is a response lifecycle event, whose response
+	// carries the model name.
+	envelope bool
 }
+
+// responsesLifecycleEvents carry the whole response, model name included.
+var responsesLifecycleEvents = []string{"response.created", "response.queued", "response.in_progress",
+	"response.completed", "response.incomplete", "response.failed"}
 
 func (e *responsesStreamEnd) observe(payload []byte) *ErrorEvent {
 	var event struct {
@@ -160,9 +179,11 @@ func (e *responsesStreamEnd) observe(payload []byte) *ErrorEvent {
 		} `json:"response"`
 	}
 	// An event that does not decode says nothing about the end.
+	e.envelope = false
 	if json.Unmarshal(payload, &event) != nil {
 		return nil
 	}
+	e.envelope = slices.Contains(responsesLifecycleEvents, event.Type)
 	code := event.Code
 	switch event.Type {
 	case "response.completed", "response.incomplete":
@@ -206,6 +227,11 @@ func responsesErrorKind(code string) ErrorEventKind {
 
 func (e *responsesStreamEnd) complete() bool { return e.ended }
 
-// The model name is the response's model, in every response.* event that carries the
+// The model name is the response's model, in the lifecycle events that carry the
 // response (llama-server's created and in_progress events carry none).
-func (e *responsesStreamEnd) nestedModel() string { return "response" }
+func (e *responsesStreamEnd) nestedModel() string {
+	if e.envelope {
+		return "response"
+	}
+	return ""
+}
