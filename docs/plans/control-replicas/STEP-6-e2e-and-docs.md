@@ -1,4 +1,4 @@
-# Step 5 — end to end and docs
+# Step 6 — end to end and docs
 
 **Status:** not started
 
