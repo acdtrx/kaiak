@@ -168,3 +168,10 @@ and lint, cross-half e2e 58.8 s, 53.9 s, 48.7 s). **Phase 5 ends here.**
 estimate, token-counting limits); the pending cloud kinds and client checks as
 before — Claude Code against an Anthropic-type model with a ceiling above its
 thinking budget (M6), Codex for `web_search`.
+
+**Live reruns after the fixes (2026-10-06, main session, at `10e27ca`):**
+- `vllm` kind (vLLM 0.30.0, `unsloth/Qwen3.8-27B-NVFP4`, embeddings on the llama-server
+  at `llama-embed.local:11435`): 29 passed, 0 failed, 1 skipped (`messages-cache`).
+- `llama-server` kind (b10802, `unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL`, same embeddings
+  server): 30 passed, 0 failed, 1 skipped (`endpoint-not-served`). The DGX was swapped
+  for the run and restored to `qwen38-27b-nvfp4` (256k, MTP 2, vision on) after.
