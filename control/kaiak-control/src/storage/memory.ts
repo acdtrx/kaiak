@@ -1,5 +1,7 @@
-// The in-memory store: state lives as long as the process, so each process's store has
-// its own config epoch.
+// The in-memory store: state lives as long as the process, so each store has its own
+// config epoch. Several cores of one process may share one store; every write below
+// runs synchronously from its comparison to its notification, so no other call sees
+// part of a write or writes between the comparison and the write.
 
 import { randomBytes } from "node:crypto";
 
@@ -9,8 +11,9 @@ import type {
   ControlPlaneStore,
   CurrentWindows,
   ReceivedRecord,
+  StoreChange,
+  StoreChangeListener,
   StoredConfig,
-  StoreLease,
   StoredGateway,
   WindowKey,
   WindowTotal,
@@ -22,11 +25,12 @@ export function createMemoryStore(): ControlPlaneStore {
   const configs: StoredConfig[] = [];
   // The last counted batch per instance and when it was counted.
   const lastBatches = new Map<string, { batch: BatchId; countedAt: number }>();
-  let lease: StoreLease | undefined;
   const totals = new Map<string, WindowTotal>();
+  let sequence = 0;
   // Oldest first; the last entry is the newest record.
   const records: ReceivedRecord[] = [];
   const gateways = new Map<string, StoredGateway>();
+  const listeners = new Set<StoreChangeListener>();
 
   const addTotals = (additions: WindowTotal[]): void => {
     for (const addition of additions) {
@@ -40,6 +44,24 @@ export function createMemoryStore(): ControlPlaneStore {
   const isCurrent = (total: WindowTotal, current: CurrentWindows): boolean =>
     total.windowStart === (total.type === "tokens_per_hour" ? current.hourStart : current.monthStart);
 
+  const latestVersion = (): number | undefined => configs.at(-1)?.version;
+
+  const liveCount = (): number => [...gateways.values()].filter((gateway) => gateway.live).length;
+
+  // Every listener hears of the change even if an earlier one throws; a listener's
+  // failure is rethrown from a microtask, the way a throwing event listener surfaces.
+  const notify = (change: StoreChange): void => {
+    for (const listener of [...listeners]) {
+      try {
+        listener({ ...change });
+      } catch (error) {
+        queueMicrotask(() => {
+          throw error;
+        });
+      }
+    }
+  };
+
   return {
     async configEpoch() {
       return epoch;
@@ -49,24 +71,26 @@ export function createMemoryStore(): ControlPlaneStore {
       return structuredClone(configs.at(-1));
     },
 
-    async saveConfig(entry, keep) {
+    async publishConfig({ entry, carried }, expected, keep) {
+      if (latestVersion() !== expected.version || sequence !== expected.sequence) {
+        return { saved: false, latestVersion: latestVersion(), sequence };
+      }
+      if (entry.version !== (expected.version ?? 0) + 1) {
+        throw Object.assign(new Error(`version ${entry.version} does not follow ${expected.version ?? "none"}`), {
+          code: "config-version-out-of-order",
+        });
+      }
       // A copy, so a caller changing its document afterwards cannot change what is stored.
       configs.push(structuredClone(entry));
       if (configs.length > keep) configs.splice(0, configs.length - keep);
+      addTotals(carried);
+      sequence += 1;
+      notify({ type: "config-published", version: entry.version, sequence });
+      return { saved: true, sequence };
     },
 
     async configsAfter(version) {
       return structuredClone(configs.filter((entry) => entry.version > version));
-    },
-
-    async acquireLease(holder, now, expiresAt) {
-      if (lease && lease.holder !== holder && lease.expiresAt > now) return { ok: false, lease: { ...lease } };
-      lease = { holder, expiresAt };
-      return { ok: true };
-    },
-
-    async releaseLease(holder) {
-      if (lease?.holder === holder) lease = undefined;
     },
 
     async lastBatch(instance) {
@@ -74,24 +98,29 @@ export function createMemoryStore(): ControlPlaneStore {
       return last && { ...last.batch };
     },
 
-    // Synchronous from start to end, so no other call sees part of a batch or writes
-    // between the comparison and the write.
     async saveCountedBatch(counted, expectedLast, keepRecords) {
       const last = lastBatches.get(counted.batch.instance)?.batch;
-      if (!sameBatch(last, expectedLast)) return { saved: false, last: last && { ...last } };
+      if (!sameBatch(last, expectedLast) || latestVersion() !== counted.configVersion) {
+        return { saved: false, last: last && { ...last }, configVersion: latestVersion() };
+      }
       lastBatches.set(counted.batch.instance, { batch: { ...counted.batch }, countedAt: counted.countedAt });
       addTotals(counted.additions);
       records.push(...structuredClone(counted.records));
       if (records.length > keepRecords) records.splice(0, records.length - keepRecords);
-      return { saved: true };
+      sequence += 1;
+      notify({ type: "batch-counted", instance: counted.batch.instance, sequence });
+      return { saved: true, sequence };
     },
 
-    async addWindowTotals(additions) {
-      addTotals(additions);
-    },
-
-    async currentWindowTotals(current) {
-      return [...totals.values()].filter((total) => isCurrent(total, current)).map((total) => structuredClone(total));
+    async totalsSnapshot(current, instance) {
+      const last = instance === undefined ? undefined : lastBatches.get(instance)?.batch;
+      return {
+        sequence,
+        config: structuredClone(configs.at(-1)),
+        last: last && { ...last },
+        windows: [...totals.values()].filter((total) => isCurrent(total, current)).map((total) => structuredClone(total)),
+        liveGateways: liveCount(),
+      };
     },
 
     async dropPastWindowTotals(oldest) {
@@ -115,12 +144,31 @@ export function createMemoryStore(): ControlPlaneStore {
       return structuredClone([...gateways.values()]);
     },
 
-    async saveGateway(gateway) {
-      gateways.set(gateway.instance, structuredClone(gateway));
+    async saveGateway(record, expectedRevision) {
+      const stored = gateways.get(record.instance);
+      if (stored?.revision !== expectedRevision) return { saved: false, current: stored && structuredClone(stored) };
+      const revision = (stored?.revision ?? 0) + 1;
+      gateways.set(record.instance, { ...structuredClone(record), revision });
+      const liveChanged = (stored?.live ?? false) !== record.live;
+      if (liveChanged) sequence += 1;
+      notify({ type: "gateways-changed", liveChanged, sequence });
+      return { saved: true, revision, sequence };
     },
 
-    async deleteGateways(instances) {
-      for (const instance of instances) gateways.delete(instance);
+    async forgetGateways(forget) {
+      const forgotten: string[] = [];
+      let liveChanged = false;
+      for (const { instance, revision } of forget) {
+        const stored = gateways.get(instance);
+        if (stored?.revision !== revision) continue;
+        gateways.delete(instance);
+        forgotten.push(instance);
+        if (stored.live) liveChanged = true;
+      }
+      if (forgotten.length === 0) return [];
+      if (liveChanged) sequence += 1;
+      notify({ type: "gateways-changed", liveChanged, sequence });
+      return forgotten;
     },
 
     async dropBatchCursorsCountedBefore(cutoff) {
@@ -132,6 +180,15 @@ export function createMemoryStore(): ControlPlaneStore {
         }
       }
       return dropped;
+    },
+
+    subscribe(listener) {
+      // A wrapper, so the same function subscribed twice is two subscriptions.
+      const subscription: StoreChangeListener = (change) => listener(change);
+      listeners.add(subscription);
+      return () => {
+        listeners.delete(subscription);
+      };
     },
   };
 }

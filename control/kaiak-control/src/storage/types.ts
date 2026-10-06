@@ -1,6 +1,15 @@
 // The storage interface: a database implements it in the real control plane; the
 // in-memory store is the reference implementation. Every method is async so a
 // database fits without change.
+//
+// The store is where control-plane processes agree (docs/specs/CONTROL-PROTOCOL.md,
+// Control-plane processes): any number of cores may run over one store, and what they
+// must agree on — the totals sequence, the config versions, the counted batches, the
+// live set — is decided here, by conditional writes and consistent reads, and
+// announced to every core through subscribe(). A store meant for several processes
+// holds each guarantee below across them; the in-memory store holds them across the
+// cores of one process. The contract tests (`kaiak-control/store-contract`) check
+// them against any store.
 
 import type { Config } from "../config/index.ts";
 import type { BatchId, GatewayStatus, TotalsLimitType, UsageRecord } from "../messages/index.ts";
@@ -48,6 +57,9 @@ export interface ReceivedRecord {
 export interface CountedBatch {
   // Becomes the instance's last counted batch.
   batch: BatchId;
+  // The config version the additions were computed under: the write is made only while
+  // it is still the latest (Usage intake: counted under the config in force).
+  configVersion: number;
   // When it was counted, by the control plane's clock (milliseconds since the epoch):
   // the last counted batch is kept for the batch cursor retention from then.
   countedAt: number;
@@ -57,19 +69,51 @@ export interface CountedBatch {
   records: ReceivedRecord[];
 }
 
-// What the conditional batch write found: the batch saved, or — when the instance's
-// last counted batch was no longer the expected one — nothing written and the last
-// batch the store holds, for the caller to decide again.
-export type SaveCountedBatchResult = { saved: true } | { saved: false; last: BatchId | undefined };
+// What the conditional batch write found: the batch saved with the totals sequence it
+// moved to, or — when the instance's last counted batch was no longer the expected
+// one, or the latest config version was no longer the batch's — nothing written, and
+// what the store holds now, for the caller to decide and compute again.
+export type SaveCountedBatchResult =
+  | { saved: true; sequence: number }
+  | { saved: false; last: BatchId | undefined; configVersion: number | undefined };
 
-// The store's lease: which control-plane process may write to it, until when
-// (milliseconds since the epoch, by the holder's clock).
-export interface StoreLease {
-  holder: string;
-  expiresAt: number;
+// A publish: the new version, and the spend carried into limits whose only change is
+// their model set (Budgets → Model-set edits), written together.
+export interface PublishedConfig {
+  entry: StoredConfig;
+  // Added to the stored totals with the version, one entry per window.
+  carried: WindowTotal[];
 }
 
-export type AcquireLeaseResult = { ok: true } | { ok: false; lease: StoreLease };
+// What a publish was computed against: the latest version it was checked against
+// (undefined: none yet) and the totals sequence its carry was read at.
+export interface PublishExpectation {
+  version: number | undefined;
+  sequence: number;
+}
+
+// What the conditional publish found: saved with the totals sequence it moved to, or
+// nothing written and what the store holds now.
+export type PublishConfigResult =
+  | { saved: true; sequence: number }
+  | { saved: false; latestVersion: number | undefined; sequence: number };
+
+// The totals at one store snapshot (CONTROL-PROTOCOL.md, Messages → Totals: consistent
+// snapshot): every member read together, so the windows hold exactly the batches
+// counted at `sequence` — `last` among them.
+export interface TotalsSnapshot {
+  // The totals sequence: the revision of a totals message made from this snapshot.
+  sequence: number;
+  // The latest config version, or undefined before the first publish.
+  config: StoredConfig | undefined;
+  // The asked instance's last counted batch (undefined before its first, or when no
+  // instance was asked).
+  last: BatchId | undefined;
+  // The stored totals of the current windows asked for.
+  windows: WindowTotal[];
+  // The size of the live set.
+  liveGateways: number;
+}
 
 // Two processes reporting under one instance name (docs/specs/CONTROL-PROTOCOL.md,
 // Gateway status): their statuses alternate between two start times.
@@ -80,8 +124,8 @@ export interface GatewayConflict {
   detectedAt: number;
 }
 
-// One gateway as the control plane knows it from its statuses.
-export interface StoredGateway {
+// One gateway as the control plane knows it from its statuses, as a core writes it.
+export interface GatewayRecord {
   instance: string;
   // The latest accepted status.
   status: GatewayStatus;
@@ -95,54 +139,86 @@ export interface StoredGateway {
   conflict?: GatewayConflict;
 }
 
+// A gateway as the store holds it: the record and its write count, which a conditional
+// write names to say which record it was computed from.
+export interface StoredGateway extends GatewayRecord {
+  // Starts at 1 with the first write of the instance and moves on by one with every
+  // write; a forgotten gateway that reports again starts at 1 again.
+  revision: number;
+}
+
+// What a conditional gateway write found: saved (with the totals sequence, which moved
+// when the write changed the live set), or nothing written and the record the store
+// holds now.
+export type SaveGatewayResult =
+  | { saved: true; revision: number; sequence: number }
+  | { saved: false; current: StoredGateway | undefined };
+
+// A gateway to forget, with the revision of the record the sweep judged.
+export interface ForgetGateway {
+  instance: string;
+  revision: number;
+}
+
+// What any process changed in the store, as every subscriber hears of it. `sequence` is
+// the totals sequence after the change.
+export type StoreChange =
+  // A config version was published (the totals moved with it).
+  | { type: "config-published"; version: number; sequence: number }
+  // A usage batch was counted.
+  | { type: "batch-counted"; instance: string; sequence: number }
+  // A gateway record was written or forgotten; liveChanged when the live set gained or
+  // lost a member (the totals moved with it).
+  | { type: "gateways-changed"; liveChanged: boolean; sequence: number };
+
+export type StoreChangeListener = (change: StoreChange) => void;
+
 export interface ControlPlaneStore {
   // The store's config epoch: 32 random lowercase hex digits, created with the store
-  // and kept for as long as it keeps its config versions. Versions count within it, so
-  // gateways tell a store that started over (versions from 1 again) from the one they
-  // followed (docs/specs/CONTROL-PROTOCOL.md, Config versions).
+  // and kept for as long as it keeps its config versions and its totals sequence. Both
+  // count within it, so gateways tell a store that started over (versions from 1
+  // again, the sequence from 0) from the one they followed; a store that loses or
+  // rolls back its state takes a new one (CONTROL-PROTOCOL.md, Config versions).
   configEpoch(): Promise<string>;
+
   // The newest config version, or undefined before the first publish.
   latestConfig(): Promise<StoredConfig | undefined>;
-  // Stores entry as the newest version. Versions older than the newest `keep` are no
-  // longer needed and may be dropped; a store may keep more.
-  saveConfig(entry: StoredConfig, keep: number): Promise<void>;
+  // Stores published.entry as the newest version and adds published.carried to the
+  // totals, in one write, only when the latest version is still expected.version and
+  // the totals sequence still expected.sequence; the write moves the sequence on by
+  // one. entry.version must be expected.version + 1 (1 for the first). Otherwise
+  // nothing changes, and the answer is what the store holds now. Versions older than
+  // the newest `keep` are no longer needed and may be dropped; a store may keep more.
+  publishConfig(published: PublishedConfig, expected: PublishExpectation, keep: number): Promise<PublishConfigResult>;
   // The stored versions newer than `version`, oldest first.
   configsAfter(version: number): Promise<StoredConfig[]>;
 
-  // One control-plane process per store (docs/specs/CONTROL-PROTOCOL.md, Control-plane
-  // processes): takes the lease for `holder` until `expiresAt`, or renews it —
-  // granted when no one holds it, when `holder` already does, or when the lease has
-  // expired by `now`; otherwise nothing changes and the answer is the lease in force.
-  // A database does the check and the write in one transaction.
-  acquireLease(holder: string, now: number, expiresAt: number): Promise<AcquireLeaseResult>;
-  // Gives the lease up when `holder` holds it; otherwise nothing changes.
-  releaseLease(holder: string): Promise<void>;
-
   // The last batch counted for an instance, or undefined before its first.
   lastBatch(instance: string): Promise<BatchId | undefined>;
-  // Stores a counted batch in one step — its ID as the instance's last batch, its
-  // additions to the totals, its records — only when the instance's last counted batch
-  // is still `expectedLast` (undefined: none yet), the one the caller decided against.
-  // So the batch is either counted and remembered or neither, and no two writers can
-  // both count one batch: the comparison and the write are one atomic operation (a
-  // database does both in one transaction). Records older than the newest
+  // Stores a counted batch in one write — its ID as the instance's last batch, its
+  // additions to the totals, its records, a step of the totals sequence — only when the
+  // instance's last counted batch is still `expectedLast` (undefined: none yet) and the
+  // latest config version is still counted.configVersion. So the batch is either
+  // counted and remembered or neither, no two writers can both count one batch, and no
+  // batch counts toward limits a publish replaced. Records older than the newest
   // `keepRecords` are no longer needed and may be dropped.
   saveCountedBatch(
     counted: CountedBatch,
     expectedLast: BatchId | undefined,
     keepRecords: number,
   ): Promise<SaveCountedBatchResult>;
-  // Adds to the stored totals, one entry per window (a window not stored yet starts
-  // from 0): a limit carrying its spend across a model-set edit.
-  addWindowTotals(additions: WindowTotal[]): Promise<void>;
-  // The stored totals of the current windows: tokens_per_hour windows starting at
-  // hourStart, usd_per_month windows starting at monthStart.
-  currentWindowTotals(current: CurrentWindows): Promise<WindowTotal[]>;
+
+  // The totals at one snapshot: the sequence, the latest config, `instance`'s last
+  // counted batch (when given), the stored totals of the current windows (tokens_per_hour
+  // windows starting at hourStart, usd_per_month windows at monthStart) and the live
+  // set's size, all as of one point between writes.
+  totalsSnapshot(current: CurrentWindows, instance?: string): Promise<TotalsSnapshot>;
   // Totals of windows before `oldest` (tokens_per_hour windows starting before its
   // hourStart, usd_per_month windows before its monthStart) are no longer needed and
   // may be dropped. The caller passes the previous windows: late records still count
-  // there.
+  // there. Dropping changes no current window, so it does not move the sequence.
   dropPastWindowTotals(oldest: CurrentWindows): Promise<void>;
+
   // The newest received records, newest first, at most `limit`.
   recentRecords(limit: number): Promise<ReceivedRecord[]>;
 
@@ -150,12 +226,22 @@ export interface ControlPlaneStore {
   gateway(instance: string): Promise<StoredGateway | undefined>;
   // Every gateway record, in no particular order.
   gateways(): Promise<StoredGateway[]>;
-  // Stores a gateway's record, replacing the previous one.
-  saveGateway(gateway: StoredGateway): Promise<void>;
-  // Forgets gateways' records; unknown instances are ignored. Their last counted
-  // batches stay (dropBatchCursorsCountedBefore).
-  deleteGateways(instances: string[]): Promise<void>;
+  // Writes a gateway's record, replacing the previous one, only when the stored record
+  // is still the one at `expectedRevision` (undefined: none stored). A write that
+  // changes `live` (or adds a live gateway) moves the totals sequence in the same write.
+  saveGateway(record: GatewayRecord, expectedRevision: number | undefined): Promise<SaveGatewayResult>;
+  // Forgets each gateway whose stored record is still at the given revision; returns the
+  // instances forgotten. Forgetting a live gateway moves the totals sequence (once for
+  // the call). Their last counted batches stay (dropBatchCursorsCountedBefore).
+  forgetGateways(gateways: ForgetGateway[]): Promise<string[]>;
   // Drops the last counted batch of every instance whose last batch was counted
   // before `cutoff` (milliseconds since the epoch), and names those instances.
   dropBatchCursorsCountedBefore(cutoff: number): Promise<string[]>;
+
+  // Calls listener with every change any process makes from now on — this one's
+  // included — after the write it describes; returns the unsubscribe, which is safe to
+  // call more than once. A listener hears changes in the order the store made them. The
+  // store calls every listener whatever another one does; a listener that throws is
+  // the store's to report (the memory store rethrows it from a microtask).
+  subscribe(listener: StoreChangeListener): () => void;
 }

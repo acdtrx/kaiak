@@ -92,8 +92,13 @@ Made while planning (confirm in review):
    so two sweeps, or a sweep racing a fresh status, never drop a live gateway.
 10. **`revision` becomes the sequence integer**, ordered within the message's
     `config_epoch`.
-    - The gateway applies totals when the epoch differs from the last applied (the
-      store started over: adopt) or when the sequence is higher.
+    - ~~The gateway applies totals when the epoch differs from the last applied (the
+      store started over: adopt) or when the sequence is higher.~~ *Changed in step 1
+      (2026-10-06, accepted):* the gateway applies totals only when their
+      `config_epoch` is the epoch of the config it runs, and then only with a higher
+      sequence (the first in an epoch whatever its sequence). Adopting another epoch
+      would let a delayed answer from a store that started over reset the ordering;
+      totals of another epoch cannot apply to the running config anyway.
     - Rejected: keeping `{ control_plane, sequence }` with a fixed ID. The object
       would carry nothing.
 11. **The per-instance batch queue stays in each core.** It only orders a resend
@@ -104,6 +109,15 @@ Made while planning (confirm in review):
     gateways to two cores, and it demonstrates the shape.
     - Rejected: testing replicas only inside `kaiak-control`. It would never show a
       real gateway following totals from two processes.
+
+Changed or added in step 1 (2026-10-06, accepted):
+
+13. **A store that loses or rolls back its state takes a new config epoch** (a restore
+    from a backup included). Without it, its sequence would go back and gateways would
+    ignore its totals.
+14. **Every gateway status write is conditional** on the record it was judged against,
+    not only live-set changes: the rule that flags two processes under one instance
+    name reads the previous record, and needs that across processes too.
 
 ## Constraints
 
