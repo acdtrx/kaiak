@@ -65,7 +65,7 @@ func (u *openAIUsage) bodyContentBytes(raw json.RawMessage) int64 {
 	return n
 }
 
-func (u *openAIUsage) reported() Units { return u.latest }
+func (u *openAIUsage) reported() (Units, bool) { return u.latest, true }
 
 func (u *openAIUsage) streamContentBytes() int64 {
 	if u.endpoint == provider.Embeddings {

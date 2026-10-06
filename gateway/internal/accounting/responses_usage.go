@@ -146,6 +146,6 @@ func (u *responsesUsage) bodyContentBytes(raw json.RawMessage) int64 {
 	return n
 }
 
-func (u *responsesUsage) reported() Units { return u.latest }
+func (u *responsesUsage) reported() (Units, bool) { return u.latest, true }
 
 func (u *responsesUsage) streamContentBytes() int64 { return u.contentBytes }

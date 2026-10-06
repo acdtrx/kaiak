@@ -3,6 +3,7 @@ package accounting
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"kaiak/internal/provider"
 )
@@ -97,5 +98,38 @@ func TestInlineMediaEstimateIgnoresTheEncodedSize(t *testing.T) {
 	small, large := EstimateInput(provider.ChatCompletions, body(1_000)), EstimateInput(provider.ChatCompletions, body(1_400_000))
 	if small != large {
 		t.Errorf("estimates differ by encoded size: %+v, %+v", small, large)
+	}
+}
+
+// The estimate reads every byte of the body once, however deep its sources and
+// content parts nest: a body nesting them thousands deep estimates in about the time
+// of a flat one, never in time that grows with depth × size (the pre-merge review's
+// H2: a key holder could tie up a core per request for a minute).
+func TestEstimateDeepNestingIsLinear(t *testing.T) {
+	const depth = 2000
+	padding := strings.Repeat("x", 1<<20)
+	for _, c := range []struct {
+		name string
+		ep   provider.Endpoint
+		body string
+	}{
+		{"messages sources", provider.Messages,
+			`{"messages":[{"role":"user","content":[{"type":"document","source":` +
+				strings.Repeat(`{"type":"content","source":`, depth) + `"` + padding + `"` +
+				strings.Repeat(`}`, depth) + `}]}]}`},
+		{"responses content parts", provider.Responses,
+			`{"input":[{"role":"user","content":[` + strings.Repeat(`{"type":"input_text","content":[`, depth) +
+				`"` + padding + `"` + strings.Repeat(`]}`, depth) + `]}]}`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			start := time.Now()
+			got := EstimateInput(c.ep, []byte(c.body))
+			if elapsed := time.Since(start); elapsed > time.Second {
+				t.Errorf("estimate took %v: it rescans nested values", elapsed)
+			}
+			if want := EstimateTokens(int64(len(c.body))); got.Total != want {
+				t.Errorf("estimate %+v, want %d (all text)", got, want)
+			}
+		})
 	}
 }

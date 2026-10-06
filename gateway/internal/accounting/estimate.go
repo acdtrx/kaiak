@@ -180,9 +180,6 @@ func (s *inputScan) promptList() ([]part, bool) {
 // the text are subtracted from p.text; tokens it counts directly are added to
 // p.fixed. It returns the value's first token.
 func (s *inputScan) value(key, parent string, tokenIDs bool, depth int, p *part) (json.Token, bool) {
-	if s.format == provider.FormatMessages && key == "source" {
-		return nil, s.messagesSource(depth, p)
-	}
 	start := s.dec.InputOffset()
 	tok, err := s.dec.Token()
 	if err != nil {
@@ -199,20 +196,12 @@ func (s *inputScan) handle(tok json.Token, span int64, key, parent string, token
 		if depth > maxEstimateDepth {
 			return false
 		}
-		if v == '[' && s.format == provider.FormatResponses && key == "content" {
-			return s.responsesParts(depth, p)
+		if v == '{' {
+			_, ok := s.object(key, tokenIDs, depth, p)
+			return ok
 		}
 		for s.dec.More() {
-			member, enclosing := key, parent
-			if v == '{' {
-				name, err := s.dec.Token()
-				if err != nil {
-					return false
-				}
-				member, _ = name.(string)
-				enclosing = key
-			}
-			if _, ok := s.value(member, enclosing, tokenIDs, depth+1, p); !ok {
+			if _, ok := s.value(key, parent, tokenIDs, depth+1, p); !ok {
 				return false
 			}
 		}
@@ -232,68 +221,86 @@ func (s *inputScan) handle(tok json.Token, span int64, key, parent string, token
 	return true
 }
 
-// messagesSource scans a Messages block's source (docs/specs/GATEWAY.md, Limits: the
-// input estimate): base64 data, a URL or a file ID is one media item, whatever its
-// size; a text or content source — or a source that is not an object — is scanned as
-// any other value. The source is read whole first: its type may come after its data.
-func (s *inputScan) messagesSource(depth int, p *part) bool {
-	start := s.dec.InputOffset()
-	var raw json.RawMessage
-	if err := s.dec.Decode(&raw); err != nil {
-		return false
-	}
-	span := s.dec.InputOffset() - start
-	var source struct {
-		Type string `json:"type"`
-	}
-	if json.Unmarshal(raw, &source) == nil {
-		switch source.Type {
-		case "base64", "url", "file":
-			p.text -= span
-			p.fixed += InlineMediaTokens
-			return true
-		}
-	}
-	inner := newInputScan(raw, provider.FormatMessages)
-	tok, err := inner.dec.Token()
-	if err != nil {
-		return false
-	}
-	return inner.handle(tok, inner.dec.InputOffset(), "", "source", false, depth, p)
-}
-
-// responsesParts scans the rest of a Responses content list, its opening bracket
-// read (docs/specs/GATEWAY.md, Limits: the input estimate): an input_image or
-// input_file part is one media item, whatever it carries — a data URL, a URL or a
-// file ID; any other part is scanned as any other value. Each part is read whole
-// first: its type may come after its data.
-func (s *inputScan) responsesParts(depth int, p *part) bool {
+// object scans the rest of an object, its opening brace just read, as member key, and
+// returns its type member when that is a string. Every byte is read once, whatever
+// the nesting (docs/specs/GATEWAY.md, Limits: the input estimate). A part's type
+// may come after its data, so the object's own count is held apart until it closes:
+//
+//   - a Responses input_image or input_file part counts InlineMediaTokens, whatever
+//     it carries (a data URL, a URL or a file ID);
+//   - a Messages image or document block counts its source as InlineMediaTokens when
+//     the source is base64 data, a URL or a file ID — only there: a tool's input
+//     member named source is text.
+func (s *inputScan) object(key string, tokenIDs bool, depth int, p *part) (string, bool) {
+	start := s.dec.InputOffset() - 1 // the opening brace
+	var own, source part
+	var typ, sourceType string
+	var sourceSpan int64
+	var ok bool
 	for s.dec.More() {
-		start := s.dec.InputOffset()
-		var raw json.RawMessage
-		if err := s.dec.Decode(&raw); err != nil {
-			return false
+		name, err := s.dec.Token()
+		if err != nil {
+			return "", false
 		}
-		span := s.dec.InputOffset() - start
-		var part struct {
-			Type string `json:"type"`
-		}
-		if json.Unmarshal(raw, &part) == nil && (part.Type == "input_image" || part.Type == "input_file") {
-			p.text -= span
-			p.fixed += InlineMediaTokens
+		member, _ := name.(string)
+		if s.format == provider.FormatMessages && member == "source" {
+			if sourceType, sourceSpan, ok = s.messagesSource(key, tokenIDs, depth+1, &source); !ok {
+				return "", false
+			}
 			continue
 		}
-		inner := newInputScan(raw, provider.FormatResponses)
-		tok, err := inner.dec.Token()
-		if err != nil {
-			return false
+		first, valueOK := s.value(member, key, tokenIDs, depth+1, &own)
+		if !valueOK {
+			return "", false
 		}
-		if !inner.handle(tok, inner.dec.InputOffset(), "content", "", false, depth+1, p) {
-			return false
+		if t, isString := first.(string); isString && member == "type" {
+			typ = t
 		}
 	}
-	_, err := s.dec.Token()
-	return err == nil
+	if _, err := s.dec.Token(); err != nil {
+		return "", false
+	}
+	switch {
+	case s.format == provider.FormatResponses && (typ == "input_image" || typ == "input_file"):
+		p.text -= s.dec.InputOffset() - start
+		p.fixed += InlineMediaTokens
+	case s.format == provider.FormatMessages && (typ == "image" || typ == "document") && isMediaSource(sourceType):
+		own.text -= sourceSpan
+		own.fixed += InlineMediaTokens
+		p.text += own.text
+		p.fixed += own.fixed
+	default:
+		p.text += own.text + source.text
+		p.fixed += own.fixed + source.fixed
+	}
+	return typ, true
+}
+
+// messagesSource scans a Messages member named source, counted into p, and returns
+// its type and its span when it is an object (an object's span is its own bytes).
+func (s *inputScan) messagesSource(parent string, tokenIDs bool, depth int, p *part) (typ string, span int64, ok bool) {
+	before := s.dec.InputOffset()
+	tok, err := s.dec.Token()
+	if err != nil {
+		return "", 0, false
+	}
+	if tok != json.Delim('{') {
+		return "", 0, s.handle(tok, s.dec.InputOffset()-before, "source", parent, tokenIDs, depth, p)
+	}
+	if depth > maxEstimateDepth {
+		return "", 0, false
+	}
+	start := s.dec.InputOffset() - 1 // the opening brace
+	if typ, ok = s.object("source", tokenIDs, depth, p); !ok {
+		return "", 0, false
+	}
+	return typ, s.dec.InputOffset() - start, true
+}
+
+// isMediaSource reports whether a Messages source of type t is media: base64 data, a
+// URL or a file ID; a text or content source is text, its content scanned as any.
+func isMediaSource(t string) bool {
+	return t == "base64" || t == "url" || t == "file"
 }
 
 // isMedia reports whether the string s, the value of member key in an object that is

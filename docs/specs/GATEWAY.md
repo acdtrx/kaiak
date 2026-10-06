@@ -1142,7 +1142,15 @@ own, and a client sending repeats is broken either way.
     `base64` (its raw `data`), `url` or `file` — the whole source counts as the item,
     whatever order its members come in; a `text` or `content` source is text, a
     `content` source's own blocks read by the same rules; a Responses `input_image` or
-    `input_file` part (its data URL, URL or file ID).
+    `input_file` part (its data URL, URL or file ID). Only a block's own `source` is
+    media: a tool's argument named `source` (in a `tool_use` input) is text (settled
+    2026-10-06, the pre-merge review's L1 of [S]).
+  - **One pass** (settled 2026-10-06, the pre-merge review's H2): every byte of the
+    body is read once, however deep sources and content parts nest — a part's own
+    count is held apart until its object closes, then kept or swapped for the media
+    figure. Rejected: reading each source or part whole and rescanning it — a body
+    nesting them thousands deep made the estimate quadratic, about a minute of CPU
+    for one request at the body cap, before limits run.
   - The estimate has two figures: the **total** (every prompt of a completion batch —
     what limits reserve and estimated records bill) and the **input one sequence
     sees** (the request less every prompt of a batch but the largest — what the
@@ -1576,6 +1584,15 @@ own, and a client sending repeats is broken either way.
   `cache_read_input_tokens` → `tokens_cached`; `cache_creation_input_tokens` →
   `tokens_cache_write`; `output_tokens` → `tokens_out`, thinking included;
   `tokens_reasoning` 0 (the format does not report it). Missing fields count 0.
+  **`message_start`'s output count is provisional** (settled 2026-10-06, the
+  pre-merge review's H1): it is 0 or 1, sent before anything is generated; only a
+  `message_delta`'s or a body's `output_tokens` is the answer's count. A stream that
+  ends without one — the client gone, a stall, the drain's cut, the backend dying,
+  or a backend that never sends it — keeps the reported input and cache units and
+  takes `tokens_out` from the estimate over the content seen (Estimation, below),
+  never below the provisional count; the record is flagged `estimated`. Rejected:
+  trusting the provisional count — a stopped answer billed its output at zero while
+  the backend billed it in full.
 - **Responses usage** (settled 2026-10-06): a body's top-level `usage`, or the
   `response.usage` of a stream's `response.completed` or `response.incomplete`.
   `input_tokens` includes the cache, as OpenAI's `prompt_tokens` does:
@@ -1607,7 +1624,9 @@ own, and a client sending repeats is broken either way.
   `tokens_in`; `tokens_cached`, `tokens_cache_write` and `tokens_reasoning` are 0.
 - **Partial** (settled 2026-09-24): a response that stopped early (client disconnect,
   backend failure mid-response, cut off by the drain) is **flagged `partial`** and counts what was relayed
-  up to then — the backend's report when one arrived, else the estimate.
+  up to then — the backend's report when one arrived, else the estimate (for
+  Messages, the output estimate when only `message_start`'s provisional count
+  arrived: Messages usage, above).
   **Client disconnect** cancels the upstream request; tokens generated so far are
   billed. Events are read before they are written, so what the backend sent counts
   even when writing to the client fails.

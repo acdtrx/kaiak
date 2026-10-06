@@ -104,6 +104,36 @@ func TestMessagesEstimatedOutput(t *testing.T) {
 	})
 }
 
+// message_start's output count is provisional (0 or 1): the count that means
+// anything comes in message_delta. A stream that ends before it — the client gone,
+// a stall, the drain's cut, the backend dying — or a backend that ends without it
+// keeps the reported input and cache units, estimates output from the content seen
+// (never below the provisional count), and is flagged estimated
+// (docs/specs/GATEWAY.md, Accounting → Messages usage).
+func TestMessagesProvisionalOutput(t *testing.T) {
+	start := `{"type":"message_start","message":{"usage":{"input_tokens":50,"cache_read_input_tokens":20,"cache_creation_input_tokens":7,"output_tokens":1}}}`
+	text := `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"` + strings.Repeat("x", 16000) + `"}}`
+	t.Run("cut before message_delta", func(t *testing.T) {
+		units, flags := streamMeter(provider.Messages, 40, start, text).Settle(false)
+		expect(t, units, flags, tokenUnits(50, 20, 7, 4000, 0), Flags{Estimated: true, Partial: true})
+	})
+	t.Run("ended without message_delta usage", func(t *testing.T) {
+		units, flags := streamMeter(provider.Messages, 40, start, text,
+			`{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`, `{"type":"message_stop"}`).Settle(true)
+		expect(t, units, flags, tokenUnits(50, 20, 7, 4000, 0), Flags{Estimated: true})
+	})
+	t.Run("never below the provisional count", func(t *testing.T) {
+		units, flags := streamMeter(provider.Messages, 40,
+			`{"type":"message_start","message":{"usage":{"input_tokens":50,"output_tokens":3}}}`).Settle(false)
+		expect(t, units, flags, tokenUnits(50, 0, 0, 3, 0), Flags{Estimated: true, Partial: true})
+	})
+	t.Run("message_delta's count is final", func(t *testing.T) {
+		units, flags := streamMeter(provider.Messages, 40, start, text,
+			`{"type":"message_delta","usage":{"output_tokens":3900}}`).Settle(false)
+		expect(t, units, flags, tokenUnits(50, 20, 7, 3900, 0), Flags{Partial: true})
+	})
+}
+
 // A Messages image or document source counts as one media item when it is data, a
 // URL or a file; a text source is text.
 func TestEstimateMessagesMedia(t *testing.T) {
@@ -116,17 +146,17 @@ func TestEstimateMessagesMedia(t *testing.T) {
 		total int64
 	}{
 		{"base64 image", `{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + payload + `"}}]}]}`,
-			text(`{"messages":[{"role":"user","content":[{"type":"image","source"}]}]}`) + m},
+			text(`{"messages":[{"role":"user","content":[{"type":"image","source":}]}]}`) + m},
 		{"data before type", `{"messages":[{"role":"user","content":[{"type":"document","source":{"data":"` + payload + `","type":"base64"}}]}]}`,
-			text(`{"messages":[{"role":"user","content":[{"type":"document","source"}]}]}`) + m},
+			text(`{"messages":[{"role":"user","content":[{"type":"document","source":}]}]}`) + m},
 		{"url", `{"messages":[{"content":[{"type":"image","source":{"type":"url","url":"https://example.com/a.png"}}]}]}`,
-			text(`{"messages":[{"content":[{"type":"image","source"}]}]}`) + m},
+			text(`{"messages":[{"content":[{"type":"image","source":}]}]}`) + m},
 		{"file", `{"messages":[{"content":[{"type":"document","source":{"type":"file","file_id":"file_1"}}]}]}`,
-			text(`{"messages":[{"content":[{"type":"document","source"}]}]}`) + m},
+			text(`{"messages":[{"content":[{"type":"document","source":}]}]}`) + m},
 		{"text source is text", `{"messages":[{"content":[{"type":"document","source":{"type":"text","media_type":"text/plain","data":"some text"}}]}]}`,
 			text(`{"messages":[{"content":[{"type":"document","source":{"type":"text","media_type":"text/plain","data":"some text"}}]}]}`)},
 		{"content source holding an image", `{"messages":[{"content":[{"type":"document","source":{"type":"content","content":[{"type":"image","source":{"type":"base64","data":"` + payload + `"}}]}}]}]}`,
-			text(`{"messages":[{"content":[{"type":"document","source":{"type":"content","content":[{"type":"image","source"}]}}]}]}`) + m},
+			text(`{"messages":[{"content":[{"type":"document","source":{"type":"content","content":[{"type":"image","source":}]}}]}]}`) + m},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			got := EstimateInput(provider.Messages, []byte(c.body))
@@ -134,6 +164,12 @@ func TestEstimateMessagesMedia(t *testing.T) {
 				t.Errorf("estimate %+v, want %d", got, c.total)
 			}
 		})
+	}
+	// A tool's input member named source is the tool's argument, text: only an image
+	// or document block's source is media.
+	tool := `{"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"t","name":"fetch","input":{"source":{"type":"url","url":"https://example.com/a"}}}]}]}`
+	if got := EstimateInput(provider.Messages, []byte(tool)); got.Total != text(tool) {
+		t.Errorf("tool input: %+v, want %d", got, text(tool))
 	}
 	// Outside Messages, a member named source is plain text.
 	body := `{"messages":[{"source":{"type":"base64","data":"` + payload + `"}}]}`

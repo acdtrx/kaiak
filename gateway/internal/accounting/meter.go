@@ -82,8 +82,10 @@ type usageReader interface {
 	bodyUsage(raw json.RawMessage)
 	// bodyContentBytes counts the generated content in the body's content member.
 	bodyContentBytes(raw json.RawMessage) int64
-	// reported is the latest usage the backend reported; nil when none.
-	reported() Units
+	// reported is the latest usage the backend reported, nil when none, and whether
+	// its output count is final — a format whose stream reports a provisional output
+	// count first (Messages) says false until the final one arrived.
+	reported() (units Units, outputFinal bool)
 	// streamContentBytes is the generated content seen in stream events.
 	streamContentBytes() int64
 }
@@ -185,9 +187,12 @@ type Flags struct {
 //     refused credential): the backend never had the prompt, or processed nothing —
 //     no units; the record says partial and carries zeros.
 //   - A backend error status: the backend generated nothing; no units.
-//   - Otherwise the backend's usage report when there is one; else input is estimated
-//     from the client's request body and output from the generated content seen, and
-//     the record is flagged estimated.
+//   - Otherwise the backend's usage report when there is one. When its output count
+//     is only provisional (a Messages stream ended before its message_delta usage),
+//     output is estimated from the generated content seen, never below the provisional
+//     count, and the record is flagged estimated.
+//   - With no report, input is estimated from the client's request body and output
+//     from the generated content seen, and the record is flagged estimated.
 func (m *Meter) Settle(complete bool) (Units, Flags) {
 	if m.SentUnanswered() {
 		return tokenUnits(m.input, 0, 0, 0, 0), Flags{Estimated: true, Partial: true}
@@ -201,7 +206,11 @@ func (m *Meter) Settle(complete bool) (Units, Flags) {
 			m.reader.bodyUsage(raw)
 		}
 	}
-	if units := m.reader.reported(); units != nil {
+	if units, outputFinal := m.reader.reported(); units != nil {
+		if !outputFinal {
+			units[config.UnitTokensOut] = max(units[config.UnitTokensOut], EstimateTokens(m.outputBytes()))
+			flags.Estimated = true
+		}
 		return units, flags
 	}
 	flags.Estimated = true
