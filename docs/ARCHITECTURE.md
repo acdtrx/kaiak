@@ -259,8 +259,12 @@ Test tooling outside the binary:
   from the protocol's own stream (an observer instance decoding `totals` events),
   what the sample received as status (an open circuit, a queued model) from the
   reports the proxy forwarded and the sample accepted, and the gateways' state from
-  logs, metrics and headers. Needs Node and `control/`'s dependencies, so `go test ./...` leaves it out
-  and `scripts/check-all.sh` runs it.
+  logs, metrics and headers. `TestAcrossHalvesReplicas` (`replicas_test.go`) runs two
+  gateways against two control-plane cores over one store (the sample with a protocol
+  replica, each gateway behind a proxy of its own): usage counted once in totals both
+  cores serve, a publish reaching the other core's gateway, a gateway moved to the
+  other core resuming without a resync. Needs Node and `control/`'s dependencies, so
+  `go test ./...` leaves them out and `scripts/check-all.sh` runs them.
 - `scripts/live` — the live-test kit, a separate Go module (standard library only,
   imports nothing from the gateway): generates a config for a real vLLM,
   llama-server, Azure OpenAI or OpenAI backend — or two backends serving one model

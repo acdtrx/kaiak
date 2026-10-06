@@ -40,7 +40,8 @@ english.
 - Commands (keep this line current):
   everything — `scripts/check-all.sh` (the gateway checks, control `npm test` +
   `npm run lint`, then the cross-half e2e: the sample control plane and two gateways,
-  `gateway/e2e` build tag `crosshalf`; any cwd) — the one command for verification;
+  also on two control-plane cores over one store, `gateway/e2e` build tag `crosshalf`;
+  any cwd) — the one command for verification;
   gateway — all checks `scripts/check-gateway.sh` (gofmt, vet, staticcheck, race
   tests incl. the e2e test in `gateway/e2e`, then lint and self-test of the live-test
   kit in `scripts/live`; any cwd) · run `go run ./cmd/kaiak` from `gateway/`;
