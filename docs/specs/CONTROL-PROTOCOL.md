@@ -10,8 +10,8 @@
 
 ## Shape
 
-- **Control plane → gateway**: a config **snapshot** (GET, carrying a version) and one
-  **SSE stream** per gateway resuming from that version (snapshot + subscribe).
+- **Control plane → gateway**: one **SSE stream** per gateway — the current config,
+  then the usage totals, then every change of either (Config stream).
 - **Gateway → control plane**: plain POSTs — usage batches and status.
 - Every request and response carries the **protocol version** (the `Kaiak-Protocol`
   header, below); a mismatch is refused with a clear error on both sides. No
@@ -37,23 +37,20 @@
 
 ## Endpoints (provisional)
 
-- `GET /v1/config` → a config snapshot `{ config_epoch, version, config }`. Versions
-  are integers from 1, increasing with every config change, assigned by the control
-  plane within its store's config epoch (Config versions). Before
-  the first config is published: `503` with `config-unavailable` — the gateway retries
-  with its reconnect backoff (settled 2026-09-24).
-- `GET /v1/stream?since=<version>&config_epoch=<epoch>` → SSE events (behavior:
-  Config stream):
-  - `config` — a full new config with its version;
+- `GET /v1/stream` → SSE events (behavior: Config stream; settled 2026-10-07, no
+  parameters):
+  - `config` — the current config with its `config_hash` (Current config);
   - `totals` — the control plane's usage totals per limit (global and group limits)
-    for hourly and monthly windows, the number of live gateways, and the last of this gateway's batches they
-    include (Budgets; Messages → Totals);
-  - `resync` — the gateway is too far behind; fetch the snapshot again.
-- `POST /v1/usage` → one usage batch; the answer is the ack, carrying fresh totals
-  (Usage batches).
+    for hourly and monthly windows, the number of live gateways, and the last of this
+    gateway's batches they include (Budgets; Messages → Totals).
+- `POST /v1/usage` → one usage batch; the answer is the ack, which names the batch and
+  nothing else (Usage batches).
 - `POST /v1/status` → gateway status; `204` with no body when accepted (Status
   intake).
 - Every body above is one of the messages below (Messages).
+- Rejected (2026-10-07): a config snapshot endpoint beside the stream
+  (`GET /v1/config`) — the stream's first event is the current config, and two ways to
+  get it are two paths to keep consistent.
 
 ## Request checks (settled 2026-09-24)
 
@@ -75,9 +72,7 @@ the `{ error, detail }` body, `error` being the stable code:
 
 - Endpoint-level failures use the same body: `not-found` (404, a path or method the
   protocol does not define under the plugin's prefix — after the request checks),
-  `since-invalid` (400, Config stream),
-  `config-unavailable` (503, above; also a usage batch before any config — Usage
-  intake), `usage-batch-invalid` and `instance-mismatch` (400, Usage intake),
+  `usage-batch-invalid` and `instance-mismatch` (400, Usage intake),
   `status-invalid` (400, Status intake); a
   request the HTTP layer itself refuses answers `request-invalid` with its 4xx status
   (a usage body over 2 MiB or a status body over 64 KiB included — a full batch and a
@@ -92,102 +87,104 @@ the `{ error, detail }` body, `error` being the stable code:
   timing-safe equality, so neither content nor length shows in the timing), and no
   error echoes the presented token.
 
-## Config versions (settled 2026-09-24)
+## Current config (settled 2026-10-07)
 
-- The control plane assigns versions: `1` for the first config published, then one
-  more with every publish. A config that fails validation (schema or semantic rules)
-  is refused with its issues and never gets a version; the current version stays.
-- **One order across processes** (settled 2026-10-06): a publish is stored only as
-  the version after the one it was checked against. Two publishes racing — in one
-  control-plane process or in two over one store (Control-plane processes) — never
-  share a version: the one that loses is checked again against the winner, the
-  parents rule included, and takes the next version or is refused. A publish depends
-  on no usage (settled 2026-10-06, with limits losing their model sets): counted
-  batches never refuse it, and it never refuses them.
+- **The app owns the config.** The host app built on `kaiak-control` is the source of
+  truth: it composes the config from its own data (keys, groups, models, backends),
+  keeps whatever history and audit it wants, and decides who may change what and
+  when. `kaiak-control` validates the document the app publishes and broadcasts the
+  **current config** to the gateways — it keeps no history and assigns no versions.
+- **Publishing replaces the current config.** A config that fails validation (schema,
+  semantic rules, the parents rule below) is refused with its issues and the current
+  config stays. Before the first publish there is no config: streams stay open and
+  send it when it is published.
+- **`config_hash`**: the lowercase hex SHA-256 of the config's JSON text exactly as
+  the control plane sends it (the `config` member of the `config` event). It
+  identifies content, so a gateway can skip a config it already runs or already
+  rejected and can report which config it applied or rejected. It carries no order:
+  two hashes are equal or not, never older or newer.
+- **One current config across processes**: a publish is stored only if the config it
+  was checked against is still the current one — a condition inside the store,
+  invisible on the wire. Two publishes racing (in one control-plane process, or in
+  two over one store — Control-plane processes) never interleave: the one that loses
+  is checked again against the winner, the parents rule included, and replaces it or
+  is refused. Concurrent editing is the app's to coordinate; the last publish to land
+  is the current config. A publish depends on no usage: counted batches never refuse
+  it, and it never refuses them (Usage intake → Counted whatever the config).
 - **Parents never change** (settled 2026-09-27): a publish that gives a group the
-  current version defines another `parent` than it has there — a top-level group
+  current config defines another `parent` than it has there — a top-level group
   given a parent and a child made top-level included — is refused like a config that
   fails validation, code `group-parent-changed` (control plane only; the issue names
   the group). A move is a delete and a create: the group's ancestors are what its
   usage records name and its spend was counted toward, so they never change under
-  it. The check compares with the current version only — the first publish has
+  it. The check compares with the current config only — the first publish has
   nothing to compare, and a group deleted in one publish may come back under another
   parent in a later one. The gateway does not check it: it is stateless and may boot
   with no previous config (a seed, a fresh start), so it has nothing to compare
   with.
-- The control plane keeps a bounded history of recent versions (default 100) so a
-  stream can resume: `since` equal to the current version replays nothing; `since`
-  within the history replays every newer version, oldest first; otherwise — older
-  than the history, newer than the current version, not a version at all, or nothing
-  published yet — the answer is `resync`.
-- Versions are the control plane's own count. A control plane that loses its store
-  (the sample's is in memory) starts again at `1`; gateways ahead of it get `resync`
-  and take the snapshot. **After a `resync` the gateway applies the snapshot whatever
-  its version** — lower than the one it runs included — and resumes from it; outside
-  a resync it never goes back to a lower version within an epoch.
-- **Config epoch** (settled 2026-09-25): versions count within the store's
-  `config_epoch` — 32 random lowercase hex digits created with the store and kept, like
-  the versions, for the store's life (a store that survives a process restart keeps
-  it; the in-memory store makes a new one per process). A version number alone says
-  nothing across stores: a new store that has reached `7` again holds another config
-  than the old store's `7`. So every snapshot and `config` event carries the epoch, the
-  gateway keeps it with the version it runs (and in its last-known-good copy), and a
-  version is compared only within its epoch — **a snapshot or event of another epoch
-  is applied whatever its version**, the `resync` rule generalized. Rejected: relying
-  on `resync` alone, which misses a new store that has caught up to the gateway's
-  number (a last-known-good boot, then `since` equal to the new current version,
-  replays nothing and the gateway keeps a config the control plane no longer has).
+- **The gateway applies what the control plane sends.** The control plane is the
+  authority on which config is current; the gateway applies every `config` event it
+  receives, skipping one whose hash equals the config it runs or the one it last
+  rejected (Config stream). Keeping the order of what goes out on a stream is the
+  sending process's job (Config stream → Order), not the gateway's.
+- Rejected (2026-10-07):
+  - config versions with a bounded history, a resume position (`since`) and `resync`
+    (settled 2026-09-24) — every config is a whole document, so only the current one
+    is ever needed, and the history existed only to replay versions nobody uses;
+  - a gateway that only applies a config newer than the one it runs — it protects
+    against nothing the sender cannot prevent on its own stream, and after a store
+    restore (an older config current again) it kept gateways on a config the control
+    plane no longer has;
+  - a config epoch naming the store a version counts in (settled 2026-09-25) — it
+    existed only to compare versions across stores.
 
-## Config stream (settled 2026-09-24)
+## Config stream (settled 2026-09-24; the current config only, 2026-10-07)
 
-- `since` and `config_epoch` are **required**: the config version the gateway runs, a
-  non-negative decimal integer (no sign, no leading zeros, one value), and the epoch
-  it counts in (32 lowercase hex digits, one value). Either missing or malformed →
-  `400 since-invalid` before the stream opens; a gateway refused so fetches the
-  snapshot and resumes from its position (settled 2026-09-25, N-P10). A gateway with
-  no config fetches the snapshot first. A gateway that rejected a newer version resumes after that one
-  (settled 2026-09-24): replaying it on every reconnect would only reject it again.
-  The control plane is unaffected — `since` is a position either way.
-- The response is `text/event-stream`, `Cache-Control: no-cache`,
-  `X-Accel-Buffering: no` (proxies must not buffer it), never compressed, carrying
-  `Kaiak-Protocol` like every response.
-- **Resume without gaps or doubles**: the control plane subscribes to new versions
-  *before* it reads the ones to replay, then sends the replay (every version newer
-  than `since`, oldest first — Config versions), then every version published while
-  the stream stays open, by whichever control-plane process (Control-plane
-  processes). A version is sent at most once per stream, in increasing order; each
-  `config` event's `id:` is its version.
-- **`resync` ends the stream**: when `since` cannot be resumed from (Config
-  versions; `config_epoch` not the store's included), the stream carries one `resync`
-  event (`{}`) and closes. The gateway
-  fetches the snapshot, applies it (a lower version included) and reconnects with the
-  snapshot's version as `since`. Rejected: keeping the stream open after `resync` —
-  its position would be undefined until the gateway's snapshot, and a reconnect is the
-  one resume path already needed.
+- `GET /v1/stream` takes no parameters. The response is `text/event-stream`,
+  `Cache-Control: no-cache`, `X-Accel-Buffering: no` (proxies must not buffer it),
+  never compressed, carrying `Kaiak-Protocol` like every response.
+- **On connect** the control plane subscribes to changes *before* it reads the current
+  config, then sends a `config` event with the current config, then a `totals` event.
+  With no config published yet the stream stays open (heartbeats only) and sends both
+  when the first config is published. Totals go out only once the stream has sent a
+  config.
+- **After that**, every change of the current config — published by any control-plane
+  process (Control-plane processes) — sends a `config` event with the config current
+  when it is read; a quick run of publishes may reach the stream as one event with the
+  newest. Events carry no `id:`.
+- **Order** (settled 2026-10-07): a process never sends on a stream a config or totals
+  it read before something it already sent there. It orders by the store's sequence
+  (Control-plane processes), which it keeps for itself; nothing on the wire carries it.
+  A read that is older than what the stream already got is dropped.
+- **Rollback** (settled 2026-10-07): when a process sees the store's sequence go back
+  — a restore from a backup, a failover to a standby that was behind — it closes every
+  stream it holds. The gateways reconnect and take the current config and totals.
+  Rejected: requiring a store that rolls back to take a new identity (a config epoch,
+  settled 2026-10-06) — it depended on whoever restored the store remembering to, and
+  gateways trapped on the newer state until it was done.
 - **Heartbeat**: a comment line (`: heartbeat`) every 15 s, so idle proxies and load
   balancers keep the connection. The gateway may treat a much longer silence as a dead
   connection and reconnect.
-- **Totals** (settled 2026-09-24): a `totals` event (`data:` the totals on one line,
-  no `id:` — resume is by config version only) follows the replay when a config
-  exists, then goes out whenever the totals change (a counted batch, a publish — new
-  `config_version` and limits — or a gateway joining or leaving the live set), made by
+- **Totals** (settled 2026-09-24; on the stream only 2026-10-07): a `totals` event
+  (`data:` the totals on one line) follows the config on connect, then goes out
+  whenever the totals change (a counted batch, a publish — the totals list the
+  current config's limits — or a gateway joining or leaving the live set), made by
   whichever control-plane process (Control-plane processes), **at most one per second
-  per stream**: the first change after a quiet second is pushed
-  at once, later ones within the second become one trailing push. A push reads the
-  totals when it is written, so it carries the newest; the gateway orders pushes and
-  acks by their revision (Messages → Totals).
+  per stream**: the first change after a quiet second is pushed at once, later ones
+  within the second become one trailing push. A push reads the totals when it is
+  written, so it carries the newest. The stream is the only way totals reach a
+  gateway (Usage batches: the ack carries none).
 - **Slow readers** (settled 2026-09-24): config events wait in the control plane's
-  send buffer until the gateway reads them — none is dropped; a heartbeat is skipped
-  while earlier events are still waiting. Totals never queue: while the buffer waits
-  to drain, one push is held and sent on drain with the totals of that moment. A
-  stream whose socket takes nothing for **30 s** (the plugin's
-  `stalledStreamTimeoutMs`) is closed; the gateway reconnects with the version it
-  runs. Rejected: queueing every totals event behind a slow reader — frequent totals
-  would grow the buffer with values already out of date.
+  send buffer until the gateway reads them; a heartbeat is skipped while earlier
+  events are still waiting. Totals never queue: while the buffer waits to drain, one
+  push is held and sent on drain with the totals of that moment. A stream whose socket
+  takes nothing for **30 s** (the plugin's `stalledStreamTimeoutMs`) is closed; the
+  gateway reconnects. Rejected: queueing every totals event behind a slow reader —
+  frequent totals would grow the buffer with values already out of date.
 - The stream ends when the gateway disconnects (the control plane drops its
-  subscription), after a `resync`, when it stalls (Slow readers), or when the control
-  plane shuts down — the gateway
-  reconnects (to another replica, or with backoff) with the version it runs.
+  subscription), when it stalls (Slow readers), on a rollback, or when the control
+  plane shuts down — the gateway reconnects (to another replica, or with backoff) and
+  takes the current config and totals again.
 
 ## Messages (settled 2026-09-24)
 
@@ -209,85 +206,65 @@ the `{ error, detail }` body, `error` being the stable code:
 
 | Message (fixture kind) | Shape |
 | --- | --- |
-| config snapshot (`config-snapshot`) | `{ config_epoch, version, config }` — `config` is a full config document |
-| totals (`totals`) | `{ revision, config_epoch, config_version, live_gateways, counted_through, windows: [window…] }` |
+| config event (`config-event`) | `{ config_hash, config }` — `config` is a full config document |
+| totals (`totals`) | `{ live_gateways, counted_through, windows: [window…] }` |
 | totals window | `{ group?, type, window_start, used }` |
-| resync (`resync`) | `{}` |
 | usage record (`usage-record`) | the record (Usage records) |
 | usage batch (`usage-batch`) | `{ batch: { instance, epoch, sequence }, records: [record…] }` |
-| usage ack (`usage-ack`) | `{ batch: { instance, epoch, sequence }, totals }` |
-| status (`status`) | `{ instance, protocol_version, state, started_at, applied_config_version, applied_config_epoch, last_rejection, backends, models }` |
+| usage ack (`usage-ack`) | `{ batch: { instance, epoch, sequence } }` |
+| status (`status`) | `{ instance, protocol_version, state, started_at, applied_config_hash, last_rejection, backends, models }` |
 | status backend | `{ in_flight, max_in_flight?, deployments: { <backend model name>: { circuit, opened_at? } } }` |
 | status model | `{ queued }` |
 
 - **Stream events**: SSE `event:` names the event, `data:` holds one JSON message on
-  one line: `config` → a config snapshot, `totals` → totals, `resync` → resync. The
-  event name picks the schema; the data carries no type field of its own. A `config`
-  event's `id:` is its version.
-- **Config snapshot**: a snapshot is valid only if its config passes the config schema
-  and the semantic rules. The gateway reads the envelope first and hands the config
-  to its config loader: a config it rejects is a *config rejection* — kept out of
-  force and reported in status with its version and codes — not a malformed message.
+  one line: `config` → a config event, `totals` → totals. The event name picks the
+  schema; the data carries no type field of its own.
+- **Config event**: valid only if its config passes the config schema and the
+  semantic rules. The gateway reads the envelope first and hands the config to its
+  config loader: a config it rejects is a *config rejection* — kept out of force and
+  reported in status with its hash and codes — not a malformed message.
 - **Usage batch**: `epoch` is 32 lowercase hex digits (128 random bits, new with each
   fresh spool); `sequence` starts at 1 and increases by one per batch within the
   epoch. A batch holds **1 to 500 records**: a gateway with nothing to report sends
   nothing, and a gateway with more queues further batches behind the outstanding one.
   Every record's `gateway_instance` is the batch's instance, and record IDs are unique
   within a batch.
-- **Usage ack**: the batch ID it acknowledges — counted now or before, the answer is
-  the same — and the totals after it, made for the batch's instance (its
-  `counted_through` is at or past the batch).
-- **Totals** — the `totals` event's data and every ack's `totals`, one shape, made
-  for one gateway (the stream's, or the acknowledged batch's instance):
-  - `revision` — orders totals messages (settled 2026-09-24; the store's sequence
-    2026-10-06): an integer from 0, the store's **totals sequence**, which moves on by
-    one with every change to the totals — a counted batch, a publish, a change to the
-    live set — whichever control-plane process made it, and never goes back while the
-    store keeps its config epoch (Control-plane processes). Pushes and acks travel on
-    different connections — with several processes, to different processes — so a
-    push read before an ack can arrive after it; the revision keeps the gateway from
-    going back to older totals. The gateway applies a message's totals only when its
-    `config_epoch` is the epoch of the config the gateway runs and its revision is
-    **higher** than the last applied in that epoch (the first in an epoch is applied
-    whatever its revision). A message of another epoch is not applied: its windows
-    could not be used (they follow their config, below), and its revision orders
-    nothing in this store — a delayed answer from a store that started over is
-    ignored that way, and the totals of a new store arrive again on the stream that
-    opens after the gateway takes that store's config. What any message shows
-    counted still counts (`counted_through`, below). Rejected: a revision per
-    control-plane process (`{ control_plane, sequence }`, with the gateway
-    remembering the processes it moved away from) — it ordered one process
-    restarting, never several running at once, whose sequences cannot be compared.
-  - `config_epoch`, `config_version` — the config whose limits the totals were
-    computed under: the store's epoch and the version in it, as a snapshot names a
-    config (settled 2026-09-25, H3). A gateway applies the windows only when both
-    equal its applied config's (`GATEWAY.md`, Limits → Control-plane mode: Totals
-    follow their config); a version alone is ambiguous across stores.
+- **Usage ack** (settled 2026-10-07): the batch ID it acknowledges — counted now or
+  before, the answer is the same — and nothing else. The gateway drops the batch from
+  its spool; its own usage leaves its counters only through stream totals (Totals:
+  `counted_through`). Rejected: fresh totals in every ack (settled 2026-09-24) — acks
+  and stream pushes travel on different connections and crossed, so the gateway had
+  to order totals by a revision, and a store restored to an earlier sequence then
+  had its totals ignored.
+- **Totals** — the `totals` event's data, made for the stream's gateway:
+  - **No order on the wire** (settled 2026-10-07): totals travel only on the stream,
+    and the process that holds the stream sends them in order (Config stream →
+    Order). The gateway applies each one as it comes. Rejected: a `revision` on every
+    totals message, ordered by the gateway (settled 2026-09-24; the store's sequence
+    2026-10-06) — needed only while acks carried totals too.
   - `live_gateways` — the live-gateway count. Each gateway enforces its share of
     every per-minute limit (limit ÷ count, rounded down, at least 1 unless the limit
     is 0) and of every backend `max_in_flight` cap (cap ÷ count, rounded up, at least
-    1), treating 0 as 1 (Totals → Per-minute windows). The ack carries the count too,
-    so one shape serves both.
+    1), treating 0 as 1 (Totals → Per-minute windows).
   - `counted_through` — `{ epoch, sequence }`, the last usage batch the control plane
     has counted for the recipient's instance, or `null` before its first (settled
-    2026-09-24). On any totals message — newer or not — the gateway stops counting as
-    its own usage every batch of that epoch at or below it: those are inside the
-    totals it applies now or applied before. So a push that already includes a batch
-    whose ack has not arrived works like that ack, and nothing is counted twice. The
-    ack stays the only thing that removes a batch from the spool.
+    2026-09-24). When the gateway applies a totals message it stops counting as its
+    own usage every batch of that epoch at or below it: those are inside the windows
+    it now applies. Between an ack and the next push the gateway keeps counting the
+    acknowledged batch as its own — about a second, a conservative over-count, never
+    a double count (settled 2026-10-07).
   - **Consistent snapshot**: a message's windows include exactly the batches the
-    control plane had counted at its revision — `counted_through` among them. The
+    control plane had counted when it read them — `counted_through` among them. The
     store guarantees it (settled 2026-10-06, Control-plane processes): a batch's
-    counting and its step of the sequence are one store write, and a message's
-    revision, `counted_through` and windows are read from one store snapshot, so it
-    holds whichever process counted and whichever reads. It is what lets the gateway
-    act on `counted_through` from a message older than the totals it holds.
-    Rejected: a sequence without that guarantee, where a message could show a batch
-    counted that the applied totals lack — usage dropped from enforcement until the
+    counting is one store write, and a message's `counted_through` and windows are
+    read from one store snapshot, so it holds whichever process counted and whichever
+    reads. Rejected: a read without that guarantee, where a message could show a
+    batch counted that its windows lack — usage dropped from enforcement until the
     next push.
-  - `windows` — **complete**: every hour and month limit with usage in the control
-    plane's current window, one entry per limit. A limit not listed has used nothing
-    in the control plane's current window. Per-minute limits are never listed.
+  - `windows` — **complete**: every hour and month limit of the current config with
+    usage in the control plane's current window, one entry per limit. A limit not
+    listed has used nothing in the control plane's current window. Per-minute limits
+    are never listed.
   - A window names its limit by the identity a config reload keeps a counter by
     (`GATEWAY.md`, Limits; settled 2026-09-27, model set removed 2026-10-06): `group`
     (the group the limit belongs to; absent for a global limit) and `type`
@@ -306,30 +283,28 @@ the `{ error, detail }` body, `error` being the stable code:
     number with a documented 2^53 bound (a silently rounded budget total is the worst
     failure mode), and strings for USD only (one representation for every `used` keeps
     one parsing path).
-- **Matching totals to limits** (enforced by the gateway, `GATEWAY.md`, Limits): only
-  totals computed under the gateway's applied config apply; then a
-  window applies to the gateway's counter with the same group (or global) and type.
-  Its `used` is the counter's pushed base for the window
+- **Matching totals to limits** (enforced by the gateway, `GATEWAY.md`, Limits;
+  settled 2026-10-07): a window applies to the gateway's counter with the same group
+  (or global) and type, **whatever config the gateway runs** — windows are counted per
+  scope and type whatever the config (Usage intake → Counted toward), so they mean the
+  same under every config. Its `used` is the counter's pushed base for the window
   `window_start` names; a window newer than the counter's current one starts that
-  window. A window matching no counter (the configs differ) is ignored; a counter
-  with no window has a pushed base of 0.
+  window. A window matching no counter (a limit the gateway's config does not have)
+  is ignored; a counter with no window has a pushed base of 0. Rejected: applying
+  totals only when they were computed under the gateway's config (settled
+  2026-09-25, H3), with a mismatch state refusing budgets after a grace — counting no
+  longer depends on the config, and a gateway that rejected a config kept stale bases.
 - **Status**: `state` is `starting`, `ready` or `draining`; `started_at` is when the
-  gateway process started; `applied_config_version` is `null` until a config from the
-  control plane (or its last-known-good copy) is applied — a gateway serving its seed
-  config reports `ready` with `null` (settled 2026-09-25: `ready` means a config is
-  in force); `applied_config_epoch` is the epoch that version counts in, `null`
-  exactly when the version is (settled 2026-09-25, N-P1: a version compares only
-  within its epoch — without it a gateway running an old store's v3 from its
-  last-known-good copy read as the current store's v3); `last_rejection` is `{ version, codes }` when **the latest config the
-  gateway received from the control plane was rejected**, else `null` (`codes`: the
-  rejection's issue codes, as the gateway logs them) — set on a rejection, cleared when
-  a later config is applied, whatever the version numbers (settled 2026-09-24): after a
-  control-plane restart versions count from 1 again, so a rejected config can be below
-  the applied version, and hiding it would leave the control plane unaware its config
-  was refused. Rejected: reporting a rejection only while its version is above the
-  applied one. A last-known-good boot does not clear it (that copy is not a config the
-  control plane sent). Routing state (settled 2026-09-24), both collections empty
-  before the first config is applied:
+  gateway process started; `applied_config_hash` is the `config_hash` of the applied
+  config, `null` until a config from the control plane (or its last-known-good copy)
+  is applied — a gateway serving its seed config reports `ready` with `null` (settled
+  2026-09-25: `ready` means a config is in force); `last_rejection` is
+  `{ config_hash, codes }` when **the latest config the gateway received from the
+  control plane was rejected**, else `null` (`codes`: the rejection's issue codes, as
+  the gateway logs them) — set on a rejection, cleared when a later config is applied
+  (settled 2026-09-24). A last-known-good boot does not clear it (that copy is not a
+  config the control plane sent). Routing state (settled 2026-09-24), both
+  collections empty before the first config is applied:
   - `backends` — backend ID → `{ in_flight, max_in_flight?, deployments }`: every
     backend of the applied config (idle ones with `in_flight` 0, so the control plane
     sees each cap), plus any backend a reload dropped while requests on it still run
@@ -357,7 +332,7 @@ the `{ error, detail }` body, `error` being the stable code:
     instance;
   - `record-id-duplicate` — two records in a batch share a record ID.
 
-  A config snapshot also reports its config's own codes. Schema violations have no
+  A config event also reports its config's own codes. Schema violations have no
   per-rule code, as for config.
 - **Repeated members** (settled 2026-09-25; the independent audit's finding 1): a
   message or config in which an object names a member twice, at any depth, is
@@ -505,7 +480,7 @@ the `{ error, detail }` body, `error` being the stable code:
     restart: a fleet-wide crash loop. The value is a constant in both halves.
   - **Parents never change** once published: a move is a delete and a create.
     `kaiak-control` refuses a publish that changes one (`group-parent-changed`,
-    Config versions); the gateway does not check it. A group created again under an
+    Current config); the gateway does not check it. A group created again under an
     ID used before is a new group in the tree, but not a fresh budget: its windows
     are keyed by the ID (Usage intake → Totals).
   - **Labels**: `labels` maps a key (`^[a-z][a-z0-9_.-]{0,62}$`) to a value of 1 to
@@ -631,10 +606,10 @@ the `{ error, detail }` body, `error` being the stable code:
 - Strict: unknown fields and wrong types are invalid, and the gateway refuses an
   object naming a member twice (`duplicate-member`; Messages → repeated members). A
   gateway that rejects a config keeps its current one and reports the rejection
-  (version + reason) in its status.
+  (its `config_hash` and codes) in its status.
 - Provider credentials appear only as environment-variable names. A backend's
   `base_url` carries no userinfo (`user:password@`; settled 2026-09-25): a URL
-  credential would travel in snapshots, last-known-good copies and host pages.
+  credential would travel in config events, last-known-good copies and host pages.
 - The same document format is used by file mode and by the sample control plane's
   config file.
 
@@ -691,10 +666,10 @@ the `{ error, detail }` body, `error` being the stable code:
   has already counted (a resend after a lost ack) is acked again without counting —
   delivery is at-least-once, counting exactly-once, with constant state per gateway.
   Record IDs stay in the records for audit and storage.
-- **The ack carries the fresh totals** the batch produced. On ack the gateway drops the
-  batch from the spool, and — in one step — adopts the totals if they are newer and
-  stops counting the batch as its own (Messages → Totals: revision,
-  `counted_through`), so its own usage is never counted twice or missed in between.
+- **The ack names the batch and nothing else** (settled 2026-10-07): on ack the
+  gateway drops the batch from the spool. It keeps counting the batch as its own until
+  stream totals show it counted (Messages → Totals: `counted_through`), so its own
+  usage is never counted twice or missed in between.
 - Batches are sealed every 5 s or at 500 records, whichever comes first. With a data
   directory they are written to it (the spool) before they are sent, so a restart
   resends them with their IDs, and a crash loses only the records settled since the
@@ -708,8 +683,8 @@ the `{ error, detail }` body, `error` being the stable code:
     first send, and a restart never seals other records under a sequence already
     used.
   - The outstanding batch is retried with the **same ID** after a network error, a
-    `5xx` (`503 config-unavailable` included), a malformed ack or an ack naming
-    another batch, on the reconnect backoff (Config stream).
+    `5xx`, a malformed ack or an ack naming another batch, on the reconnect backoff
+    (Config stream).
   - A refusal that means the batch itself can never be accepted — `400`/`413` with
     `usage-batch-invalid`, `record-instance-mismatch`, `record-id-duplicate`,
     `timestamp-invalid`, `instance-mismatch` or `request-invalid` — **sets the batch
@@ -736,10 +711,11 @@ How the control plane takes `POST /v1/usage`, as `kaiak-control` implements it.
   violation `400` with the rule's code (`record-instance-mismatch`,
   `record-id-duplicate`, `timestamp-invalid`; the first one found, every issue in
   `detail`); the batch's instance equal to the `Kaiak-Instance` header, else `400
-  instance-mismatch` (the code status reports use too); a published config, else `503
-  config-unavailable` — with no config there are no limits to count toward and no
-  `config_version` to answer with, so nothing is counted and the gateway keeps the
-  batch and retries.
+  instance-mismatch` (the code status reports use too). A batch is counted whether or
+  not a config has been published (settled 2026-10-07): counting does not depend on
+  the config (Counted whatever the config), and the ack carries nothing a config is
+  needed for. Rejected: `503 config-unavailable` before the first publish (settled
+  2026-09-24) — it existed because counting and the ack's totals needed a config.
 - **De-duplication** by the last counted batch ID per instance: no batch yet → counted;
   same epoch and a sequence above the last → counted (a skipped sequence is counted
   too and logged: records lost on the gateway side are its loss, and the control plane
@@ -750,8 +726,8 @@ How the control plane takes `POST /v1/usage`, as `kaiak-control` implements it.
   write (below) decides, so two copies racing (a retry beside the original) are
   counted once either way.
 - **Counted atomically**: the batch ID becomes the instance's last, its amounts join
-  the totals, its records join the recent records and the totals sequence moves on by
-  one (Messages → Totals: `revision`) in one store write — a batch is counted and
+  the totals, its records join the recent records and the store's sequence moves on by
+  one (Control-plane processes) in one store write — a batch is counted and
   remembered, or neither. Rejected: separate writes, where a crash between them loses
   a batch or counts it twice.
 - **Counted whatever the config** (settled 2026-10-06): a batch's amounts do not
@@ -799,8 +775,8 @@ How the control plane takes `POST /v1/usage`, as `kaiak-control` implements it.
   record) still count toward their windows, which no limit lists; the listed groups
   that remain and global count as always — so usage settled just before a delete
   counts toward the ancestors that remain, and records stay readable after the tree
-  is reorganized. Parents never change (Config
-  versions), so a listed group that still exists has the ancestors it had when the
+  is reorganized. Parents never change (Current
+  config), so a listed group that still exists has the ancestors it had when the
   record was made — unless it was deleted and created again under the same ID,
   which counting cannot tell apart (the record counts toward what the ID names
   now, as its windows do: Totals). Rejected: dropping such records, which would
@@ -842,10 +818,10 @@ How the control plane takes `POST /v1/usage`, as `kaiak-control` implements it.
   allowance instead would let each of N gateways spend all of it. The overshoot is
   bounded by the other gateways' unreported usage — about one batch interval each
   (principle 6).
-- Totals are pushed after each batch that changes them, at most once a second per
-  gateway, and in every ack — each time the complete set (Messages, Totals). The push
-  rules — on connect, on a publish and on live-set changes too, coalescing, slow
-  readers — are in Config stream.
+- Totals are pushed on the stream after each batch that changes them, at most once a
+  second per gateway — each time the complete set (Messages, Totals). The push rules —
+  on connect, on a publish and on live-set changes too, coalescing, order, slow
+  readers — are in Config stream. Acks carry no totals (Usage batches).
 - **Editing a limit keeps its spend** (settled 2026-10-06): a limit is identified by
   its scope and type, so a new value applies to the window's spend so far, on both
   sides, with nothing to carry. It replaces the model-set carry-over (settled
@@ -863,7 +839,7 @@ How the control plane takes `POST /v1/usage`, as `kaiak-control` implements it.
 ## Gateway status
 
 - Sent on connect (when the client starts, and whenever a config stream connects), on
-  change (state, applied config version, last rejection, a model's queue becoming
+  change (state, applied config, last rejection, a model's queue becoming
   non-empty or empty — not its depth changing in between, which the 10 s report
   carries: status traffic stays low under load — and a deployment's circuit opening
   or closing; these routing changes are spaced by a 1 s minimum gap: one inside the
@@ -871,7 +847,7 @@ How the control plane takes `POST /v1/usage`, as `kaiak-control` implements it.
   such report a second — `GATEWAY.md`, Status minimum gap), and every 10 s (settled
   2026-09-24: a failed report is simply retried by the next one; nothing waits for
   it): instance ID, protocol version, state
-  (starting / ready / draining), start time, applied config version, last rejection,
+  (starting / ready / draining), start time, applied config hash, last rejection,
   in-flight counts and caps per backend, queued requests per model, circuit state
   per deployment (exact fields: Messages, Status).
 - A gateway silent for 30 s is dropped from the live set, and the live-gateway count
@@ -941,25 +917,25 @@ How the control plane takes `POST /v1/status`, as `kaiak-control` implements it.
   `kaiak-control` holds every protocol rule on top of its store contract; its
   in-memory store serves one process (`control/kaiak-control/GUIDE.md`, the store).
 - **What the store guarantees**, to every process:
-  - **One totals sequence** per store (Messages → Totals: `revision`): it moves on by
-    one with every change to the totals — a counted batch, a publish, a gateway
-    joining or leaving the live set — in the same write as the change, and never goes
-    back while the store keeps its config epoch. A store that loses or rolls back its
-    state (a restore from a backup included) takes a new config epoch, as its
-    versions would otherwise clash too (Config versions → Config epoch).
-  - **Conditional writes**: every write that changes the totals, the config versions
+  - **One sequence** per store, kept by the store and used only inside the control
+    plane: it moves on by one with every change to the totals or the current config —
+    a counted batch, a publish, a gateway joining or leaving the live set — in the same
+    write as the change. Processes use it to keep what they send on each stream in
+    order (Config stream → Order), and a process that sees it go back closes its
+    streams (Config stream → Rollback). Nothing on the wire carries it.
+  - **Conditional writes**: every write that changes the totals, the current config
     or the live set is made only if what it was computed from is still the store's
     state, else nothing is written and the process computes again — a counted batch
-    on its instance's last batch (Usage intake), a publish on the latest version
-    (Config versions), a status or an expiry on the gateway record it read (Status
-    intake). Publishes and batches never condition on each other (Usage intake →
-    Counted whatever the config).
-  - **Consistent reads**: a totals message's revision, `counted_through` and windows
-    come from one store snapshot (Messages → Totals: consistent snapshot).
+    on its instance's last batch (Usage intake), a publish on the config it was
+    checked against (Current config), a status or an expiry on the gateway record it
+    read (Status intake). Publishes and batches never condition on each other (Usage
+    intake → Counted whatever the config).
+  - **Consistent reads**: a totals message's `counted_through` and windows come from
+    one store snapshot (Messages → Totals: consistent snapshot).
   - **Change notification**: every process hears of every publish, totals change and
-    live-set change any process made, so each pushes to the streams it holds (Config
-    stream). A process that misses one leaves its streams' totals stale until the next
-    change; usage acks carry fresh totals whatever the stream does.
+    live-set change any process made, so each sends to the streams it holds (Config
+    stream). A process that misses a notification leaves its streams behind until
+    the next change of that kind.
 - **Processes start and stop freely**: no process owns the store, so rolling updates,
   restarts and replicas need no ordering. The expiry sweep runs on every process
   (Status intake). What a process keeps for itself — the streams it holds, the
@@ -969,8 +945,9 @@ How the control plane takes `POST /v1/status`, as `kaiak-control` implements it.
     kept deployments from running replicas, and a process that stalled past the
     lease had to stop;
   - a leader for the sweep — conditional writes make running it everywhere safe;
-  - a revision per process (`{ control_plane, sequence }`) — it ordered one process
-    restarting, never several running at once (Messages → Totals);
+  - a revision per process (`{ control_plane, sequence }`), and later one per store
+    (settled 2026-10-06), carried on totals for gateways to order — superseded by
+    totals on the stream only, ordered by their sender (Config stream → Order);
   - the core polling the store for changes made elsewhere — change notification is
     the store's guarantee, and a second mechanism for the same concern would stack a
     safety net on it.
@@ -993,30 +970,24 @@ How the control plane takes `POST /v1/status`, as `kaiak-control` implements it.
   control plane is back. Other models keep serving — unpriced models included, whatever
   USD limit names them: they cost nothing (settled 2026-09-25, D6; `GATEWAY.md`,
   Limits → Unpriced models).
-- **What counts as an outage** (settled 2026-09-24): contact is a snapshot fetched,
-  bytes on the config stream (heartbeats included) or a usage ack, and an open
+- **What counts as an outage** (settled 2026-09-24): contact is bytes on the config
+  stream (heartbeats included) or a usage ack, and an open
   stream is contact while it stays open; the outage is no open stream and no
   contact for longer than the grace, counted from the gateway's start when it never
   reached the control plane (a last-known-good or seed boot). A request is refused when its
-  model has a price in force and any limit that applies to it — any of its scopes, a
-  — is a `usd_per_month` limit: `503 budget_unavailable` (`GATEWAY.md`, Client API). The
+  model has a price in force and any limit that applies to it — any scope on its
+  path — is a `usd_per_month` limit: `503 budget_unavailable` (`GATEWAY.md`, Client API). The
   first contact ends it; status reports are not counted as contact (they are
   best-effort and carry nothing back). While usage batches wait for an answer, the
   gateway is also in outage once they have waited past the grace, an open stream
   notwithstanding (settled 2026-09-25, M16; `GATEWAY.md`, Limits → Usage acks count
   for money limits).
-- **Not an outage, same refusal**: while the newest totals are for another config
-  than the one the gateway applied (typically a config it rejected) for longer than
-  the grace, the same models get the same `503 budget_unavailable` — the control
-  plane is reachable but counts other limits (`GATEWAY.md`, Limits → Control-plane
-  mode: totals follow their config). It shows in `kaiak_control_config_mismatch`,
-  not in `kaiak_control_outage` (settled 2026-09-25, N-P3): the remedy is the
-  config, not the control plane.
 - **Not an outage, same refusal: no totals yet** (settled 2026-09-25, D8): a gateway
-  that has not yet applied totals for its config since it started (nor restored
-  them from its data directory) does not know the spend, and refuses the same
+  that has not yet applied totals since it started (nor restored them from its data
+  directory) does not know the spend, and refuses the same
   models the same way until they arrive. Its readiness waits for them within the
   boot wait (`GATEWAY.md`, Control-plane mode → Readiness waits for the first
   totals), so this shows only when they are late; the totals that follow the
   config on every stream connect (Config stream) end it.
-- On reconnect: snapshot, resume the stream, send the held batches in order.
+- On reconnect: the stream sends the current config and totals; the held batches go
+  in order.
