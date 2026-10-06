@@ -140,7 +140,7 @@ the limits.
     - overload and rate limit → neutral with the cooldown (as `429`);
     - caller codes and Anthropic `invalid_request_error` → neutral, not retried;
     - `server_error`, `api_error`, unknown or missing → failure.
-- **M5 — Responses and Messages references to server-stored objects pass** [A][P]
+- **M5 — Responses and Messages references to server-stored objects pass** (decided 2026-10-06: refuse) [A][P]
   `rare` / `adversarial`
   - `server/inbound_responses.go:42`.
   - Responses:
@@ -197,7 +197,7 @@ Fixes are cheap unless noted.
 - **L5 — `anthropic` probe needs the exact listed id** [A] `occasional`. A deployment
   using an alias the list doesn't return stays open after its circuit opens. The
   config-time check warns. Fix: docs ("use the ids the models list returns").
-- **L6 — `azure-anthropic` verify says ok without contacting anything** [A]
+- **L6 — `azure-anthropic` verify says ok without contacting anything** (decided 2026-10-06: not checkable) [A]
   `occasional`. The always-pass probe is as decided; the verify result reads as
   "verified". Fix: report it as not checkable (an `ok: false` code or a distinct
   status). Decide in review.

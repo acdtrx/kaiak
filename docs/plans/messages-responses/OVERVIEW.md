@@ -275,6 +275,9 @@ its own branch after this one merges; the release waits for both.
 - **Phase 4 — live kit, end to end, docs** (steps 6–7). Green at the end.
   6. `STEP-6-live-kit.md`
   7. `STEP-7-e2e-and-docs.md`
+- **Phase 5 — review fixes** (step 8). Green at the end.
+  8. `STEP-8-review-fixes.md`: the pre-merge review's findings
+     (`docs/reviews/2026-10-06/AUDIT.md`).
 
 Expected reds inside phase 1:
 - After step 1, both halves fail the new fixtures and the version checks. Step 2
