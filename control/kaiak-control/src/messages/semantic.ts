@@ -31,17 +31,17 @@ export function checkUsageRecord(record: UsageRecord, path = ""): ValidationIssu
   return issues;
 }
 
-export function checkTotals(totals: Totals, path = ""): ValidationIssue[] {
+export function checkTotals(totals: Totals): ValidationIssue[] {
   const { issues, report } = collector();
   const seen = new Map<string, number>();
   totals.windows.forEach((window, index) => {
-    const windowPath = pointer(path, "windows", index);
+    const windowPath = pointer("/windows", index);
     checkTimestamp(window.window_start, pointer(windowPath, "window_start"), report);
     // A window belongs to one limit: its group (or global) and type.
     const identity = JSON.stringify([window.group ?? null, window.type]);
     const first = seen.get(identity);
     if (first !== undefined) {
-      report("totals-window-duplicate", windowPath, `same limit as ${pointer(path, "windows", first)}`);
+      report("totals-window-duplicate", windowPath, `same limit as ${pointer("/windows", first)}`);
       return;
     }
     seen.set(identity, index);

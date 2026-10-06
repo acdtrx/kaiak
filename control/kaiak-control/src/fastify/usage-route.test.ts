@@ -58,7 +58,7 @@ async function postUsage(base: string, body: unknown, headers: Record<string, st
   return fetch(`${base}/v1/usage`, { method: "POST", headers, body: JSON.stringify(body) });
 }
 
-test("a batch is answered with its ack carrying the totals", async () => {
+test("a batch is answered with its ack naming the batch only", async () => {
   const { base, controlPlane } = await start();
   const response = await postUsage(base, BATCH);
   assert.equal(response.status, 200);
@@ -66,9 +66,8 @@ test("a batch is answered with its ack carrying the totals", async () => {
   const ack: unknown = await response.json();
   const validation = validateUsageAck(ack);
   assert.ok(validation.ok, "the ack passes its schema");
-  assert.deepEqual(validation.message.batch, BATCH.batch);
-  assert.deepEqual(validation.message.totals, await controlPlane.totals("gw-1"));
-  assert.ok(validation.message.totals.windows.length > 0, "the batch counted");
+  assert.deepEqual(ack, { batch: BATCH.batch });
+  assert.ok(((await controlPlane.totals("gw-1"))?.windows.length ?? 0) > 0, "the batch counted");
 
   // The resend after a lost ack gets the same answer.
   const resent = await postUsage(base, BATCH);
@@ -100,11 +99,11 @@ test("invalid batches are refused with their codes", async () => {
   assert.equal(((await notJson.json()) as { error: string }).error, "request-invalid");
 });
 
-test("a batch before any config is answered 503 config-unavailable", async () => {
+test("a batch before any config is counted and acked", async () => {
   const { base } = await start(false);
   const response = await postUsage(base, BATCH);
-  assert.equal(response.status, 503);
-  assert.equal(((await response.json()) as { error: string }).error, "config-unavailable");
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { batch: BATCH.batch });
 });
 
 test("a batch without the token is refused before intake", async () => {

@@ -9,8 +9,10 @@ import Fastify from "fastify";
 import type { Config } from "../config/index.ts";
 import { createControlPlane } from "../control-plane/index.ts";
 import type { ControlPlane } from "../control-plane/index.ts";
-import { validateConfigSnapshot } from "../messages/index.ts";
+import { configHash } from "../config-publishing/index.ts";
+import { validateConfigEvent } from "../messages/index.ts";
 import { createMemoryStore } from "../storage/index.ts";
+import type { ControlPlaneStore } from "../storage/index.ts";
 
 import { controlProtocolPlugin } from "./index.ts";
 import type { ControlProtocolPluginOptions } from "./index.ts";
@@ -35,11 +37,10 @@ function configNumbered(n: number): Config {
   return config;
 }
 
-function newControlPlane(configHistorySize = 100): ControlPlane {
+function newControlPlane(store: ControlPlaneStore = createMemoryStore()): ControlPlane {
   return createControlPlane({
-    store: createMemoryStore(),
+    store,
     token: TOKEN,
-    configHistorySize,
     onListenerError: (error) => assert.fail(`listener failed: ${String(error)}`),
   });
 }
@@ -53,8 +54,6 @@ async function publish(controlPlane: ControlPlane, ...numbers: number[]): Promis
 
 interface RunningApp {
   base: string;
-  // The control plane's config epoch, which a stream names with its since.
-  epoch: string;
   close(): Promise<void>;
 }
 
@@ -77,30 +76,31 @@ async function startApp(
   assert.ok(address && typeof address === "object", "listening on a TCP port");
   const started = {
     base: `http://127.0.0.1:${address.port}`,
-    epoch: await controlPlane.configEpoch(),
     close: () => app.close(),
   };
   running.push(started);
   return started;
 }
 
-async function openStream(app: RunningApp, since: number, epoch = app.epoch): Promise<SseStream> {
-  const stream = await openSseStream(`${app.base}/v1/stream?since=${since}&config_epoch=${epoch}`, GATEWAY_HEADERS);
+async function openStream(app: RunningApp): Promise<SseStream> {
+  const stream = await openSseStream(`${app.base}/v1/stream`, GATEWAY_HEADERS);
   openStreams.push(stream);
   assert.equal(stream.response.status, 200);
   return stream;
 }
 
-// The version a config event carries, after checking the event is a valid snapshot
-// whose id is that version.
-function configVersionOf(item: SseItem): number {
+// Which configNumbered a config event carries, after checking the event is a valid
+// config event whose hash is its config's.
+function configNumberOf(item: SseItem): number {
   assert.equal(item.kind, "event");
   assert.ok(item.kind === "event");
   assert.equal(item.event, "config");
-  const validation = validateConfigSnapshot(JSON.parse(item.data));
-  assert.ok(validation.ok, "the data is a valid config snapshot");
-  assert.equal(item.id, String(validation.message.version));
-  return validation.message.version;
+  assert.equal(item.id, undefined, "config events carry no id: there is nothing to resume from");
+  const validation = validateConfigEvent(JSON.parse(item.data));
+  assert.ok(validation.ok, "the data is a valid config event");
+  const { config, config_hash } = validation.message;
+  assert.equal(config_hash, configHash(config));
+  return (config.models["llama"]?.metadata.context_length ?? 0) - 1000;
 }
 
 // The next event or comment other than totals, which the stream also pushes on connect
@@ -119,19 +119,10 @@ async function nextConfigOrEnd(stream: SseStream): Promise<SseItem> {
   }
 }
 
-async function nextVersions(stream: SseStream, count: number): Promise<number[]> {
-  const versions: number[] = [];
-  for (let n = 0; n < count; n++) versions.push(configVersionOf(await nextConfigOrEnd(stream)));
-  return versions;
-}
-
-async function assertResyncThenEnd(stream: SseStream): Promise<void> {
-  const item = await stream.nextEvent();
-  assert.deepEqual(item.kind === "event" && { event: item.event, data: JSON.parse(item.data) }, {
-    event: "resync",
-    data: {},
-  });
-  assert.deepEqual(await stream.nextEvent(), { kind: "end" });
+async function nextConfigs(stream: SseStream, count: number): Promise<number[]> {
+  const numbers: number[] = [];
+  for (let n = 0; n < count; n++) numbers.push(configNumberOf(await nextConfigOrEnd(stream)));
+  return numbers;
 }
 
 // Wraps a core so a test sees how many config subscriptions are active.
@@ -160,40 +151,6 @@ function countingSubscriptions(controlPlane: ControlPlane) {
   return { controlPlane: counted, activeReaches };
 }
 
-describe("GET /v1/config", { timeout: 10_000 }, () => {
-  test("answers the current version's snapshot, with the protocol header", async () => {
-    const controlPlane = newControlPlane();
-    await publish(controlPlane, 1, 2);
-    const app = await startApp(controlPlane);
-
-    const response = await fetch(`${app.base}/v1/config`, { headers: GATEWAY_HEADERS });
-    assert.equal(response.status, 200);
-    assert.equal(response.headers.get("kaiak-protocol"), "5");
-    const body: unknown = await response.json();
-    assert.deepEqual(body, { config_epoch: app.epoch, version: 2, config: configNumbered(2) });
-    assert.ok(validateConfigSnapshot(body).ok);
-  });
-
-  test("answers 503 config-unavailable before anything is published", async () => {
-    const app = await startApp(newControlPlane());
-    const response = await fetch(`${app.base}/v1/config`, { headers: GATEWAY_HEADERS });
-    assert.equal(response.status, 503);
-    assert.equal(response.headers.get("kaiak-protocol"), "5");
-    const body = (await response.json()) as { error: string; detail: string };
-    assert.equal(body.error, "config-unavailable");
-    assert.equal(typeof body.detail, "string");
-  });
-
-  test("mounts under a prefix the host chooses", async () => {
-    const controlPlane = newControlPlane();
-    await publish(controlPlane, 1);
-    const app = await startApp(controlPlane, { prefix: "/control/v1" });
-    const response = await fetch(`${app.base}/control/v1/config`, { headers: GATEWAY_HEADERS });
-    assert.equal(response.status, 200);
-    assert.equal((await fetch(`${app.base}/v1/config`, { headers: GATEWAY_HEADERS })).status, 404);
-  });
-});
-
 describe("request checks", { timeout: 10_000 }, () => {
   const failures = [
     { name: "no token", headers: { ...GATEWAY_HEADERS, authorization: "" }, status: 401, error: "unauthorized" },
@@ -217,7 +174,7 @@ describe("request checks", { timeout: 10_000 }, () => {
     },
   ];
 
-  for (const endpoint of ["/v1/config", "/v1/stream?since=1"]) {
+  for (const endpoint of ["/v1/stream", "/v1/status"]) {
     for (const failure of failures) {
       test(`${endpoint} with ${failure.name} answers ${failure.status} ${failure.error}`, async () => {
         const controlPlane = newControlPlane();
@@ -234,41 +191,14 @@ describe("request checks", { timeout: 10_000 }, () => {
       });
     }
   }
-
-  const epoch = "0123456789abcdef0123456789abcdef";
-  for (const since of [
-    "",
-    "since=",
-    "since=abc",
-    "since=-1",
-    "since=1.5",
-    "since=01",
-    "since=1&since=2",
-    "since=1",
-    `config_epoch=${epoch}`,
-    "since=1&config_epoch=",
-    "since=1&config_epoch=0123456789ABCDEF0123456789ABCDEF",
-    `since=1&config_epoch=${epoch}&config_epoch=${epoch}`,
-  ]) {
-    test(`/v1/stream?${since} answers 400 since-invalid`, async () => {
-      const controlPlane = newControlPlane();
-      await publish(controlPlane, 1);
-      const app = await startApp(controlPlane);
-      const response = await fetch(`${app.base}/v1/stream?${since}`, { headers: GATEWAY_HEADERS });
-      assert.equal(response.status, 400);
-      assert.equal(response.headers.get("kaiak-protocol"), "5");
-      const body = (await response.json()) as { error: string; detail: unknown };
-      assert.equal(body.error, "since-invalid");
-      assert.equal(typeof body.detail, "string");
-    });
-  }
 });
 
 describe("answers outside the routes", { timeout: 10_000 }, () => {
   const cases = [
     { name: "an unknown path", method: "GET", path: "/v1/nothing-here" },
-    { name: "a method the protocol does not define", method: "DELETE", path: "/v1/config" },
-    { name: "HEAD on the stream", method: "HEAD", path: "/v1/stream?since=1" },
+    { name: "a method the protocol does not define", method: "DELETE", path: "/v1/stream" },
+    { name: "HEAD on the stream", method: "HEAD", path: "/v1/stream" },
+    { name: "GET /v1/config: the stream is the one way to get the config", method: "GET", path: "/v1/config" },
   ];
   for (const { name, method, path: requestPath } of cases) {
     test(`${name} answers 404 not-found with the protocol header`, async () => {
@@ -307,7 +237,7 @@ describe("answers outside the routes", { timeout: 10_000 }, () => {
     ] as const) {
       const headers = new Headers(GATEWAY_HEADERS);
       headers.append(name, GATEWAY_HEADERS[name]);
-      const response = await fetch(`${app.base}/v1/config`, { headers });
+      const response = await fetch(`${app.base}/v1/stream`, { headers });
       assert.equal(response.status, 400);
       assert.equal(((await response.json()) as { error: string }).error, error);
     }
@@ -318,7 +248,7 @@ describe("GET /v1/stream", { timeout: 10_000 }, () => {
   test("is an uncached event stream carrying the protocol header", async () => {
     const controlPlane = newControlPlane();
     await publish(controlPlane, 1);
-    const stream = await openStream(await startApp(controlPlane), 1);
+    const stream = await openStream(await startApp(controlPlane));
     const headers = stream.response.headers;
     assert.equal(headers.get("content-type"), "text/event-stream; charset=utf-8");
     assert.equal(headers.get("cache-control"), "no-cache");
@@ -327,63 +257,64 @@ describe("GET /v1/stream", { timeout: 10_000 }, () => {
     assert.equal(headers.get("content-encoding"), null);
   });
 
-  test("delivers a config published while connected", async () => {
+  test("on connect it sends the current config, then the totals", async () => {
+    const controlPlane = newControlPlane();
+    await publish(controlPlane, 1, 2, 3);
+    const stream = await openStream(await startApp(controlPlane));
+    const first = await stream.nextEvent();
+    assert.equal(configNumberOf(first), 3);
+    assert.ok(first.kind === "event");
+    assert.deepEqual(JSON.parse(first.data), { config_hash: configHash(configNumbered(3)), config: configNumbered(3) });
+    const second = await stream.nextEvent();
+    assert.ok(second.kind === "event" && second.event === "totals");
+  });
+
+  test("mounts under a prefix the host chooses", async () => {
     const controlPlane = newControlPlane();
     await publish(controlPlane, 1);
-    const stream = await openStream(await startApp(controlPlane), 1);
+    const app = await startApp(controlPlane, { prefix: "/control/v1" });
+    const stream = await openSseStream(`${app.base}/control/v1/stream`, GATEWAY_HEADERS);
+    openStreams.push(stream);
+    assert.equal(stream.response.status, 200);
+    assert.deepEqual(await nextConfigs(stream, 1), [1]);
+    assert.equal((await fetch(`${app.base}/v1/stream`, { headers: GATEWAY_HEADERS })).status, 404);
+  });
+
+  test("before anything is published the stream stays open, then gets the first config and totals", async () => {
+    const controlPlane = newControlPlane();
+    const stream = await openStream(await startApp(controlPlane, { heartbeatIntervalMs: 20 }));
+    assert.deepEqual(await stream.next(), { kind: "comment", text: "heartbeat" });
+    await publish(controlPlane, 1);
+    assert.deepEqual(await nextConfigs(stream, 1), [1]);
+    const totals = await stream.nextEvent();
+    assert.ok(totals.kind === "event" && totals.event === "totals");
+  });
+
+  test("delivers every config published while connected", async () => {
+    const controlPlane = newControlPlane();
+    await publish(controlPlane, 1);
+    const stream = await openStream(await startApp(controlPlane));
+    assert.deepEqual(await nextConfigs(stream, 1), [1]);
     await publish(controlPlane, 2);
-    const item = await nextConfigOrEnd(stream);
-    assert.equal(configVersionOf(item), 2);
-    assert.ok(item.kind === "event");
-    assert.deepEqual(JSON.parse(item.data), { config_epoch: await controlPlane.configEpoch(), version: 2, config: configNumbered(2) });
-  });
-
-  test("resuming replays exactly the newer versions, oldest first, then goes live", async () => {
-    const controlPlane = newControlPlane();
-    await publish(controlPlane, 1, 2, 3, 4);
-    const stream = await openStream(await startApp(controlPlane), 2);
-    assert.deepEqual(await nextVersions(stream, 2), [3, 4]);
-    await publish(controlPlane, 5);
-    assert.deepEqual(await nextVersions(stream, 1), [5]);
-  });
-
-  test("since the current version replays nothing, then goes live", async () => {
-    const controlPlane = newControlPlane();
-    await publish(controlPlane, 1, 2);
-    const stream = await openStream(await startApp(controlPlane), 2);
     await publish(controlPlane, 3);
-    assert.deepEqual(await nextVersions(stream, 1), [3]);
+    assert.deepEqual(await nextConfigs(stream, 2), [2, 3]);
   });
 
-  test("since from another epoch sends resync, even at the current version number", async () => {
-    // A gateway that followed another store (or this one before it started over) up
-    // to version 2: the number matches, the config does not.
+  test("a store restored to an older config sends it like any other on a new stream", async () => {
     const controlPlane = newControlPlane();
     await publish(controlPlane, 1, 2);
     const app = await startApp(controlPlane);
-    await assertResyncThenEnd(await openStream(app, 2, "0123456789abcdef0123456789abcdef"));
-  });
-
-  test("since older than the history sends resync and ends the stream", async () => {
-    const controlPlane = newControlPlane(2);
-    await publish(controlPlane, 1, 2, 3, 4);
-    await assertResyncThenEnd(await openStream(await startApp(controlPlane), 1));
-  });
-
-  test("since ahead of the current version sends resync and ends the stream", async () => {
-    const controlPlane = newControlPlane();
-    await publish(controlPlane, 1, 2);
-    await assertResyncThenEnd(await openStream(await startApp(controlPlane), 9));
-  });
-
-  test("before anything is published, any since gets resync", async () => {
-    await assertResyncThenEnd(await openStream(await startApp(newControlPlane()), 0));
+    assert.deepEqual(await nextConfigs(await openStream(app), 1), [2]);
+    // The current config is config 1 again: a new stream gets it, nothing refuses it.
+    await publish(controlPlane, 1);
+    assert.deepEqual(await nextConfigs(await openStream(app), 1), [1]);
   });
 
   test("an idle stream carries heartbeat comments", async () => {
     const controlPlane = newControlPlane();
     await publish(controlPlane, 1);
-    const stream = await openStream(await startApp(controlPlane, { heartbeatIntervalMs: 20 }), 1);
+    const stream = await openStream(await startApp(controlPlane, { heartbeatIntervalMs: 20 }));
+    assert.deepEqual(await nextConfigs(stream, 1), [1]);
     assert.deepEqual(await nextWithoutTotals(stream), { kind: "comment", text: "heartbeat" });
     assert.deepEqual(await nextWithoutTotals(stream), { kind: "comment", text: "heartbeat" });
   });
@@ -393,7 +324,7 @@ describe("GET /v1/stream", { timeout: 10_000 }, () => {
     await publish(core, 1);
     const { controlPlane, activeReaches } = countingSubscriptions(core);
     const app = await startApp(controlPlane, { heartbeatIntervalMs: 20 });
-    const stream = await openStream(app, 1);
+    const stream = await openStream(app);
     await activeReaches(1);
     stream.close();
     await activeReaches(0);
@@ -406,47 +337,91 @@ describe("GET /v1/stream", { timeout: 10_000 }, () => {
     await publish(core, 1);
     const { controlPlane, activeReaches } = countingSubscriptions(core);
     const app = await startApp(controlPlane);
-    const streams = await Promise.all(Array.from({ length: 50 }, () => openStream(app, 1)));
+    const streams = await Promise.all(Array.from({ length: 50 }, () => openStream(app)));
     await activeReaches(50);
+    for (const stream of streams) assert.deepEqual(await nextConfigs(stream, 1), [1]);
     await publish(core, 2);
-    for (const stream of streams) assert.deepEqual(await nextVersions(stream, 1), [2]);
+    for (const stream of streams) assert.deepEqual(await nextConfigs(stream, 1), [2]);
     for (const stream of streams) stream.close();
     await activeReaches(0);
   });
 
-  test("a version published while the replay is read is delivered exactly once", async () => {
+  test("a config published while the current config is read is sent once, after it", async () => {
     const core = newControlPlane();
     await publish(core, 1);
-    // The publish lands after the stream subscribed and before it reads the replay, so
-    // the version reaches it twice: from the subscription and in the replay.
+    // The publish lands after the stream subscribed and before its read returns: the
+    // config reaches it both ways, and is sent once.
     const controlPlane: ControlPlane = {
       ...core,
-      async configsSince(version) {
+      async currentConfig() {
+        const read = await core.currentConfig();
         await publish(core, 2);
-        return core.configsSince(version);
+        return read;
       },
     };
-    const stream = await openStream(await startApp(controlPlane), 1);
-    assert.deepEqual(await nextVersions(stream, 1), [2]);
+    const stream = await openStream(await startApp(controlPlane));
+    assert.deepEqual(await nextConfigs(stream, 2), [1, 2]);
     await publish(core, 3);
-    assert.deepEqual(await nextVersions(stream, 1), [3]);
+    assert.deepEqual(await nextConfigs(stream, 1), [3]);
   });
 
-  test("a version published after the replay is read, before it is written, is delivered once, in order", async () => {
+  test("a connect read overtaken by a newer config is not sent after it", async () => {
     const core = newControlPlane();
-    await publish(core, 1, 2);
+    await publish(core, 1);
+    // The connect read sees config 1, but the newer config 2 reaches the stream first:
+    // sending config 1 after it would put the gateway back on a config no longer current.
+    let releaseRead = (): void => {};
+    const readHeld = new Promise<void>((resolve) => (releaseRead = resolve));
     const controlPlane: ControlPlane = {
       ...core,
-      async configsSince(version) {
-        const answer = await core.configsSince(version);
-        await publish(core, 3);
-        return answer;
+      async currentConfig() {
+        const read = await core.currentConfig();
+        await readHeld;
+        return read;
       },
     };
-    const stream = await openStream(await startApp(controlPlane), 1);
-    assert.deepEqual(await nextVersions(stream, 2), [2, 3]);
-    await publish(core, 4);
-    assert.deepEqual(await nextVersions(stream, 1), [4]);
+    const app = await startApp(controlPlane);
+    const opened = openStream(app);
+    await publish(core, 2);
+    releaseRead();
+    const stream = await opened;
+    assert.deepEqual(await nextConfigs(stream, 1), [2]);
+    await publish(core, 3);
+    assert.deepEqual(await nextConfigs(stream, 1), [3]);
+  });
+
+  test("a store going back ends every stream; the gateways reconnect to its current state", async () => {
+    const inner = createMemoryStore();
+    let back = 0;
+    const store: ControlPlaneStore = {
+      ...inner,
+      async currentConfig() {
+        const current = await inner.currentConfig();
+        return current && { ...current, sequence: current.sequence - back };
+      },
+      async totalsSnapshot(current, instance) {
+        const snapshot = await inner.totalsSnapshot(current, instance);
+        return { ...snapshot, sequence: snapshot.sequence - back };
+      },
+      subscribe(listener) {
+        return inner.subscribe((change) => listener({ ...change, sequence: change.sequence - back }));
+      },
+    };
+    const controlPlane = newControlPlane(store);
+    await publish(controlPlane, 1, 2, 3);
+    const app = await startApp(controlPlane);
+    const streams = [await openStream(app), await openStream(app)];
+    for (const stream of streams) assert.deepEqual(await nextConfigs(stream, 1), [3]);
+
+    // Restored to a copy two writes behind: the next write shows it.
+    back = 2;
+    await publish(controlPlane, 1);
+    for (const stream of streams) {
+      let item = await nextWithoutTotals(stream);
+      // A config event may still go out before the rollback is seen.
+      while (item.kind !== "end") item = await nextWithoutTotals(stream);
+    }
+    assert.deepEqual(await nextConfigs(await openStream(app), 1), [1]);
   });
 
   test("closing the app ends open streams", async () => {
@@ -454,9 +429,10 @@ describe("GET /v1/stream", { timeout: 10_000 }, () => {
     await publish(core, 1);
     const { controlPlane, activeReaches } = countingSubscriptions(core);
     const app = await startApp(controlPlane);
-    const stream = await openStream(app, 1);
+    const stream = await openStream(app);
     await activeReaches(1);
     await app.close();
+    assert.deepEqual(await nextConfigs(stream, 1), [1]);
     assert.deepEqual(await nextConfigOrEnd(stream), { kind: "end" });
     await activeReaches(0);
   });

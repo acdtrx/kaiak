@@ -2,14 +2,14 @@
 // Budgets, Messages → Totals): batches taken exactly once per batch ID, their records
 // stamped with the control plane's receipt time and counted into the hour and month
 // windows of every scope on their path — each in its gateway_time window when that is
-// the current or previous one — and totals of the current windows for acks and pushes,
-// each read from one store snapshot under the store's totals sequence. Nothing here is
-// held per process that another process could disagree with: the store decides which
-// batches count and orders the totals.
+// the current or previous one — whether or not a config is published, and totals of
+// the current windows for stream pushes, each read from one store snapshot. Nothing
+// here is held per process that another process could disagree with: the store decides
+// which batches count.
 
 import { validateUsageBatch } from "../messages/index.ts";
 import type { BatchId, Totals, TotalsWindow, UsageAck, UsageBatch } from "../messages/index.ts";
-import type { ControlPlaneStore, CurrentWindows, ReceivedRecord, StoredConfig } from "../storage/index.ts";
+import type { ControlPlaneStore, CurrentConfig, CurrentWindows, ReceivedRecord } from "../storage/index.ts";
 
 import { batchAdditions, limitedWindowsOf, windowKeyOf } from "./aggregate.ts";
 import type { LimitedWindow } from "./aggregate.ts";
@@ -26,14 +26,12 @@ export type BatchOutcome = "first" | "next" | "gap" | "new-epoch" | "duplicate";
 
 export interface UsageBatchError {
   // "usage-batch-invalid" (schema violation), a message rule code
-  // ("record-instance-mismatch", "record-id-duplicate", "timestamp-invalid"),
-  // "instance-mismatch" (the body's instance is not the requester's), or
-  // "config-unavailable" (nothing published yet, so there are no totals to answer
-  // with — the gateway keeps the batch and retries).
+  // ("record-instance-mismatch", "record-id-duplicate", "timestamp-invalid"), or
+  // "instance-mismatch" (the body's instance is not the requester's).
   code: string;
   message: string;
   // The HTTP status an adapter answers with.
-  status: 400 | 503;
+  status: 400;
 }
 
 export type UsageIntake =
@@ -45,9 +43,9 @@ export type TotalsChangedListener = () => void;
 export interface Usage {
   // Takes one usage batch from `instance` (the requester's checked instance ID).
   acceptUsageBatch(instance: string, doc: unknown): Promise<UsageIntake>;
-  // The totals of the current windows under the latest config as the gateway
-  // `instance` gets them (its counted_through); undefined before the first config is
-  // published.
+  // The totals of the current windows the current config limits, as the gateway
+  // `instance` gets them on its stream (its counted_through); undefined before the
+  // first config is published.
   totals(instance: string): Promise<Totals | undefined>;
   // The newest received records, newest first.
   recentRecords(): Promise<ReceivedRecord[]>;
@@ -66,6 +64,9 @@ export interface UsageOptions {
   clock: () => number;
   // How many received records recentRecords keeps.
   recentRecordsSize: number;
+  // Hears of every store sequence a totals read sees (CONTROL-PROTOCOL.md, Config
+  // stream → Rollback).
+  observeSequence: (sequence: number) => void;
   // Called for each totals listener that throws (the batch is counted either way).
   onListenerError: (error: unknown) => void;
 }
@@ -74,7 +75,7 @@ export interface UsageOptions {
 // A window past it is reported at the ceiling — beyond any limit a config can express.
 const MAX_USED = 10n ** 18n - 1n;
 
-export function createUsage({ store, clock, recentRecordsSize, onListenerError }: UsageOptions): Usage {
+export function createUsage({ store, clock, recentRecordsSize, observeSequence, onListenerError }: UsageOptions): Usage {
   if (!Number.isSafeInteger(recentRecordsSize) || recentRecordsSize < 0) {
     throw Object.assign(new Error(`recent records size must be a non-negative integer, got ${recentRecordsSize}`), {
       code: "recent-records-size-invalid",
@@ -86,16 +87,16 @@ export function createUsage({ store, clock, recentRecordsSize, onListenerError }
   // its original here is decided without a refused write; across processes the
   // store's conditional write decides.
   const queues = new Map<string, Promise<unknown>>();
-  // A cache of the latest config's limited windows, by version: derived from the
+  // A cache of the current config's limited windows, by its hash: derived from the
   // store's config, never a decision of its own.
-  let limitedCache: { version: number; limited: LimitedWindow[] } | undefined;
+  let limitedCache: { hash: string; limited: LimitedWindow[] } | undefined;
   // The hour this process last pruned past windows in: pruning is idempotent, so
   // every process prunes on its own first batch of an hour.
   let prunedHourStart: number | undefined;
 
-  const limitedOf = (config: StoredConfig): LimitedWindow[] => {
-    if (limitedCache?.version !== config.version) {
-      limitedCache = { version: config.version, limited: limitedWindowsOf(config.config) };
+  const limitedOf = (config: CurrentConfig): LimitedWindow[] => {
+    if (limitedCache?.hash !== config.hash) {
+      limitedCache = { hash: config.hash, limited: limitedWindowsOf(config.config) };
     }
     return limitedCache.limited;
   };
@@ -128,11 +129,9 @@ export function createUsage({ store, clock, recentRecordsSize, onListenerError }
   const totalsAt = async (instance: string, now: number): Promise<Totals | undefined> => {
     const windows = currentWindows(now);
     const snapshot = await store.totalsSnapshot(windows, instance);
+    observeSequence(snapshot.sequence);
     if (!snapshot.config) return undefined;
     return {
-      revision: snapshot.sequence,
-      config_epoch: await store.configEpoch(),
-      config_version: snapshot.config.version,
       live_gateways: snapshot.liveGateways,
       counted_through: snapshot.last ? { epoch: snapshot.last.epoch, sequence: snapshot.last.sequence } : null,
       windows: listedWindows(limitedOf(snapshot.config), snapshot.windows, windows),
@@ -147,13 +146,6 @@ export function createUsage({ store, clock, recentRecordsSize, onListenerError }
   };
 
   const countBatch = async ({ batch, records }: UsageBatch): Promise<UsageIntake> => {
-    if (!(await store.latestConfig())) {
-      return {
-        ok: false,
-        error: { code: "config-unavailable", message: "no config has been published yet", status: 503 },
-      };
-    }
-
     // The write is conditional on the last batch the outcome was decided against: when
     // another writer counted a batch of this instance in between, nothing is written
     // and the outcome is decided again against the store's last batch — so a batch is
@@ -181,10 +173,7 @@ export function createUsage({ store, clock, recentRecordsSize, onListenerError }
       outcome = outcomeOf(batch, previous);
     }
 
-    const totals = await totalsAt(batch.instance, clock());
-    // A config is published and versions are never withdrawn, so totals exist.
-    if (!totals) throw Object.assign(new Error("no config after one was read"), { code: "config-missing" });
-    return { ok: true, ack: { batch, totals }, outcome, ...(previous !== undefined && { previous }) };
+    return { ok: true, ack: { batch }, outcome, ...(previous !== undefined && { previous }) };
   };
 
   return {

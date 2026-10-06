@@ -4,9 +4,7 @@
 
 import type { FastifyInstance, FastifyPluginAsync, FastifyRequest } from "fastify";
 
-import type { ConfigPosition } from "../config-versions/index.ts";
 import type { ControlPlane } from "../control-plane/index.ts";
-import type { ConfigSnapshot } from "../messages/index.ts";
 import { PROTOCOL_HEADER, PROTOCOL_VERSION, errorBody } from "../protocol/index.ts";
 import type { ErrorBody } from "../protocol/index.ts";
 
@@ -86,6 +84,13 @@ function registerGatewayRoutes(routes: FastifyInstance, options: ControlProtocol
 
   // The core starts with the app: it runs the expiry sweep, without which the live set
   // never shrinks.
+  // A store that went back under this core may hold less than its streams were sent:
+  // every stream ends, and the gateways reconnect to the store's current state.
+  const unsubscribeRollback = controlPlane.onRollback(() => {
+    if (openStreams.size === 0) return;
+    routes.log.warn({ streams: openStreams.size }, "the store's sequence went back; ending every gateway stream");
+    for (const end of openStreams) end();
+  });
   routes.addHook("onReady", async () => {
     await controlPlane.start();
   });
@@ -93,6 +98,7 @@ function registerGatewayRoutes(routes: FastifyInstance, options: ControlProtocol
     for (const end of openStreams) end();
   });
   routes.addHook("onClose", async () => {
+    unsubscribeRollback();
     await controlPlane.stop();
   });
 
@@ -113,20 +119,6 @@ function registerGatewayRoutes(routes: FastifyInstance, options: ControlProtocol
   routes.setNotFoundHandler(async (request, reply) => {
     const body: ErrorBody = { error: "not-found", detail: `no ${request.method} ${request.url} in the control protocol` };
     return reply.code(404).send(body);
-  });
-
-  routes.get("/config", async (_request, reply) => {
-    const current = await controlPlane.currentConfig();
-    if (!current) {
-      const body: ErrorBody = { error: "config-unavailable", detail: "no config has been published yet" };
-      return reply.code(503).send(body);
-    }
-    const snapshot: ConfigSnapshot = {
-      config_epoch: await controlPlane.configEpoch(),
-      version: current.version,
-      config: current.config,
-    };
-    return snapshot;
   });
 
   routes.post("/usage", { bodyLimit: USAGE_BODY_LIMIT_BYTES }, async (request, reply) => {
@@ -167,11 +159,8 @@ function registerGatewayRoutes(routes: FastifyInstance, options: ControlProtocol
 
   // A HEAD request would open a stream with no body to carry it.
   routes.get("/stream", { exposeHeadRoute: false }, async (request, reply) => {
-    const since = readPosition(request.query);
-    if ("error" in since) return reply.code(400).send(since);
     await streamToGateway(reply, {
       core: controlPlane,
-      since,
       instance: instanceOf(request),
       heartbeatIntervalMs,
       totalsPushIntervalMs,
@@ -180,33 +169,6 @@ function registerGatewayRoutes(routes: FastifyInstance, options: ControlProtocol
       log: request.log,
     });
   });
-}
-
-const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
-const EPOCH = /^[0-9a-f]{32}$/;
-
-// The resume position is required: `since`, the version the gateway runs (a
-// non-negative integer), and `config_epoch`, the epoch it counts in.
-function readPosition(query: unknown): ConfigPosition | ErrorBody {
-  const read = (name: string): unknown =>
-    typeof query === "object" && query !== null && name in query ? (query as Record<string, unknown>)[name] : undefined;
-  const since = read("since");
-  const epoch = read("config_epoch");
-  if (typeof since !== "string" || !DECIMAL.test(since) || !Number.isSafeInteger(Number(since))) {
-    const detail =
-      since === undefined
-        ? "the since query parameter is required"
-        : "since must be one non-negative integer, the config version the gateway runs";
-    return { error: "since-invalid", detail };
-  }
-  if (typeof epoch !== "string" || !EPOCH.test(epoch)) {
-    const detail =
-      epoch === undefined
-        ? "the config_epoch query parameter is required with since"
-        : "config_epoch must be one epoch, 32 lowercase hex digits";
-    return { error: "since-invalid", detail };
-  }
-  return { epoch, version: Number(since) };
 }
 
 function statusOf(error: unknown): number {

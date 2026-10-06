@@ -15,27 +15,16 @@ const FULL = path.join(FIXTURES, "config/valid/full.json");
 const MIXED_BATCH = path.join(FIXTURES, "messages/usage-batch/valid/mixed-groups.json");
 const READY_STATUS = path.join(FIXTURES, "messages/status/valid/ready.json");
 
-test("the core publishes, serves and resumes config versions with its clock", async () => {
+test("the core publishes and serves the current config with its clock", async () => {
   const controlPlane = createControlPlane({ store: createMemoryStore(), token: "t", clock: () => 42 });
-  const heard: number[] = [];
-  controlPlane.onConfigPublished((published) => heard.push(published.version));
+  const heard: string[] = [];
+  controlPlane.onConfigPublished((published) => heard.push(published.hash));
 
   const result = await controlPlane.publishConfig(JSON.parse(readFileSync(MINIMAL, "utf8")));
   assert.ok(result.ok);
   assert.equal(result.published.publishedAt, 42);
-  assert.equal((await controlPlane.currentConfig())?.version, 1);
-  const epoch = await controlPlane.configEpoch();
-  assert.deepEqual(await controlPlane.configsSince({ epoch, version: 1 }), { resync: false, epoch, configs: [] });
-  assert.deepEqual(heard, [1]);
-});
-
-test("the core's history size bounds resuming", async () => {
-  const controlPlane = createControlPlane({ store: createMemoryStore(), token: "t", configHistorySize: 1 });
-  const doc: unknown = JSON.parse(readFileSync(MINIMAL, "utf8"));
-  for (let n = 0; n < 3; n++) await controlPlane.publishConfig(doc);
-  const epoch = await controlPlane.configEpoch();
-  assert.deepEqual(await controlPlane.configsSince({ epoch, version: 1 }), { resync: true });
-  assert.equal((await controlPlane.configsSince({ epoch, version: 2 })).resync, false);
+  assert.equal((await controlPlane.currentConfig())?.hash, result.published.hash);
+  assert.deepEqual(heard, [result.published.hash]);
 });
 
 test("the core checks gateway requests against its token", () => {
@@ -50,13 +39,13 @@ test("the core checks gateway requests against its token", () => {
 });
 
 test("a listener's failure goes to the host's handler, not to the publish", async () => {
-  const failures: number[] = [];
+  const failures: string[] = [];
   const controlPlane = createControlPlane({
     store: createMemoryStore(),
     token: "t",
     onListenerError: (_error, event) => {
       assert.equal(event.type, "config-published");
-      if (event.type === "config-published") failures.push(event.published.version);
+      if (event.type === "config-published") failures.push(event.published.hash);
     },
   });
   controlPlane.onConfigPublished(() => {
@@ -64,7 +53,7 @@ test("a listener's failure goes to the host's handler, not to the publish", asyn
   });
   const result = await controlPlane.publishConfig(JSON.parse(readFileSync(MINIMAL, "utf8")));
   assert.ok(result.ok);
-  assert.deepEqual(failures, [1]);
+  assert.deepEqual(failures, [result.published.hash]);
 });
 
 test("an empty token is refused", () => {
@@ -84,15 +73,17 @@ test("the core takes usage batches with its clock and reports totals listener fa
     throw new Error("broken");
   });
   assert.ok((await controlPlane.publishConfig(JSON.parse(readFileSync(FULL, "utf8")))).ok);
-  const intake = await controlPlane.acceptUsageBatch("gw-1", JSON.parse(readFileSync(MIXED_BATCH, "utf8")));
+  const batch = JSON.parse(readFileSync(MIXED_BATCH, "utf8")) as { batch: unknown };
+  const intake = await controlPlane.acceptUsageBatch("gw-1", batch);
   assert.ok(intake.ok);
-  assert.equal(intake.ack.totals.live_gateways, 0);
-  assert.deepEqual(intake.ack.totals, await controlPlane.totals("gw-1"));
+  // The ack names the batch only; the totals reach the gateway on its stream.
+  assert.deepEqual(intake.ack, { batch: batch.batch });
+  assert.equal((await controlPlane.totals("gw-1"))?.live_gateways, 0);
   assert.equal((await controlPlane.recentRecords()).length, 1);
   assert.deepEqual(events, ["totals-changed"]);
 });
 
-test("the live set's size is the live-gateway count in totals and acks", async () => {
+test("the live set's size is the live-gateway count in totals", async () => {
   let now = Date.UTC(2026, 8, 24, 10, 30);
   const events: string[] = [];
   const controlPlane = createControlPlane({
@@ -111,9 +102,6 @@ test("the live set's size is the live-gateway count in totals and acks", async (
     assert.ok((await controlPlane.acceptStatus(instance, { ...status, instance })).ok);
   }
   assert.equal((await controlPlane.totals("gw-1"))?.live_gateways, 2);
-  const intake = await controlPlane.acceptUsageBatch("gw-1", JSON.parse(readFileSync(MIXED_BATCH, "utf8")));
-  assert.ok(intake.ok);
-  assert.equal(intake.ack.totals.live_gateways, 2);
 
   now += 1_000;
   assert.deepEqual((await controlPlane.expireSilentGateways("manual")).expired, ["gw-1", "gw-2"]);
@@ -218,29 +206,30 @@ describe("several cores over one store", () => {
     assert.equal(await usd(b, "carol"), "240");
   });
 
-  test("totals read through either core carry one revision", async () => {
+  test("totals read through either core are the same", async () => {
     const store = createMemoryStore();
     const [a, b] = [core(store), core(store)];
     assert.ok((await a.publishConfig(full())).ok);
     assert.ok((await b.acceptUsageBatch("gw-1", carolBatch("gw-1", 1, 5))).ok);
     const [ta, tb] = [await a.totals("gw-1"), await b.totals("gw-1")];
     assert.deepEqual(ta, tb);
-    assert.equal(ta?.revision, 2);
+    assert.deepEqual(ta?.counted_through, { epoch: "e".repeat(32), sequence: 1 });
   });
 
   test("a publish through one core reaches the other core's listeners, and their totals follow", async () => {
     const store = createMemoryStore();
     const [a, b] = [core(store), core(store)];
-    const heardByB: number[] = [];
+    const heardByB: string[] = [];
     let totalsHeardByB = 0;
-    b.onConfigPublished((published) => heardByB.push(published.version));
+    b.onConfigPublished((published) => heardByB.push(published.hash));
     b.onTotalsChanged(() => (totalsHeardByB += 1));
-    assert.ok((await a.publishConfig(full())).ok);
+    const result = await a.publishConfig(full());
+    assert.ok(result.ok);
     assert.ok((await a.acceptUsageBatch("gw-1", carolBatch("gw-1", 1, 5))).ok);
     await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual(heardByB, [1]);
+    assert.deepEqual(heardByB, [result.published.hash]);
     assert.equal(totalsHeardByB, 1);
-    assert.equal((await b.totals("gw-1"))?.config_version, 1);
+    assert.equal(await usd(b, "carol"), "5");
   });
 
   test("publishes and batches racing on two cores never refuse each other", async () => {
@@ -254,7 +243,7 @@ describe("several cores over one store", () => {
     }
     const results = await Promise.all(work);
     assert.ok(results.every((result) => result.ok));
-    assert.equal((await b.currentConfig())?.version, 11);
+    assert.deepEqual((await b.currentConfig())?.config, full());
     assert.equal(await usd(a, "carol"), "10");
   });
 
@@ -290,4 +279,55 @@ describe("several cores over one store", () => {
     await swept;
     assert.equal(await b.liveGateways(), 1);
   });
+});
+
+// A memory store whose sequences can be set back, as a store restored from a backup or
+// failed over to a copy behind it reads.
+function restorableStore(): { store: ControlPlaneStore; setBack: (by: number) => void } {
+  const inner = createMemoryStore();
+  let back = 0;
+  const store: ControlPlaneStore = {
+    ...inner,
+    async currentConfig() {
+      const current = await inner.currentConfig();
+      return current && { ...current, sequence: current.sequence - back };
+    },
+    async totalsSnapshot(current, instance) {
+      const snapshot = await inner.totalsSnapshot(current, instance);
+      return { ...snapshot, sequence: snapshot.sequence - back };
+    },
+    subscribe(listener) {
+      return inner.subscribe((change) => listener({ ...change, sequence: change.sequence - back }));
+    },
+  };
+  return { store, setBack: (by) => (back = by) };
+}
+
+test("a store sequence going back is a rollback the core announces; going on is not", async () => {
+  const { store, setBack } = restorableStore();
+  const controlPlane = createControlPlane({ store, token: "t" });
+  let rollbacks = 0;
+  const unsubscribe = controlPlane.onRollback(() => (rollbacks += 1));
+  const doc: unknown = JSON.parse(readFileSync(FULL, "utf8"));
+  assert.ok((await controlPlane.publishConfig(doc)).ok);
+  assert.ok((await controlPlane.publishConfig(doc)).ok);
+  await controlPlane.totals("gw-1");
+  assert.equal(rollbacks, 0);
+
+  // The store goes back two writes: the next read shows it, once.
+  setBack(2);
+  await controlPlane.totals("gw-1");
+  assert.equal(rollbacks, 1);
+  await controlPlane.totals("gw-1");
+  assert.equal(rollbacks, 1, "the core reads on from where the store is now");
+
+  // A write after the rollback moves on from the restored sequence: no new rollback.
+  assert.ok((await controlPlane.publishConfig(doc)).ok);
+  assert.equal(rollbacks, 1);
+
+  unsubscribe();
+  unsubscribe();
+  setBack(5);
+  await controlPlane.totals("gw-1");
+  assert.equal(rollbacks, 1, "an unsubscribed listener hears nothing more");
 });

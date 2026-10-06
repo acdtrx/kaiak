@@ -4,19 +4,19 @@
 // store decides what they must agree on and tells each core of every change
 // (docs/specs/CONTROL-PROTOCOL.md, Control-plane processes).
 
-import { createConfigVersions } from "../config-versions/index.ts";
-import type { ConfigVersions } from "../config-versions/index.ts";
+import { createConfigPublishing } from "../config-publishing/index.ts";
+import type { ConfigPublishing } from "../config-publishing/index.ts";
 import { createGateways } from "../gateways/index.ts";
 import type { ExpirySweepRun, Gateways, GatewaysChange } from "../gateways/index.ts";
 import { checkGatewayRequest } from "../protocol/index.ts";
 import type { GatewayRequestCheck, RequestHeaders } from "../protocol/index.ts";
-import type { ControlPlaneStore, StoredConfig } from "../storage/index.ts";
+import type { ControlPlaneStore, CurrentConfig } from "../storage/index.ts";
 import { createUsage } from "../usage/index.ts";
 import type { Usage } from "../usage/index.ts";
 
 // What a listener that threw was being told of.
 export type ListenerEvent =
-  | { type: "config-published"; published: StoredConfig }
+  | { type: "config-published"; published: CurrentConfig }
   | { type: "totals-changed" }
   | { type: "gateways-changed"; change: GatewaysChange };
 
@@ -26,8 +26,6 @@ export interface ControlPlaneOptions {
   store: ControlPlaneStore;
   // The bearer token gateways present (KAIAK_CONTROL_TOKEN on the gateway side).
   token: string;
-  // How many recent config versions a stream can resume across. Default 100.
-  configHistorySize?: number;
   // How many received usage records recentRecords keeps. Default 100.
   recentRecordsSize?: number;
   // Milliseconds since the epoch. Default Date.now.
@@ -52,12 +50,21 @@ export interface ControlPlaneOptions {
   onListenerError?: ListenerErrorHandler;
 }
 
+// Hears that the store's sequence went back under this core: the store was restored
+// or failed over to a copy behind it (CONTROL-PROTOCOL.md, Config stream → Rollback).
+export type RollbackListener = () => void;
+
 export interface ControlPlane
-  extends ConfigVersions,
+  extends ConfigPublishing,
     Pick<Usage, "acceptUsageBatch" | "totals" | "recentRecords" | "onTotalsChanged">,
     Gateways {
   // Checks a gateway request's token, protocol version and instance ID.
   checkGatewayRequest(headers: RequestHeaders): GatewayRequestCheck;
+  // Calls listener every time this core reads a store sequence below one it read
+  // before; whatever was sent on a stream may then be ahead of the store, so an adapter
+  // ends its streams and the gateways reconnect. Returns the unsubscribe, which is safe
+  // to call more than once.
+  onRollback(listener: RollbackListener): () => void;
   // Runs the expiry sweep on its timer. Call it before serving gateways (the Fastify
   // plugin does, when the app is ready); a second call while started does nothing.
   // Every core sweeps: its writes are conditional, so cores sweeping together agree.
@@ -66,7 +73,6 @@ export interface ControlPlane
   stop(): Promise<void>;
 }
 
-const DEFAULT_CONFIG_HISTORY_SIZE = 100;
 const DEFAULT_RECENT_RECORDS_SIZE = 100;
 const DEFAULT_GATEWAY_LIVE_TIMEOUT_MS = 30_000;
 const DEFAULT_GATEWAY_FORGET_AFTER_MS = 3_600_000;
@@ -77,7 +83,6 @@ export function createControlPlane(options: ControlPlaneOptions): ControlPlane {
   const {
     store,
     token,
-    configHistorySize = DEFAULT_CONFIG_HISTORY_SIZE,
     recentRecordsSize = DEFAULT_RECENT_RECORDS_SIZE,
     clock = Date.now,
     gatewayLiveTimeoutMs = DEFAULT_GATEWAY_LIVE_TIMEOUT_MS,
@@ -90,10 +95,24 @@ export function createControlPlane(options: ControlPlaneOptions): ControlPlane {
   if (token.length === 0) {
     throw Object.assign(new Error("the gateway token must not be empty"), { code: "token-missing" });
   }
-  const configVersions = createConfigVersions({
+  // The highest store sequence this core has read; a read below it is a rollback.
+  let highestSequence = 0;
+  const rollbackListeners = new Set<RollbackListener>();
+  const observeSequence = (sequence: number): void => {
+    if (sequence >= highestSequence) {
+      highestSequence = sequence;
+      return;
+    }
+    highestSequence = sequence;
+    for (const listener of [...rollbackListeners]) listener();
+  };
+  // Every change the store announces carries its sequence: a rollback shows on the
+  // first write after it, whatever reads this core makes.
+  store.subscribe((change) => observeSequence(change.sequence));
+  const configPublishing = createConfigPublishing({
     store,
-    historySize: configHistorySize,
     clock,
+    observeSequence,
     onListenerError: (error, published) => onListenerError(error, { type: "config-published", published }),
   });
   const gateways = createGateways({
@@ -110,15 +129,14 @@ export function createControlPlane(options: ControlPlaneOptions): ControlPlane {
     store,
     clock,
     recentRecordsSize,
+    observeSequence,
     onListenerError: (error) => onListenerError(error, { type: "totals-changed" }),
   });
   let started = false;
   return {
-    publishConfig: configVersions.publishConfig,
-    currentConfig: configVersions.currentConfig,
-    configEpoch: configVersions.configEpoch,
-    configsSince: configVersions.configsSince,
-    onConfigPublished: configVersions.onConfigPublished,
+    publishConfig: configPublishing.publishConfig,
+    currentConfig: configPublishing.currentConfig,
+    onConfigPublished: configPublishing.onConfigPublished,
     acceptUsageBatch: usage.acceptUsageBatch,
     totals: usage.totals,
     recentRecords: usage.recentRecords,
@@ -131,6 +149,14 @@ export function createControlPlane(options: ControlPlaneOptions): ControlPlane {
     startExpirySweep: gateways.startExpirySweep,
     stopExpirySweep: gateways.stopExpirySweep,
     checkGatewayRequest: (headers) => checkGatewayRequest(headers, token),
+    onRollback(listener) {
+      // A wrapper, so the same function subscribed twice is two subscriptions.
+      const subscription: RollbackListener = () => listener();
+      rollbackListeners.add(subscription);
+      return () => {
+        rollbackListeners.delete(subscription);
+      };
+    },
     async start() {
       if (started) return;
       started = true;

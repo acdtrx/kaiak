@@ -22,11 +22,11 @@ export interface UsageRecord {
   gateway_time: string;
 }
 
-// GET /v1/config, and the data of a config event.
-export interface ConfigSnapshot {
-  // The store's config epoch the version counts in.
-  config_epoch: string;
-  version: number;
+// The data of a config event: the control plane's current config and its content
+// hash (lowercase hex SHA-256 of the config's JSON as sent; it identifies content and
+// carries no order).
+export interface ConfigEvent {
+  config_hash: string;
   config: Config;
 }
 
@@ -50,25 +50,15 @@ export interface BatchPosition {
   sequence: number;
 }
 
-// The data of a totals event, and part of every usage ack, as one gateway gets it: a
-// consistent snapshot whose windows include every batch counted at its revision —
-// counted_through, the recipient instance's last counted batch, among them.
+// The data of a totals event, as one gateway gets it on its stream: a consistent
+// snapshot whose windows include every batch counted at it — counted_through, the
+// recipient instance's last counted batch, among them. The gateway applies the windows
+// to the limits it runs, whatever config it runs.
 export interface Totals {
-  // The store's totals sequence at the snapshot: an integer from 0 that grows with
-  // every change to the totals, whichever process made it. Within one config epoch a
-  // gateway applies a message only when its revision is higher than the last applied.
-  revision: number;
-  // With config_version, the config the totals were computed under (the store's
-  // epoch and the version in it): a gateway applies them only to that config.
-  config_epoch: string;
-  config_version: number;
   live_gateways: number;
   counted_through: BatchPosition | null;
   windows: TotalsWindow[];
 }
-
-// The data of a resync event: an empty object.
-export type Resync = Record<string, never>;
 
 export interface BatchId {
   instance: string;
@@ -82,16 +72,15 @@ export interface UsageBatch {
   records: UsageRecord[];
 }
 
-// The answer to POST /v1/usage.
+// The answer to POST /v1/usage: the batch it acknowledges, counted now or before.
 export interface UsageAck {
   batch: BatchId;
-  totals: Totals;
 }
 
 export type GatewayState = "starting" | "ready" | "draining";
 
 export interface ConfigRejection {
-  version: number;
+  config_hash: string;
   codes: string[];
 }
 
@@ -101,13 +90,11 @@ export interface GatewayStatus {
   protocol_version: 5;
   state: GatewayState;
   started_at: string;
-  // The config in force: its version and the store epoch it counts in, both null
-  // before the first apply (and while the gateway runs its seed config).
-  applied_config_version: number | null;
-  applied_config_epoch: string | null;
+  // The config_hash of the config in force; null before the first config from the
+  // control plane is applied (and while the gateway runs its seed config).
+  applied_config_hash: string | null;
   // The latest config the gateway received, when it rejected it; null once a later
-  // one is applied. Its version may be below the applied one (a restarted control
-  // plane counts from 1 again).
+  // one is applied.
   last_rejection: ConfigRejection | null;
   // Every backend of the applied config, plus any backend a reload dropped while it
   // still has requests in flight; keyed by backend ID.

@@ -11,6 +11,7 @@ import { afterEach, describe, test } from "node:test";
 import Fastify from "fastify";
 
 import type { Config } from "../config/index.ts";
+import { configHash } from "../config-publishing/index.ts";
 import { createControlPlane } from "../control-plane/index.ts";
 import type { ControlPlane, ControlPlaneOptions } from "../control-plane/index.ts";
 import type { ExpirySweepRun } from "../gateways/index.ts";
@@ -51,8 +52,6 @@ async function publishFixture(controlPlane: ControlPlane, file: string): Promise
 
 interface RunningApp {
   base: string;
-  // The control plane's config epoch, which a stream names with its since.
-  epoch: string;
   port: number;
   close(): Promise<void>;
 }
@@ -79,11 +78,11 @@ async function startApp(
     await app.close();
   };
   closers.push(close);
-  return { base: `http://127.0.0.1:${address.port}`, epoch: await controlPlane.configEpoch(), port: address.port, close };
+  return { base: `http://127.0.0.1:${address.port}`, port: address.port, close };
 }
 
-async function openStream(app: RunningApp, since: number): Promise<SseStream> {
-  const stream = await openSseStream(`${app.base}/v1/stream?since=${since}&config_epoch=${app.epoch}`, headersFor("gw-1"));
+async function openStream(app: RunningApp): Promise<SseStream> {
+  const stream = await openSseStream(`${app.base}/v1/stream`, headersFor("gw-1"));
   closers.push(() => stream.close());
   assert.equal(stream.response.status, 200);
   return stream;
@@ -98,9 +97,18 @@ async function postStatus(app: RunningApp, instance: string, body: unknown = { .
 }
 
 // The next totals event's message, after checking it is valid and carries no id.
+// A config event before it (the stream's first, or a publish's) is skipped.
 async function nextTotals(stream: SseStream): Promise<Totals> {
-  const item = await stream.nextEvent();
+  let item = await stream.nextEvent();
+  while (item.kind === "event" && item.event === "config") item = await stream.nextEvent();
   return totalsOf(item);
+}
+
+// The config_hash of the next event, which must be a config event.
+async function nextConfigHash(stream: SseStream): Promise<string> {
+  const item = await stream.nextEvent();
+  assert.ok(item.kind === "event" && item.event === "config", "a config event");
+  return (JSON.parse(item.data) as { config_hash: string }).config_hash;
 }
 
 function totalsOf(item: SseItem): Totals {
@@ -153,7 +161,7 @@ describe("POST /v1/status", { timeout: 10_000 }, () => {
   test("a status before any config is accepted", async () => {
     const controlPlane = newControlPlane();
     const app = await startApp(controlPlane);
-    const starting = { ...READY, state: "starting", applied_config_version: null, applied_config_epoch: null };
+    const starting = { ...READY, state: "starting", applied_config_hash: null };
     assert.equal((await postStatus(app, "gw-1", starting)).status, 204);
     assert.equal(await controlPlane.liveGateways(), 1);
   });
@@ -192,7 +200,7 @@ describe("POST /v1/status", { timeout: 10_000 }, () => {
     assert.deepEqual(await controlPlane.gateways(), []);
   });
 
-  test("the plugin starts the core with the app — lease and expiry sweep — and stops it on close", async () => {
+  test("the plugin starts the core with the app — its expiry sweep — and stops it on close", async () => {
     const sweeps = new EventEmitter();
     const store = createMemoryStore();
     const core = newControlPlane({ store, expirySweepIntervalMs: 5, onExpirySweep: (run) => sweeps.emit("run", run) });
@@ -226,14 +234,14 @@ describe("POST /v1/status", { timeout: 10_000 }, () => {
       await startApp(coreA, { totalsPushIntervalMs: 10 }),
       await startApp(coreB, { totalsPushIntervalMs: 10 }),
     ];
-    const stream = await openStream(appA, 1);
-    assert.equal((await nextTotals(stream)).config_version, 1);
+    const stream = await openStream(appA);
+    assert.equal(await nextConfigHash(stream), configHash(readFixture("config/valid/minimal.json") as Config));
+    await nextTotals(stream);
 
-    // A publish through B: A's stream gets the version, then totals under it.
+    // A publish through B: A's stream gets the config, then the totals.
     await publishFixture(coreB, "full.json");
-    const config = await stream.nextEvent();
-    assert.ok(config.kind === "event" && config.event === "config" && config.id === "2");
-    assert.equal((await nextTotals(stream)).config_version, 2);
+    assert.equal(await nextConfigHash(stream), configHash(readFixture("config/valid/full.json") as Config));
+    await nextTotals(stream);
 
     // A batch posted to B: A's stream pushes the totals it produced.
     const response = await fetch(`${appB.base}/v1/usage`, {
@@ -253,36 +261,20 @@ describe("POST /v1/status", { timeout: 10_000 }, () => {
 });
 
 describe("totals on the stream", { timeout: 20_000 }, () => {
-  test("a stream gets totals right after the replay", async () => {
+  test("a stream gets totals right after the current config", async () => {
     const controlPlane = newControlPlane();
     await publishFixture(controlPlane, "minimal.json");
     await publishFixture(controlPlane, "full.json");
-    const stream = await openStream(await startApp(controlPlane), 1);
-    const config = await stream.nextEvent();
-    assert.ok(config.kind === "event" && config.event === "config" && config.id === "2");
-    // Two publishes: the revision is at 2.
-    assert.deepEqual(await nextTotals(stream), {
-      revision: 2,
-      config_epoch: await controlPlane.configEpoch(),
-      config_version: 2,
-      live_gateways: 0,
-      counted_through: null,
-      windows: [],
-    });
-  });
-
-  test("with nothing published a stream gets resync and no totals", async () => {
-    const stream = await openStream(await startApp(newControlPlane()), 0);
-    const item = await stream.nextEvent();
-    assert.ok(item.kind === "event" && item.event === "resync");
-    assert.deepEqual(await stream.nextEvent(), { kind: "end" });
+    const stream = await openStream(await startApp(controlPlane));
+    assert.equal(await nextConfigHash(stream), configHash(readFixture("config/valid/full.json") as Config));
+    assert.deepEqual(await nextTotals(stream), { live_gateways: 0, counted_through: null, windows: [] });
   });
 
   test("a counted batch pushes the totals it produced", async () => {
     const controlPlane = newControlPlane({ clock: () => Date.UTC(2026, 8, 24, 10, 30) });
     await publishFixture(controlPlane, "full.json");
     const app = await startApp(controlPlane, { totalsPushIntervalMs: 10 });
-    const stream = await openStream(app, 1);
+    const stream = await openStream(app);
     assert.deepEqual((await nextTotals(stream)).windows, []);
     const response = await fetch(`${app.base}/v1/usage`, {
       method: "POST",
@@ -290,6 +282,8 @@ describe("totals on the stream", { timeout: 20_000 }, () => {
       body: JSON.stringify(readFixture("messages/usage-batch/valid/mixed-groups.json")),
     });
     assert.equal(response.status, 200);
+    // The ack names the batch only: the totals come on the stream.
+    assert.deepEqual(Object.keys((await response.json()) as object), ["batch"]);
     const pushed = await nextTotals(stream);
     assert.ok(pushed.windows.length > 0);
     assert.deepEqual(pushed, await controlPlane.totals("gw-1"));
@@ -297,15 +291,23 @@ describe("totals on the stream", { timeout: 20_000 }, () => {
     assert.deepEqual(pushed.counted_through, { epoch: "5d41402abc4b2a76b9719d911017c592", sequence: 18 });
   });
 
-  test("a publish is followed by totals under the new version", async () => {
-    const controlPlane = newControlPlane();
-    await publishFixture(controlPlane, "minimal.json");
-    const stream = await openStream(await startApp(controlPlane, { totalsPushIntervalMs: 10 }), 1);
-    assert.equal((await nextTotals(stream)).config_version, 1);
+  test("a publish is followed by totals listing the new config's limits", async () => {
+    const controlPlane = newControlPlane({ clock: () => Date.UTC(2026, 8, 24, 10, 30) });
     await publishFixture(controlPlane, "full.json");
-    const config = await stream.nextEvent();
-    assert.ok(config.kind === "event" && config.event === "config");
-    assert.equal((await nextTotals(stream)).config_version, 2);
+    const app = await startApp(controlPlane, { totalsPushIntervalMs: 10 });
+    const stream = await openStream(app);
+    await nextTotals(stream);
+    const response = await fetch(`${app.base}/v1/usage`, {
+      method: "POST",
+      headers: { ...headersFor("gw-1"), "content-type": "application/json" },
+      body: JSON.stringify(readFixture("messages/usage-batch/valid/mixed-groups.json")),
+    });
+    assert.equal(response.status, 200);
+    assert.ok((await nextTotals(stream)).windows.length > 0);
+    // A config without limits: the counted usage stays counted, and nothing is listed.
+    await publishFixture(controlPlane, "minimal.json");
+    assert.equal(await nextConfigHash(stream), configHash(readFixture("config/valid/minimal.json") as Config));
+    assert.deepEqual((await nextTotals(stream)).windows, []);
   });
 
   test("gateways joining and leaving push the live count", async () => {
@@ -313,13 +315,11 @@ describe("totals on the stream", { timeout: 20_000 }, () => {
     const controlPlane = newControlPlane({ clock: () => now });
     await publishFixture(controlPlane, "minimal.json");
     const app = await startApp(controlPlane, { totalsPushIntervalMs: 10 });
-    const stream = await openStream(app, 1);
+    const stream = await openStream(app);
     assert.equal((await nextTotals(stream)).live_gateways, 0);
 
     assert.equal((await postStatus(app, "gw-1")).status, 204);
-    const joined = await nextTotals(stream);
-    assert.equal(joined.live_gateways, 1);
-    assert.equal(joined.revision, 2, "the join moved the revision on");
+    assert.equal((await nextTotals(stream)).live_gateways, 1);
 
     now += 30_000;
     const run = await controlPlane.expireSilentGateways("manual");
@@ -332,7 +332,7 @@ describe("totals on the stream", { timeout: 20_000 }, () => {
     const controlPlane = newControlPlane();
     await publishFixture(controlPlane, "minimal.json");
     const app = await startApp(controlPlane, { totalsPushIntervalMs: interval });
-    const stream = await openStream(app, 1);
+    const stream = await openStream(app);
     assert.equal((await nextTotals(stream)).live_gateways, 0);
     const leadingAt = performance.now();
 
@@ -370,7 +370,7 @@ describe("slow readers", { timeout: 30_000 }, () => {
 
   // A stream client on a plain socket, paused from the start. HTTP/1.0, so the body is
   // the event stream as written, with no chunk framing.
-  async function openPausedStream(app: RunningApp, since: number) {
+  async function openPausedStream(app: RunningApp) {
     const socket = net.connect(app.port, "127.0.0.1");
     socket.pause();
     closers.push(() => {
@@ -380,7 +380,7 @@ describe("slow readers", { timeout: 30_000 }, () => {
     const headers = Object.entries(headersFor("gw-1"))
       .map(([name, value]) => `${name}: ${value}\r\n`)
       .join("");
-    socket.write(`GET /v1/stream?since=${since}&config_epoch=${app.epoch} HTTP/1.0\r\nhost: 127.0.0.1\r\n${headers}\r\n`);
+    socket.write(`GET /v1/stream HTTP/1.0\r\nhost: 127.0.0.1\r\n${headers}\r\n`);
     return {
       // Starts reading; resolves with the text so far once `done` holds for it.
       async readUntil(done: (text: string) => boolean): Promise<string> {
@@ -396,10 +396,14 @@ describe("slow readers", { timeout: 30_000 }, () => {
     };
   }
 
-  // The live-gateway counts of the totals events after the config event with this id.
-  function liveCountsAfter(text: string, configId: number): number[] {
-    const start = text.indexOf(`id: ${configId}\n`);
-    if (start === -1) return [];
+  // The live-gateway counts of the totals events after the stream's nth config event
+  // (counted from 1).
+  function liveCountsAfter(text: string, configCount: number): number[] {
+    let start = -1;
+    for (let n = 0; n < configCount; n++) {
+      start = text.indexOf("event: config\n", start + 1);
+      if (start === -1) return [];
+    }
     return text
       .slice(start)
       .split("\n\n")
@@ -418,7 +422,7 @@ describe("slow readers", { timeout: 30_000 }, () => {
     await publishFixture(core, "minimal.json");
     const { controlPlane, activeReaches } = countingStreams(core);
     const app = await startApp(controlPlane, { stalledStreamTimeoutMs: 200 });
-    await openPausedStream(app, 1);
+    await openPausedStream(app);
     await activeReaches(1);
     await publishLarge(core);
     // The server ends the stream on its own; nothing on the client side moved.
@@ -430,7 +434,7 @@ describe("slow readers", { timeout: 30_000 }, () => {
     await publishFixture(core, "minimal.json");
     const { controlPlane, activeReaches } = countingStreams(core);
     const app = await startApp(controlPlane, { totalsPushIntervalMs: 10 });
-    const client = await openPausedStream(app, 1);
+    const client = await openPausedStream(app);
     await activeReaches(1);
     await publishLarge(core);
     // Every join asks for a push while the socket still holds the configs.

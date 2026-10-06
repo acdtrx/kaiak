@@ -8,9 +8,8 @@ import path from "node:path";
 import { describe, test } from "node:test";
 
 import {
-  validateConfigSnapshot,
+  validateConfigEvent,
   validateGatewayStatus,
-  validateResync,
   validateTotals,
   validateUsageAck,
   validateUsageBatch,
@@ -23,8 +22,7 @@ const CASES_FILE = "cases.json";
 
 // Each fixture directory and the validator for its message.
 const VALIDATORS: Record<string, (doc: unknown) => MessageValidation<unknown>> = {
-  "config-snapshot": validateConfigSnapshot,
-  resync: validateResync,
+  "config-event": validateConfigEvent,
   status: validateGatewayStatus,
   totals: validateTotals,
   "usage-ack": validateUsageAck,

@@ -4,6 +4,7 @@ import path from "node:path";
 import { describe, test } from "node:test";
 
 import type { Config } from "../config/index.ts";
+import { configHash } from "../config-publishing/index.ts";
 import { validateTotals } from "../messages/index.ts";
 import type { Totals, UsageBatch, UsageRecord } from "../messages/index.ts";
 import { createMemoryStore } from "../storage/index.ts";
@@ -82,7 +83,7 @@ interface Harness {
   usage: Usage;
   store: ControlPlaneStore;
   setTime(ms: number): void;
-  // Stores config as the next version.
+  // Makes config the current one.
   publish(config: Config): Promise<void>;
   listenerErrors: unknown[];
 }
@@ -95,12 +96,13 @@ async function harness(options: Partial<Omit<UsageOptions, "clock">> = {}): Prom
     store,
     clock: () => now,
     recentRecordsSize: 100,
+    observeSequence: () => {},
     onListenerError: (error) => listenerErrors.push(error),
     ...options,
   });
   const publish = async (config: Config): Promise<void> => {
-    const latest = (await store.latestConfig())?.version;
-    const written = await store.publishConfig({ version: (latest ?? 0) + 1, config, publishedAt: now }, latest, 100);
+    const current = (await store.currentConfig())?.hash;
+    const written = await store.publishConfig({ config, hash: configHash(config), publishedAt: now }, current);
     assert.ok(written.saved, "the harness's publish is stored");
   };
   await publish(fullConfig());
@@ -127,7 +129,7 @@ async function carolHourUsed(usage: Usage): Promise<string | undefined> {
 
 describe("aggregation", () => {
   test("a mixed batch counts into every scope on each path; the totals list the limited windows", async () => {
-    const { usage, store } = await harness();
+    const { usage } = await harness();
     const records = [
       // Every model counts toward every scope on the path. Token windows leave out
       // input read from the cache (eval-pipeline's 100, alice's 1024).
@@ -152,10 +154,6 @@ describe("aggregation", () => {
 
     const totals = await currentTotals(usage);
     assert.deepEqual(totals, {
-      // The publish moved the store's sequence to 1, the batch to 2.
-      revision: 2,
-      config_epoch: await store.configEpoch(),
-      config_version: 1,
       live_gateways: 0,
       counted_through: { epoch: EPOCH_A, sequence: 1 },
       windows: [
@@ -169,7 +167,7 @@ describe("aggregation", () => {
         { group: "bob", type: "tokens_per_hour", window_start: HOUR_10, used: "150" },
       ],
     });
-    assert.deepEqual(intake.ack, { batch: { instance: INSTANCE, epoch: EPOCH_A, sequence: 1 }, totals });
+    assert.deepEqual(intake.ack, { batch: { instance: INSTANCE, epoch: EPOCH_A, sequence: 1 } });
   });
 
   test("a token limit counts plain input, input written to the cache and output — not input read from it", async () => {
@@ -237,7 +235,7 @@ describe("aggregation", () => {
     const { usage, publish } = await harness();
     acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [record(EVAL, "bge-m3", [1, 0, 0, 0, 0], 10)])));
 
-    // Version 2 drops research's limits: its window leaves the totals, and keeps counting.
+    // A config without research's limits: its window leaves the totals, and keeps counting.
     const config = fullConfig();
     const research = config.groups?.["research"];
     assert.ok(research, "full.json has group research");
@@ -245,13 +243,11 @@ describe("aggregation", () => {
     await publish(config);
     acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 2, [record(EVAL, "bge-m3", [1, 0, 0, 0, 0], 5)])));
     let totals = await currentTotals(usage);
-    assert.equal(totals.config_version, 2);
     assert.equal(totals.windows.find((window) => window.group === "research"), undefined);
 
-    // Version 3 brings the limit back: it holds everything counted in the window.
+    // The limit back: it holds everything counted in the window.
     await publish(fullConfig());
     totals = await currentTotals(usage);
-    assert.equal(totals.config_version, 3);
     assert.equal(totals.windows.find((window) => window.group === "research")?.used, "15");
   });
 
@@ -275,17 +271,21 @@ describe("aggregation", () => {
     assert.equal(carolUsd?.used, "999999999999999999");
   });
 
-  test("no config published: the batch is refused with config-unavailable", async () => {
+  test("no config published: the batch is counted, and its totals are listed once a config limits them", async () => {
+    const store = createMemoryStore();
     const usage = createUsage({
-      store: createMemoryStore(),
+      store,
       clock: () => T0,
       recentRecordsSize: 10,
+      observeSequence: () => {},
       onListenerError: (error) => assert.fail(String(error)),
     });
     assert.equal(await usage.totals(INSTANCE), undefined);
-    const intake = await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [oneTokenRecord()]));
-    assert.ok(!intake.ok);
-    assert.deepEqual(intake.error, { code: "config-unavailable", message: "no config has been published yet", status: 503 });
+    acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [record(["users", "carol"], "gpt-4.1-mini", [3, 0, 0, 0, 0], 4)])));
+    assert.equal(await usage.totals(INSTANCE), undefined, "no config: nothing to list yet");
+    const config = fullConfig();
+    assert.ok((await store.publishConfig({ config, hash: configHash(config), publishedAt: T0 }, undefined)).saved);
+    assert.equal(await carolHourUsed(usage), "3");
   });
 });
 
@@ -428,14 +428,13 @@ describe("windows by the control plane's clock", () => {
       totals.windows.filter((window) => window.group === "carol"),
       [{ group: "carol", type: "usd_per_month", window_start: SEPTEMBER, used: "7" }],
     );
-    const intake = acked(
+    acked(
       await usage.acceptUsageBatch(
         INSTANCE,
         batch(EPOCH_A, 2, [record(["users", "carol"], "gpt-4.1-mini", [3, 0, 0, 0, 0], 1, "2026-09-24T11:00:00Z")]),
       ),
     );
     totals = await currentTotals(usage);
-    assert.deepEqual(intake.ack.totals, totals);
     assert.deepEqual(
       totals.windows.filter((window) => window.group === "carol"),
       [
@@ -648,6 +647,7 @@ describe("recent records and listeners", () => {
           store: createMemoryStore(),
           clock: () => T0,
           recentRecordsSize: -1,
+          observeSequence: () => {},
           onListenerError: () => undefined,
         }),
       { code: "recent-records-size-invalid" },
@@ -655,29 +655,25 @@ describe("recent records and listeners", () => {
   });
 });
 
-describe("revision and counted_through", () => {
-  test("the revision is the store's sequence: it moves with every counted batch and publish, not with a duplicate", async () => {
-    const { usage, publish } = await harness();
-    // The harness's publish moved the sequence to 1.
-    assert.equal((await currentTotals(usage)).revision, 1);
-    const first = batch(EPOCH_A, 1, [oneTokenRecord()]);
-    const intake = acked(await usage.acceptUsageBatch(INSTANCE, first));
-    assert.equal(intake.ack.totals.revision, 2);
-    const duplicate = acked(await usage.acceptUsageBatch(INSTANCE, first));
-    assert.equal(duplicate.ack.totals.revision, 2);
+describe("counted_through and the store's sequence", () => {
+  test("the store's sequence each totals read sees is heard, and never goes on the wire", async () => {
+    const seen: number[] = [];
+    const { usage, publish } = await harness({ observeSequence: (sequence) => seen.push(sequence) });
+    await currentTotals(usage);
+    acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [oneTokenRecord()])));
     await publish(fullConfig());
-    assert.equal((await currentTotals(usage)).revision, 3);
+    const totals = await currentTotals(usage);
+    // The harness's publish, then the batch, then the second publish.
+    assert.deepEqual(seen, [1, 3]);
+    assert.deepEqual(Object.keys(totals).sort(), ["counted_through", "live_gateways", "windows"]);
   });
 
-  test("two processes over one store read one revision", async () => {
+  test("two processes over one store read the same totals", async () => {
     const store = createMemoryStore();
     const a = await harness({ store });
     const b = await harness({ store });
     acked(await a.usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [oneTokenRecord()])));
-    const [ta, tb] = [await currentTotals(a.usage), await currentTotals(b.usage)];
-    assert.deepEqual(ta, tb);
-    // Two publishes (one per harness) and the batch.
-    assert.equal(ta.revision, 3);
+    assert.deepEqual(await currentTotals(a.usage), await currentTotals(b.usage));
   });
 
   test("counted_through is the recipient instance's last counted batch", async () => {
@@ -685,19 +681,20 @@ describe("revision and counted_through", () => {
     assert.equal((await currentTotals(usage)).counted_through, null);
     acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 3, [oneTokenRecord()])));
     const other = { ...oneTokenRecord(), gateway_instance: "gw-2" };
-    const intake = acked(
+    acked(
       await usage.acceptUsageBatch("gw-2", { batch: { instance: "gw-2", epoch: EPOCH_B, sequence: 7 }, records: [other] }),
     );
-    assert.deepEqual(intake.ack.totals.counted_through, { epoch: EPOCH_B, sequence: 7 });
+    assert.deepEqual((await usage.totals("gw-2"))?.counted_through, { epoch: EPOCH_B, sequence: 7 });
     assert.deepEqual((await currentTotals(usage)).counted_through, { epoch: EPOCH_A, sequence: 3 });
     assert.equal((await usage.totals("gw-3"))?.counted_through, null);
   });
 
-  test("an ack's totals hold the batch it acknowledges", async () => {
+  test("an ack names the batch it acknowledges and nothing else", async () => {
     const { usage } = await harness();
-    const ack = acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [oneTokenRecord()]))).ack.totals;
-    assert.equal(ack.revision, 2);
-    assert.deepEqual(ack.counted_through, { epoch: EPOCH_A, sequence: 1 });
-    assert.ok(ack.windows.some((window) => window.group === "carol"), "the ack's windows hold the batch");
+    const sent = batch(EPOCH_A, 1, [oneTokenRecord()]);
+    const intake = acked(await usage.acceptUsageBatch(INSTANCE, sent));
+    assert.deepEqual(intake.ack, { batch: sent.batch });
+    const duplicate = acked(await usage.acceptUsageBatch(INSTANCE, sent));
+    assert.deepEqual(duplicate.ack, { batch: sent.batch });
   });
 });

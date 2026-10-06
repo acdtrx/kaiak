@@ -191,11 +191,11 @@ test("a status is validated and must name the requester's instance", async () =>
   assert.deepEqual(changes, []);
 });
 
-test("a rejection below the applied version is accepted (a restarted control plane counts from 1)", async () => {
+test("a status naming its applied and its rejected config by hash is stored as sent", async () => {
   const { gateways } = setup();
   const status = statusOf("gw-1", {
-    applied_config_version: 42,
-    last_rejection: { version: 1, codes: ["key-group-unknown"] },
+    applied_config_hash: "a".repeat(64),
+    last_rejection: { config_hash: "b".repeat(64), codes: ["key-group-unknown"] },
   });
   assert.ok((await gateways.acceptStatus("gw-1", status)).ok);
   assert.deepEqual((await gateways.gateways())[0]?.status, status);

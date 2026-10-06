@@ -8,9 +8,8 @@ export { BACKEND_TYPES, resolveScopes, validateConfig } from "./config/index.ts"
 export type * from "./config/index.ts";
 
 export {
-  validateConfigSnapshot,
+  validateConfigEvent,
   validateGatewayStatus,
-  validateResync,
   validateTotals,
   validateUsageAck,
   validateUsageBatch,
@@ -21,7 +20,7 @@ export type * from "./messages/index.ts";
 export { createControlPlane } from "./control-plane/index.ts";
 export type * from "./control-plane/index.ts";
 
-export type * from "./config-versions/index.ts";
+export type * from "./config-publishing/index.ts";
 
 export type * from "./usage/index.ts";
 

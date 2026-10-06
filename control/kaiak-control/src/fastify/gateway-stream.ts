@@ -1,23 +1,20 @@
-// GET /v1/stream (docs/specs/CONTROL-PROTOCOL.md, Config stream, Budgets): the config
-// versions newer than the gateway's, then every version published while it stays
-// connected, and the totals — on connect, then whenever they or the live-gateway count
-// change, at most once per push interval — as server-sent events written straight to
-// the socket.
+// GET /v1/stream (docs/specs/CONTROL-PROTOCOL.md, Config stream, Budgets): the current
+// config on connect, then the totals, then the current config every time it changes
+// and the totals whenever they or the live-gateway count change, at most once per push
+// interval — as server-sent events written straight to the socket. The stream is the
+// gateway's one way to get its config and its totals.
 
 import { performance } from "node:perf_hooks";
 
 import type { FastifyBaseLogger, FastifyReply } from "fastify";
 
-import type { ConfigPosition } from "../config-versions/index.ts";
 import type { ControlPlane } from "../control-plane/index.ts";
-import type { ConfigSnapshot, Totals } from "../messages/index.ts";
-import type { StoredConfig } from "../storage/index.ts";
+import type { ConfigEvent, Totals } from "../messages/index.ts";
+import type { CurrentConfig } from "../storage/index.ts";
 
 export interface GatewayStreamOptions {
-  core: Pick<ControlPlane, "configsSince" | "onConfigPublished" | "totals" | "onTotalsChanged" | "onGatewaysChanged">;
-  // The version the gateway runs with its epoch, and its checked instance ID (the
-  // totals carry its counted_through).
-  since: ConfigPosition;
+  core: Pick<ControlPlane, "currentConfig" | "onConfigPublished" | "totals" | "onTotalsChanged" | "onGatewaysChanged">;
+  // The gateway's checked instance ID (the totals carry its counted_through).
   instance: string;
   heartbeatIntervalMs: number;
   // At most one totals event per this many milliseconds.
@@ -37,12 +34,12 @@ const EVENT_STREAM_HEADERS = {
 };
 
 const HEARTBEAT = ": heartbeat\n\n";
-const RESYNC_EVENT = "event: resync\ndata: {}\n\n";
 
-// Resolves once the replay is written; the stream stays open until the client leaves,
-// a resync ends it, its socket stalls, or the app closes.
+// Resolves once the current config is read; the stream stays open until the client
+// leaves, its socket stalls, or the app closes it (when the app stops, or when its core
+// saw the store roll back).
 export async function streamToGateway(reply: FastifyReply, options: GatewayStreamOptions): Promise<void> {
-  const { core, since, instance, heartbeatIntervalMs, totalsPushIntervalMs, stalledStreamTimeoutMs, openStreams, log } = options;
+  const { core, instance, heartbeatIntervalMs, totalsPushIntervalMs, stalledStreamTimeoutMs, openStreams, log } = options;
 
   // The stream bypasses Fastify's reply handling; the headers set so far (the protocol
   // version) go out with the event-stream ones.
@@ -55,15 +52,13 @@ export async function streamToGateway(reply: FastifyReply, options: GatewayStrea
   raw.flushHeaders();
 
   const connection = new AbortController();
-  // Versions at or below this one are not sent again: a version published while the
-  // replay is read arrives both in the replay and from the subscription.
-  let lastSent = since.version;
-  // The store's epoch, which every config event carries; known once the replay is read
-  // (config events wait in pending until then).
-  let epoch = "";
-  // Versions published before the replay is written wait here, so none is sent out of
-  // order. While it is set, totals wait too: the connect push follows the replay.
-  let pending: StoredConfig[] | undefined = [];
+  // The store's sequence of the config last sent on this stream: a config read before
+  // it (a slow read overtaken by a faster one) is not sent. The sequence never goes on
+  // the wire; a store that went back closes the stream instead (Rollback).
+  let lastSent: number | undefined;
+  // Configs heard of while the connect read is in progress wait here, so none is sent
+  // before it. While it is set, totals wait too: they follow the first config.
+  let pending: CurrentConfig[] | undefined = [];
 
   // Writes go through Node's own buffer, so a client slow to read only delays config
   // events, never loses them. A socket that takes nothing for the stall timeout ends
@@ -78,11 +73,11 @@ export async function streamToGateway(reply: FastifyReply, options: GatewayStrea
     raw.once("drain", drained);
   };
 
-  const sendConfig = (entry: StoredConfig): void => {
-    if (entry.version <= lastSent) return;
-    lastSent = entry.version;
-    const snapshot: ConfigSnapshot = { config_epoch: epoch, version: entry.version, config: entry.config };
-    write(`event: config\nid: ${entry.version}\ndata: ${JSON.stringify(snapshot)}\n\n`);
+  const sendConfig = (current: CurrentConfig): void => {
+    if (lastSent !== undefined && current.sequence <= lastSent) return;
+    lastSent = current.sequence;
+    const event: ConfigEvent = { config_hash: current.hash, config: current.config };
+    write(`event: config\ndata: ${JSON.stringify(event)}\n\n`);
   };
 
   // Totals are latest-wins: at most one push is waiting at a time — for the interval to
@@ -94,8 +89,9 @@ export async function streamToGateway(reply: FastifyReply, options: GatewayStrea
   let pushAfterRead = false;
   let pushAfterDrain = false;
 
+  // Totals follow the first config: none is pushed before a config was sent.
   const requestTotals = (): void => {
-    if (pending || connection.signal.aborted || trailingPush !== undefined) return;
+    if (pending || lastSent === undefined || connection.signal.aborted || trailingPush !== undefined) return;
     const wait = lastTotalsAt + totalsPushIntervalMs - performance.now();
     if (wait > 0) {
       trailingPush = setTimeout(() => {
@@ -142,8 +138,8 @@ export async function streamToGateway(reply: FastifyReply, options: GatewayStrea
     requestTotals();
   }
 
-  // Subscribe before reading the replay, so a version published in between is not lost.
-  // A publish changes the totals' config version and limits, so totals follow it.
+  // Subscribe before reading the current config, so one published in between is not
+  // lost. A publish changes which limits the totals list, so totals follow it.
   const unsubscribeConfigs = core.onConfigPublished((published) => {
     if (pending) {
       pending.push(published);
@@ -181,24 +177,20 @@ export async function streamToGateway(reply: FastifyReply, options: GatewayStrea
     return;
   }
 
-  let answer: Awaited<ReturnType<typeof core.configsSince>>;
+  let current: CurrentConfig | undefined;
   try {
-    answer = await core.configsSince(since);
+    current = await core.currentConfig();
   } catch (error) {
-    log.error({ err: error }, "config stream: reading the versions to replay failed");
+    log.error({ err: error }, "config stream: reading the current config failed");
     raw.destroy();
     return;
   }
   if (connection.signal.aborted) return;
-  if (answer.resync) {
-    // The gateway fetches the snapshot and reconnects from its version.
-    raw.end(RESYNC_EVENT);
-    return;
-  }
-  epoch = answer.epoch;
-  for (const entry of answer.configs) sendConfig(entry);
+  // Before the first publish the stream stays open with nothing to send: the first
+  // config arrives as soon as one is published.
+  if (current) sendConfig(current);
   const publishedMeanwhile = pending;
   pending = undefined;
-  for (const entry of publishedMeanwhile) sendConfig(entry);
+  for (const published of publishedMeanwhile) sendConfig(published);
   requestTotals();
 }

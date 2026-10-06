@@ -13,14 +13,14 @@ import { test } from "node:test";
 
 import { validateConfig } from "../config/index.ts";
 
-import { validateConfigSnapshot, validateTotals, validateUsageAck } from "./index.ts";
+import { validateConfigEvent, validateTotals, validateUsageAck } from "./index.ts";
 
 const FIXTURES = path.resolve(import.meta.dirname, "../../../../protocol/fixtures/duplicate-members");
 const CASES_FILE = "cases.json";
 
 const VALIDATORS: Record<string, (doc: unknown) => { ok: true } | { ok: false; issues: unknown[] }> = {
   config: validateConfig,
-  "config-snapshot": validateConfigSnapshot,
+  "config-event": validateConfigEvent,
   totals: validateTotals,
   "usage-ack": validateUsageAck,
 };
