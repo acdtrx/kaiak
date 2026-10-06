@@ -174,6 +174,14 @@ Group entries under headings as themes emerge.
 
 ## Limits
 
+- **Provider budgets** — money limits on a set of backends (a provider account, such
+  as one Azure subscription across regions), counting every group's spend that went
+  through them; when spent, those deployments leave routing, so a model with other
+  deployments keeps serving and only a model with none left is refused. Money only,
+  no per-minute limits (2026-10-06, with limits losing their model sets: provider
+  spend is the useful granularity below the group, not models). Open: whether a
+  provider is a list of backends or a label backends carry. Revisit trigger: the
+  user's research and discussions on provider budgets.
 - **Live count excludes draining gateways** — a draining gateway stays in
   `live_gateways` until it goes silent, so every rollout temporarily halves backend-cap
   and per-minute shares (queueing and 429s while hosts have room). Fix: the control plane
@@ -237,18 +245,6 @@ Group entries under headings as themes emerge.
   Revisit trigger: per-minute refusals keep showing one gateway's window full while
   the others have room, after cache reads left the token count (2026-10-05). (ruled
   2026-10-05: postponed — the user is weighing the end-of-stream dump.)
-
-- **Carry-over copy reads the claimer's pushed base** — in control-plane mode, when
-  one dropped limit is taken over by several new limits (a model-set edit that splits
-  one limit into several), the first takes the counter and the others get a copy;
-  each copy's pushed base is looked up under the first new limit's key, so if that
-  key already had pushed totals of its own (a limit returning within its window),
-  the copies start from that total instead of the predecessor's. Rare, and the next
-  totals (about a second) replace every base. Kept here rather than in `GATEWAY.md`:
-  it is a known imprecision of the code, not an agreement. Fix: read the
-  predecessor's pushed base before the first claim renames it. Revisit trigger: a
-  budget seen briefly misapplied after a model-set edit that splits one limit into
-  several.
 
 - **Output limit derived from remaining budget** — lower a request's output limit to
   what the remaining budget can pay for; refuse below a minimum instead of truncating.

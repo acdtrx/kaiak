@@ -1372,9 +1372,10 @@ own, and a client sending repeats is broken either way.
   counting requests, tokens or nano-USD (accounting's cost unit) against an effective
   limit — the configured value in file mode, the pushed share for per-minute windows
   in control-plane mode. Sliding minutes count one-second buckets over the last 60 s;
-  hours and months reset at their UTC boundary. A limit applies to a request when its
-  model set covers the request's model (`models` omitted: every model, counted
-  together); the scopes checked are global and every group on the key's path, a
+  hours and months reset at their UTC boundary. Every limit of a scope applies to every
+  request in it, whatever its model (settled 2026-10-06: limits have no model sets,
+  `CONTROL-PROTOCOL.md`, Config → The group tree); the scopes checked are global and
+  every group on the key's path, a
   path of any length up to 8 (each group's limits already merged with its parent's
   `child_defaults`). Only the body endpoints are limited — the model endpoints
   use no model capacity.
@@ -1458,32 +1459,21 @@ own, and a client sending repeats is broken either way.
   blocked only by requests still running (Refusal).
 - **Config reload** (settled 2026-09-24): the counters follow the live config, not
   each request's snapshot. A limit that still exists — same identity: group (or
-  global), type and model set, order ignored (settled 2026-09-27) — keeps its
+  global) and type (settled 2026-09-27, model set removed 2026-10-06) — keeps its
   counter, and a changed value applies at once
-  to the count so far; a new limit starts empty; a removed limit's counter is
+  to the count so far; a new limit starts empty in file mode, and in control-plane mode
+  takes its base from the totals, which count its scope's usage whatever the config
+  (`CONTROL-PROTOCOL.md`, Usage intake → Counted toward); a removed limit's counter is
   dropped. A group deleted and created again under the same ID is such a removed
   limit returning: in control-plane mode the pushed totals give it its window's
   spend back (`CONTROL-PROTOCOL.md`, Usage intake → Totals); in file mode its
   counters start empty.
-- **Model-set edits keep the spend** (settled 2026-09-25, D5): a new limit with no
-  counter of its identity, whose group (or global) and type match a limit the reload
-  drops — its model set changed — takes over that counter: its count (and in
-  control-plane mode its pushed base, until totals for the new config name the new
-  identity, and its uncounted usage). Several such predecessors (ambiguous — e.g.
-  two limits merged into one) carry the one with the most used, logged as a
-  warning; a predecessor taken by several new limits is copied into the others
-  (without its in-flight reservations). Each carry-over is logged. Predecessors
-  come from the config the gateway applied before, which is not the previous
-  published version when it skipped some (`CONTROL-PROTOCOL.md`, Budgets →
-  Model-set edits: each side carries against the config it last held). The control
-  plane carries its windows the same way (`CONTROL-PROTOCOL.md`, Budgets →
-  Model-set edits). Rejected: model set in the identity with nothing carried —
-  adding a model to a spent monthly budget forgave the month.
 - **File-mode usage snapshot** (settled 2026-09-24; only with a data directory —
   without one, a restart starts with empty windows): `limits.json` in the data
-  directory, format version 2 (settled 2026-09-27: limits are named by group), holding
+  directory, format version 3 (settled 2026-10-06: limits are named by group and
+  type, no model set), holding
   each hour and month window with settled usage (`group` — absent for a global
-  limit —, `type`, `models`, `window_start`, `used`) — unsettled reservations
+  limit —, `type`, `window_start`, `used`) — unsettled reservations
   are left out. Written every 30 s and on shutdown; restored at startup, where a
   window is kept only if its limit still exists and its window is the current one.
   Per-minute windows are not kept. A snapshot that cannot be read is logged and the
@@ -1587,14 +1577,15 @@ own, and a client sending repeats is broken either way.
     still serves a request at a 16 384 default output — about one a minute per
     gateway. Each config apply and each change of the live count logs a warning, once,
     for every per-minute token limit whose share is below the default output of a
-    model it covers (output default × live gateways > limit). Rejected: refusing
+    model its scope may use (output default × live gateways > limit). Rejected: refusing
     such requests as too large — every ordinary request failed while each
     gateway's share sat idle.
   - **Restart keeps the last totals** (settled 2026-09-25, M5; only with a data
     directory — without one, a restart counts from the next totals: a boot with the
     control plane down serves only the seed's free models, which spend no budget): `limits.json` is
-    neither read nor written; instead `totals.json` (format version 2, settled
-    2026-09-27: counters are named by limit identity, group or global) holds each
+    neither read nor written; instead `totals.json` (format version 3, settled
+    2026-10-06: counters are named by limit identity, group or global and type, no
+    model set) holds each
     hour and month counter's pushed base (`base_window_start`, `base`) and the usage
     the control plane had not counted (`window_start`, `uncounted`), under the
     config the counters were matched to (`config_epoch`, `config_version`) and the
@@ -1622,7 +1613,7 @@ own, and a client sending repeats is broken either way.
     control plane down is in outage once the grace has passed since it started. In
     outage, a request is refused `503 budget_unavailable` (no `Retry-After`: nobody
     knows when the control plane returns) when its model has a price in force and
-    any limit that applies to it — any scope, model set covering the model — is a
+    any limit that applies to it — any scope on its path — is a
     `usd_per_month` limit (Unpriced models), before
     anything is reserved; other requests keep serving on the last totals and local
     counting, per-minute limits included. The first contact ends it. Rejected:
@@ -2688,8 +2679,7 @@ own, and a client sending repeats is broken either way.
     | `kaiak.usage.issues` | `issues` | `usage record refused by the protocol's checks…`: what failed |
     | `kaiak.usage.clamped` | `clamped` | `usage out of the protocol's range…`: the units clamped (an array) |
     | `http.response.status_code`, `error.type` | `status`, `code` | `usage batch refused by the control plane…`: the control plane's status and error code — the code only when it has the protocol's code shape (Logs: no remote text) |
-    | `kaiak.limit.scope`, `kaiak.limit.group`, `kaiak.limit.type`, `kaiak.limit.models` | `scope`, `group`, `type`, `models` | A limit counter's identity: scope kind, group ID (absent for a global limit, as on the request line), type, models covered (`*` for all) |
-    | `kaiak.limit.from_models`, `kaiak.limit.predecessors`, `kaiak.limit.used` | `from_models`, `predecessors`, `used` | `limit keeps its usage across a model-set change`: the models it had, the counters it could descend from, the usage kept — in dollars for a USD limit, as on the request line |
+    | `kaiak.limit.scope`, `kaiak.limit.group`, `kaiak.limit.type` | `scope`, `group`, `type` | A limit counter's identity: scope kind, group ID (absent for a global limit, as on the request line), type |
     | `kaiak.limit.configured`, `kaiak.limit.enforced`, `kaiak.limit.live_gateways` | `tokens_per_minute`, `share`, `live_gateways` | `per-minute share below the model's default output…`: the configured limit, this gateway's share, the live gateways |
     | `kaiak.model.name`, `kaiak.model.output_default` | `model`, `output_default` | The same line: the model and its default output |
     | `kaiak.limit.window_start`, `kaiak.gateway_time` | `window_start`, `gateway_time` | `pushed window ahead of the gateway's clock` |

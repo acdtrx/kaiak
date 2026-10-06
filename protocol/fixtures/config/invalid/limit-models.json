@@ -18,13 +18,6 @@
           ]
         }
       ]
-    },
-    "embed": {
-      "deployments": [{ "backend": "vllm", "model": "embed" }],
-      "metadata": {
-        "context_length": 512,
-        "capabilities": { "streaming": false, "tools": false, "vision": false, "reasoning": false }
-      }
     }
   },
   "groups": {
@@ -32,10 +25,7 @@
     "app": {
       "parent": "team1",
       "allowed_models": ["chat"],
-      "limits": [
-        { "type": "tokens_per_hour", "value": 1000, "models": ["chat", "embed"] },
-        { "type": "tokens_per_hour", "value": 2000, "models": ["embed", "chat"] }
-      ]
+      "limits": [{ "type": "requests_per_minute", "value": 10, "models": ["chat"] }]
     },
     "users": { "child_defaults": { "allowed_models": ["chat"] } },
     "alice": { "parent": "users" }

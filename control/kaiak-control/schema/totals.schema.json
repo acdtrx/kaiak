@@ -70,7 +70,7 @@
       }
     },
     "window": {
-      "description": "One limit's current window: the limit's identity (group or global, type, model set — as in config), the window start and the amount used.",
+      "description": "One limit's current window: the limit's identity (group or global, and type — as in config), the window start and the amount used.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -89,15 +89,6 @@
             "tokens_per_hour",
             "usd_per_month"
           ]
-        },
-        "models": {
-          "description": "The limit's model set, order ignored. Omitted = the limit covers all models.",
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": {
-            "$ref": "config.schema.json#/$defs/public_model_name"
-          }
         },
         "window_start": {
           "description": "Start of the window, UTC: the top of an hour for tokens_per_hour, the first of a month for usd_per_month.",

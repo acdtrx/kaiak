@@ -5,7 +5,7 @@
     "global": {
       "limits": [
         { "type": "requests_per_minute", "value": 3000 },
-        { "type": "usd_per_month", "value": 5000, "models": ["gpt-4.1", "gpt-4.1-mini"] }
+        { "type": "usd_per_month", "value": 5000 }
       ],
       "max_request_body_bytes": 8388608,
       "control_outage_grace_ms": 600000,
@@ -129,8 +129,8 @@
         "allowed_models": ["*"],
         "limits": [
           { "type": "requests_per_minute", "value": 600 },
-          { "type": "tokens_per_hour", "value": 20000000, "models": ["qwen3-32b"] },
-          { "type": "usd_per_month", "value": 1000, "models": ["gpt-4.1", "gpt-4.1-mini"] }
+          { "type": "tokens_per_hour", "value": 20000000 },
+          { "type": "usd_per_month", "value": 1000 }
         ]
       },
       "support-bot": {
@@ -208,8 +208,8 @@
         "allowed_models": "all",
         "limits": [
           { "type": "requests_per_minute", "value": 600 },
-          { "type": "tokens_per_hour", "value": 20000000, "models": ["qwen3-32b"] },
-          { "type": "usd_per_month", "value": 1000, "models": ["gpt-4.1", "gpt-4.1-mini"] }
+          { "type": "tokens_per_hour", "value": 20000000 },
+          { "type": "usd_per_month", "value": 1000 }
         ]
       },
       "support-bot": {

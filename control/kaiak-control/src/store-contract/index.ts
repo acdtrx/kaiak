@@ -57,13 +57,11 @@ const hourWindow = (used: bigint, group = "g"): WindowTotal => ({ group, type: "
 function counted(
   instance: string,
   sequence: number,
-  configVersion: number,
   options: { used?: bigint; countedAt?: number; record?: string } = {},
 ): CountedBatch {
   const { used = 1n, countedAt = 0, record } = options;
   return {
     batch: batchId(instance, sequence),
-    configVersion,
     countedAt,
     additions: used === 0n ? [] : [hourWindow(used)],
     records: record === undefined ? [] : [{ receivedAt: countedAt, record: { record_id: record } as unknown as UsageRecord }],
@@ -97,15 +95,11 @@ export function storeContractTests(subject: StoreContractSubject): void {
       }
     };
 
-  // Publishes versions 1..n with no carry, through `store`, from an empty store.
+  // Publishes versions 1..n through `store`, from an empty store; returns the sequence.
   const publishVersions = async (store: ControlPlaneStore, n: number): Promise<number> => {
     let sequence = 0;
     for (let version = 1; version <= n; version += 1) {
-      const result = await store.publishConfig(
-        { entry: entry(version), carried: [] },
-        { version: version === 1 ? undefined : version - 1, sequence },
-        100,
-      );
+      const result = await store.publishConfig(entry(version), version === 1 ? undefined : version - 1, 100);
       assert.ok(result.saved, `publishing version ${version}`);
       sequence = result.sequence;
     }
@@ -153,28 +147,12 @@ export function storeContractTests(subject: StoreContractSubject): void {
 
     describe("publishing", () => {
       test(
-        "a version is stored only against the expected latest version and sequence",
+        "a version is stored only against the expected latest version",
         withStore(async (a, b) => {
-          assert.deepEqual(await a.publishConfig({ entry: entry(1), carried: [] }, { version: undefined, sequence: 0 }, 10), {
-            saved: true,
-            sequence: 1,
-          });
+          assert.deepEqual(await a.publishConfig(entry(1), undefined, 10), { saved: true, sequence: 1 });
           // Another process that checked against "no version yet" finds version 1.
-          assert.deepEqual(await b.publishConfig({ entry: entry(1), carried: [] }, { version: undefined, sequence: 0 }, 10), {
-            saved: false,
-            latestVersion: 1,
-            sequence: 1,
-          });
-          // The right version but a stale sequence: its carry was read before a change.
-          assert.deepEqual(await b.publishConfig({ entry: entry(2), carried: [] }, { version: 1, sequence: 0 }, 10), {
-            saved: false,
-            latestVersion: 1,
-            sequence: 1,
-          });
-          assert.deepEqual(await b.publishConfig({ entry: entry(2), carried: [] }, { version: 1, sequence: 1 }, 10), {
-            saved: true,
-            sequence: 2,
-          });
+          assert.deepEqual(await b.publishConfig(entry(1), undefined, 10), { saved: false, latestVersion: 1 });
+          assert.deepEqual(await b.publishConfig(entry(2), 1, 10), { saved: true, sequence: 2 });
           assert.equal((await a.latestConfig())?.version, 2);
           assert.deepEqual(
             (await a.configsAfter(0)).map((stored) => stored.version),
@@ -188,32 +166,21 @@ export function storeContractTests(subject: StoreContractSubject): void {
       );
 
       test(
-        "the carried spend is written with the version",
+        "a publish leaves the windows as they are",
         withStore(async (a, b) => {
-          await a.publishConfig({ entry: entry(1), carried: [] }, { version: undefined, sequence: 0 }, 10);
-          await a.publishConfig({ entry: entry(2), carried: [hourWindow(40n, "carry")] }, { version: 1, sequence: 1 }, 10);
-          const snapshot = await b.totalsSnapshot(CURRENT);
-          assert.equal(snapshot.sequence, 2);
-          assert.equal(snapshot.config?.version, 2);
-          assert.deepEqual(snapshot.windows, [hourWindow(40n, "carry")]);
-          // A refused publish carries nothing.
-          await b.publishConfig({ entry: entry(3), carried: [hourWindow(5n, "carry")] }, { version: 1, sequence: 2 }, 10);
-          assert.deepEqual((await a.totalsSnapshot(CURRENT)).windows, [hourWindow(40n, "carry")]);
+          await publishVersions(a, 1);
+          assert.ok((await a.saveCountedBatch(counted("gw-1", 1, { used: 40n }), undefined, 10)).saved);
+          assert.ok((await b.publishConfig(entry(2), 1, 10)).saved);
+          const snapshot = await a.totalsSnapshot(CURRENT);
+          assert.deepEqual([snapshot.sequence, snapshot.config?.version, snapshot.windows], [3, 2, [hourWindow(40n)]]);
         }),
       );
 
       test(
         "the newest `keep` versions stay",
         withStore(async (a) => {
-          let sequence = 0;
           for (let version = 1; version <= 5; version += 1) {
-            const result = await a.publishConfig(
-              { entry: entry(version), carried: [] },
-              { version: version === 1 ? undefined : version - 1, sequence },
-              2,
-            );
-            assert.ok(result.saved);
-            sequence = result.sequence;
+            assert.ok((await a.publishConfig(entry(version), version === 1 ? undefined : version - 1, 2)).saved);
           }
           const kept = (await a.configsAfter(0)).map((stored) => stored.version);
           assert.ok(kept.includes(4) && kept.includes(5), `kept ${kept.join(",")}`);
@@ -226,7 +193,7 @@ export function storeContractTests(subject: StoreContractSubject): void {
         withStore(async (a, b) => {
           const sequence = await publishVersions(a, 1);
           const results = await Promise.all(
-            [a, b, a, b].map((store) => store.publishConfig({ entry: entry(2), carried: [] }, { version: 1, sequence }, 10)),
+            [a, b, a, b].map((store) => store.publishConfig(entry(2), 1, 10)),
           );
           assert.equal(results.filter((result) => result.saved).length, 1);
           assert.equal((await a.configsAfter(1)).length, 1);
@@ -238,7 +205,7 @@ export function storeContractTests(subject: StoreContractSubject): void {
         "stored configs share no state with what callers hold, read or written",
         withStore(async (a) => {
           const written = entry(1);
-          await a.publishConfig({ entry: written, carried: [] }, { version: undefined, sequence: 0 }, 10);
+          await a.publishConfig(written, undefined, 10);
           (written.config as unknown as { marker: number }).marker = 100;
           const latest = await a.latestConfig();
           (latest?.config as unknown as { marker: number }).marker = 200;
@@ -256,19 +223,17 @@ export function storeContractTests(subject: StoreContractSubject): void {
         "a batch is counted only against the expected last batch",
         withStore(async (a, b) => {
           const sequence = await publishVersions(a, 1);
-          assert.deepEqual(await a.saveCountedBatch(counted("gw-1", 1, 1), undefined, 10), { saved: true, sequence: sequence + 1 });
+          assert.deepEqual(await a.saveCountedBatch(counted("gw-1", 1), undefined, 10), { saved: true, sequence: sequence + 1 });
           // Another process that decided against "no batch yet" finds batch 1.
-          assert.deepEqual(await b.saveCountedBatch(counted("gw-1", 1, 1), undefined, 10), {
+          assert.deepEqual(await b.saveCountedBatch(counted("gw-1", 1), undefined, 10), {
             saved: false,
             last: batchId("gw-1", 1),
-            configVersion: 1,
           });
-          assert.deepEqual(await b.saveCountedBatch(counted("gw-1", 2, 1), batchId("gw-1", 3), 10), {
+          assert.deepEqual(await b.saveCountedBatch(counted("gw-1", 2), batchId("gw-1", 3), 10), {
             saved: false,
             last: batchId("gw-1", 1),
-            configVersion: 1,
           });
-          assert.deepEqual(await b.saveCountedBatch(counted("gw-1", 2, 1), batchId("gw-1", 1), 10), {
+          assert.deepEqual(await b.saveCountedBatch(counted("gw-1", 2), batchId("gw-1", 1), 10), {
             saved: true,
             sequence: sequence + 2,
           });
@@ -278,24 +243,29 @@ export function storeContractTests(subject: StoreContractSubject): void {
       );
 
       test(
-        "a batch is counted only under the latest config version",
+        "publishes and batches never refuse each other",
         withStore(async (a, b) => {
           let sequence = await publishVersions(a, 1);
-          // A publish lands between computing the batch under version 1 and writing it.
-          const published = await b.publishConfig({ entry: entry(2), carried: [] }, { version: 1, sequence }, 10);
+          // A publish lands between deciding a batch and writing it: the batch is counted.
+          const published = await b.publishConfig(entry(2), 1, 10);
           assert.ok(published.saved);
           sequence = published.sequence;
-          assert.deepEqual(await a.saveCountedBatch(counted("gw-1", 1, 1, { used: 7n }), undefined, 10), {
-            saved: false,
-            last: undefined,
-            configVersion: 2,
-          });
-          const snapshot = await a.totalsSnapshot(CURRENT, "gw-1");
-          assert.deepEqual([snapshot.sequence, snapshot.last, snapshot.windows], [sequence, undefined, []]);
-          assert.deepEqual(await a.saveCountedBatch(counted("gw-1", 1, 2, { used: 7n }), undefined, 10), {
+          assert.deepEqual(await a.saveCountedBatch(counted("gw-1", 1, { used: 7n }), undefined, 10), {
             saved: true,
             sequence: sequence + 1,
           });
+          // A batch lands between checking a publish and writing it: the publish is stored.
+          assert.ok((await b.saveCountedBatch(counted("gw-2", 1, { used: 3n }), undefined, 10)).saved);
+          assert.deepEqual(await a.publishConfig(entry(3), 2, 10), { saved: true, sequence: sequence + 3 });
+          // Racing at once, every write lands.
+          const results = await Promise.all([
+            a.publishConfig(entry(4), 3, 10),
+            b.saveCountedBatch(counted("gw-1", 2, { used: 1n }), batchId("gw-1", 1), 10),
+            a.saveCountedBatch(counted("gw-2", 2, { used: 1n }), batchId("gw-2", 1), 10),
+          ]);
+          assert.ok(results.every((result) => result.saved));
+          const snapshot = await a.totalsSnapshot(CURRENT);
+          assert.deepEqual([snapshot.sequence, snapshot.config?.version, sumUsed(snapshot.windows)], [sequence + 6, 4, 12n]);
         }),
       );
 
@@ -304,7 +274,7 @@ export function storeContractTests(subject: StoreContractSubject): void {
         withStore(async (a, b) => {
           await publishVersions(a, 1);
           const results = await Promise.all(
-            Array.from({ length: 8 }, (_, i) => (i % 2 === 0 ? a : b).saveCountedBatch(counted("gw-1", 1, 1, { used: 5n }), undefined, 10)),
+            Array.from({ length: 8 }, (_, i) => (i % 2 === 0 ? a : b).saveCountedBatch(counted("gw-1", 1, { used: 5n }), undefined, 10)),
           );
           assert.equal(results.filter((result) => result.saved).length, 1);
           assert.deepEqual((await b.totalsSnapshot(CURRENT)).windows, [hourWindow(5n)]);
@@ -318,7 +288,7 @@ export function storeContractTests(subject: StoreContractSubject): void {
           for (let sequence = 1; sequence <= 4; sequence += 1) {
             const store = sequence % 2 === 0 ? a : b;
             const result = await store.saveCountedBatch(
-              counted("gw-1", sequence, 1, { record: `r${sequence}` }),
+              counted("gw-1", sequence, { record: `r${sequence}` }),
               sequence === 1 ? undefined : batchId("gw-1", sequence - 1),
               10,
             );
@@ -334,8 +304,8 @@ export function storeContractTests(subject: StoreContractSubject): void {
         "the batch cursor stays when its gateway is forgotten; the retention drops it",
         withStore(async (a, b) => {
           await publishVersions(a, 1);
-          await a.saveCountedBatch(counted("gw-1", 1, 1, { countedAt: 100 }), undefined, 10);
-          await b.saveCountedBatch(counted("gw-2", 1, 1, { countedAt: 200 }), undefined, 10);
+          await a.saveCountedBatch(counted("gw-1", 1, { countedAt: 100 }), undefined, 10);
+          await b.saveCountedBatch(counted("gw-2", 1, { countedAt: 200 }), undefined, 10);
           const saved = await a.saveGateway(gatewayRecord("gw-1", true), undefined);
           assert.ok(saved.saved);
           assert.deepEqual(await a.forgetGateways([{ instance: "gw-1", revision: saved.revision }]), ["gw-1"]);
@@ -353,7 +323,7 @@ export function storeContractTests(subject: StoreContractSubject): void {
         withStore(async (a, b) => {
           const sequence = await publishVersions(a, 1);
           assert.equal(sequence, 1);
-          await a.saveCountedBatch(counted("gw-1", 1, 1), undefined, 10);
+          await a.saveCountedBatch(counted("gw-1", 1), undefined, 10);
           assert.equal((await b.totalsSnapshot(CURRENT)).sequence, 2);
           // Joining the live set moves it; a status that leaves it as it is does not.
           const joined = await b.saveGateway(gatewayRecord("gw-1", true), undefined);
@@ -367,7 +337,7 @@ export function storeContractTests(subject: StoreContractSubject): void {
           assert.ok(left.saved);
           assert.equal(left.sequence, 4);
           // Refused writes and dropping past windows change nothing.
-          await b.saveCountedBatch(counted("gw-1", 1, 1), undefined, 10);
+          await b.saveCountedBatch(counted("gw-1", 1), undefined, 10);
           await b.dropPastWindowTotals(PREVIOUS);
           assert.equal((await a.totalsSnapshot(CURRENT)).sequence, 4);
         }),
@@ -385,7 +355,7 @@ export function storeContractTests(subject: StoreContractSubject): void {
               const store = gw % 2 === 0 ? a : b;
               const instance = `gw-${gw}`;
               writes.push(
-                store.saveCountedBatch(counted(instance, round, 1), round === 1 ? undefined : batchId(instance, round - 1), 1000),
+                store.saveCountedBatch(counted(instance, round), round === 1 ? undefined : batchId(instance, round - 1), 1000),
               );
               const reader = gw % 2 === 0 ? b : a;
               reads.push(
@@ -406,7 +376,7 @@ export function storeContractTests(subject: StoreContractSubject): void {
               const last = await a.lastBatch(instance);
               const next = (last?.sequence ?? 0) + 1;
               if (next > 4) break;
-              await a.saveCountedBatch(counted(instance, next, 1), last, 1000);
+              await a.saveCountedBatch(counted(instance, next), last, 1000);
             }
           }
           for (const read of await Promise.all(reads)) {
@@ -427,7 +397,7 @@ export function storeContractTests(subject: StoreContractSubject): void {
           await publishVersions(a, 1);
           const past: WindowTotal = { group: "g", type: "tokens_per_hour", windowStart: PREVIOUS.hourStart, used: 3n };
           const month: WindowTotal = { type: "usd_per_month", windowStart: MONTH, used: 9n };
-          const batch = counted("gw-1", 1, 1, { used: 0n });
+          const batch = counted("gw-1", 1, { used: 0n });
           batch.additions = [past, hourWindow(2n), month];
           assert.ok((await a.saveCountedBatch(batch, undefined, 10)).saved);
           const current = (await b.totalsSnapshot(CURRENT)).windows;
@@ -444,19 +414,22 @@ export function storeContractTests(subject: StoreContractSubject): void {
       );
 
       test(
-        "the same window adds up across writes; model sets name windows apart",
+        "the same window adds up across writes; scopes and types name windows apart",
         withStore(async (a, b) => {
           await publishVersions(a, 1);
-          const models = (used: bigint): WindowTotal => ({ ...hourWindow(used), models: ["a", "b"] });
-          const one = counted("gw-1", 1, 1, { used: 0n });
-          one.additions = [hourWindow(2n), models(5n)];
-          const two = counted("gw-2", 1, 1, { used: 0n });
-          two.additions = [hourWindow(3n), models(1n)];
+          const global = (used: bigint): WindowTotal => ({ type: "tokens_per_hour", windowStart: HOUR, used });
+          const money = (used: bigint): WindowTotal => ({ group: "g", type: "usd_per_month", windowStart: MONTH, used });
+          const one = counted("gw-1", 1, { used: 0n });
+          one.additions = [hourWindow(2n), global(5n), money(7n)];
+          const two = counted("gw-2", 1, { used: 0n });
+          two.additions = [hourWindow(3n), global(1n), money(1n)];
           assert.ok((await a.saveCountedBatch(one, undefined, 10)).saved);
           assert.ok((await b.saveCountedBatch(two, undefined, 10)).saved);
           const windows = (await a.totalsSnapshot(CURRENT)).windows;
-          assert.equal(windows.find((window) => window.models === undefined)?.used, 5n);
-          assert.equal(windows.find((window) => window.models !== undefined)?.used, 6n);
+          assert.equal(windows.length, 3);
+          assert.equal(windows.find((window) => window.group === "g" && window.type === "tokens_per_hour")?.used, 5n);
+          assert.equal(windows.find((window) => window.group === undefined)?.used, 6n);
+          assert.equal(windows.find((window) => window.type === "usd_per_month")?.used, 8n);
         }),
       );
 
@@ -561,7 +534,7 @@ export function storeContractTests(subject: StoreContractSubject): void {
           const onB = listen(b);
           try {
             await publishVersions(a, 1);
-            await b.saveCountedBatch(counted("gw-1", 1, 1), undefined, 10);
+            await b.saveCountedBatch(counted("gw-1", 1), undefined, 10);
             await a.saveGateway(gatewayRecord("gw-1", true), undefined);
             const expected: StoreChange[] = [
               { type: "config-published", version: 1, sequence: 1 },
@@ -588,7 +561,7 @@ export function storeContractTests(subject: StoreContractSubject): void {
           });
           try {
             await publishVersions(a, 1);
-            await a.saveCountedBatch(counted("gw-1", 1, 1), undefined, 10);
+            await a.saveCountedBatch(counted("gw-1", 1), undefined, 10);
             const deadline = Date.now() + notifyTimeoutMs;
             while (seen.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
             assert.equal(seen.length, 1, "the batch was heard");
@@ -604,11 +577,11 @@ export function storeContractTests(subject: StoreContractSubject): void {
         withStore(async (a, b) => {
           await publishVersions(a, 1);
           const heard = listen(b);
-          await a.saveCountedBatch(counted("gw-1", 1, 1), undefined, 10);
+          await a.saveCountedBatch(counted("gw-1", 1), undefined, 10);
           await heard.until("the counted batch", () => heard.changes.length >= 1);
           // Refused: the same batch again, a stale publish, a stale gateway write.
-          await a.saveCountedBatch(counted("gw-1", 1, 1), undefined, 10);
-          await a.publishConfig({ entry: entry(2), carried: [] }, { version: undefined, sequence: 0 }, 10);
+          await a.saveCountedBatch(counted("gw-1", 1), undefined, 10);
+          await a.publishConfig(entry(2), undefined, 10);
           await a.saveGateway(gatewayRecord("gw-9", true), 3);
           heard.unsubscribe();
           heard.unsubscribe();

@@ -155,7 +155,7 @@
   "effective-limits-exceeded.json": {
     "kind": "semantic",
     "code": "effective-limits-exceeded",
-    "reason": "50 001 effective limits, one over the 50 000 bound: 50 global, 50 of the users group's own, and 100 child_defaults limits on each of its 499 children — one child overrides a default (still 100), one adds a limit of its own (101)"
+    "reason": "50 001 effective limits, one over the 50 000 bound: 4 global, 4 of the users group's own, 4 child_defaults limits on each of its 12 498 children (one child overrides a default, still 4), and one top-level group with one limit"
   },
   "expires-at-date-only.json": {
     "kind": "schema",
@@ -319,43 +319,24 @@
     "kind": "schema",
     "reason": "a group has at most 16 labels"
   },
-  "limit-duplicate-all-models.json": {
-    "kind": "semantic",
-    "code": "limit-duplicate",
-    "reason": "two all-model limits of one type in the global scope"
-  },
   "limit-duplicate-child-defaults.json": {
     "kind": "semantic",
     "code": "limit-duplicate",
-    "reason": "two child_defaults limits share type and model set"
+    "reason": "two child_defaults limits share a type"
   },
   "limit-duplicate-group.json": {
     "kind": "semantic",
     "code": "limit-duplicate",
-    "reason": "two of a group's own limits share type and model set (limits the group overrides from its parent's child_defaults do not count)"
+    "reason": "two of a group's own limits share a type (limits the group overrides from its parent's child_defaults do not count)"
   },
-  "limit-duplicate-reordered-models.json": {
+  "limit-duplicate.json": {
     "kind": "semantic",
     "code": "limit-duplicate",
-    "reason": "two limits in one scope share type and model set (order ignored)"
+    "reason": "two limits of one type in the global scope"
   },
-  "limit-model-unknown-child-defaults.json": {
-    "kind": "semantic",
-    "code": "limit-model-unknown",
-    "reason": "a child_defaults limit names a model that does not exist"
-  },
-  "limit-model-unknown.json": {
-    "kind": "semantic",
-    "code": "limit-model-unknown",
-    "reason": "a limit names a model that does not exist"
-  },
-  "limit-models-empty.json": {
+  "limit-models.json": {
     "kind": "schema",
-    "reason": "a limit's model list is omitted for all models, never empty"
-  },
-  "limit-models-wildcard.json": {
-    "kind": "schema",
-    "reason": "a limit covers all models by omitting models, not with \"*\""
+    "reason": "a limit has no model list: it covers all of its scope's usage (settled 2026-10-06)"
   },
   "limit-negative.json": {
     "kind": "schema",

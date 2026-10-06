@@ -3,7 +3,7 @@
   "global": {
     "limits": [
       { "type": "requests_per_minute", "value": 1200 },
-      { "type": "usd_per_month", "value": 2000, "models": ["gpt-4.1", "gpt-4.1-mini"] }
+      { "type": "usd_per_month", "value": 2000 }
     ]
   },
   "backends": {
@@ -137,7 +137,7 @@
     "research-eval": {
       "parent": "research",
       "labels": { "kind": "project" },
-      "limits": [{ "type": "usd_per_month", "value": 300, "models": ["gpt-4.1", "gpt-4.1-mini"] }]
+      "limits": [{ "type": "usd_per_month", "value": 300 }]
     },
     "eval-batch": {
       "parent": "research-eval",

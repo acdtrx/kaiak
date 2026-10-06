@@ -35,10 +35,6 @@
     "kind": "schema",
     "reason": "totals carry the live-gateway count"
   },
-  "models-empty.json": {
-    "kind": "schema",
-    "reason": "a model set names at least one model; all models is models omitted"
-  },
   "month-window-not-first.json": {
     "kind": "schema",
     "reason": "a month window starts on the first at midnight"
@@ -78,11 +74,11 @@
   "window-duplicate.json": {
     "kind": "semantic",
     "code": "totals-window-duplicate",
-    "reason": "one window per limit: same group (or global), type and model set (order ignored)"
+    "reason": "one window per limit: same group (or global) and type"
   },
-  "window-models-duplicate.json": {
+  "window-models.json": {
     "kind": "schema",
-    "reason": "a window's model set lists each model once"
+    "reason": "a window names its limit by scope and type; there is no model set (settled 2026-10-06)"
   },
   "window-scope-field.json": {
     "kind": "schema",

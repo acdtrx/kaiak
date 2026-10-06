@@ -71,19 +71,16 @@ export function createMemoryStore(): ControlPlaneStore {
       return structuredClone(configs.at(-1));
     },
 
-    async publishConfig({ entry, carried }, expected, keep) {
-      if (latestVersion() !== expected.version || sequence !== expected.sequence) {
-        return { saved: false, latestVersion: latestVersion(), sequence };
-      }
-      if (entry.version !== (expected.version ?? 0) + 1) {
-        throw Object.assign(new Error(`version ${entry.version} does not follow ${expected.version ?? "none"}`), {
+    async publishConfig(entry, expectedVersion, keep) {
+      if (latestVersion() !== expectedVersion) return { saved: false, latestVersion: latestVersion() };
+      if (entry.version !== (expectedVersion ?? 0) + 1) {
+        throw Object.assign(new Error(`version ${entry.version} does not follow ${expectedVersion ?? "none"}`), {
           code: "config-version-out-of-order",
         });
       }
       // A copy, so a caller changing its document afterwards cannot change what is stored.
       configs.push(structuredClone(entry));
       if (configs.length > keep) configs.splice(0, configs.length - keep);
-      addTotals(carried);
       sequence += 1;
       notify({ type: "config-published", version: entry.version, sequence });
       return { saved: true, sequence };
@@ -100,9 +97,7 @@ export function createMemoryStore(): ControlPlaneStore {
 
     async saveCountedBatch(counted, expectedLast, keepRecords) {
       const last = lastBatches.get(counted.batch.instance)?.batch;
-      if (!sameBatch(last, expectedLast) || latestVersion() !== counted.configVersion) {
-        return { saved: false, last: last && { ...last }, configVersion: latestVersion() };
-      }
+      if (!sameBatch(last, expectedLast)) return { saved: false, last: last && { ...last } };
       lastBatches.set(counted.batch.instance, { batch: { ...counted.batch }, countedAt: counted.countedAt });
       addTotals(counted.additions);
       records.push(...structuredClone(counted.records));
@@ -198,7 +193,6 @@ function sameBatch(a: BatchId | undefined, b: BatchId | undefined): boolean {
   return a.instance === b.instance && a.epoch === b.epoch && a.sequence === b.sequence;
 }
 
-// Model sets arrive sorted (WindowKey), so equal sets give equal keys.
-function windowKey({ group, type, models, windowStart }: WindowKey): string {
-  return JSON.stringify([group ?? null, type, models ?? null, windowStart]);
+function windowKey({ group, type, windowStart }: WindowKey): string {
+  return JSON.stringify([group ?? null, type, windowStart]);
 }

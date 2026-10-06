@@ -101,7 +101,9 @@ the `{ error, detail }` body, `error` being the stable code:
   the version after the one it was checked against. Two publishes racing — in one
   control-plane process or in two over one store (Control-plane processes) — never
   share a version: the one that loses is checked again against the winner, the
-  parents rule included, and takes the next version or is refused.
+  parents rule included, and takes the next version or is refused. A publish depends
+  on no usage (settled 2026-10-06, with limits losing their model sets): counted
+  batches never refuse it, and it never refuses them.
 - **Parents never change** (settled 2026-09-27): a publish that gives a group the
   current version defines another `parent` than it has there — a top-level group
   given a parent and a child made top-level included — is refused like a config that
@@ -209,7 +211,7 @@ the `{ error, detail }` body, `error` being the stable code:
 | --- | --- |
 | config snapshot (`config-snapshot`) | `{ config_epoch, version, config }` — `config` is a full config document |
 | totals (`totals`) | `{ revision, config_epoch, config_version, live_gateways, counted_through, windows: [window…] }` |
-| totals window | `{ group?, type, models?, window_start, used }` |
+| totals window | `{ group?, type, window_start, used }` |
 | resync (`resync`) | `{}` |
 | usage record (`usage-record`) | the record (Usage records) |
 | usage batch (`usage-batch`) | `{ batch: { instance, epoch, sequence }, records: [record…] }` |
@@ -287,11 +289,10 @@ the `{ error, detail }` body, `error` being the stable code:
     plane's current window, one entry per limit. A limit not listed has used nothing
     in the control plane's current window. Per-minute limits are never listed.
   - A window names its limit by the identity a config reload keeps a counter by
-    (`GATEWAY.md`, Limits; settled 2026-09-27): `group` (the group the limit
-    belongs to; absent for a global limit), `type` (`tokens_per_hour` or
-    `usd_per_month`) and `models` (the limit's model set, order ignored; absent = all
-    models). A group's limits are its effective ones, its parent's `child_defaults`
-    merged in (Config → The group tree).
+    (`GATEWAY.md`, Limits; settled 2026-09-27, model set removed 2026-10-06): `group`
+    (the group the limit belongs to; absent for a global limit) and `type`
+    (`tokens_per_hour` or `usd_per_month`). A group's limits are its effective ones,
+    its parent's `child_defaults` merged in (Config → The group tree).
   - `window_start` is the top of a UTC hour (`tokens_per_hour`) or the first of a UTC
     month at midnight (`usd_per_month`), by the control plane's clock.
   - `used` counts what the gateway counts against that limit: tokens as
@@ -307,8 +308,8 @@ the `{ error, detail }` body, `error` being the stable code:
     one parsing path).
 - **Matching totals to limits** (enforced by the gateway, `GATEWAY.md`, Limits): only
   totals computed under the gateway's applied config apply; then a
-  window applies to the gateway's counter with the same group (or global), type and
-  model set (order ignored). Its `used` is the counter's pushed base for the window
+  window applies to the gateway's counter with the same group (or global) and type.
+  Its `used` is the counter's pushed base for the window
   `window_start` names; a window newer than the counter's current one starts that
   window. A window matching no counter (the configs differ) is ignored; a counter
   with no window has a pushed base of 0.
@@ -453,12 +454,22 @@ the `{ error, detail }` body, `error` being the stable code:
     limits or allowed models of its own. Its **path** is its group and every
     ancestor, top-level first.
   - **Scopes**: a request's scopes are the groups on its key's path, plus global. It
-    must pass every limit of each scope whose model set covers its model, and its
-    usage counts toward each of them.
-  - **Limits**: `{ type, value, models? }`; `models` omitted means all models,
-    counted together. A limit's **identity** is (group, type, model set, order
-    ignored); a global limit has no group. Totals windows, the gateway's counters,
-    model-set carry-over and the file-mode snapshot all key limits by it.
+    must pass every limit of each scope, and its usage counts toward each of them.
+  - **Limits** (settled 2026-10-06): `{ type, value }`, at most one per type in a
+    scope (global, a group, a group's `child_defaults`), covering all of the scope's
+    usage — every model, counted together. A limit's **identity** is (group, type); a
+    global limit has no group. Totals windows, the gateway's counters and the
+    file-mode snapshot all key limits by it. An unpriced model costs nothing, so a
+    `usd_per_month` limit already counts only priced models' spend. Rejected:
+    - limits on a set of models (the `models` member, settled 2026-09-24): budgets
+      are set per group, a model set made one scope hold several limits of a type,
+      and an edited set made a new identity whose spend had to be carried over at
+      publish — tying publishes to usage counting across control-plane processes;
+    - an `id` per limit to keep identity through edits — one limit per type in a
+      scope needs none.
+
+    A money budget across a provider's backends is a separate concern (backlog:
+    provider budgets).
   - **Allowed models intersect down the path**: each level of the path has an
     effective list — the group's own `allowed_models`, else its parent's
     `child_defaults.allowed_models`, else none, and then that level restricts
@@ -469,14 +480,14 @@ the `{ error, detail }` body, `error` being the stable code:
     need a list before its keys could do anything.
   - **`child_defaults`** apply to each **direct child**, never further down: a
     child's own `allowed_models` replaces the default list whole; each of a child's
-    limits replaces the default limit with the same type and model set, in place,
+    limits replaces the default limit of the same type, in place,
     and default limits it does not override still apply. A group's **effective
     limits** are that merge: the parent's `child_defaults.limits` in their order,
-    each replaced in place by the group's limit of the same identity, then the
+    each replaced in place by the group's limit of the same type, then the
     group's other limits in their order. `child_defaults` on a group without
     children has no effect and is not an error.
   - **`child_defaults` is a default, not a ceiling** (settled 2026-09-27): since a
-    child's own list or same-identity limit replaces the default, a child can be
+    child's own list or same-type limit replaces the default, a child can be
     given more than the default — more models, a higher value. A hard restriction
     for a whole subtree goes on the parent's **own** `allowed_models` and `limits`,
     which bind every group below it (allowed models intersect down the path, and
@@ -591,12 +602,9 @@ the `{ error, detail }` body, `error` being the stable code:
     `child_defaults`') names no model.
   - `allowed-models-wildcard-mixed` — `"*"` listed alongside model names (a group's
     list or a `child_defaults` list).
-  - `limit-model-unknown` — a limit's `models` entry names no model (global, a
-    group's or a `child_defaults` limit).
   - `limit-duplicate` — two limits in one list (`global.limits`, one group's
-    `limits`, one group's `child_defaults.limits`) share type and model set, order
-    ignored. A group's limit with the identity of one of its parent's defaults is an
-    override, not a duplicate.
+    `limits`, one group's `child_defaults.limits`) share a type. A group's limit with
+    the type of one of its parent's defaults is an override, not a duplicate.
   - `output-limit-default-above-ceiling` — `output_limit.default` > `ceiling`.
   - `output-limit-above-context` — `output_limit.ceiling` > `metadata.context_length`.
   - `reasoning-efforts-without-reasoning` — `reasoning_efforts` listed while
@@ -746,11 +754,12 @@ How the control plane takes `POST /v1/usage`, as `kaiak-control` implements it.
   one (Messages → Totals: `revision`) in one store write — a batch is counted and
   remembered, or neither. Rejected: separate writes, where a crash between them loses
   a batch or counts it twice.
-- **Counted under the config in force** (settled 2026-10-06): a batch's amounts are
-  computed under the latest published config, and the write is conditional on that
-  version still being the latest — a publish in between (by any control-plane
-  process) makes the write fail, and the batch is computed again under the new
-  limits. So no batch counts toward limits a publish already replaced.
+- **Counted whatever the config** (settled 2026-10-06): a batch's amounts do not
+  depend on the config — every record counts toward its scopes' windows (Counted
+  toward) — so a publish never refuses a batch's write, and a batch never refuses a
+  publish. Rejected: counting toward the limits of the config in force, with the
+  write conditional on that version — it made every publish race usage, and existed
+  only for model-set carry-over.
 - **Exactly once in the store** (settled 2026-09-25, D7): the write is conditional on
   the last batch ID the decision was made against — the store compares and writes in
   one atomic operation, and when another writer counted a batch of the instance in
@@ -774,35 +783,39 @@ How the control plane takes `POST /v1/usage`, as `kaiak-control` implements it.
   (`GATEWAY.md`, Limits → Uncounted usage stays in its own window). Rejected:
   counting by receipt time only — through an outage it charged the whole backlog to
   the current window, turning an hour limit into "since the outage began".
-- **Counted toward** (Budgets; settled 2026-09-27): a record's scopes are global and
-  every group its `groups` lists that the config in force at receipt (the current
-  published version) defines — the path as recorded, never re-derived. Within those
-  scopes, every `tokens_per_hour` and `usd_per_month` limit whose model set covers
-  the record's model adds
+- **Counted toward** (Budgets; settled 2026-09-27, by scope 2026-10-06): a record's
+  scopes are global and every group its `groups` lists — the path as recorded, never
+  re-derived. In each scope, the record adds
   `tokens_in + tokens_cache_write + tokens_out` (written tokens count, settled
   2026-10-02; input read from the cache does not, settled 2026-10-05 — `GATEWAY.md`,
-  Limits → Settle) or `cost_nano_usd`
-  to that limit's window for the record (Counted in its own window). A group's limits
-  are its effective ones (`child_defaults` merged; Config → The group tree).
-  Per-minute limits are not counted (they stay local to gateways).
+  Limits → Settle) to the scope's `tokens_per_hour` window and `cost_nano_usd` to its
+  `usd_per_month` window for the record (Counted in its own window), **whether or not
+  the scope has a limit of that type** in any config: windows are kept per scope and
+  type, and totals list those the current config limits (Totals). Per-minute limits
+  are not counted (they stay local to gateways). Rejected: counting only toward the
+  limits of the config in force (until 2026-10-06's simplification) — it tied counting
+  to publishes.
 - **Groups the config no longer defines** (deleted after the gateway settled the
-  record) are skipped; the listed groups that remain and global still count — so
-  usage settled just before a delete counts toward the ancestors that remain, and
-  records stay readable after the tree is reorganized. Parents never change (Config
+  record) still count toward their windows, which no limit lists; the listed groups
+  that remain and global count as always — so usage settled just before a delete
+  counts toward the ancestors that remain, and records stay readable after the tree
+  is reorganized. Parents never change (Config
   versions), so a listed group that still exists has the ancestors it had when the
   record was made — unless it was deleted and created again under the same ID,
   which counting cannot tell apart (the record counts toward what the ID names
   now, as its windows do: Totals). Rejected: dropping such records, which would
   under-count the surviving scopes' budgets on every config edit that races
   traffic.
-- **Totals** follow the current config: a limit's window is kept by its identity
-  (group or global, type, model set), so a limit removed from the config leaves the totals
-  and one that returns within the same window comes back with what was counted while
-  it existed; a new limit starts at 0 — unless only its model set changed (Budgets →
-  Model-set edits). **A group ID used again resumes its window's spend** (settled
+- **Totals** follow the current config: they list the windows of the limits it
+  defines, by identity (group or global, and type). Windows are counted whatever the
+  config (Counted toward), so an edited limit keeps its spend, a limit removed from the
+  config leaves the totals, and a limit added within a window starts with the scope's
+  usage counted in that window so far — a monthly budget added mid-month counts the
+  month (settled 2026-10-06; it replaces "a new limit starts at 0"). **A group ID used
+  again resumes its window's spend** (settled
   2026-09-27): a group deleted and created again with the same ID within the same
   hour or month — a move included, whatever its new parent — gets that window's
-  amounts back for each limit of the same identity; it is a new group in the tree,
+  amounts back for each limit of its types; it is a new group in the tree,
   but the ID's budget in the current window carries on. A fresh budget takes a new
   ID. Rejected: dropping a deleted group's windows at publish — every other limit
   that returns within its window comes back with its spend, and a group's limits
@@ -833,38 +846,13 @@ How the control plane takes `POST /v1/usage`, as `kaiak-control` implements it.
   gateway, and in every ack — each time the complete set (Messages, Totals). The push
   rules — on connect, on a publish and on live-set changes too, coalescing, slow
   readers — are in Config stream.
-- **Model-set edits** (settled 2026-09-25, D5): a publish whose new limit matches, by
-  group (or global) and type, limits the previous config had and the new one dropped —
-  only the model set changed — carries their spend: the new limit's current hour or
-  month window is raised to the largest predecessor's amount there (it may hold its
-  own already, from when that identity last existed in the window). Several
-  predecessors are ambiguous: the largest is carried and the host hears of it
-  (`onLimitCarriedOver`, `ambiguous`; the sample logs a warning). No batch counts
-  between the carry and the publish, and every batch counts under the config in
-  force when it is counted — whichever control-plane process counts or publishes
-  (settled 2026-10-06; the writes below and Usage intake → Counted under the config
-  in force). The gateway carries its counters the same way (`GATEWAY.md`, Limits → Model-set
-  edits keep the spend). **Each side carries against the config it last held**
-  (settled 2026-09-27): `kaiak-control` against the previously published version,
-  a gateway against the config it applied before — which differ when a gateway
-  skips versions (a resync, a rejected config), so the two may carry different
-  predecessors for a while. The totals computed under the new config settle the
-  difference: once they reach the gateway, they are its base for every limit
-  (`GATEWAY.md`, Limits → Control-plane mode). Rejected: a new identity starting
-  at 0 — adding a model to a spent monthly budget forgave the month. **The carry and
-  the version are one store write** (settled 2026-10-01, the 2026-09-30 review's C4
-  and B2; one write 2026-10-06), conditional on the latest version and the totals
-  sequence the carry was computed from: a batch counted or a version published in
-  between (by any control-plane process) makes it fail with nothing written, and the
-  publish is checked and its carry computed again. A store write that fails for
-  any other reason fails the publish with nothing stored or announced, and the host
-  retries. The write moves the totals sequence on by one. The host hears of each
-  carry (`onLimitCarriedOver`) once the publish has succeeded; a callback that
-  throws goes to `onListenerError` and never fails it. Rejected: storing the version
-  first — a failed carry then left the new config live with the spend lost, and the
-  retry, comparing against the stored version, found nothing to carry; the carry
-  and the version as two writes — a batch another process counts between them is
-  missed by the carry.
+- **Editing a limit keeps its spend** (settled 2026-10-06): a limit is identified by
+  its scope and type, so a new value applies to the window's spend so far, on both
+  sides, with nothing to carry. It replaces the model-set carry-over (settled
+  2026-09-25, D5): a publish that changed a limit's model set raised the new limit's
+  window to its predecessor's, and needed no batch counted between reading the spend
+  and storing the version — a coupling of publishing and counting across processes
+  that limits without model sets remove.
 - **Per-minute windows** stay local to each gateway; the control plane pushes only the
   number of live gateways, and each gateway enforces limit ÷ live gateways, rounded
   down, 0 counting as 1, never below 1 unless the limit is 0 (`GATEWAY.md`, Limits →
@@ -962,10 +950,10 @@ How the control plane takes `POST /v1/status`, as `kaiak-control` implements it.
   - **Conditional writes**: every write that changes the totals, the config versions
     or the live set is made only if what it was computed from is still the store's
     state, else nothing is written and the process computes again — a counted batch
-    on its instance's last batch and the latest config version (Usage intake), a
-    publish on the latest version and the totals sequence (Config versions; Budgets →
-    Model-set edits), a status or an expiry on the gateway record it read (Status
-    intake).
+    on its instance's last batch (Usage intake), a publish on the latest version
+    (Config versions), a status or an expiry on the gateway record it read (Status
+    intake). Publishes and batches never condition on each other (Usage intake →
+    Counted whatever the config).
   - **Consistent reads**: a totals message's revision, `counted_through` and windows
     come from one store snapshot (Messages → Totals: consistent snapshot).
   - **Change notification**: every process hears of every publish, totals change and
@@ -1011,7 +999,7 @@ How the control plane takes `POST /v1/status`, as `kaiak-control` implements it.
   contact for longer than the grace, counted from the gateway's start when it never
   reached the control plane (a last-known-good or seed boot). A request is refused when its
   model has a price in force and any limit that applies to it — any of its scopes, a
-  model set covering its model — is a `usd_per_month` limit: `503 budget_unavailable` (`GATEWAY.md`, Client API). The
+  — is a `usd_per_month` limit: `503 budget_unavailable` (`GATEWAY.md`, Client API). The
   first contact ends it; status reports are not counted as contact (they are
   best-effort and carry nothing back). While usage batches wait for an answer, the
   gateway is also in outage once they have waited past the grace, an open stream

@@ -23,13 +23,13 @@ export interface StoredConfig {
   publishedAt: number;
 }
 
-// One limit's window: the limit's identity — its group (absent for a global limit),
-// type and model set — and the window's start.
+// One scope's window for one limit type: the scope — a group, absent for global — the
+// type, and the window's start. Usage counts toward every scope on a record's path
+// whatever the config's limits (CONTROL-PROTOCOL.md, Usage intake → Counted toward);
+// totals list the windows the config limits.
 export interface WindowKey {
   group?: string;
   type: TotalsLimitType;
-  // The limit's model set, sorted; absent = all models.
-  models?: string[];
   // Milliseconds since the epoch: the top of a UTC hour (tokens_per_hour) or the first
   // of a UTC month (usd_per_month).
   windowStart: number;
@@ -57,9 +57,6 @@ export interface ReceivedRecord {
 export interface CountedBatch {
   // Becomes the instance's last counted batch.
   batch: BatchId;
-  // The config version the additions were computed under: the write is made only while
-  // it is still the latest (Usage intake: counted under the config in force).
-  configVersion: number;
   // When it was counted, by the control plane's clock (milliseconds since the epoch):
   // the last counted batch is kept for the batch cursor retention from then.
   countedAt: number;
@@ -71,32 +68,15 @@ export interface CountedBatch {
 
 // What the conditional batch write found: the batch saved with the totals sequence it
 // moved to, or — when the instance's last counted batch was no longer the expected
-// one, or the latest config version was no longer the batch's — nothing written, and
-// what the store holds now, for the caller to decide and compute again.
-export type SaveCountedBatchResult =
-  | { saved: true; sequence: number }
-  | { saved: false; last: BatchId | undefined; configVersion: number | undefined };
-
-// A publish: the new version, and the spend carried into limits whose only change is
-// their model set (Budgets → Model-set edits), written together.
-export interface PublishedConfig {
-  entry: StoredConfig;
-  // Added to the stored totals with the version, one entry per window.
-  carried: WindowTotal[];
-}
-
-// What a publish was computed against: the latest version it was checked against
-// (undefined: none yet) and the totals sequence its carry was read at.
-export interface PublishExpectation {
-  version: number | undefined;
-  sequence: number;
-}
+// one — nothing written, and the last batch the store holds, for the caller to decide
+// again.
+export type SaveCountedBatchResult = { saved: true; sequence: number } | { saved: false; last: BatchId | undefined };
 
 // What the conditional publish found: saved with the totals sequence it moved to, or
-// nothing written and what the store holds now.
+// nothing written and the latest version the store holds now.
 export type PublishConfigResult =
   | { saved: true; sequence: number }
-  | { saved: false; latestVersion: number | undefined; sequence: number };
+  | { saved: false; latestVersion: number | undefined };
 
 // The totals at one store snapshot (CONTROL-PROTOCOL.md, Messages → Totals: consistent
 // snapshot): every member read together, so the windows hold exactly the batches
@@ -183,13 +163,14 @@ export interface ControlPlaneStore {
 
   // The newest config version, or undefined before the first publish.
   latestConfig(): Promise<StoredConfig | undefined>;
-  // Stores published.entry as the newest version and adds published.carried to the
-  // totals, in one write, only when the latest version is still expected.version and
-  // the totals sequence still expected.sequence; the write moves the sequence on by
-  // one. entry.version must be expected.version + 1 (1 for the first). Otherwise
-  // nothing changes, and the answer is what the store holds now. Versions older than
-  // the newest `keep` are no longer needed and may be dropped; a store may keep more.
-  publishConfig(published: PublishedConfig, expected: PublishExpectation, keep: number): Promise<PublishConfigResult>;
+  // Stores entry as the newest version, only when the latest version is still
+  // expectedVersion (undefined: none yet); the write moves the totals sequence on by
+  // one (the totals list the new config's limits). entry.version must be
+  // expectedVersion + 1 (1 for the first). Otherwise nothing changes, and the answer
+  // names the latest version. A publish depends on no usage: counted batches never
+  // refuse it, and it never refuses them. Versions older than the newest `keep` are no
+  // longer needed and may be dropped; a store may keep more.
+  publishConfig(entry: StoredConfig, expectedVersion: number | undefined, keep: number): Promise<PublishConfigResult>;
   // The stored versions newer than `version`, oldest first.
   configsAfter(version: number): Promise<StoredConfig[]>;
 
@@ -197,11 +178,11 @@ export interface ControlPlaneStore {
   lastBatch(instance: string): Promise<BatchId | undefined>;
   // Stores a counted batch in one write — its ID as the instance's last batch, its
   // additions to the totals, its records, a step of the totals sequence — only when the
-  // instance's last counted batch is still `expectedLast` (undefined: none yet) and the
-  // latest config version is still counted.configVersion. So the batch is either
-  // counted and remembered or neither, no two writers can both count one batch, and no
-  // batch counts toward limits a publish replaced. Records older than the newest
-  // `keepRecords` are no longer needed and may be dropped.
+  // instance's last counted batch is still `expectedLast` (undefined: none yet). So the
+  // batch is either counted and remembered or neither, and no two writers can both
+  // count one batch. The config plays no part: a publish never refuses a batch.
+  // Records older than the newest `keepRecords` are no longer needed and may be
+  // dropped.
   saveCountedBatch(
     counted: CountedBatch,
     expectedLast: BatchId | undefined,

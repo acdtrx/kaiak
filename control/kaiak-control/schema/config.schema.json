@@ -398,7 +398,7 @@
           "$ref": "#/$defs/allowed_models"
         },
         "limits": {
-          "description": "This group's limits. Each replaces the parent's child_defaults limit with the same type and model set; defaults not replaced still apply.",
+          "description": "This group's limits, at most one per type, each covering all of the group's usage. Each replaces the parent's child_defaults limit of the same type; defaults not replaced still apply.",
           "$ref": "#/$defs/limits"
         },
         "child_defaults": {
@@ -461,14 +461,7 @@
           "description": "Per-minute windows slide; hours are fixed UTC hours; months are calendar months, UTC.",
           "enum": ["requests_per_minute", "tokens_per_minute", "tokens_per_hour", "usd_per_month"]
         },
-        "value": { "type": "number", "minimum": 0, "maximum": 9007199254740991 },
-        "models": {
-          "description": "Public model names the limit covers, counted together. Omitted = all models.",
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": { "$ref": "#/$defs/public_model_name" }
-        }
+        "value": { "type": "number", "minimum": 0, "maximum": 9007199254740991 }
       },
       "if": {
         "properties": { "type": { "enum": ["requests_per_minute", "tokens_per_minute", "tokens_per_hour"] } },

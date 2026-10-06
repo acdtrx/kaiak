@@ -19,7 +19,7 @@ test("every store has its own config epoch", async () => {
 
 test("a publish whose version does not follow the expected one is a caller fault", async () => {
   const store = createMemoryStore();
-  await assert.rejects(store.publishConfig({ entry: entry(2), carried: [] }, { version: undefined, sequence: 0 }, 10), {
+  await assert.rejects(store.publishConfig(entry(2), undefined, 10), {
     code: "config-version-out-of-order",
   });
   assert.equal(await store.latestConfig(), undefined);

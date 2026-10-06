@@ -27,8 +27,8 @@
     "alice": {
       "parent": "users",
       "limits": [
-        { "type": "requests_per_minute", "value": 5, "models": ["chat"] },
-        { "type": "requests_per_minute", "value": 6, "models": ["chat"] }
+        { "type": "requests_per_minute", "value": 5 },
+        { "type": "requests_per_minute", "value": 6 }
       ]
     }
   },
