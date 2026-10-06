@@ -9,7 +9,8 @@
 > 2026-10-02; to Messages and Responses passthrough — the Anthropic backend types, no
 > model defaults (config format 5, protocol version 5) — on 2026-10-06; to several
 > control-plane processes over one store and limits without model sets (same formats)
-> on 2026-10-06.
+> on 2026-10-06; to a broadcast-only control plane — the current config by hash, no
+> config versions — on 2026-10-07.
 >
 > Background, in this order: `docs/architecture/control-plane.html` (how gateways and a
 > control plane work together, with diagrams), `docs/specs/CONTROL-PROTOCOL.md` (the
@@ -19,13 +20,18 @@
 ## 1. The division of labor
 
 kaiak gateways serve LLM traffic and never call the control plane on the request path.
-The control plane owns config, usage totals and budgets. `kaiak-control` implements
-the **whole protocol side** of that; your app supplies the rest.
+The control plane owns config, usage totals and budgets. **Your app is the source of
+truth for config**: it keeps the parts (keys, groups, models, backends) in its own
+store, composes the whole document, keeps any history or audit of it, and decides who
+may change what and when. `kaiak-control` takes the document your app hands it,
+validates it, makes it the **current config** and broadcasts it to the gateways with
+the usage totals. It keeps no earlier configs. It implements the **whole protocol
+side**; your app supplies the rest.
 
 | `kaiak-control` does | Your app does |
 | --- | --- |
-| The four gateway endpoints (`controlProtocolPlugin`) and their checks (token, protocol version, instance) | Everything a human touches: UI, login, roles, audit log |
-| Config validation (the same schema and semantic rules the gateway runs), versioning, history, the config stream, `resync` | Building config documents (from forms, a DB model, an import) and deciding when to publish |
+| The three gateway endpoints (`controlProtocolPlugin`) and their checks (token, protocol version, instance) | Everything a human touches: UI, login, roles, audit log |
+| Config validation (the same schema and semantic rules the gateway runs), the current config and its `config_hash`, broadcasting it on the stream | Composing config documents (from forms, a DB model, an import), their history and audit, concurrent editing, and deciding when to publish |
 | Usage intake: de-duplication, exactly-once counting, hour/month totals per limit, totals pushes | Long-term usage storage, reports, invoices (fed from the store — §6) |
 | Gateway status, the live set, expiry, conflict flags | Showing them; alerting on them |
 | Key generation and hashing (`createKey`) | Showing the plaintext key once; mapping keys to people |
@@ -39,7 +45,7 @@ something the protocol needs, the change belongs in the kaiak repo (§11).
 ## 2. Hard rules
 
 1. **How many processes your store allows is your store's choice.** The core keeps
-   nothing replicas must agree on: config versions, counted batches, the totals
+   nothing replicas must agree on: the current config, counted batches, the store's
    sequence and the live set are the store's, decided by conditional writes and
    announced through its `subscribe()` (§5). `createMemoryStore()` lives in one process:
    with it, run **one** process (the sample's protocol replicas share one store inside
@@ -48,9 +54,10 @@ something the protocol needs, the change belongs in the kaiak repo (§11).
    number of replicas behind a load balancer. Prove it with the exported contract
    tests (§11) before running two.
 2. **Every config goes through `controlPlane.publishConfig(doc)`.** Never write
-   `publishConfig` on the store yourself: the core validates the document, checks it
-   against the current version and retries a publish that lost a race to another
-   process's.
+   `publishConfig` on the store yourself: the core validates the document, checks the
+   parents rule against the current config, and retries a publish that lost a race to
+   another process's. A publish **replaces** the current config: two admins editing at
+   once is your app's to arbitrate, before it publishes.
 3. **Config holds key hashes, never keys.** `createKey(id)` returns `{ id, key, hash }`;
    store `id` + `hash`, show `key` once, never log or persist it.
 4. **Backend secrets never enter config.** A backend names an environment variable
@@ -103,7 +110,7 @@ const controlPlane: ControlPlane = createControlPlane({
   },
 });
 
-// Mounts GET /v1/config, GET /v1/stream, POST /v1/usage, POST /v1/status.
+// Mounts GET /v1/stream, POST /v1/usage, POST /v1/status.
 // Starts the core (runs the expiry sweep) when the app is ready,
 // ends open streams and stops the core on app.close().
 app.register(controlProtocolPlugin, { controlPlane });
@@ -120,13 +127,13 @@ await app.listen({ host: "0.0.0.0", port: 8090 });
 
 - Gateways get `KAIAK_CONTROL_URL=https://<host>` (the base; they append `/v1/...`)
   and the same `KAIAK_CONTROL_TOKEN`.
-- Until the first config is published, gateways get `503 config-unavailable` and keep
-  retrying; publish on startup (the sample reads its file in an `onReady` hook).
+- Until the first config is published, a gateway's stream stays open with nothing on
+  it, and the gateway waits for its first config; publish on startup (the sample reads
+  its file in an `onReady` hook). Usage batches are counted all the same.
 - Plugin options (all optional): `prefix` (default `/v1` — gateways expect `/v1`, so
   leave it), `heartbeatIntervalMs` (15 000), `totalsPushIntervalMs` (1 000),
   `stalledStreamTimeoutMs` (30 000).
-- Core options worth knowing: `configHistorySize` (100 versions a stream can resume
-  across), `recentRecordsSize` (100), `gatewayLiveTimeoutMs` (30 000),
+- Core options worth knowing: `recentRecordsSize` (100), `gatewayLiveTimeoutMs` (30 000),
   `gatewayForgetAfterMs` (1 h), `batchCursorRetentionMs` (7 days). Defaults match
   the gateway's timings; change them only with a reason.
 - Several cores over one store are several `createControlPlane({ store })` calls —
@@ -143,24 +150,27 @@ reference implementation — read it first, then mirror its behavior method by m
 The contract is also a test suite, `storeContractTests` from
 `kaiak-control/store-contract` (§11): run it against your store.
 
-The store is where control-plane processes agree. Every write that changes the totals
-moves **one totals sequence** by one, in the same transaction; the sequence is the
-`revision` gateways order totals by. Every such write is **conditional** on what the
-core read, so two processes never both win; a refused write changes nothing and the
-core decides again. Reads of the totals are **one snapshot**. And every change, by any
-process, reaches every process through `subscribe()`.
+The store is where control-plane processes agree. Every write that changes what
+gateways are sent — a publish, a counted batch, a change to the live set — moves **one
+sequence** by one, in the same transaction. The sequence never goes on the wire: each
+core uses it to never send a stream something older than what it already sent there,
+and a core that reads it going **back** (a restore from a backup, a failover to a copy
+behind) ends its streams so gateways reconnect to the store's current state. Every such
+write is **conditional** on what the core read, so two processes never both win; a
+refused write changes nothing and the core decides again. Reads of the totals are
+**one snapshot**. And every change, by any process, reaches every process through
+`subscribe()`.
 
 | Methods | Contract to hold |
 | --- | --- |
-| `configEpoch()` | 32 random lowercase hex digits, created **once with the store** and kept while the store keeps its versions and its sequence. A store that survives restarts keeps its epoch — that is what lets gateways keep resuming across control-plane restarts. A store that loses or **rolls back** its state (a restore from a backup) takes a new epoch: otherwise its sequence goes back and gateways ignore its totals. |
-| `latestConfig`, `publishConfig(entry, expectedVersion, keep)`, `configsAfter(version)` | Store `entry` as the newest version **only while the latest version is still `expectedVersion`**, and move the sequence — one transaction. Otherwise write nothing and return `{ saved: false, latestVersion }`. A publish never depends on usage. Versions older than the newest `keep` may be dropped; keeping all of them (config audit history) is allowed. `configsAfter` returns oldest first. |
+| `currentConfig()`, `publishConfig(entry, expectedHash)` | One current config: `{ config, hash, publishedAt }` plus the sequence its publish moved the store to. A publish **replaces** it **only while the current config's hash is still `expectedHash`** (`undefined` = none published yet) — the config the core checked the parents rule against — and moves the sequence, in one transaction. Otherwise write nothing and return `{ saved: false, current }`. The store keeps no earlier configs; config history is your app's. A publish never depends on usage. |
 | `lastBatch(instance)`, `saveCountedBatch(counted, expectedLast, keepRecords)` | The exactly-once guarantee. Write the batch ID as the instance's last, add every `additions` entry to the window totals, append `records` and move the sequence — **all in one transaction, and only if the instance's last batch still equals `expectedLast`** (`undefined` = none yet). Otherwise write nothing and return `{ saved: false, last }`. A compare-and-set on the cursor row (`UPDATE … WHERE … = $expected`) is the usual shape. |
-| `totalsSnapshot(current, instance?)` | The sequence, the latest config, the instance's last batch, the current windows (`tokens_per_hour` at `hourStart`, `usd_per_month` at `monthStart`) and the live set's size, **read in one snapshot** (`REPEATABLE READ`, or one statement). A message built from it holds exactly the batches counted at its sequence. |
+| `totalsSnapshot(current, instance?)` | The sequence, the current config, the instance's last batch, the current windows (`tokens_per_hour` at `hourStart`, `usd_per_month` at `monthStart`) and the live set's size, **read in one snapshot** (`REPEATABLE READ`, or one statement). A message built from it holds exactly the batches counted at its sequence. |
 | `dropPastWindowTotals(oldest)` | Past windows *may* be dropped; keeping them for reporting is allowed — the core only reads current windows. Does not move the sequence. |
 | `recentRecords(limit)` | Newest first. |
 | `gateway`, `gateways`, `saveGateway(record, expectedRevision)`, `forgetGateways([{ instance, revision }])` | Latest status per instance with a per-instance write count (`revision`). Each write and each forget only if the stored record is still at the revision the core read; a write or forget that changes the live set moves the sequence in the same transaction. Forgetting a gateway keeps its batch cursor. |
 | `dropBatchCursorsCountedBefore(cutoff)` | Drop cursors counted before `cutoff`, return their instances. |
-| `subscribe(listener)` | Every change **any process** makes — `config-published`, `batch-counted`, `gateways-changed`, each with the sequence after it — after its write, in the store's order, to every subscriber of every process. For a database: a notification channel (Postgres `LISTEN`/`NOTIFY` sent in the writing transaction, Redis pub/sub). A lost notification leaves streams without pushes until the next change; the core does not poll. |
+| `subscribe(listener)` | Every change **any process** makes — `config-published` (with the new hash), `batch-counted`, `gateways-changed`, each with the sequence after it — after its write, in the store's order, to every subscriber of every process. For a database: a notification channel (Postgres `LISTEN`/`NOTIFY` sent in the writing transaction, Redis pub/sub). A lost notification leaves streams without a config or a push until the next change; the core does not poll. |
 
 Representation notes:
 
@@ -183,9 +193,8 @@ Representation notes:
 A sketch, not a prescription (Postgres):
 
 ```sql
-create table store_meta   (id int primary key default 1, config_epoch text not null,
-                           sequence bigint not null default 0);
-create table configs      (version int primary key, config jsonb not null, published_at bigint not null);
+create table store_meta   (id int primary key default 1, sequence bigint not null default 0,
+                           config jsonb, config_hash text, published_at bigint);
 create table batch_cursor (instance text primary key, epoch text not null, sequence bigint not null,
                            counted_at bigint not null);
 create table window_total (group_id text, type text, window_start bigint,
@@ -199,14 +208,14 @@ Each conditional write is one transaction that fails cleanly when its condition 
 not hold, moves the sequence, and notifies:
 
 ```sql
--- publishConfig: the version is the condition (the primary key refuses a second
--- writer of the same version; check the latest inside the transaction).
+-- publishConfig: the current hash is the condition.
 begin;
-  select coalesce(max(version), 0) from configs;          -- must equal $expectedVersion
-  insert into configs values ($version, $config, $publishedAt);
-  update store_meta set sequence = sequence + 1 returning sequence;
+  update store_meta set config = $config, config_hash = $hash, published_at = $publishedAt,
+                        sequence = sequence + 1
+    where config_hash is not distinct from $expectedHash
+    returning sequence;                                   -- 0 rows: refused, roll back
   select pg_notify('kaiak', json_build_object('type', 'config-published',
-                   'version', $version, 'sequence', <sequence>)::text);
+                   'hash', $hash, 'sequence', <sequence>)::text);
 commit;
 
 -- saveCountedBatch: compare-and-set on the cursor (an insert for the first batch).
@@ -406,15 +415,18 @@ Typical flow for a UI edit:
    `message` and a JSON Pointer `path`. Stable codes (`key-group-unknown`,
    `group-cycle`, `limit-duplicate`, `output-limit-above-context`, …) are listed in
    the spec.
-3. Call `controlPlane.publishConfig(doc)`: `{ ok: true, published: { version, … } }` or
-   `{ ok: false, issues }` (nothing published, current version stays). Validation runs
-   again inside; step 2 is for UX only. Publishing also compares with the current
-   version: a group given another `parent` than it has there is refused
+3. Call `controlPlane.publishConfig(doc)`: `{ ok: true, published: { config, hash, publishedAt, sequence } }`
+   or `{ ok: false, issues }` (nothing published, the current config stays). Validation
+   runs again inside; step 2 is for UX only. Publishing also compares with the current
+   config: a group given another `parent` than it has there is refused
    (`group-parent-changed`, path `/groups/<id>/parent`) — `validateConfig` cannot see
    this, so surface publish issues in the UI too.
 4. Watch the result land: `gateways()` shows each gateway's
-   `status.applied_config_version`, or `status.last_rejection` (`{ version, codes }`)
-   when a gateway refused it (typically a backend `api_key_env` not set on that pod).
+   `status.applied_config_hash` — the `hash` publish returned once it applied it — or
+   `status.last_rejection` (`{ config_hash, codes }`) when a gateway refused it
+   (typically a backend `api_key_env` not set on that pod). Keep the hashes your app
+   published, beside your own history of the documents, to tell which edit a gateway
+   runs.
 
 Keys: `createKey(id)` — `id` matches `^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$` (throws
 `key-id-invalid` otherwise); `isConfigId(id)` checks that shape, the same for key and
@@ -480,7 +492,7 @@ The sample's `verify` command wraps it for a config file:
 
 | Need | Call |
 | --- | --- |
-| Current config and its version | `currentConfig()` → `{ version, config, publishedAt }`; `configEpoch()` |
+| The current config | `currentConfig()` → `{ config, hash, publishedAt, sequence }` (`sequence` is the store's, for ordering only) |
 | Gateways, health, what they run | `gateways()` → `{ instance, status, receivedAt, live, conflict? }[]`; `liveGateways()` |
 | Spend vs limits (current windows) | `totals("")` + `resolveScopes(config)`, matched by scope and type — below |
 | A group's path, effective limits and models | `resolveScopes(config)` → `{ group?, path, limits, allowed_models? }[]` — global first (no `group`, `path` `[]`), then every group in config order; `allowed_models` absent = every model |
@@ -524,13 +536,13 @@ if (current && totals) {
 - **Body limits** are set by the plugin (usage 2 MiB, status 64 KiB); a proxy limit
   below that breaks usage delivery.
 - **Restarts** are safe with a durable store: gateways keep serving, hold usage,
-  reconnect and resume from their config version. Priced models under a USD limit are
+  reconnect and get the current config and totals again. Priced models under a USD limit are
   refused by gateways only after the outage passes `global.control_outage_grace_ms`
   (15 min default) — keep restarts well below it.
 - **Replicas** (with a store that holds the contract across processes, §5): run them
   behind any load balancer, no stickiness needed. A gateway whose replica goes away
-  reconnects to another and resumes from its config version; totals stay ordered by
-  the store's sequence. **Rolling updates** are fine: old and new processes run side
+  reconnects to another and gets the current config and totals from it. **Rolling
+  updates** are fine: old and new processes run side
   by side over the store. With the in-memory store, run one process.
 - Token holders can report usage and status under any instance name (one shared token
   by design); treat `KAIAK_CONTROL_TOKEN` like a provider key.
@@ -584,7 +596,8 @@ if (current && totals) {
   on its path, so a parent's window already holds its descendants' spend. Totals
   exist only for hour and month limits; for reports, group your ledger (§6) by any
   prefix of the records' `groups`.
-- Resetting the store's config epoch on migration — every gateway resyncs; harmless,
-  but a sign the store is not keeping what it should.
+- Restoring the store from a backup and expecting gateways to keep the newer config —
+  they get the restored one: the control plane is the authority, and every core that
+  sees the store go back ends its streams so gateways take its current state.
 - Editing `kaiak-control` inside your app. Protocol or library changes land in the
   kaiak repo, on both halves and the spec at once, then you move your pin.

@@ -81,7 +81,7 @@ svg .band { stroke: none; }
   <nav class="toc">
     <a href="gateway.html">← Gateway internals</a>
     <a href="#split">Who owns what</a>
-    <a href="#endpoints">The four endpoints</a>
+    <a href="#endpoints">The three endpoints</a>
     <a href="#boot">Boot and steady state</a>
     <a href="#config">Config pushes</a>
     <a href="#usage">Usage delivery</a>
@@ -98,11 +98,11 @@ svg .band { stroke: none; }
 <table>
   <thead><tr><th>Concern</th><th>Gateway (<code>kaiak</code>, Go)</th><th>Control plane (<code>kaiak-control</code>, Node)</th></tr></thead>
   <tbody>
-    <tr><td>Config</td><td>Validates and applies what it is sent; keeps the running one if the new one is invalid</td><td>Source of truth: validates (the group tree included), versions, publishes, pushes; refuses a publish that moves a group to another parent</td></tr>
+    <tr><td>Config</td><td>Validates and applies what it is sent; keeps the running one if the new one is invalid</td><td>Validates what the host app hands it (the group tree included), makes it the current config and broadcasts it; refuses a publish that moves a group to another parent. The app is the source of truth: it composes the config and keeps its history</td></tr>
     <tr><td>Usage</td><td>Meters every request, settles records, delivers them in batches</td><td>Counts each batch exactly once, keeps hour and month totals per limit of global and of each group</td></tr>
     <tr><td>Budgets</td><td>Enforces pushed totals + its own uncounted usage; per-minute limits on its share</td><td>Pushes totals and the live-gateway count; never decides a single request</td></tr>
     <tr><td>Keys</td><td>Holds only hashes (in config); resolves key → key ID, group and the group's path</td><td>Generates keys; stores only ID and hash</td></tr>
-    <tr><td>Status</td><td>Reports state, config version, rejections, routing state</td><td>Keeps the latest per gateway; tracks the live set</td></tr>
+    <tr><td>Status</td><td>Reports state, the applied config's hash, rejections, routing state</td><td>Keeps the latest per gateway; tracks the live set</td></tr>
     <tr><td>Request path</td><td>Everything</td><td><strong>Nothing</strong> — never contacted while serving a request</td></tr>
   </tbody>
 </table>
@@ -111,66 +111,58 @@ svg .band { stroke: none; }
 </section>
 
 <section id="endpoints">
-<h2>The four endpoints</h2>
+<h2>The three endpoints</h2>
 <figure>
-<svg viewBox="0 0 960 400" role="img" aria-label="Gateways call four endpoints on the control plane: GET config returns a snapshot; GET stream holds an SSE stream of config, totals and resync events; POST usage sends one batch and receives an ack with fresh totals; POST status reports state and gets 204.">
+<svg viewBox="0 0 960 340" role="img" aria-label="Gateways call three endpoints on the control plane: GET stream holds an SSE stream that sends the current config, then totals, then every change; POST usage sends one batch and receives an ack naming it; POST status reports state and gets 204.">
   <defs>
     <marker id="e-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker>
     <marker id="e-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-hot"/></marker>
   </defs>
   <!-- stacked gateways -->
-  <rect x="36" y="56" width="190" height="300" rx="10" class="ext"/>
-  <rect x="28" y="48" width="190" height="300" rx="10" class="ext"/>
-  <rect x="20" y="40" width="190" height="300" rx="10" class="box"/>
+  <rect x="36" y="56" width="190" height="240" rx="10" class="ext"/>
+  <rect x="28" y="48" width="190" height="240" rx="10" class="ext"/>
+  <rect x="20" y="40" width="190" height="240" rx="10" class="box"/>
   <text x="115" y="68" text-anchor="middle" class="t">kaiak gateway × N</text>
   <text x="115" y="86" text-anchor="middle" class="s">package control</text>
-  <text x="40" y="126" class="l">boot</text>
-  <text x="40" y="186" class="l">stream follower</text>
-  <text x="40" y="256" class="l">batch sender</text>
-  <text x="40" y="316" class="l">status reporter</text>
+  <text x="40" y="126" class="l">stream follower</text>
+  <text x="40" y="196" class="l">batch sender</text>
+  <text x="40" y="256" class="l">status reporter</text>
 
-  <rect x="740" y="40" width="200" height="300" rx="10" class="hot"/>
+  <rect x="740" y="40" width="200" height="240" rx="10" class="hot"/>
   <text x="840" y="68" text-anchor="middle" class="t">control plane</text>
   <text x="840" y="86" text-anchor="middle" class="s">controlProtocolPlugin, /v1</text>
-  <text x="760" y="126" class="l">current config</text>
-  <text x="760" y="186" class="l">replay + subscribe</text>
-  <text x="760" y="256" class="l">usage intake</text>
-  <text x="760" y="316" class="l">status intake</text>
-
-  <!-- config -->
-  <line x1="210" y1="112" x2="738" y2="112" class="edge" marker-end="url(#e-a)"/>
-  <text x="474" y="104" text-anchor="middle" class="t">GET /v1/config</text>
-  <line x1="738" y1="130" x2="212" y2="130" class="edge" marker-end="url(#e-a)"/>
-  <text x="474" y="146" text-anchor="middle" class="s">{ config_epoch, version, config } · 503 config-unavailable before the first publish</text>
+  <text x="760" y="126" class="l">current config + totals</text>
+  <text x="760" y="196" class="l">usage intake</text>
+  <text x="760" y="256" class="l">status intake</text>
 
   <!-- stream -->
-  <line x1="210" y1="172" x2="738" y2="172" class="edge" marker-end="url(#e-a)"/>
-  <text x="474" y="164" text-anchor="middle" class="t">GET /v1/stream?since=&lt;version&gt;&amp;config_epoch=&lt;epoch&gt;</text>
-  <line x1="738" y1="190" x2="212" y2="190" class="edge-hot" marker-end="url(#e-ah)" stroke-width="3"/>
-  <text x="474" y="208" text-anchor="middle" class="la">SSE, held open: config · totals (≤ 1/s) · resync · heartbeat every 15 s</text>
+  <line x1="210" y1="112" x2="738" y2="112" class="edge" marker-end="url(#e-a)"/>
+  <text x="474" y="104" text-anchor="middle" class="t">GET /v1/stream</text>
+  <line x1="738" y1="130" x2="212" y2="130" class="edge-hot" marker-end="url(#e-ah)" stroke-width="3"/>
+  <text x="474" y="148" text-anchor="middle" class="la">SSE, held open: the current config, then totals; every change after (totals ≤ 1/s); heartbeat every 15 s</text>
 
   <!-- usage -->
-  <line x1="210" y1="242" x2="738" y2="242" class="edge" marker-end="url(#e-a)"/>
-  <text x="474" y="234" text-anchor="middle" class="t">POST /v1/usage — one batch, 1–500 records</text>
-  <line x1="738" y1="260" x2="212" y2="260" class="edge" marker-end="url(#e-a)"/>
-  <text x="474" y="276" text-anchor="middle" class="s">ack { batch, totals } — the same answer for a resend</text>
+  <line x1="210" y1="182" x2="738" y2="182" class="edge" marker-end="url(#e-a)"/>
+  <text x="474" y="174" text-anchor="middle" class="t">POST /v1/usage — one batch, 1–500 records</text>
+  <line x1="738" y1="200" x2="212" y2="200" class="edge" marker-end="url(#e-a)"/>
+  <text x="474" y="216" text-anchor="middle" class="s">ack { batch } — the same answer for a resend</text>
 
   <!-- status -->
-  <line x1="210" y1="302" x2="738" y2="302" class="edge" marker-end="url(#e-a)"/>
-  <text x="474" y="294" text-anchor="middle" class="t">POST /v1/status — every 10 s and on change</text>
-  <line x1="738" y1="320" x2="212" y2="320" class="edge" marker-end="url(#e-a)"/>
-  <text x="474" y="336" text-anchor="middle" class="s">204, no body</text>
+  <line x1="210" y1="242" x2="738" y2="242" class="edge" marker-end="url(#e-a)"/>
+  <text x="474" y="234" text-anchor="middle" class="t">POST /v1/status — every 10 s and on change</text>
+  <line x1="738" y1="260" x2="212" y2="260" class="edge" marker-end="url(#e-a)"/>
+  <text x="474" y="276" text-anchor="middle" class="s">204, no body</text>
 
-  <text x="480" y="384" text-anchor="middle" class="s">Every request: Authorization: Bearer &lt;token&gt; · Kaiak-Protocol: 5 · Kaiak-Instance: &lt;id&gt; — checked in that order (401, 400, 400)</text>
+  <text x="480" y="324" text-anchor="middle" class="s">Every request: Authorization: Bearer &lt;token&gt; · Kaiak-Protocol: 5 · Kaiak-Instance: &lt;id&gt; — checked in that order (401, 400, 400)</text>
 </svg>
-<figcaption>Control plane → gateway is a snapshot plus one SSE stream that resumes from the snapshot's version. Gateway → control plane is plain POSTs. Every body is a JSON message with a schema in <code>protocol/schema/</code>; both halves test against the same fixtures in <code>protocol/fixtures/</code>. Errors use <code>{ error, detail? }</code>.</figcaption>
+<figcaption>Control plane → gateway is one SSE stream: the current config on connect, then the totals, then every change. Gateway → control plane is plain POSTs. Every body is a JSON message with a schema in <code>protocol/schema/</code>; both halves test against the same fixtures in <code>protocol/fixtures/</code>. Errors use <code>{ error, detail? }</code>.</figcaption>
 </figure>
 </section>
 
 <section id="boot">
 <h2>Boot and steady state</h2>
 <figure>
-<svg viewBox="0 0 960 640" role="img" aria-label="Sequence: the gateway reports starting, fetches the snapshot, applies it, opens the stream from that version, receives replayed configs and totals, binds its listeners and reports ready; then configs, totals and heartbeats arrive on the stream while usage batches and statuses go out as POSTs.">
+<svg viewBox="0 0 960 640" role="img" aria-label="Sequence: the gateway reports starting, opens the stream, receives the current config and applies it, receives totals, binds its listeners and reports ready; then configs, totals and heartbeats arrive on the stream while usage batches and statuses go out as POSTs.">
   <defs>
     <marker id="s-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker>
     <marker id="s-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-hot"/></marker>
@@ -184,33 +176,29 @@ svg .band { stroke: none; }
 
   <text x="20" y="80" class="la">BOOT</text>
   <line x1="210" y1="84" x2="748" y2="84" class="edge" marker-end="url(#s-a)"/>
-  <text x="480" y="78" text-anchor="middle" class="l">POST /v1/status  state=starting, applied_config_version=null</text>
+  <text x="480" y="78" text-anchor="middle" class="l">POST /v1/status  state=starting, applied_config_hash=null</text>
 
   <line x1="210" y1="118" x2="748" y2="118" class="edge" marker-end="url(#s-a)"/>
-  <text x="480" y="112" text-anchor="middle" class="l">GET /v1/config  (retried with backoff up to the boot wait, 60 s)</text>
-  <line x1="750" y1="140" x2="212" y2="140" class="edge" marker-end="url(#s-a)"/>
-  <text x="480" y="156" text-anchor="middle" class="s">snapshot { config_epoch: e, version: 7, config }</text>
+  <text x="480" y="112" text-anchor="middle" class="l">GET /v1/stream  (retried with backoff up to the boot wait, 60 s)</text>
+  <line x1="750" y1="140" x2="212" y2="140" class="edge-hot" marker-end="url(#s-ah)"/>
+  <text x="480" y="156" text-anchor="middle" class="la">event: config  { config_hash: h, config } — the current config</text>
 
   <rect x="90" y="166" width="240" height="30" rx="6" class="box"/>
-  <text x="210" y="186" text-anchor="middle" class="l">apply v7 (validate, swap)</text>
+  <text x="210" y="186" text-anchor="middle" class="l">apply h (validate, swap)</text>
 
-  <line x1="210" y1="222" x2="748" y2="222" class="edge" marker-end="url(#s-a)"/>
-  <text x="480" y="216" text-anchor="middle" class="l">GET /v1/stream?since=7&amp;config_epoch=e</text>
   <line x1="750" y1="244" x2="212" y2="244" class="edge-hot" marker-end="url(#s-ah)"/>
-  <text x="480" y="260" text-anchor="middle" class="la">replay: every version newer than 7, oldest first</text>
-  <line x1="750" y1="276" x2="212" y2="276" class="edge-hot" marker-end="url(#s-ah)"/>
-  <text x="480" y="292" text-anchor="middle" class="la">event: totals  (windows, live_gateways, counted_through)</text>
+  <text x="480" y="260" text-anchor="middle" class="la">event: totals  (windows, live_gateways, counted_through)</text>
 
   <rect x="90" y="302" width="240" height="30" rx="6" class="hot"/>
   <text x="210" y="322" text-anchor="middle" class="l">bind :8080 / :9090 — ready</text>
   <line x1="210" y1="352" x2="748" y2="352" class="edge" marker-end="url(#s-a)"/>
-  <text x="480" y="346" text-anchor="middle" class="l">POST /v1/status  state=ready, applied v7</text>
+  <text x="480" y="346" text-anchor="middle" class="l">POST /v1/status  state=ready, applied_config_hash=h</text>
 
   <line x1="20" y1="384" x2="940" y2="384" stroke="var(--line)" stroke-width="1"/>
   <text x="20" y="408" class="la">STEADY STATE</text>
 
   <line x1="750" y1="428" x2="212" y2="428" class="edge-hot" marker-end="url(#s-ah)"/>
-  <text x="480" y="422" text-anchor="middle" class="la">event: config (v8) — on every publish</text>
+  <text x="480" y="422" text-anchor="middle" class="la">event: config — the current config, on every publish</text>
   <line x1="750" y1="458" x2="212" y2="458" class="edge-hot" marker-end="url(#s-ah)"/>
   <text x="480" y="452" text-anchor="middle" class="la">event: totals — on every change, at most one a second</text>
   <line x1="750" y1="488" x2="212" y2="488" class="edge-dash" marker-end="url(#s-a)"/>
@@ -219,19 +207,19 @@ svg .band { stroke: none; }
   <line x1="210" y1="526" x2="748" y2="526" class="edge" marker-end="url(#s-a)"/>
   <text x="480" y="520" text-anchor="middle" class="l">POST /v1/usage  batch sealed every 5 s or at 500 records</text>
   <line x1="750" y1="548" x2="212" y2="548" class="edge" marker-end="url(#s-a)"/>
-  <text x="480" y="564" text-anchor="middle" class="s">ack + totals</text>
+  <text x="480" y="564" text-anchor="middle" class="s">ack { batch } — the totals that count it come on the stream</text>
 
   <line x1="210" y1="600" x2="748" y2="600" class="edge" marker-end="url(#s-a)"/>
   <text x="480" y="594" text-anchor="middle" class="l">POST /v1/status  every 10 s · on change (≥ 1 s apart) · on every stream connect</text>
 </svg>
-<figcaption>Readiness waits for the first totals: without them the gateway would not know the month's spend. They follow the config on every stream connect, so the wait is normally milliseconds; if they do not come within what is left of the boot wait, the gateway starts anyway and refuses priced, USD-limited models until they arrive.</figcaption>
+<figcaption>The stream is the gateway's one way to get its config and its totals. Readiness waits for the first totals: without them the gateway would not know the month's spend. They follow the config on every stream connect, so the wait is normally milliseconds; if they do not come within what is left of the boot wait, the gateway starts anyway and refuses priced, USD-limited models until they arrive.</figcaption>
 </figure>
 
 <h3>When the control plane is unavailable at boot</h3>
 <ol>
-  <li>Keep asking for the snapshot until the boot wait runs out (<code>KAIAK_CONTROL_BOOT_WAIT_MS</code>, 60 s).</li>
+  <li>Keep opening the stream until its first config arrives or the boot wait runs out (<code>KAIAK_CONTROL_BOOT_WAIT_MS</code>, 60 s). Before the first publish the stream is open but carries no config.</li>
   <li>With a data directory: boot from the <strong>last-known-good</strong> copy.</li>
-  <li>With a seed file (<code>KAIAK_SEED_CONFIG_FILE</code>): boot from the <strong>seed</strong> — free models only, so nothing is served without its budget. Status reports <code>ready</code> with <code>applied_config_version: null</code>.</li>
+  <li>With a seed file (<code>KAIAK_SEED_CONFIG_FILE</code>): boot from the <strong>seed</strong> — free models only, so nothing is served without its budget. Status reports <code>ready</code> with <code>applied_config_hash: null</code>.</li>
   <li>Otherwise exit non-zero; the supervisor (Kubernetes) restarts it with backoff.</li>
 </ol>
 <p>Whichever way it booted, the gateway keeps trying the control plane and switches to its config at first contact.</p>
@@ -240,7 +228,7 @@ svg .band { stroke: none; }
 <section id="config">
 <h2>Config pushes</h2>
 <figure>
-<svg viewBox="0 0 960 250" role="img" aria-label="A host calls publishConfig; the core validates the document and stores it as the next version; every open stream sends it as a config event followed by totals for the new version; each gateway applies or rejects it and reports the result in its next status.">
+<svg viewBox="0 0 960 250" role="img" aria-label="A host calls publishConfig; the core validates the document and makes it the current config; every open stream sends it as a config event followed by totals; each gateway applies or rejects it and reports the result, by hash, in its next status.">
   <defs>
     <marker id="c2-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker>
     <marker id="c2-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-hot"/></marker>
@@ -254,8 +242,8 @@ svg .band { stroke: none; }
   <text x="305" y="84" text-anchor="middle" class="s">schema + semantic rules</text>
 
   <rect x="440" y="40" width="170" height="60" rx="8" class="hot"/>
-  <text x="525" y="66" text-anchor="middle" class="t">store v(n+1)</text>
-  <text x="525" y="84" text-anchor="middle" class="s">in the totals' turn</text>
+  <text x="525" y="66" text-anchor="middle" class="t">replace current</text>
+  <text x="525" y="84" text-anchor="middle" class="s">config + its hash</text>
 
   <rect x="660" y="40" width="130" height="60" rx="8" class="box"/>
   <text x="725" y="66" text-anchor="middle" class="t">every stream</text>
@@ -274,20 +262,20 @@ svg .band { stroke: none; }
   <path d="M790,80 L838,98" class="edge-hot" marker-end="url(#c2-ah)"/>
 
   <path d="M305,100 L305,160 L95,160 L95,102" class="edge" marker-end="url(#c2-a)"/>
-  <text x="200" y="178" text-anchor="middle" class="lw">{ ok: false, issues } — no version, current one stays</text>
+  <text x="200" y="178" text-anchor="middle" class="lw">{ ok: false, issues } — the current config stays</text>
 
   <path d="M890,120 L890,190 L527,190 L527,102" class="edge" marker-end="url(#c2-a)"/>
-  <text x="708" y="212" text-anchor="middle" class="l">POST /v1/status: applied_config_version, or last_rejection { version, codes }</text>
+  <text x="708" y="212" text-anchor="middle" class="l">POST /v1/status: applied_config_hash, or last_rejection { config_hash, codes }</text>
   <text x="708" y="232" text-anchor="middle" class="s">gateways() shows each gateway's result to the host</text>
 </svg>
-<figcaption>A config is validated twice — by <code>kaiak-control</code> before it gets a version, and by each gateway before it is applied — against the same schema and the same semantic rule codes. <code>kaiak-control</code> alone also compares with the current version and refuses a group given another parent (<code>group-parent-changed</code>): the gateway is stateless and may boot with nothing to compare with. A gateway that rejects a version keeps its running config and says so in status; the next stream reconnect resumes after the rejected version rather than replaying it.</figcaption>
+<figcaption>The host app is the source of truth for config: it composes the document and keeps its history. A config is validated twice — by <code>kaiak-control</code> before it becomes current, and by each gateway before it is applied — against the same schema and the same semantic rule codes. <code>kaiak-control</code> alone also compares with the current config and refuses a group given another parent (<code>group-parent-changed</code>): the gateway is stateless and may boot with nothing to compare with. A gateway that rejects a config keeps its running one and says so in status, naming the config by its hash; a reconnect sends the same config again, and the gateway skips it by its hash.</figcaption>
 </figure>
 
-<h3>Versions and epochs</h3>
+<h3>One current config, ordered by its sender</h3>
 <ul>
-  <li>Versions are integers from 1, one more per publish. The store keeps a bounded history (default 100) so a reconnecting stream can replay what it missed.</li>
-  <li>Versions count within the store's <strong>config epoch</strong> (32 random hex digits created with the store). The in-memory store gets a new epoch each process, so a restarted sample control plane is recognised as a different store even when its version numbers catch up.</li>
-  <li><code>resync</code> — the stream cannot resume from <code>since</code> (too old, from the future, other epoch): one <code>resync</code> event, the stream closes, the gateway fetches the snapshot and applies it <em>whatever its version</em>, then reconnects.</li>
+  <li>The control plane holds one <strong>current config</strong> and its <code>config_hash</code> (SHA-256 of its JSON as sent). The hash says what a config is, never when: a gateway applies whatever config its stream sends, skipping one identical to the config it runs or to the one it last rejected.</li>
+  <li><strong>Order is the sender's job.</strong> A core never sends a stream a config or totals read before what it already sent there; it uses the store's sequence for this, which never goes on the wire.</li>
+  <li><strong>Rollback.</strong> A core that reads the store's sequence going back — a restore from a backup, a failover to a copy behind — ends its streams; the gateways reconnect and take the store's current state, the restored config included. Rejected: gateways accepting only a newer config, which would leave them on a config the control plane no longer has.</li>
   <li>Slow readers: config events queue and are never dropped; totals never queue (one is held and sent with fresh values on drain); a stream that takes nothing for 30 s is closed and the gateway reconnects.</li>
 </ul>
 </section>
@@ -342,15 +330,15 @@ svg .band { stroke: none; }
   <line x1="825" y1="72" x2="848" y2="72" class="edge" marker-end="url(#u-a)"/>
 
   <path d="M900,100 L900,150 L482,150 L482,102" class="edge-hot" marker-end="url(#u-ah)"/>
-  <text x="640" y="142" text-anchor="middle" class="la">ack { batch, totals }</text>
+  <text x="640" y="142" text-anchor="middle" class="la">ack { batch }</text>
 
   <line x1="770" y1="100" x2="770" y2="148" class="edge-dash"/>
   <text x="770" y="172" text-anchor="middle" class="s">already counted: acked again, counted nothing</text>
 
-  <text x="20" y="196" class="t">On the ack, in one step, the gateway:</text>
+  <text x="20" y="196" class="t">On the ack the gateway:</text>
   <text x="20" y="218" class="l">• drops the batch from memory / spool</text>
-  <text x="20" y="238" class="l">• adopts the totals if their revision is newer</text>
-  <text x="20" y="258" class="l">• stops counting batches ≤ counted_through as its own</text>
+  <text x="20" y="246" class="t">On the next totals on its stream:</text>
+  <text x="20" y="268" class="l">• stops counting batches ≤ counted_through as its own</text>
 
   <text x="580" y="196" class="t">One atomic store write:</text>
   <text x="580" y="218" class="l">• the batch ID becomes the instance's last</text>
@@ -363,7 +351,7 @@ svg .band { stroke: none; }
 </figure>
 
 <ul>
-  <li><strong>Retried with the same ID</strong> on network errors, 5xx (including <code>503 config-unavailable</code>), malformed acks.</li>
+  <li><strong>Retried with the same ID</strong> on network errors, 5xx, malformed acks. A batch is counted whether or not a config is published.</li>
   <li><strong>Set aside</strong> (kept, logged at error) only when the batch itself can never be accepted: <code>usage-batch-invalid</code>, a message-rule code, <code>instance-mismatch</code>, <code>request-invalid</code>. Retrying it would block every batch behind it.</li>
   <li><strong>Retried, not set aside</strong>, on <code>401</code>, protocol mismatch, unknown answers — a misconfigured proxy must never discard billing data.</li>
   <li><strong>Memory bound</strong>: without a data dir, at most <code>KAIAK_USAGE_MEMORY_BYTES</code> (64 MiB) of encoded records wait; the drain spends its last 10 s delivering them.</li>
@@ -409,8 +397,8 @@ svg .band { stroke: none; }
 </figure>
 
 <ul>
-  <li><strong>Totals follow their config</strong>: every totals message names the <code>config_epoch</code> and <code>config_version</code> it was computed under; a gateway applies them only if they match the config it runs.</li>
-  <li><strong>Ordering</strong>: pushes and acks travel on different connections, and may come from different control-plane processes, so each carries a <code>revision</code>: the store's totals sequence, which every counted batch, publish and live-set change moves by one. Within the config epoch the gateway runs, older revisions are ignored; restarts and replicas need no special case.</li>
+  <li><strong>Totals apply whatever the config</strong>: a gateway applies each window to the limit it runs with the same scope and type, whatever config it runs — one it rejected the newest of included; a window for a limit it does not run is ignored.</li>
+  <li><strong>On the stream only, in order</strong>: totals travel only on the gateway's stream, never on acks, and the core keeps each stream in order by the store's sequence, which never goes on the wire. After an ack the gateway keeps counting that batch as its own until the next push (about a second); a push's <code>counted_through</code> retires it.</li>
   <li><strong>Exact sums</strong>: <code>used</code> travels as a decimal string (nano-USD for money), summed as <code>BigInt</code> — a month of spend can exceed what a JavaScript number holds exactly.</li>
   <li><strong>Totals per scope</strong>: a scope (global or a group) holds at most one limit per type, and a limit's identity is (scope, type); a totals window names its <code>group</code>, or none for a global limit. A record adds to the windows of every scope on its <code>groups</code> path, whether or not a limit is there: an edited limit keeps its spend, a limit added mid-window starts with the window's usage, and publishing never waits on counting.</li>
 </ul>
@@ -467,7 +455,7 @@ svg .band { stroke: none; }
 <section id="status">
 <h2>Status and the live set</h2>
 <ul>
-  <li>A status carries <code>state</code> (<code>starting</code>, <code>ready</code>, <code>draining</code>), <code>started_at</code>, the applied config's version and epoch, <code>last_rejection</code>, per-backend in-flight counts and caps with each deployment's circuit, and per-model queue depth.</li>
+  <li>A status carries <code>state</code> (<code>starting</code>, <code>ready</code>, <code>draining</code>), <code>started_at</code>, the applied config's <code>config_hash</code>, <code>last_rejection</code> (by hash), per-backend in-flight counts and caps with each deployment's circuit, and per-model queue depth.</li>
   <li>Sent at start, on every stream connect, on change (state, config, rejection, a queue becoming empty or non-empty, a circuit opening or closing — at most one such report a second) and every 10 s. A failed report is simply replaced by the next.</li>
   <li>A gateway joins the <strong>live set</strong> with its first status and leaves when silent for 30 s (sweep every 5 s). A draining gateway stays live until it goes quiet, since it still spends. The live count drives per-minute shares and cap splits, and is pushed again when it changes.</li>
   <li>Two processes under one instance name (a copied <code>KAIAK_INSTANCE_ID</code>) show as alternating <code>started_at</code> values and get a <code>conflict</code> flag in <code>gateways()</code>.</li>
@@ -484,18 +472,17 @@ svg .band { stroke: none; }
     <tr><td>Per-minute limits</td><td>Enforced locally as before, on the last known share.</td></tr>
     <tr><td>Usage</td><td>Held in memory (or the spool) and sent in order on reconnect, each record into the window it was used in.</td></tr>
     <tr><td>Priced models under a USD limit</td><td>Served until the outage passes <code>global.control_outage_grace_ms</code> (15 min), then <code>503 budget_unavailable</code> until contact returns. Free models keep serving.</td></tr>
-    <tr><td>What counts as contact</td><td>A snapshot fetched, bytes on the stream (heartbeats included) or a usage ack. Status reports do not count. Usage batches unanswered past the grace also count as an outage, even with the stream open.</td></tr>
-    <tr><td>Reconnect</td><td>Snapshot, resume the stream, send the held batches in order.</td></tr>
+    <tr><td>What counts as contact</td><td>Bytes on the stream (heartbeats included) or a usage ack. Status reports do not count. Usage batches unanswered past the grace also count as an outage, even with the stream open.</td></tr>
+    <tr><td>Reconnect</td><td>Reopen the stream — it sends the current config, then the totals — and send the held batches in order.</td></tr>
   </tbody>
 </table>
 </div>
-<p>The same refusal applies, without an outage, when the newest totals are for another config than the applied one (typically a config the gateway rejected) for longer than the grace — shown by <code>kaiak_control_config_mismatch</code> rather than <code>kaiak_control_outage</code>.</p>
 </section>
 
 <section id="inside">
 <h2>Inside the control plane</h2>
 <figure>
-<svg viewBox="0 0 960 360" role="img" aria-label="Inside a control plane: the host app registers kaiak-control's Fastify plugin, which serves the gateway endpoints over the core; the host's own UI and config editor call the same core; the core runs config versions, usage, gateways and request checks over one store, which the host supplies; any number of processes may run the core over one store that holds the contract.">
+<svg viewBox="0 0 960 360" role="img" aria-label="Inside a control plane: the host app registers kaiak-control's Fastify plugin, which serves the gateway endpoints over the core; the host's own UI and config editor call the same core; the core runs config publishing, usage, gateways and request checks over one store, which the host supplies; any number of processes may run the core over one store that holds the contract.">
   <defs>
     <marker id="i-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker>
   </defs>
@@ -504,7 +491,7 @@ svg .band { stroke: none; }
 
   <rect x="40" y="60" width="250" height="70" rx="8" class="hot"/>
   <text x="165" y="88" text-anchor="middle" class="t">controlProtocolPlugin</text>
-  <text x="165" y="108" text-anchor="middle" class="s">/v1/config · stream · usage · status</text>
+  <text x="165" y="108" text-anchor="middle" class="s">/v1/stream · usage · status</text>
 
   <rect x="330" y="60" width="270" height="70" rx="8" class="box"/>
   <text x="465" y="88" text-anchor="middle" class="t">your routes</text>
@@ -516,7 +503,7 @@ svg .band { stroke: none; }
 
   <rect x="40" y="170" width="560" height="84" rx="10" class="hot"/>
   <text x="320" y="194" text-anchor="middle" class="t">core — createControlPlane()</text>
-  <text x="60" y="222" class="l">config-versions</text>
+  <text x="60" y="222" class="l">config-publishing</text>
   <text x="200" y="222" class="l">usage + totals</text>
   <text x="330" y="222" class="l">gateways + live set</text>
   <text x="480" y="222" class="l">request checks</text>
@@ -541,7 +528,7 @@ svg .band { stroke: none; }
 </section>
 
 <footer>
-  Overview only — the contract is <code>docs/specs/CONTROL-PROTOCOL.md</code> (with schemas and fixtures in <code>protocol/</code>); gateway behavior in <code>docs/specs/GATEWAY.md</code>; operations in <code>docs/DEPLOYMENT.md</code>. Written 2026-09-26 against 0.6.0; describes the group tree with the 2026-09-27 review's fixes (after 0.7.1), tiered prices (2026-09-29), the cache-write unit (2026-10-02) the Anthropic backend types with model defaults removed, and several control-plane processes over one store with limits by scope and type (2026-10-06, config format and protocol version 5). Back to <a href="gateway.html">gateway internals</a>.
+  Overview only — the contract is <code>docs/specs/CONTROL-PROTOCOL.md</code> (with schemas and fixtures in <code>protocol/</code>); gateway behavior in <code>docs/specs/GATEWAY.md</code>; operations in <code>docs/DEPLOYMENT.md</code>. Written 2026-09-26 against 0.6.0; describes the group tree with the 2026-09-27 review's fixes (after 0.7.1), tiered prices (2026-09-29), the cache-write unit (2026-10-02), the Anthropic backend types with model defaults removed, several control-plane processes over one store with limits by scope and type (2026-10-06), and a broadcast-only control plane — the current config by hash, totals on the stream only (2026-10-07; config format and protocol version 5). Back to <a href="gateway.html">gateway internals</a>.
 </footer>
 </main>
 </body>
