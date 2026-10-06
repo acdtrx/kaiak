@@ -25,10 +25,21 @@ func responsesUsage(u Usage) map[string]any {
 }
 
 // responseObject is a Responses response object; output and usage are added when the
-// answer is done.
-func responseObject(model, status string) map[string]any {
-	return map[string]any{"id": "resp_fake_1", "object": "response", "created_at": created, "model": model,
-		"status": status, "output": []any{}, "store": false}
+// answer is done. It reports the request's store and service_tier back, as OpenAI's
+// response object does: store true when the request leaves it out (OpenAI's
+// default), service_tier only when the request sets one.
+func responseObject(model, status string, top map[string]json.RawMessage) map[string]any {
+	response := map[string]any{"id": "resp_fake_1", "object": "response", "created_at": created, "model": model,
+		"status": status, "output": []any{}, "store": true}
+	var store bool
+	if json.Unmarshal(top["store"], &store) == nil {
+		response["store"] = store
+	}
+	var tier string
+	if json.Unmarshal(top["service_tier"], &tier) == nil && tier != "" {
+		response["service_tier"] = tier
+	}
+	return response
 }
 
 // messageItem is the answer's one output message, holding text.
@@ -51,8 +62,9 @@ func finishResponse(response map[string]any, text string, cut bool, usage Usage,
 	}
 }
 
-func writeResponse(w http.ResponseWriter, model, text string, cut bool, usage Usage, omitUsage bool) {
-	response := responseObject(model, "in_progress")
+func writeResponse(w http.ResponseWriter, top map[string]json.RawMessage, model, text string, cut bool, usage Usage,
+	omitUsage bool) {
+	response := responseObject(model, "in_progress", top)
 	finishResponse(response, text, cut, usage, omitUsage)
 	writeJSON(w, http.StatusOK, response)
 }
@@ -68,7 +80,7 @@ var responsesErrorEvent = []byte(`{"type":"error","code":"server_error","message
 // OpenAI stream; ErrorEvent sends an error event after ErrorEventAfter text events and
 // ends the stream there.
 func (b *Backend) writeResponsesStream(w http.ResponseWriter, r *http.Request, req *Request, reply Reply,
-	model string, chunks []string, cut bool, usage Usage) {
+	top map[string]json.RawMessage, model string, chunks []string, cut bool, usage Usage) {
 	s, ok := b.startStream(w, r, req, reply)
 	if !ok {
 		return
@@ -81,7 +93,7 @@ func (b *Backend) writeResponsesStream(w http.ResponseWriter, r *http.Request, r
 		s.send("error", responsesErrorEvent)
 		return
 	}
-	response := responseObject(model, "in_progress")
+	response := responseObject(model, "in_progress", top)
 	item := map[string]any{"id": "msg_fake_1", "type": "message", "role": "assistant", "status": "in_progress", "content": []any{}}
 	part := map[string]any{"type": "output_text", "text": "", "annotations": []any{}}
 	if !event(map[string]any{"type": "response.created", "response": response}) ||

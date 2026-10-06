@@ -41,6 +41,9 @@ type Reply struct {
 	// Usage overrides the reported token counts. Default: 7 prompt tokens, one
 	// completion token per chunk.
 	Usage *Usage
+	// CachedTokens, when Usage is not set, reports that many of the default 7 prompt
+	// tokens as read from the cache (a prefix cache answering a repeated prompt).
+	CachedTokens int
 	// OmitUsage: never report usage — no usage field in a non-stream answer, no
 	// usage chunk in a stream even when the request asks for one.
 	OmitUsage bool
@@ -392,7 +395,7 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 		chunks = chunks[:*params.maxTokens]
 		finish = "length"
 	}
-	usage := Usage{PromptTokens: 7, CompletionTokens: len(chunks)}
+	usage := Usage{PromptTokens: 7, CompletionTokens: len(chunks), CachedTokens: reply.CachedTokens}
 	if reply.Usage != nil {
 		usage = *reply.Usage
 	}
@@ -403,9 +406,9 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 	case endpoint == inputTokensPath:
 		writeJSON(w, http.StatusOK, map[string]any{"object": "response.input_tokens", "input_tokens": usage.PromptTokens})
 	case endpoint == responsesPath && params.stream:
-		b.writeResponsesStream(w, r, req, reply, params.model, chunks, finish == "length", usage)
+		b.writeResponsesStream(w, r, req, reply, top, params.model, chunks, finish == "length", usage)
 	case endpoint == responsesPath:
-		writeResponse(w, params.model, strings.Join(chunks, ""), finish == "length", usage, reply.OmitUsage)
+		writeResponse(w, top, params.model, strings.Join(chunks, ""), finish == "length", usage, reply.OmitUsage)
 	case endpoint == messagesPath && params.stream:
 		b.writeMessagesStream(w, r, req, reply, params.model, chunks, finish == "length", usage)
 	case endpoint == messagesPath:

@@ -1,9 +1,12 @@
 # Live backend checks
 
 > The runbook for `scripts/live/`: run the built `kaiak` against a real vLLM,
-> llama-server, Azure OpenAI or OpenAI backend and check it end to end. Opt-in —
-> never needed for a green suite (`docs/TECH-STACK.md`, Testing). The kit's own
-> self-test, against the fake backend, runs in `scripts/check-gateway.sh`.
+> llama-server, OpenAI, Azure OpenAI, Anthropic or Claude in Microsoft Foundry
+> backend and check it end to end, through every client API the backend serves (chat
+> completions, Anthropic Messages, OpenAI Responses). Opt-in — never needed for a
+> green suite (`docs/TECH-STACK.md`, Testing). The kit's own self-test, against the
+> fake backend, runs in `scripts/check-gateway.sh`. Someone running it for the kaiak
+> team without knowing kaiak: start at **For a tester with access**.
 
 ## What it does
 
@@ -16,7 +19,9 @@ One command per backend kind. The runner:
    server of their own), four public models on it (below), one group holding the
    key;
 3. starts `kaiak` on free loopback ports with a temporary data directory and JSON logs;
-4. runs the checks, printing `PASS`/`FAIL`/`SKIP` per check and a summary;
+4. runs the checks — through each client API the backend type serves (the table in
+   `docs/specs/GATEWAY.md`, Providers → Endpoint support) — printing
+   `PASS`/`FAIL`/`SKIP` per check and a summary;
 5. sends SIGTERM, requires a clean drain and exit 0, and deletes everything it made
    (`-keep` keeps the config and the gateway log, and prints where).
 
@@ -27,7 +32,7 @@ model:
 
 | Name | Purpose |
 |---|---|
-| `live-chat` | chat checks; output limit `-max-output` (default 1024) |
+| `live-chat` | chat, Messages and Responses checks; output limit `-max-output` (default 1024) |
 | `live-capped` | output-limit ceiling check; ceiling `-ceiling` (default 16) |
 | `live-rpm` | limit check; 1 request per minute for the key's group |
 | `live-embed` | embeddings, only with `-embeddings-model` — whatever the model's name on the backend (a path-style id too) |
@@ -36,20 +41,111 @@ Chat models are priced at `-price-in` / `-price-out` USD per million tokens (def
 1 / 2 — placeholders, only so the cost path is exercised; `0` and `0` leave them
 unpriced and skip the cost checks).
 
+## For a tester with access
+
+For someone with an account on one of the cloud APIs, running the kit for the kaiak
+team. You need no kaiak background: the kit builds and runs the gateway itself.
+
+**What you need**
+
+- A Mac or Linux machine with Go (the version in `gateway/go.mod`) and git.
+- This repository: `git clone <the URL you were given> && cd kaiak`, on the branch or
+  tag you were asked to test.
+- For each kind you can run:
+
+  | Kind | What you need | Environment variable |
+  |---|---|---|
+  | `anthropic` | an Anthropic API key with access to a cheap model (Claude Haiku 4.5) | `ANTHROPIC_API_KEY` |
+  | `azure-anthropic` | a Foundry resource name, a Claude deployment in it (Haiku 4.5 if you can) and its key | `ANTHROPIC_FOUNDRY_API_KEY` |
+  | `openai` | an OpenAI API key with access to a cheap model (`gpt-4.1-mini` or similar) | `OPENAI_API_KEY` |
+  | `azure-openai` | an Azure OpenAI resource endpoint, a chat deployment in it that supports the Responses API, and its key | `AZURE_OPENAI_API_KEY` |
+
+**One command per kind**, from the repository root (`export` the key first):
+
+```sh
+go -C scripts/live run . -kind anthropic -model claude-haiku-4-5
+go -C scripts/live run . -kind azure-anthropic -base-url https://<resource>.services.ai.azure.com -model <deployment>
+go -C scripts/live run . -kind openai -model gpt-4.1-mini
+go -C scripts/live run . -kind azure-openai -base-url https://<resource>.openai.azure.com -model <deployment>
+```
+
+Each run takes a minute or two, ends with `N passed, N failed, N skipped`, and costs
+cents (Prerequisites). **Send back the whole output.** It holds no keys — the kit
+passes only the variable's *name* to the gateway — and no prompt text; the
+answers' first few words appear, from fixed questions about lighthouses. A `FAIL`
+line says what was expected and what came back; nothing else is needed from you. If
+a run cannot start (a `live:` error before the first check), the message says which
+flag or variable is missing.
+
+## Client checks
+
+The kit checks the gateway's own behavior; these check that real clients work
+through it. Start a gateway in front of a backend that serves the client's API —
+any config with a key works (`README.md`; `examples/local-config.json` is a start),
+or run a kit kind with `-keep` and reuse the config and key it generated — then run
+one small task in each client and send back the gateway's log lines for it (they
+hold no prompt or response content).
+
+- **Claude Code** (Messages; a model on `vllm`, `llama-server`, `anthropic` or
+  `azure-anthropic`):
+
+  ```sh
+  ANTHROPIC_BASE_URL=http://localhost:8080 ANTHROPIC_AUTH_TOKEN=<kaiak key> \
+    ANTHROPIC_MODEL=<public model name> claude
+  ```
+
+  `ANTHROPIC_BASE_URL` has no `/v1` (the client adds it). Claude Code sends the key
+  as `Authorization: Bearer`; the gateway takes `x-api-key` too.
+- **Codex** (Responses; a model on `vllm`, `llama-server`, `openai` or
+  `azure-openai`), in `~/.codex/config.toml`:
+
+  ```toml
+  model = "<public model name>"
+  model_provider = "kaiak"
+  web_search = "disabled"
+
+  [model_providers.kaiak]
+  name = "kaiak"
+  base_url = "http://localhost:8080/v1"
+  env_key = "KAIAK_API_KEY"
+  wire_api = "responses"
+  ```
+
+  then `KAIAK_API_KEY=<kaiak key> codex`.
+
+**Known client settings.** The gateway refuses a few things clients may send by
+default; each refusal names the parameter, so the fix is one setting:
+
+- **Codex attaches its hosted `web_search` tool** unless `web_search = "disabled"`
+  (its default is `"cached"`): kaiak answers `400 hosted_tool_unsupported` naming
+  `web_search`. Search runs on OpenAI's side, which kaiak does not serve.
+- **Claude Code with a 1-hour prompt cache** on Anthropic or Foundry: a
+  `cache_control` with `ttl: "1h"` is refused, `400 price_option_unsupported` — the
+  1-hour cache write is priced above the standard one. Leave Claude Code's cache at
+  its default (5 minutes). Self-hosted backends pass it through.
+- **Claude Code's web search** (its WebSearch tool) sends Anthropic's server
+  `web_search` tool and is refused the same way; every other Claude Code tool runs
+  on your machine and works.
+
 ## Prerequisites
 
 - Go (the version in `gateway/go.mod`) and this repository checked out; run from the
   repository root (the runner finds `gateway/` from the working directory).
 - The backend reachable from this machine: `curl <base-url>/models` (vLLM,
-  llama-server, OpenAI) or
+  llama-server, OpenAI),
   `curl https://<resource>.openai.azure.com/openai/v1/models -H "api-key: $AZURE_OPENAI_API_KEY"`
-  answers.
+  (Azure OpenAI) or
+  `curl https://api.anthropic.com/v1/models -H "x-api-key: $ANTHROPIC_API_KEY" -H "anthropic-version: 2023-06-01"`
+  (Anthropic) answers. Foundry has no models list; its first check is the kit's
+  `messages`.
 - The backend key in an environment variable (vLLM and llama-server only if they run
   with `--api-key`). The runner passes the variable's **name** into the config
   (`api_key_env`), never the value; the value never appears in its output or in the
   gateway log.
-- Each run sends about eight small chat requests (one asks for a long story, cut at
-  16 tokens) and one embeddings request — a few thousand tokens on a paid API.
+- Each run sends a few small requests per API the backend serves (one asks for a long
+  story, cut at 16 tokens) and one embeddings request; a Messages backend also gets
+  the cache check's two requests of about 8,000 input tokens each. On a paid API a
+  run costs cents (Claude Haiku 4.5 at $1 / $5 per million tokens: under $0.05).
 
 ## Commands
 
@@ -117,18 +213,64 @@ go -C scripts/live run . -kind azure-openai \
   name (unless you named the deployment after the model).
 - The key goes in the `api-key` header; another variable name: `-api-key-env NAME`.
 
+### Anthropic
+
+```sh
+export ANTHROPIC_API_KEY=sk-ant-...
+go -C scripts/live run . -kind anthropic \
+  -model claude-haiku-4-5
+```
+
+- `base-url` defaults to `https://api.anthropic.com/v1`.
+- The key goes in `x-api-key`; another variable name: `-api-key-env NAME`.
+- Claude serves only Messages: the chat, Responses and embeddings checks do not
+  run, and `endpoint-not-served` checks the gateway refuses them.
+
+### Claude in Microsoft Foundry
+
+```sh
+export ANTHROPIC_FOUNDRY_API_KEY=...
+go -C scripts/live run . -kind azure-anthropic \
+  -base-url https://<resource>.services.ai.azure.com \
+  -model <claude-deployment-name>
+```
+
+- `base-url` is the **resource endpoint** — no path. The gateway appends
+  `/anthropic/v1/` (a URL ending in `/anthropic/v1` or `/anthropic` is trimmed, with
+  a note).
+- `model` is the **deployment name** (Foundry portal → Build → Models → your Claude
+  deployment); by default it is the model ID, e.g. `claude-haiku-4-5`.
+- The key (the deployment's Details tab) goes in the `api-key` header; another
+  variable name: `-api-key-env NAME`. Entra ID tokens are not supported.
+
+### Thinking models
+
+A model that reasons first can spend the whole output limit on reasoning, and the
+checks then say `only reasoning came back`. Raise `-max-output` (e.g. 4096), or
+switch reasoning off per API — each flag adds its JSON object to every request of
+that API the kit sends:
+
+```sh
+  -chat-params      '{"chat_template_kwargs":{"enable_thinking":false}}'   # vLLM, llama-server
+  -messages-params  '{"chat_template_kwargs":{"enable_thinking":false}}'   # vLLM's Messages takes it too
+  -responses-params '{"chat_template_kwargs":{"enable_thinking":false}}'   # and its Responses
+  -responses-params '{"reasoning":{"effort":"low"}}'                       # OpenAI, Azure
+```
+
 ### Self-test (no backend needed)
 
 ```sh
-go -C scripts/live run . -self-test          # all four kinds
-go -C scripts/live run . -self-test -kind azure-openai
+go -C scripts/live run . -self-test          # all six kinds
+go -C scripts/live run . -self-test -kind azure-anthropic
 ```
 
 Runs every check against the fake backend (`gateway/internal/fakebackend/cmd/fakebackend`)
 standing in for each kind: vLLM and llama-server layout without a key, OpenAI
-layout with `Authorization: Bearer`, Azure layout (`/openai/v1/`) with `api-key` — the
-fake answers `401` to a missing or wrong credential and `404` to a wrong path, so a
-config the kit generates wrongly fails here first.
+layout with `Authorization: Bearer`, Azure OpenAI layout (`/openai/v1/`) with
+`api-key`, Anthropic layout with `x-api-key`, Foundry layout (`/anthropic/v1/`) with
+`api-key` — the fake answers `401` to a missing or wrong credential and `404` to a
+wrong path, so a config the kit generates wrongly fails here first. The fakes report
+3 of every 7 prompt tokens read from the cache, so the cache check passes there.
 
 The self-test ends with a two-backend run: two fakes serving one model, each capped
 at one request (`-max-in-flight 1`), with the failover check — the runner stops the
@@ -155,9 +297,28 @@ context length. `go -C scripts/live run . -h` lists them all.
 | `usage-log/stream-usg` | that stream counted exactly too |
 | `embeddings` | embeddings reach the backend; the answer names `live-embed`, has a vector and `prompt_tokens`; with `-embeddings-base-url`, its log line names backend `live-embeddings` |
 | `usage-log/embeddings` | embeddings usage counted exactly (input tokens, no output) |
-| `output-ceiling` | a request for the model's whole context length in output tokens (`-context-length`; more is refused, `400 invalid_value`) is lowered to the ceiling: `completion_tokens` ≤ ceiling, `finish_reason: "length"`. vLLM and llama-server are asked through `max_tokens` (the gateway lowers the client's own key), OpenAI and Azure through `max_completion_tokens` (their reasoning models refuse `max_tokens`) |
-| `rate-limit` | the second `live-rpm` request in a minute gets `429 rate_limit_exceeded` with `Retry-After` and `x-ratelimit-*-requests` headers — before reaching the backend |
-| `metrics` | the admin `/metrics` shows the chat requests, their `tokens_out` and cost, and the rate-limit refusal |
+| `messages` | a Messages request **without `max_tokens`** (the API requires it; the gateway sets the output-limit default) returns text under the public model name, with `usage` |
+| `usage-log/messages` | its log line carries the backend's own token counts and a cost |
+| `messages-stream` | a Messages stream opens with `message_start` naming `live-chat`, streams text deltas and ends with `message_stop` — no error event, no `[DONE]` |
+| `usage-log/msg-stream` | that stream counted exactly |
+| `messages-cache` | the same ~8,000-token system prompt, marked for the prompt cache, sent twice: the second request's log line reports input read from the cache. Anthropic caches it always (a miss fails); a self-hosted server reports cache reads only with its prefix cache on (a miss skips) |
+| `messages-count` | `/v1/messages/count_tokens` answers `input_tokens` and settles no usage record |
+| `messages-models` | `/v1/models` asked the way Anthropic's SDKs ask (`x-api-key`, `anthropic-version`) answers in Anthropic's shape, listing the models served through Messages |
+| `messages-errors` | a wrong key (`401 authentication_error`) and an unknown model (`404 not_found_error`) come back in Anthropic's error shape, with kaiak's code |
+| `messages-hosted-tool` | a tool the backend would run (`web_search_20250305`) is refused, `400 hosted_tool_unsupported`, before routing |
+| `price-options` | Anthropic and Foundry: `speed: "fast"` is refused, `400 price_option_unsupported`, before it is sent (and on Anthropic the `messages` check passing shows the backend took `service_tier: "standard_only"`); self-hosted: it passes through, as they price nothing |
+| `responses` | a Responses request asking for `store: true` and without `max_output_tokens` returns text under the public model name, with `usage`; OpenAI and Azure report back `store: false`, what the gateway sent (the self-hosted servers' answers carry no `store`) |
+| `usage-log/responses` | its log line carries the backend's own token counts (reasoning too, where reported) and a cost |
+| `responses-stream` | a Responses stream opens with `response.created`, streams text deltas and ends with `response.completed` naming `live-chat` — no `error`, `response.failed` or `response.incomplete` event |
+| `usage-log/resp-stream` | that stream counted exactly |
+| `responses-count` | where served (llama-server, OpenAI): `/v1/responses/input_tokens` answers `input_tokens` and settles no usage record |
+| `responses-stateful` | a request naming `previous_response_id` is refused, `400 stateful_responses_unsupported`, before routing — the gateway serves Responses stateless |
+| `responses-hosted-tool` | a hosted tool (`web_search`) is refused, `400 hosted_tool_unsupported`, before routing |
+| `service-tier` | OpenAI and Azure: a request asking for `service_tier: "priority"` runs on `default` (skipped when the answer does not report its tier) |
+| `endpoint-not-served` | every API the backend type does not serve (chat completions on Claude, Messages on OpenAI, `responses/input_tokens` on vLLM and Azure, …) is refused `400 endpoint_not_served`, in that API's error shape |
+| `output-ceiling` | a request for the model's whole context length in output tokens (`-context-length`; more is refused, `400 invalid_value`) is lowered to the ceiling: `completion_tokens` ≤ ceiling, `finish_reason: "length"`. vLLM and llama-server are asked through `max_tokens` (the gateway lowers the client's own key), OpenAI and Azure through `max_completion_tokens` (their reasoning models refuse `max_tokens`); Anthropic and Foundry through Messages' `max_tokens`, ending `stop_reason: "max_tokens"` |
+| `rate-limit` | the second `live-rpm` request in a minute gets `429 rate_limit_exceeded` with `Retry-After` and `x-ratelimit-*-requests` headers — before reaching the backend (through Messages on Anthropic and Foundry, in Anthropic's shape: `rate_limit_error`) |
+| `metrics` | the admin `/metrics` shows the `live-chat` requests, their `tokens_out` and cost, the rate-limit refusal, and a request on each of the `messages` and `responses` endpoints the backend serves |
 | `spread` | two backends: six requests one after another are served by both (`kaiak.backend.id` on each log line) — tied deployments take turns |
 | `capacity` | two backends with `-max-in-flight N`: 2N+2 requests at once are all answered — those over the cap wait in the gateway's queue (the count queued is reported, not required) — and `kaiak_backend_max_in_flight` shows N for each |
 | `failover` | two backends with `-check-failover`: see the failover procedure below |
@@ -300,12 +461,24 @@ checks run as without it.
     deployment's: the backend's text says what is missing.
   - `400` relayed from the backend — a parameter the backend refuses; the body says
     which. `-chat-params` values are the first suspect.
+- `400 endpoint_not_served` on a check that should have run: the backend type does
+  not serve that API (Providers → Endpoint support) — the kit runs each API's
+  checks only on the kinds that serve it, so this means the kit and the gateway
+  disagree on the table.
+- `502 upstream_endpoint_missing` — the server answered `404` (vLLM: `405`) on an
+  endpoint its type serves: a server version older than the endpoint (vLLM before
+  its Messages or Responses support). Upgrade the server; chat keeps working.
+- `400 hosted_tool_unsupported`, `stateful_responses_unsupported`,
+  `price_option_unsupported` on a check other than the one testing it: a
+  `-messages-params` or `-responses-params` value asks for something the gateway
+  refuses — the message names the parameter.
 - `kaiak.usage.estimated=true` on a `usage-log/*` check: the backend sent no usage, so the gateway
   fell back to its 4-bytes-per-token estimate. On `usage-log/stream` it means the
   backend ignored `stream_options.include_usage` (older vLLM, or a proxy in front of it
   that strips it).
 - `only reasoning came back`: a thinking model spent the whole output limit on
-  reasoning. Switch thinking off with `-chat-params` or raise `-max-output`.
+  reasoning. Switch thinking off with `-chat-params`, `-messages-params` or
+  `-responses-params`, or raise `-max-output` (Thinking models).
 - `output-ceiling` with `finish_reason` other than `length`: the model stopped on its
   own before 16 tokens (unlikely with the prompt used) — or the backend ignored the
   output limit; compare `completion_tokens` with the ceiling.
@@ -367,14 +540,41 @@ gateway started from `examples/config.json`):
   answers come back without reasoning; with thinking on they carry it.
 - **Reasoning parser fields** — with vLLM's `--reasoning-parser`, reasoning arrives in
   `reasoning_content` (older) or `reasoning` (newer) beside `content`, streamed as
-  deltas. Check that the log line's `gen_ai.usage.reasoning.output_tokens` (the
-  record's `tokens_reasoning`) stays 0 unless vLLM reports
-  `completion_tokens_details.reasoning_tokens` (it usually does not — reasoning is
-  still inside `gen_ai.usage.output_tokens`, the record's `tokens_out`, which is
-  what is priced).
+  deltas. vLLM 0.30.0 reports `completion_tokens_details.reasoning_tokens` on chat
+  and `output_tokens_details.reasoning_tokens` on Responses, and the log line's
+  `gen_ai.usage.reasoning.output_tokens` (the record's `tokens_reasoning`) shows
+  them; Messages reports no reasoning count, so it stays 0 there. Reasoning is
+  always inside `gen_ai.usage.output_tokens` (the record's `tokens_out`), which is
+  what is priced.
 - **Unknown sampling parameters pass through** — `top_k`, `min_p` as defaults reach
   vLLM untouched (the backend log shows each request's parameters when request
   logging is enabled on the vLLM server).
+
+## Anthropic and Foundry: assumptions made without access
+
+The `anthropic` and `azure-anthropic` providers and these kinds were written from
+Anthropic's and Microsoft's documentation, without an account. What was assumed —
+check these first when a tester runs them:
+
+1. **Paths**: Anthropic `https://api.anthropic.com/v1/messages` (and
+   `/messages/count_tokens`, `/models?limit=1000`); Foundry
+   `https://<resource>.services.ai.azure.com/anthropic/v1/messages` and
+   `/messages/count_tokens`, with no models list. `messages` and `messages-count`
+   passing proves them.
+2. **Auth**: `x-api-key` (Anthropic) and `api-key` (Foundry) with
+   `anthropic-version: 2023-06-01`, which the gateway sends itself.
+3. **`service_tier: "standard_only"`** on every Anthropic request is accepted
+   (`messages` passing); Foundry gets none (it has no Priority Tier).
+4. **Usage**: `input_tokens` excludes cache reads and writes, reported as
+   `cache_read_input_tokens` and `cache_creation_input_tokens`; streams report them
+   in `message_start` and the output in `message_delta`. `usage-log/messages` and
+   `messages-cache` read them.
+5. **Errors**: `{"type": "error", "error": {"type", "message"}}`; `529
+   overloaded_error` counts as a `5xx`; a missing model is a `404 not_found_error`
+   naming it (`upstream_model_missing` if the deployment's model is wrong — check
+   by running once with a wrong `-model`).
+6. **Prompt cache minimum**: the cache check's ~8,000-token prompt is above every
+   current model's minimum cacheable length (up to 4,096 tokens).
 
 ## Manual: an OpenAI client library
 

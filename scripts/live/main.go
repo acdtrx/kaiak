@@ -1,6 +1,8 @@
 // Command live runs the kaiak gateway against a real backend (vLLM, llama-server, Azure
-// OpenAI or OpenAI) and checks it end to end, printing PASS/FAIL per check. It generates the
-// config (with a fresh client key), starts the built kaiak binary, drives it over HTTP
+// OpenAI, OpenAI, Anthropic or Claude in Microsoft Foundry) and checks it end to end,
+// printing PASS/FAIL/SKIP per check. It generates the config (with a fresh client
+// key), starts the built kaiak binary, drives it over HTTP — through every client API
+// the backend type serves: chat completions, Anthropic Messages, OpenAI Responses —
 // and reads its log and metrics. With -base-url-2 a second backend of the same kind
 // serves the same model: the models get two deployments, and the reliability checks
 // run (load spread, the concurrency cap, and with -check-failover a failover the user
@@ -33,9 +35,12 @@ const (
 	kindLlamaServer = "llama-server"
 	kindAzure       = "azure-openai"
 	kindOpenAI      = "openai"
+	// Claude through Anthropic's API, and Claude in Microsoft Foundry.
+	kindAnthropic      = "anthropic"
+	kindAzureAnthropic = "azure-anthropic"
 )
 
-var allKinds = []string{kindVLLM, kindLlamaServer, kindOpenAI, kindAzure}
+var allKinds = []string{kindVLLM, kindLlamaServer, kindOpenAI, kindAzure, kindAnthropic, kindAzureAnthropic}
 
 // options is everything a run needs, from flags and environment.
 type options struct {
@@ -56,12 +61,18 @@ type options struct {
 	priceOut            float64
 	// chatParams are extra parameters added to every chat request the kit sends (the
 	// gateway sets none of its own); parsed from -chat-params by resolve.
-	chatParams     string
-	chatParamsObj  map[string]any
-	kaiakBin       string
-	requestTimeout time.Duration
-	keep           bool
-	verbose        bool
+	chatParams    string
+	chatParamsObj map[string]any
+	// messagesParams and responsesParams are the same for the Messages and Responses
+	// requests; parsed from -messages-params and -responses-params by resolve.
+	messagesParams     string
+	messagesParamsObj  map[string]any
+	responsesParams    string
+	responsesParamsObj map[string]any
+	kaiakBin           string
+	requestTimeout     time.Duration
+	keep               bool
+	verbose            bool
 
 	// Two backends (-base-url-2).
 	maxInFlight   int
@@ -92,28 +103,31 @@ func (o options) label() string {
 // given: self-hosted servers usually run without one.
 var defaultAPIKeyEnv = map[string]string{
 	kindVLLM: "", kindLlamaServer: "", kindOpenAI: "OPENAI_API_KEY", kindAzure: "AZURE_OPENAI_API_KEY",
+	kindAnthropic: "ANTHROPIC_API_KEY", kindAzureAnthropic: "ANTHROPIC_FOUNDRY_API_KEY",
 }
 
 func main() {
 	var o options
 	selfTest := flag.Bool("self-test", false, "run every check against the fake backend standing in for each kind (or only -kind)")
-	flag.StringVar(&o.kind, "kind", "", "backend kind: vllm, llama-server, azure-openai or openai")
-	flag.StringVar(&o.baseURL, "base-url", os.Getenv("LIVE_BASE_URL"), "backend base URL (env LIVE_BASE_URL): vLLM or llama-server http://host:8000/v1; OpenAI https://api.openai.com/v1 (the default); Azure the resource endpoint https://<resource>.openai.azure.com")
+	flag.StringVar(&o.kind, "kind", "", "backend kind: "+strings.Join(allKinds, ", "))
+	flag.StringVar(&o.baseURL, "base-url", os.Getenv("LIVE_BASE_URL"), "backend base URL (env LIVE_BASE_URL): vLLM or llama-server http://host:8000/v1; OpenAI https://api.openai.com/v1 and Anthropic https://api.anthropic.com/v1 (the defaults); Azure OpenAI the resource endpoint https://<resource>.openai.azure.com; Foundry the resource endpoint https://<resource>.services.ai.azure.com")
 	flag.StringVar(&o.baseURL2, "base-url-2", os.Getenv("LIVE_BASE_URL_2"), "a second backend of the same kind serving the same -model (env LIVE_BASE_URL_2): two deployments, and the load-spread, cap and failover checks")
 	flag.IntVar(&o.maxInFlight, "max-in-flight", 0, "with -base-url-2: each backend's max_in_flight (0: no cap); adds the capacity check")
 	flag.BoolVar(&o.checkFailover, "check-failover", false, "with -base-url-2: the failover check — stop the second backend when asked, start it again when asked")
 	flag.DurationVar(&o.failoverWait, "failover-wait", 10*time.Minute, "how long the failover check waits for each step (the backend stopped, the backend back)")
-	flag.StringVar(&o.model, "model", os.Getenv("LIVE_MODEL"), "chat model name on the backend (env LIVE_MODEL); for Azure the deployment name")
+	flag.StringVar(&o.model, "model", os.Getenv("LIVE_MODEL"), "chat model name on the backend (env LIVE_MODEL); for Azure OpenAI and Foundry the deployment name")
 	flag.StringVar(&o.embeddingsModel, "embeddings-model", os.Getenv("LIVE_EMBEDDINGS_MODEL"), "embeddings model name on the backend, optional (env LIVE_EMBEDDINGS_MODEL)")
 	flag.StringVar(&o.embeddingsBaseURL, "embeddings-base-url", os.Getenv("LIVE_EMBEDDINGS_BASE_URL"), "a separate openai-compatible server for -embeddings-model (env LIVE_EMBEDDINGS_BASE_URL), e.g. http://host:8003/v1; default: -base-url serves it")
 	flag.StringVar(&o.embeddingsAPIKeyEnv, "embeddings-api-key-env", "", "with -embeddings-base-url: name of the environment variable holding that server's key (default: none)")
-	flag.StringVar(&o.apiKeyEnv, "api-key-env", "-", "name of the environment variable holding the backend key (default: none for vllm and llama-server, OPENAI_API_KEY, AZURE_OPENAI_API_KEY)")
+	flag.StringVar(&o.apiKeyEnv, "api-key-env", "-", "name of the environment variable holding the backend key (default: none for vllm and llama-server, OPENAI_API_KEY, AZURE_OPENAI_API_KEY, ANTHROPIC_API_KEY, ANTHROPIC_FOUNDRY_API_KEY)")
 	flag.IntVar(&o.maxOutput, "max-output", 1024, "output-limit default and ceiling of the chat model (raise it for reasoning models)")
 	flag.IntVar(&o.ceiling, "ceiling", 16, "output-limit ceiling of the model the ceiling check uses")
 	flag.IntVar(&o.contextLength, "context-length", 32768, "declared context length of the chat model")
 	flag.Float64Var(&o.priceIn, "price-in", 1, "USD per million input tokens (0 with -price-out 0: unpriced, cost check skipped)")
 	flag.Float64Var(&o.priceOut, "price-out", 2, "USD per million output tokens")
 	flag.StringVar(&o.chatParams, "chat-params", "", `extra parameters for every chat request the kit sends, a JSON object (e.g. '{"chat_template_kwargs":{"enable_thinking":false}}')`)
+	flag.StringVar(&o.messagesParams, "messages-params", "", `extra parameters for every Messages request the kit sends, a JSON object (e.g. '{"thinking":{"type":"disabled"}}')`)
+	flag.StringVar(&o.responsesParams, "responses-params", "", `extra parameters for every Responses request the kit sends, a JSON object (e.g. '{"reasoning":{"effort":"low"}}')`)
 	flag.StringVar(&o.kaiakBin, "kaiak", "", "kaiak binary to run (default: built from this repository)")
 	flag.DurationVar(&o.requestTimeout, "request-timeout", 2*time.Minute, "time allowed for each request")
 	flag.BoolVar(&o.keep, "keep", false, "keep the temporary directory (config, gateway log) and print its path")
@@ -169,22 +183,30 @@ func resolve(o *options) error {
 	if o.apiKeyEnv == "-" {
 		o.apiKeyEnv = defaultAPIKeyEnv[o.kind]
 	}
-	if o.chatParams != "" {
-		if err := json.Unmarshal([]byte(o.chatParams), &o.chatParamsObj); err != nil || o.chatParamsObj == nil {
-			return fmt.Errorf("-chat-params is not a JSON object: %s", o.chatParams)
+	for _, p := range []struct {
+		flag string
+		text string
+		obj  *map[string]any
+	}{{"-chat-params", o.chatParams, &o.chatParamsObj}, {"-messages-params", o.messagesParams, &o.messagesParamsObj},
+		{"-responses-params", o.responsesParams, &o.responsesParamsObj}} {
+		if p.text == "" {
+			continue
+		}
+		if err := json.Unmarshal([]byte(p.text), p.obj); err != nil || *p.obj == nil {
+			return fmt.Errorf("%s is not a JSON object: %s", p.flag, p.text)
 		}
 	}
-	if o.kind == kindAzure && o.apiKeyEnv == "" {
-		return errors.New("azure-openai needs -api-key-env: Azure authenticates with an api-key header")
-	}
-	if o.kind == kindOpenAI && o.apiKeyEnv == "" {
-		return errors.New("openai needs -api-key-env: OpenAI answers nothing without a key")
+	if o.apiKeyEnv == "" && (o.kind == kindAzure || o.kind == kindOpenAI || anthropicKind(o.kind)) {
+		return fmt.Errorf("%s needs -api-key-env: the backend answers nothing without a key", o.kind)
 	}
 	if o.apiKeyEnv != "" && os.Getenv(o.apiKeyEnv) == "" {
 		return fmt.Errorf("%s is not set: export the backend key there, or name another variable with -api-key-env", o.apiKeyEnv)
 	}
 	if o.baseURL == "" && o.kind == kindOpenAI {
 		o.baseURL = "https://api.openai.com/v1"
+	}
+	if o.baseURL == "" && o.kind == kindAnthropic {
+		o.baseURL = "https://api.anthropic.com/v1"
 	}
 	if o.baseURL == "" {
 		return errors.New("no backend URL: set -base-url or LIVE_BASE_URL")
@@ -196,11 +218,17 @@ func resolve(o *options) error {
 			return errors.New("-base-url-2 is -base-url: the second backend must be another process (another host or port)")
 		}
 	}
+	if o.twoBackends() && !o.serves(epChat) {
+		return fmt.Errorf("-base-url-2: the two-backend checks run on chat completions, which %s does not serve", o.kind)
+	}
 	if !o.twoBackends() && (o.maxInFlight != 0 || o.checkFailover) {
 		return errors.New("-max-in-flight and -check-failover need -base-url-2")
 	}
 	if o.maxInFlight < 0 {
 		return errors.New("-max-in-flight: want 0 (no cap) or more")
+	}
+	if o.embeddingsModel != "" && !o.embeddingsServer() && !o.serves(epEmbeddings) {
+		return fmt.Errorf("-embeddings-model needs -embeddings-base-url with %s, which serves no embeddings", o.kind)
 	}
 	if o.embeddingsServer() {
 		if o.embeddingsModel == "" {
@@ -217,7 +245,7 @@ func resolve(o *options) error {
 		}
 	}
 	if o.model == "" {
-		return errors.New("no model: set -model or LIVE_MODEL (for Azure, the deployment name)")
+		return errors.New("no model: set -model or LIVE_MODEL (for Azure OpenAI and Foundry, the deployment name)")
 	}
 	if o.maxOutput < 1 || o.ceiling < 1 || o.maxOutput > o.contextLength || o.ceiling > o.contextLength {
 		return errors.New("-max-output and -ceiling must be at least 1 and at most -context-length")
@@ -225,16 +253,21 @@ func resolve(o *options) error {
 	return nil
 }
 
-// normalizeBaseURL trims a trailing slash and, for Azure, a trailing /openai/v1,
-// with a note about URLs that look wrong for the kind.
+// azureLayouts are the paths the gateway appends to an Azure kind's resource
+// endpoint.
+var azureLayouts = map[string]string{kindAzure: "/openai/v1", kindAzureAnthropic: "/anthropic/v1"}
+
+// normalizeBaseURL trims a trailing slash and, for the Azure kinds, the path the
+// gateway appends itself, with a note about URLs that look wrong for the kind.
 func normalizeBaseURL(kind, u string) string {
 	u = strings.TrimRight(u, "/")
+	layout, azure := azureLayouts[kind]
 	switch {
-	case kind == kindAzure && strings.HasSuffix(u, "/openai/v1"):
-		u = strings.TrimSuffix(u, "/openai/v1")
-		fmt.Printf("note: Azure base URL is the resource endpoint; using %s (the gateway appends /openai/v1/)\n", u)
-	case kind != kindAzure && !strings.HasSuffix(u, "/v1"):
-		fmt.Printf("note: %s base URL %s does not end in /v1; an OpenAI client's base URL usually does\n", kind, u)
+	case azure && (strings.HasSuffix(u, layout) || strings.HasSuffix(u, strings.TrimSuffix(layout, "/v1"))):
+		u = strings.TrimSuffix(strings.TrimSuffix(u, "/v1"), strings.TrimSuffix(layout, "/v1"))
+		fmt.Printf("note: %s base URL is the resource endpoint; using %s (the gateway appends %s/)\n", kind, u, layout)
+	case !azure && !strings.HasSuffix(u, "/v1"):
+		fmt.Printf("note: %s base URL %s does not end in /v1; an OpenAI or Anthropic client's base URL usually does\n", kind, u)
 	}
 	return u
 }

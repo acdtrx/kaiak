@@ -268,16 +268,20 @@ func runSelfTest(ctx context.Context, o options) error {
 		k := o
 		k.kind = kind
 		k.model, k.embeddingsModel = selfTestChatModel, selfTestEmbedModel
+		if !k.serves(epEmbeddings) {
+			k.embeddingsModel = ""
+		}
 		k.apiKeyEnv = defaultAPIKeyEnv[kind]
 		k.requestTimeout = 10 * time.Second
 		secret, _ := newKey()
-		auth := map[string]string{kindVLLM: "none", kindLlamaServer: "none", kindOpenAI: "bearer", kindAzure: "api-key"}[kind]
+		auth := map[string]string{kindVLLM: "none", kindLlamaServer: "none", kindOpenAI: "bearer", kindAzure: "api-key",
+			kindAnthropic: "x-api-key", kindAzureAnthropic: "api-key"}[kind]
 		fake, root, err := startFake(ctx, fakeBin, "127.0.0.1:0", auth, secret, selfTestChatModel, selfTestEmbedModel)
 		if err != nil {
 			return err
 		}
 		k.baseURL = root + "/v1"
-		if kind == kindAzure {
+		if _, azure := azureLayouts[kind]; azure {
 			k.baseURL = root
 		}
 		var extraEnv []string
@@ -371,11 +375,15 @@ const (
 	selfTestEmbedPath = "/models/fake-embed-q8_0.gguf"
 )
 
+// selfTestCachedTokens is how many prompt tokens the fakes report read from the cache,
+// so the cache check sees a prefix cache answering.
+const selfTestCachedTokens = "3"
+
 // startFake runs the fake backend on addr (port 0: a free one), listing models, and
 // returns its root URL.
 func startFake(ctx context.Context, bin, addr, auth, key string, models ...string) (*exec.Cmd, string, error) {
 	cmd := exec.Command(bin, "-addr", addr, "-auth", auth, "-key", key, "-quiet",
-		"-models", strings.Join(models, ","))
+		"-cached-tokens", selfTestCachedTokens, "-models", strings.Join(models, ","))
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, "", err

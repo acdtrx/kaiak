@@ -59,15 +59,21 @@ const (
 	idEmbed       = "live-embed"
 )
 
+// checks runs every check the kind's backend type allows: the chat completions checks,
+// then the Messages and the Responses checks where it serves them, the refusal of
+// the APIs it does not, and the checks across APIs (output ceiling, rate limit,
+// metrics) through the first API it serves.
 func (r *run) checks() {
 	r.checkAuth()
 	r.checkModels()
-	r.checkChat()
-	r.checkUsageLog("usage-log/chat", idChat, true)
-	r.checkStream("chat-stream", idStream, false)
-	r.checkUsageLog("usage-log/stream", idStream, true)
-	r.checkStream("chat-stream-usage", idStreamUsage, true)
-	r.checkUsageLog("usage-log/stream-usg", idStreamUsage, true)
+	if r.o.serves(epChat) {
+		r.checkChat()
+		r.checkUsageLog("usage-log/chat", idChat, true)
+		r.checkStream("chat-stream", idStream, false)
+		r.checkUsageLog("usage-log/stream", idStream, true)
+		r.checkStream("chat-stream-usage", idStreamUsage, true)
+		r.checkUsageLog("usage-log/stream-usg", idStreamUsage, true)
+	}
 	if r.o.embeddingsModel == "" {
 		r.skip("embeddings", "no -embeddings-model")
 		r.skip("usage-log/embeddings", "no -embeddings-model")
@@ -75,8 +81,20 @@ func (r *run) checks() {
 		r.checkEmbeddings()
 		r.checkUsageLog("usage-log/embeddings", idEmbed, false)
 	}
-	r.checkCeiling()
-	r.checkRateLimit()
+	if r.o.serves(epMessages) {
+		r.messagesChecks()
+	}
+	if r.o.serves(epResponses) {
+		r.responsesChecks()
+	}
+	r.checkNotServed()
+	if r.o.serves(epChat) {
+		r.checkCeiling()
+		r.checkRateLimit()
+	} else {
+		r.checkMessagesCeiling()
+		r.checkMessagesRateLimit()
+	}
 	if r.o.twoBackends() {
 		r.checkSpread()
 		if r.o.maxInFlight > 0 {
@@ -93,7 +111,22 @@ func (r *run) checks() {
 	r.checkMetrics()
 }
 
+// checkAuth sends a request without a key; a kind serving no chat completions is
+// asked through Messages, whose refusal comes in Anthropic's error shape.
 func (r *run) checkAuth() {
+	if !r.o.serves(epChat) {
+		resp, err := r.postAnthropic("", "/v1/messages", "", r.messagesBody(modelChat, false, nil))
+		if err != nil {
+			r.fail("auth-reject", "%v", err)
+			return
+		}
+		if problem := anthropicError(resp, http.StatusUnauthorized, "authentication_error", "missing_api_key"); problem != "" {
+			r.fail("auth-reject", "no key: %s", problem)
+			return
+		}
+		r.pass("auth-reject", "no key → 401 authentication_error")
+		return
+	}
 	resp, err := r.post("", "/v1/chat/completions", "", r.chatBody(modelChat, false, nil))
 	switch {
 	case err != nil:
@@ -112,15 +145,21 @@ func (r *run) checkModels() {
 		return
 	}
 	var list struct {
-		Data []struct{ ID string }
+		Data []struct {
+			ID        string
+			Endpoints []string
+		}
 	}
 	if err := json.Unmarshal(body, &list); err != nil {
 		r.fail("models", "not a model list: %s", body)
 		return
 	}
-	var ids []string
+	var ids, chatEndpoints []string
 	for _, m := range list.Data {
 		ids = append(ids, m.ID)
+		if m.ID == modelChat {
+			chatEndpoints = m.Endpoints
+		}
 	}
 	want := []string{modelCapped, modelChat, modelRPM}
 	if r.o.embeddingsModel != "" {
@@ -131,7 +170,12 @@ func (r *run) checkModels() {
 		r.fail("models", "lists %v, want %v", ids, want)
 		return
 	}
-	r.pass("models", "lists "+strings.Join(ids, ", "))
+	wantEndpoints := slices.Sorted(slices.Values(kindEndpoints[r.o.kind]))
+	if !slices.Equal(chatEndpoints, wantEndpoints) {
+		r.fail("models", "%s lists endpoints %v, want %s's %v", modelChat, chatEndpoints, r.o.kind, wantEndpoints)
+		return
+	}
+	r.pass("models", "lists "+strings.Join(ids, ", ")+"; endpoints "+strings.Join(chatEndpoints, ", "))
 }
 
 // chatAnswer is the part of a chat completion the checks read.
@@ -428,6 +472,12 @@ func (r *run) checkMetrics() {
 	refused := sumSeries(text, `kaiak_errors_total{class="rate_limited"}`)
 	succeeded := sumSeries(text, "kaiak_upstream_attempts_total{", `outcome="success"`)
 	timed := sumSeries(text, "kaiak_upstream_attempt_duration_seconds_count{")
+	missingEndpoint := ""
+	for _, ep := range []string{epMessages, epResponses} {
+		if r.o.serves(ep) && sumSeries(text, "kaiak_request_duration_seconds_count{", `endpoint="`+ep+`"`, chat) < 1 {
+			missingEndpoint = ep
+		}
+	}
 	backendOnUsage := false
 	for line := range strings.SplitSeq(text, "\n") {
 		backendOnUsage = backendOnUsage || strings.HasPrefix(line, "kaiak_usage_") && strings.Contains(line, "backend=")
@@ -448,6 +498,8 @@ func (r *run) checkMetrics() {
 		r.fail("metrics", "kaiak_upstream_attempt_duration_seconds_count = %v, want ≥ the %v successful attempts", timed, succeeded)
 	case backendOnUsage:
 		r.fail("metrics", "a usage series carries a backend label")
+	case missingEndpoint != "":
+		r.fail("metrics", "kaiak_request_duration_seconds has no %s request for %s", missingEndpoint, modelChat)
 	default:
 		r.pass("metrics", fmt.Sprintf("%s: %v usage records, %v tokens out, %v USD; %v rate-limited; %v successful upstream attempts",
 			modelChat, records, tokensOut, cost, refused, succeeded))
@@ -535,6 +587,33 @@ func (r *run) post(key, path, id string, body any) (*response, error) {
 	if err != nil {
 		return nil, err
 	}
+	return r.do(req)
+}
+
+// anthropicRequest is a request as Anthropic's SDKs send it: the key in x-api-key,
+// with anthropic-version.
+func (r *run) anthropicRequest(key, path, id string, body any) (*http.Request, error) {
+	req, err := r.request("", path, id, body)
+	if err != nil {
+		return nil, err
+	}
+	if key != "" {
+		req.Header.Set("X-Api-Key", key)
+	}
+	req.Header.Set("Anthropic-Version", anthropicVersion)
+	return req, nil
+}
+
+func (r *run) postAnthropic(key, path, id string, body any) (*response, error) {
+	req, err := r.anthropicRequest(key, path, id, body)
+	if err != nil {
+		return nil, err
+	}
+	return r.do(req)
+}
+
+// do sends req and reads the whole answer.
+func (r *run) do(req *http.Request) (*response, error) {
 	resp, err := r.client.Do(req)
 	if err != nil {
 		return nil, err

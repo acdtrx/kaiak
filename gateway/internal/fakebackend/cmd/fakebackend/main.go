@@ -1,7 +1,8 @@
 // Command fakebackend runs the fake OpenAI-compatible backend as a process, for
 // scripts, the live-test kit's self-test and manual runs. Test tooling only.
 //
-// It serves /v1/ (the OpenAI layout) and /openai/v1/ (Azure layout), prints
+// It serves /v1/ (the OpenAI and Anthropic layout), /openai/v1/ (Azure OpenAI's) and
+// /anthropic/v1/ (Claude in Foundry's), prints
 // "listening <url>" on stdout once it accepts connections, and stops on SIGINT or
 // SIGTERM. Answers honor max_completion_tokens / max_tokens (finish_reason "length"
 // when they cut the answer short).
@@ -30,14 +31,18 @@ const answer = "Hello from the fake backend. It answers every request with the s
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8000", "listen address (port 0 picks a free port)")
 	profile := flag.String("profile", "normal", "behavior: normal, no-usage (never reports usage), slow (streams one event every 200ms)")
-	auth := flag.String("auth", "none", "credential check: none, bearer (Authorization: Bearer <key>), api-key (api-key: <key>)")
+	auth := flag.String("auth", "none", "credential check: none, bearer (Authorization: Bearer <key>), api-key (api-key: <key>), x-api-key (x-api-key: <key>)")
 	key := flag.String("key", "", "the credential the auth check expects")
 	quiet := flag.Bool("quiet", false, "do not log requests to stderr")
+	cachedTokens := flag.Int("cached-tokens", 0, "report this many of the 7 prompt tokens as read from the cache (0-7)")
 	models := flag.String("models", strings.Join(fakebackend.DefaultModels, ","),
 		"comma-separated model IDs the models list lists (completions serve any model name)")
 	flag.Parse()
 
-	reply := fakebackend.Reply{Chunks: words(answer), HonorMaxTokens: true}
+	if *cachedTokens < 0 || *cachedTokens > 7 {
+		log.Fatalf("fakebackend: -cached-tokens %d: want 0 to 7", *cachedTokens)
+	}
+	reply := fakebackend.Reply{Chunks: words(answer), HonorMaxTokens: true, CachedTokens: *cachedTokens}
 	switch *profile {
 	case "normal":
 	case "no-usage":
@@ -53,6 +58,8 @@ func main() {
 		reply.RequireHeader, reply.RequireValue = "Authorization", "Bearer "+*key
 	case "api-key":
 		reply.RequireHeader, reply.RequireValue = "api-key", *key
+	case "x-api-key":
+		reply.RequireHeader, reply.RequireValue = "x-api-key", *key
 	default:
 		log.Fatalf("fakebackend: unknown -auth %q", *auth)
 	}
