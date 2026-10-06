@@ -527,11 +527,21 @@ type sampleProcess struct {
 	exited chan struct{}
 	err    error
 	totals *totalsWatch
+	// replicas are the protocol replicas' base URLs: further cores over the sample's
+	// one store (KAIAK_SAMPLE_PROTOCOL_PORTS).
+	replicas []string
 }
 
 // startSample runs the sample on a free loopback port and returns once it logs its
 // address. It is killed at test cleanup if still running.
 func startSample(t *testing.T, node, root, configFile, token string) *sampleProcess {
+	t.Helper()
+	return startSampleReplicas(t, node, root, configFile, token, 0)
+}
+
+// startSampleReplicas runs the sample with replicas protocol replicas, each on a free
+// loopback port, and returns once every listener logged its address.
+func startSampleReplicas(t *testing.T, node, root, configFile, token string, replicas int) *sampleProcess {
 	t.Helper()
 	cmd := exec.Command(node, "src/main.ts")
 	cmd.Dir = filepath.Join(root, "control", "sample")
@@ -542,6 +552,9 @@ func startSample(t *testing.T, node, root, configFile, token string) *sampleProc
 	}
 	cmd.Env = append(cmd.Env, "KAIAK_SAMPLE_CONFIG="+configFile, "KAIAK_CONTROL_TOKEN="+token,
 		"KAIAK_SAMPLE_LISTEN=127.0.0.1:0", "KAIAK_LOG_FORMAT=json")
+	if replicas > 0 {
+		cmd.Env = append(cmd.Env, "KAIAK_SAMPLE_PROTOCOL_PORTS="+strings.Repeat("0,", replicas-1)+"0")
+	}
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -580,6 +593,13 @@ func startSample(t *testing.T, node, root, configFile, token string) *sampleProc
 		m, _ := entry["msg"].(string)
 		return strings.HasPrefix(m, "sample control plane listening on ") && entry["url"] != nil
 	})["url"])
+	for i := 1; i <= replicas; i++ {
+		prefix := fmt.Sprintf("sample protocol replica %d listening on ", i)
+		s.replicas = append(s.replicas, fmt.Sprint(s.logs.wait(t, "a replica's address", func(entry map[string]any) bool {
+			m, _ := entry["msg"].(string)
+			return strings.HasPrefix(m, prefix) && entry["url"] != nil
+		})["url"]))
+	}
 	s.totals = watchTotals(t, s.url, token)
 	return s
 }
