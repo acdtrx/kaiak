@@ -25,13 +25,12 @@ var (
 	envNamePattern         = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 	keyHashPattern         = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 	reasoningEffortPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
-	defaultNamePattern     = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 	labelKeyPattern        = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,62}$`)
 )
 
 // FormatVersion is the config document format this gateway reads; any other is
 // rejected, never migrated.
-const FormatVersion = 4
+const FormatVersion = 5
 
 // maxPriceTiers bounds a price entry's tiers.
 const maxPriceTiers = 8
@@ -91,17 +90,14 @@ func IsPublicModelName(s string) bool {
 	return modelNamePattern.MatchString(s) && !strings.HasSuffix(s, reservedModelSuffix)
 }
 
-// Request parameters a model's defaults may not set: the gateway owns them or they
-// carry request content.
-var refusedDefaults = []string{
-	"model", "messages", "prompt", "input", "stream", "stream_options", "max_tokens", "max_completion_tokens",
-	"n", "best_of", "service_tier",
-}
-
 var (
 	backendTypes = []string{
 		string(BackendOpenAICompatible), string(BackendOpenAI), string(BackendAzureOpenAI), string(BackendVLLM),
-		string(BackendLlamaServer),
+		string(BackendLlamaServer), string(BackendAnthropic), string(BackendAzureAnthropic),
+	}
+	// Backend types whose API answers nothing without a key: api_key_env is required.
+	keyedBackendTypes = []string{
+		string(BackendOpenAI), string(BackendAzureOpenAI), string(BackendAnthropic), string(BackendAzureAnthropic),
 	}
 	limitTypes = []string{
 		string(LimitRequestsPerMinute), string(LimitTokensPerMinute), string(LimitTokensPerHour), string(LimitUSDPerMonth),
@@ -181,8 +177,8 @@ func (c *schemaCheck) backend(v any, path string) {
 	if m == nil {
 		return
 	}
-	// OpenAI and Azure answer nothing without a key.
-	if t, _ := m["type"].(string); t == string(BackendOpenAI) || t == string(BackendAzureOpenAI) {
+	// The cloud APIs answer nothing without a key.
+	if t, _ := m["type"].(string); slices.Contains(keyedBackendTypes, t) {
 		if _, ok := m["api_key_env"]; !ok {
 			c.Fail(path, t+" backends need api_key_env")
 		}
@@ -219,7 +215,6 @@ func (c *schemaCheck) model(v any, path string) {
 				"reasoning_efforts": {Check: c.ArrayOf(0, 0, true, c.StringMatching(reasoningEffortPattern, "a lowercase word"))},
 			})
 		}},
-		"defaults": {Check: c.defaults},
 		"output_limit": {Check: func(v any, path string) {
 			c.Object(v, path, map[string]schemacheck.Field{
 				"default": {Required: true, Check: c.IntegerAtLeast(1)},
@@ -267,27 +262,6 @@ func (c *schemaCheck) retrySettings(v any, path string) map[string]any {
 	return c.Object(v, path, map[string]schemacheck.Field{
 		"max_attempts": {Check: c.IntegerBetween(1, MaxAttemptsCeiling)},
 	})
-}
-
-func (c *schemaCheck) defaults(v any, path string) {
-	m, ok := v.(map[string]any)
-	if !ok {
-		c.Fail(path, "must be an object")
-		return
-	}
-	for _, name := range slices.Sorted(maps.Keys(m)) {
-		p := schemacheck.Pointer(path, name)
-		if !defaultNamePattern.MatchString(name) {
-			c.Fail(p, "must be a lowercase parameter name")
-		}
-		if slices.Contains(refusedDefaults, name) {
-			c.Fail(p, "is set by the gateway or the client, never by defaults")
-		}
-		if m[name] == nil {
-			c.Fail(p, "must not be null")
-		}
-		c.FiniteNumbers(m[name], p)
-	}
 }
 
 func (c *schemaCheck) usdPerMillion(v any, path string) {

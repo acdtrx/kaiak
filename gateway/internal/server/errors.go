@@ -193,6 +193,9 @@ func errUpstream(code provider.Code) *apiError {
 	case provider.CodePathMissing:
 		return &apiError{status: http.StatusBadGateway, errType: typeServer, code: string(code),
 			message: "The model backend's address is misconfigured."}
+	case provider.CodeEndpointMissing:
+		return &apiError{status: http.StatusBadGateway, errType: typeServer, code: string(code),
+			message: "The model backend's server does not have this endpoint."}
 	}
 	return &apiError{status: http.StatusBadGateway, errType: typeServer, code: string(provider.CodeUnavailable),
 		message: "The model backend could not be reached."}
@@ -203,6 +206,21 @@ func errUpstream(code provider.Code) *apiError {
 func errUpstreamFault(status int) *apiError {
 	return &apiError{status: status, errType: typeServer, code: "upstream_error",
 		message: "The model backend failed to process the request."}
+}
+
+// errRefused answers a provider's refusal of the request before sending: the caller's
+// mistake, a 400 naming the parameter at fault.
+func errRefused(r *provider.RefusalError) *apiError {
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: r.Code, param: r.Param,
+		message: r.Message}
+}
+
+// errEndpointNotServed answers a request for a model none of whose deployments is on
+// a backend serving the endpoint (docs/specs/GATEWAY.md, Providers → Endpoint
+// support). The model passed the access check, so naming the endpoint leaks nothing.
+func errEndpointNotServed(ep endpoint) *apiError {
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "endpoint_not_served",
+		message: fmt.Sprintf("The model is not served on %s: none of its backends serves this API.", ep.path())}
 }
 
 func errInternal() *apiError {

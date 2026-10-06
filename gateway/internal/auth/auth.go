@@ -1,4 +1,4 @@
-// Package auth resolves a client's bearer key to an identity and decides which models
+// Package auth resolves a client's key to an identity and decides which models
 // that identity may use. Past this package a key is its key ID; the key itself is never
 // stored, returned or logged.
 package auth
@@ -44,18 +44,23 @@ type Identity struct {
 	allowed config.ModelSet
 }
 
-// Authenticate resolves the Authorization header value to an identity in snapshot.
-// A key is valid through its expires_at instant and expired after it; now is the
-// request's start time.
-func Authenticate(snapshot *config.Snapshot, authorization string, now time.Time) (Identity, *Error) {
-	if authorization == "" {
+// Authenticate resolves the client's key to an identity in snapshot: the
+// Authorization header's bearer token, or — when the request has no Authorization
+// header — the x-api-key header's value, as the Anthropic SDKs send it
+// (docs/specs/GATEWAY.md, Client API → Auth). A key is valid through its expires_at
+// instant and expired after it; now is the request's start time.
+func Authenticate(snapshot *config.Snapshot, authorization, apiKey string, now time.Time) (Identity, *Error) {
+	key := apiKey
+	switch {
+	case authorization != "":
+		var ok bool
+		if key, ok = bearerToken(authorization); !ok {
+			return Identity{}, &Error{Code: CodeMalformedKey,
+				Message: "Malformed Authorization header. Send the API key as \"Bearer <key>\"."}
+		}
+	case apiKey == "":
 		return Identity{}, &Error{Code: CodeMissingKey,
-			Message: "No API key provided. Send it in the Authorization header as \"Bearer <key>\"."}
-	}
-	key, ok := bearerToken(authorization)
-	if !ok {
-		return Identity{}, &Error{Code: CodeMalformedKey,
-			Message: "Malformed Authorization header. Send the API key as \"Bearer <key>\"."}
+			Message: "No API key provided. Send it in the Authorization header as \"Bearer <key>\", or in the x-api-key header."}
 	}
 	sum := sha256.Sum256([]byte(key))
 	k, found := snapshot.KeyByHash("sha256:" + hex.EncodeToString(sum[:]))

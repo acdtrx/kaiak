@@ -60,6 +60,8 @@ const (
 	BackendAzureOpenAI      BackendType = "azure-openai"
 	BackendVLLM             BackendType = "vllm"
 	BackendLlamaServer      BackendType = "llama-server"
+	BackendAnthropic        BackendType = "anthropic"
+	BackendAzureAnthropic   BackendType = "azure-anthropic"
 )
 
 type LimitType string
@@ -182,8 +184,6 @@ type Model struct {
 	ContextLength    int64
 	Capabilities     Capabilities
 	ReasoningEfforts []string
-	// Defaults maps request parameter → JSON value, exactly as written in the config.
-	Defaults map[string]json.RawMessage
 	// OutputLimit is nil when the model declares none (the gateway sets nothing).
 	OutputLimit *OutputLimit
 	// Prices in strictly increasing EffectiveFrom order; empty = unpriced.
@@ -439,7 +439,6 @@ func resolveModel(name string, m modelDoc, backends map[string]*Backend) *Model 
 			Reasoning: m.Metadata.Capabilities.Reasoning,
 		},
 		ReasoningEfforts: m.Metadata.ReasoningEfforts,
-		Defaults:         m.Defaults,
 		Prices:           make([]Price, len(m.Prices)),
 	}
 	for i, d := range m.Deployments {

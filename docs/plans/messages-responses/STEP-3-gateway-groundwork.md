@@ -1,6 +1,6 @@
 # Step 3 — gateway groundwork
 
-**Status:** not started
+**Status:** done (2026-10-06)
 
 ## Intent
 
@@ -90,4 +90,127 @@ At the end the suite is green, and nothing a client sees has changed except
 
 ## Result
 
-(filled in when the step is done)
+**What changed**
+
+- **Config** (`gateway/internal/config/`): format 5; types `anthropic` and
+  `azure-anthropic`; `api_key_env` required for the four cloud types
+  (`keyedBackendTypes`); `defaults` gone from the document, the snapshot and the
+  schema, together with `refusedDefaults` and the parameter-name pattern.
+- **Versions:** protocol 5 (`control.ProtocolVersion`, the fake control plane);
+  `last-known-good.json` format 6. Inline test configs in `cmd/kaiak`, `e2e`, `auth`,
+  `config`, `limits`, `server` and the live kit moved to format 5.
+- **Provider** (`gateway/internal/provider/`):
+  - `Endpoint` gains `Messages`, `MessagesCountTokens`, `Responses` and
+    `ResponsesInputTokens`, each with its path, plus a `Format` (OpenAI, Messages,
+    Responses).
+  - **Endpoint support:** one table, `kinds`, the one place a type is named. Each type
+    has the endpoints it serves (each module file declares its list), whether it has a
+    models list, and its constructor. `Serves(type, endpoint)` and `ListsModels(type)`
+    are exported.
+  - **Wire core:**
+    - `wireCall.core` marks a type's core endpoints (OpenAI's three, or `messages`).
+      A wrong-path answer there stays `upstream_path_missing`; on any other endpoint
+      it is the new `upstream_endpoint_missing`.
+    - Beyond the core endpoints a 405 is read too. vLLM's `unknownPath` also reads
+      `{"detail":"Method Not Allowed"}`.
+    - `include_usage` is set only on OpenAI-format streams.
+  - **`RefusalError`** (code, param, message) is a provider's refusal before sending.
+  - **New modules `anthropic.go` and `azure_anthropic.go`:**
+    - URL layouts, credential headers and `anthropic-version: 2023-06-01`.
+    - `standard_only` on `anthropic` Messages requests.
+    - Wrong-model and wrong-path readings.
+    - Probe: the paged models list (`?limit=1000`) for `anthropic`; always-pass with
+      no request for `azure-anthropic`.
+  - **`anthropic_price.go`** holds the shared price-option check (`speed`,
+    `inference_geo`, every `cache_control.ttl: "1h"` in the four places the spec
+    names), with exact keys and parameter paths in `param`.
+- **Routing:** the config-time model check skips types without a models list, with the
+  info line `model check not available for this backend type`.
+  `NewModelChecker` takes `provider.ListsModels`.
+- **Server** (`gateway/internal/server/`):
+  - Defaults removed from `params.go`; the output limit is the one parameter set.
+  - Model entries gain `endpoints`; `props` drops `defaults`.
+  - `bodyEndpoints` drives routes and `takesBody`.
+  - Inbound parsing dispatches by the endpoint's format, with the OpenAI parser moved
+    unchanged into `parseOpenAIFields`.
+  - **Routing by endpoint support** (`servingDeployments`): the model itself when
+    every deployment serves the endpoint, a filtered copy when some do, and
+    `400 endpoint_not_served` before routing when none does. Routing itself is
+    unchanged, and its dispatcher cache is keyed by model pointer, so a filtered copy
+    stays correct.
+  - **The refusal** is answered `400` with the provider's code and param, never
+    retried, neutral for the circuit, attempt outcome `client_error`, meter refused.
+  - **`upstream_endpoint_missing`:**
+    - `502`, retry reason `endpoint_missing`.
+    - Every deployment on that backend is refused for the request.
+    - Neutral for the circuit, attempt outcome `endpoint_missing`, meter refused.
+    - A warning line names the backend, deployment and endpoint.
+  - **Errors and metrics:** the five new codes have their classes.
+    `metrics.AttemptEndpointMissing` and the retry reason exist at 0 from the start.
+  - `gen_ai.provider.name` is `anthropic` for both Anthropic types.
+- **Auth:** `Authenticate` takes the `x-api-key` value as well. `Authorization` comes
+  first; the missing-key message names both headers.
+- **Live kit:** `-chat-defaults` is replaced by `-chat-params`. The kit adds the
+  object to every chat request it sends, since the gateway no longer sets defaults.
+  The runbook's mentions are renamed.
+- **Spec fixes** (`docs/specs/GATEWAY.md`):
+  - fourteen attempt-outcome series, not thirteen
+  - `client_error` also covers a provider's refusal before sending
+  - `messages/count_tokens` is neither refused nor edited by the Anthropic modules
+    (nothing is billed there)
+- **Tests:**
+  - **Provider:**
+    - both Anthropic types on the wire: path, headers, model, tier per endpoint
+    - each price-option refusal and its param, nothing sent, count_tokens not
+      refused, standard values passing, exact keys
+    - self-hosted types passing the options untouched
+    - 404 readings: missing model, wrong path on messages, endpoint missing on
+      count_tokens; 529 relayed
+    - probes
+    - endpoint support checked row by row against the spec's table
+    - endpoint missing for vLLM (404 and 405), llama-server, OpenAI, Azure; a 405 on
+      chat relayed
+    - no usage edit outside the OpenAI format
+  - **Server:**
+    - `endpoint_not_served` (nothing sent, no record, logged)
+    - mixed-model routing to the serving deployments only
+    - `endpoints` on entries
+    - `x-api-key`, alone and with `Authorization`
+    - refusal and endpoint-missing classification, retry and `avoidAfter`
+  - **Routing:** the model check skip.
+  - The defaults test is rewritten as `TestOutputLimitIsTheOneParameterSet`;
+    `TestModelEntryAndProps` follows the new shapes.
+
+**Decisions made in this step** (please review)
+
+1. **The per-format pieces of the response side are not split yet.** These are the
+   meter's usage reading, stream completeness, and nested model rewriting. They stay
+   OpenAI-only until steps 4–5 add the second and third format, so no interface with
+   one implementation lands ahead of its need.
+   - The provider's `Endpoint`/`Format`, the per-format body edits and the inbound
+     dispatch are in place.
+   - Nothing routes a Messages or Responses request yet.
+   - The inbound dispatch panics on a format with no parser, which no route reaches.
+   - The Anthropic modules' Messages **streams** get correct completeness and
+     `message_start` rewriting only in step 4. Their non-stream answers are complete
+     today.
+2. **The price-option refusal and `standard_only` apply to `messages` only, not
+   `messages/count_tokens`.** The spec now says so.
+3. **A refusal's attempt outcome is `client_error`.** The spec's outcome list says so.
+4. **A filtered model copy per request, rather than a change to routing,** for mixed
+   models. It allocates only when a model's deployments differ in endpoint support.
+5. **The fake backend needed no Anthropic shapes in this step.** The provider tests
+   use a small recording server (`anthropic_test.go`); steps 4–5 teach the fake
+   backend both formats.
+
+**Flagged for step 7:** model defaults are still described in `docs/DEPLOYMENT.md`
+(`:399`, `:442`) and `docs/architecture/gateway.html` (`:330`). `docs/DEPLOYMENT.md:763`'s
+"Wrong model, path or credential" alert could list `endpoint_missing`. No
+spec/code disagreement found beyond the three spec fixes above.
+
+**Suite** (2026-10-06): `scripts/check-gateway.sh` passed: gofmt, vet, staticcheck,
+`go test -race` (e2e included), and the live kit's lint and self-test (vllm,
+llama-server, openai, azure-openai, vllm with two backends).
+`scripts/check-all.sh` passed: gateway checks, control `npm test` (fail 0), `npm run
+lint`, and the cross-half e2e (`ok kaiak/e2e 48.858s`), ending "all checks passed".
+**Phase 1 ends green.**

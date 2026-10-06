@@ -61,7 +61,7 @@ go -C scripts/live run . -kind vllm \
   -model Qwen/Qwen3-32B \
   -embeddings-model BAAI/bge-m3          # optional: a pooling model on the same URL
 # vLLM started with --api-key:  export VLLM_API_KEY=...  and add  -api-key-env VLLM_API_KEY
-# thinking model, answers are all reasoning:  -chat-defaults '{"chat_template_kwargs":{"enable_thinking":false}}'
+# thinking model, answers are all reasoning:  -chat-params '{"chat_template_kwargs":{"enable_thinking":false}}'
 #                                        or:  -max-output 4096
 ```
 
@@ -191,7 +191,7 @@ go -C scripts/live run . -kind vllm \
   -model qwen3-8b \
   -max-in-flight 4 \
   -check-failover
-# Qwen3 thinking on:  -chat-defaults '{"chat_template_kwargs":{"enable_thinking":false}}'
+# Qwen3 thinking on:  -chat-params '{"chat_template_kwargs":{"enable_thinking":false}}'
 ```
 
 - `-base-url-2` (env `LIVE_BASE_URL_2`): the second backend, same kind, serving the
@@ -299,13 +299,13 @@ checks run as without it.
   - `404` relayed from the backend — a `404` the gateway does not read as the
     deployment's: the backend's text says what is missing.
   - `400` relayed from the backend — a parameter the backend refuses; the body says
-    which. `-chat-defaults` values are the first suspect.
+    which. `-chat-params` values are the first suspect.
 - `kaiak.usage.estimated=true` on a `usage-log/*` check: the backend sent no usage, so the gateway
   fell back to its 4-bytes-per-token estimate. On `usage-log/stream` it means the
   backend ignored `stream_options.include_usage` (older vLLM, or a proxy in front of it
   that strips it).
 - `only reasoning came back`: a thinking model spent the whole output limit on
-  reasoning. Switch thinking off with `-chat-defaults` or raise `-max-output`.
+  reasoning. Switch thinking off with `-chat-params` or raise `-max-output`.
 - `output-ceiling` with `finish_reason` other than `length`: the model stopped on its
   own before 16 tokens (unlikely with the prompt used) — or the backend ignored the
   output limit; compare `completion_tokens` with the ceiling.
@@ -362,7 +362,7 @@ gateway started from `examples/config.json`):
 - **`max_completion_tokens` honored** — the gateway writes its output-limit default
   there. Send a chat without any limit to `live-capped` and check
   `completion_tokens` ≤ the ceiling.
-- **`chat_template_kwargs` passthrough** — `-chat-defaults
+- **`chat_template_kwargs` passthrough** — `-chat-params
   '{"chat_template_kwargs":{"enable_thinking":false}}'` on a Qwen3 model should make
   answers come back without reasoning; with thinking on they carry it.
 - **Reasoning parser fields** — with vLLM's `--reasoning-parser`, reasoning arrives in

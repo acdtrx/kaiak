@@ -109,7 +109,7 @@ func TestSeedConfigServesWhenTheControlPlaneHasNoConfig(t *testing.T) {
 func errorControlPlane(t *testing.T, status int, code string) *url.URL {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Kaiak-Protocol", "4")
+		w.Header().Set("Kaiak-Protocol", "5")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(`{"error":"` + code + `"}`))

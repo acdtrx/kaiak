@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -22,9 +23,10 @@ import (
 // binary stream framing, request signing) without pipeline changes. It does so by
 // keeping every backend-specific concern behind Send and Response: the pipeline hands
 // over the client's request as received plus the routing decision, and gets back
-// status, headers and events already in the client's format (OpenAI JSON and SSE). A
-// translating provider converts on both sides; the OpenAI-format modules pass
-// through with the owned edits only.
+// status, headers and events already in the client's format (the endpoint's: OpenAI,
+// Messages or Responses JSON and SSE). A translating provider converts on both sides;
+// today's modules pass every request through in its own format with the owned edits
+// only (docs/specs/GATEWAY.md, Client API → Client APIs).
 type Provider interface {
 	// Send sends req upstream and waits for the first event of the response (or for
 	// the whole response to end, when it has no body), so a failure before anything
@@ -44,9 +46,14 @@ const (
 	ChatCompletions Endpoint = iota
 	Completions
 	Embeddings
+	Messages
+	MessagesCountTokens
+	Responses
+	ResponsesInputTokens
 )
 
-// path is the endpoint's path below the OpenAI API's version prefix.
+// path is the endpoint's path below the API's version prefix
+// (docs/specs/GATEWAY.md, Base URLs).
 func (e Endpoint) path() string {
 	switch e {
 	case ChatCompletions:
@@ -55,8 +62,40 @@ func (e Endpoint) path() string {
 		return "completions"
 	case Embeddings:
 		return "embeddings"
+	case Messages:
+		return "messages"
+	case MessagesCountTokens:
+		return "messages/count_tokens"
+	case Responses:
+		return "responses"
+	case ResponsesInputTokens:
+		return "responses/input_tokens"
 	}
 	return ""
+}
+
+// Format is a client API format: the request and response shapes an endpoint speaks
+// (docs/specs/GATEWAY.md, Client API → Client APIs).
+type Format int
+
+const (
+	// FormatOpenAI: chat completions, completions and embeddings.
+	FormatOpenAI Format = iota
+	// FormatMessages: Anthropic's Messages API and its token counting.
+	FormatMessages
+	// FormatResponses: OpenAI's Responses API and its token counting.
+	FormatResponses
+)
+
+// Format is the format the endpoint speaks.
+func (e Endpoint) Format() Format {
+	switch e {
+	case Messages, MessagesCountTokens:
+		return FormatMessages
+	case Responses, ResponsesInputTokens:
+		return FormatResponses
+	}
+	return FormatOpenAI
 }
 
 // Request is one client request as the pipeline hands it to a provider: already
@@ -66,8 +105,8 @@ type Request struct {
 	// Deployment is where routing sent the request: the backend and the model name
 	// on it.
 	Deployment config.Deployment
-	// Body is the client's request body exactly as received (OpenAI format, a JSON
-	// object).
+	// Body is the client's request body exactly as received (the endpoint's format, a
+	// JSON object).
 	Body []byte
 	// Stream and IncludeUsage are the client's stream and
 	// stream_options.include_usage.
@@ -83,8 +122,8 @@ type Request struct {
 	// From then on the backend has the prompt and may process and bill it, whatever
 	// happens before its answer (docs/specs/GATEWAY.md, Accounting).
 	Sent func()
-	// Params are top-level request parameters the pipeline sets (declared defaults,
-	// the output limit), in order. Each value is encoded JSON; it replaces every
+	// Params are top-level request parameters the pipeline sets (the output limit), in
+	// order. Each value is encoded JSON; it replaces every
 	// occurrence of its key or, when the key is absent, is added. Keys never repeat
 	// and never name a member the provider edits itself (model, stream_options).
 	Params []Param
@@ -154,9 +193,13 @@ const (
 	// Providers: wrong model on a host).
 	CodeModelMissing Code = "upstream_model_missing"
 	// CodePathMissing: the backend answered 404 the way its server answers a path it
-	// does not have — the backend's base_url is wrong (docs/specs/GATEWAY.md,
-	// Providers: wrong path to a host).
+	// does not have, on one of its type's core endpoints — the backend's base_url is
+	// wrong (docs/specs/GATEWAY.md, Providers: wrong path to a host).
 	CodePathMissing Code = "upstream_path_missing"
+	// CodeEndpointMissing: the same answer on an endpoint beyond the type's core ones
+	// — the server's version predates the endpoint, which its other endpoints do not
+	// (docs/specs/GATEWAY.md, Providers: an endpoint missing from a server).
+	CodeEndpointMissing Code = "upstream_endpoint_missing"
 )
 
 // Error is a failure before any part of the response reached the client. Its message
@@ -168,6 +211,19 @@ type Error struct {
 
 func (e *Error) Error() string { return fmt.Sprintf("%s: %v", e.Code, e.Err) }
 func (e *Error) Unwrap() error { return e.Err }
+
+// RefusalError is a provider's refusal of a request as the caller's mistake, made
+// before anything was sent (docs/specs/GATEWAY.md, Providers: a provider's refusal):
+// the pipeline answers it as a 400 with Code and Param, never retries it and never
+// counts it toward the circuit. Message is safe to show the client: it names
+// parameters, never values the client wrote.
+type RefusalError struct {
+	Code    string
+	Param   string
+	Message string
+}
+
+func (e *RefusalError) Error() string { return e.Code + ": " + e.Message }
 
 // Registry hands out the provider for a backend and owns the backends' HTTP
 // transports, so connections are pooled across requests and config reloads.
@@ -192,12 +248,60 @@ func NewRegistry(lookupEnv func(string) (string, bool)) *Registry {
 }
 
 // backendModule is one backend type's provider: what that type does differently
-// lives in its module, which builds on the OpenAI wire core (wire.go) for what the
-// types share.
+// lives in its module, which builds on the wire core (wire.go) for what the types
+// share.
 type backendModule interface {
 	Provider
 	// probe checks whether the backend answers (Registry.Probe).
 	probe(ctx context.Context) (serves func(model string) bool, err error)
+}
+
+// backendKind is one backend type: the endpoints its server serves, whether it has
+// a models list, and how its module is built over a backend's connection pool and
+// credential.
+type backendKind struct {
+	// serves are the endpoints the type's server serves (docs/specs/GATEWAY.md,
+	// Providers → Endpoint support).
+	serves []Endpoint
+	// listsModels: the server has a models list the config-time model check can read
+	// (docs/specs/GATEWAY.md, Providers → Probe and model check for the new types).
+	listsModels bool
+	build       func(b *config.Backend, client *http.Client, credential string) backendModule
+}
+
+// kinds holds every backend type the config schema admits: the one place a type is
+// named.
+var kinds = map[config.BackendType]backendKind{
+	config.BackendOpenAI:           {serves: openAIEndpoints, listsModels: true, build: newOpenAI},
+	config.BackendAzureOpenAI:      {serves: azureOpenAIEndpoints, listsModels: true, build: newAzureOpenAI},
+	config.BackendVLLM:             {serves: vLLMEndpoints, listsModels: true, build: newVLLM},
+	config.BackendLlamaServer:      {serves: llamaServerEndpoints, listsModels: true, build: newLlamaServer},
+	config.BackendOpenAICompatible: {serves: openAICompatibleEndpoints, listsModels: true, build: newOpenAICompatible},
+	config.BackendAnthropic:        {serves: anthropicEndpoints, listsModels: true, build: newAnthropic},
+	config.BackendAzureAnthropic:   {serves: azureAnthropicEndpoints, listsModels: false, build: newAzureAnthropic},
+}
+
+// kindOf is type t's kind. The config schema admits only the types in kinds, so
+// another is a gateway fault.
+func kindOf(t config.BackendType) backendKind {
+	k, ok := kinds[t]
+	if !ok {
+		panic(fmt.Sprintf("provider: no module for backend type %q", t))
+	}
+	return k
+}
+
+// Serves reports whether backends of type t serve endpoint e: routing sends a
+// request only to deployments whose backend does (docs/specs/GATEWAY.md, Providers →
+// Endpoint support).
+func Serves(t config.BackendType, e Endpoint) bool {
+	return slices.Contains(kindOf(t).serves, e)
+}
+
+// ListsModels reports whether backends of type t have a models list, which the
+// config-time model check reads; one without (azure-anthropic) is not checked.
+func ListsModels(t config.BackendType) bool {
+	return kindOf(t).listsModels
 }
 
 // For returns the provider for backend b: its type's module.
@@ -206,21 +310,8 @@ func (r *Registry) For(b *config.Backend) Provider {
 }
 
 // module returns backend b's module, over b's connection pool and with its credential.
-// The config schema admits only the types listed here, so another is a gateway fault.
 func (r *Registry) module(b *config.Backend) backendModule {
-	switch b.Type {
-	case config.BackendOpenAI:
-		return &openAI{backend: b, client: r.client(b), credential: r.credential(b)}
-	case config.BackendAzureOpenAI:
-		return &azureOpenAI{backend: b, client: r.client(b), credential: r.credential(b)}
-	case config.BackendVLLM:
-		return &vLLM{backend: b, client: r.client(b), credential: r.credential(b)}
-	case config.BackendLlamaServer:
-		return &llamaServer{backend: b, client: r.client(b), credential: r.credential(b)}
-	case config.BackendOpenAICompatible:
-		return &openAICompatible{backend: b, client: r.client(b), credential: r.credential(b)}
-	}
-	panic(fmt.Sprintf("provider: no module for backend type %q", b.Type))
+	return kindOf(b.Type).build(b, r.client(b), r.credential(b))
 }
 
 // credential is the gateway's credential for b; "" when it has none. A reserved

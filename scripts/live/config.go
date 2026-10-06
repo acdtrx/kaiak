@@ -66,12 +66,6 @@ func buildConfig(o options, hash string) ([]byte, error) {
 		global["circuit"] = map[string]any{"failure_threshold": failoverThreshold, "probe_interval_ms": failoverProbeIntervalMS}
 	}
 
-	var defaults map[string]any
-	if o.chatDefaults != "" {
-		if err := json.Unmarshal([]byte(o.chatDefaults), &defaults); err != nil || defaults == nil {
-			return nil, fmt.Errorf("-chat-defaults is not a JSON object: %s", o.chatDefaults)
-		}
-	}
 	var prices []any
 	if o.priceIn != 0 || o.priceOut != 0 {
 		prices = []any{map[string]any{"effective_from": "2000-01-01", "tiers": []any{map[string]any{
@@ -83,9 +77,6 @@ func buildConfig(o options, hash string) ([]byte, error) {
 			"metadata": map[string]any{"context_length": o.contextLength,
 				"capabilities": map[string]any{"streaming": true, "tools": false, "vision": false, "reasoning": false}},
 			"output_limit": map[string]any{"default": outputLimit, "ceiling": outputLimit},
-		}
-		if defaults != nil {
-			m["defaults"] = defaults
 		}
 		if prices != nil {
 			m["prices"] = prices
@@ -115,7 +106,7 @@ func buildConfig(o options, hash string) ([]byte, error) {
 	}
 
 	return json.MarshalIndent(map[string]any{
-		"format_version": 4,
+		"format_version": 5,
 		"global":         global,
 		"backends":       backends,
 		"models":         models,

@@ -65,7 +65,7 @@ func typesConfig(backendURL, hash string) map[string]any {
 		}
 	}
 	return map[string]any{
-		"format_version": 4,
+		"format_version": 5,
 		"global":         map[string]any{},
 		"backends":       backends,
 		"models":         models,

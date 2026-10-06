@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
+	"slices"
 	"time"
 
 	"kaiak/internal/accounting"
@@ -80,9 +82,13 @@ func (e endpoint) operationName() string {
 	return ""
 }
 
+// bodyEndpoints are the endpoints served as a POST carrying a JSON request body, each
+// passed through to a backend serving it.
+var bodyEndpoints = []endpoint{endpointChatCompletions, endpointCompletions, endpointEmbeddings}
+
 // takesBody reports whether the endpoint is a POST carrying a JSON request body.
 func (e endpoint) takesBody() bool {
-	return e == endpointChatCompletions || e == endpointCompletions || e == endpointEmbeddings
+	return slices.Contains(bodyEndpoints, e)
 }
 
 // namesModel reports whether a request to the endpoint names one model (in its body
@@ -213,7 +219,7 @@ func (rq *request) finish() {
 // request, whatever the attempts; their finisher is registered before the attempt
 // loop's, so it runs after settlement.
 func newPipeline(drain *Drain, keys *keyInFlight, bodies *BodyBudget, providers *provider.Registry, limiter *limits.Limiter,
-	router *routing.Router, recorder *accounting.Recorder) []stage {
+	router *routing.Router, recorder *accounting.Recorder, logger *slog.Logger) []stage {
 	budget := newRetryBudget(time.Now)
 	return []stage{
 		{"admission", func(_ context.Context, rq *request) *apiError { return admit(drain, rq) }},
@@ -224,16 +230,16 @@ func newPipeline(drain *Drain, keys *keyInFlight, bodies *BodyBudget, providers 
 		{"model_params", applyModelParams},
 		{"limits", func(_ context.Context, rq *request) *apiError { return checkLimits(rq, limiter) }},
 		{"attempts", func(ctx context.Context, rq *request) *apiError {
-			return sendAttempts(ctx, rq, router, recorder, providers, budget)
+			return sendAttempts(ctx, rq, router, recorder, providers, budget, logger)
 		}},
 		{"models", answerModelEndpoint},
 	}
 }
 
-// authenticateKey resolves the bearer key before any body is read, so an
+// authenticateKey resolves the client's key before any body is read, so an
 // unauthenticated client never makes the gateway buffer a request body.
 func authenticateKey(_ context.Context, rq *request) *apiError {
-	id, err := auth.Authenticate(rq.snapshot, rq.r.Header.Get("Authorization"), rq.start)
+	id, err := auth.Authenticate(rq.snapshot, rq.r.Header.Get("Authorization"), rq.r.Header.Get("X-Api-Key"), rq.start)
 	if err != nil {
 		rq.authFailure = err.Code
 		rq.keyID = err.KeyID

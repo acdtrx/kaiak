@@ -57,16 +57,17 @@ const (
 	AttemptServerError  AttemptOutcome = "server_error"  // a backend 5xx
 	AttemptBrokeOff     AttemptOutcome = "broke_off"     // broken off, stalled or incomplete after the first event
 	// Neutral: they leave the circuit as it is.
+	AttemptEndpointMissing AttemptOutcome = "endpoint_missing" // the backend's server lacks an endpoint its type serves
 	AttemptResponseTimeout AttemptOutcome = "response_timeout" // a non-stream response timeout
 	AttemptRateLimited     AttemptOutcome = "rate_limited"     // a backend 429
-	AttemptClientError     AttemptOutcome = "client_error"     // another backend 4xx
+	AttemptClientError     AttemptOutcome = "client_error"     // another backend 4xx, or the provider's refusal before sending
 	AttemptCanceled        AttemptOutcome = "canceled"         // the client left, or the drain cut, before the first event
 	AttemptInternal        AttemptOutcome = "internal"         // a gateway fault building the upstream request
 )
 
 var attemptOutcomes = []AttemptOutcome{AttemptSuccess, AttemptUnavailable, AttemptTimeout, AttemptAuthFailed,
-	AttemptModelMissing, AttemptPathMissing, AttemptServerError, AttemptBrokeOff, AttemptResponseTimeout, AttemptRateLimited,
-	AttemptClientError, AttemptCanceled, AttemptInternal}
+	AttemptModelMissing, AttemptPathMissing, AttemptServerError, AttemptBrokeOff, AttemptEndpointMissing,
+	AttemptResponseTimeout, AttemptRateLimited, AttemptClientError, AttemptCanceled, AttemptInternal}
 
 // Bucket bounds. Durations span quick refusals to a long generation (longer ones,
 // up to the default 30 min response timeout, fall in +Inf); decode rates span a busy CPU backend to a
@@ -97,7 +98,7 @@ var queueReasons = []string{QueueFull, QueueTimeout}
 // retryReasons are the reason label values of kaiak_retries_total: the request
 // pipeline's retry reasons (docs/specs/GATEWAY.md, Routing and reliability: retries).
 var retryReasons = []string{"unavailable", "timeout", "server_error", "rate_limited", "auth_failed", "model_missing",
-	"path_missing"}
+	"path_missing", "endpoint_missing"}
 
 // limitScopeKinds are the scope_kind label values of kaiak_limit_rejections_total:
 // the kinds of scope a limit belongs to (limits.Scope).

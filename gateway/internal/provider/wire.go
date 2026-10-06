@@ -19,13 +19,13 @@ import (
 	"kaiak/internal/sse"
 )
 
-// The OpenAI wire core: the request, response and error handling every backend module
-// speaking the OpenAI format shares (openai.go, azure_openai.go, vllm.go,
-// llama_server.go, openai_compatible.go). The core is
-// not a provider and knows no backend type: a module prepares the upstream request —
-// URL, credential, body edits, the error codes that mean a missing model, its
-// server's answer to a path it does not have — and hands it to sendWire; its probe
-// reads the models list with fetchModelsList.
+// The wire core: the request, response and error handling every backend module shares
+// (openai.go, azure_openai.go, vllm.go, llama_server.go, openai_compatible.go,
+// anthropic.go, azure_anthropic.go). The core is not a provider and knows no backend
+// type: a module prepares the upstream request — URL, credential, body edits, the
+// error codes that mean a missing model, its server's answer to a path it does not
+// have, whether the endpoint is one of its type's core ones — and hands it to
+// sendWire; its probe reads the models list with fetchModelsList.
 
 // wireCall is one upstream request a backend module prepared.
 type wireCall struct {
@@ -44,9 +44,18 @@ type wireCall struct {
 	missingModelCodes []string
 	// unknownPath reports whether a 404 answer (its first maxNotFoundBody bytes) is
 	// the server's answer to a path it does not have: the request reached the
-	// server but no endpoint, so the backend's base_url is wrong.
+	// server but no endpoint.
 	unknownPath func(answer []byte) bool
+	// core: the endpoint is one of the type's core endpoints, where a path the server
+	// does not have means a wrong base_url. On any other endpoint the type serves, it
+	// means the server's version predates the endpoint (CodeEndpointMissing).
+	core bool
 }
+
+// openAICore reports whether e is a core endpoint of the OpenAI-format types: one of
+// OpenAI's three (docs/specs/GATEWAY.md, Providers: an endpoint missing from a
+// server).
+func openAICore(e Endpoint) bool { return e.Format() == FormatOpenAI }
 
 // sendWire sends call upstream for req and waits for the first event of the response,
 // as Provider.Send says. Besides *Error and the context's error, it returns a plain
@@ -114,17 +123,22 @@ func sendWire(ctx context.Context, req *Request, call wireCall) (Response, error
 		cancel(nil)
 		return nil, &Error{Code: CodeAuthFailed, Err: fmt.Errorf("backend %s answered %d", call.backend.ID, resp.StatusCode)}
 	}
-	if resp.StatusCode == http.StatusNotFound {
+	// A 405 is read too beyond the core endpoints: vLLM answers one where a POST
+	// lands on a route it has for another method only.
+	if resp.StatusCode == http.StatusNotFound || (resp.StatusCode == http.StatusMethodNotAllowed && !call.core) {
 		// A missing model is read first: a server may answer it in the same shape as
 		// an unknown path.
 		var deploymentErr *Error
 		switch answer, ok := readNotFound(resp); {
-		case ok && modelMissing(answer, req.Deployment.Model, call.missingModelCodes):
+		case ok && resp.StatusCode == http.StatusNotFound && modelMissing(answer, req.Deployment.Model, call.missingModelCodes):
 			deploymentErr = &Error{Code: CodeModelMissing, Err: fmt.Errorf("backend %s answered 404: model %q does not exist there",
 				call.backend.ID, req.Deployment.Model)}
-		case ok && call.unknownPath(answer):
+		case ok && call.unknownPath(answer) && call.core:
 			deploymentErr = &Error{Code: CodePathMissing, Err: fmt.Errorf("backend %s answered 404: no endpoint at %s (check its base_url)",
 				call.backend.ID, call.url)}
+		case ok && call.unknownPath(answer):
+			deploymentErr = &Error{Code: CodeEndpointMissing, Err: fmt.Errorf("backend %s answered %d: its server has no %s endpoint (an older version?)",
+				call.backend.ID, resp.StatusCode, req.Endpoint.path())}
 		}
 		if deploymentErr != nil {
 			_ = resp.Body.Close() // the backend's answer is about its deployment: not relayed
@@ -260,7 +274,7 @@ func listedModels(b *config.Backend, body []byte) (serves func(model string) boo
 // (a missing model, an unknown path) from a caller's 404; error answers are small.
 const maxNotFoundBody = 64 << 10
 
-// readNotFound reads the start of a 404 answer, up to maxNotFoundBody bytes, and puts
+// readNotFound reads the start of a 404 (or 405) answer, up to maxNotFoundBody bytes, and puts
 // what was read back in front of the body, so an answer that is the caller's is
 // relayed whole. ok is false when the read failed: such an answer is not the
 // deployment's, and the body returns the error again after what was read.
@@ -375,16 +389,17 @@ func wireHeaders(h http.Header, req *Request) {
 
 // passthroughBody applies the gateway's owned edits to the client's body: the model
 // name becomes the deployment's, the module's own edits (extra) and the pipeline's
-// parameters are set, and a stream gets stream_options.include_usage so the backend
-// reports usage. stripUsage is true when the client did not ask for usage, so the
-// usage-only chunk that edit adds must not reach it.
+// parameters are set, and an OpenAI-format stream gets stream_options.include_usage
+// so the backend reports usage — Messages and Responses always report it. stripUsage
+// is true when the client did not ask for usage, so the usage-only chunk that edit
+// adds must not reach it.
 func passthroughBody(req *Request, extra ...memberEdit) (body []byte, stripUsage bool, err error) {
 	model, _ := json.Marshal(req.Deployment.Model) // a string always encodes
 	edits := append([]memberEdit{setValue("model", model)}, extra...)
 	for _, p := range req.Params {
 		edits = append(edits, setValue(p.Key, p.Value))
 	}
-	if req.Stream && !req.IncludeUsage {
+	if req.Stream && !req.IncludeUsage && req.Endpoint.Format() == FormatOpenAI {
 		edits = append(edits, memberEdit{key: "stream_options", set: setIncludeUsage})
 		stripUsage = true
 	}

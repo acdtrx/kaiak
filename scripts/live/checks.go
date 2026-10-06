@@ -94,7 +94,7 @@ func (r *run) checks() {
 }
 
 func (r *run) checkAuth() {
-	resp, err := r.post("", "/v1/chat/completions", "", chatBody(modelChat, false, nil))
+	resp, err := r.post("", "/v1/chat/completions", "", r.chatBody(modelChat, false, nil))
 	switch {
 	case err != nil:
 		r.fail("auth-reject", "%v", err)
@@ -152,7 +152,7 @@ type chatAnswer struct {
 }
 
 func (r *run) checkChat() {
-	resp, err := r.post(r.key, "/v1/chat/completions", idChat, chatBody(modelChat, false, nil))
+	resp, err := r.post(r.key, "/v1/chat/completions", idChat, r.chatBody(modelChat, false, nil))
 	if !r.ok("chat", resp, err, idChat) {
 		return
 	}
@@ -166,7 +166,7 @@ func (r *run) checkChat() {
 	case a.Model != modelChat:
 		r.fail("chat", "answer names model %q, want the public name %q", a.Model, modelChat)
 	case msg.Content == "" && (msg.ReasoningContent != "" || msg.Reasoning != ""):
-		r.fail("chat", "only reasoning came back (finish_reason %q): raise -max-output, or switch thinking off with -chat-defaults", a.Choices[0].FinishReason)
+		r.fail("chat", "only reasoning came back (finish_reason %q): raise -max-output, or switch thinking off with -chat-params", a.Choices[0].FinishReason)
 	case msg.Content == "":
 		r.fail("chat", "empty content: %s", resp.body)
 	case a.Usage == nil:
@@ -185,7 +185,7 @@ func (r *run) checkStream(name, id string, includeUsage bool) {
 	if includeUsage {
 		extra["stream_options"] = map[string]any{"include_usage": true}
 	}
-	req, err := r.request(r.key, "/v1/chat/completions", id, chatBody(modelChat, true, extra))
+	req, err := r.request(r.key, "/v1/chat/completions", id, r.chatBody(modelChat, true, extra))
 	if err != nil {
 		r.fail(name, "%v", err)
 		return
@@ -266,7 +266,7 @@ func (r *run) checkStream(name, id string, includeUsage bool) {
 	case badModel != "":
 		r.fail(name, "a chunk names model %q, want %q", badModel, modelChat)
 	case content.Len() == 0 && reasoning.Len() > 0:
-		r.fail(name, "only reasoning streamed: raise -max-output, or switch thinking off with -chat-defaults")
+		r.fail(name, "only reasoning streamed: raise -max-output, or switch thinking off with -chat-params")
 	case content.Len() == 0:
 		r.fail(name, "no content in %d chunks", chunks)
 	case includeUsage && (usageChunks != 1 || !usageLast):
@@ -330,8 +330,8 @@ func (r *run) checkCeiling() {
 	if r.o.kind == kindVLLM || r.o.kind == kindLlamaServer {
 		limitKey = "max_tokens"
 	}
-	body := map[string]any{"model": modelCapped, limitKey: r.o.contextLength, "messages": []any{map[string]any{"role": "user",
-		"content": "Write a long story, at least 600 words, about a lighthouse keeper."}}}
+	body := r.withChatParams(map[string]any{"model": modelCapped, limitKey: r.o.contextLength, "messages": []any{map[string]any{"role": "user",
+		"content": "Write a long story, at least 600 words, about a lighthouse keeper."}}})
 	resp, err := r.post(r.key, "/v1/chat/completions", "live-ceiling", body)
 	if !r.ok("output-ceiling", resp, err, "live-ceiling") {
 		return
@@ -351,11 +351,11 @@ func (r *run) checkCeiling() {
 
 // checkRateLimit: live-rpm allows 1 request per minute, so the second is refused.
 func (r *run) checkRateLimit() {
-	resp, err := r.post(r.key, "/v1/chat/completions", "live-rpm-1", chatBody(modelRPM, false, nil))
+	resp, err := r.post(r.key, "/v1/chat/completions", "live-rpm-1", r.chatBody(modelRPM, false, nil))
 	if !r.ok("rate-limit", resp, err, "live-rpm-1") {
 		return
 	}
-	resp, err = r.post(r.key, "/v1/chat/completions", "live-rpm-2", chatBody(modelRPM, false, nil))
+	resp, err = r.post(r.key, "/v1/chat/completions", "live-rpm-2", r.chatBody(modelRPM, false, nil))
 	if err != nil {
 		r.fail("rate-limit", "%v", err)
 		return
@@ -564,13 +564,22 @@ func httpGet(ctx context.Context, client *http.Client, url, key string) (int, []
 	return resp.StatusCode, body, err
 }
 
-func chatBody(model string, stream bool, extra map[string]any) map[string]any {
-	body := map[string]any{"model": model, "messages": []any{map[string]any{"role": "user",
-		"content": "In one short sentence, what is a lighthouse for?"}}}
+// chatBody is a chat request to model with the -chat-params added, then extra.
+func (r *run) chatBody(model string, stream bool, extra map[string]any) map[string]any {
+	body := r.withChatParams(map[string]any{"model": model, "messages": []any{map[string]any{"role": "user",
+		"content": "In one short sentence, what is a lighthouse for?"}}})
 	if stream {
 		body["stream"] = true
 	}
 	for k, v := range extra {
+		body[k] = v
+	}
+	return body
+}
+
+// withChatParams adds the -chat-params to a chat request body and returns it.
+func (r *run) withChatParams(body map[string]any) map[string]any {
+	for k, v := range r.o.chatParamsObj {
 		body[k] = v
 	}
 	return body

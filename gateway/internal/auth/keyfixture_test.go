@@ -49,7 +49,7 @@ func TestSharedKeyFixturesAuthenticate(t *testing.T) {
 				t.Fatalf("key %q is not in the settled format", fixture.Key)
 			}
 			snapshot, err := config.Parse([]byte(`{
-  "format_version": 4,
+  "format_version": 5,
   "global": {},
   "backends": { "local": { "type": "openai-compatible", "base_url": "http://localhost:8000/v1" } },
   "models": { "m": { "deployments": [{ "backend": "local", "model": "m" }],
@@ -61,7 +61,7 @@ func TestSharedKeyFixturesAuthenticate(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			id, authErr := Authenticate(snapshot, "Bearer "+fixture.Key, now)
+			id, authErr := Authenticate(snapshot, "Bearer "+fixture.Key, "", now)
 			if authErr != nil {
 				t.Fatalf("the fixture key does not authenticate against its hash: %v", authErr)
 			}

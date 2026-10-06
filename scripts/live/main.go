@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -53,11 +54,14 @@ type options struct {
 	contextLength       int
 	priceIn             float64
 	priceOut            float64
-	chatDefaults        string
-	kaiakBin            string
-	requestTimeout      time.Duration
-	keep                bool
-	verbose             bool
+	// chatParams are extra parameters added to every chat request the kit sends (the
+	// gateway sets none of its own); parsed from -chat-params by resolve.
+	chatParams     string
+	chatParamsObj  map[string]any
+	kaiakBin       string
+	requestTimeout time.Duration
+	keep           bool
+	verbose        bool
 
 	// Two backends (-base-url-2).
 	maxInFlight   int
@@ -109,7 +113,7 @@ func main() {
 	flag.IntVar(&o.contextLength, "context-length", 32768, "declared context length of the chat model")
 	flag.Float64Var(&o.priceIn, "price-in", 1, "USD per million input tokens (0 with -price-out 0: unpriced, cost check skipped)")
 	flag.Float64Var(&o.priceOut, "price-out", 2, "USD per million output tokens")
-	flag.StringVar(&o.chatDefaults, "chat-defaults", "", `extra request defaults for the chat models, a JSON object (e.g. '{"chat_template_kwargs":{"enable_thinking":false}}')`)
+	flag.StringVar(&o.chatParams, "chat-params", "", `extra parameters for every chat request the kit sends, a JSON object (e.g. '{"chat_template_kwargs":{"enable_thinking":false}}')`)
 	flag.StringVar(&o.kaiakBin, "kaiak", "", "kaiak binary to run (default: built from this repository)")
 	flag.DurationVar(&o.requestTimeout, "request-timeout", 2*time.Minute, "time allowed for each request")
 	flag.BoolVar(&o.keep, "keep", false, "keep the temporary directory (config, gateway log) and print its path")
@@ -164,6 +168,11 @@ func resolve(o *options) error {
 	}
 	if o.apiKeyEnv == "-" {
 		o.apiKeyEnv = defaultAPIKeyEnv[o.kind]
+	}
+	if o.chatParams != "" {
+		if err := json.Unmarshal([]byte(o.chatParams), &o.chatParamsObj); err != nil || o.chatParamsObj == nil {
+			return fmt.Errorf("-chat-params is not a JSON object: %s", o.chatParams)
+		}
 	}
 	if o.kind == kindAzure && o.apiKeyEnv == "" {
 		return errors.New("azure-openai needs -api-key-env: Azure authenticates with an api-key header")

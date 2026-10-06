@@ -389,7 +389,7 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 	circuits := metrics.NewCircuits(registry)
 	router := routing.New(routing.Options{Probe: providers.Probe, Observer: circuits, Logger: logger})
 	ops := metrics.NewOps(registry, router, holder)
-	modelChecker := routing.NewModelChecker(providers.Probe, logger)
+	modelChecker := routing.NewModelChecker(providers.Probe, provider.ListsModels, logger)
 	// Every applied config sets the backend caps routing enforces and the backends
 	// whose connection pools are kept, and has its deployments' models checked in
 	// the background.

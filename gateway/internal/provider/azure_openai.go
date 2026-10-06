@@ -16,6 +16,14 @@ type azureOpenAI struct {
 	credential string
 }
 
+// azureOpenAIEndpoints: Azure's v1 API serves the OpenAI endpoints and Responses, but
+// not responses/input_tokens (it answers 404 there).
+var azureOpenAIEndpoints = []Endpoint{ChatCompletions, Completions, Embeddings, Responses}
+
+func newAzureOpenAI(b *config.Backend, client *http.Client, credential string) backendModule {
+	return &azureOpenAI{backend: b, client: client, credential: credential}
+}
+
 // url joins the resource endpoint, the /openai/v1 prefix and the endpoint path
 // (docs/specs/GATEWAY.md, Base URLs).
 func (m *azureOpenAI) url(path string) string { return m.backend.BaseURL + "/openai/v1/" + path }
@@ -38,7 +46,7 @@ func (m *azureOpenAI) Send(ctx context.Context, req *Request) (Response, error) 
 	}
 	return sendWire(ctx, req, wireCall{
 		backend: m.backend, client: m.client, url: m.url(req.Endpoint.path()), header: m.header(),
-		body: body, stripUsage: stripUsage, missingModelCodes: []string{"DeploymentNotFound", "model_not_found"}, unknownPath: m.unknownPath,
+		body: body, stripUsage: stripUsage, missingModelCodes: []string{"DeploymentNotFound", "model_not_found"}, unknownPath: m.unknownPath, core: openAICore(req.Endpoint),
 	})
 }
 

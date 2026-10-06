@@ -131,7 +131,8 @@ func errorCodeClass(code string) metrics.ErrorClass {
 	case "model_not_found", "unknown_url":
 		return metrics.ErrorNotFound
 	case "invalid_json", "duplicate_member", "invalid_body", "missing_required_parameter", "invalid_type",
-		"invalid_value", "n_too_large", "request_too_large", "method_not_allowed":
+		"invalid_value", "n_too_large", "request_too_large", "method_not_allowed", "stateful_responses_unsupported",
+		"hosted_tool_unsupported", "price_option_unsupported", "endpoint_not_served":
 		return metrics.ErrorInvalidRequest
 	case "rate_limit_exceeded", "concurrency_limit_exceeded":
 		return metrics.ErrorRateLimited
@@ -147,7 +148,8 @@ func errorCodeClass(code string) metrics.ErrorClass {
 		return metrics.ErrorUpstreamUnavailable
 	case "upstream_timeout":
 		return metrics.ErrorUpstreamTimeout
-	case "upstream_auth_failed", "upstream_model_missing", "upstream_path_missing", "upstream_error":
+	case "upstream_auth_failed", "upstream_model_missing", "upstream_path_missing", "upstream_endpoint_missing",
+		"upstream_error":
 		return metrics.ErrorUpstreamError
 	case "client_closed":
 		return metrics.ErrorClientClosed

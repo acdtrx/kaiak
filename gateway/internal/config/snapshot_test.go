@@ -56,7 +56,7 @@ func mustReject(t *testing.T, doc string) *ValidationError {
 // minimalDoc is protocol/fixtures/config/valid/minimal.json with one field replaceable.
 func minimalDoc(backend string) string {
 	return `{
-  "format_version": 4,
+  "format_version": 5,
   "global": {},
   "backends": { "local": ` + backend + ` },
   "models": {
@@ -202,15 +202,6 @@ func TestModelResolution(t *testing.T) {
 	}
 	if q.OutputLimit == nil || *q.OutputLimit != (OutputLimit{Default: 4096, Ceiling: 16384}) {
 		t.Errorf("output limit = %+v", q.OutputLimit)
-	}
-	if got := string(q.Defaults["stop"]); got != `["<|im_end|>"]` {
-		t.Errorf("defaults stop = %s, want the raw JSON array", got)
-	}
-	if got := string(q.Defaults["temperature"]); got != "0.6" {
-		t.Errorf("defaults temperature = %s", got)
-	}
-	if got := string(q.Defaults["chat_template_kwargs"]); got != `{ "enable_thinking": false }` {
-		t.Errorf("defaults chat_template_kwargs = %s, want the raw JSON object", got)
 	}
 	g := s.Models["gpt-4.1"]
 	if len(g.Prices) != 2 {

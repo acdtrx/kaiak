@@ -16,6 +16,13 @@ type llamaServer struct {
 	credential string
 }
 
+// llamaServerEndpoints: llama-server serves every endpoint (build b9917).
+var llamaServerEndpoints = []Endpoint{ChatCompletions, Completions, Embeddings, Messages, MessagesCountTokens, Responses, ResponsesInputTokens}
+
+func newLlamaServer(b *config.Backend, client *http.Client, credential string) backendModule {
+	return &llamaServer{backend: b, client: client, credential: credential}
+}
+
 // url joins the base URL, which already ends in the API version path
 // (docs/specs/GATEWAY.md, Base URLs), and the endpoint path.
 func (m *llamaServer) url(path string) string { return m.backend.BaseURL + "/" + path }
@@ -38,7 +45,7 @@ func (m *llamaServer) Send(ctx context.Context, req *Request) (Response, error) 
 	}
 	return sendWire(ctx, req, wireCall{
 		backend: m.backend, client: m.client, url: m.url(req.Endpoint.path()), header: m.header(),
-		body: body, stripUsage: stripUsage, missingModelCodes: []string{"model_not_found"}, unknownPath: m.unknownPath,
+		body: body, stripUsage: stripUsage, missingModelCodes: []string{"model_not_found"}, unknownPath: m.unknownPath, core: openAICore(req.Endpoint),
 	})
 }
 

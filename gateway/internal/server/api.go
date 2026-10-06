@@ -45,9 +45,9 @@ func NewAPI(holder *config.Holder, drain *Drain, bodies *BodyBudget, providers *
 	logger *slog.Logger) *API {
 	keys := newKeyInFlight()
 	a := &API{holder: holder, logger: logger, ops: ops, drain: drain, keys: keys,
-		stages: newPipeline(drain, keys, bodies, providers, limiter, router, recorder), mux: http.NewServeMux()}
+		stages: newPipeline(drain, keys, bodies, providers, limiter, router, recorder, logger), mux: http.NewServeMux()}
 
-	for _, ep := range []endpoint{endpointChatCompletions, endpointCompletions, endpointEmbeddings} {
+	for _, ep := range bodyEndpoints {
 		a.mux.HandleFunc("POST "+ep.path(), func(w http.ResponseWriter, r *http.Request) {
 			a.serve(w, r, ep, "")
 		})
@@ -60,8 +60,11 @@ func NewAPI(holder *config.Holder, drain *Drain, bodies *BodyBudget, providers *
 	// Method-less patterns catch the other methods on known paths; "/" catches
 	// unknown paths. ServeMux's own 404 and 405 answers are plain text, so they never
 	// reach clients.
-	for _, path := range []string{endpointChatCompletions.path(), endpointCompletions.path(),
-		endpointEmbeddings.path(), "/v1/models", "/v1/models/{rest...}"} {
+	paths := []string{"/v1/models", "/v1/models/{rest...}"}
+	for _, ep := range bodyEndpoints {
+		paths = append(paths, ep.path())
+	}
+	for _, path := range paths {
 		allow := http.MethodPost
 		if strings.HasPrefix(path, "/v1/models") {
 			allow = "GET, HEAD"
@@ -270,13 +273,16 @@ func methodAttrs(method string) []slog.Attr {
 
 // providerName is gen_ai.provider.name for a backend type: the GenAI convention's
 // well-known value where one fits, else "" — the self-hosted types have none, and
-// kaiak.backend.type names every type.
+// kaiak.backend.type names every type. Claude in Foundry is Anthropic's service and
+// API on Azure, and no Azure value names it, so it is anthropic too.
 func providerName(t config.BackendType) string {
 	switch t {
 	case config.BackendOpenAI:
 		return "openai"
 	case config.BackendAzureOpenAI:
 		return "azure.ai.openai"
+	case config.BackendAnthropic, config.BackendAzureAnthropic:
+		return "anthropic"
 	}
 	return ""
 }

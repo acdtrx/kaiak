@@ -10,6 +10,7 @@ import (
 
 	"kaiak/internal/accounting"
 	"kaiak/internal/config"
+	"kaiak/internal/provider"
 )
 
 // inboundFields are the request parameters the gateway owns (docs/specs/GATEWAY.md,
@@ -25,8 +26,6 @@ type inboundFields struct {
 	// generate, each up to the output limit: n (or best_of, when larger) per
 	// prompt, times a completion's prompts. At least 1.
 	Sequences int64
-	// set holds the top-level keys the request gives a non-null value.
-	set map[string]bool
 }
 
 // readInbound parses a body endpoint's request: the raw body, capped by the snapshot's
@@ -55,7 +54,8 @@ func readInbound(_ context.Context, rq *request, bodies *BodyBudget) *apiError {
 	return parseOwnedFields(rq)
 }
 
-// parseOwnedFields reads the owned fields by exact key. encoding/json matches struct
+// parseOwnedFields reads the owned fields of the request's format by exact key
+// (docs/specs/GATEWAY.md, Client API → owned fields). encoding/json matches struct
 // fields case-insensitively, which would read "Model" as model while the backend sees
 // an unknown field; the top-level object is therefore decoded as a map. A null value
 // counts as absent, as it does for OpenAI. A top-level member named twice is refused
@@ -69,13 +69,18 @@ func parseOwnedFields(rq *request) *apiError {
 	if repeated != "" {
 		return errDuplicateMember(repeated)
 	}
-	rq.inbound.set = make(map[string]bool, len(top))
-	for key, value := range top {
-		if string(value) != "null" {
-			rq.inbound.set[key] = true
-		}
+	switch providerEndpoint(rq.endpoint).Format() {
+	case provider.FormatOpenAI:
+		return parseOpenAIFields(rq, top)
 	}
+	// The endpoint table routes only the formats the inbound stage reads.
+	panic("server: no inbound parser for the endpoint's format")
+}
 
+// parseOpenAIFields reads an OpenAI-format request's owned fields: model, stream, the
+// output-limit keys, the sequence count, an embeddings request's inputs and
+// stream_options.include_usage.
+func parseOpenAIFields(rq *request, top map[string]json.RawMessage) *apiError {
 	model, apiErr := optionalField[string](top, "model", "model", "a string")
 	if apiErr != nil {
 		return apiErr

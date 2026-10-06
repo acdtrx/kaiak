@@ -143,36 +143,33 @@ func TestInFlightSurvivesAConfigSwap(t *testing.T) {
 	}
 }
 
-func TestDeclaredDefaultsAndOutputLimit(t *testing.T) {
+func TestOutputLimitIsTheOneParameterSet(t *testing.T) {
 	g := newTestGateway(t)
 	cases := []struct {
 		name, path, body, want string
 	}{
-		{"defaults and output-limit default filled", "/v1/chat/completions",
+		{"output-limit default filled, nothing else added", "/v1/chat/completions",
 			`{"model":"pair","messages":[]}`,
-			`{"model":"pair-a","messages":[],"chat_template_kwargs":{"enable_thinking":false},"temperature":0.2,"top_k":[1,2],"max_completion_tokens":256}`},
-		{"client values never replaced; null counts as unset", "/v1/chat/completions",
+			`{"model":"pair-a","messages":[],"max_completion_tokens":256}`},
+		{"client values pass as sent, null included", "/v1/chat/completions",
 			`{"model":"pair","temperature":0.9,"top_k":null,"max_tokens":100}`,
-			`{"model":"pair-b","temperature":0.9,"top_k":[1,2],"max_tokens":100,"chat_template_kwargs":{"enable_thinking":false}}`},
+			`{"model":"pair-b","temperature":0.9,"top_k":null,"max_tokens":100}`},
 		{"ceiling lowers the key the client used", "/v1/chat/completions",
-			`{"model":"pair","max_tokens":5000,"temperature":1,"top_k":3}`,
-			`{"model":"pair-a","max_tokens":1024,"temperature":1,"top_k":3,"chat_template_kwargs":{"enable_thinking":false}}`},
+			`{"model":"pair","max_tokens":5000,"temperature":1}`,
+			`{"model":"pair-a","max_tokens":1024,"temperature":1}`},
 		{"both keys set: each checked against the ceiling", "/v1/chat/completions",
-			`{"model":"pair","max_completion_tokens":4096,"max_tokens":2048,"temperature":1,"top_k":3}`,
-			`{"model":"pair-b","max_completion_tokens":1024,"max_tokens":1024,"temperature":1,"top_k":3,"chat_template_kwargs":{"enable_thinking":false}}`},
+			`{"model":"pair","max_completion_tokens":4096,"max_tokens":2048}`,
+			`{"model":"pair-b","max_completion_tokens":1024,"max_tokens":1024}`},
 		{"a key within the ceiling passes as sent (negative ones are refused: TestNegativeOutputLimitIsRefused)", "/v1/chat/completions",
-			`{"model":"pair","max_tokens":500,"temperature":1,"top_k":3}`,
-			`{"model":"pair-a","max_tokens":500,"temperature":1,"top_k":3,"chat_template_kwargs":{"enable_thinking":false}}`},
+			`{"model":"pair","max_tokens":500}`,
+			`{"model":"pair-a","max_tokens":500}`},
 		{"completions default under max_tokens", "/v1/completions",
-			`{"model":"pair","prompt":"x","temperature":1,"top_k":3}`,
-			`{"model":"pair-b","prompt":"x","temperature":1,"top_k":3,"chat_template_kwargs":{"enable_thinking":false},"max_tokens":256}`},
-		{"embeddings: defaults only, no output limit", "/v1/embeddings",
+			`{"model":"pair","prompt":"x"}`,
+			`{"model":"pair-b","prompt":"x","max_tokens":256}`},
+		{"embeddings: no output limit", "/v1/embeddings",
 			`{"model":"pair","input":"x","max_tokens":5000}`,
-			`{"model":"pair-a","input":"x","max_tokens":5000,"chat_template_kwargs":{"enable_thinking":false},"temperature":0.2,"top_k":[1,2]}`},
-		{"an object default replaces an unset parameter whole, never merged", "/v1/chat/completions",
-			`{"model":"pair","chat_template_kwargs":{"custom":1},"temperature":1,"top_k":3,"max_tokens":10}`,
-			`{"model":"pair-b","chat_template_kwargs":{"custom":1},"temperature":1,"top_k":3,"max_tokens":10}`},
-		{"no defaults or limit declared: untouched (within the context)", "/v1/chat/completions",
+			`{"model":"pair-a","input":"x","max_tokens":5000}`},
+		{"no limit declared: untouched (within the context)", "/v1/chat/completions",
 			`{"model":"open","max_tokens":8000}`,
 			`{"model":"open","max_tokens":8000}`},
 	}
@@ -277,18 +274,19 @@ func TestModelListDependsOnTheKeyGroup(t *testing.T) {
 func TestModelEntryAndProps(t *testing.T) {
 	g := newTestGateway(t)
 	entry := `{"id":"pair","object":"model","created":0,"owned_by":"kaiak","context_length":32768,` +
-		`"capabilities":{"streaming":true,"tools":true,"vision":false,"reasoning":true},"reasoning_efforts":["low","high"]`
+		`"capabilities":{"streaming":true,"tools":true,"vision":false,"reasoning":true},"reasoning_efforts":["low","high"],` +
+		`"endpoints":["chat_completions","completions","embeddings"]`
 	w := do(t, g.h, call{method: "GET", path: "/v1/models/pair", key: workloadKey})
 	if got := strings.TrimSpace(w.Body.String()); w.Code != http.StatusOK || got != entry+"}" {
 		t.Errorf("entry %d %s\nwant %s}", w.Code, got, entry)
 	}
 	w = do(t, g.h, call{method: "GET", path: "/v1/models/pair/props", key: workloadKey})
-	want := entry + `,"defaults":{"chat_template_kwargs":{"enable_thinking":false},"temperature":0.2,"top_k":[1,2]},"output_limit":{"default":256,"ceiling":1024}}`
+	want := entry + `,"output_limit":{"default":256,"ceiling":1024}}`
 	if got := strings.TrimSpace(w.Body.String()); w.Code != http.StatusOK || got != want {
 		t.Errorf("props %d %s\nwant %s", w.Code, got, want)
 	}
 	w = do(t, g.h, call{method: "GET", path: "/v1/models/Org/open-7b/props", key: userKey})
-	if !strings.Contains(w.Body.String(), `"reasoning_efforts":[],"defaults":{},"output_limit":null}`) {
+	if !strings.Contains(w.Body.String(), `"reasoning_efforts":[],"endpoints":["chat_completions","completions","embeddings"],"output_limit":null}`) {
 		t.Errorf("props without declarations %s", w.Body.String())
 	}
 	// Not allowed for this key: the same 404 as an unknown model.

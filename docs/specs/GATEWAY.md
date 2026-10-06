@@ -473,6 +473,8 @@ own, and a client sending repeats is broken either way.
     `tools[]` or the top level (a 1-hour cache write costs 2× input, a 5-minute one
     1.25×, and `tokens_cache_write` is one unit).
 
+  `messages/count_tokens` is neither refused nor edited: nothing is generated or
+  billed there (settled 2026-10-06, as `responses/input_tokens` keeps its tier).
   The `anthropic` module also sets `service_tier: "standard_only"` on every Messages
   request, the client's value replaced: `auto`, the API's default, draws on Priority
   Tier capacity where the organization has a commitment, billed outside the price
@@ -2175,11 +2177,12 @@ own, and a client sending repeats is broken either way.
     `broke_off` (broken off, stalled or incomplete after the first event); neutral
     — `endpoint_missing` (settled 2026-10-06), `response_timeout` (a non-stream response timeout, before or after the first
     bytes; before them it is a failure for a half-open trial and from the 3rd in a
-    row — Routing and reliability: outcome classes), `rate_limited` (a backend `429`), `client_error` (another backend `4xx`),
+    row — Routing and reliability: outcome classes), `rate_limited` (a backend `429`), `client_error` (another backend `4xx`, or
+    a provider's refusal before sending — `price_option_unsupported`, settled 2026-10-06),
     `canceled` (the client left, or the drain cut, before the first event),
     `internal` (a gateway fault building the upstream request). Label values are
     config names and the fixed outcomes only, never client input; every configured
-    deployment has all thirteen series from the start, at 0 (next bullet).
+    deployment has all fourteen series from the start, at 0 (next bullet).
   - **Series at 0** (settled 2026-09-25, E5; the audit's N-O4): every counter and
     histogram whose label values are fixed or come from the config exists at 0
     from startup, and a config apply creates those of its new models, deployments

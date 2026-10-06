@@ -46,11 +46,11 @@ func TestProtocolMismatchLogsNoHeaderValue(t *testing.T) {
 		values []string
 		want   string
 	}{
-		{"the token echoed", []string{echoAuthorization}, "control plane answered 200 with an invalid Kaiak-Protocol, gateway speaks 4"},
-		{"absent", nil, "control plane answered 200 without Kaiak-Protocol, gateway speaks 4"},
-		{"another version", []string{"3"}, "control plane answered 200 with Kaiak-Protocol 3, gateway speaks 4"},
-		{"two values", []string{"4", "4"}, "control plane answered 200 with an invalid Kaiak-Protocol, gateway speaks 4"},
-		{"not canonical", []string{"04"}, "control plane answered 200 with an invalid Kaiak-Protocol, gateway speaks 4"},
+		{"the token echoed", []string{echoAuthorization}, "control plane answered 200 with an invalid Kaiak-Protocol, gateway speaks 5"},
+		{"absent", nil, "control plane answered 200 without Kaiak-Protocol, gateway speaks 5"},
+		{"another version", []string{"4"}, "control plane answered 200 with Kaiak-Protocol 4, gateway speaks 5"},
+		{"two values", []string{"5", "5"}, "control plane answered 200 with an invalid Kaiak-Protocol, gateway speaks 5"},
+		{"not canonical", []string{"05"}, "control plane answered 200 with an invalid Kaiak-Protocol, gateway speaks 5"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			out := fetchFailureLog(t, func(w http.ResponseWriter, r *http.Request) {

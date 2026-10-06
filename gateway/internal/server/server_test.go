@@ -51,7 +51,7 @@ const (
 //   - slow: backend "slow", first-event, response and stall timeouts 150 ms
 //   - down: backend "down", nothing listening
 //   - pair: two deployments, "pair-a" on "local" and "pair-b" on "local-b" (the same
-//     fake backend under another ID); declared defaults, an output limit, prices
+//     fake backend under another ID); an output limit, prices
 //     (1 and 2 USD per million input and output tokens now, no tokens_cached or
 //     tokens_cache_write price)
 func testSnapshot(t *testing.T, backendURL string) *config.Snapshot {
@@ -83,7 +83,7 @@ func testDocWith(backendURL string, edit func(doc string) string) string {
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } } }`
 	}
 	doc := `{
-  "format_version": 4,
+  "format_version": 5,
   "global": { "max_request_body_bytes": 1024 },
   "backends": {
     "local": { "type": "openai-compatible", "base_url": "` + backendURL + `/v1", "api_key_env": "LOCAL_KEY" },
@@ -100,7 +100,6 @@ func testDocWith(backendURL string, edit func(doc string) string) string {
       "deployments": [{ "backend": "local", "model": "pair-a" }, { "backend": "local-b", "model": "pair-b" }],
       "metadata": { "context_length": 32768, "reasoning_efforts": ["low", "high"],
         "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": true } },
-      "defaults": { "top_k": [1, 2], "temperature": 0.2, "chat_template_kwargs": { "enable_thinking": false } },
       "output_limit": { "default": 256, "ceiling": 1024 },
       "prices": [
         { "effective_from": "2020-01-01",

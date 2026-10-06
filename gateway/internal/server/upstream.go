@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -26,6 +27,8 @@ const (
 	retryAuthFailed   = "auth_failed"   // the backend refused the gateway's credential
 	retryModelMissing = "model_missing" // the backend does not serve the deployment's model
 	retryPathMissing  = "path_missing"  // the backend's base_url leads to no endpoint
+	// the backend's server version lacks an endpoint its type serves
+	retryEndpointMissing = "endpoint_missing"
 )
 
 // attempt is one try of a routed request on one deployment: its slot, the meter the
@@ -60,14 +63,19 @@ type attempt struct {
 // client is retried while the model's max_attempts allow and retryReason says so;
 // the attempt that answers — or the last one — is relayed or answered with its
 // error. A request refused before its first attempt has a slot never reaches
-// accounting: no usage record; the limits finisher releases its reservation.
+// accounting: no usage record; the limits finisher releases its reservation. Only the
+// model's deployments whose backend serves the endpoint take part; a model with none
+// is refused before routing (docs/specs/GATEWAY.md, Providers → Endpoint support).
 // model_access has checked the model exists in the snapshot.
 func sendAttempts(ctx context.Context, rq *request, router *routing.Router, recorder *accounting.Recorder,
-	providers *provider.Registry, budget *retryBudget) *apiError {
+	providers *provider.Registry, budget *retryBudget, logger *slog.Logger) *apiError {
 	if !rq.endpoint.takesBody() {
 		return nil
 	}
-	m := rq.snapshot.Models[rq.model]
+	m := servingDeployments(rq.snapshot.Models[rq.model], rq.endpoint)
+	if m == nil {
+		return errEndpointNotServed(rq.endpoint)
+	}
 	// However the request ends, its last attempt settles, tells the circuit breaker
 	// and frees its slot.
 	rq.finishers = append(rq.finishers, func() { rq.endAttempt(recorder) })
@@ -106,7 +114,7 @@ func sendAttempts(ctx context.Context, rq *request, router *routing.Router, reco
 		} else {
 			budget.retry(rq.model)
 		}
-		resp, failure := sendAttempt(ctx, rq, providers)
+		resp, failure := sendAttempt(ctx, rq, providers, logger)
 		if rq.upstreamStatus == http.StatusTooManyRequests {
 			slot.Throttled(throttleCooldown(resp.Header(), time.Now()))
 		}
@@ -161,11 +169,42 @@ func throttleCooldown(h http.Header, now time.Time) time.Duration {
 	return throttleCooldownDefault
 }
 
+// servingDeployments is model m as routing sees it for a request to ep: only the
+// deployments whose backend serves ep — m itself when every one does, nil when none
+// does (docs/specs/GATEWAY.md, Request pipeline: routing).
+func servingDeployments(m *config.Model, ep endpoint) *config.Model {
+	n := 0
+	for _, d := range m.Deployments {
+		if serves(d, ep) {
+			n++
+		}
+	}
+	switch n {
+	case len(m.Deployments):
+		return m
+	case 0:
+		return nil
+	}
+	view := *m
+	view.Deployments = make([]config.Deployment, 0, n)
+	for _, d := range m.Deployments {
+		if serves(d, ep) {
+			view.Deployments = append(view.Deployments, d)
+		}
+	}
+	return &view
+}
+
+// serves reports whether deployment d's backend serves endpoint ep.
+func serves(d config.Deployment, ep endpoint) bool {
+	return provider.Serves(d.Backend.Type, providerEndpoint(ep))
+}
+
 // sendAttempt sends the request to its current attempt's deployment and waits for
 // the first event. A failure before any response is returned as the answer it would
 // get. The attempt's meter hears when the request was written in full (it counts the
 // input of an attempt that then gets no answer), and how the backend answered.
-func sendAttempt(ctx context.Context, rq *request, providers *provider.Registry) (provider.Response, *apiError) {
+func sendAttempt(ctx context.Context, rq *request, providers *provider.Registry, logger *slog.Logger) (provider.Response, *apiError) {
 	resp, err := providers.For(rq.deployment.Backend).Send(ctx, &provider.Request{
 		Endpoint:     providerEndpoint(rq.endpoint),
 		Deployment:   rq.deployment,
@@ -181,7 +220,17 @@ func sendAttempt(ctx context.Context, rq *request, providers *provider.Registry)
 		failure := upstreamFailure(ctx, rq, err)
 		if perr, ok := errors.AsType[*provider.Error](rq.upstreamErr); ok &&
 			(perr.Code == provider.CodeAuthFailed || perr.Code == provider.CodeModelMissing ||
-				perr.Code == provider.CodePathMissing) {
+				perr.Code == provider.CodePathMissing || perr.Code == provider.CodeEndpointMissing) {
+			rq.meter.Refused()
+			if perr.Code == provider.CodeEndpointMissing {
+				// Not a circuit failure, so it shows here: the operator upgrades the
+				// server, or the deployment keeps refusing the endpoint.
+				logger.Warn("the backend's server lacks an endpoint its type serves: an older version?",
+					"kaiak.request.id", rq.id, "kaiak.backend.id", rq.deployment.Backend.ID,
+					"kaiak.deployment.model", rq.deployment.Model, "kaiak.endpoint", rq.endpoint.name())
+			}
+		}
+		if _, ok := errors.AsType[*provider.RefusalError](rq.upstreamErr); ok {
 			rq.meter.Refused()
 		}
 		return nil, failure
@@ -226,6 +275,8 @@ func retryReason(rq *request) string {
 		return retryModelMissing
 	case provider.CodePathMissing:
 		return retryPathMissing
+	case provider.CodeEndpointMissing:
+		return retryEndpointMissing
 	}
 	return retryUnavailable
 }
@@ -241,7 +292,7 @@ func retryReason(rq *request) string {
 func avoidAfter(avoid routing.Avoid, m *config.Model, at *attempt) routing.Avoid {
 	key := routing.DeploymentID{Backend: at.deployment.Backend.ID, Model: at.deployment.Model}
 	avoid.Refused = append(avoid.Refused, key)
-	if at.retryReason == retryAuthFailed || at.retryReason == retryPathMissing {
+	if at.retryReason == retryAuthFailed || at.retryReason == retryPathMissing || at.retryReason == retryEndpointMissing {
 		for _, d := range m.Deployments {
 			if d.Backend.ID == key.Backend {
 				avoid.Refused = append(avoid.Refused, routing.DeploymentID{Backend: d.Backend.ID, Model: d.Model})
@@ -403,6 +454,11 @@ func (rq *request) endAttempt(recorder *accounting.Recorder) {
 // backend answered and was serving.
 func classifyAttempt(rq *request) (metrics.AttemptOutcome, routing.Outcome, string) {
 	if rq.upstreamStatus == 0 {
+		if _, refused := errors.AsType[*provider.RefusalError](rq.upstreamErr); refused {
+			// The caller's mistake, refused before sending: nothing was asked of the
+			// deployment.
+			return metrics.AttemptClientError, routing.Neutral, ""
+		}
 		perr, ok := errors.AsType[*provider.Error](rq.upstreamErr)
 		switch {
 		case !ok && rq.upstreamErr == nil:
@@ -421,6 +477,9 @@ func classifyAttempt(rq *request) (metrics.AttemptOutcome, routing.Outcome, stri
 			return metrics.AttemptModelMissing, routing.Failure, rq.upstreamErr.Error()
 		case provider.CodePathMissing:
 			return metrics.AttemptPathMissing, routing.Failure, rq.upstreamErr.Error()
+		case provider.CodeEndpointMissing:
+			// The deployment serves its other endpoints.
+			return metrics.AttemptEndpointMissing, routing.Neutral, ""
 		}
 		return metrics.AttemptUnavailable, routing.Failure, rq.upstreamErr.Error()
 	}
@@ -452,12 +511,17 @@ func providerEndpoint(ep endpoint) provider.Endpoint {
 	return provider.ChatCompletions
 }
 
-// upstreamFailure maps a provider error to the client's answer.
+// upstreamFailure maps a provider error to the client's answer: a refusal before
+// sending is the caller's 400, a failure to get a response the gateway's upstream
+// answer.
 func upstreamFailure(ctx context.Context, rq *request, err error) *apiError {
 	if ctx.Err() != nil {
 		return canceledAnswer(ctx)
 	}
 	rq.upstreamErr = err
+	if refusal, ok := errors.AsType[*provider.RefusalError](err); ok {
+		return errRefused(refusal)
+	}
 	if perr, ok := errors.AsType[*provider.Error](err); ok {
 		return errUpstream(perr.Code)
 	}

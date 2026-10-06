@@ -17,6 +17,15 @@ type openAICompatible struct {
 	credential string
 }
 
+// openAICompatibleEndpoints: OpenAI's three only. A server that serves Messages or
+// Responses gets a type of its own (docs/specs/GATEWAY.md, Providers → Endpoint
+// support).
+var openAICompatibleEndpoints = []Endpoint{ChatCompletions, Completions, Embeddings}
+
+func newOpenAICompatible(b *config.Backend, client *http.Client, credential string) backendModule {
+	return &openAICompatible{backend: b, client: client, credential: credential}
+}
+
 // url joins the base URL, which already ends in the API version path
 // (docs/specs/GATEWAY.md, Base URLs), and the endpoint path.
 func (m *openAICompatible) url(path string) string { return m.backend.BaseURL + "/" + path }
@@ -38,7 +47,7 @@ func (m *openAICompatible) Send(ctx context.Context, req *Request) (Response, er
 	}
 	return sendWire(ctx, req, wireCall{
 		backend: m.backend, client: m.client, url: m.url(req.Endpoint.path()), header: m.header(),
-		body: body, stripUsage: stripUsage, missingModelCodes: []string{"model_not_found"}, unknownPath: m.unknownPath,
+		body: body, stripUsage: stripUsage, missingModelCodes: []string{"model_not_found"}, unknownPath: m.unknownPath, core: openAICore(req.Endpoint),
 	})
 }
 

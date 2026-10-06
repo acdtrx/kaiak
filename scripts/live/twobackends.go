@@ -12,7 +12,7 @@ import (
 // servedBy sends a short chat to the capped model (answers stay cheap), requires 200
 // and returns the request's log line. A failure is reported under name.
 func (r *run) servedBy(name, id string) (map[string]any, bool) {
-	resp, err := r.post(r.key, "/v1/chat/completions", id, chatBody(modelCapped, false, nil))
+	resp, err := r.post(r.key, "/v1/chat/completions", id, r.chatBody(modelCapped, false, nil))
 	if !r.ok(name, resp, err, id) {
 		return nil, false
 	}
@@ -65,7 +65,7 @@ func (r *run) checkCapacity() {
 	for i := range n {
 		results[i] = make(chan result, 1)
 		go func() {
-			resp, err := r.post(r.key, "/v1/chat/completions", fmt.Sprintf("live-capacity-%d", i), chatBody(modelCapped, false, nil))
+			resp, err := r.post(r.key, "/v1/chat/completions", fmt.Sprintf("live-capacity-%d", i), r.chatBody(modelCapped, false, nil))
 			results[i] <- result{resp, err}
 		}()
 	}

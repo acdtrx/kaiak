@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"maps"
 	"net/http"
+	"slices"
 
 	"kaiak/internal/config"
 )
@@ -24,6 +24,10 @@ type modelEntry struct {
 	ContextLength    int64            `json:"context_length"`
 	Capabilities     capabilitiesJSON `json:"capabilities"`
 	ReasoningEfforts []string         `json:"reasoning_efforts"`
+	// Endpoints are the body endpoints some deployment of the model serves, by their
+	// metric names, sorted: which API reaches the model. Information from the config,
+	// not health.
+	Endpoints []string `json:"endpoints"`
 }
 
 type capabilitiesJSON struct {
@@ -34,11 +38,10 @@ type capabilitiesJSON struct {
 }
 
 // modelProps is /v1/models/{id}/props: the model entry plus what the gateway applies
-// to requests — declared defaults and the output limit (null when none is declared).
+// to a request's output — the output limit (null when none is declared).
 type modelProps struct {
 	modelEntry
-	Defaults    map[string]json.RawMessage `json:"defaults"`
-	OutputLimit *outputLimitJSON           `json:"output_limit"`
+	OutputLimit *outputLimitJSON `json:"output_limit"`
 }
 
 type outputLimitJSON struct {
@@ -74,7 +77,21 @@ func newModelEntry(m *config.Model) modelEntry {
 			Reasoning: m.Capabilities.Reasoning,
 		},
 		ReasoningEfforts: efforts,
+		Endpoints:        servedEndpoints(m),
 	}
+}
+
+// servedEndpoints names the body endpoints at least one of m's deployments serves,
+// sorted (docs/specs/GATEWAY.md, Client API → /v1/models).
+func servedEndpoints(m *config.Model) []string {
+	names := []string{}
+	for _, ep := range bodyEndpoints {
+		if slices.ContainsFunc(m.Deployments, func(d config.Deployment) bool { return serves(d, ep) }) {
+			names = append(names, ep.name())
+		}
+	}
+	slices.Sort(names)
+	return names
 }
 
 // answerModelEndpoint is the terminal stage for the model endpoints; the body
@@ -93,10 +110,7 @@ func answerModelEndpoint(_ context.Context, rq *request) *apiError {
 		writeJSON(rq.w, newModelEntry(rq.snapshot.Models[rq.model]))
 	case endpointModelProps:
 		m := rq.snapshot.Models[rq.model]
-		props := modelProps{modelEntry: newModelEntry(m), Defaults: maps.Clone(m.Defaults)}
-		if props.Defaults == nil {
-			props.Defaults = map[string]json.RawMessage{}
-		}
+		props := modelProps{modelEntry: newModelEntry(m)}
 		if m.OutputLimit != nil {
 			props.OutputLimit = &outputLimitJSON{Default: m.OutputLimit.Default, Ceiling: m.OutputLimit.Ceiling}
 		}

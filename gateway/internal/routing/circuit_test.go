@@ -723,7 +723,7 @@ func TestModelCheckWarnsPerMissingModel(t *testing.T) {
 			return nil, fmt.Errorf("probe: %w", hintedError{"base_url should end in /v1"})
 		}
 		return func(model string) bool { return model != "wrong@x" }, nil
-	}, logger)
+	}, func(config.BackendType) bool { return true }, logger)
 	x, y, down := backend("x", 0), backend("y", 0), backend("down", 0)
 	nopath := &config.Backend{ID: "nopath", BaseURL: "http://vllm:8000"}
 	ctx, stop := context.WithCancel(context.Background())
@@ -758,6 +758,47 @@ func TestModelCheckWarnsPerMissingModel(t *testing.T) {
 	}
 	if probed["x"] != 1 || probed["y"] != 1 || probed["down"] != 1 || probed["nopath"] != 1 {
 		t.Errorf("probes %v, want one per backend", probed)
+	}
+}
+
+// A backend whose type has no models list (azure-anthropic) is not probed at config
+// apply: an info line says the check is not available for it.
+func TestModelCheckSkipsTypesWithoutAModelsList(t *testing.T) {
+	var logs logBuffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	probed := make(chan string, 4)
+	c := NewModelChecker(func(_ context.Context, b *config.Backend) (func(string) bool, error) {
+		probed <- b.ID
+		return func(string) bool { return true }, nil
+	}, func(t config.BackendType) bool { return t != config.BackendAzureAnthropic }, logger)
+	listed := backend("listed", 0)
+	foundry := backend("foundry", 0)
+	foundry.Type = config.BackendAzureAnthropic
+	ctx, stop := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() {
+		c.Run(ctx)
+		close(stopped)
+	}()
+	c.Check(circuitSnapshot(1, time.Hour, queuedModel("a", 1, time.Hour, listed), queuedModel("b", 1, time.Hour, foundry)))
+	select {
+	case id := <-probed:
+		if id != "listed" {
+			t.Errorf("probed %s", id)
+		}
+	case <-time.After(waitTimeout):
+		t.Fatal("model check did not probe the listed backend")
+	}
+	stop()
+	<-stopped
+	select {
+	case id := <-probed:
+		t.Errorf("probed %s too", id)
+	default:
+	}
+	if out := logs.String(); !strings.Contains(out,
+		`level=INFO msg="model check not available for this backend type" kaiak.backend.id=foundry kaiak.backend.type=azure-anthropic`) {
+		t.Errorf("log:\n%s\nwant the info line for foundry", out)
 	}
 }
 

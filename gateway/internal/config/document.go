@@ -1,7 +1,5 @@
 package config
 
-import "encoding/json"
-
 // The config document as decoded, before resolution. These types follow
 // protocol/schema/config.schema.json and are decoded only after the document passed
 // checkSchema, so every field has the type the schema requires. Numbers are float64:
@@ -66,13 +64,12 @@ type backendDoc struct {
 }
 
 type modelDoc struct {
-	Deployments []deploymentDoc            `json:"deployments"`
-	Metadata    metadataDoc                `json:"metadata"`
-	Defaults    map[string]json.RawMessage `json:"defaults"`
-	OutputLimit *outputLimitDoc            `json:"output_limit"`
-	Queue       *queueDoc                  `json:"queue"`
-	Retries     *retriesDoc                `json:"retries"`
-	Prices      []priceDoc                 `json:"prices"`
+	Deployments []deploymentDoc `json:"deployments"`
+	Metadata    metadataDoc     `json:"metadata"`
+	OutputLimit *outputLimitDoc `json:"output_limit"`
+	Queue       *queueDoc       `json:"queue"`
+	Retries     *retriesDoc     `json:"retries"`
+	Prices      []priceDoc      `json:"prices"`
 }
 
 type deploymentDoc struct {

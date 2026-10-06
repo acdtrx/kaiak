@@ -1,23 +1,17 @@
 package server
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"maps"
-	"slices"
 	"strconv"
 
 	"kaiak/internal/provider"
 )
 
-// applyModelParams works out the parameters the model's config sets on a body request
-// (docs/specs/GATEWAY.md, Model metadata and Output limit) and the request's effective
-// output limit. The provider splices the parameters into the client's body; nothing
-// else in it changes.
+// applyModelParams works out the parameter the model's config sets on a body request
+// — the output limit, the one it sets (docs/specs/GATEWAY.md, Model metadata and
+// Output limit) — and the request's effective output limit. The provider splices the
+// parameters into the client's body; nothing else in it changes.
 //
-//   - Declared defaults: every body endpoint gets each default the request leaves
-//     unset (absent or null). A value the client sent is never replaced.
 //   - Output limit out of range (chat and completions): a key the client set below 0
 //     (llama-server reads -1 as unlimited, past any reservation) or above the
 //     model's context_length (it can never be honored — prompt and output share the
@@ -33,17 +27,6 @@ func applyModelParams(_ context.Context, rq *request) *apiError {
 		return nil
 	}
 	model := rq.snapshot.Models[rq.model]
-
-	for _, key := range slices.Sorted(maps.Keys(model.Defaults)) {
-		if rq.inbound.set[key] {
-			continue
-		}
-		var value bytes.Buffer
-		// Config values passed strict decoding: they are valid JSON.
-		_ = json.Compact(&value, model.Defaults[key])
-		rq.params = append(rq.params, provider.Param{Key: key, Value: value.Bytes()})
-	}
-
 	keys := outputLimitKeys(rq.endpoint)
 	if len(keys) == 0 {
 		return nil

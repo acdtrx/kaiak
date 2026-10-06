@@ -34,7 +34,7 @@ func testSnapshot(t *testing.T) *config.Snapshot {
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } } }`
 	}
 	doc := `{
-  "format_version": 4,
+  "format_version": 5,
   "global": {},
   "backends": { "local": { "type": "openai-compatible", "base_url": "http://localhost:8000/v1" } },
   "models": { ` + model("open") + `, ` + model("secret") + ` },
@@ -63,7 +63,7 @@ var now = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 func TestAuthenticateResolvesGroups(t *testing.T) {
 	s := testSnapshot(t)
 
-	id, err := Authenticate(s, "Bearer "+workloadKey, now)
+	id, err := Authenticate(s, "Bearer "+workloadKey, "", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestAuthenticateResolvesGroups(t *testing.T) {
 		t.Errorf("workload key resolved to %+v", id)
 	}
 
-	id, err = Authenticate(s, "bearer "+userKey, now)
+	id, err = Authenticate(s, "bearer "+userKey, "", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestAuthenticateRefusals(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := Authenticate(s, c.header, now)
+			_, err := Authenticate(s, c.header, "", now)
 			if err == nil || err.Code != c.want || err.KeyID != c.keyID {
 				t.Fatalf("got %+v, want code %s key ID %q", err, c.want, c.keyID)
 			}
@@ -113,10 +113,10 @@ func TestAuthenticateRefusals(t *testing.T) {
 
 func TestKeyIsValidThroughItsExpiryInstant(t *testing.T) {
 	s := testSnapshot(t)
-	if _, err := Authenticate(s, "Bearer "+expiringKey, expiresAt); err != nil {
+	if _, err := Authenticate(s, "Bearer "+expiringKey, "", expiresAt); err != nil {
 		t.Errorf("at expires_at: %v, want valid", err)
 	}
-	_, err := Authenticate(s, "Bearer "+expiringKey, expiresAt.Add(time.Nanosecond))
+	_, err := Authenticate(s, "Bearer "+expiringKey, "", expiresAt.Add(time.Nanosecond))
 	if err == nil || err.Code != CodeExpiredKey || err.KeyID != "k-exp" {
 		t.Errorf("after expires_at: %+v, want expired", err)
 	}
@@ -124,8 +124,8 @@ func TestKeyIsValidThroughItsExpiryInstant(t *testing.T) {
 
 func TestAuthorizeModel(t *testing.T) {
 	s := testSnapshot(t)
-	user, _ := Authenticate(s, "Bearer "+userKey, now)
-	workload, _ := Authenticate(s, "Bearer "+workloadKey, now)
+	user, _ := Authenticate(s, "Bearer "+userKey, "", now)
+	workload, _ := Authenticate(s, "Bearer "+workloadKey, "", now)
 
 	if err := user.AuthorizeModel("open"); err != nil {
 		t.Errorf("user on an allowed model: %v", err)

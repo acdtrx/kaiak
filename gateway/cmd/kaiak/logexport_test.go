@@ -97,7 +97,7 @@ func (c *fakeCollector) received() []string {
 func TestRunStartFailureReachesTheCollector(t *testing.T) {
 	collector := newFakeCollector(t)
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(`{"format_version": 4}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"format_version": 5}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var logs syncBuffer

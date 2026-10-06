@@ -16,6 +16,14 @@ type openAI struct {
 	credential string
 }
 
+// openAIEndpoints: OpenAI's API serves the OpenAI endpoints and Responses with its token
+// counting.
+var openAIEndpoints = []Endpoint{ChatCompletions, Completions, Embeddings, Responses, ResponsesInputTokens}
+
+func newOpenAI(b *config.Backend, client *http.Client, credential string) backendModule {
+	return &openAI{backend: b, client: client, credential: credential}
+}
+
 // url joins the base URL, which already ends in the API version path
 // (docs/specs/GATEWAY.md, Base URLs), and the endpoint path.
 func (m *openAI) url(path string) string { return m.backend.BaseURL + "/" + path }
@@ -38,7 +46,7 @@ func (m *openAI) Send(ctx context.Context, req *Request) (Response, error) {
 	}
 	return sendWire(ctx, req, wireCall{
 		backend: m.backend, client: m.client, url: m.url(req.Endpoint.path()), header: m.header(),
-		body: body, stripUsage: stripUsage, missingModelCodes: []string{"model_not_found"}, unknownPath: m.unknownPath,
+		body: body, stripUsage: stripUsage, missingModelCodes: []string{"model_not_found"}, unknownPath: m.unknownPath, core: openAICore(req.Endpoint),
 	})
 }
 

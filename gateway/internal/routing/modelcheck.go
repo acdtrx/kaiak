@@ -17,20 +17,23 @@ const modelCheckParallel = 8
 // lists the deployment's model (docs/specs/GATEWAY.md, Providers: wrong model on a
 // host, wrong path to a host): one probe per backend, in the background, a warning
 // per deployment whose model is missing, per backend whose models list is not where
-// its base_url says and per backend that does not answer. It never delays or refuses
-// a config; a newer config replaces one not yet checked.
+// its base_url says and per backend that does not answer. A backend whose type has
+// no models list (azure-anthropic) is not probed: an info line says so. It never
+// delays or refuses a config; a newer config replaces one not yet checked.
 type ModelChecker struct {
-	probe  ProbeFunc
-	logger *slog.Logger
+	probe       ProbeFunc
+	listsModels func(config.BackendType) bool
+	logger      *slog.Logger
 
 	mu      sync.Mutex
 	pending *config.Snapshot
 	wake    chan struct{}
 }
 
-// NewModelChecker returns a checker probing with probe and warning on logger.
-func NewModelChecker(probe ProbeFunc, logger *slog.Logger) *ModelChecker {
-	return &ModelChecker{probe: probe, logger: logger, wake: make(chan struct{}, 1)}
+// NewModelChecker returns a checker probing with probe the backends whose type
+// listsModels says has a models list, and warning on logger.
+func NewModelChecker(probe ProbeFunc, listsModels func(config.BackendType) bool, logger *slog.Logger) *ModelChecker {
+	return &ModelChecker{probe: probe, listsModels: listsModels, logger: logger, wake: make(chan struct{}, 1)}
 }
 
 // Check asks for s to be checked; it returns at once.
@@ -86,6 +89,11 @@ func (c *ModelChecker) check(ctx context.Context, s *config.Snapshot) {
 	var wg sync.WaitGroup
 	for id, names := range models {
 		b := s.Backends[id]
+		if !c.listsModels(b.Type) {
+			c.logger.Info("model check not available for this backend type", "kaiak.backend.id", id,
+				"kaiak.backend.type", string(b.Type))
+			continue
+		}
 		wg.Go(func() {
 			select {
 			case slots <- struct{}{}:
