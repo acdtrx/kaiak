@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"kaiak/internal/accounting"
 	"kaiak/internal/config"
 	"kaiak/internal/control"
 	"kaiak/internal/fakebackend"
@@ -176,6 +177,67 @@ func TestAcrossHalves(t *testing.T) {
 			PromptTokens: 2036, CompletionTokens: 40, CachedTokens: 1024, CacheWriteTokens: 1009}})
 		defer backend.SetReply(fakebackend.Reply{})
 		served(t, "chat on gw-a, input written to the cache", chat(t, a, "chat"))
+		allCounted(t, waitLimit)
+	})
+
+	t.Run("Messages and Responses answers settle at the sample; token counting leaves no record", func(t *testing.T) {
+		// 100 prompt tokens (30 plain, 40 read from the cache, 30 written to it) and 5
+		// out, reported in each API's own shape: every record carries the same units,
+		// and the hourly token limit counts 65 of each (input read from the cache
+		// left out).
+		backend.SetReply(fakebackend.Reply{Usage: &fakebackend.Usage{
+			PromptTokens: 100, CompletionTokens: 5, CachedTokens: 40, CacheWriteTokens: 30}})
+		defer backend.SetReply(fakebackend.Reply{})
+		want := accounting.Units{config.UnitTokensIn: 30, config.UnitTokensCached: 40, config.UnitTokensCacheWrite: 30,
+			config.UnitTokensOut: 5, config.UnitTokensReasoning: 0}
+		const limitTokens = 65
+
+		// Counted first, on the gateway whose answers follow: a batch holding a later
+		// answer's record would hold theirs too.
+		counts := map[string]*response{
+			"xh-count-messages": a.postMessages(t, "/v1/messages/count_tokens", evalKey, "xh-count-messages",
+				map[string]any{"model": "agent", "messages": []any{map[string]any{"role": "user", "content": "hi"}}}),
+			"xh-count-responses": b.post(t, "/v1/responses/input_tokens", evalKey, "xh-count-responses",
+				map[string]any{"model": "agent", "input": "hi"}),
+		}
+		for id, r := range counts {
+			if r.StatusCode != http.StatusOK {
+				t.Fatalf("%s: %d %s", id, r.StatusCode, r.body)
+			}
+		}
+
+		var answers []string
+		for _, stream := range []bool{false, true} {
+			id := fmt.Sprintf("xh-messages-stream-%v", stream)
+			r := a.postMessages(t, "/v1/messages", evalKey, id, map[string]any{"model": "agent", "max_tokens": 32,
+				"stream": stream, "messages": []any{map[string]any{"role": "user", "content": "hi"}}})
+			if r.StatusCode != http.StatusOK {
+				t.Fatalf("%s: %d %s", id, r.StatusCode, r.body)
+			}
+			tokens.add(limitTokens)
+			answers = append(answers, id)
+
+			id = fmt.Sprintf("xh-responses-stream-%v", stream)
+			r = b.post(t, "/v1/responses", evalKey, id, map[string]any{"model": "agent", "stream": stream, "input": "hi"})
+			if r.StatusCode != http.StatusOK {
+				t.Fatalf("%s: %d %s", id, r.StatusCode, r.body)
+			}
+			tokens.add(limitTokens)
+			answers = append(answers, id)
+		}
+
+		for _, id := range answers {
+			record := proxy.waitRecord(t, id, waitLimit)
+			if !maps.Equal(record.Units, want) || record.Model != "agent" || record.Deployment.Backend != "ls" ||
+				record.Estimated || record.Partial {
+				t.Errorf("%s: record %+v, want units %v on ls, reported", id, record, want)
+			}
+		}
+		for id := range counts {
+			if record, ok := proxy.record(id); ok {
+				t.Errorf("%s: a token-counting request left a record: %+v", id, record)
+			}
+		}
 		allCounted(t, waitLimit)
 	})
 
@@ -339,7 +401,9 @@ func TestAcrossHalves(t *testing.T) {
 // that refuses everything (the "priced-probe" model), the USD budget of the team
 // research (the parent of the key's group eval) over "priced" and "priced-probe", a
 // global hourly token limit on every model (its total shows on the sample's totals),
-// per-minute limits of 2 on "rpm" and 1000 on "chat", and a 1 s outage grace; for the reliability status, a backend refusing connections (the
+// per-minute limits of 2 on "rpm" and 1000 on "chat", and a 1 s outage grace; the
+// working backend again as a llama-server, serving the "agent" model over Messages and
+// Responses; for the reliability status, a backend refusing connections (the
 // "down" model; a circuit opens on its first failure) and one taking one request at
 // a time (the "held" model).
 func crossHalfConfig(backendURL, refuserURL, downURL, cappedURL, evalHash, annHash string) map[string]any {
@@ -348,11 +412,14 @@ func crossHalfConfig(backendURL, refuserURL, downURL, cappedURL, evalHash, annHa
 	backends["refuser"] = map[string]any{"type": "openai-compatible", "base_url": refuserURL + "/v1"}
 	backends["down"] = map[string]any{"type": "openai-compatible", "base_url": downURL + "/v1"}
 	backends["capped"] = map[string]any{"type": "openai-compatible", "base_url": cappedURL + "/v1", "max_in_flight": 1}
+	// The working backend again, as a llama-server: its type serves Messages and
+	// Responses (and their token counting), which the openai-compatible type does not.
+	backends["ls"] = map[string]any{"type": "llama-server", "base_url": backendURL + "/v1"}
 	models := cfg["models"].(map[string]any)
 	probe := maps.Clone(models["priced"].(map[string]any))
 	probe["deployments"] = []any{map[string]any{"backend": "refuser", "model": backendChatModel}}
 	models["priced-probe"] = probe
-	for name, backend := range map[string]string{"down": "down", "held": "capped"} {
+	for name, backend := range map[string]string{"down": "down", "held": "capped", "agent": "ls"} {
 		m := maps.Clone(models["rpm"].(map[string]any))
 		m["deployments"] = []any{map[string]any{"backend": backend, "model": backendChatModel}}
 		models[name] = m

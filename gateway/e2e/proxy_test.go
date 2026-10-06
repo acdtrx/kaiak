@@ -6,7 +6,8 @@ package e2e
 // its address stays put while the sample behind it stops and starts again on another
 // port, it can lose one usage ack — the batch reaches the control plane and is
 // counted, the answer never reaches the gateway — and it keeps every status report it
-// forwarded with the control plane's answer: what the sample received, as sent.
+// forwarded with the control plane's answer, and every usage record of the batches the
+// control plane accepted: what the sample received, as sent.
 
 import (
 	"bytes"
@@ -21,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"kaiak/internal/accounting"
 	"kaiak/internal/control"
 )
 
@@ -36,6 +38,9 @@ type controlProxy struct {
 
 	statuses       []forwardedStatus
 	statusesChange chan struct{} // closed and replaced on every forwarded status
+
+	records       map[string]accounting.UsageRecord // by request ID, from accepted batches
+	recordsChange chan struct{}                     // closed and replaced on every accepted batch
 }
 
 // forwardedStatus is one POST /v1/status the proxy forwarded, and the answer.
@@ -50,7 +55,8 @@ type upstreamKey struct{}
 // newControlProxy starts the proxy with no upstream; it is closed at test cleanup.
 func newControlProxy(t *testing.T) *controlProxy {
 	t.Helper()
-	p := &controlProxy{transport: &http.Transport{}, dropped: make(chan int, 1), statusesChange: make(chan struct{})}
+	p := &controlProxy{transport: &http.Transport{}, dropped: make(chan int, 1), statusesChange: make(chan struct{}),
+		records: make(map[string]accounting.UsageRecord), recordsChange: make(chan struct{})}
 	p.forward = &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(pr.In.Context().Value(upstreamKey{}).(*url.URL))
@@ -114,6 +120,10 @@ func (p *controlProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.forwardStatus(w, r)
 		return
 	}
+	if !drop && r.Method == http.MethodPost && r.URL.Path == "/v1/usage" {
+		p.forwardUsage(w, r)
+		return
+	}
 	if !drop {
 		p.forward.ServeHTTP(w, r)
 		return
@@ -153,6 +163,60 @@ func (p *controlProxy) forwardStatus(w http.ResponseWriter, r *http.Request) {
 	close(p.statusesChange)
 	p.statusesChange = make(chan struct{})
 	p.mu.Unlock()
+}
+
+// forwardUsage forwards a usage batch and, when the control plane accepted it (2xx),
+// keeps its records.
+func (p *controlProxy) forwardUsage(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	rec := &answerRecorder{ResponseWriter: w}
+	p.forward.ServeHTTP(rec, r)
+	var batch control.UsageBatch
+	if rec.status < 200 || rec.status > 299 || json.Unmarshal(body, &batch) != nil {
+		return
+	}
+	p.mu.Lock()
+	for _, record := range batch.Records {
+		p.records[record.RequestID] = record
+	}
+	close(p.recordsChange)
+	p.recordsChange = make(chan struct{})
+	p.mu.Unlock()
+}
+
+// record is the usage record the control plane accepted for a request ID, if any.
+func (p *controlProxy) record(requestID string) (accounting.UsageRecord, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	record, ok := p.records[requestID]
+	return record, ok
+}
+
+// waitRecord returns the usage record of requestID once a batch holding it was
+// accepted; it waits up to limit.
+func (p *controlProxy) waitRecord(t *testing.T, requestID string, limit time.Duration) accounting.UsageRecord {
+	t.Helper()
+	deadline := time.NewTimer(limit)
+	defer deadline.Stop()
+	for {
+		p.mu.Lock()
+		record, ok := p.records[requestID]
+		changed := p.recordsChange
+		p.mu.Unlock()
+		if ok {
+			return record
+		}
+		select {
+		case <-changed:
+		case <-deadline.C:
+			t.Fatalf("no accepted usage record for request %s within %s", requestID, limit)
+		}
+	}
 }
 
 // statusMark is the number of status reports forwarded so far: waitStatus from it
