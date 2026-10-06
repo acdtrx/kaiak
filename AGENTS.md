@@ -42,7 +42,7 @@ english.
   `npm run lint`, then the cross-half e2e: the sample control plane and two gateways,
   also on two control-plane cores over one store, `gateway/e2e` build tag `crosshalf`;
   any cwd) — the one command for verification;
-  gateway — all checks `scripts/check-gateway.sh` (gofmt, vet, staticcheck, race
+  gateway — all checks `scripts/check-gateway.sh` (gofmt, vet, staticcheck, uncached race
   tests incl. the e2e test in `gateway/e2e`, then lint and self-test of the live-test
   kit in `scripts/live`; any cwd) · run `go run ./cmd/kaiak` from `gateway/`;
   live backends (opt-in) `go -C scripts/live run . -kind vllm|llama-server|openai|azure-openai|anthropic|azure-anthropic …`

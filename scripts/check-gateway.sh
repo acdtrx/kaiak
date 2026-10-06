@@ -30,8 +30,10 @@ lint() {
 cd "$root/gateway"
 lint gateway
 
-echo "==> go test -race (gateway)"
-go test -race ./...
+# Uncached: the shared fixtures (protocol/) live outside the gateway module, so Go's
+# test cache does not see them change and would report old results.
+echo "==> go test -race -count=1 (gateway)"
+go test -race -count=1 ./...
 
 cd "$root/scripts/live"
 lint "live-test kit"
