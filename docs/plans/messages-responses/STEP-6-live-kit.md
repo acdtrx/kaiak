@@ -227,3 +227,12 @@ log's reasoning is 0, with reasoning on). Nothing contradicts the spec.
 staticcheck, race tests including the e2e; the live-test kit's lint and self-test,
 every kind green; control `npm test` and lint; the cross-half e2e). Expected red:
 none. `scripts/check-gateway.sh` still runs only the kit's lint and `-self-test`.
+
+**Embeddings, live (2026-10-06, run by the main session after step 7):** the vllm
+kind against vLLM 0.30.0 (`unsloth/Qwen3.8-27B-NVFP4`, `-max-output 4096`) with
+`-embeddings-base-url`, twice:
+- vLLM's `qwen3-embed` entry (`qwen3-embedding-0.6b`, `dgx.local:8003`, started for
+  the run and stopped after): 29 passed, 0 failed, 1 skipped (`messages-cache`);
+  `embeddings` 1024 dimensions, 6 tokens; `usage-log/embeddings` in 6, out 0.
+- llama-server on `llama-embed.local:11435` (`/models/qwen3-embedding-0.6b-q8_0.gguf`):
+  29 passed, 0 failed, 1 skipped; the same embeddings figures.

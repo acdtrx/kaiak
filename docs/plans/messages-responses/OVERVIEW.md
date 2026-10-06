@@ -207,7 +207,7 @@ Made while planning (confirm in review):
     - Usage records gain no field: the deployment already says where a request went.
 29. **Versions** (no backwards compatibility):
     - protocol 5 (the config in snapshots changes)
-    - config `format_version` 5 (new types, no `defaults`)
+    - config `format_version` 5 (no `defaults`; new types bump no version, per the 2026-10-01 rule)
     - `last-known-good.json` format bumped (it holds the config)
     - usage spool unchanged (records unchanged)
 
