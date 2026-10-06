@@ -90,10 +90,10 @@ func sendThrough(t *testing.T, fb *fakebackend.Backend, r *Registry, b *config.B
 }
 
 // Every module through the same service-tier cases (docs/specs/GATEWAY.md, Providers →
-// Service tier): openai and azure-openai keep requests on the standard tier — chat
-// always carries "default", other endpoints only in place of a tier the client sent;
-// vllm, llama-server and openai-compatible pass the client's member untouched and add
-// none.
+// Service tier): openai and azure-openai keep requests on the standard tier — chat and
+// Responses always carry "default", completions and embeddings only in place of a tier
+// the client sent, Responses token counting keeps the client's; vllm, llama-server and
+// openai-compatible pass the client's member untouched and add none.
 func TestServiceTierByModule(t *testing.T) {
 	tierCases := []struct {
 		name     string
@@ -107,6 +107,9 @@ func TestServiceTierByModule(t *testing.T) {
 		{"chat with priority", ChatCompletions, `{"model":"pub","service_tier": "priority","messages":[{"role":"user","content":"hi"}]}`, `"priority"`, `"default"`},
 		{"embeddings without a tier", Embeddings, `{"model":"pub","input":"a"}`, "", ""},
 		{"embeddings with flex", Embeddings, `{"model":"pub","service_tier":"flex","input":"a"}`, `"flex"`, `"default"`},
+		{"responses without a tier", Responses, `{"model":"pub","input":"a"}`, "", `"default"`},
+		{"responses with priority", Responses, `{"model":"pub","service_tier":"priority","input":"a"}`, `"priority"`, `"default"`},
+		{"input_tokens with priority", ResponsesInputTokens, `{"model":"pub","service_tier":"priority","input":"a"}`, `"priority"`, `"priority"`},
 	}
 	fb := fakebackend.New()
 	defer fb.Close()

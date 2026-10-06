@@ -27,6 +27,8 @@ const (
 	endpointEmbeddings
 	endpointMessages
 	endpointMessagesCountTokens
+	endpointResponses
+	endpointResponsesInputTokens
 	endpointListModels
 	endpointGetModel
 	endpointModelProps
@@ -45,6 +47,10 @@ func (e endpoint) path() string {
 		return "/v1/messages"
 	case endpointMessagesCountTokens:
 		return "/v1/messages/count_tokens"
+	case endpointResponses:
+		return "/v1/responses"
+	case endpointResponsesInputTokens:
+		return "/v1/responses/input_tokens"
 	case endpointListModels:
 		return "/v1/models"
 	case endpointGetModel:
@@ -68,6 +74,10 @@ func (e endpoint) name() string {
 		return "messages"
 	case endpointMessagesCountTokens:
 		return "messages_count_tokens"
+	case endpointResponses:
+		return "responses"
+	case endpointResponsesInputTokens:
+		return "responses_input_tokens"
 	case endpointListModels:
 		return "list_models"
 	case endpointGetModel:
@@ -83,7 +93,7 @@ func (e endpoint) name() string {
 // and "" for the model and token-counting endpoints, which have none.
 func (e endpoint) operationName() string {
 	switch e {
-	case endpointChatCompletions, endpointMessages:
+	case endpointChatCompletions, endpointMessages, endpointResponses:
 		return "chat"
 	case endpointCompletions:
 		return "text_completion"
@@ -96,7 +106,7 @@ func (e endpoint) operationName() string {
 // bodyEndpoints are the endpoints served as a POST carrying a JSON request body, each
 // passed through to a backend serving it.
 var bodyEndpoints = []endpoint{endpointChatCompletions, endpointCompletions, endpointEmbeddings,
-	endpointMessages, endpointMessagesCountTokens}
+	endpointMessages, endpointMessagesCountTokens, endpointResponses, endpointResponsesInputTokens}
 
 // takesBody reports whether the endpoint is a POST carrying a JSON request body.
 func (e endpoint) takesBody() bool {
@@ -107,7 +117,7 @@ func (e endpoint) takesBody() bool {
 // generated or billed there, so it reserves no tokens and settles into no usage
 // record (docs/specs/GATEWAY.md, Client API → token-counting endpoints).
 func (e endpoint) counts() bool {
-	return e == endpointMessagesCountTokens
+	return e == endpointMessagesCountTokens || e == endpointResponsesInputTokens
 }
 
 // namesModel reports whether a request to the endpoint names one model (in its body

@@ -91,9 +91,14 @@ type usageReader interface {
 // NewMeter returns the meter for a request to ep whose input is estimated at input
 // tokens (EstimateInput).
 func NewMeter(ep provider.Endpoint, input int64) *Meter {
-	var reader usageReader = &openAIUsage{endpoint: ep}
-	if ep.Format() == provider.FormatMessages {
+	var reader usageReader
+	switch ep.Format() {
+	case provider.FormatMessages:
 		reader = &messagesUsage{}
+	case provider.FormatResponses:
+		reader = &responsesUsage{}
+	default:
+		reader = &openAIUsage{endpoint: ep}
 	}
 	return &Meter{input: input, reader: reader}
 }

@@ -146,9 +146,10 @@ func TestPassthroughBodyEdits(t *testing.T) {
 	}
 }
 
-// A chat request always names the standard tier: an absent one is "auto", the
-// deployment's or project's own setting. Other endpoints get "default" only in place
-// of a tier the client sent: OpenAI refuses parameters an endpoint does not define.
+// A chat or Responses request always names the standard tier: an absent one is
+// "auto", the deployment's or project's own setting. Completions and embeddings get
+// "default" only in place of a tier the client sent: OpenAI refuses parameters an
+// endpoint does not define. Responses token counting keeps the client's.
 func TestStandardServiceTier(t *testing.T) {
 	cases := []struct {
 		endpoint Endpoint
@@ -161,6 +162,10 @@ func TestStandardServiceTier(t *testing.T) {
 		{Completions, `{"model":"pub","prompt":"a","service_tier":"auto"}`, `{"model":"d","prompt":"a","service_tier":"default"}`},
 		{Embeddings, `{"model":"pub","input":"a"}`, `{"model":"d","input":"a"}`},
 		{Embeddings, `{"model":"pub","input":"a","service_tier":"flex"}`, `{"model":"d","input":"a","service_tier":"default"}`},
+		{Responses, `{"model":"pub","input":"a"}`, `{"model":"d","input":"a","service_tier":"default","store":false}`},
+		{Responses, `{"model":"pub","input":"a","service_tier":"priority"}`, `{"model":"d","input":"a","service_tier":"default","store":false}`},
+		{ResponsesInputTokens, `{"model":"pub","input":"a"}`, `{"model":"d","input":"a"}`},
+		{ResponsesInputTokens, `{"model":"pub","input":"a","service_tier":"priority"}`, `{"model":"d","input":"a","service_tier":"priority"}`},
 	}
 	for _, c := range cases {
 		req := &Request{Endpoint: c.endpoint, Deployment: config.Deployment{Model: "d"}, Body: []byte(c.body)}

@@ -2,8 +2,6 @@ package server
 
 import (
 	"encoding/json"
-	"fmt"
-	"slices"
 	"strings"
 
 	"kaiak/internal/accounting"
@@ -39,53 +37,48 @@ func parseMessagesFields(rq *request, top map[string]json.RawMessage) *apiError 
 var messagesHostedMembers = []string{"mcp_servers", "container"}
 
 // messagesClientToolPrefixes start the types of Anthropic's tools the client runs
-// (bash, the text editor, computer use, memory), whatever their version suffix.
+// (bash, the text editor, computer use, memory); a dated version follows each
+// (computer_20250124).
 var messagesClientToolPrefixes = []string{"bash_", "text_editor_", "computer_", "memory_"}
 
 // refuseMessagesHostedTools refuses a request handing the backend a tool to run itself
 // (docs/specs/GATEWAY.md, Client API → hosted tools are refused): mcp_servers or
 // container, or a tools entry whose type is not on the allowlist of tools the client
-// runs — no type, "custom", or one of Anthropic's client-run tools. An allowlist, so a
-// server tool released later is refused until it is judged. A tool naming its type
-// twice is refused: the gateway and the backend could read different ones.
+// runs — no type, "custom", or one of Anthropic's client-run tools.
 func refuseMessagesHostedTools(top map[string]json.RawMessage) *apiError {
 	for _, key := range messagesHostedMembers {
 		if raw, ok := top[key]; ok && string(raw) != "null" {
 			return errHostedMember(key)
 		}
 	}
-	raw, ok := top["tools"]
-	if !ok || string(raw) == "null" {
-		return nil
-	}
-	var tools []json.RawMessage
-	if json.Unmarshal(raw, &tools) != nil {
-		return errInvalidType("tools", "an array")
-	}
-	for i, tool := range tools {
-		param := fmt.Sprintf("tools[%d]", i)
-		members, repeats, ok := decodeMembersRepeats(tool)
-		if !ok {
-			return errInvalidType(param, "an object")
-		}
-		if slices.Contains(repeats, "type") {
-			return errDuplicateMember(param + ".type")
-		}
-		typ, apiErr := optionalField[string](members, "type", param+".type", "a string")
-		if apiErr != nil {
-			return apiErr
-		}
-		if typ != nil && !messagesClientTool(*typ) {
-			return errHostedTool(param+".type", *typ)
-		}
-	}
-	return nil
+	return refuseHostedToolTypes(top["tools"], "tools", messagesClientTool)
 }
 
-// messagesClientTool reports whether a Messages tool of type t is one the client runs.
+// messagesClientTool reports whether a Messages tool of type t is one the client runs:
+// "custom", or a client-run tool's prefix followed directly by its version date. A
+// name that merely shares a prefix (computer_toolset_20260801) is another tool, to be
+// judged before it passes.
 func messagesClientTool(t string) bool {
 	if t == "custom" {
 		return true
 	}
-	return slices.ContainsFunc(messagesClientToolPrefixes, func(prefix string) bool { return strings.HasPrefix(t, prefix) })
+	for _, prefix := range messagesClientToolPrefixes {
+		if version, ok := strings.CutPrefix(t, prefix); ok && isDigits(version) {
+			return true
+		}
+	}
+	return false
+}
+
+// isDigits reports whether s is one or more ASCII digits.
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }

@@ -42,14 +42,16 @@ const maxEstimateDepth = 10000
 //     one token;
 //   - in a Messages request, an image or document block's source counts
 //     InlineMediaTokens when it is base64 data, a URL or a file ID (a text or content
-//     source is text, its own content scanned by these rules).
+//     source is text, its own content scanned by these rules);
+//   - in a Responses request, an input_image or input_file content part counts
+//     InlineMediaTokens whatever it carries (data URL, URL or file ID).
 //
 // One pass over the body, bounded by its size. A body that does not scan (the parse
 // before this refuses those) is estimated by its size alone.
 func EstimateInput(ep provider.Endpoint, body []byte) InputEstimate {
 	whole := EstimateTokens(int64(len(body)))
 	fallback := InputEstimate{Total: whole, LargestPrompt: whole}
-	s := newInputScan(body, ep.Format() == provider.FormatMessages)
+	s := newInputScan(body, ep.Format())
 
 	if tok, err := s.dec.Token(); err != nil || tok != json.Delim('{') {
 		return fallback
@@ -114,12 +116,13 @@ func (p part) tokens() int64 {
 
 type inputScan struct {
 	dec *json.Decoder
-	// messages: the body is a Messages request, whose media live in block sources.
-	messages bool
+	// format is the body's client API format: a Messages request's media live in
+	// block sources, a Responses request's in content parts.
+	format provider.Format
 }
 
-func newInputScan(data []byte, messages bool) *inputScan {
-	s := &inputScan{dec: json.NewDecoder(bytes.NewReader(data)), messages: messages}
+func newInputScan(data []byte, format provider.Format) *inputScan {
+	s := &inputScan{dec: json.NewDecoder(bytes.NewReader(data)), format: format}
 	s.dec.UseNumber()
 	return s
 }
@@ -177,7 +180,7 @@ func (s *inputScan) promptList() ([]part, bool) {
 // the text are subtracted from p.text; tokens it counts directly are added to
 // p.fixed. It returns the value's first token.
 func (s *inputScan) value(key, parent string, tokenIDs bool, depth int, p *part) (json.Token, bool) {
-	if s.messages && key == "source" {
+	if s.format == provider.FormatMessages && key == "source" {
 		return nil, s.messagesSource(depth, p)
 	}
 	start := s.dec.InputOffset()
@@ -195,6 +198,9 @@ func (s *inputScan) handle(tok json.Token, span int64, key, parent string, token
 	case json.Delim:
 		if depth > maxEstimateDepth {
 			return false
+		}
+		if v == '[' && s.format == provider.FormatResponses && key == "content" {
+			return s.responsesParts(depth, p)
 		}
 		for s.dec.More() {
 			member, enclosing := key, parent
@@ -248,12 +254,46 @@ func (s *inputScan) messagesSource(depth int, p *part) bool {
 			return true
 		}
 	}
-	inner := newInputScan(raw, true)
+	inner := newInputScan(raw, provider.FormatMessages)
 	tok, err := inner.dec.Token()
 	if err != nil {
 		return false
 	}
 	return inner.handle(tok, inner.dec.InputOffset(), "", "source", false, depth, p)
+}
+
+// responsesParts scans the rest of a Responses content list, its opening bracket
+// read (docs/specs/GATEWAY.md, Limits: the input estimate): an input_image or
+// input_file part is one media item, whatever it carries — a data URL, a URL or a
+// file ID; any other part is scanned as any other value. Each part is read whole
+// first: its type may come after its data.
+func (s *inputScan) responsesParts(depth int, p *part) bool {
+	for s.dec.More() {
+		start := s.dec.InputOffset()
+		var raw json.RawMessage
+		if err := s.dec.Decode(&raw); err != nil {
+			return false
+		}
+		span := s.dec.InputOffset() - start
+		var part struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(raw, &part) == nil && (part.Type == "input_image" || part.Type == "input_file") {
+			p.text -= span
+			p.fixed += InlineMediaTokens
+			continue
+		}
+		inner := newInputScan(raw, provider.FormatResponses)
+		tok, err := inner.dec.Token()
+		if err != nil {
+			return false
+		}
+		if !inner.handle(tok, inner.dec.InputOffset(), "content", "", false, depth+1, p) {
+			return false
+		}
+	}
+	_, err := s.dec.Token()
+	return err == nil
 }
 
 // isMedia reports whether the string s, the value of member key in an object that is

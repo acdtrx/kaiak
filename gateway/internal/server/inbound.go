@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"slices"
@@ -18,9 +19,11 @@ import (
 // Request pipeline). Everything else stays in the raw body, untouched.
 type inboundFields struct {
 	Stream bool
-	// MaxTokens and MaxCompletionTokens are nil when the request omits them.
+	// MaxTokens, MaxCompletionTokens and MaxOutputTokens (Responses) are nil when the
+	// request omits them.
 	MaxTokens           *int64
 	MaxCompletionTokens *int64
+	MaxOutputTokens     *int64
 	// IncludeUsage is the client's stream_options.include_usage.
 	IncludeUsage bool
 	// Sequences is how many output sequences the request asks the backend to
@@ -75,6 +78,8 @@ func parseOwnedFields(rq *request) *apiError {
 		return parseOpenAIFields(rq, top)
 	case provider.FormatMessages:
 		return parseMessagesFields(rq, top)
+	case provider.FormatResponses:
+		return parseResponsesFields(rq, top)
 	}
 	// The endpoint table routes only the formats the inbound stage reads.
 	panic("server: no inbound parser for the endpoint's format")
@@ -121,6 +126,40 @@ func parseOpenAIFields(rq *request, top map[string]json.RawMessage) *apiError {
 		rq.inbound.IncludeUsage = includeUsage != nil && *includeUsage
 	}
 	rq.input = accounting.EstimateInput(providerEndpoint(rq.endpoint), rq.body)
+	return nil
+}
+
+// refuseHostedToolTypes refuses a tool list (raw, the request member param) holding a
+// tool the backend would run itself (docs/specs/GATEWAY.md, Client API → hosted tools
+// are refused): every entry whose type is set must be one clientRuns admits — an
+// allowlist, so a server tool released later is refused until it is judged. A tool
+// naming its type twice is refused: the gateway and the backend could read different
+// ones. An absent or null list holds none.
+func refuseHostedToolTypes(raw json.RawMessage, param string, clientRuns func(string) bool) *apiError {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var tools []json.RawMessage
+	if json.Unmarshal(raw, &tools) != nil {
+		return errInvalidType(param, "an array")
+	}
+	for i, tool := range tools {
+		at := fmt.Sprintf("%s[%d]", param, i)
+		members, repeats, ok := decodeMembersRepeats(tool)
+		if !ok {
+			return errInvalidType(at, "an object")
+		}
+		if slices.Contains(repeats, "type") {
+			return errDuplicateMember(at + ".type")
+		}
+		typ, apiErr := optionalField[string](members, "type", at+".type", "a string")
+		if apiErr != nil {
+			return apiErr
+		}
+		if typ != nil && !clientRuns(*typ) {
+			return errHostedTool(at+".type", *typ)
+		}
+	}
 	return nil
 }
 

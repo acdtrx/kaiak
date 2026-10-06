@@ -397,15 +397,20 @@ func wireHeaders(h http.Header, req *Request) {
 
 // passthroughBody applies the gateway's owned edits to the client's body: the model
 // name becomes the deployment's, the module's own edits (extra) and the pipeline's
-// parameters are set, and an OpenAI-format stream gets stream_options.include_usage
-// so the backend reports usage — Messages and Responses always report it. stripUsage
-// is true when the client did not ask for usage, so the usage-only chunk that edit
-// adds must not reach it.
+// parameters are set, a Responses request gets store: false (the gateway serves
+// Responses stateless and lets no backend keep a conversation: docs/specs/GATEWAY.md,
+// Client API → Responses is stateless), and an OpenAI-format stream gets
+// stream_options.include_usage so the backend reports usage — Messages and Responses
+// always report it. stripUsage is true when the client did not ask for usage, so the
+// usage-only chunk that edit adds must not reach it.
 func passthroughBody(req *Request, extra ...memberEdit) (body []byte, stripUsage bool, err error) {
 	model, _ := json.Marshal(req.Deployment.Model) // a string always encodes
 	edits := append([]memberEdit{setValue("model", model)}, extra...)
 	for _, p := range req.Params {
 		edits = append(edits, setValue(p.Key, p.Value))
+	}
+	if req.Endpoint == Responses {
+		edits = append(edits, setValue("store", []byte("false")))
 	}
 	if req.Stream && !req.IncludeUsage && req.Endpoint.Format() == FormatOpenAI {
 		edits = append(edits, memberEdit{key: "stream_options", set: setIncludeUsage})
@@ -419,13 +424,17 @@ func passthroughBody(req *Request, extra ...memberEdit) (body []byte, stripUsage
 // the modules whose backends bill by tier (openai.go, azure_openai.go;
 // docs/specs/GATEWAY.md, Providers → Service tier): prices are standard-tier rates,
 // and a priority request is billed about twice what its record would say. A chat
-// completions request always carries service_tier "default" — an absent tier means
-// "auto", which follows the deployment's or project's own setting. On the other
-// endpoints a client's tier becomes "default" and an absent one stays absent: OpenAI
-// refuses parameters an endpoint does not define.
+// completions or Responses request always carries service_tier "default" — an absent
+// tier means "auto", which follows the deployment's or project's own setting. On
+// completions and embeddings a client's tier becomes "default" and an absent one
+// stays absent: OpenAI refuses parameters an endpoint does not define. Responses
+// token counting is left as the client sent it: nothing is generated or billed there.
 func standardServiceTier(e Endpoint) memberEdit {
 	return memberEdit{key: "service_tier", set: func(current []byte) ([]byte, error) {
-		if current == nil && e != ChatCompletions {
+		switch {
+		case e == ResponsesInputTokens:
+			return current, nil
+		case current == nil && e != ChatCompletions && e != Responses:
 			return nil, nil
 		}
 		return []byte(`"default"`), nil

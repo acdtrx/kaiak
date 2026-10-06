@@ -12,12 +12,12 @@ import (
 // Output limit) — and the request's effective output limit. The provider splices the
 // parameters into the client's body; nothing else in it changes.
 //
-//   - Output limit out of range (chat, completions and Messages): a key the client set below 0
+//   - Output limit out of range (chat, completions, Messages and Responses): a key the client set below 0
 //     (llama-server reads -1 as unlimited, past any reservation) or above the
 //     model's context_length (it can never be honored — prompt and output share the
 //     context) is refused, 400 invalid_value naming the key, OpenAI's answer to the
 //     same mistakes.
-//   - Output limit (chat, completions and Messages, when the model declares one): a request
+//   - Output limit (chat, completions, Messages and Responses, when the model declares one): a request
 //     that sets no output-limit key gets the default under the endpoint's key,
 //     lowered to leave the prompt room in the context (injectedOutputLimit); a key
 //     set above the ceiling is lowered to the ceiling — each key the client set is
@@ -95,8 +95,8 @@ type outputLimitKey struct {
 // which vLLM, SGLang, llama-server, OpenAI and Azure all read — and which OpenAI's and
 // Azure's reasoning models require (they refuse max_tokens) — and still honors the
 // older max_tokens. Completions and Messages have only max_tokens (Messages requires
-// it, so a model with an output limit always sends one). Embeddings and the
-// token-counting endpoints generate nothing.
+// it, so a model with an output limit always sends one), Responses only
+// max_output_tokens. Embeddings and the token-counting endpoints generate nothing.
 func outputLimitKeys(ep endpoint) []outputLimitKey {
 	switch ep {
 	case endpointChatCompletions:
@@ -106,6 +106,8 @@ func outputLimitKeys(ep endpoint) []outputLimitKey {
 		}
 	case endpointCompletions, endpointMessages:
 		return []outputLimitKey{{"max_tokens", func(f *inboundFields) *int64 { return f.MaxTokens }}}
+	case endpointResponses:
+		return []outputLimitKey{{"max_output_tokens", func(f *inboundFields) *int64 { return f.MaxOutputTokens }}}
 	}
 	return nil
 }

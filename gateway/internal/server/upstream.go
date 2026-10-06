@@ -519,6 +519,10 @@ func providerEndpoint(ep endpoint) provider.Endpoint {
 		return provider.Messages
 	case endpointMessagesCountTokens:
 		return provider.MessagesCountTokens
+	case endpointResponses:
+		return provider.Responses
+	case endpointResponsesInputTokens:
+		return provider.ResponsesInputTokens
 	}
 	return provider.ChatCompletions
 }

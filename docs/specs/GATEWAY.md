@@ -47,12 +47,17 @@
   run, and on cloud ones they would bill units kaiak does not price. An allowlist
   of tool types the client runs itself, so a new server tool is refused until it is
   judged:
-  - Messages: a tool with no `type`, or `custom`, or a type starting `bash_`,
-    `text_editor_`, `computer_` or `memory_` (Anthropic's client-run tools);
-    `mcp_servers` and `container` are refused the same way (`param` naming them).
+  - Messages: a tool with no `type`, or `custom`, or one of Anthropic's client-run
+    tools — `bash_`, `text_editor_`, `computer_` or `memory_` followed directly by
+    its version date (`computer_20250124`; settled 2026-10-06, the step 4 review: a
+    type that merely shares the prefix, `computer_toolset_20260801`, is another
+    tool, refused until judged); `mcp_servers` and `container` are refused the same
+    way (`param` naming them).
   - Responses: `function`, `custom`, `local_shell`, `shell`, `apply_patch`; a
     `tool_choice` naming any other type (`{"type": "web_search"}`, …) is refused
-    too.
+    too. A `tool_choice` of type `allowed_tools` names no tool of its own — it
+    narrows the `tools` list — so it passes, its own `tools` list held to the same
+    allowlist (settled 2026-10-06).
 
   Clients that attach a hosted tool by default need it turned off (Codex:
   `web_search = "disabled"`; `docs/testing/LIVE-BACKENDS.md`).
@@ -157,8 +162,11 @@
     `previous_response_id`, `conversation`, `background`, each `tools[].type`,
     `tool_choice` (its `type` only), and `service_tier` on `openai` and
     `azure-openai`.
-  - The token-counting endpoints own `model` and the tool fields of their format;
-    they take no output limit and no `stream`.
+  - The token-counting endpoints own `model` and the tool fields of their format,
+    and `responses/input_tokens` the stateful fields too, refused as on
+    `/v1/responses` (settled 2026-10-06: a stored response or conversation the
+    gateway never lets a backend keep could only be another client's); they take no
+    output limit and no `stream`.
 - **Request IDs**: `x-request-id` is accepted (or generated), forwarded to the backend,
   returned to the client, and stamped on the log line and the usage record. A client
   ID is kept when it is 1–128 characters of `[A-Za-z0-9._:-]`; any other value is
@@ -1588,8 +1596,12 @@ own, and a client sending repeats is broken either way.
   `content`, `refusal`, reasoning text (`reasoning_content` or `reasoning`, one of
   them), tool-call names and arguments; completions `text`; Messages `text`,
   `thinking` and `tool_use` inputs (stream deltas `text_delta`, `thinking_delta`,
-  `input_json_delta`); Responses `output_text`, reasoning text and summaries, and
-  function-call arguments (stream deltas likewise) — settled 2026-10-06. JSON
+  `input_json_delta`); Responses `output_text` and refusals, reasoning text and
+  summaries, and tool-call names with their arguments or a custom tool's input
+  (stream deltas likewise: `response.output_text.delta`, `response.refusal.delta`,
+  `response.reasoning_text.delta`, `response.reasoning_summary_text.delta`,
+  `response.function_call_arguments.delta`, `response.custom_tool_call_input.delta`)
+  — settled 2026-10-06. JSON
   structure, roles, signatures, finish reasons and indexes do not count. A non-stream body's choices are kept up to
   4 MiB to be read; past that their raw size counts. The estimated input is all
   `tokens_in`; `tokens_cached`, `tokens_cache_write` and `tokens_reasoning` are 0.

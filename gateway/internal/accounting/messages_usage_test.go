@@ -11,15 +11,15 @@ import (
 	"kaiak/internal/sse"
 )
 
-// recordedStreamMeter is a meter fed a recorded Messages stream (fakebackend/captures)
+// recordedStreamMeter is a meter for ep fed a recorded stream (fakebackend/captures)
 // event by event.
-func recordedStreamMeter(t *testing.T, server, name string) *Meter {
+func recordedStreamMeter(t *testing.T, ep provider.Endpoint, server, name string) *Meter {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("..", "fakebackend", "captures", server, name))
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := NewMeter(provider.Messages, 99)
+	m := NewMeter(ep, 99)
 	m.Answered(200, true)
 	events := sse.NewReader(bytes.NewReader(data), 1<<20)
 	for {
@@ -50,7 +50,7 @@ func TestMessagesUsage(t *testing.T) {
 		{"llama-server", "messages-stream-tool.sse", tokenUnits(277, 0, 0, 61, 0)},
 	} {
 		t.Run(c.server+"/"+c.name, func(t *testing.T) {
-			m := recordedStreamMeter(t, c.server, c.name)
+			m := recordedStreamMeter(t, provider.Messages, c.server, c.name)
 			if !m.StreamContentSeen() {
 				t.Error("no content seen")
 			}

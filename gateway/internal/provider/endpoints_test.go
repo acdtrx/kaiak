@@ -114,12 +114,16 @@ func TestEndpointMissingFromAServer(t *testing.T) {
 }
 
 // Messages and Responses always report usage: a stream to them gets no
-// stream_options edit, and nothing is hidden from the client.
+// stream_options edit, and nothing is hidden from the client. A Responses request gets
+// store: false and nothing else.
 func TestNoUsageEditOutsideTheOpenAIFormat(t *testing.T) {
-	for _, e := range []Endpoint{Messages, Responses} {
+	for e, want := range map[Endpoint]string{
+		Messages:  `{"model":"m","stream":true}`,
+		Responses: `{"model":"m","stream":true,"store":false}`,
+	} {
 		body, stripUsage, err := passthroughBody(&Request{Endpoint: e, Stream: true,
 			Deployment: config.Deployment{Model: "m"}, Body: []byte(`{"model":"pub","stream":true}`)})
-		if err != nil || stripUsage || string(body) != `{"model":"m","stream":true}` {
+		if err != nil || stripUsage || string(body) != want {
 			t.Errorf("%s: %s, strip %v, %v", e.path(), body, stripUsage, err)
 		}
 	}

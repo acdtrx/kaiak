@@ -361,6 +361,14 @@ func errHostedTool(param, toolType string) *apiError {
 			param, clip.String(toolType))}
 }
 
+// errStatefulResponses refuses a Responses request relying on state kept between
+// requests (docs/specs/GATEWAY.md, Client API → Responses is stateless); param names
+// the field.
+func errStatefulResponses(param string) *apiError {
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "stateful_responses_unsupported", param: param,
+		message: fmt.Sprintf("'%s' relies on state kept between requests; the gateway serves Responses stateless: send the whole conversation in input.", param)}
+}
+
 // errHostedMember refuses a request member that hands the backend tools to run itself
 // (Messages mcp_servers and container).
 func errHostedMember(param string) *apiError {

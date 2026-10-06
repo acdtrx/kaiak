@@ -24,8 +24,11 @@ type streamEnd interface {
 
 // newStreamEnd is the end reader of a stream in format f.
 func newStreamEnd(f Format) streamEnd {
-	if f == FormatMessages {
+	switch f {
+	case FormatMessages:
 		return &messagesStreamEnd{}
+	case FormatResponses:
+		return &responsesStreamEnd{}
 	}
 	return &openAIStreamEnd{}
 }
@@ -111,3 +114,37 @@ func (e *messagesStreamEnd) complete() bool { return e.stopped }
 
 // The model name is message_start's message.model.
 func (e *messagesStreamEnd) nestedModel() string { return "message" }
+
+// responsesStreamEnd: a Responses stream is complete once it carried
+// response.completed or response.incomplete — vLLM ends a stream cut by
+// max_output_tokens with response.completed whose status is incomplete, OpenAI with
+// response.incomplete, and both are whole. An error event or response.failed is the
+// backend abandoning it. Events are read by their data's type, which every Responses
+// event carries; output items may overlap (llama-server adds a function call before
+// its reasoning item is done), so nothing here depends on their order.
+type responsesStreamEnd struct {
+	ended bool
+}
+
+func (e *responsesStreamEnd) observe(payload []byte) bool {
+	var event struct {
+		Type string `json:"type"`
+	}
+	// An event that does not decode says nothing about the end.
+	if json.Unmarshal(payload, &event) != nil {
+		return false
+	}
+	switch event.Type {
+	case "response.completed", "response.incomplete":
+		e.ended = true
+	case "error", "response.failed":
+		return true
+	}
+	return false
+}
+
+func (e *responsesStreamEnd) complete() bool { return e.ended }
+
+// The model name is the response's model, in every response.* event that carries the
+// response (llama-server's created and in_progress events carry none).
+func (e *responsesStreamEnd) nestedModel() string { return "response" }

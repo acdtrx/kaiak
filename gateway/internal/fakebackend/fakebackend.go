@@ -1,6 +1,6 @@
 // Package fakebackend is a model server for tests. It serves chat completions,
-// completions, embeddings, Anthropic Messages with its token counting, and the models
-// list (the gateway's probe) under /v1/ (the OpenAI and Anthropic layout),
+// completions, embeddings, Anthropic Messages and OpenAI Responses with their token
+// counting, and the models list (the gateway's probe) under /v1/ (the OpenAI and Anthropic layout),
 // /openai/v1/ (Azure OpenAI's) and /anthropic/v1/ (Claude in Foundry's), answers as
 // scripted by the test, and records every request it receives. Test tooling only: nothing in the gateway binary imports it;
 // cmd/fakebackend runs it as a process for the e2e test and the live-test kit.
@@ -70,20 +70,22 @@ type Reply struct {
 	CutAfter int
 	// EndAfter > 0: a stream sends that many text events, then ends the response
 	// cleanly — no finish_reason, no usage, no [DONE] (a generator that died); a
-	// Messages stream ends without message_delta and message_stop.
+	// Messages stream ends without message_delta and message_stop, a Responses stream
+	// without response.completed.
 	EndAfter int
-	// ErrorEvent makes a Messages stream send an error event (Anthropic's
-	// overloaded_error) after ErrorEventAfter text events — 0: as its first event —
-	// and end there.
+	// ErrorEvent makes a Messages or Responses stream send an error event (Anthropic's
+	// overloaded_error, a Responses error) after ErrorEventAfter text events — 0: as
+	// its first event — and end there.
 	ErrorEvent      bool
 	ErrorEventAfter int
 	// EventDelay, when set, makes a stream wait that long before each event after
 	// the first (a slow model).
 	EventDelay time.Duration
-	// HonorMaxTokens: generate at most the request's max_completion_tokens or
-	// max_tokens chunks (the smaller when both are set), one token each, and finish
-	// with "length" ("max_tokens" in Messages) when that cut the answer short — as a
-	// real model server does.
+	// HonorMaxTokens: generate at most the request's max_completion_tokens,
+	// max_tokens or max_output_tokens chunks (the smallest when several are set), one
+	// token each, and finish with "length" ("max_tokens" in Messages, an incomplete
+	// response in Responses) when that cut the answer short — as a real model server
+	// does.
 	HonorMaxTokens bool
 }
 
@@ -92,7 +94,8 @@ type Reply struct {
 // and Azure OpenAI do. A Messages answer reports them as Anthropic does: input_tokens
 // is PromptTokens less the cached and written tokens, which are
 // cache_read_input_tokens and cache_creation_input_tokens; reasoning is not reported
-// apart.
+// apart. A Responses answer reports PromptTokens as input_tokens, with the cached and
+// written tokens in input_tokens_details and reasoning in output_tokens_details.
 type Usage struct {
 	PromptTokens     int
 	CompletionTokens int
@@ -236,6 +239,8 @@ const (
 	embeddingPath   = "embeddings"
 	messagesPath    = "messages"
 	countTokensPath = "messages/count_tokens"
+	responsesPath   = "responses"
+	inputTokensPath = "responses/input_tokens"
 	modelsPath      = "models"
 )
 
@@ -297,7 +302,7 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 	default:
 	}
 	switch endpoint {
-	case chatPath, completionPath, embeddingPath, messagesPath, countTokensPath:
+	case chatPath, completionPath, embeddingPath, messagesPath, countTokensPath, responsesPath, inputTokensPath:
 	default:
 		ok = false
 	}
@@ -371,7 +376,7 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 	if json.Unmarshal(top["stream_options"], &options) == nil {
 		_ = json.Unmarshal(options["include_usage"], &params.includeUsage)
 	}
-	for _, name := range []string{"max_completion_tokens", "max_tokens"} {
+	for _, name := range []string{"max_completion_tokens", "max_tokens", "max_output_tokens"} {
 		var n *int
 		if json.Unmarshal(top[name], &n) == nil && n != nil && (params.maxTokens == nil || *n < *params.maxTokens) {
 			params.maxTokens = n
@@ -395,6 +400,12 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case endpoint == countTokensPath:
 		writeJSON(w, http.StatusOK, map[string]any{"input_tokens": usage.PromptTokens})
+	case endpoint == inputTokensPath:
+		writeJSON(w, http.StatusOK, map[string]any{"object": "response.input_tokens", "input_tokens": usage.PromptTokens})
+	case endpoint == responsesPath && params.stream:
+		b.writeResponsesStream(w, r, req, reply, params.model, chunks, finish == "length", usage)
+	case endpoint == responsesPath:
+		writeResponse(w, params.model, strings.Join(chunks, ""), finish == "length", usage, reply.OmitUsage)
 	case endpoint == messagesPath && params.stream:
 		b.writeMessagesStream(w, r, req, reply, params.model, chunks, finish == "length", usage)
 	case endpoint == messagesPath:
