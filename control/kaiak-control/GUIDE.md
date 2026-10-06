@@ -7,7 +7,9 @@
 > protocol version 3) on 2026-09-29; to a backend type per server (formats unchanged)
 > on 2026-10-01; to the cache-write unit (config format 4, protocol version 4) on
 > 2026-10-02; to Messages and Responses passthrough — the Anthropic backend types, no
-> model defaults (config format 5, protocol version 5) — on 2026-10-06.
+> model defaults (config format 5, protocol version 5) — on 2026-10-06; to several
+> control-plane processes over one store and limits without model sets (same formats)
+> on 2026-10-06.
 >
 > Background, in this order: `docs/architecture/control-plane.html` (how gateways and a
 > control plane work together, with diagrams), `docs/specs/CONTROL-PROTOCOL.md` (the
@@ -36,14 +38,19 @@ something the protocol needs, the change belongs in the kaiak repo (§11).
 
 ## 2. Hard rules
 
-1. **One control-plane process per store.** Config versions, the totals revision and
-   stream subscriptions live in one process. The core takes a **lease** in the store at
-   start and refuses to start (`store-lease-held`) while another process holds it.
-   Deploy exactly one replica (Kubernetes: `replicas: 1`, `strategy: Recreate`). A
-   second replica is not "HA" — it is refused, or worse if your store's lease is wrong.
+1. **How many processes your store allows is your store's choice.** The core keeps
+   nothing replicas must agree on: config versions, counted batches, the totals
+   sequence and the live set are the store's, decided by conditional writes and
+   announced through its `subscribe()` (§5). `createMemoryStore()` lives in one process:
+   with it, run **one** process (the sample's protocol replicas share one store inside
+   one process — a demonstration, not a deployment). A store that holds the contract
+   across processes (a database with transactions and a change channel, §5) runs any
+   number of replicas behind a load balancer. Prove it with the exported contract
+   tests (§11) before running two.
 2. **Every config goes through `controlPlane.publishConfig(doc)`.** Never write
-   `saveConfig` yourself. Publishing runs in the totals' turn so budgets stay consistent
-   across limit edits.
+   `publishConfig` on the store yourself: the core validates the document, checks it
+   against the current version and retries a publish that lost a race to another
+   process's.
 3. **Config holds key hashes, never keys.** `createKey(id)` returns `{ id, key, hash }`;
    store `id` + `hash`, show `key` once, never log or persist it.
 4. **Backend secrets never enter config.** A backend names an environment variable
@@ -122,38 +129,49 @@ await app.listen({ host: "0.0.0.0", port: 8090 });
   across), `recentRecordsSize` (100), `gatewayLiveTimeoutMs` (30 000),
   `gatewayForgetAfterMs` (1 h), `batchCursorRetentionMs` (7 days). Defaults match
   the gateway's timings; change them only with a reason.
+- Several cores over one store are several `createControlPlane({ store })` calls —
+  one per process in a real deployment (§2, rule 1). The sample shows the shape inside
+  one process: `KAIAK_SAMPLE_PROTOCOL_PORTS` adds protocol replicas, each a core and a
+  Fastify instance of its own over the sample's one in-memory store. The sample stays a
+  single process; its replicas are a demonstration and a test harness.
 
 ## 5. Implementing the store
 
 `ControlPlaneStore` (`src/storage/types.ts`) is the only thing you must implement.
 Every method is async. `createMemoryStore()` (`src/storage/memory.ts`) is the
 reference implementation — read it first, then mirror its behavior method by method.
-Its tests (`src/storage/memory.test.ts`) state the contract points the core relies on;
-port them to run against your store.
+The contract is also a test suite, `storeContractTests` from
+`kaiak-control/store-contract` (§11): run it against your store.
+
+The store is where control-plane processes agree. Every write that changes the totals
+moves **one totals sequence** by one, in the same transaction; the sequence is the
+`revision` gateways order totals by. Every such write is **conditional** on what the
+core read, so two processes never both win; a refused write changes nothing and the
+core decides again. Reads of the totals are **one snapshot**. And every change, by any
+process, reaches every process through `subscribe()`.
 
 | Methods | Contract to hold |
 | --- | --- |
-| `configEpoch()` | 32 random lowercase hex digits, created **once with the store** and never changed while the store keeps its versions. A store that survives restarts keeps its epoch — that is what lets gateways keep resuming across control-plane restarts. |
-| `latestConfig`, `saveConfig(entry, keep)`, `configsAfter(version)` | Versions are written by the core only. `saveConfig` may drop versions older than the newest `keep`; keeping all of them (config audit history) is allowed. `configsAfter` returns oldest first. |
-| `acquireLease(holder, now, expiresAt)`, `releaseLease(holder)` | Grant when free, when `holder` already holds it, or when expired by `now`; otherwise change nothing and return the lease in force. **Check and write in one transaction.** |
-| `lastBatch(instance)`, `saveCountedBatch(counted, expectedLast, keepRecords)` | The exactly-once guarantee. Write the batch ID as the instance's last, add every `additions` entry to the window totals, and append `records` — **all in one transaction, and only if the instance's last batch still equals `expectedLast`** (`undefined` = none yet). Otherwise write nothing and return `{ saved: false, last }`. A compare-and-set on the cursor row (`UPDATE … WHERE last = $expected`, or `SELECT … FOR UPDATE`) is the usual shape. |
-| `addWindowTotals(additions)` | Add to window totals (a window not stored starts at 0). Used for model-set carry-overs. |
-| `currentWindowTotals({ hourStart, monthStart })` | `tokens_per_hour` windows starting at `hourStart`, `usd_per_month` windows starting at `monthStart`. |
-| `dropPastWindowTotals(oldest)` | Past windows *may* be dropped; keeping them for reporting is allowed — the core only reads current windows. |
+| `configEpoch()` | 32 random lowercase hex digits, created **once with the store** and kept while the store keeps its versions and its sequence. A store that survives restarts keeps its epoch — that is what lets gateways keep resuming across control-plane restarts. A store that loses or **rolls back** its state (a restore from a backup) takes a new epoch: otherwise its sequence goes back and gateways ignore its totals. |
+| `latestConfig`, `publishConfig(entry, expectedVersion, keep)`, `configsAfter(version)` | Store `entry` as the newest version **only while the latest version is still `expectedVersion`**, and move the sequence — one transaction. Otherwise write nothing and return `{ saved: false, latestVersion }`. A publish never depends on usage. Versions older than the newest `keep` may be dropped; keeping all of them (config audit history) is allowed. `configsAfter` returns oldest first. |
+| `lastBatch(instance)`, `saveCountedBatch(counted, expectedLast, keepRecords)` | The exactly-once guarantee. Write the batch ID as the instance's last, add every `additions` entry to the window totals, append `records` and move the sequence — **all in one transaction, and only if the instance's last batch still equals `expectedLast`** (`undefined` = none yet). Otherwise write nothing and return `{ saved: false, last }`. A compare-and-set on the cursor row (`UPDATE … WHERE … = $expected`) is the usual shape. |
+| `totalsSnapshot(current, instance?)` | The sequence, the latest config, the instance's last batch, the current windows (`tokens_per_hour` at `hourStart`, `usd_per_month` at `monthStart`) and the live set's size, **read in one snapshot** (`REPEATABLE READ`, or one statement). A message built from it holds exactly the batches counted at its sequence. |
+| `dropPastWindowTotals(oldest)` | Past windows *may* be dropped; keeping them for reporting is allowed — the core only reads current windows. Does not move the sequence. |
 | `recentRecords(limit)` | Newest first. |
-| `gateway`, `gateways`, `saveGateway`, `deleteGateways` | Latest status per instance, whole-record replace. Deleting a gateway keeps its batch cursor. |
+| `gateway`, `gateways`, `saveGateway(record, expectedRevision)`, `forgetGateways([{ instance, revision }])` | Latest status per instance with a per-instance write count (`revision`). Each write and each forget only if the stored record is still at the revision the core read; a write or forget that changes the live set moves the sequence in the same transaction. Forgetting a gateway keeps its batch cursor. |
 | `dropBatchCursorsCountedBefore(cutoff)` | Drop cursors counted before `cutoff`, return their instances. |
+| `subscribe(listener)` | Every change **any process** makes — `config-published`, `batch-counted`, `gateways-changed`, each with the sequence after it — after its write, in the store's order, to every subscriber of every process. For a database: a notification channel (Postgres `LISTEN`/`NOTIFY` sent in the writing transaction, Redis pub/sub). A lost notification leaves streams without pushes until the next change; the core does not poll. |
 
 Representation notes:
 
 - **Window totals are `bigint`** (tokens, or nano-USD). Store them as `NUMERIC` /
   `DECIMAL(20,0)` or `BIGINT` — the protocol caps a window at 18 digits (< 10^18), so a
   signed 64-bit integer holds it. Never a float.
-- **Window identity** is `(group, type, models, windowStart)`; `group` is absent for
-  a global limit, `models` is a **sorted** array or absent (= all models). Normalize
-  both to stable non-null values for a primary key (primary-key columns cannot be
-  `NULL`): e.g. `''` for global (a group ID is never empty), and for models the JSON
-  text of the sorted array, `''` for all. Windows are keyed by the group **ID**:
+- **Window identity** is `(group, type, windowStart)`; `group` is absent for global.
+  Normalize it to a stable non-null value for a primary key (primary-key columns
+  cannot be `NULL`): e.g. `''` for global (a group ID is never empty). Usage counts
+  toward every scope on a record's path whatever the config's limits, so windows exist
+  for groups without a limit too. Windows are keyed by the group **ID**:
   those of a deleted group are no longer read and age out with their hour or month —
   unless a group is created again under that ID within the window, which reads them
   again (§7).
@@ -166,15 +184,51 @@ A sketch, not a prescription (Postgres):
 
 ```sql
 create table store_meta   (id int primary key default 1, config_epoch text not null,
-                           lease_holder text, lease_expires_at bigint);
+                           sequence bigint not null default 0);
 create table configs      (version int primary key, config jsonb not null, published_at bigint not null);
 create table batch_cursor (instance text primary key, epoch text not null, sequence bigint not null,
                            counted_at bigint not null);
-create table window_total (group_id text, type text, models text, window_start bigint,
-                           used numeric(20,0) not null, primary key (group_id, type, models, window_start));
+create table window_total (group_id text, type text, window_start bigint,
+                           used numeric(20,0) not null, primary key (group_id, type, window_start));
 create table usage_record (record_id text primary key, received_at bigint not null, record jsonb not null);
-create table gateway      (instance text primary key, state jsonb not null);
+create table gateway      (instance text primary key, revision int not null, live boolean not null,
+                           state jsonb not null);
 ```
+
+Each conditional write is one transaction that fails cleanly when its condition does
+not hold, moves the sequence, and notifies:
+
+```sql
+-- publishConfig: the version is the condition (the primary key refuses a second
+-- writer of the same version; check the latest inside the transaction).
+begin;
+  select coalesce(max(version), 0) from configs;          -- must equal $expectedVersion
+  insert into configs values ($version, $config, $publishedAt);
+  update store_meta set sequence = sequence + 1 returning sequence;
+  select pg_notify('kaiak', json_build_object('type', 'config-published',
+                   'version', $version, 'sequence', <sequence>)::text);
+commit;
+
+-- saveCountedBatch: compare-and-set on the cursor (an insert for the first batch).
+begin;
+  update batch_cursor set epoch = $epoch, sequence = $seq, counted_at = $at
+    where instance = $instance and epoch = $expectedEpoch and sequence = $expectedSeq;
+                                                          -- 0 rows: refused, roll back
+  insert into window_total … on conflict (group_id, type, window_start)
+    do update set used = window_total.used + excluded.used;
+  insert into usage_record …;                             -- your ledger too (§6)
+  update store_meta set sequence = sequence + 1 returning sequence;
+  select pg_notify('kaiak', …'batch-counted'…);
+commit;
+
+-- saveGateway / forgetGateways: the revision is the condition.
+update gateway set state = $state, live = $live, revision = revision + 1
+  where instance = $instance and revision = $expectedRevision;   -- 0 rows: refused
+```
+
+Run `totalsSnapshot` in one `REPEATABLE READ` transaction. Every process `LISTEN`s on
+the channel and passes each payload to its subscribers; `pg_notify` inside the
+transaction is delivered only on commit, in commit order.
 
 ## 6. Usage records: your ledger
 
@@ -428,7 +482,7 @@ The sample's `verify` command wraps it for a config file:
 | --- | --- |
 | Current config and its version | `currentConfig()` → `{ version, config, publishedAt }`; `configEpoch()` |
 | Gateways, health, what they run | `gateways()` → `{ instance, status, receivedAt, live, conflict? }[]`; `liveGateways()` |
-| Spend vs limits (current windows) | `totals("")` + `resolveScopes(config)` + `limitIdentity(limit)` — below |
+| Spend vs limits (current windows) | `totals("")` + `resolveScopes(config)`, matched by scope and type — below |
 | A group's path, effective limits and models | `resolveScopes(config)` → `{ group?, path, limits, allowed_models? }[]` — global first (no `group`, `path` `[]`), then every group in config order; `allowed_models` absent = every model |
 | Live usage feed | `recentRecords()` |
 | Push updates to browsers | `onConfigPublished`, `onTotalsChanged`, `onGatewaysChanged` (each returns an unsubscribe) |
@@ -439,10 +493,10 @@ Totals vs limits (as the sample's status page does, `control/sample/src/page/sec
 const current = await controlPlane.currentConfig();
 const totals = await controlPlane.totals(""); // "" = read under no gateway's name
 if (current && totals) {
-  const used = new Map(totals.windows.map((w) => [JSON.stringify([w.group ?? null, limitIdentity(w)]), BigInt(w.used)]));
+  const used = new Map(totals.windows.map((w) => [JSON.stringify([w.group ?? null, w.type]), BigInt(w.used)]));
   for (const { group, limits } of resolveScopes(current.config)) { // group undefined = global
     for (const limit of limits) {
-      const spent = used.get(JSON.stringify([group ?? null, limitIdentity(limit)])) ?? 0n; // absent = nothing used
+      const spent = used.get(JSON.stringify([group ?? null, limit.type])) ?? 0n; // absent = nothing used
       // tokens_per_hour / usd_per_month only: per-minute limits are enforced on
       // gateways and never counted here. USD amounts are nano-USD.
     }
@@ -473,9 +527,11 @@ if (current && totals) {
   reconnect and resume from their config version. Priced models under a USD limit are
   refused by gateways only after the outage passes `global.control_outage_grace_ms`
   (15 min default) — keep restarts well below it.
-- **Replacing the process**: the new one starts once the old lease is released (clean
-  `app.close()`) or expired (crash: up to `storeLeaseTtlMs`). Rolling updates that start
-  the new pod before stopping the old one wait on the lease — use `Recreate`.
+- **Replicas** (with a store that holds the contract across processes, §5): run them
+  behind any load balancer, no stickiness needed. A gateway whose replica goes away
+  reconnects to another and resumes from its config version; totals stay ordered by
+  the store's sequence. **Rolling updates** are fine: old and new processes run side
+  by side over the store. With the in-memory store, run one process.
 - Token holders can report usage and status under any instance name (one shared token
   by design); treat `KAIAK_CONTROL_TOKEN` like a provider key.
 - Logging: Fastify's pino. JSON in production; for development, `pino-pretty` with
@@ -485,28 +541,39 @@ if (current && totals) {
 
 ## 11. Testing
 
-- Unit-test your store against the contract (§5): port `memory.test.ts`, then drive the
-  core with it — the kaiak-control tests (`src/**/**.test.ts`) show how to call
-  `acceptUsageBatch`, `acceptStatus` and `publishConfig` directly without HTTP.
+- Run the store contract against your store from a `node:test` file:
+
+  ```ts
+  import { storeContractTests } from "kaiak-control/store-contract";
+  storeContractTests({ name: "postgres", create: makeEmptyStore, attach: connectAgain, dispose });
+  ```
+
+  `attach` gives a second handle on the same store, as a second process holds it
+  (another pool and listener): the tests race writes across both handles and listen
+  through the other. Then drive the core with your store — the kaiak-control tests
+  (`src/**/**.test.ts`) show how to call `acceptUsageBatch`, `acceptStatus` and
+  `publishConfig` directly without HTTP, two cores over one store included.
 - Validate against the shared fixtures in the kaiak repo's `protocol/fixtures/` (valid
   and invalid configs and messages, with `cases.json` naming each expected code).
 - End to end: run a real `kaiak` binary (or the gateway image) against your app with a
   fake OpenAI-compatible backend (`gateway/internal/fakebackend/cmd/fakebackend`), then
   check a request's usage arrives exactly once, a config edit reaches the gateway, and
   a control-plane restart loses nothing. The kaiak repo's cross-half e2e
-  (`gateway/e2e/sample_test.go`, build tag `crosshalf`) does this against the sample.
+  (`gateway/e2e/sample_test.go`, build tag `crosshalf`) does this against the sample,
+  and `gateway/e2e/replicas_test.go` with two gateways on two cores over one store.
 
 ## 12. Things that look reasonable and are wrong
 
-- Running two replicas "for availability" — refused by the lease, by design.
+- Running two replicas over a store that does not hold the contract across processes
+  — the in-memory store, or a database store without conditional writes or a change
+  channel. Nothing refuses it: totals go out of order or miss pushes, and spend is
+  counted twice or lost. Run the contract tests (§11) with `attach` first.
 - Sending gateways a remaining *allowance* per scope — they must get totals; the
   library already does this.
 - Treating `recentRecords()` as the usage history — it is the last 100.
 - Parsing `used` or `cost_nano_usd` sums as JavaScript numbers — sums must be `BigInt`.
 - Rebuilding config from the previous published document plus a patch without
   validating — always build whole and publish through the core.
-- A `models` array stored unsorted (or `[]` for "all models") in window keys — the
-  identity breaks and totals stop matching limits.
 - Moving a group by editing its `parent` — refused (`group-parent-changed`). A move
   is a delete and a create; the old group's spend stays with its old ancestors, and
   a group created again under the same ID within the window resumes that ID's spend
