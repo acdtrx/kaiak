@@ -2,7 +2,7 @@
 // the URL config will use and accepts the credential, and reads what it reports about
 // its models, for the app to show and to turn into declared config. It only reports:
 // no state, no retries, GETs only, no redirect followed, at most two requests in order
-// (none for azure-anthropic, which has no models list).
+// (none for azure-anthropic, which has no models list: not checkable).
 // Called by the app only — never by the core, the Fastify plugin or a schedule.
 
 import { Ajv2020 } from "ajv/dist/2020.js";
@@ -29,7 +29,10 @@ export type VerifyFailureCode =
   | "timeout"
   | "credential-refused"
   | "not-a-models-list"
-  | "model-not-listed";
+  | "model-not-listed"
+  // The type has nothing to check against (azure-anthropic: no models list); nothing
+  // was sent.
+  | "not-checkable";
 
 export type VerifiedServer = "vllm" | "llama-server" | "unknown";
 
@@ -143,14 +146,19 @@ export async function verifyBackend(options: VerifyBackendOptions): Promise<Back
   const settings = checkInput(options);
   settings.signal?.throwIfAborted();
 
-  // Claude in Microsoft Foundry has no models list: nothing is sent.
+  // Claude in Microsoft Foundry has no models list: nothing is sent, and the report
+  // says not checkable — never ok, so no caller reads it as verified.
   if (settings.type === "azure-anthropic") {
     return {
-      ok: true,
+      ok: false,
+      failure: {
+        code: "not-checkable",
+        message:
+          "Microsoft Foundry has no models list: the backend cannot be checked; its reachability and credential stay unchecked until the gateway's first request",
+      },
       server: "unknown",
       models: [],
-      ...(settings.model === undefined ? {} : { metadata: {} }),
-      notes: ["Microsoft Foundry has no models list: the backend was not contacted"],
+      notes: [],
     };
   }
 

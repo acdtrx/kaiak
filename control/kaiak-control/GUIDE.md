@@ -416,8 +416,9 @@ field by field, is `docs/specs/BACKEND-VERIFY.md`.
   to it, and private addresses are allowed (backends live there). Expose it only to
   people allowed to configure backends, behind your app's own authentication (hard
   rule 5); anyone else could use it to probe your network or send a key elsewhere.
-- **`azure-anthropic` is not checked.** Foundry has no models list, so the helper sends
-  nothing and says so in a note: reachability and the credential show only at the
+- **`azure-anthropic` is not checkable.** Foundry has no models list, so the helper
+  sends nothing and answers `ok: false` with the failure code `not-checkable` — never
+  a report that reads as verified: reachability and the credential show only at the
   gateway's first request.
 - **Nothing is saved.** A backend restarted with another context size leaves config
   stale until someone verifies again.

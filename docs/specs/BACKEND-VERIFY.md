@@ -75,12 +75,16 @@ way by the gateway:
 
 - **The Anthropic types** (settled 2026-10-06): Anthropic's models list is paged
   (20 by default), so one request asks for the most a page holds. Claude in
-  Microsoft Foundry has no Models API, so an `azure-anthropic` report sends nothing
-  and says so (Sources); its reachability and credential stay unchecked until the
-  gateway's first request.
+  Microsoft Foundry has no Models API, so an `azure-anthropic` check sends nothing
+  and answers **not checkable** (settled 2026-10-06, the pre-merge review's L6):
+  `ok: false`, failure code `not-checkable` — never a report a caller reads as
+  verified; its reachability and credential stay unchecked until the gateway's
+  first request. Rejected: `ok: true` with a note — the sample's `verify` exited 0,
+  and a UI would show the backend as verified.
 
 - Every request sends `Accept: application/json`, `User-Agent: kaiak-control` and the
-  credential header when a credential was given; nothing else of its own (Node's
+  credential header when a credential was given (`anthropic` also its
+  `anthropic-version`); nothing else of its own (Node's
   `fetch` adds its fixed defaults: `Host`, `Connection`, `Accept-Encoding`,
   `Accept-Language: *`, `Sec-Fetch-Mode`).
 - **At most two requests, in order**: the models list, then `GET <root>/props` only
@@ -133,7 +137,7 @@ inferred from names or other fields.
 | unknown (OpenAI, SGLang, …) | — | reachability, credential and the listed ids only | — |
 | azure-openai | — | reachability and credential only | — |
 | anthropic | `context_length` | the model's list entry, `max_input_tokens` (Anthropic's Models API, from the documentation; not verified live) | no |
-| azure-anthropic | — | nothing: `models: []` and a top-level note, `Microsoft Foundry has no models list: the backend was not contacted` | — |
+| azure-anthropic | — | nothing: not checkable (`ok: false`, `not-checkable`, `models: []`) | — |
 
 - **llama-server context comes from `/props`**, not the list's `meta.n_ctx`
   (settled 2026-09-29): the server splits its context across slots, and
@@ -146,8 +150,8 @@ inferred from names or other fields.
 - **Azure lists base models, not deployments** — the names requests carry are
   deployment names. So an azure-openai report has `models: []` and a top-level note,
   and `model-not-listed` never applies there: as in the gateway's model check, every
-  name counts as served. The same holds for `azure-anthropic`, which has no list at
-  all (settled 2026-10-06).
+  name counts as served. `azure-anthropic` has no list at all: not checkable
+  (above).
 - A `/props` that fails (no answer, timeout, non-`2xx`, over the read cap, not JSON)
   is a note on each model, not a failure: the backend answered and accepted the
   credential. Its values are then absent.
@@ -220,7 +224,7 @@ type MetadataFragment = {
 
 ### Failure codes
 
-Only the models-list request decides `ok`. The first failure ends the call.
+Only the models-list request decides `ok` (or its absence: `not-checkable`). The first failure ends the call.
 
 | Code | When |
 | --- | --- |
@@ -228,7 +232,8 @@ Only the models-list request decides `ok`. The first failure ends the call.
 | `timeout` | The models list did not arrive whole within `timeoutMs`. |
 | `credential-refused` | The models list answered `401` or `403` (the message says whether a credential was sent). |
 | `not-a-models-list` | Any other answer that is not a `2xx` JSON body of at most 1 MiB matching the models-list schema: another status (a `3xx` included — not followed), a body that is not JSON, over the cap, or without a `data` array of entries with a string `id`. The message names the status or what was wrong. |
-| `model-not-listed` | Every type but azure-openai: `model` was given and no entry's `id` equals it whole (the gateway's model check matches the same way). `models` still lists what the list said; `/props` is not read. |
+| `model-not-listed` | Every type but azure-openai and azure-anthropic: `model` was given and no entry's `id` equals it whole (the gateway's model check matches the same way). `models` still lists what the list said; `/props` is not read. |
+| `not-checkable` | azure-anthropic: the type has no models list to check against; nothing was sent (settled 2026-10-06). |
 
 - **Abort is not a failure**: when the caller's `signal` aborts, the call rejects
   with the signal's reason, as platform APIs do.

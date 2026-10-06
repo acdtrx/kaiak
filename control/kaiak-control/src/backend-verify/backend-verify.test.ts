@@ -474,26 +474,25 @@ test("anthropic: the paged list with x-api-key and anthropic-version; context fr
   assertNoCredential(denied);
 });
 
-test("azure-anthropic: no request is sent; no models, a note, any name served", async (t) => {
+test("azure-anthropic: no request is sent; not checkable, never reported as verified", async (t) => {
   const backend = await fakeBackend(t, {});
-  const report = await verifyBackend({
-    type: "azure-anthropic",
-    baseUrl: backend.origin,
-    credential: CREDENTIAL,
-    model: "my-claude-deployment",
-  });
-  assert.deepEqual(report, {
-    ok: true,
-    server: "unknown",
-    models: [],
-    metadata: {},
-    notes: ["Microsoft Foundry has no models list: the backend was not contacted"],
-  });
-  assert.deepEqual(backend.requests, []);
-  assertNoCredential(report);
-
-  const noModel = await verifyBackend({ type: "azure-anthropic", baseUrl: backend.origin, credential: CREDENTIAL });
-  assert.equal(noModel.metadata, undefined);
+  const message = "Microsoft Foundry has no models list: the backend cannot be checked; its reachability and credential stay unchecked until the gateway's first request";
+  for (const model of ["my-claude-deployment", undefined]) {
+    const report = await verifyBackend({
+      type: "azure-anthropic",
+      baseUrl: backend.origin,
+      credential: CREDENTIAL,
+      ...(model === undefined ? {} : { model }),
+    });
+    assert.deepEqual(report, {
+      ok: false,
+      failure: { code: "not-checkable", message },
+      server: "unknown",
+      models: [],
+      notes: [],
+    });
+    assertNoCredential(report);
+  }
   assert.deepEqual(backend.requests, []);
 });
 

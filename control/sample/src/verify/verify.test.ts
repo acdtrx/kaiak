@@ -8,7 +8,7 @@ import { test } from "node:test";
 import type { TestContext } from "node:test";
 import { promisify } from "node:util";
 
-import { runVerify } from "./index.ts";
+import { explain, runVerify } from "./index.ts";
 
 const CLI = path.resolve(import.meta.dirname, "../verify-cli.ts");
 const run = promisify(execFile);
@@ -86,6 +86,17 @@ test("--type takes each of the five backend types, and the check follows it", as
   assert.ok(azure.kind === "report");
   assert.equal(azure.report.failure?.code, "not-a-models-list");
   assert.match(azure.report.failure?.message ?? "", /\/v1\/openai\/v1\/models answered 404$/);
+});
+
+test("azure-anthropic says plainly it was not checked, and fails", async () => {
+  const result = await runVerify(["--base-url", "https://res.services.ai.azure.com", "--type", "azure-anthropic"], {
+    VERIFY_KEY: "k",
+  });
+  assert.ok(result.kind === "report");
+  assert.equal(result.report.ok, false);
+  assert.equal(result.report.failure?.code, "not-checkable");
+  assert.match(explain(result.report, { type: "azure-anthropic", baseUrl: "https://res.services.ai.azure.com" }),
+    /^verify: not-checkable: Microsoft Foundry has no models list/);
 });
 
 test("the API key comes from the named variable, which must be set", async () => {
