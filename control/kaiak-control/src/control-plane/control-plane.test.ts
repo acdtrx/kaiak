@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { EventEmitter, once } from "node:events";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, test } from "node:test";
@@ -93,112 +92,6 @@ test("the core takes usage batches with its clock and reports totals listener fa
   assert.deepEqual(events, ["totals-changed"]);
 });
 
-describe("a model-set edit's carry-over and the publish", () => {
-  const SEPT_24 = Date.UTC(2026, 8, 24, 10, 30);
-  const full = (): Record<string, unknown> => JSON.parse(readFileSync(FULL, "utf8"));
-  // full.json with the global USD limit's model set widened: its spend carries over.
-  const widened = (): Record<string, unknown> => {
-    const config = full() as { global: { limits: { type: string; models?: string[] }[] } };
-    for (const limit of config.global.limits) {
-      if (limit.type === "usd_per_month") limit.models = ["gpt-4.1", "gpt-4.1-mini", "qwen3-32b"];
-    }
-    return config;
-  };
-  const globalUsd = async (controlPlane: ControlPlane): Promise<{ models?: string[]; used: string }> => {
-    const window = (await controlPlane.totals("gw-1"))?.windows.find(
-      (w) => w.group === undefined && w.type === "usd_per_month",
-    );
-    assert.ok(window, "the global USD window");
-    return { ...(window.models && { models: window.models }), used: window.used };
-  };
-  const spent = async (controlPlane: ControlPlane): Promise<string> => {
-    assert.ok((await controlPlane.publishConfig(full())).ok);
-    assert.ok((await controlPlane.acceptUsageBatch("gw-1", JSON.parse(readFileSync(MIXED_BATCH, "utf8")))).ok);
-    const { used } = await globalUsd(controlPlane);
-    assert.ok(BigInt(used) > 0n, "the batch spent against the global USD limit");
-    return used;
-  };
-
-  test("a failed carry write stores and announces nothing; the retry carries the spend", async () => {
-    const memory = createMemoryStore();
-    let failCarry = false;
-    const store: ControlPlaneStore = {
-      ...memory,
-      async addWindowTotals(additions) {
-        if (failCarry) {
-          failCarry = false;
-          throw new Error("store unavailable");
-        }
-        return memory.addWindowTotals(additions);
-      },
-    };
-    const controlPlane = createControlPlane({ store, token: "t", clock: () => SEPT_24 });
-    const used = await spent(controlPlane);
-    const heard: number[] = [];
-    controlPlane.onConfigPublished((published) => heard.push(published.version));
-
-    failCarry = true;
-    await assert.rejects(controlPlane.publishConfig(widened()), /store unavailable/);
-    assert.equal((await controlPlane.currentConfig())?.version, 1, "nothing stored");
-    assert.deepEqual(heard, [], "nothing announced");
-
-    const retry = await controlPlane.publishConfig(widened());
-    assert.ok(retry.ok);
-    assert.equal(retry.published.version, 2);
-    assert.deepEqual(await globalUsd(controlPlane), { models: ["gpt-4.1", "gpt-4.1-mini", "qwen3-32b"], used });
-  });
-
-  test("a carry written before a failed store write is not added twice by the retry", async () => {
-    const memory = createMemoryStore();
-    let failSave = false;
-    const store: ControlPlaneStore = {
-      ...memory,
-      async saveConfig(entry, keep) {
-        if (failSave) {
-          failSave = false;
-          throw new Error("store unavailable");
-        }
-        return memory.saveConfig(entry, keep);
-      },
-    };
-    const controlPlane = createControlPlane({ store, token: "t", clock: () => SEPT_24 });
-    const used = await spent(controlPlane);
-
-    failSave = true;
-    await assert.rejects(controlPlane.publishConfig(widened()), /store unavailable/);
-    assert.ok((await controlPlane.publishConfig(widened())).ok);
-    assert.equal((await globalUsd(controlPlane)).used, used);
-  });
-
-  test("an onLimitCarriedOver that throws goes to the host's handler; the publish succeeds", async () => {
-    const events: { type: string; carry?: unknown }[] = [];
-    const controlPlane = createControlPlane({
-      store: createMemoryStore(),
-      token: "t",
-      clock: () => SEPT_24,
-      onLimitCarriedOver: () => {
-        throw new Error("audit log unavailable");
-      },
-      onListenerError: (_error, event) => events.push(event),
-    });
-    const used = await spent(controlPlane);
-
-    const result = await controlPlane.publishConfig(widened());
-    assert.ok(result.ok);
-    assert.equal((await globalUsd(controlPlane)).used, used);
-    assert.deepEqual(
-      events.map((event) => event.type),
-      ["limit-carried-over"],
-    );
-    assert.deepEqual(events[0]?.carry, {
-      type: "usd_per_month",
-      models: ["gpt-4.1", "gpt-4.1-mini", "qwen3-32b"],
-      from: [["gpt-4.1", "gpt-4.1-mini"]],
-      ambiguous: false,
-    });
-  });
-});
-
 test("the live set's size is the live-gateway count in totals and acks", async () => {
   let now = Date.UTC(2026, 8, 24, 10, 30);
   const events: string[] = [];
@@ -225,7 +118,8 @@ test("the live set's size is the live-gateway count in totals and acks", async (
   now += 1_000;
   assert.deepEqual((await controlPlane.expireSilentGateways("manual")).expired, ["gw-1", "gw-2"]);
   assert.equal((await controlPlane.totals("gw-1"))?.live_gateways, 0);
-  assert.deepEqual(events, ["gateways-changed", "gateways-changed", "gateways-changed"]);
+  // Each status and each expiry is its own change to the gateway records.
+  assert.deepEqual(events, ["gateways-changed", "gateways-changed", "gateways-changed", "gateways-changed"]);
 });
 
 test("a gateway forgotten while silent keeps its last counted batch for the cursor retention", async () => {
@@ -259,79 +153,141 @@ test("a gateway forgotten while silent keeps its last counted batch for the curs
   assert.equal((await controlPlane.totals("gw-1"))?.counted_through, null);
 });
 
-describe("one process per store", () => {
+describe("several cores over one store", () => {
   const cores: ControlPlane[] = [];
   afterEach(async () => {
     for (const core of cores.splice(0)) await core.stop();
   });
   const core = (store: ControlPlaneStore, options: Partial<ControlPlaneOptions> = {}): ControlPlane => {
-    const created = createControlPlane({ store, token: "t", ...options });
+    const created = createControlPlane({ store, token: "t", clock: () => Date.UTC(2026, 8, 24, 10, 30), ...options });
     cores.push(created);
     return created;
   };
+  const full = (): unknown => JSON.parse(readFileSync(FULL, "utf8"));
 
-  test("a second core on the store refuses to start until the first stops", async () => {
-    const store = createMemoryStore();
-    const first = core(store, { controlPlaneId: "1".repeat(32) });
-    const second = core(store, { controlPlaneId: "2".repeat(32) });
-    await first.start();
-    await first.start(); // started already: nothing more
-    await assert.rejects(second.start(), {
-      code: "store-lease-held",
-      message: /holder 1{32}.*run one control-plane process per store/,
-    });
-    await first.stop();
-    await second.start();
-  });
-
-  test("a lease its holder stopped renewing expires", async () => {
-    let now = 0;
-    const store = createMemoryStore();
-    await store.acquireLease("crashed", now, now + 30_000);
-    const next = core(store, { clock: () => now });
-    await assert.rejects(next.start(), { code: "store-lease-held" });
-    now = 30_000;
-    await next.start();
-  });
-
-  test("the core renews its lease and hears when it is lost", async () => {
-    const store = createMemoryStore();
-    const lost: unknown[] = [];
-    const renewed = new EventEmitter();
-    const watched: ControlPlaneStore = {
-      ...store,
-      async acquireLease(holder, now, expiresAt) {
-        const result = await store.acquireLease(holder, now, expiresAt);
-        renewed.emit("attempt", result);
-        return result;
+  // One record for carol, costing `cost` nano-USD, from `instance`.
+  const carolBatch = (instance: string, sequence: number, cost: number): unknown => ({
+    batch: { instance, epoch: "e".repeat(32), sequence },
+    records: [
+      {
+        record_id: `${instance}-${sequence}`.padEnd(32, "0").replace(/[^0-9a-f]/g, "0"),
+        request_id: `req-${instance}-${sequence}`,
+        gateway_instance: instance,
+        key_id: "k-carol",
+        groups: ["users", "carol"],
+        model: "gpt-4.1-mini",
+        deployment: { backend: "b", model: "gpt-4.1-mini" },
+        units: { tokens_in: 1, tokens_cached: 0, tokens_cache_write: 0, tokens_out: 0, tokens_reasoning: 0 },
+        cost_nano_usd: cost,
+        estimated: false,
+        partial: false,
+        gateway_time: "2026-09-24T10:29:00Z",
       },
-    };
-    const running = core(watched, { storeLeaseTtlMs: 30, onStoreLeaseLost: (error) => lost.push(error) });
-    await running.start();
-    const [first] = (await once(renewed, "attempt")) as [{ ok: boolean }];
-    assert.ok(first.ok, "the holder renews its lease");
+    ],
+  });
+  const usd = async (controlPlane: ControlPlane, group?: string): Promise<string | undefined> =>
+    (await controlPlane.totals("probe"))?.windows.find((w) => w.group === group && w.type === "usd_per_month")?.used;
 
-    // Another process took the store (this one stalled past its lease).
-    await store.releaseLease((await leaseHolder(store)) ?? "");
-    await store.acquireLease("intruder", Date.now(), Date.now() + 60_000);
-    const [attempt] = (await once(renewed, "attempt")) as [{ ok: boolean }];
-    assert.equal(attempt.ok, false);
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.ok(lost.length > 0, "the loss is reported");
-    assert.equal((lost[0] as { code?: string }).code, "store-lease-held");
+  test("every core starts: none holds the store alone", async () => {
+    const store = createMemoryStore();
+    const [a, b] = [core(store), core(store)];
+    await a.start();
+    await a.start(); // started already: nothing more
+    await b.start();
   });
 
-  test("the lease TTL must allow a renewal before it runs out", () => {
-    for (const storeLeaseTtlMs of [0, 2, 1.5]) {
-      assert.throws(() => createControlPlane({ store: createMemoryStore(), token: "t", storeLeaseTtlMs }), {
-        code: "store-lease-ttl-invalid",
-      });
+  test("batches from many instances split across two cores, each resent to both, count once", async () => {
+    const store = createMemoryStore();
+    const [a, b] = [core(store), core(store)];
+    assert.ok((await a.publishConfig(full())).ok);
+    const instances = Array.from({ length: 8 }, (_, n) => `gw-${n}`);
+    const sends = instances.flatMap((instance, n) =>
+      [1, 2, 3].flatMap((sequence) => {
+        const doc = carolBatch(instance, sequence, 10);
+        // Every batch goes to one core first, and its resend to the other at once.
+        const [first, second] = (n + sequence) % 2 === 0 ? [a, b] : [b, a];
+        return [first.acceptUsageBatch(instance, doc), second.acceptUsageBatch(instance, structuredClone(doc))];
+      }),
+    );
+    const intakes = await Promise.all(sends);
+    assert.ok(intakes.every((intake) => intake.ok));
+    const outcomes = intakes.map((intake) => (intake.ok ? intake.outcome : "refused"));
+    assert.equal(outcomes.filter((outcome) => outcome === "duplicate").length, 24);
+    // 8 instances × 3 batches × 10 nano-USD, once each.
+    assert.equal(await usd(a), "240");
+    assert.equal(await usd(b, "carol"), "240");
+  });
+
+  test("totals read through either core carry one revision", async () => {
+    const store = createMemoryStore();
+    const [a, b] = [core(store), core(store)];
+    assert.ok((await a.publishConfig(full())).ok);
+    assert.ok((await b.acceptUsageBatch("gw-1", carolBatch("gw-1", 1, 5))).ok);
+    const [ta, tb] = [await a.totals("gw-1"), await b.totals("gw-1")];
+    assert.deepEqual(ta, tb);
+    assert.equal(ta?.revision, 2);
+  });
+
+  test("a publish through one core reaches the other core's listeners, and their totals follow", async () => {
+    const store = createMemoryStore();
+    const [a, b] = [core(store), core(store)];
+    const heardByB: number[] = [];
+    let totalsHeardByB = 0;
+    b.onConfigPublished((published) => heardByB.push(published.version));
+    b.onTotalsChanged(() => (totalsHeardByB += 1));
+    assert.ok((await a.publishConfig(full())).ok);
+    assert.ok((await a.acceptUsageBatch("gw-1", carolBatch("gw-1", 1, 5))).ok);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(heardByB, [1]);
+    assert.equal(totalsHeardByB, 1);
+    assert.equal((await b.totals("gw-1"))?.config_version, 1);
+  });
+
+  test("publishes and batches racing on two cores never refuse each other", async () => {
+    const store = createMemoryStore();
+    const [a, b] = [core(store), core(store)];
+    assert.ok((await a.publishConfig(full())).ok);
+    const work: Promise<{ ok: boolean }>[] = [];
+    for (let n = 1; n <= 10; n++) {
+      work.push(a.publishConfig(full()));
+      work.push(b.acceptUsageBatch("gw-1", carolBatch("gw-1", n, 1)));
     }
+    const results = await Promise.all(work);
+    assert.ok(results.every((result) => result.ok));
+    assert.equal((await b.currentConfig())?.version, 11);
+    assert.equal(await usd(a, "carol"), "10");
+  });
+
+  test("an edited limit keeps its window across cores", async () => {
+    const store = createMemoryStore();
+    const [a, b] = [core(store), core(store)];
+    assert.ok((await a.publishConfig(full())).ok);
+    assert.ok((await b.acceptUsageBatch("gw-1", carolBatch("gw-1", 1, 700))).ok);
+    const edited = full() as { global: { limits: { type: string; value: number }[] } };
+    edited.global.limits = [{ type: "usd_per_month", value: 9000 }];
+    assert.ok((await b.publishConfig(edited)).ok);
+    assert.equal(await usd(a), "700");
+  });
+
+  test("two sweeps together expire a silent gateway once; a sweep never expires a gateway that just reported", async () => {
+    const store = createMemoryStore();
+    let now = Date.UTC(2026, 8, 24, 10, 30);
+    const options = { clock: () => now, gatewayLiveTimeoutMs: 1_000 };
+    const [a, b] = [core(store, options), core(store, options)];
+    assert.ok((await a.publishConfig(full())).ok);
+    const status = JSON.parse(readFileSync(READY_STATUS, "utf8")) as { instance: string };
+    for (const instance of ["gw-1", "gw-2"]) assert.ok((await a.acceptStatus(instance, { ...status, instance })).ok);
+
+    now += 1_000;
+    const [runA, runB] = await Promise.all([a.expireSilentGateways("manual"), b.expireSilentGateways("manual")]);
+    assert.deepEqual([...runA.expired, ...runB.expired].sort(), ["gw-1", "gw-2"]);
+    assert.equal(await a.liveGateways(), 0);
+
+    // gw-1 reports again while a sweep that judged it silent is about to write.
+    const reported = b.acceptStatus("gw-1", { ...status, instance: "gw-1" });
+    const swept = a.expireSilentGateways("manual");
+    assert.ok((await reported).ok);
+    await swept;
+    assert.equal(await b.liveGateways(), 1);
   });
 });
-
-// The holder of the store's lease, read by asking under a holder that cannot hold it.
-async function leaseHolder(store: ControlPlaneStore): Promise<string | undefined> {
-  const probe = await store.acquireLease("probe", 0, 0);
-  return probe.ok ? undefined : probe.lease.holder;
-}

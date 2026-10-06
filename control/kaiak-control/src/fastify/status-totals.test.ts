@@ -36,13 +36,10 @@ function headersFor(instance: string): Record<string, string> {
   return { authorization: `Bearer ${TOKEN}`, "kaiak-protocol": "5", "kaiak-instance": instance };
 }
 
-const CONTROL_PLANE = "c".repeat(32);
-
 function newControlPlane(options: Partial<ControlPlaneOptions> = {}): ControlPlane {
   return createControlPlane({
     store: createMemoryStore(),
     token: TOKEN,
-    controlPlaneId: CONTROL_PLANE,
     onListenerError: (error) => assert.fail(`listener failed: ${String(error)}`),
     ...options,
   });
@@ -216,23 +213,42 @@ describe("POST /v1/status", { timeout: 10_000 }, () => {
     const [run] = (await once(sweeps, "run")) as [ExpirySweepRun];
     assert.equal(run.trigger, "schedule");
     assert.deepEqual({ started, stopped }, { started: 1, stopped: 0 });
-    const held = await store.acquireLease("someone-else", Date.now(), Date.now() + 1000);
-    assert.ok(!held.ok && held.lease.holder === CONTROL_PLANE, "the core holds the store's lease");
     await app.close();
     assert.deepEqual({ started, stopped }, { started: 1, stopped: 1 });
-    assert.deepEqual(await store.acquireLease("someone-else", Date.now(), Date.now() + 1000), { ok: true });
   });
 
-  test("an app whose store another core holds fails to start, saying why", async () => {
+  test("two apps over one store: a stream on one hears the other's publishes, batches and gateways", async () => {
     const store = createMemoryStore();
-    await startApp(newControlPlane({ store, controlPlaneId: "1".repeat(32) }));
-    const second = Fastify();
-    await second.register(controlProtocolPlugin, { controlPlane: newControlPlane({ store, controlPlaneId: "2".repeat(32) }) });
-    await assert.rejects(async () => second.ready(), {
-      code: "store-lease-held",
-      message: /another control-plane process holds this store \(holder 1{32}, .*run one control-plane process per store/,
+    const clock = () => Date.UTC(2026, 8, 24, 10, 30);
+    const [coreA, coreB] = [newControlPlane({ store, clock }), newControlPlane({ store, clock })];
+    await publishFixture(coreA, "minimal.json");
+    const [appA, appB] = [
+      await startApp(coreA, { totalsPushIntervalMs: 10 }),
+      await startApp(coreB, { totalsPushIntervalMs: 10 }),
+    ];
+    const stream = await openStream(appA, 1);
+    assert.equal((await nextTotals(stream)).config_version, 1);
+
+    // A publish through B: A's stream gets the version, then totals under it.
+    await publishFixture(coreB, "full.json");
+    const config = await stream.nextEvent();
+    assert.ok(config.kind === "event" && config.event === "config" && config.id === "2");
+    assert.equal((await nextTotals(stream)).config_version, 2);
+
+    // A batch posted to B: A's stream pushes the totals it produced.
+    const response = await fetch(`${appB.base}/v1/usage`, {
+      method: "POST",
+      headers: { ...headersFor("gw-1"), "content-type": "application/json" },
+      body: JSON.stringify(readFixture("messages/usage-batch/valid/mixed-groups.json")),
     });
-    await second.close();
+    assert.equal(response.status, 200);
+    const pushed = await nextTotals(stream);
+    assert.deepEqual(pushed.counted_through, { epoch: "5d41402abc4b2a76b9719d911017c592", sequence: 18 });
+    assert.deepEqual(pushed, await coreA.totals("gw-1"));
+
+    // A status posted to B moves the live count A's stream reports.
+    assert.equal((await postStatus(appB, "gw-2")).status, 204);
+    assert.equal((await nextTotals(stream)).live_gateways, 1);
   });
 });
 
@@ -246,7 +262,7 @@ describe("totals on the stream", { timeout: 20_000 }, () => {
     assert.ok(config.kind === "event" && config.event === "config" && config.id === "2");
     // Two publishes: the revision is at 2.
     assert.deepEqual(await nextTotals(stream), {
-      revision: { control_plane: CONTROL_PLANE, sequence: 2 },
+      revision: 2,
       config_epoch: await controlPlane.configEpoch(),
       config_version: 2,
       live_gateways: 0,
@@ -303,7 +319,7 @@ describe("totals on the stream", { timeout: 20_000 }, () => {
     assert.equal((await postStatus(app, "gw-1")).status, 204);
     const joined = await nextTotals(stream);
     assert.equal(joined.live_gateways, 1);
-    assert.equal(joined.revision.sequence, 2, "the join moved the revision on");
+    assert.equal(joined.revision, 2, "the join moved the revision on");
 
     now += 30_000;
     const run = await controlPlane.expireSilentGateways("manual");

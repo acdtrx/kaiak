@@ -174,6 +174,52 @@ describe("parents never change", () => {
   });
 });
 
+describe("several processes over one store", () => {
+  // Two config versions over one store, as two control-plane processes hold it.
+  function twoProcesses(): [ConfigVersions, ConfigVersions] {
+    const store = createMemoryStore();
+    const make = (): ConfigVersions =>
+      createConfigVersions({ store, historySize: 100, clock: () => 0, onListenerError: failOnListenerError });
+    return [make(), make()];
+  }
+
+  test("publishes racing from both get consecutive versions, each stored once", async () => {
+    const [a, b] = twoProcesses();
+    const results = await Promise.all([1, 2, 3, 4].map((n) => (n % 2 ? a : b).publishConfig(configNumbered(n))));
+    assert.deepEqual(results.map(publishedVersion).sort(), [1, 2, 3, 4]);
+    assert.equal((await b.currentConfig())?.version, 4);
+  });
+
+  test("each process's listeners hear every version, whichever process published it, in order", async () => {
+    const [a, b] = twoProcesses();
+    const heardByA: number[] = [];
+    const heardByB: number[] = [];
+    a.onConfigPublished((published) => heardByA.push(published.version));
+    b.onConfigPublished((published) => heardByB.push(published.version));
+    await a.publishConfig(configNumbered(1));
+    await b.publishConfig(configNumbered(2));
+    await a.publishConfig(configNumbered(3));
+    // The other process reads each version back after the store's announcement.
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(heardByA, [1, 2, 3]);
+    assert.deepEqual(heardByB, [1, 2, 3]);
+  });
+
+  test("a publish that lost the race is checked again against the version that won", async () => {
+    const [a, b] = twoProcesses();
+    await a.publishConfig(withGroups({ top: {}, other: {} }));
+    // Both read version 1, where "child" does not exist. a's version 2 creates it under
+    // "top"; b's publish, checked again against version 2, would move it.
+    const [won, lost] = await Promise.all([
+      a.publishConfig(withGroups({ top: {}, other: {}, child: { parent: "top" } })),
+      b.publishConfig(withGroups({ top: {}, other: {}, child: { parent: "other" } })),
+    ]);
+    assert.equal(publishedVersion(won), 2);
+    assert.deepEqual(lost.ok ? [] : lost.issues.map(({ code }) => code), ["group-parent-changed"]);
+    assert.equal((await a.currentConfig())?.version, 2);
+  });
+});
+
 describe("resuming from a version", () => {
   test("the current version gets nothing to replay", async () => {
     const configVersions = versions();
@@ -248,7 +294,7 @@ describe("resuming from a version", () => {
     // A store keeping less than asked: drop everything but the newest version.
     const latest = await store.latestConfig();
     assert.ok(latest);
-    await store.saveConfig({ ...latest, version: 4 }, 1);
+    assert.ok((await store.publishConfig({ ...latest, version: 4 }, 3, 1)).saved);
     assert.deepEqual(await configVersions.configsSince(await at(configVersions, 1)), { resync: true });
     assert.deepEqual((await configVersions.configsSince(await at(configVersions, 3))).resync, false);
   });

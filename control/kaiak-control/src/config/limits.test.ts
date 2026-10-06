@@ -7,7 +7,7 @@ import path from "node:path";
 import { describe, test } from "node:test";
 
 import { validateConfig } from "./index.ts";
-import { limitCovers, limitIdentity, mergeLimits, resolveScopes } from "./limits.ts";
+import { mergeLimits, resolveScopes } from "./limits.ts";
 import type { Config, Limit } from "./types.ts";
 
 const RESOLVED = path.resolve(import.meta.dirname, "../../../../protocol/fixtures/config/resolved");
@@ -61,10 +61,16 @@ describe("resolution fixtures", () => {
   }
 });
 
-test("a group's own limit with a new model set follows the defaults", () => {
-  const defaults = [{ type: "tokens_per_hour" as const, value: 10 }];
-  const own = [{ type: "tokens_per_hour" as const, value: 99, models: ["a"] }];
-  assert.deepEqual(mergeLimits(defaults, own), [defaults[0], own[0]]);
+test("a group's own limit replaces the default of its type in place; its other limits follow", () => {
+  const defaults = [
+    { type: "tokens_per_hour" as const, value: 10 },
+    { type: "usd_per_month" as const, value: 5 },
+  ];
+  const own = [
+    { type: "requests_per_minute" as const, value: 7 },
+    { type: "tokens_per_hour" as const, value: 99 },
+  ];
+  assert.deepEqual(mergeLimits(defaults, own), [own[1], defaults[1], own[0]]);
 });
 
 test("resolving a config whose parents do not reach a top-level group fails loudly", () => {
@@ -77,15 +83,4 @@ test("resolving a config whose parents do not reach a top-level group fails loud
     keys: {},
   } satisfies Config;
   assert.throws(() => resolveScopes(config), { code: "config-invalid" });
-});
-
-test("limit identity ignores model order; coverage follows the model set", () => {
-  assert.equal(
-    limitIdentity({ type: "usd_per_month", models: ["b", "a"] }),
-    limitIdentity({ type: "usd_per_month", models: ["a", "b"] }),
-  );
-  assert.notEqual(limitIdentity({ type: "usd_per_month" }), limitIdentity({ type: "usd_per_month", models: ["a"] }));
-  assert.ok(limitCovers({ type: "usd_per_month", value: 1 }, "anything"));
-  assert.ok(limitCovers({ type: "usd_per_month", value: 1, models: ["a"] }, "a"));
-  assert.ok(!limitCovers({ type: "usd_per_month", value: 1, models: ["a"] }, "b"));
 });

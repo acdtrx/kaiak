@@ -115,15 +115,15 @@ const GATEWAYS: GatewayView[] = [
 
 // Used amounts for three of the config's counted limits; the rest have used nothing.
 const TOTALS: Totals = {
-  revision: { control_plane: "c".repeat(32), sequence: 4 },
+  revision: 4,
   config_epoch: STORE_EPOCH,
   config_version: 7,
   live_gateways: 1,
   counted_through: null,
   windows: [
-    { type: "usd_per_month", models: ["gpt-4.1", "gpt-4.1-mini"], window_start: "2026-09-01T00:00:00Z", used: "1524000" },
+    { type: "usd_per_month", window_start: "2026-09-01T00:00:00Z", used: "1524000" },
     { group: "alice", type: "usd_per_month", window_start: "2026-09-01T00:00:00Z", used: "150000000000" },
-    { group: "eval-pipeline", type: "tokens_per_hour", models: ["qwen3-32b"], window_start: "2026-09-24T10:00:00Z", used: "1052" },
+    { group: "eval-pipeline", type: "tokens_per_hour", window_start: "2026-09-24T10:00:00Z", used: "1052" },
   ],
 };
 
@@ -290,12 +290,12 @@ test("totals: every limit of every scope, used against its value, zero included;
   const totals = section((await fetchPage(PUBLISHED)).body, "totals");
   const row = (pattern: RegExp): void => assert.match(totals, pattern);
   // Used: 1,524,000 nano-USD of $5,000.
-  row(/<td>global<\/td><td>\$5,000.00 \/ month<\/td><td>gpt-4.1, gpt-4.1-mini<\/td>\s*<td class="num">\$0.001524<\/td><td class="bar"><meter [^>]*value="0"><\/meter> <span class="num">0.0%<\/span><\/td><td>2026-09-01 00:00:00 UTC<\/td>/);
+  row(/<td>global<\/td><td>\$5,000.00 \/ month<\/td>\s*<td class="num">\$0.001524<\/td><td class="bar"><meter [^>]*value="0"><\/meter> <span class="num">0.0%<\/span><\/td><td>2026-09-01 00:00:00 UTC<\/td>/);
   // $150 of alice's $200 (her override of the default user's $20).
   row(/<td><span class="muted">users \/<\/span> <span class="id">alice<\/span><\/td><td>\$200.00 \/ month<\/td>[\s\S]*?\$150.00<\/td><td class="bar"><meter [^>]*value="75"><\/meter> <span class="num">75%/);
-  row(/<td><span class="muted">research \/<\/span> <span class="id">eval-pipeline<\/span><\/td><td>20,000,000 tokens \/ hour<\/td><td>qwen3-32b<\/td>\s*<td class="num">1,052<\/td>[\s\S]*?2026-09-24 10:00:00 UTC/);
+  row(/<td><span class="muted">research \/<\/span> <span class="id">eval-pipeline<\/span><\/td><td>20,000,000 tokens \/ hour<\/td>\s*<td class="num">1,052<\/td>[\s\S]*?2026-09-24 10:00:00 UTC/);
   // Nothing used yet: 0 of the limit, the current window.
-  row(/<td><span class="id">research<\/span><\/td><td>\$1,500.00 \/ month<\/td><td><span class="muted">all<\/span><\/td>\s*<td class="num">\$0.00<\/td>/);
+  row(/<td><span class="id">research<\/span><\/td><td>\$1,500.00 \/ month<\/td>\s*<td class="num">\$0.00<\/td>/);
   row(/users \/<\/span> <span class="id">bob<\/span><\/td><td>2,000,000 tokens \/ hour<\/td>[\s\S]*?<td class="num">0<\/td>[\s\S]*?2026-09-24 10:00:00 UTC/);
   row(/<td>global<\/td><td>3,000 requests \/ min<\/td>[\s\S]*?per gateway share, not counted here/);
 });
