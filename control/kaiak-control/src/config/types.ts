@@ -3,7 +3,15 @@
 
 // The backend type enum, as a value for apps that list or check types; a test pins it to
 // the schema's enum.
-export const BACKEND_TYPES = ["openai-compatible", "openai", "azure-openai", "vllm", "llama-server"] as const;
+export const BACKEND_TYPES = [
+  "openai-compatible",
+  "openai",
+  "azure-openai",
+  "vllm",
+  "llama-server",
+  "anthropic",
+  "azure-anthropic",
+] as const;
 
 export type BackendType = (typeof BACKEND_TYPES)[number];
 
@@ -18,9 +26,6 @@ export type UsageUnit = "tokens_in" | "tokens_cached" | "tokens_cache_write" | "
 
 // Units a price entry may name.
 export type PriceUnit = Exclude<UsageUnit, "tokens_reasoning">;
-
-// A JSON value other than null: what a model's defaults may hold.
-export type DefaultValue = string | number | boolean | unknown[] | { [key: string]: unknown };
 
 export interface Limit {
   type: LimitType;
@@ -92,7 +97,6 @@ export interface CircuitSettings {
 export interface Model {
   deployments: Deployment[];
   metadata: ModelMetadata;
-  defaults?: Record<string, DefaultValue>;
   output_limit?: { default: number; ceiling: number };
   queue?: QueueSettings;
   retries?: Required<RetrySettings>;
@@ -139,7 +143,7 @@ export interface Global {
 }
 
 export interface Config {
-  format_version: 4;
+  format_version: 5;
   global: Global;
   backends: Record<string, Backend>;
   models: Record<string, Model>;

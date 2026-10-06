@@ -8,7 +8,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { definitionChecker } from "../schemas/index.ts";
 
 // The protocol version this library speaks.
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 
 // Header names, lower case as Node presents incoming headers.
 export const PROTOCOL_HEADER = "kaiak-protocol";

@@ -6,7 +6,8 @@
 > format 2, protocol version 2) on 2026-09-27; to tiered prices (config format 3,
 > protocol version 3) on 2026-09-29; to a backend type per server (formats unchanged)
 > on 2026-10-01; to the cache-write unit (config format 4, protocol version 4) on
-> 2026-10-02.
+> 2026-10-02; to Messages and Responses passthrough — the Anthropic backend types, no
+> model defaults (config format 5, protocol version 5) — on 2026-10-06.
 >
 > Background, in this order: `docs/architecture/control-plane.html` (how gateways and a
 > control plane work together, with diagrams), `docs/specs/CONTROL-PROTOCOL.md` (the
@@ -198,7 +199,7 @@ and `partial`, `gateway_time`. Raw units travel beside the cost, so you can re-p
 The config document is the one format everything shares:
 `schema/config.schema.json` in the package, `examples/config.json` in the kaiak repo,
 field meanings in `docs/specs/CONTROL-PROTOCOL.md` → Config. Top level:
-`format_version: 4`, `global`, `backends`, `models`, `keys`, and optional `groups` —
+`format_version: 5`, `global`, `backends`, `models`, `keys`, and optional `groups` —
 each collection an object keyed by ID.
 
 **Backend types** (`CONTROL-PROTOCOL.md` → Config → Backend types; what each does:
@@ -209,6 +210,17 @@ gateway's module for it. `BACKEND_TYPES` lists them, for a form's choices.
   `api_key_env` and **force the standard service tier** (Prices, below).
 - `vllm`, `llama-server` (llama.cpp) and `openai-compatible` — any other server
   speaking the OpenAI format (SGLang, …) — pass the client's `service_tier` untouched.
+- `anthropic` (Anthropic's API) and `azure-anthropic` (Claude in Microsoft Foundry)
+  require `api_key_env` and **keep requests at the standard price**: options billed
+  above it are refused (Prices, below).
+- **A type decides which client APIs reach a model** (`GATEWAY.md` → Providers →
+  Endpoint support). The gateway passes each request through to a backend speaking
+  the same API and translates nothing, so a model is reachable through the APIs its
+  deployments' types serve: OpenAI's chat, completions and embeddings on every type
+  but the Anthropic ones; Anthropic Messages on `vllm`, `llama-server`, `anthropic`
+  and `azure-anthropic`; OpenAI Responses on `vllm`, `llama-server`, `openai` and
+  `azure-openai`. A Claude model is Messages-only; `openai-compatible` serves
+  OpenAI's three only. Model entries on the gateway list their `endpoints`.
 - **Choosing a type**: the server's own type whenever it has one;
   `openai-compatible` only for a server without one. The backend answers the same
   under either, but only its own type gets that server's rules: an OpenAI backend
@@ -216,8 +228,18 @@ gateway's module for it. `BACKEND_TYPES` lists them, for a form's choices.
   bills about twice the prices config holds. `verifyBackend` notes a vLLM or
   llama-server answer under another type (§8).
 - `base_url` is what an OpenAI client would use, `/v1` included
-  (`https://api.openai.com/v1`, `http://vllm:8000/v1`); for `azure-openai` it is the
-  resource endpoint (`https://<resource>.openai.azure.com`). No type has a default.
+  (`https://api.openai.com/v1`, `http://vllm:8000/v1`) — for `anthropic`, what an
+  Anthropic client would use with `/v1` (`https://api.anthropic.com/v1`); for
+  `azure-openai` and `azure-anthropic` it is the resource endpoint
+  (`https://<resource>.openai.azure.com`, `https://<resource>.services.ai.azure.com`).
+  No type has a default.
+
+**Models carry no defaults** (`GATEWAY.md` → Model metadata): request parameters
+such as temperature or a chat template's switches are the backends' to set — the
+gateway applies none, and the config has no field for them. `metadata`
+(`context_length`, `capabilities`, `reasoning_efforts`) is information for clients;
+`output_limit` is the one request parameter the gateway sets, because limits reserve
+it. Suggested settings your UI shows people are your app's data, outside config.
 
 **The group tree** (`CONTROL-PROTOCOL.md` → Config → The group tree): each group is
 `{ parent?, labels?, allowed_models?, limits?, child_defaults? }`; no `parent` = a
@@ -288,9 +310,13 @@ use the price of their day.
   becomes `"default"`, and every chat request carries it even when the client sent
   none, since the default (`auto`) follows the Azure deployment's or OpenAI
   project's setting, which may be Priority (`GATEWAY.md` → Providers → Service
-  tier). Priority, flex and batch rates never apply there. The other types pass the
-  client's `service_tier` untouched — no tier is billed there. `service_tier` cannot
-  be a model default.
+  tier). Priority, flex and batch rates never apply there. On `anthropic` and
+  `azure-anthropic` the gateway refuses fast mode (`speed`), a non-global
+  `inference_geo` and 1-hour cache writes, and `anthropic` sends every request with
+  `service_tier: "standard_only"` (`GATEWAY.md` → Providers → Standard price on
+  Anthropic types): price Claude models at their standard rates, 5-minute cache
+  writes as `tokens_cache_write`. The self-hosted types pass the client's
+  `service_tier` untouched — no tier is billed there.
 - **Azure deployment types price differently**: Data Zone (EU/US) is about 10%
   above Global for the same model. Price a model at the rate of the deployment type
   its deployments use.
@@ -366,8 +392,9 @@ field by field, is `docs/specs/BACKEND-VERIFY.md`.
   - `ok`, and `failure: { code, message }` when not: `unreachable`, `timeout`,
     `credential-refused`, `not-a-models-list`, `model-not-listed`. Branch on the code;
     `message` and the `notes` are for people.
-  - `server`: `vllm`, `llama-server` or `unknown` (OpenAI, Azure, anything else — only
-    reachability, the credential and the listed ids are checked there). Recognized
+  - `server`: `vllm`, `llama-server` or `unknown` (OpenAI, Azure, Anthropic, anything
+    else — only reachability, the credential and the listed ids are checked there;
+    for `anthropic` also `context_length`, from the list's `max_input_tokens`). Recognized
     from the answer, whatever `type` was given; a `vllm` or `llama-server` under
     another type adds a note naming the type to use — show it before the operator
     saves the backend.
@@ -389,6 +416,9 @@ field by field, is `docs/specs/BACKEND-VERIFY.md`.
   to it, and private addresses are allowed (backends live there). Expose it only to
   people allowed to configure backends, behind your app's own authentication (hard
   rule 5); anyone else could use it to probe your network or send a key elsewhere.
+- **`azure-anthropic` is not checked.** Foundry has no models list, so the helper sends
+  nothing and says so in a note: reachability and the credential show only at the
+  gateway's first request.
 - **Nothing is saved.** A backend restarted with another context size leaves config
   stale until someone verifies again.
 

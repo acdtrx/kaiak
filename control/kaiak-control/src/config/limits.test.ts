@@ -69,7 +69,7 @@ test("a group's own limit with a new model set follows the defaults", () => {
 
 test("resolving a config whose parents do not reach a top-level group fails loudly", () => {
   const config = {
-    format_version: 4,
+    format_version: 5,
     global: {},
     backends: {},
     models: {},

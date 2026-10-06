@@ -33,7 +33,7 @@ function readFixture(relative: string): unknown {
 const READY = readFixture("messages/status/valid/ready.json") as GatewayStatus;
 
 function headersFor(instance: string): Record<string, string> {
-  return { authorization: `Bearer ${TOKEN}`, "kaiak-protocol": "4", "kaiak-instance": instance };
+  return { authorization: `Bearer ${TOKEN}`, "kaiak-protocol": "5", "kaiak-instance": instance };
 }
 
 const CONTROL_PLANE = "c".repeat(32);
@@ -145,7 +145,7 @@ describe("POST /v1/status", { timeout: 10_000 }, () => {
     const app = await startApp(controlPlane);
     const response = await postStatus(app, "gw-1");
     assert.equal(response.status, 204);
-    assert.equal(response.headers.get("kaiak-protocol"), "4");
+    assert.equal(response.headers.get("kaiak-protocol"), "5");
     assert.equal(await response.text(), "");
     assert.deepEqual(await controlPlane.gateways(), [
       { instance: "gw-1", status: { ...READY, instance: "gw-1" }, receivedAt: 1_000, live: true },
@@ -340,7 +340,9 @@ describe("slow readers", { timeout: 30_000 }, () => {
     const model = config.models["llama"];
     assert.ok(model, "the minimal fixture has model llama");
     model.metadata.context_length = 1000 + n;
-    model.defaults = { padding: "x".repeat(1024 * 1024) };
+    // Padding: 256 more top-level groups, each with 16 labels of 256 characters.
+    const labels = Object.fromEntries(Array.from({ length: 16 }, (_, i) => [`pad${i}`, "x".repeat(256)]));
+    for (let i = 0; i < 256; i++) (config.groups ??= {})[`pad-${i}`] = { labels };
     return config;
   }
 

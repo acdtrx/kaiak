@@ -56,7 +56,7 @@ const GATEWAYS: GatewayView[] = [
     instance: "gw-1",
     status: {
       instance: "gw-1",
-      protocol_version: 4,
+      protocol_version: 5,
       state: "ready",
       started_at: "2026-09-24T09:58:12.5Z",
       applied_config_version: 7,
@@ -78,7 +78,7 @@ const GATEWAYS: GatewayView[] = [
     instance: "gw-2",
     status: {
       instance: "gw-2",
-      protocol_version: 4,
+      protocol_version: 5,
       state: "draining",
       started_at: "2026-09-24T08:00:00Z",
       applied_config_version: 6,
@@ -97,7 +97,7 @@ const GATEWAYS: GatewayView[] = [
     instance: "gw-3",
     status: {
       instance: "gw-3",
-      protocol_version: 4,
+      protocol_version: 5,
       state: "ready",
       started_at: "2026-09-24T07:00:00Z",
       applied_config_version: 7,

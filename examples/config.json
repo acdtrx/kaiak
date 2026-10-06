@@ -1,5 +1,5 @@
 {
-  "format_version": 4,
+  "format_version": 5,
   "global": {
     "limits": [
       { "type": "requests_per_minute", "value": 1200 },
@@ -38,13 +38,6 @@
         "context_length": 32768,
         "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": true }
       },
-      "defaults": {
-        "temperature": 0.7,
-        "top_p": 0.8,
-        "top_k": 20,
-        "min_p": 0,
-        "chat_template_kwargs": { "enable_thinking": false }
-      },
       "output_limit": { "default": 2048, "ceiling": 8192 }
     },
     "qwen3-32b-thinking": {
@@ -56,7 +49,6 @@
         "context_length": 32768,
         "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": true }
       },
-      "defaults": { "temperature": 0.6, "top_p": 0.95, "top_k": 20, "min_p": 0 },
       "output_limit": { "default": 8192, "ceiling": 16384 }
     },
     "bge-m3": {

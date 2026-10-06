@@ -89,6 +89,25 @@ const AZURE_LIST = {
   data: [{ id: "gpt-5.5", object: "model", created: 1790000000, owned_by: "system", capabilities: {} }],
 };
 
+// Anthropic's Models API, from its documentation (not captured live): a page of
+// entries with max_input_tokens, one without it.
+const ANTHROPIC_LIST = {
+  data: [
+    {
+      type: "model",
+      id: "claude-sonnet-5-5",
+      display_name: "Claude Sonnet 5.5",
+      created_at: "2026-08-01T00:00:00Z",
+      max_input_tokens: 1000000,
+      max_tokens: 128000,
+    },
+    { type: "model", id: "claude-haiku-4-5", display_name: "Claude Haiku 4.5", created_at: "2025-10-01T00:00:00Z" },
+  ],
+  has_more: false,
+  first_id: "claude-sonnet-5-5",
+  last_id: "claude-haiku-4-5",
+};
+const ANTHROPIC_AUTH_ERROR = { type: "error", error: { type: "authentication_error", message: "invalid x-api-key" } };
 const CREDENTIAL = "sk-kaiak-test-SECRET-4f1c9e";
 
 interface SeenRequest {
@@ -405,15 +424,95 @@ test("azure-openai: the list at /openai/v1/models with api-key; no models, a not
   assert.equal(noModel.metadata, undefined);
 });
 
+test("anthropic: the paged list with x-api-key and anthropic-version; context from max_input_tokens", async (t) => {
+  const listPath = "/v1/models?limit=1000";
+  const backend = await fakeBackend(t, { [listPath]: json(200, ANTHROPIC_LIST) });
+  const url = `${backend.origin}${listPath}`;
+  const report = await verifyBackend({
+    type: "anthropic",
+    baseUrl: `${backend.origin}/v1`,
+    credential: CREDENTIAL,
+    model: "claude-sonnet-5-5",
+  });
+  assert.deepEqual(report, {
+    ok: true,
+    server: "unknown",
+    models: [
+      {
+        id: "claude-sonnet-5-5",
+        context_length: 1000000,
+        sources: { context_length: { url, field: "max_input_tokens", hint: false } },
+        notes: [],
+      },
+      {
+        id: "claude-haiku-4-5",
+        sources: {},
+        notes: [`context_length not reported: ${url} has no max_input_tokens`],
+      },
+    ],
+    metadata: { context_length: 1000000 },
+    notes: [],
+  });
+  const [request] = backend.requests;
+  assert.equal(backend.requests.length, 1);
+  assert.equal(request?.headers["x-api-key"], CREDENTIAL);
+  assert.equal(request?.headers["anthropic-version"], "2023-06-01");
+  assert.equal(request?.headers.authorization, undefined);
+  assertNoCredential(report);
+
+  const missing = await verifyBackend({
+    type: "anthropic",
+    baseUrl: `${backend.origin}/v1`,
+    credential: CREDENTIAL,
+    model: "claude-nope",
+  });
+  assert.equal(missing.failure?.code, "model-not-listed");
+
+  const refused = await fakeBackend(t, { [listPath]: json(401, ANTHROPIC_AUTH_ERROR) });
+  const denied = await verifyBackend({ type: "anthropic", baseUrl: `${refused.origin}/v1`, credential: CREDENTIAL });
+  assert.equal(denied.failure?.code, "credential-refused");
+  assertNoCredential(denied);
+});
+
+test("azure-anthropic: no request is sent; no models, a note, any name served", async (t) => {
+  const backend = await fakeBackend(t, {});
+  const report = await verifyBackend({
+    type: "azure-anthropic",
+    baseUrl: backend.origin,
+    credential: CREDENTIAL,
+    model: "my-claude-deployment",
+  });
+  assert.deepEqual(report, {
+    ok: true,
+    server: "unknown",
+    models: [],
+    metadata: {},
+    notes: ["Microsoft Foundry has no models list: the backend was not contacted"],
+  });
+  assert.deepEqual(backend.requests, []);
+  assertNoCredential(report);
+
+  const noModel = await verifyBackend({ type: "azure-anthropic", baseUrl: backend.origin, credential: CREDENTIAL });
+  assert.equal(noModel.metadata, undefined);
+  assert.deepEqual(backend.requests, []);
+});
+
 test("each type reads its models list at its URL with its credential header", async (t) => {
+  // azure-anthropic has no models list: it sends nothing (its own test below).
   const cases: [BackendType, string, string, string][] = [
     ["openai-compatible", "/v1", "/v1/models", "authorization"],
     ["openai", "/v1", "/v1/models", "authorization"],
     ["vllm", "/v1", "/v1/models", "authorization"],
     ["llama-server", "/v1", "/v1/models", "authorization"],
     ["azure-openai", "", "/openai/v1/models", "api-key"],
+    ["anthropic", "/v1", "/v1/models?limit=1000", "x-api-key"],
   ];
-  assert.deepEqual(cases.map(([type]) => type).sort(), [...BACKEND_TYPES].sort(), "every type is covered");
+  assert.deepEqual(
+    [...cases.map(([type]) => type), "azure-anthropic"].sort(),
+    [...BACKEND_TYPES].sort(),
+    "every type is covered",
+  );
+  const credentialHeaders = ["authorization", "api-key", "x-api-key"];
   for (const [type, basePath, listPath, header] of cases) {
     const backend = await fakeBackend(t, { [listPath]: json(200, OPENAI_LIST) });
     const report = await verifyBackend({ type, baseUrl: `${backend.origin}${basePath}`, credential: CREDENTIAL });
@@ -424,10 +523,12 @@ test("each type reads its models list at its URL with its credential header", as
       type,
     );
     const [request] = backend.requests;
-    const expected = header === "api-key" ? CREDENTIAL : `Bearer ${CREDENTIAL}`;
+    const expected = header === "authorization" ? `Bearer ${CREDENTIAL}` : CREDENTIAL;
     assert.equal(request?.headers[header], expected, `${type}: ${header}`);
-    const other = header === "api-key" ? "authorization" : "api-key";
-    assert.equal(request?.headers[other], undefined, `${type}: no ${other}`);
+    for (const other of credentialHeaders.filter((name) => name !== header)) {
+      assert.equal(request?.headers[other], undefined, `${type}: no ${other}`);
+    }
+    assert.equal(request?.headers["anthropic-version"], type === "anthropic" ? "2023-06-01" : undefined, type);
     assertNoCredential(report);
   }
 });
@@ -638,7 +739,7 @@ test("invalid input throws verify-input-invalid and sends nothing", async (t) =>
   await assert.rejects(verifyBackend({ type: "bedrock" as BackendType, baseUrl: base }), (error: Error) => {
     assert.equal(
       error.message,
-      'type must be one of "openai-compatible", "openai", "azure-openai", "vllm", "llama-server"',
+      'type must be one of "openai-compatible", "openai", "azure-openai", "vllm", "llama-server", "anthropic", "azure-anthropic"',
     );
     return true;
   });

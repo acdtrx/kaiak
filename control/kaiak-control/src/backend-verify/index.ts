@@ -1,7 +1,8 @@
 // Backend verification (docs/specs/BACKEND-VERIFY.md): checks that a backend answers at
 // the URL config will use and accepts the credential, and reads what it reports about
 // its models, for the app to show and to turn into declared config. It only reports:
-// no state, no retries, GETs only, no redirect followed, at most two requests in order.
+// no state, no retries, GETs only, no redirect followed, at most two requests in order
+// (none for azure-anthropic, which has no models list).
 // Called by the app only — never by the core, the Fastify plugin or a schedule.
 
 import { Ajv2020 } from "ajv/dist/2020.js";
@@ -86,6 +87,8 @@ const MAX_TIMEOUT_MS = 2_147_483_647;
 // The gateway's model probe reads the same.
 const BODY_CAP_BYTES = 1024 * 1024;
 const USER_AGENT = "kaiak-control";
+// The one Anthropic API version, sent as the gateway sends it.
+const ANTHROPIC_VERSION = "2023-06-01";
 
 // Input rules are the config schema's own, so a backend that verifies is one config
 // accepts. The type and base_url rules sit inside the backend definition: the pointer
@@ -140,8 +143,18 @@ export async function verifyBackend(options: VerifyBackendOptions): Promise<Back
   const settings = checkInput(options);
   settings.signal?.throwIfAborted();
 
-  const listUrl =
-    settings.type === "azure-openai" ? `${settings.baseUrl}/openai/v1/models` : `${settings.baseUrl}/models`;
+  // Claude in Microsoft Foundry has no models list: nothing is sent.
+  if (settings.type === "azure-anthropic") {
+    return {
+      ok: true,
+      server: "unknown",
+      models: [],
+      ...(settings.model === undefined ? {} : { metadata: {} }),
+      notes: ["Microsoft Foundry has no models list: the backend was not contacted"],
+    };
+  }
+
+  const listUrl = modelsListUrl(settings);
   const answer = await getJson(listUrl, settings);
   const list = modelsListOf(answer, listUrl, settings);
   if ("failure" in list) return { ok: false, failure: list.failure, server: "unknown", models: [], notes: [] };
@@ -158,7 +171,8 @@ export async function verifyBackend(options: VerifyBackendOptions): Promise<Back
     };
   }
 
-  const server = recognizeServer(list.data);
+  // An anthropic backend's type already says what it is: no recognition from owned_by.
+  const server = settings.type === "anthropic" ? "unknown" : recognizeServer(list.data);
   const models = list.data.map((entry): VerifiedModel => ({ id: entry.id, sources: {}, notes: [] }));
   const notes: string[] = [];
   // Only the server's own type gets its gateway module's rules; the backend is reached
@@ -166,7 +180,10 @@ export async function verifyBackend(options: VerifyBackendOptions): Promise<Back
   if (server !== "unknown" && server !== settings.type) {
     notes.push(`the models list says the server is ${server}: use type "${server}", not "${settings.type}"`);
   }
-  if (server === "vllm") {
+  if (settings.type === "anthropic") {
+    list.data.forEach((entry, index) => readAnthropicEntry(entry, listUrl, modelAt(models, index)));
+    if (list.data.length === 0) notes.push("the models list is empty");
+  } else if (server === "vllm") {
     list.data.forEach((entry, index) => readVllmEntry(entry, listUrl, modelAt(models, index)));
   } else if (server === "unknown") {
     notes.push(
@@ -281,10 +298,25 @@ async function getJson(url: string, settings: Settings): Promise<Answer> {
   }
 }
 
+// The models list's URL per type (docs/specs/BACKEND-VERIFY.md, Requests). Anthropic's
+// list is paged, 20 by default: one request asks for the most a page holds.
+function modelsListUrl(settings: Settings): string {
+  switch (settings.type) {
+    case "azure-openai":
+      return `${settings.baseUrl}/openai/v1/models`;
+    case "anthropic":
+      return `${settings.baseUrl}/models?limit=1000`;
+    default:
+      return `${settings.baseUrl}/models`;
+  }
+}
+
 function requestHeaders(settings: Settings): Record<string, string> {
   const headers: Record<string, string> = { Accept: "application/json", "User-Agent": USER_AGENT };
+  if (settings.type === "anthropic") headers["anthropic-version"] = ANTHROPIC_VERSION;
   if (settings.credential !== undefined) {
     if (settings.type === "azure-openai") headers["api-key"] = settings.credential;
+    else if (settings.type === "anthropic") headers["x-api-key"] = settings.credential;
     else headers["Authorization"] = `Bearer ${settings.credential}`;
   }
   return headers;
@@ -348,7 +380,7 @@ function modelsListOf(
   }
 }
 
-// From every entry's owned_by (every type but azure-openai).
+// From every entry's owned_by (every type but azure-openai and the Anthropic types).
 function recognizeServer(entries: ModelEntry[]): VerifiedServer {
   if (entries.length === 0) return "unknown";
   if (entries.every((entry) => entry.owned_by === "vllm")) return "vllm";
@@ -369,6 +401,16 @@ function readVllmEntry(entry: ModelEntry, url: string, model: VerifiedModel): vo
     model.sources.context_length = { url, field: "max_model_len", hint: false };
   } else {
     model.notes.push(absentNote("context_length", url, "max_model_len", read.kind, "a positive integer"));
+  }
+}
+
+function readAnthropicEntry(entry: ModelEntry, url: string, model: VerifiedModel): void {
+  const read = readField(entry, "max_input_tokens", isContextLength);
+  if (read.kind === "value") {
+    model.context_length = read.value as number;
+    model.sources.context_length = { url, field: "max_input_tokens", hint: false };
+  } else {
+    model.notes.push(absentNote("context_length", url, "max_input_tokens", read.kind, "a positive integer"));
   }
 }
 

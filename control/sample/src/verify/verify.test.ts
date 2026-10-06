@@ -62,7 +62,7 @@ test("bad arguments are refused with a message, before anything is sent", async 
   await refused(["--base-url", ""], /--base-url is required/);
   await refused(
     ["--base-url", "http://h/v1", "--type", "bedrock"],
-    /^--type must be one of openai-compatible, openai, azure-openai, vllm, llama-server, not "bedrock"$/,
+    /^--type must be one of openai-compatible, openai, azure-openai, vllm, llama-server, anthropic, azure-anthropic, not "bedrock"$/,
   );
   await refused(["--base-url", "http://h/v1", "--api-key", "sk-x"], /--api-key/);
   await refused(["--base-url", "http://h/v1", "extra"], /extra/);
@@ -188,5 +188,5 @@ test("the command exits 0 on a passing check, 1 on a failed one or bad arguments
   assert.equal(badType.code, 1);
   assert.equal(badType.stdout, "");
   assert.match(badType.stderr, /^verify: --type must be one of [^\n]*\nusage /);
-  assert.match(badType.stderr, /\n {2}--type {9}the backend's type: openai-compatible, openai, azure-openai, vllm, llama-server /);
+  assert.match(badType.stderr, /\n {2}--type {9}the backend's type: openai-compatible, openai, azure-openai, vllm, llama-server, anthropic, azure-anthropic /);
 });

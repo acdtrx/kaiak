@@ -19,7 +19,7 @@ const TOKEN = "test-token";
 const FIXTURES = path.resolve(import.meta.dirname, "../../../../protocol/fixtures");
 const HEADERS = {
   authorization: `Bearer ${TOKEN}`,
-  "kaiak-protocol": "4",
+  "kaiak-protocol": "5",
   "kaiak-instance": "gw-1",
   "content-type": "application/json",
 };
@@ -62,7 +62,7 @@ test("a batch is answered with its ack carrying the totals", async () => {
   const { base, controlPlane } = await start();
   const response = await postUsage(base, BATCH);
   assert.equal(response.status, 200);
-  assert.equal(response.headers.get("kaiak-protocol"), "4");
+  assert.equal(response.headers.get("kaiak-protocol"), "5");
   const ack: unknown = await response.json();
   const validation = validateUsageAck(ack);
   assert.ok(validation.ok, "the ack passes its schema");
