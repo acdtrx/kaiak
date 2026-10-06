@@ -31,6 +31,10 @@ store contract, so the host app chooses:
 - **The gateway orders totals by the store's sequence**: the restart detection and the
   list of replaced control-plane processes go.
 - **Protocol:** the totals `revision` changes meaning and shape.
+- **Broadcast only** (added 2026-10-07, steps 7–9): the app owns its config; the
+  library validates the current document and broadcasts it with the totals. No config
+  versions, history, epoch or totals revision on the wire; acks carry no totals;
+  ordering is the sending core's job per stream.
 - **Limits without model sets** (added 2026-10-06, step 3): a limit is `{ type, value }`
   per scope, identified by (scope, type); usage counts by scope whatever the config;
   the model-set carry-over goes. Publishing and counting no longer depend on each
@@ -95,7 +99,8 @@ Made while planning (confirm in review):
    - Rejected: a leader for the sweep. Idempotent conditional writes need none.
 9. **The expiry sweep runs on every core.** Its writes are conditional (decision 5),
    so two sweeps, or a sweep racing a fresh status, never drop a live gateway.
-10. **`revision` becomes the sequence integer**, ordered within the message's
+10. *Superseded by decision 18 (2026-10-07): totals carry no revision.*
+    **`revision` becomes the sequence integer**, ordered within the message's
     `config_epoch`.
     - ~~The gateway applies totals when the epoch differs from the last applied (the
       store started over: adopt) or when the sequence is higher.~~ *Changed in step 1
@@ -117,7 +122,9 @@ Made while planning (confirm in review):
 
 Changed or added in step 1 (2026-10-06, accepted):
 
-13. **A store that loses or rolls back its state takes a new config epoch** (a restore
+13. *Superseded by decision 18 (2026-10-07): a core that sees the store's sequence go
+    back closes its streams; there is no config epoch.*
+    **A store that loses or rolls back its state takes a new config epoch** (a restore
     from a backup included). Without it, its sequence would go back and gateways would
     ignore its totals.
 14. **Every gateway status write is conditional** on the record it was judged against,
@@ -144,6 +151,35 @@ Settled with the user after step 2 (2026-10-06):
 
 Steps 3–5 of the first plan became 4–6 when step 3 was inserted (2026-10-06). Steps
 1–2's Results name the old numbers.
+
+Settled with the user after the pre-merge review (2026-10-07):
+
+18. **The control plane only broadcasts.**
+    - The app is the source of truth for config: it composes the parts, keeps any
+      history, and owns concurrent editing.
+    - `kaiak-control` holds the **current** config and its content hash, validates a
+      publish (including the parents rule against the current config) and broadcasts
+      it.
+    - No config versions, history, resume, resync or config epoch. The gateway
+      applies whatever config the control plane sends, skipping one identical by
+      hash.
+    - Rejected: "a gateway only accepts a newer config". It protects against nothing
+      the sender cannot prevent itself, and it traps gateways on a config the control
+      plane no longer has after a restore.
+19. **Totals travel only on the stream, without a revision.**
+    - Acks only acknowledge batches; own usage is retired by stream totals.
+    - Each core orders what it sends per stream using the store's sequence
+      internally, and closes its streams when the store's sequence goes back
+      (rollback).
+    - The gateway applies totals windows to its own limits by (scope, type), whatever
+      config it runs. There is no config-mismatch state.
+    - Accepted cost: after an ack the gateway keeps counting that batch locally until
+      the next push (about a second).
+20. **Removal discipline.**
+    - Phase 3 is a removal. Nothing removed survives renamed, aliased or behind a
+      compatibility path.
+    - Tests asserting removed behaviour are deleted, not adapted.
+    - Step 7's checklist must grep clean at the phase end (step 9).
 
 ## Constraints
 
@@ -191,6 +227,13 @@ merge.
      fake control plane.
 - **Phase 2 — end to end and docs** (step 6). Green at the end.
   6. `STEP-6-e2e-and-docs.md`
+- **Phase 3 — broadcast only** (steps 7–9). A removal; green only at the end.
+  7. `STEP-7-broadcast-contract.md`: the contract, schemas, fixtures, store interface,
+     removal checklist.
+  8. `STEP-8-broadcast-control.md`: `kaiak-control` and the sample.
+  9. `STEP-9-broadcast-gateway.md`: the gateway; the checklist greps clean.
+- **Phase 4 — review fixes** (step 10). Green at the end.
+  10. `STEP-10-review-fixes.md`: the pre-merge review's surviving findings.
 
 Expected reds inside phase 1:
 - After step 1, both halves fail the totals fixtures. Step 4 clears `kaiak-control`'s
