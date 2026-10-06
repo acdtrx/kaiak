@@ -14,7 +14,7 @@ import (
 const (
 	SnapshotFile = "limits.json"
 	// snapshotVersion is the file's format version; a file with another is discarded.
-	snapshotVersion = 2
+	snapshotVersion = 3
 	// SnapshotInterval is how often the running gateway writes the snapshot; it is
 	// also written on shutdown.
 	SnapshotInterval = 30 * time.Second
@@ -28,11 +28,10 @@ type snapshotData struct {
 // a config reload matches on), when the window started and what was settled in it.
 type savedWindow struct {
 	// Group is the group the limit belongs to; "" (omitted) for a global limit.
-	Group  string           `json:"group,omitempty"`
-	Type   config.LimitType `json:"type"`
-	Models []string         `json:"models"`
-	Start  time.Time        `json:"window_start"`
-	Used   int64            `json:"used"`
+	Group string           `json:"group,omitempty"`
+	Type  config.LimitType `json:"type"`
+	Start time.Time        `json:"window_start"`
+	Used  int64            `json:"used"`
 }
 
 // SaveSnapshot writes the settled usage of every hour and month window that holds
@@ -53,7 +52,7 @@ func (l *Limiter) SaveSnapshot(dir *state.Dir) (int, error) {
 			continue
 		}
 		data.Windows = append(data.Windows, savedWindow{Group: c.key.group, Type: c.limit.Type,
-			Models: c.limit.Models, Start: time.Unix(c.w.start, 0).UTC(), Used: used})
+			Start: time.Unix(c.w.start, 0).UTC(), Used: used})
 	}
 	l.mu.Unlock()
 	return len(data.Windows), dir.WriteVersioned(SnapshotFile, snapshotVersion, data)
@@ -74,7 +73,7 @@ func (l *Limiter) LoadSnapshot(dir *state.Dir) (restored, dropped int, err error
 	l.sync()
 	now := l.now()
 	for _, saved := range data.Windows {
-		c, ok := l.counters[keyOf(saved.Group, config.Limit{Type: saved.Type, Models: saved.Models})]
+		c, ok := l.counters[keyOf(saved.Group, config.Limit{Type: saved.Type})]
 		if !ok || c.w.kind == SlidingMinute || !saved.Start.Equal(windowStart(c.w.kind, now)) {
 			dropped++
 			continue

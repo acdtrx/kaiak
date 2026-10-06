@@ -17,7 +17,7 @@ import (
 const (
 	modelChat   = "live-chat"   // output limit -max-output
 	modelCapped = "live-capped" // output-limit ceiling -ceiling
-	modelRPM    = "live-rpm"    // 1 request per minute for the key's group
+	modelRPM    = "live-rpm"    // the rate-limit checks' model, sent with the metered key
 	modelEmbed  = "live-embed"  // only with -embeddings-model (whatever its name on the backend)
 )
 
@@ -38,9 +38,10 @@ const (
 
 // buildConfig is the config document for one run: one backend (two with
 // -base-url-2, each deploying the chat models; a third with -embeddings-base-url,
-// deploying the embeddings model), the models above, one group holding the one key
-// (hash) with every model allowed.
-func buildConfig(o options, hash string) ([]byte, error) {
+// deploying the embeddings model), the models above, and two groups with every model
+// allowed: live holds the checks' key (hash), live-metered the rate-limit checks' key
+// (meteredHash) under 1 request a minute — a limit counts every request of its group.
+func buildConfig(o options, hash, meteredHash string) ([]byte, error) {
 	timeout := o.requestTimeout.Milliseconds()
 	backendOf := func(backendType, baseURL, apiKeyEnv string) map[string]any {
 		b := map[string]any{"type": backendType, "base_url": baseURL, "first_event_timeout_ms": timeout,
@@ -110,10 +111,16 @@ func buildConfig(o options, hash string) ([]byte, error) {
 		"global":         global,
 		"backends":       backends,
 		"models":         models,
-		"groups": map[string]any{"live": map[string]any{
-			"limits": []any{map[string]any{"type": "requests_per_minute", "value": 1, "models": []any{modelRPM}}},
-		}},
-		"keys": map[string]any{"k-live": map[string]any{"hash": hash, "group": "live"}},
+		"groups": map[string]any{
+			"live": map[string]any{},
+			"live-metered": map[string]any{
+				"limits": []any{map[string]any{"type": "requests_per_minute", "value": 1}},
+			},
+		},
+		"keys": map[string]any{
+			"k-live":         map[string]any{"hash": hash, "group": "live"},
+			"k-live-metered": map[string]any{"hash": meteredHash, "group": "live-metered"},
+		},
 	}, "", "  ")
 }
 

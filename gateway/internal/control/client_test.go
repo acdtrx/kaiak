@@ -1049,12 +1049,18 @@ func TestTotalsEventsReachTheConsumer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var compact bytes.Buffer
-	if err := json.Compact(&compact, data); err != nil {
+	// The fixture's totals, of the config epoch the gateway runs: totals of another
+	// epoch are not applied.
+	var fields map[string]any
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatal(err)
+	}
+	fields["config_epoch"] = h.cp.ConfigEpoch()
+	if data, err = json.Marshal(fields); err != nil {
 		t.Fatal(err)
 	}
 	st.Send("totals", "", []byte(`{"broken":`)) // malformed: logged, skipped
-	h.cp.PushTotals(compact.Bytes())
+	h.cp.PushTotals(data)
 	want, err := DecodeTotals(data)
 	if err != nil {
 		t.Fatal(err)

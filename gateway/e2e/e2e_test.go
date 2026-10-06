@@ -23,6 +23,15 @@ const (
 	backendEmbedModel = "BAAI/bge-m3"
 )
 
+// Every limit counts every request of its scope, so the checks that spend a limit
+// have a key of their own: rpmKey is the one key of the group metered (2 requests a
+// minute), budgetKey of the group budgeted (0.0001 USD a month, which one "priced"
+// answer is past).
+var (
+	rpmKey, rpmHash       = newKey()
+	budgetKey, budgetHash = newKey()
+)
+
 // testConfig is the config document the gateway runs with; extraModel, when set,
 // adds one more chat model (the reload scenario).
 func testConfig(backendURL, evalHash, annHash, extraModel string) map[string]any {
@@ -61,23 +70,28 @@ func testConfig(backendURL, evalHash, annHash, extraModel string) map[string]any
 	}
 	return map[string]any{
 		"format_version": 5,
-		"global": map[string]any{
-			"limits": []any{map[string]any{"type": "usd_per_month", "value": 0.0001, "models": []any{"priced"}}},
-		},
-		"backends": map[string]any{"fake": map[string]any{"type": "openai-compatible", "base_url": backendURL + "/v1"}},
-		"models":   models,
+		"global":         map[string]any{},
+		"backends":       map[string]any{"fake": map[string]any{"type": "openai-compatible", "base_url": backendURL + "/v1"}},
+		"models":         models,
 		"groups": map[string]any{
 			"research": map[string]any{},
-			"eval": map[string]any{
-				"parent": "research", "allowed_models": []any{"*"},
-				"limits": []any{map[string]any{"type": "requests_per_minute", "value": 2, "models": []any{"rpm"}}},
+			"eval":     map[string]any{"parent": "research", "allowed_models": []any{"*"}},
+			"metered": map[string]any{
+				"parent": "research", "allowed_models": []any{"rpm"},
+				"limits": []any{map[string]any{"type": "requests_per_minute", "value": 2}},
+			},
+			"budgeted": map[string]any{
+				"parent": "research", "allowed_models": []any{"priced", "rpm"},
+				"limits": []any{map[string]any{"type": "usd_per_month", "value": 0.0001}},
 			},
 			"users": map[string]any{"child_defaults": map[string]any{"allowed_models": []any{"chat", "embed"}}},
 			"ann":   map[string]any{"parent": "users"},
 		},
 		"keys": map[string]any{
-			"k-eval": map[string]any{"hash": evalHash, "group": "eval"},
-			"k-ann":  map[string]any{"hash": annHash, "group": "ann"},
+			"k-eval":   map[string]any{"hash": evalHash, "group": "eval"},
+			"k-ann":    map[string]any{"hash": annHash, "group": "ann"},
+			"k-rpm":    map[string]any{"hash": rpmHash, "group": "metered"},
+			"k-budget": map[string]any{"hash": budgetHash, "group": "budgeted"},
 		},
 	}
 }
@@ -255,12 +269,12 @@ func TestGatewayEndToEnd(t *testing.T) {
 
 	t.Run("requests per minute limit answers 429 with headers", func(t *testing.T) {
 		for i, remaining := range []string{"1", "0"} {
-			r := g.post(t, "/v1/chat/completions", evalKey, "", chatBody("rpm", false, nil))
+			r := g.post(t, "/v1/chat/completions", rpmKey, "", chatBody("rpm", false, nil))
 			if r.StatusCode != http.StatusOK || r.Header.Get("X-Ratelimit-Remaining-Requests") != remaining {
 				t.Fatalf("request %d: %d, remaining %q", i+1, r.StatusCode, r.Header.Get("X-Ratelimit-Remaining-Requests"))
 			}
 		}
-		r := g.post(t, "/v1/chat/completions", evalKey, "", chatBody("rpm", false, nil))
+		r := g.post(t, "/v1/chat/completions", rpmKey, "", chatBody("rpm", false, nil))
 		if r.StatusCode != http.StatusTooManyRequests || r.errorCode(t) != "rate_limit_exceeded" {
 			t.Fatalf("third request: %d %s", r.StatusCode, r.body)
 		}
@@ -274,12 +288,12 @@ func TestGatewayEndToEnd(t *testing.T) {
 	})
 
 	t.Run("usd per month limit trips", func(t *testing.T) {
-		r := g.post(t, "/v1/chat/completions", evalKey, "e2e-priced", chatBody("priced", false, nil))
+		r := g.post(t, "/v1/chat/completions", budgetKey, "e2e-priced", chatBody("priced", false, nil))
 		if r.StatusCode != http.StatusOK {
 			t.Fatalf("first request: %d %s", r.StatusCode, r.body)
 		}
 		g.settled(t, "e2e-priced") // its cost is in the month's window now
-		r = g.post(t, "/v1/chat/completions", evalKey, "", chatBody("priced", false, nil))
+		r = g.post(t, "/v1/chat/completions", budgetKey, "", chatBody("priced", false, nil))
 		if r.StatusCode != http.StatusTooManyRequests || r.errorCode(t) != "budget_exceeded" || r.Header.Get("Retry-After") == "" {
 			t.Fatalf("second request: %d %s", r.StatusCode, r.body)
 		}
@@ -349,12 +363,12 @@ func TestGatewayEndToEnd(t *testing.T) {
 
 	t.Run("usage snapshot survives a restart", func(t *testing.T) {
 		g.logs.wait(t, "the restored snapshot", msg("limits snapshot restored"))
-		r := g.post(t, "/v1/chat/completions", evalKey, "", chatBody("priced", false, nil))
+		r := g.post(t, "/v1/chat/completions", budgetKey, "", chatBody("priced", false, nil))
 		if r.StatusCode != http.StatusTooManyRequests || r.errorCode(t) != "budget_exceeded" {
 			t.Fatalf("priced after restart: %d %s", r.StatusCode, r.body)
 		}
 		// Per-minute windows are not kept.
-		if r := g.post(t, "/v1/chat/completions", evalKey, "", chatBody("rpm", false, nil)); r.StatusCode != http.StatusOK {
+		if r := g.post(t, "/v1/chat/completions", rpmKey, "", chatBody("rpm", false, nil)); r.StatusCode != http.StatusOK {
 			t.Fatalf("rpm after restart: %d %s", r.StatusCode, r.body)
 		}
 	})

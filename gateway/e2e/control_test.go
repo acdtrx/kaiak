@@ -209,7 +209,7 @@ func TestRestartWithTheControlPlaneDownKeepsASpentBudget(t *testing.T) {
 	cp := fakecontrol.New(token)
 	defer cp.Close()
 	dataDir := filepath.Join(t.TempDir(), "data")
-	evalKey, evalHash := newKey()
+	_, evalHash := newKey()
 	_, annHash := newKey()
 	data, err := json.Marshal(testConfig(backend.URL(), evalHash, annHash, ""))
 	if err != nil {
@@ -219,14 +219,14 @@ func TestRestartWithTheControlPlaneDownKeepsASpentBudget(t *testing.T) {
 
 	g := startGatewayEnv(t, controlEnv(cp.URL(), token, dataDir))
 	g.logs.wait(t, "the stream", msg("config stream connected", "kaiak.config.since", "1"))
-	// The global budget on "priced" (0.0001 USD) is spent this month.
+	// The group budgeted's budget (0.0001 USD) is spent this month.
 	month := time.Now().UTC().Format("2006-01") + "-01T00:00:00Z"
-	cp.SetWindows([]byte(`[{"type":"usd_per_month","models":["priced"],"window_start":"` + month +
+	cp.SetWindows([]byte(`[{"group":"budgeted","type":"usd_per_month","window_start":"` + month +
 		`","used":"200000"}]`))
 	cp.PushCurrentTotals()
 	deadline := time.Now().Add(waitLimit)
 	for {
-		r := g.post(t, "/v1/chat/completions", evalKey, "", chatBody("priced", false, nil))
+		r := g.post(t, "/v1/chat/completions", budgetKey, "", chatBody("priced", false, nil))
 		if r.StatusCode == http.StatusTooManyRequests && strings.Contains(string(r.body), "budget_exceeded") {
 			break
 		}
@@ -241,7 +241,7 @@ func TestRestartWithTheControlPlaneDownKeepsASpentBudget(t *testing.T) {
 	g = startGatewayEnv(t, append(controlEnv(cp.URL(), token, dataDir), "KAIAK_DRAIN_TIMEOUT_MS=500",
 		"KAIAK_CONTROL_BOOT_WAIT_MS=1000"))
 	g.logs.wait(t, "the last-known-good boot", msg("config applied", "kaiak.trigger", "last-known-good", "kaiak.config.version", "1"))
-	r := g.post(t, "/v1/chat/completions", evalKey, "", chatBody("priced", false, nil))
+	r := g.post(t, "/v1/chat/completions", budgetKey, "", chatBody("priced", false, nil))
 	if r.StatusCode != http.StatusTooManyRequests || !strings.Contains(string(r.body), "budget_exceeded") {
 		t.Errorf("after the restart: %d %s, want the spent budget still refusing", r.StatusCode, r.body)
 	}

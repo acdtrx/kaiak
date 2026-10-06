@@ -17,7 +17,7 @@ import (
 const (
 	SharedFile = "totals.json"
 	// sharedVersion is the file's format version; a file with another is discarded.
-	sharedVersion = 2
+	sharedVersion = 3
 )
 
 type sharedData struct {
@@ -36,7 +36,6 @@ type savedShared struct {
 	// Group is the group the limit belongs to; "" (omitted) for a global limit.
 	Group     string           `json:"group,omitempty"`
 	Type      config.LimitType `json:"type"`
-	Models    []string         `json:"models"`
 	BaseStart time.Time        `json:"base_window_start"`
 	Base      int64            `json:"base"`
 	Start     time.Time        `json:"window_start"`
@@ -68,7 +67,7 @@ func (l *Limiter) SaveShared(dir *state.Dir) (int, error) {
 		if c.w.base == 0 && uncounted == 0 {
 			continue
 		}
-		saved := savedShared{Group: c.key.group, Type: c.limit.Type, Models: c.limit.Models,
+		saved := savedShared{Group: c.key.group, Type: c.limit.Type,
 			Start: time.Unix(c.w.start, 0).UTC(), Uncounted: uncounted}
 		if c.w.base != 0 {
 			saved.BaseStart, saved.Base = time.Unix(c.w.baseStart, 0).UTC(), c.w.base
@@ -123,14 +122,14 @@ func (l *Limiter) LoadShared(dir *state.Dir, restoredGeneration uint64) (SharedR
 	now := l.now()
 	l.live = max(data.LiveGateways, 1)
 	for _, saved := range data.Windows {
-		key := keyOf(saved.Group, config.Limit{Type: saved.Type, Models: saved.Models})
+		key := keyOf(saved.Group, config.Limit{Type: saved.Type})
 		c, ok := l.counters[key]
 		if !ok || !c.w.shared {
 			out.Dropped++
 			continue
 		}
 		if !saved.BaseStart.IsZero() {
-			l.pushed[key] = PushedWindow{Group: saved.Group, Type: saved.Type, Models: saved.Models,
+			l.pushed[key] = PushedWindow{Group: saved.Group, Type: saved.Type,
 				Start: saved.BaseStart, Used: saved.Base}
 		}
 		l.applyLimit(c)

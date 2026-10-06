@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"strings"
 
 	"kaiak/internal/schemacheck"
 )
@@ -47,20 +46,10 @@ func (r *ruleCheck) totals(tree any, path string) {
 	}
 }
 
-// windowIdentity: a window belongs to one limit — group (absent: global), type and
-// model set, order ignored; "all models" (no models) is its own set.
+// windowIdentity: a window belongs to one limit — its group (absent: global) and type.
 func windowIdentity(window map[string]any) string {
-	models := "*"
-	if list, ok := window["models"].([]any); ok {
-		names := make([]string, len(list))
-		for i, name := range list {
-			names[i] = name.(string)
-		}
-		slices.Sort(names)
-		models = strings.Join(names, "\n")
-	}
 	group, _ := window["group"].(string)
-	return strings.Join([]string{group, window["type"].(string), models}, "\n")
+	return group + "\n" + window["type"].(string)
 }
 
 func (r *ruleCheck) usageBatch(tree any) {

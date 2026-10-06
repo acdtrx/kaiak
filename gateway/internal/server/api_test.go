@@ -49,7 +49,7 @@ func TestRequestLineKeysFollowTheFieldTable(t *testing.T) {
 			values: map[string]any{"kaiak.backend.type": "azure-openai", "gen_ai.provider.name": "azure.ai.openai"}},
 		{name: "limit refusal",
 			setup: func(g *testGateway) {
-				withLimits(t, g, "", `[{ "type": "requests_per_minute", "value": 0, "models": ["open"] }]`)
+				withLimits(t, g, "", `[{ "type": "requests_per_minute", "value": 0 }]`)
 			},
 			c: call{method: "POST", path: "/v1/chat/completions", key: workloadKey, body: `{"model":"open","messages":[]}`},
 			want: keys(always, []string{"kaiak.key.id", "kaiak.key.group", "gen_ai.request.model",
@@ -61,7 +61,7 @@ func TestRequestLineKeysFollowTheFieldTable(t *testing.T) {
 			setup: func(g *testGateway) {
 				g.holder.Swap(testSnapshotWith(t, g.backend.URL(), func(doc string) string {
 					return strings.Replace(doc, `"global": { `,
-						`"global": { "limits": [{ "type": "requests_per_minute", "value": 0, "models": ["open"] }], `, 1)
+						`"global": { "limits": [{ "type": "requests_per_minute", "value": 0 }], `, 1)
 				}))
 			},
 			c: call{method: "POST", path: "/v1/chat/completions", key: workloadKey, body: `{"model":"open","messages":[]}`},

@@ -49,14 +49,13 @@ type Server struct {
 	counted     []UsageBatch
 	usageFaults []UsageFault
 	usageFault  *UsageFault
-	// Totals: the revision (this process's ID and its sequence), the scripted windows
-	// (a JSON array) and live-gateway count, and whether changes push totals to the
-	// open streams.
-	controlPlane string
-	sequence     int64
-	windows      []byte
-	live         int64
-	pushTotals   bool
+	// Totals: the revision (the store's totals sequence in the config epoch), the
+	// scripted windows (a JSON array) and live-gateway count, and whether changes push
+	// totals to the open streams.
+	sequence   int64
+	windows    []byte
+	live       int64
+	pushTotals bool
 	// holdConnectTotals leaves the totals out after a stream's replay (a control plane
 	// slow to send them).
 	holdConnectTotals bool
@@ -160,7 +159,7 @@ const connectedBuffer = 64
 func New(token string) *Server {
 	s := &Server{token: token, protocol: protocolVersion, streams: map[*Stream]struct{}{},
 		connected: make(chan *Stream, connectedBuffer), lastBatch: map[string]BatchID{},
-		controlPlane: newControlPlaneID(), configEpoch: newControlPlaneID(), windows: []byte("[]"), live: 1,
+		configEpoch: newEpoch(), windows: []byte("[]"), live: 1,
 		usageEvents: make(chan UsageEvent, eventsBuffer), statusEvents: make(chan []byte, eventsBuffer)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/config", s.serveConfig)
@@ -196,15 +195,15 @@ func (s *Server) Publish(config []byte) int64 {
 }
 
 // Restart forgets every published version, the last counted batch of each instance
-// and the totals, starts a new config epoch and a new control-plane ID for the
-// revision, and ends the open streams, as a control plane with an in-memory store does
-// when it restarts: versions start again at 1, in a new epoch. Counted keeps what was
-// counted before, for the test.
+// and the totals, starts a new config epoch with its totals sequence at 0, and ends
+// the open streams, as a control plane with an in-memory store does when it restarts:
+// versions start again at 1, in a new epoch. Counted keeps what was counted before,
+// for the test.
 func (s *Server) Restart() {
 	s.mu.Lock()
-	s.configs, s.configEpoch = nil, newControlPlaneID()
+	s.configs, s.configEpoch = nil, newEpoch()
 	s.lastBatch = map[string]BatchID{}
-	s.controlPlane, s.sequence, s.windows = newControlPlaneID(), 0, []byte("[]")
+	s.sequence, s.windows = 0, []byte("[]")
 	s.mu.Unlock()
 	s.closeStreams()
 }
@@ -254,11 +253,12 @@ func (s *Server) ConfigEpoch() string {
 	return s.configEpoch
 }
 
-// Revision returns the current totals revision: the control-plane ID and sequence.
-func (s *Server) Revision() (controlPlane string, sequence int64) {
+// Revision returns the current totals revision: the store's totals sequence within
+// the config epoch.
+func (s *Server) Revision() int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.controlPlane, s.sequence
+	return s.sequence
 }
 
 // Totals returns the current totals as instance gets them (its counted_through).
@@ -301,11 +301,11 @@ func (s *Server) totalsLocked(instance string) []byte {
 	if last, ok := s.lastBatch[instance]; ok {
 		counted = fmt.Appendf(nil, `{"epoch":%q,"sequence":%d}`, last.Epoch, last.Sequence)
 	}
-	return fmt.Appendf(nil, `{"revision":{"control_plane":%q,"sequence":%d},"config_epoch":%q,"config_version":%d,"live_gateways":%d,"counted_through":%s,"windows":%s}`,
-		s.controlPlane, s.sequence, s.configEpoch, len(s.configs), s.live, counted, s.windows)
+	return fmt.Appendf(nil, `{"revision":%d,"config_epoch":%q,"config_version":%d,"live_gateways":%d,"counted_through":%s,"windows":%s}`,
+		s.sequence, s.configEpoch, len(s.configs), s.live, counted, s.windows)
 }
 
-func newControlPlaneID() string {
+func newEpoch() string {
 	var b [16]byte
 	_, _ = rand.Read(b[:]) // crypto/rand.Read never returns an error
 	return hex.EncodeToString(b[:])

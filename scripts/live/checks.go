@@ -16,11 +16,13 @@ import (
 
 // run is one kind's check sequence and its results.
 type run struct {
-	ctx    context.Context
-	o      options
-	gw     *gateway
-	key    string
-	client *http.Client
+	ctx context.Context
+	o   options
+	gw  *gateway
+	key string
+	// meteredKey is the rate-limit checks' key: its group allows 1 request a minute.
+	meteredKey string
+	client     *http.Client
 
 	passed, failed, skipped int
 }
@@ -393,13 +395,14 @@ func (r *run) checkCeiling() {
 	}
 }
 
-// checkRateLimit: live-rpm allows 1 request per minute, so the second is refused.
+// checkRateLimit: the metered key's group allows 1 request per minute, so the second
+// is refused.
 func (r *run) checkRateLimit() {
-	resp, err := r.post(r.key, "/v1/chat/completions", "live-rpm-1", r.chatBody(modelRPM, false, nil))
+	resp, err := r.post(r.meteredKey, "/v1/chat/completions", "live-rpm-1", r.chatBody(modelRPM, false, nil))
 	if !r.ok("rate-limit", resp, err, "live-rpm-1") {
 		return
 	}
-	resp, err = r.post(r.key, "/v1/chat/completions", "live-rpm-2", r.chatBody(modelRPM, false, nil))
+	resp, err = r.post(r.meteredKey, "/v1/chat/completions", "live-rpm-2", r.chatBody(modelRPM, false, nil))
 	if err != nil {
 		r.fail("rate-limit", "%v", err)
 		return

@@ -171,7 +171,7 @@ func TestOutageRefusesMoneyLimitedModels(t *testing.T) {
 	g := newTestGatewayWith(t, func(h *config.Holder) *limits.Limiter {
 		return limits.NewShared(h, time.Now, func() limits.Contact { return limits.Contact{Last: lost} }, nil)
 	})
-	withLimits(t, g, `[{ "type": "usd_per_month", "value": 100, "models": ["pair"] }]`, "")
+	withLimits(t, g, `[{ "type": "usd_per_month", "value": 100 }]`, "")
 	w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey, body: `{"model":"pair","messages":[]}`})
 	expectError(t, w, http.StatusServiceUnavailable, "budget_unavailable")
 	if typ, _, _ := openAIError(t, w); typ != "server_error" {

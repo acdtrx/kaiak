@@ -28,8 +28,8 @@ func (l *logLines) find(match func(map[string]any) bool) (map[string]any, bool) 
 	return nil, false
 }
 
-// spentBudgetControlPlane is a control plane serving testConfig whose global budget
-// on "priced" (0.0001 USD) is spent this month.
+// spentBudgetControlPlane is a control plane serving testConfig whose group budgeted
+// has spent its budget (0.0001 USD) this month.
 func spentBudgetControlPlane(t *testing.T, backendURL, evalHash, annHash string) *fakecontrol.Server {
 	t.Helper()
 	cp := fakecontrol.New(startupToken)
@@ -40,7 +40,7 @@ func spentBudgetControlPlane(t *testing.T, backendURL, evalHash, annHash string)
 	}
 	cp.Publish(data)
 	month := time.Now().UTC().Format("2006-01") + "-01T00:00:00Z"
-	cp.SetWindows([]byte(`[{"type":"usd_per_month","models":["priced"],"window_start":"` + month +
+	cp.SetWindows([]byte(`[{"group":"budgeted","type":"usd_per_month","window_start":"` + month +
 		`","used":"200000"}]`))
 	return cp
 }
@@ -82,7 +82,7 @@ func TestBootWaitsForAControlPlaneComingUp(t *testing.T) {
 func TestReadinessWaitsForTheFirstTotals(t *testing.T) {
 	backend := fakebackend.New()
 	defer backend.Close()
-	evalKey, evalHash := newKey()
+	_, evalHash := newKey()
 	_, annHash := newKey()
 	cp := spentBudgetControlPlane(t, backend.URL(), evalHash, annHash)
 	cp.HoldTotalsOnConnect(true)
@@ -98,7 +98,7 @@ func TestReadinessWaitsForTheFirstTotals(t *testing.T) {
 	time.Sleep(time.Second)
 	if line, bound := g.logs.find(msg("listening", "kaiak.listener.name", "api")); bound {
 		g.api = listenerURL(line)
-		r := g.post(t, "/v1/chat/completions", evalKey, "", chatBody("priced", false, nil))
+		r := g.post(t, "/v1/chat/completions", budgetKey, "", chatBody("priced", false, nil))
 		t.Fatalf("the API listener bound before the first totals; the priced request on a spent budget answered %d %s",
 			r.StatusCode, r.body)
 	}
@@ -111,7 +111,7 @@ func TestReadinessWaitsForTheFirstTotals(t *testing.T) {
 	if status, body := g.get(t, "/readyz", ""); status != http.StatusOK {
 		t.Fatalf("/readyz = %d %s, want 200", status, body)
 	}
-	r := g.post(t, "/v1/chat/completions", evalKey, "", chatBody("priced", false, nil))
+	r := g.post(t, "/v1/chat/completions", budgetKey, "", chatBody("priced", false, nil))
 	if r.StatusCode != http.StatusTooManyRequests || r.errorCode(t) != "budget_exceeded" {
 		t.Errorf("priced request after the first totals: %d %s, want 429 budget_exceeded", r.StatusCode, r.body)
 	}
@@ -131,20 +131,20 @@ func TestFirstTotalsLateRefuseBudgetsUntilTheyArrive(t *testing.T) {
 
 	g := startGatewayEnv(t, append(controlEnv(cp.URL(), startupToken, ""), "KAIAK_CONTROL_BOOT_WAIT_MS=1500"))
 	g.logs.wait(t, "the wait running out", msg("first totals not received within the boot wait: priced USD-limited requests are refused until they arrive"))
-	r := g.post(t, "/v1/chat/completions", evalKey, "", chatBody("priced", false, nil))
+	r := g.post(t, "/v1/chat/completions", budgetKey, "", chatBody("priced", false, nil))
 	if r.StatusCode != http.StatusServiceUnavailable || r.errorCode(t) != "budget_unavailable" {
 		t.Errorf("priced request with no totals: %d %s, want 503 budget_unavailable", r.StatusCode, r.body)
 	}
 	if !strings.Contains(string(r.body), "not known") {
 		t.Errorf("budget_unavailable message %s, want it to say the spend is not known", r.body)
 	}
-	if r := g.post(t, "/v1/chat/completions", evalKey, "", chatBody("chat", false, nil)); r.StatusCode != http.StatusOK {
-		t.Errorf("model under no USD limit: %d %s, want 200", r.StatusCode, r.body)
+	if r := g.post(t, "/v1/chat/completions", evalKey, "", chatBody("rpm", false, nil)); r.StatusCode != http.StatusOK {
+		t.Errorf("unpriced model: %d %s, want 200", r.StatusCode, r.body)
 	}
 
 	cp.PushCurrentTotals()
 	g.waitMetric(t, "the totals applied", "kaiak_control_totals_applied_timestamp_seconds", func(float64) bool { return true })
-	r = g.post(t, "/v1/chat/completions", evalKey, "", chatBody("priced", false, nil))
+	r = g.post(t, "/v1/chat/completions", budgetKey, "", chatBody("priced", false, nil))
 	if r.StatusCode != http.StatusTooManyRequests || r.errorCode(t) != "budget_exceeded" {
 		t.Errorf("priced request after the totals: %d %s, want 429 budget_exceeded", r.StatusCode, r.body)
 	}

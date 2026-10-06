@@ -365,7 +365,7 @@ func TestLogExport(t *testing.T) {
 		t.Fatalf("no key: %d %s", r.StatusCode, r.body)
 	}
 	for i := range 3 {
-		r := g.post(t, "/v1/chat/completions", evalKey, fmt.Sprintf("otlp-rpm-%d", i), chatBody("rpm", false, nil))
+		r := g.post(t, "/v1/chat/completions", rpmKey, fmt.Sprintf("otlp-rpm-%d", i), chatBody("rpm", false, nil))
 		if want := []int{200, 200, 429}[i]; r.StatusCode != want {
 			t.Fatalf("rpm request %d: %d %s, want %d", i, r.StatusCode, r.body, want)
 		}
@@ -415,7 +415,7 @@ func TestLogExport(t *testing.T) {
 			"http.response.status_code": 401.0, "kaiak.auth.failure": "missing_key", "error.type": "missing_api_key"}},
 		{"the limit refusal", msg("request", "kaiak.request.id", "otlp-rpm-2"), map[string]any{
 			"http.response.status_code": 429.0, "error.type": "rate_limit_exceeded", "kaiak.limit.type": "requests_per_minute",
-			"kaiak.limit.group": "eval", "kaiak.limit.configured": 2.0}},
+			"kaiak.limit.group": "metered", "kaiak.limit.configured": 2.0}},
 		{"kaiak stopped", msg("kaiak stopped"), nil},
 	} {
 		r := find(c.match)

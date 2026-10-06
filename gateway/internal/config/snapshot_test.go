@@ -299,15 +299,15 @@ func TestChildDefaultsMergeUnderEachChild(t *testing.T) {
 	assertLimits(t, "bob", bob.Limits, []Limit{defaults[0], {Type: LimitTokensPerHour, Value: 2000000}, defaults[2]})
 }
 
-func TestChildOverrideMatchesOnTypeAndModelSet(t *testing.T) {
+func TestChildOverrideMatchesOnType(t *testing.T) {
 	s := parseFixture(t, "users-child-defaults.json")
 
-	// The requests_per_minute override (all models) replaces the default one; the
-	// tokens_per_hour default for ["small"] still applies.
+	// The requests_per_minute override replaces the default one in place; the
+	// tokens_per_hour default still applies.
 	power := s.Groups["power-user@example.com"]
 	assertLimits(t, "power-user", power.Limits, []Limit{
 		{Type: LimitRequestsPerMinute, Value: 100},
-		{Type: LimitTokensPerHour, Value: 100000, Models: []string{"small"}},
+		{Type: LimitTokensPerHour, Value: 100000},
 	})
 	if !slices.Equal(power.AllowedModels.Names(), []string{"large", "small"}) {
 		t.Errorf("power-user allowed = %v", power.AllowedModels.Names())
@@ -320,28 +320,16 @@ func TestChildOverrideMatchesOnTypeAndModelSet(t *testing.T) {
 	}
 }
 
-func TestMergeLimitsAppendsOverridesWithANewModelSet(t *testing.T) {
+func TestMergeLimitsAppendsOverridesOfAnotherType(t *testing.T) {
 	defaults := []Limit{{Type: LimitTokensPerHour, Value: 10}}
-	overrides := []Limit{{Type: LimitTokensPerHour, Value: 99, Models: []string{"a"}}}
-	assertLimits(t, "merged", mergeLimits(defaults, overrides), []Limit{defaults[0], overrides[0]})
-}
-
-func TestLimitCovers(t *testing.T) {
-	s := parseFixture(t, "full.json")
-	eval := s.Groups["eval-pipeline"].Limits
-	if !eval[0].Covers("anything") {
-		t.Error("an all-models limit must cover every model")
-	}
-	usd := eval[2]
-	if !slices.Equal(usd.Models, []string{"gpt-4.1", "gpt-4.1-mini"}) || !usd.Covers("gpt-4.1") || usd.Covers("qwen3-32b") {
-		t.Errorf("usd limit = %+v", usd)
-	}
+	overrides := []Limit{{Type: LimitUSDPerMonth, Value: 99}, {Type: LimitTokensPerHour, Value: 20}}
+	assertLimits(t, "merged", mergeLimits(defaults, overrides), []Limit{overrides[1], overrides[0]})
 }
 
 func assertLimits(t *testing.T, who string, got, want []Limit) {
 	t.Helper()
 	if !slices.EqualFunc(got, want, func(a, b Limit) bool {
-		return a.Type == b.Type && a.Value == b.Value && slices.Equal(a.Models, b.Models)
+		return a.Type == b.Type && a.Value == b.Value
 	}) {
 		t.Errorf("%s limits = %+v, want %+v", who, got, want)
 	}
@@ -459,14 +447,14 @@ func TestPriceTierIssues(t *testing.T) {
 func TestCountEffectiveLimits(t *testing.T) {
 	rpm := limitDoc{Type: string(LimitRequestsPerMinute), Value: 1}
 	tph := limitDoc{Type: string(LimitTokensPerHour), Value: 1}
-	tphLlama := limitDoc{Type: string(LimitTokensPerHour), Value: 2, Models: []string{"llama"}}
+	usd := limitDoc{Type: string(LimitUSDPerMonth), Value: 2}
 	doc := &document{
 		Global: globalDoc{Limits: []limitDoc{rpm}},
 		Groups: map[string]groupDoc{
 			"users":    {Limits: []limitDoc{rpm}, ChildDefaults: &childDefaultsDoc{Limits: []limitDoc{rpm, tph}}},
 			"plain":    {Parent: "users"},
 			"override": {Parent: "users", Limits: []limitDoc{{Type: string(LimitTokensPerHour), Value: 9}}},
-			"extra":    {Parent: "users", Limits: []limitDoc{tphLlama}},
+			"extra":    {Parent: "users", Limits: []limitDoc{usd}},
 			"orphan":   {Parent: "nowhere", Limits: []limitDoc{rpm, tph}},
 			"below":    {Parent: "plain"},
 		},

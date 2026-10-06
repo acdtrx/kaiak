@@ -276,7 +276,8 @@ func normalizeBaseURL(kind, u string) string {
 // report. extraEnv is added to the gateway's environment (the self-test's fake key).
 func runKind(ctx context.Context, o options, ws *workspace, extraEnv []string) error {
 	key, hash := newKey()
-	cfg, err := buildConfig(o, hash)
+	meteredKey, meteredHash := newKey()
+	cfg, err := buildConfig(o, hash, meteredHash)
 	if err != nil {
 		return err
 	}
@@ -303,7 +304,7 @@ func runKind(ctx context.Context, o options, ws *workspace, extraEnv []string) e
 	}
 	defer gw.stop()
 
-	r := &run{ctx: ctx, o: o, gw: gw, key: key, client: newClient(o.requestTimeout)}
+	r := &run{ctx: ctx, o: o, gw: gw, key: key, meteredKey: meteredKey, client: newClient(o.requestTimeout)}
 	r.checks()
 	gw.stop()
 	if !gw.cleanExit() {

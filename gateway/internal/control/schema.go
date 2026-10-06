@@ -110,12 +110,7 @@ func (w *walker) configSnapshot(v any, path string) {
 
 func (w *walker) totals(v any, path string) {
 	w.Object(v, path, map[string]schemacheck.Field{
-		"revision": {Required: true, Check: func(v any, path string) {
-			w.Object(v, path, map[string]schemacheck.Field{
-				"control_plane": {Required: true, Check: w.hex32()},
-				"sequence":      {Required: true, Check: w.count()},
-			})
-		}},
+		"revision":       {Required: true, Check: w.count()},
 		"config_epoch":   {Required: true, Check: w.hex32()},
 		"config_version": {Required: true, Check: w.configVersion()},
 		"live_gateways":  {Required: true, Check: w.count()},
@@ -133,7 +128,6 @@ func (w *walker) totalsWindow(v any, path string) {
 	m := w.Object(v, path, map[string]schemacheck.Field{
 		"group":        {Check: w.id()},
 		"type":         {Required: true, Check: w.Enum(totalsLimitTypes)},
-		"models":       {Check: w.ArrayOf(1, 0, true, w.StringWhere(config.IsPublicModelName, publicModelNameWhat))},
 		"window_start": {Required: true, Check: w.timestamp()},
 		"used":         {Required: true, Check: w.StringMatching(amountPattern, "a string of at most 18 decimal digits, no leading zeros")},
 	})

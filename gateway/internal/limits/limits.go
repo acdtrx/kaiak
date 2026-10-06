@@ -11,7 +11,6 @@
 package limits
 
 import (
-	"context"
 	"log/slog"
 	"math"
 	"slices"
@@ -76,19 +75,18 @@ func effectiveLimit(l config.Limit) int64 {
 	return int64(v)
 }
 
-// counterKey identifies a limit across config versions: a reload keeps the counter
-// of every limit whose group (or global), type and model set are unchanged. Group IDs
-// are unique across the tree, so the group alone names the scope.
+// counterKey identifies a limit across config versions: its group (or global) and
+// type, the one limit of that type in its scope. A reload keeps the counter of every
+// limit whose key is unchanged, its value edited or not. Group IDs are unique across
+// the tree, so the group alone names the scope.
 type counterKey struct {
 	// group is the group the limit belongs to; "" = global (IDs are never empty).
 	group string
 	typ   config.LimitType
-	// models is the sorted model set joined by newlines; "" = all models.
-	models string
 }
 
 func keyOf(group string, l config.Limit) counterKey {
-	return counterKey{group: group, typ: l.Type, models: strings.Join(l.Models, "\n")}
+	return counterKey{group: group, typ: l.Type}
 }
 
 func (k counterKey) scope() Scope { return scopeOf(k.group) }
@@ -233,22 +231,13 @@ func (l *Limiter) sync() {
 	}
 	now := l.now()
 	next := make(map[counterKey]*counter, len(l.counters))
-	// unmatched are the new limits with no counter of the same identity: their slot
-	// in the scope's list is filled once every exact match is known.
-	type unmatched struct {
-		key   counterKey
-		limit config.Limit
-		slot  **counter
-	}
-	var pending []unmatched
 	build := func(group string, limits []config.Limit) []*counter {
 		out := make([]*counter, len(limits))
 		for i, lim := range limits {
 			k := keyOf(group, lim)
 			c, ok := l.counters[k]
 			if !ok {
-				pending = append(pending, unmatched{key: k, limit: lim, slot: &out[i]})
-				continue
+				c = l.newCounter(k)
 			}
 			c.limit = lim
 			next[k] = c
@@ -263,26 +252,6 @@ func (l *Limiter) sync() {
 			l.byGroup[id] = build(id, g.Limits)
 		}
 	}
-	// dropped holds the counters no new limit kept, by group and type: each pending
-	// limit reads only its own bucket, never every counter, so a reload that gives N
-	// children a new identity stays linear in N.
-	var dropped map[dropBucket][]*counter
-	if len(pending) > 0 {
-		dropped = make(map[dropBucket][]*counter, len(pending))
-		for k, c := range l.counters {
-			if _, kept := next[k]; !kept {
-				b := dropBucket{group: k.group, typ: k.typ}
-				dropped[b] = append(dropped[b], c)
-			}
-		}
-	}
-	claimed := make(map[*counter]bool, len(pending))
-	for _, p := range pending {
-		c := l.carryOver(p.key, dropped[dropBucket{group: p.key.group, typ: p.key.typ}], claimed, now)
-		c.limit = p.limit
-		next[p.key] = c
-		*p.slot = c
-	}
 	for _, c := range next {
 		l.applyLimit(c)
 	}
@@ -293,54 +262,13 @@ func (l *Limiter) sync() {
 	}
 }
 
-// dropBucket groups the counters a reload drops by what a new limit may inherit
-// from: the same group (or global) and type.
-type dropBucket struct {
-	group string
-	typ   config.LimitType
-}
-
-// carryOver returns the counter for a new limit identity k that no existing counter
-// has (docs/specs/GATEWAY.md, Limits → Config reload): when counters of the same
-// group (or global) and type are being dropped (predecessors) — the limit's model set
-// changed — the limit keeps their usage: the one with the most used now (several:
-// ambiguous, logged as a warning), taken over whole when no other new limit took it
-// yet, else copied. A shared window's pushed base comes with it, until totals for the
-// new config name the new identity. With no predecessor the counter starts empty.
-// Callers hold l.mu.
-func (l *Limiter) carryOver(k counterKey, predecessors []*counter, claimed map[*counter]bool, now time.Time) *counter {
-	var best *counter
-	var bestUsed int64
-	for _, old := range predecessors {
-		if used := old.w.usedAt(now); best == nil || used > bestUsed {
-			best, bestUsed = old, used
-		}
-	}
+// newCounter is the counter of a limit identity no existing counter has: it starts
+// empty (docs/specs/GATEWAY.md, Limits → Config reload). Callers hold l.mu.
+func (l *Limiter) newCounter(k counterKey) *counter {
 	kind, measure := shape(k.typ)
-	if best == nil {
-		c := &counter{key: k, measure: measure, w: newWindow(kind, 0)}
-		c.w.shared = l.shared() && kind != SlidingMinute
-		return c
-	}
-	if p, ok := l.pushed[best.key]; ok {
-		if _, named := l.pushed[k]; !named {
-			l.pushed[k] = p
-		}
-	}
-	level := slog.LevelInfo
-	if len(predecessors) > 1 {
-		level = slog.LevelWarn
-	}
-	l.logger.Log(context.Background(), level, "limit keeps its usage across a model-set change",
-		append(identityAttrs(k.group), "kaiak.limit.type", k.typ,
-			"kaiak.limit.models", modelsAttr(k.models), "kaiak.limit.from_models", modelsAttr(best.key.models),
-			"kaiak.limit.predecessors", len(predecessors), "kaiak.limit.used", LogValue(measure, bestUsed))...)
-	if !claimed[best] {
-		claimed[best] = true
-		best.key = k
-		return best
-	}
-	return &counter{key: k, measure: measure, w: best.w.copySettled(now)}
+	c := &counter{key: k, measure: measure, w: newWindow(kind, 0)}
+	c.w.shared = l.shared() && kind != SlidingMinute
+	return c
 }
 
 // identityAttrs are a limit's scope and group log fields: the group is absent for a
@@ -359,14 +287,6 @@ func LogValue(m Measure, v int64) any {
 		return float64(v) / 1e9
 	}
 	return v
-}
-
-// modelsAttr writes a counter key's model set for the log: "*" for all models.
-func modelsAttr(models string) string {
-	if models == "" {
-		return "*"
-	}
-	return strings.ReplaceAll(models, "\n", ",")
 }
 
 // applyLimit sets c's effective limit — the configured value, or in control-plane
@@ -450,8 +370,8 @@ type Subject struct {
 	RequestsOnly bool
 }
 
-// applicable lists the counters of every scope the subject belongs to whose model
-// set covers its model: global and each group on its path. USD counters apply
+// applicable lists the counters of every scope the subject belongs to: global and
+// each group on its path. USD counters apply
 // only to a priced request (Subject.Priced): an unpriced model costs nothing, so no
 // budget refuses it or is spent by it (docs/specs/GATEWAY.md, Limits → Unpriced
 // models); a request that generates nothing (Subject.RequestsOnly) meets only request
@@ -460,7 +380,7 @@ func (l *Limiter) applicable(s Subject) []*counter {
 	var out []*counter
 	add := func(cs []*counter) {
 		for _, c := range cs {
-			if c.limit.Covers(s.Model) && (s.Priced || c.measure != MeasureCost) && (!s.RequestsOnly || c.measure == MeasureRequests) {
+			if (s.Priced || c.measure != MeasureCost) && (!s.RequestsOnly || c.measure == MeasureRequests) {
 				out = append(out, c)
 			}
 		}
@@ -603,7 +523,7 @@ func (l *Limiter) Settle(r *Reservation, recs ...accounting.UsageRecord) {
 func (l *Limiter) checkCountLocked(c *counter) {
 	if c.w.clampNegative() {
 		l.logger.Error("limit counter went negative: clamped to 0", append(identityAttrs(c.key.group),
-			"kaiak.limit.type", c.key.typ, "kaiak.limit.models", modelsAttr(c.key.models))...)
+			"kaiak.limit.type", c.key.typ)...)
 	}
 }
 
@@ -627,16 +547,14 @@ type CounterUsage struct {
 	// Group is the group the limit belongs to; "" for a global limit.
 	Group string
 	Type  config.LimitType
-	// Models the limit covers, sorted; nil = all models.
-	Models []string
 	// Limit and Used are in the counter's unit: requests, tokens or nano-USD. Used
 	// includes unsettled reservations.
 	Limit int64
 	Used  int64
 }
 
-// Usage returns every counter's current state, sorted by group (global first), type
-// and model set.
+// Usage returns every counter's current state, sorted by group (global first) and
+// type.
 func (l *Limiter) Usage() []CounterUsage {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -645,14 +563,13 @@ func (l *Limiter) Usage() []CounterUsage {
 	out := make([]CounterUsage, 0, len(l.counters))
 	for _, c := range l.counters {
 		out = append(out, CounterUsage{Group: c.key.group, Type: c.limit.Type,
-			Models: c.limit.Models, Limit: c.w.limit, Used: c.w.usedAt(now)})
+			Limit: c.w.limit, Used: c.w.usedAt(now)})
 	}
 	slices.SortFunc(out, func(a, b CounterUsage) int {
-		return strings.Compare(sortKey(a.Group, a.Type, a.Models), sortKey(b.Group, b.Type, b.Models))
+		if c := strings.Compare(a.Group, b.Group); c != 0 {
+			return c
+		}
+		return strings.Compare(string(a.Type), string(b.Type))
 	})
 	return out
-}
-
-func sortKey(group string, t config.LimitType, models []string) string {
-	return group + "\x00" + string(t) + "\x00" + strings.Join(models, "\n")
 }

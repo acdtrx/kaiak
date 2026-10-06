@@ -348,9 +348,8 @@ func (c *schemaCheck) limits(v any, path string) {
 
 func (c *schemaCheck) limit(v any, path string) {
 	m := c.Object(v, path, map[string]schemacheck.Field{
-		"type":   {Required: true, Check: c.Enum(limitTypes)},
-		"value":  {Required: true, Check: c.NumberBetween(0, schemacheck.MaxSafeInteger)},
-		"models": {Check: c.ArrayOf(1, 0, true, c.publicModelName)},
+		"type":  {Required: true, Check: c.Enum(limitTypes)},
+		"value": {Required: true, Check: c.NumberBetween(0, schemacheck.MaxSafeInteger)},
 	})
 	if m == nil {
 		return
@@ -359,11 +358,5 @@ func (c *schemaCheck) limit(v any, path string) {
 	value, isNumber := m["value"].(json.Number)
 	if isNumber && slices.Contains(countLimitTypes, limitType) && !schemacheck.IsInteger(schemacheck.NumberValue(value)) {
 		c.Fail(schemacheck.Pointer(path, "value"), "must be an integer for "+limitType)
-	}
-}
-
-func (c *schemaCheck) publicModelName(v any, path string) {
-	if s, ok := v.(string); !ok || !IsPublicModelName(s) {
-		c.Fail(path, "must be "+publicModelNameWhat)
 	}
 }

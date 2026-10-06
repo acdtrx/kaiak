@@ -3,12 +3,10 @@ package limits
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -176,21 +174,20 @@ func TestEveryScopeIsEnforced(t *testing.T) {
 	refused(t, l, bob, 10)
 }
 
-func TestModelSets(t *testing.T) {
+// Every limit of a scope counts every request of that scope, whatever its model.
+func TestEveryLimitOfAScopeCountsEveryModel(t *testing.T) {
 	c := newClock("2026-09-24T10:00:00Z")
 	l := c.limiter(holderOf(snapshot(t, limitsDoc{
-		team:     `[{ "type": "requests_per_minute", "value": 1, "models": ["m1"] }]`,
+		team:     `[{ "type": "requests_per_minute", "value": 2 }]`,
 		workload: `[{ "type": "requests_per_minute", "value": 3 }]`,
 	})))
 	admitN(t, l, workload, 1, 10)
-	if rej := refused(t, l, workload, 10); rej.Group != "t" {
-		t.Errorf("refused by %s, want the m1 team limit", rej.Scope)
+	admitN(t, l, workload.on("m2"), 1, 10)
+	if rej := refused(t, l, workload.on("m2"), 10); rej.Group != "t" {
+		t.Errorf("refused by %s, want the team limit counting m1 and m2 together", rej.Scope)
 	}
-	// m2 is outside the team limit's model set; the workload limit counts all models
-	// together: m1's request plus two on m2 reach its 3.
-	admitN(t, l, workload.on("m2"), 2, 10)
-	if rej := refused(t, l, workload.on("m2"), 10); rej.Group != "w" {
-		t.Errorf("refused by %s, want the all-models workload limit", rej.Scope)
+	if rej := refused(t, l, workload, 10); rej.Group != "t" {
+		t.Errorf("refused by %s, want the team limit on m1 too", rej.Scope)
 	}
 }
 
@@ -543,17 +540,17 @@ func TestRefusalBlockedBySettledUsageKeepsItsTime(t *testing.T) {
 func TestReloadKeepsMatchingCounters(t *testing.T) {
 	c := newClock("2026-09-24T10:00:00Z")
 	holder := holderOf(snapshot(t, limitsDoc{
-		team:     `[{ "type": "requests_per_minute", "value": 10 }, { "type": "tokens_per_hour", "value": 5000, "models": ["m1", "m2"] }]`,
+		team:     `[{ "type": "requests_per_minute", "value": 10 }, { "type": "tokens_per_hour", "value": 5000 }]`,
 		workload: `[{ "type": "requests_per_minute", "value": 10 }]`,
 	}))
 	l := c.limiter(holder)
 	admitN(t, l, workload, 4, 100)
 
 	// Team requests limit lowered to 4 (applies to the count so far); the team token
-	// limit kept with its model set written in another order; the workload's limit
-	// removed and a workload token limit added.
+	// limit kept and moved after the requests limit; the workload's limit removed and a
+	// workload token limit added.
 	holder.Swap(snapshot(t, limitsDoc{
-		team:     `[{ "type": "requests_per_minute", "value": 4 }, { "type": "tokens_per_hour", "value": 5000, "models": ["m2", "m1"] }]`,
+		team:     `[{ "type": "tokens_per_hour", "value": 5000 }, { "type": "requests_per_minute", "value": 4 }]`,
 		workload: `[{ "type": "tokens_per_minute", "value": 1000 }]`,
 	}))
 	rej := refused(t, l, workload, 100)
@@ -572,11 +569,10 @@ func TestReloadKeepsMatchingCounters(t *testing.T) {
 		}
 	}
 
-	// D5: a limit whose only change is its model set keeps its count — group and
-	// type identify it across the change.
-	holder.Swap(snapshot(t, limitsDoc{team: `[{ "type": "tokens_per_hour", "value": 5000, "models": ["m1"] }]`}))
+	// An edited value keeps the count: group and type identify the limit.
+	holder.Swap(snapshot(t, limitsDoc{team: `[{ "type": "tokens_per_hour", "value": 9000 }]`}))
 	if got := used(t, l, "t", config.LimitTokensPerHour); got != 400 {
-		t.Errorf("limit with another model set at %d, want the 400 carried over", got)
+		t.Errorf("limit with another value at %d, want the 400 kept", got)
 	}
 }
 
@@ -618,7 +614,7 @@ func openDir(t *testing.T) (*state.Dir, *bytes.Buffer) {
 
 var persisted = limitsDoc{
 	global:   `[{ "type": "usd_per_month", "value": 100 }]`,
-	team:     `[{ "type": "tokens_per_hour", "value": 100000, "models": ["m1"] }]`,
+	team:     `[{ "type": "tokens_per_hour", "value": 100000 }]`,
 	workload: `[{ "type": "tokens_per_minute", "value": 100000 }, { "type": "requests_per_minute", "value": 100 }]`,
 	ann:      `[{ "type": "tokens_per_hour", "value": 100000 }]`,
 }
@@ -706,7 +702,7 @@ func TestSnapshotWithAnotherVersionIsDiscarded(t *testing.T) {
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Error("the file with another version was kept")
 	}
-	if !strings.Contains(logs.String(), "kaiak.data_file.found_version=1") || !strings.Contains(logs.String(), "kaiak.data_file.want_version=2") {
+	if !strings.Contains(logs.String(), "kaiak.data_file.found_version=1") || !strings.Contains(logs.String(), "kaiak.data_file.want_version=3") {
 		t.Errorf("discard not logged:\n%s", logs)
 	}
 	// No file at all restores nothing, without error.
@@ -722,8 +718,8 @@ func TestSnapshotWithAnotherVersionIsDiscarded(t *testing.T) {
 // unchecked, and the request's cost was then charged past it.
 func TestBillabilityComesFromTheRequestsOwnSnapshot(t *testing.T) {
 	c := newClock("2026-09-24T10:30:00Z")
-	priced := snapshot(t, limitsDoc{team: usdLimitM1})
-	free := snapshot(t, limitsDoc{team: usdLimitM1})
+	priced := snapshot(t, limitsDoc{team: usdLimit})
+	free := snapshot(t, limitsDoc{team: usdLimit})
 	free.Models["m1"].Prices = nil
 	h := holderOf(priced)
 	l := c.limiter(h)
@@ -879,147 +875,21 @@ func TestSettlementReachesAncestorsOfADeletedGroup(t *testing.T) {
 	}
 }
 
-// A carry-over across a model-set edit stays within one group: B's limit, whose
-// model set changed while A's limit of the same type went away, starts empty — it
-// never inherits A's usage.
-func TestCarryOverStaysWithinItsGroup(t *testing.T) {
-	c := newClock("2026-09-24T10:00:00Z")
-	holder := holderOf(snapshot(t, limitsDoc{
-		team: `[{ "type": "tokens_per_hour", "value": 5000, "models": ["m1"] }]`,
-		ann:  `[{ "type": "tokens_per_hour", "value": 5000, "models": ["m1"] }]`,
-	}))
-	l := c.limiter(holder)
-	admitN(t, l, workload, 1, 400)
-	if got := used(t, l, "t", config.LimitTokensPerHour); got != 400 {
-		t.Fatalf("team tokens %d, want 400", got)
-	}
-
-	holder.Swap(snapshot(t, limitsDoc{ann: `[{ "type": "tokens_per_hour", "value": 5000, "models": ["m1", "m2"] }]`}))
-	if got := used(t, l, "ann", config.LimitTokensPerHour); got != 0 {
-		t.Errorf("ann tokens %d after the edit, want 0: the team's usage is not hers", got)
-	}
-}
-
-// A limit split by a model-set edit into two new identities carries its predecessor's
-// usage to both: the first takes the counter over, reservations in flight included;
-// the second gets a copy of the settled usage only — the in-flight reservation settles
-// on the counter it was made on, so a copied hold would never be released. The two
-// count separately from then on.
-func TestCarryOverToTwoNewLimitsFromOnePredecessor(t *testing.T) {
-	c := newClock("2026-09-24T10:00:00Z")
-	holder := holderOf(snapshot(t, limitsDoc{team: `[{ "type": "tokens_per_hour", "value": 5000, "models": ["m1", "m2"] }]`}))
-	l := c.limiter(holder)
-	l.Settle(admitN(t, l, workload, 1, 5000)[0], record(400, 0, 0, 0, 0, 0))
-	inFlight := admitN(t, l, workload, 1, 1000)[0]
-
-	holder.Swap(snapshot(t, limitsDoc{team: `[
-    { "type": "tokens_per_hour", "value": 5000, "models": ["m1"] },
-    { "type": "tokens_per_hour", "value": 5000, "models": ["m2"] } ]`}))
-	usedOn := func(model string) int64 {
-		t.Helper()
-		for _, u := range l.Usage() {
-			if u.Group == "t" && u.Type == config.LimitTokensPerHour && slices.Equal(u.Models, []string{model}) {
-				return u.Used
-			}
-		}
-		t.Fatalf("no team tokens_per_hour counter on %s", model)
-		return 0
-	}
-	if m1, m2 := usedOn("m1"), usedOn("m2"); m1 != 1400 || m2 != 400 {
-		t.Fatalf("after the split m1 %d, m2 %d; want 1400 (400 settled + 1000 in flight) and 400 (settled only)", m1, m2)
-	}
-
-	c.advance(time.Second)
-	l.Settle(inFlight, record(200, 0, 0, 0, 0, 0))
-	if m1, m2 := usedOn("m1"), usedOn("m2"); m1 != 600 || m2 != 400 {
-		t.Errorf("after the in-flight request settled m1 %d, m2 %d; want 600 and 400 (no phantom hold)", m1, m2)
-	}
-
-	l.Settle(admitN(t, l, workload, 1, 100)[0], record(100, 0, 0, 0, 0, 0))
-	if m1, m2 := usedOn("m1"), usedOn("m2"); m1 != 700 || m2 != 400 {
-		t.Errorf("after a request on m1: m1 %d, m2 %d; want 700 and 400 (separate counters)", m1, m2)
-	}
-	l.Settle(admitN(t, l, workload.on("m2"), 1, 50)[0], record(50, 0, 0, 0, 0, 0))
-	if m1, m2 := usedOn("m1"), usedOn("m2"); m1 != 700 || m2 != 450 {
-		t.Errorf("after a request on m2: m1 %d, m2 %d; want 700 and 450", m1, m2)
-	}
-}
-
-// The carry-over line logs a USD limit's used amount in dollars, as the request
-// line's refusal fields do — not in the counter's nano-USD.
-func TestCarryOverLogsUsedInDollars(t *testing.T) {
-	clk := newClock("2026-10-05T10:00:00Z")
-	holder := holderOf(snapshot(t, limitsDoc{team: `[{"type":"usd_per_month","value":100,"models":["m1"]}]`}))
-	var logs bytes.Buffer
-	l := New(holder, clk.now, slog.New(slog.NewJSONHandler(&logs, nil)))
-	l.Settle(admitN(t, l, workload, 1, 1)[0], record(1, 0, 0, 0, 0, 2_000_000_000)) // $2.
-	holder.Swap(snapshot(t, limitsDoc{team: `[{"type":"usd_per_month","value":100,"models":["m1","m2"]}]`}))
-	l.Usage() // syncs to the changed model set and logs the carry-over
-	var line map[string]any
-	if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &line); err != nil {
-		t.Fatalf("decode the carry-over line: %v; %s", err, logs.Bytes())
-	}
-	if got := line["kaiak.limit.used"]; got != float64(2) {
-		t.Errorf("$2 of carried spend logged as kaiak.limit.used=%v, want 2", got)
-	}
-}
-
 // An operational line about a global limit carries no kaiak.limit.group:
 // kaiak.limit.scope says global, as on the request line.
 func TestGlobalLimitLinesCarryNoGroup(t *testing.T) {
 	clk := newClock("2026-10-05T10:00:00Z")
-	holder := holderOf(snapshot(t, limitsDoc{global: `[{"type":"tokens_per_hour","value":1000,"models":["m1"]}]`}))
+	holder := holderOf(snapshot(t, limitsDoc{global: `[{"type":"tokens_per_minute","value":60000}]`}))
 	var logs bytes.Buffer
-	l := New(holder, clk.now, slog.New(slog.NewJSONHandler(&logs, nil)))
-	admitN(t, l, workload, 1, 10)
-	holder.Swap(snapshot(t, limitsDoc{global: `[{"type":"tokens_per_hour","value":1000,"models":["m1","m2"]}]`}))
-	l.Usage()
+	cs := &contactState{connected: true, last: clk.t}
+	l := NewShared(holder, clk.now, cs.get, slog.New(slog.NewJSONHandler(&logs, nil)))
+	l.TakeTotals(&Totals{LiveGateways: 4}, 0) // a 15 000 share, below m1's default output
 	var line map[string]any
-	if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &line); err != nil {
-		t.Fatalf("decode the carry-over line: %v; %s", err, logs.Bytes())
+	if err := json.Unmarshal(bytes.SplitN(bytes.TrimSpace(logs.Bytes()), []byte("\n"), 2)[0], &line); err != nil {
+		t.Fatalf("decode the share line: %v; %s", err, logs.Bytes())
 	}
 	if g, ok := line["kaiak.limit.group"]; ok || line["kaiak.limit.scope"] != "global" {
 		t.Errorf("global limit's line: scope %v, kaiak.limit.group %q present %v; want global and no group",
 			line["kaiak.limit.scope"], g, ok)
-	}
-}
-
-// usersDoc is a users group with children child groups, each given one
-// tokens_per_hour limit on models (a JSON array) by users' child_defaults.
-func usersDoc(tb testing.TB, children int, models string) *config.Snapshot {
-	tb.Helper()
-	model := `{ "deployments": [{ "backend": "b", "model": "x" }], "metadata": { "context_length": 32768,
-      "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } } }`
-	var b strings.Builder
-	b.WriteString(`{ "format_version": 5, "global": {},
-  "backends": { "b": { "type": "openai-compatible", "base_url": "http://localhost:1/v1" } },
-  "models": { "m1": ` + model + `, "m2": ` + model + ` },
-  "groups": { "users": { "child_defaults": { "limits": [{ "type": "tokens_per_hour", "value": 1000, "models": ` + models + ` }] } }`)
-	for i := range children {
-		fmt.Fprintf(&b, `, "u%d": { "parent": "users" }`, i)
-	}
-	b.WriteString(` }, "keys": {} }`)
-	s, err := config.Parse([]byte(b.String()))
-	if err != nil {
-		tb.Fatal(err)
-	}
-	return s
-}
-
-// A model-set edit of a child_defaults limit gives every child a new limit identity
-// whose predecessor is dropped: the reload that carries them over runs under the
-// limiter's lock, so its time grows with the number of children, not their square.
-func BenchmarkReloadCarryOver(b *testing.B) {
-	const children = 40000
-	snaps := []*config.Snapshot{usersDoc(b, children, `["m1", "m2"]`), usersDoc(b, children, `["m1"]`)}
-	holder := holderOf(snaps[1])
-	l := newClock("2026-09-24T10:00:00Z").limiter(holder)
-	l.Usage()
-	b.ResetTimer()
-	for i := range b.N {
-		holder.Swap(snaps[i%2])
-		l.mu.Lock()
-		l.sync()
-		l.mu.Unlock()
 	}
 }

@@ -20,29 +20,28 @@ const labelSentinel = "Cost Center 4711"
 // groupTreeConfig is testConfig with a four-level tree in place of its groups:
 // team acme → projects acme-rag and acme-search → envs acme-rag-prod and
 // acme-rag-dev → workloads rag-api (prod) and rag-sandbox (dev); search-api is a
-// workload straight under acme-search. Limits: the prod env allows 2 "chat" requests
-// a minute, the rag project 10 "chat" and 3 "rpm" requests a minute (shared by both
-// envs) and 0.0001 USD a month on "priced". Global has no limits; the backend takes
-// 4 requests at a time (its share shows which totals a gateway applied).
+// workload straight under acme-search. Limits: the prod env allows 2 requests a
+// minute, the rag project 4 requests a minute (shared by both envs) and 0.0001 USD a
+// month. Global has no limits; the backend takes 4 requests at a time (its share
+// shows which totals a gateway applied).
 func groupTreeConfig(backendURL string, hashes map[string]string) map[string]any {
 	cfg := testConfig(backendURL, hashes["k-prod"], hashes["k-dev"], "")
 	cfg["global"] = map[string]any{}
 	cfg["backends"].(map[string]any)["fake"].(map[string]any)["max_in_flight"] = 4
-	rpm := func(value int, model string) map[string]any {
-		return map[string]any{"type": "requests_per_minute", "value": value, "models": []any{model}}
+	rpm := func(value int) map[string]any {
+		return map[string]any{"type": "requests_per_minute", "value": value}
 	}
 	cfg["groups"] = map[string]any{
 		"acme": map[string]any{"labels": map[string]any{"kind": "team", "cost_center": labelSentinel}},
 		"acme-rag": map[string]any{
 			"parent": "acme",
 			"labels": map[string]any{"kind": "project"},
-			"limits": []any{rpm(10, "chat"), rpm(3, "rpm"),
-				map[string]any{"type": "usd_per_month", "value": 0.0001, "models": []any{"priced"}}},
+			"limits": []any{rpm(4), map[string]any{"type": "usd_per_month", "value": 0.0001}},
 		},
 		"acme-rag-prod": map[string]any{
 			"parent": "acme-rag",
 			"labels": map[string]any{"kind": "env", "env": "prod"},
-			"limits": []any{rpm(2, "chat")},
+			"limits": []any{rpm(2)},
 		},
 		"acme-rag-dev": map[string]any{"parent": "acme-rag", "labels": map[string]any{"kind": "env", "env": "dev"}},
 		"rag-api":      map[string]any{"parent": "acme-rag-prod", "labels": map[string]any{"kind": "workload"}},
@@ -115,20 +114,18 @@ func TestGroupTreeEndToEnd(t *testing.T) {
 		ok(t, "k-prod", "prod-chat-1", "chat")
 		ok(t, "k-prod", "prod-chat-2", "chat")
 		refused(t, "k-prod", "prod-chat-3", "chat", "rate_limit_exceeded", "acme-rag-prod", "rag-api")
-		// The project's 10 have room: the dev env, under the same project, serves.
+		// The project's 4 have room: the dev env, under the same project, serves.
 		ok(t, "k-dev", "dev-chat-1", "chat")
 	})
 
 	t.Run("a project limit is shared by its envs", func(t *testing.T) {
-		ok(t, "k-prod", "prod-rpm-1", "rpm")
-		ok(t, "k-prod", "prod-rpm-2", "rpm")
+		// The project's 4th request this minute (prod's two and dev's one before it).
 		ok(t, "k-dev", "dev-rpm-1", "rpm")
 		refused(t, "k-dev", "dev-rpm-2", "rpm", "rate_limit_exceeded", "acme-rag", "rag-sandbox")
-		refused(t, "k-prod", "prod-rpm-3", "rpm", "rate_limit_exceeded", "acme-rag", "rag-api")
 		// Another project under the same team has no such limit.
 		ok(t, "k-search", "search-rpm-1", "rpm")
-		if got := g.metric(t, `kaiak_limit_rejections_total{scope_kind="group",type="requests_per_minute"}`); got != 3 {
-			t.Errorf("group rejections = %v, want 3", got)
+		if got := g.metric(t, `kaiak_limit_rejections_total{scope_kind="group",type="requests_per_minute"}`); got != 2 {
+			t.Errorf("group rejections = %v, want 2", got)
 		}
 	})
 
@@ -165,7 +162,7 @@ func TestGroupTreeEndToEnd(t *testing.T) {
 	t.Run("totals for a group apply to that group's keys alone", func(t *testing.T) {
 		now := time.Now().UTC()
 		month := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
-		cp.SetWindows(fmt.Appendf(nil, `[{"group":"acme-rag","type":"usd_per_month","models":["priced"],"window_start":%q,"used":"200000"}]`, month))
+		cp.SetWindows(fmt.Appendf(nil, `[{"group":"acme-rag","type":"usd_per_month","window_start":%q,"used":"200000"}]`, month))
 		// A live count of 2, set after the windows, marks the totals that carry them:
 		// the backend cap's share halves once the gateway has applied such totals.
 		cp.SetLiveGateways(2)

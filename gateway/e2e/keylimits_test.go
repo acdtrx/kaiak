@@ -160,8 +160,7 @@ func TestTokenRefusalBlockedByARunningRequestRetriesSoon(t *testing.T) {
 	// limit (64): one reservation fits 120 tokens, two do not; a settled answer (7 in,
 	// 4 out) beside one reservation still fits.
 	eval := cfg["groups"].(map[string]any)["eval"].(map[string]any)
-	eval["limits"] = append(eval["limits"].([]any),
-		map[string]any{"type": "tokens_per_minute", "value": 120, "models": []any{"chat"}})
+	eval["limits"] = []any{map[string]any{"type": "tokens_per_minute", "value": 120}}
 	writeJSON(t, configFile, cfg)
 	g := startGateway(t, configFile, "")
 

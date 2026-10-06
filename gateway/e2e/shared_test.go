@@ -48,15 +48,15 @@ func TestSharedLimitsAcrossGateways(t *testing.T) {
 	a, b := start("gw-a"), start("gw-b")
 
 	t.Run("the per-minute limit is split between the live gateways", func(t *testing.T) {
-		// eval's 2 requests a minute on "rpm", two live gateways: 1 each.
+		// metered's 2 requests a minute, two live gateways: 1 each.
 		for _, g := range []*gateway{a, b} {
-			r := g.post(t, "/v1/chat/completions", evalKey, "", chatBody("rpm", false, nil))
+			r := g.post(t, "/v1/chat/completions", rpmKey, "", chatBody("rpm", false, nil))
 			if r.StatusCode != http.StatusOK || r.Header.Get("x-ratelimit-limit-requests") != "1" ||
 				r.Header.Get("x-ratelimit-remaining-requests") != "0" {
 				t.Fatalf("first request: %d, limit %q remaining %q: %s", r.StatusCode,
 					r.Header.Get("x-ratelimit-limit-requests"), r.Header.Get("x-ratelimit-remaining-requests"), r.body)
 			}
-			if r := g.post(t, "/v1/chat/completions", evalKey, "", chatBody("rpm", false, nil)); r.StatusCode != http.StatusTooManyRequests {
+			if r := g.post(t, "/v1/chat/completions", rpmKey, "", chatBody("rpm", false, nil)); r.StatusCode != http.StatusTooManyRequests {
 				t.Fatalf("second request: %d, want 429 on the share: %s", r.StatusCode, r.body)
 			}
 		}
@@ -71,7 +71,7 @@ func TestSharedLimitsAcrossGateways(t *testing.T) {
 	})
 
 	t.Run("a budget spent through one gateway is enforced on the other", func(t *testing.T) {
-		if r := a.post(t, "/v1/chat/completions", evalKey, "e2e-spend", chatBody("priced", false, nil)); r.StatusCode != http.StatusOK {
+		if r := a.post(t, "/v1/chat/completions", budgetKey, "e2e-spend", chatBody("priced", false, nil)); r.StatusCode != http.StatusOK {
 			t.Fatalf("spend on gw-a: %d %s", r.StatusCode, r.body)
 		}
 		waitUsage(t, cp, "gw-a's batch", func(e fakecontrol.UsageEvent) bool {
@@ -83,7 +83,7 @@ func TestSharedLimitsAcrossGateways(t *testing.T) {
 		}
 		now := time.Now().UTC()
 		month := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
-		cp.SetWindows(fmt.Appendf(nil, `[{"type":"usd_per_month","models":["priced"],"window_start":%q,"used":"%d"}]`,
+		cp.SetWindows(fmt.Appendf(nil, `[{"group":"budgeted","type":"usd_per_month","window_start":%q,"used":"%d"}]`,
 			month, int64(cost)))
 		// Totals made before the windows were set may still be on their way to gw-b
 		// (pushed when gw-a's batch was counted, or in an ack), so a newer totals
@@ -93,12 +93,12 @@ func TestSharedLimitsAcrossGateways(t *testing.T) {
 		cp.SetLiveGateways(1)
 		b.waitMetric(t, "gw-b taking the pushed windows", `kaiak_backend_max_in_flight{backend="fake"}`,
 			func(v float64) bool { return v == 4 })
-		r := b.post(t, "/v1/chat/completions", evalKey, "", chatBody("priced", false, nil))
+		r := b.post(t, "/v1/chat/completions", budgetKey, "", chatBody("priced", false, nil))
 		if r.StatusCode != http.StatusTooManyRequests || r.errorCode(t) != "budget_exceeded" {
 			t.Fatalf("gw-b after the push: %d %s, want 429 budget_exceeded", r.StatusCode, r.body)
 		}
-		if r := b.post(t, "/v1/chat/completions", evalKey, "", chatBody("chat", false, nil)); r.StatusCode != http.StatusOK {
-			t.Fatalf("gw-b on a model the budget does not cover: %d %s", r.StatusCode, r.body)
+		if r := b.post(t, "/v1/chat/completions", evalKey, "", chatBody("rpm", false, nil)); r.StatusCode != http.StatusOK {
+			t.Fatalf("gw-b on an unpriced model, which no budget refuses: %d %s", r.StatusCode, r.body)
 		}
 		cp.SetLiveGateways(2)
 		for _, g := range []*gateway{a, b} {
@@ -114,12 +114,12 @@ func TestSharedLimitsAcrossGateways(t *testing.T) {
 		if got := a.metric(t, "kaiak_control_connected"); got != 0 {
 			t.Errorf("connected = %v during the outage", got)
 		}
-		r := a.post(t, "/v1/chat/completions", evalKey, "", chatBody("priced", false, nil))
+		r := a.post(t, "/v1/chat/completions", budgetKey, "", chatBody("priced", false, nil))
 		if r.StatusCode != http.StatusServiceUnavailable || r.errorCode(t) != "budget_unavailable" {
 			t.Fatalf("money-limited model in the outage: %d %s, want 503 budget_unavailable", r.StatusCode, r.body)
 		}
-		if r := a.post(t, "/v1/chat/completions", evalKey, "", chatBody("chat", false, nil)); r.StatusCode != http.StatusOK {
-			t.Fatalf("other model in the outage: %d %s", r.StatusCode, r.body)
+		if r := a.post(t, "/v1/chat/completions", evalKey, "", chatBody("rpm", false, nil)); r.StatusCode != http.StatusOK {
+			t.Fatalf("unpriced model in the outage: %d %s", r.StatusCode, r.body)
 		}
 		if got := a.metric(t, `kaiak_errors_total{class="budget_unavailable"}`); got != 1 {
 			t.Errorf("budget_unavailable errors = %v, want 1", got)
@@ -133,7 +133,7 @@ func TestSharedLimitsAcrossGateways(t *testing.T) {
 			t.Errorf("outage = %v once connected", got)
 		}
 		// Served again, and still over its budget.
-		r := a.post(t, "/v1/chat/completions", evalKey, "", chatBody("priced", false, nil))
+		r := a.post(t, "/v1/chat/completions", budgetKey, "", chatBody("priced", false, nil))
 		if r.StatusCode != http.StatusTooManyRequests || r.errorCode(t) != "budget_exceeded" {
 			t.Fatalf("money-limited model after the outage: %d %s, want 429 budget_exceeded", r.StatusCode, r.body)
 		}
@@ -156,7 +156,7 @@ func TestRejectedConfigKeepsTheSpentBudget(t *testing.T) {
 	defer cp.Close()
 	cp.PushTotalsOnChange()
 	cp.SetLiveGateways(2)
-	evalKey, evalHash := newKey()
+	_, evalHash := newKey()
 	_, annHash := newKey()
 	publish := func(cfg map[string]any) {
 		data, err := json.Marshal(cfg)
@@ -189,7 +189,7 @@ func TestRejectedConfigKeepsTheSpentBudget(t *testing.T) {
 		}
 	}
 	chat := func(g *gateway, model string) *response {
-		return g.post(t, "/v1/chat/completions", evalKey, "", chatBody(model, false, nil))
+		return g.post(t, "/v1/chat/completions", budgetKey, "", chatBody(model, false, nil))
 	}
 	budgetExceeded := func(t *testing.T, g *gateway, what string) {
 		t.Helper()
@@ -202,21 +202,21 @@ func TestRejectedConfigKeepsTheSpentBudget(t *testing.T) {
 		return time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
 	}
 
-	// v1's budget on "priced" (0.0001 USD) is spent.
-	cp.SetWindows(fmt.Appendf(nil, `[{"type":"usd_per_month","models":["priced"],"window_start":%q,"used":"200000"}]`, month()))
+	// v1's budget (0.0001 USD) is spent.
+	cp.SetWindows(fmt.Appendf(nil, `[{"group":"budgeted","type":"usd_per_month","window_start":%q,"used":"200000"}]`, month()))
 	liveMarker(t, 1)
 	for _, g := range []*gateway{a, b} {
 		budgetExceeded(t, g, "v1's spent budget")
 	}
 
-	// v2 adds a backend whose key only gw-a has, and widens the budget to "chat": a
-	// new limit, unspent in the control plane's count.
+	// v2 adds a backend whose key only gw-a has, and raises the budget: the control
+	// plane's count for v2 (scripted here) shows it unspent.
 	v2 := testConfig(backend.URL(), evalHash, annHash, "")
 	v2["backends"].(map[string]any)["fake"].(map[string]any)["max_in_flight"] = 4
 	v2["backends"].(map[string]any)["keyed"] = map[string]any{"type": "openai-compatible",
 		"base_url": backend.URL() + "/v1", "api_key_env": keyEnv}
-	v2["global"].(map[string]any)["limits"] = []any{map[string]any{"type": "usd_per_month", "value": 0.0001,
-		"models": []any{"chat", "priced"}}}
+	v2["groups"].(map[string]any)["budgeted"].(map[string]any)["limits"] = []any{
+		map[string]any{"type": "usd_per_month", "value": 0.001}}
 	publish(v2)
 	a.logs.wait(t, "gw-a applying v2", msg("config applied", "kaiak.trigger", "control", "kaiak.config.version", "2"))
 	b.logs.wait(t, "gw-b rejecting v2", msg("config rejected", "kaiak.trigger", "control", "kaiak.config.version", "2"))
@@ -225,14 +225,14 @@ func TestRejectedConfigKeepsTheSpentBudget(t *testing.T) {
 	}
 
 	// The control plane counts v2's limits now.
-	cp.SetWindows(fmt.Appendf(nil, `[{"type":"usd_per_month","models":["chat","priced"],"window_start":%q,"used":"0"}]`, month()))
+	cp.SetWindows(fmt.Appendf(nil, `[{"group":"budgeted","type":"usd_per_month","window_start":%q,"used":"0"}]`, month()))
 	liveMarker(t, 2)
 	if r := chat(a, "priced"); r.StatusCode != http.StatusOK {
 		t.Errorf("gw-a under v2's unspent budget: %d %s, want 200", r.StatusCode, r.body)
 	}
 	budgetExceeded(t, b, "gw-b after v2's totals")
-	if r := chat(b, "chat"); r.StatusCode != http.StatusOK {
-		t.Errorf("gw-b on a model v1's budget does not cover: %d %s, want 200", r.StatusCode, r.body)
+	if r := chat(b, "rpm"); r.StatusCode != http.StatusOK {
+		t.Errorf("gw-b on an unpriced model, which no budget refuses: %d %s, want 200", r.StatusCode, r.body)
 	}
 	// The mismatch is reported: gw-b's status names the rejected version.
 	var rejected bool

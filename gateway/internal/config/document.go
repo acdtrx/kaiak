@@ -132,7 +132,6 @@ type keyDoc struct {
 }
 
 type limitDoc struct {
-	Type   string   `json:"type"`
-	Value  float64  `json:"value"`
-	Models []string `json:"models"`
+	Type  string  `json:"type"`
+	Value float64 `json:"value"`
 }

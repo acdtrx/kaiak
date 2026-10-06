@@ -35,7 +35,6 @@ const (
 	CodeDeploymentBackendUnknown         = "deployment-backend-unknown"
 	CodeAllowedModelUnknown              = "allowed-model-unknown"
 	CodeAllowedModelsWildcardMixed       = "allowed-models-wildcard-mixed"
-	CodeLimitModelUnknown                = "limit-model-unknown"
 	CodeLimitDuplicate                   = "limit-duplicate"
 	CodeOutputLimitDefaultAboveCeiling   = "output-limit-default-above-ceiling"
 	CodeOutputLimitAboveContext          = "output-limit-above-context"

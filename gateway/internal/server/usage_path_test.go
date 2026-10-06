@@ -113,7 +113,7 @@ func testLimitsTotals(t *control.Totals) *limits.Totals {
 		LiveGateways: t.LiveGateways}
 	for _, w := range t.Windows {
 		out.Windows = append(out.Windows, limits.PushedWindow{Group: w.Group, Type: w.Type,
-			Models: w.Models, Start: w.WindowStart, Used: w.Used})
+			Start: w.WindowStart, Used: w.Used})
 	}
 	return out
 }

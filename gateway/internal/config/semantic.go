@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"strings"
 
 	"kaiak/internal/schemacheck"
 )
@@ -238,14 +237,14 @@ func countEffectiveLimits(doc *document) int {
 		if !built {
 			identities = make(map[string]bool, len(defaults))
 			for _, d := range defaults {
-				identities[limitIdentity(d.Type, d.Models)] = true
+				identities[d.Type] = true
 			}
 			defaultIdentities[group.Parent] = identities
 		}
 		total += len(defaults)
 		taken := make(map[string]bool, len(group.Limits))
 		for _, own := range group.Limits {
-			if identity := limitIdentity(own.Type, own.Models); identities[identity] && !taken[identity] {
+			if identity := own.Type; identities[identity] && !taken[identity] {
 				taken[identity] = true
 				total--
 			}
@@ -258,28 +257,10 @@ func countEffectiveLimits(doc *document) int {
 func (c *semanticCheck) limits(limits []limitDoc, path string) {
 	seen := make(map[string]int, len(limits))
 	for i, limit := range limits {
-		limitPath := schemacheck.Pointer(path, i)
-		for j, name := range limit.Models {
-			if _, ok := c.doc.Models[name]; !ok {
-				c.report(CodeLimitModelUnknown, schemacheck.Pointer(limitPath, "models", j), fmt.Sprintf("model %q is not defined", name))
-			}
-		}
-		identity := limitIdentity(limit.Type, limit.Models)
-		if first, dup := seen[identity]; dup {
-			c.report(CodeLimitDuplicate, limitPath, "same type and model set as "+schemacheck.Pointer(path, first))
+		if first, dup := seen[limit.Type]; dup {
+			c.report(CodeLimitDuplicate, schemacheck.Pointer(path, i), "same type as "+schemacheck.Pointer(path, first))
 			continue
 		}
-		seen[identity] = i
+		seen[limit.Type] = i
 	}
-}
-
-// limitIdentity: two limits in one list collide when they have the same type and
-// cover the same set of models; "all models" (nil) is its own set.
-func limitIdentity(limitType string, models []string) string {
-	if models == nil {
-		return limitType + "\n" + allModels
-	}
-	sorted := slices.Clone(models)
-	slices.Sort(sorted)
-	return limitType + "\n" + strings.Join(sorted, "\n")
 }

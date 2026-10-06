@@ -294,11 +294,7 @@ func TestResolvedFixtures(t *testing.T) {
 				// the config does. Identity ignores the order, the list order counts.
 				wantLimits := make([]Limit, len(want.Limits))
 				for i, l := range want.Limits {
-					var models []string
-					if l.Models != nil {
-						models = slices.Sorted(slices.Values(l.Models))
-					}
-					wantLimits[i] = Limit{Type: LimitType(l.Type), Value: l.Value, Models: models}
+					wantLimits[i] = Limit{Type: LimitType(l.Type), Value: l.Value}
 				}
 				assertLimits(t, id, g.Limits, wantLimits)
 			}

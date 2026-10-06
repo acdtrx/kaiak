@@ -231,16 +231,12 @@ type PriceTier struct {
 	USDPerMillion map[Unit]float64
 }
 
+// Limit is one limit of a scope (global or a group). A scope holds at most one limit
+// per type, so (scope, type) identifies it; it counts every request of its scope,
+// whatever the model.
 type Limit struct {
 	Type  LimitType
 	Value float64
-	// Models the limit covers, counted together, sorted; nil = all models.
-	Models []string
-}
-
-// Covers reports whether the limit counts requests to model.
-func (l Limit) Covers(model string) bool {
-	return l.Models == nil || slices.Contains(l.Models, model)
 }
 
 // Group is one node of the group tree with what its path gives it
@@ -466,12 +462,7 @@ func resolveModel(name string, m modelDoc, backends map[string]*Backend) *Model 
 func resolveLimits(docs []limitDoc) []Limit {
 	limits := make([]Limit, len(docs))
 	for i, l := range docs {
-		var models []string
-		if l.Models != nil {
-			models = slices.Clone(l.Models)
-			slices.Sort(models)
-		}
-		limits[i] = Limit{Type: LimitType(l.Type), Value: l.Value, Models: models}
+		limits[i] = Limit{Type: LimitType(l.Type), Value: l.Value}
 	}
 	return limits
 }
@@ -515,23 +506,21 @@ func resolveGroup(id string, doc *document, s *Snapshot, every ModelSet) *Group 
 }
 
 // mergeLimits applies a group's own limits over its parent's child_defaults limits: a
-// group's limit replaces the default limit with the same type and model set, in its
-// place; defaults not replaced still apply; the group's other limits follow in their
-// order.
+// group's limit replaces the default limit of the same type, in its place; defaults
+// not replaced still apply; the group's other limits follow in their order.
 func mergeLimits(defaults, overrides []Limit) []Limit {
 	merged := make([]Limit, 0, len(defaults)+len(overrides))
-	// byIdentity is the first override of each identity; a default takes it.
-	byIdentity := make(map[string]int, len(overrides))
+	// byType is the first override of each type; a default takes it.
+	byType := make(map[LimitType]int, len(overrides))
 	for i, o := range overrides {
-		id := limitIdentity(string(o.Type), o.Models)
-		if _, dup := byIdentity[id]; !dup {
-			byIdentity[id] = i
+		if _, dup := byType[o.Type]; !dup {
+			byType[o.Type] = i
 		}
 	}
 	used := make([]bool, len(overrides))
 	for _, d := range defaults {
 		limit := d
-		if i, ok := byIdentity[limitIdentity(string(d.Type), d.Models)]; ok {
+		if i, ok := byType[d.Type]; ok {
 			limit = overrides[i]
 			used[i] = true
 		}

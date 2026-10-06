@@ -155,13 +155,11 @@ type Client struct {
 	usage   *usageSender
 	status  *statusReporter
 	// totalsMu makes OnTotals calls one at a time — the stream and the usage sender
-	// deliver from different goroutines — and guards revision.
+	// deliver from different goroutines — and guards lastTotals.
 	totalsMu sync.Mutex
-	// revision is the revision of the totals last applied; nil before any.
-	revision *Revision
-	// retired are the control-plane processes the totals moved away from, oldest
-	// first, at most maxRetiredControlPlanes (CONTROL-PROTOCOL.md, Messages → Totals).
-	retired []string
+	// lastTotals is the config epoch and revision of the totals last applied; nil
+	// before any.
+	lastTotals *appliedTotals
 
 	// lastContact is when the control plane was last in contact (unix nanoseconds):
 	// a snapshot fetched, bytes on the config stream, an ack. It starts when the
@@ -396,17 +394,20 @@ func (c *Client) Run(ctx context.Context) {
 	c.http.CloseIdleConnections()
 }
 
-// maxRetiredControlPlanes bounds the control-plane processes remembered as moved
-// away from. One control plane restarting is the case the rule serves (a delayed
-// answer from the process just replaced); 16 covers a run of restarts well past it.
-const maxRetiredControlPlanes = 16
+// appliedTotals is where the totals last applied stand: their store's config epoch
+// and their revision, the store's totals sequence within it.
+type appliedTotals struct {
+	epoch    string
+	revision Revision
+}
 
 // takeTotals hands one totals message to the consumer, one call at a time: its totals
-// when their revision is newer than the last applied and not from a control-plane
-// process moved away from (CONTROL-PROTOCOL.md, Messages → Totals), and the usage it
-// shows counted — whatever the revision or process, since the totals applied are at
-// least as new and every message is a consistent snapshot. acked is the generation
-// of the batch an ack acknowledges (0 for a totals event).
+// when they are of the config epoch the gateway runs and their revision is higher
+// than the last applied in that epoch (the first in an epoch whatever its revision;
+// CONTROL-PROTOCOL.md, Messages → Totals), and the usage it shows counted — whatever
+// the revision or epoch, since the totals applied are at least as new and every
+// message is a consistent snapshot. acked is the generation of the batch an ack
+// acknowledges (0 for a totals event).
 func (c *Client) takeTotals(t Totals, acked uint64) {
 	c.totalsMu.Lock()
 	defer c.totalsMu.Unlock()
@@ -414,24 +415,16 @@ func (c *Client) takeTotals(t Totals, acked uint64) {
 	if t.CountedThrough != nil {
 		update.Counted = max(update.Counted, c.usage.countedGeneration(*t.CountedThrough))
 	}
-	switch {
-	case slices.Contains(c.retired, t.Revision.ControlPlane):
-		c.logger.Info("totals ignored: from a control plane replaced since",
-			"kaiak.totals.control_plane", t.Revision.ControlPlane, "kaiak.totals.current_control_plane", c.revision.ControlPlane)
-	case c.revision == nil || t.Revision.NewerThan(*c.revision):
-		if c.revision != nil && t.Revision.ControlPlane != c.revision.ControlPlane {
-			c.logger.Info("totals from another control plane: ordering restarts",
-				"kaiak.totals.control_plane", t.Revision.ControlPlane, "kaiak.totals.previous_control_plane", c.revision.ControlPlane)
-			c.retired = append(c.retired, c.revision.ControlPlane)
-			if len(c.retired) > maxRetiredControlPlanes {
-				c.retired = slices.Delete(c.retired, 0, 1)
-			}
-		}
-		c.revision = &t.Revision
+	switch running := c.appliedEpoch(); {
+	case t.ConfigEpoch != running:
+		c.logger.Info("totals ignored: from another config epoch",
+			"kaiak.totals.config_epoch", t.ConfigEpoch, "kaiak.config.epoch", running)
+	case c.lastTotals == nil || c.lastTotals.epoch != t.ConfigEpoch || t.Revision > c.lastTotals.revision:
+		c.lastTotals = &appliedTotals{epoch: t.ConfigEpoch, revision: t.Revision}
 		update.Totals = &t
 	default:
-		c.logger.Debug("totals ignored: not newer than the totals applied", "kaiak.totals.sequence", t.Revision.Sequence,
-			"kaiak.totals.applied_sequence", c.revision.Sequence)
+		c.logger.Debug("totals ignored: not newer than the totals applied", "kaiak.totals.sequence", t.Revision,
+			"kaiak.totals.applied_sequence", c.lastTotals.revision)
 	}
 	if c.opts.OnTotals != nil && (update.Totals != nil || update.Counted != 0) {
 		c.opts.OnTotals(update)
@@ -484,6 +477,17 @@ func (c *Client) pause(ctx context.Context) {
 	d := c.backoff.next()
 	c.logger.Debug("control plane reconnect scheduled", logattr.Seconds("kaiak.control.delay", d))
 	_ = c.opts.wait(ctx, d) // cancelled: the loop sees ctx and stops
+}
+
+// appliedEpoch is the config epoch of the config in force; "" while none from the
+// control plane is (before one, or with the seed).
+func (c *Client) appliedEpoch() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.applied == nil {
+		return ""
+	}
+	return c.applied.epoch
 }
 
 func (c *Client) currentPosition() configPosition {

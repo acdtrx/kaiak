@@ -57,10 +57,23 @@ func postAs(t *testing.T, g *testGateway, key, id, body string) *httptest.Respon
 func TestLimitRefusalsLogTheLimit(t *testing.T) {
 	g := newTestGateway(t)
 	g.holder.Swap(testSnapshotWith(t, g.backend.URL(), func(doc string) string {
-		doc = strings.Replace(doc, `"research": {}`, `"research": { "labels": { "cost_center": "label-value-never-logged" }, "limits": [{ "type": "usd_per_month", "value": 0, "models": ["pair"] }] }`, 1)
-		doc = strings.Replace(doc, `"allowed_models": ["*"] }`, `"allowed_models": ["*"], "limits": [{ "type": "requests_per_minute", "value": 1, "models": ["open"] }] }`, 1)
-		return strings.Replace(doc, `"global": { `, `"global": { "limits": [{ "type": "tokens_per_minute", "value": 5, "models": ["Org/open-7b"] }], `, 1)
+		doc = strings.Replace(doc, `"research": {}`, `"research": { "labels": { "cost_center": "label-value-never-logged" }, "limits": [{ "type": "usd_per_month", "value": 0 }] }`, 1)
+		doc = strings.Replace(doc, `"allowed_models": ["*"] }`, `"allowed_models": ["*"], "limits": [{ "type": "requests_per_minute", "value": 1 }] }`, 1)
+		return strings.Replace(doc, `"global": { `, `"global": { "limits": [{ "type": "tokens_per_minute", "value": 100 }], `, 1)
 	}))
+
+	// The budget first: a refused request counts toward no limit, so eval's request
+	// limit is still free for the admitted request after it.
+	usd := postAs(t, g, workloadKey, "usd", `{"model":"pair","messages":[]}`)
+	expectError(t, usd, http.StatusTooManyRequests, "budget_exceeded")
+	// The client learns the kind of scope, never the group's ID or labels.
+	if body := usd.Body.String(); !strings.Contains(body, "group limit") || strings.Contains(body, "research") ||
+		strings.Contains(body, "label-value-never-logged") {
+		t.Errorf("refusal message must name the scope kind only: %s", body)
+	}
+	expectFields(t, logFields(t, g, "usd"), map[string]any{"error.type": "budget_exceeded",
+		"kaiak.limit.scope": "group", "kaiak.limit.group": "research", "kaiak.limit.type": "usd_per_month",
+		"kaiak.limit.enforced": float64(0), "kaiak.limit.configured": float64(0), "kaiak.limit.used": float64(0)})
 
 	if w := postAs(t, g, workloadKey, "admitted", chatBody); w.Code != http.StatusOK {
 		t.Fatalf("admitted: status %d", w.Code)
@@ -78,26 +91,16 @@ func TestLimitRefusalsLogTheLimit(t *testing.T) {
 		"kaiak.limit.enforced": float64(1), "kaiak.limit.configured": float64(1), "kaiak.limit.used": float64(1),
 		"kaiak.key.group": "eval"})
 
-	usd := postAs(t, g, workloadKey, "usd", `{"model":"pair","messages":[]}`)
-	expectError(t, usd, http.StatusTooManyRequests, "budget_exceeded")
-	// The client learns the kind of scope, never the group's ID or labels.
-	if body := usd.Body.String(); !strings.Contains(body, "group limit") || strings.Contains(body, "research") ||
-		strings.Contains(body, "label-value-never-logged") {
-		t.Errorf("refusal message must name the scope kind only: %s", body)
-	}
-	expectFields(t, logFields(t, g, "usd"), map[string]any{"error.type": "budget_exceeded",
-		"kaiak.limit.scope": "group", "kaiak.limit.group": "research", "kaiak.limit.type": "usd_per_month",
-		"kaiak.limit.enforced": float64(0), "kaiak.limit.configured": float64(0), "kaiak.limit.used": float64(0)})
-
-	expectError(t, postAs(t, g, userKey, "tpm", `{"model":"Org/open-7b","messages":[{"role":"user","content":"a prompt over five tokens"}]}`),
+	expectError(t, postAs(t, g, userKey, "tpm", `{"model":"Org/open-7b","messages":[{"role":"user","content":"`+
+		strings.Repeat("a prompt well over a hundred tokens ", 20)+`"}]}`),
 		http.StatusTooManyRequests, "rate_limit_exceeded")
 	tpm := logFields(t, g, "tpm")
 	expectFields(t, tpm, map[string]any{"kaiak.limit.scope": "global",
-		"kaiak.limit.type": "tokens_per_minute", "kaiak.limit.enforced": float64(5), "kaiak.limit.configured": float64(5),
-		"kaiak.limit.used": float64(0), "kaiak.key.group": "ann"}, "kaiak.limit.group", "kaiak.limit.id")
+		"kaiak.limit.type": "tokens_per_minute", "kaiak.limit.enforced": float64(100), "kaiak.limit.configured": float64(100),
+		"kaiak.key.group": "ann"}, "kaiak.limit.group", "kaiak.limit.id")
 	// A token refusal says what the request asked for: here more than the limit
 	// allows at all (a request too large, not a full window).
-	if requested, ok := tpm["kaiak.limit.requested"].(float64); !ok || requested <= 5 {
+	if requested, ok := tpm["kaiak.limit.requested"].(float64); !ok || requested <= 100 {
 		t.Errorf("kaiak.limit.requested %v, want the request's reservation, above the limit", tpm["kaiak.limit.requested"])
 	}
 	if _, ok := logFields(t, g, "rpm")["kaiak.limit.requested"]; ok {
@@ -126,7 +129,7 @@ func TestBudgetUnavailableLogsTheLimit(t *testing.T) {
 	g := newTestGatewayWith(t, func(h *config.Holder) *limits.Limiter {
 		return limits.NewShared(h, time.Now, func() limits.Contact { return limits.Contact{Last: lost} }, nil)
 	})
-	withLimits(t, g, `[{ "type": "usd_per_month", "value": 100, "models": ["pair"] }]`, "")
+	withLimits(t, g, `[{ "type": "usd_per_month", "value": 100 }]`, "")
 	expectError(t, postAs(t, g, workloadKey, "unavailable", `{"model":"pair","messages":[]}`),
 		http.StatusServiceUnavailable, "budget_unavailable")
 	expectFields(t, logFields(t, g, "unavailable"), map[string]any{"error.type": "budget_unavailable",

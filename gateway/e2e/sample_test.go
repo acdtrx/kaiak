@@ -17,7 +17,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -110,8 +109,8 @@ func TestAcrossHalves(t *testing.T) {
 	}
 
 	t.Run("the per-minute limit is split between the two gateways", func(t *testing.T) {
-		// "chat" allows 1000 requests a minute: each gateway's share shows in the
-		// header once the sample has pushed two live gateways.
+		// eval allows 1000 requests a minute: each gateway's share shows in the header
+		// once the sample has pushed two live gateways.
 		for _, g := range []*gateway{a, b} {
 			pollUntil(t, "a share of 500 requests a minute", waitLimit, func() bool {
 				r := chat(t, g, "chat")
@@ -119,15 +118,18 @@ func TestAcrossHalves(t *testing.T) {
 				return r.Header.Get("x-ratelimit-limit-requests") == "500"
 			})
 		}
-		// "rpm" allows 2: one each.
+		// metered allows 2: one each.
+		rpm := func(g *gateway) *response {
+			return g.post(t, "/v1/chat/completions", rpmKey, "", chatBody("rpm", false, nil))
+		}
 		for _, g := range []*gateway{a, b} {
-			r := chat(t, g, "rpm")
+			r := rpm(g)
 			served(t, "rpm", r)
 			if r.Header.Get("x-ratelimit-limit-requests") != "1" || r.Header.Get("x-ratelimit-remaining-requests") != "0" {
 				t.Fatalf("rpm: limit %q remaining %q, want the share 1 and 0 left",
 					r.Header.Get("x-ratelimit-limit-requests"), r.Header.Get("x-ratelimit-remaining-requests"))
 			}
-			if r := chat(t, g, "rpm"); r.StatusCode != http.StatusTooManyRequests {
+			if r := rpm(g); r.StatusCode != http.StatusTooManyRequests {
 				t.Fatalf("second rpm request: %d %s, want 429 on the share", r.StatusCode, r.body)
 			}
 		}
@@ -249,7 +251,7 @@ func TestAcrossHalves(t *testing.T) {
 		// 7 tokens in at $10 and 4 out at $20 per million: 150000 nano-USD, counted
 		// toward the team research, an ancestor of the key's group.
 		sample.totals.wait(t, "the spend counted", waitLimit, func(tot control.Totals) bool {
-			return used(tot, "research", config.LimitUSDPerMonth, "priced", "priced-probe") == 150_000
+			return used(tot, "research", config.LimitUSDPerMonth) == 150_000
 		})
 		pollUntil(t, "gw-b refusing the budget's models", waitLimit, func() bool {
 			r := chat(t, b, "priced-probe")
@@ -399,9 +401,10 @@ func TestAcrossHalves(t *testing.T) {
 
 // crossHalfConfig is the e2e config with what this test observes: a second backend
 // that refuses everything (the "priced-probe" model), the USD budget of the team
-// research (the parent of the key's group eval) over "priced" and "priced-probe", a
-// global hourly token limit on every model (its total shows on the sample's totals),
-// per-minute limits of 2 on "rpm" and 1000 on "chat", and a 1 s outage grace; the
+// research (the parent of the key's group eval), counting only the priced models
+// ("chat" is unpriced here, so the budget's total is the priced answers alone), a
+// global hourly token limit (its total shows on the sample's totals), a per-minute
+// limit of 1000 on eval beside metered's 2, and a 1 s outage grace; the
 // working backend again as a llama-server, serving the "agent" model over Messages and
 // Responses; for the reliability status, a backend refusing connections (the
 // "down" model; a circuit opens on its first failure) and one taking one request at
@@ -428,13 +431,13 @@ func crossHalfConfig(backendURL, refuserURL, downURL, cappedURL, evalHash, annHa
 	global["control_outage_grace_ms"] = 1000
 	global["circuit"] = map[string]any{"failure_threshold": 1}
 	global["limits"] = []any{map[string]any{"type": "tokens_per_hour", "value": 1_000_000_000}}
+	delete(models["chat"].(map[string]any), "prices")
 	groups := cfg["groups"].(map[string]any)
 	groups["research"].(map[string]any)["limits"] = []any{
-		map[string]any{"type": "usd_per_month", "value": 0.0001, "models": []any{"priced", "priced-probe"}},
+		map[string]any{"type": "usd_per_month", "value": 0.0001},
 	}
 	groups["eval"].(map[string]any)["limits"] = []any{
-		map[string]any{"type": "requests_per_minute", "value": 2, "models": []any{"rpm"}},
-		map[string]any{"type": "requests_per_minute", "value": 1000, "models": []any{"chat"}},
+		map[string]any{"type": "requests_per_minute", "value": 1000},
 	}
 	return cfg
 }
@@ -760,7 +763,7 @@ func (s *servedTokens) total() int64 {
 // window: exactly, but an answer at the window's edges may count in either hour.
 func (s *servedTokens) counted(totals control.Totals) bool {
 	for _, w := range totals.Windows {
-		if w.Group != "" || w.Type != config.LimitTokensPerHour || len(w.Models) != 0 {
+		if w.Group != "" || w.Type != config.LimitTokensPerHour {
 			continue
 		}
 		start, end := w.WindowStart, w.WindowStart.Add(time.Hour)
@@ -779,13 +782,11 @@ func (s *servedTokens) counted(totals control.Totals) bool {
 	return len(s.answers) == 0
 }
 
-// used is the window's used amount of group's limit (global: "") of type typ over
-// the model set models (none: every model; order ignored); 0 when the totals list no
-// such window.
-func used(totals control.Totals, group string, typ config.LimitType, models ...string) int64 {
-	models = slices.Sorted(slices.Values(models))
+// used is the window's used amount of group's limit (global: "") of type typ; 0 when
+// the totals list no such window.
+func used(totals control.Totals, group string, typ config.LimitType) int64 {
 	for _, w := range totals.Windows {
-		if w.Group == group && w.Type == typ && slices.Equal(slices.Sorted(slices.Values(w.Models)), models) {
+		if w.Group == group && w.Type == typ {
 			return w.Used
 		}
 	}

@@ -86,9 +86,9 @@ func freeConfig(backendURL, evalHash, annHash string) map[string]any {
 	models := cfg["models"].(map[string]any)
 	delete(models, "chat")
 	delete(models, "priced")
-	global := cfg["global"].(map[string]any)
-	global["limits"] = []any{}
 	groups := cfg["groups"].(map[string]any)
+	delete(groups, "budgeted")
+	delete(cfg["keys"].(map[string]any), "k-budget")
 	groups["users"] = map[string]any{"child_defaults": map[string]any{"allowed_models": []any{"rpm", "embed"}}}
 	return cfg
 }

@@ -352,14 +352,14 @@ func (r *run) checkMessagesCeiling() {
 }
 
 // checkMessagesRateLimit is the rate-limit check through Messages: the second request
-// to live-rpm is refused in Anthropic's shape, with the rate-limit headers.
+// with the metered key is refused in Anthropic's shape, with the rate-limit headers.
 func (r *run) checkMessagesRateLimit() {
 	const name = "rate-limit"
-	resp, err := r.postAnthropic(r.key, "/v1/messages", "live-rpm-1", r.messagesBody(modelRPM, false, nil))
+	resp, err := r.postAnthropic(r.meteredKey, "/v1/messages", "live-rpm-1", r.messagesBody(modelRPM, false, nil))
 	if !r.ok(name, resp, err, "live-rpm-1") {
 		return
 	}
-	resp, err = r.postAnthropic(r.key, "/v1/messages", "live-rpm-2", r.messagesBody(modelRPM, false, nil))
+	resp, err = r.postAnthropic(r.meteredKey, "/v1/messages", "live-rpm-2", r.messagesBody(modelRPM, false, nil))
 	if err != nil {
 		r.fail(name, "%v", err)
 		return

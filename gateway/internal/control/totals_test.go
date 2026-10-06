@@ -14,15 +14,11 @@ import (
 	"kaiak/internal/fakecontrol"
 )
 
-const (
-	controlPlaneA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	controlPlaneB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-)
-
-// scriptedTotals is a totals message with the given revision and live-gateway count.
-func scriptedTotals(controlPlane string, sequence, live int64) []byte {
-	return fmt.Appendf(nil, `{"revision":{"control_plane":%q,"sequence":%d},"config_epoch":"c0ffee00c0ffee00c0ffee00c0ffee00","config_version":1,"live_gateways":%d,"counted_through":null,"windows":[]}`,
-		controlPlane, sequence, live)
+// scriptedTotals is a totals message of the given config epoch with the given
+// revision and live-gateway count.
+func scriptedTotals(epoch string, revision, live int64) []byte {
+	return fmt.Appendf(nil, `{"revision":%d,"config_epoch":%q,"config_version":1,"live_gateways":%d,"counted_through":null,"windows":[]}`,
+		revision, epoch, live)
 }
 
 func TestTotalsAreAppliedInRevisionOrder(t *testing.T) {
@@ -32,23 +28,20 @@ func TestTotalsAreAppliedInRevisionOrder(t *testing.T) {
 	c.Boot(context.Background())
 	h.run(c)
 	st := h.nextStream()
+	epoch := h.cp.ConfigEpoch()
 
 	// live_gateways tells the messages apart; each step names the next one applied.
 	steps := []struct {
-		controlPlane   string
-		sequence, live int64
+		revision, live int64
 		applied        bool
 	}{
-		{controlPlaneA, 5, 1, true},
-		{controlPlaneA, 4, 2, false}, // older
-		{controlPlaneA, 5, 3, false}, // the same revision
-		{controlPlaneA, 6, 4, true},
-		{controlPlaneB, 1, 5, true},  // a restarted control plane: adopted, lower sequence and all
-		{controlPlaneB, 1, 6, false}, // ordered from there
-		{controlPlaneB, 2, 7, true},
+		{5, 1, true},
+		{4, 2, false}, // older: another process's delayed answer, or a reordered ack
+		{5, 3, false}, // the same revision
+		{6, 4, true},
 	}
 	for _, s := range steps {
-		st.Send("totals", "", scriptedTotals(s.controlPlane, s.sequence, s.live))
+		st.Send("totals", "", scriptedTotals(epoch, s.revision, s.live))
 	}
 	for _, s := range steps {
 		if !s.applied {
@@ -56,7 +49,7 @@ func TestTotalsAreAppliedInRevisionOrder(t *testing.T) {
 		}
 		u := h.nextTotals()
 		if u.Totals == nil || u.Totals.LiveGateways != s.live || u.Counted != 0 {
-			t.Fatalf("update %+v, want the totals of %s/%d (live %d)", u, s.controlPlane[:1], s.sequence, s.live)
+			t.Fatalf("update %+v, want the totals of revision %d (live %d)", u, s.revision, s.live)
 		}
 	}
 	select {
@@ -108,7 +101,7 @@ func TestCountedThroughOfAnotherEpoch(t *testing.T) {
 	st := h.nextStream()
 	c.Record(testRecord(1))
 	h.wantUsage(fakecontrol.OutcomeRefused, 1, 1)
-	st.Send("totals", "", []byte(`{"revision":{"control_plane":"`+controlPlaneA+`","sequence":1},"config_epoch":"c0ffee00c0ffee00c0ffee00c0ffee00","config_version":1,"live_gateways":1,`+
+	st.Send("totals", "", []byte(`{"revision":1,"config_epoch":"`+h.cp.ConfigEpoch()+`","config_version":1,"live_gateways":1,`+
 		`"counted_through":{"epoch":"00000000000000000000000000000001","sequence":9},"windows":[]}`))
 	if u := h.nextTotals(); u.Totals == nil || u.Counted != 0 {
 		t.Errorf("update %+v, want totals and nothing counted", u)
@@ -140,21 +133,25 @@ func TestContact(t *testing.T) {
 		t.Errorf("last contact %v, want the snapshot fetch after %v", last, created)
 	}
 	st := h.nextStream()
-	st.Send("totals", "", scriptedTotals(controlPlaneA, 1, 1))
+	st.Send("totals", "", scriptedTotals(h.cp.ConfigEpoch(), 1, 1))
 	h.nextTotals() // the stream is being read
 	if connected, _ := c.Contact(); !connected {
 		t.Error("not connected with the stream open")
 	}
 }
 
-// The independent audit's finding 5: a totals message from a control-plane process
-// the gateway has moved away from — a delayed ack from the process a restart
-// replaced — never replaces the current process's totals (A 100 → B 200 → A 150
-// applied 150 and reopened spent budget). Its counted_through still retires the
-// batches it counted: that process counted them before it was replaced, so the
-// replacement's totals include them — nothing counted twice, nothing lost.
-func TestTotalsFromAReplacedControlPlaneAreIgnored(t *testing.T) {
-	const epoch = "00000000000000000000000000000001"
+// Totals apply only when they are of the config epoch the gateway runs (CONTROL-
+// PROTOCOL.md, Messages → Totals): a store that started over takes a new epoch, so a
+// delayed answer from the old one (A 100 → B 200 → A 150) can never replace the new
+// store's totals, and the new store's totals wait for its config. Ordering starts
+// again in each epoch. counted_through counts whatever the epoch of the totals: those
+// batches were counted before.
+func TestTotalsFollowTheRunningConfigEpoch(t *testing.T) {
+	const (
+		batchEpoch = "00000000000000000000000000000001"
+		storeA     = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		storeB     = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	)
 	type applied struct {
 		used    int64 // -1: no totals
 		counted uint64
@@ -168,34 +165,28 @@ func TestTotalsFromAReplacedControlPlaneAreIgnored(t *testing.T) {
 		got = append(got, a)
 	}}}
 	c.usage = &usageSender{queue: []spoolEntry{
-		{id: BatchID{Epoch: epoch, Sequence: 1}, generation: 1},
-		{id: BatchID{Epoch: epoch, Sequence: 2}, generation: 2},
-		{id: BatchID{Epoch: epoch, Sequence: 3}, generation: 3},
+		{id: BatchID{Epoch: batchEpoch, Sequence: 1}, generation: 1},
+		{id: BatchID{Epoch: batchEpoch, Sequence: 2}, generation: 2},
+		{id: BatchID{Epoch: batchEpoch, Sequence: 3}, generation: 3},
 	}}
-	take := func(process string, seq, used, countedThrough int64, acked uint64) {
-		c.takeTotals(Totals{Revision: Revision{ControlPlane: process, Sequence: seq},
-			CountedThrough: &BatchPosition{Epoch: epoch, Sequence: countedThrough},
+	take := func(store string, revision, used, countedThrough int64, acked uint64) {
+		c.takeTotals(Totals{Revision: Revision(revision), ConfigEpoch: store,
+			CountedThrough: &BatchPosition{Epoch: batchEpoch, Sequence: countedThrough},
 			Windows:        []TotalsWindow{{Used: used}}}, acked)
 	}
-	take(controlPlaneA, 10, 100, 1, 1) // A acks batch 1
-	take(controlPlaneB, 1, 200, 1, 0)  // A restarted as B: B's stream
-	take(controlPlaneA, 11, 150, 2, 2) // A's delayed ack of batch 2, after B's totals
-	take(controlPlaneA, 12, 170, 2, 0) // anything else of A's
-	take(controlPlaneB, 2, 260, 3, 3)  // B acks batch 3
-	want := []applied{{100, 1}, {200, 1}, {-1, 2}, {-1, 2}, {260, 3}}
+	c.applied = &configPosition{epoch: storeA, version: 4}
+	take(storeA, 10, 100, 1, 1) // A acks batch 1
+	take(storeB, 1, 200, 1, 0)  // A started over as B: B's totals wait for B's config
+	c.applied = &configPosition{epoch: storeB, version: 1}
+	take(storeB, 1, 200, 1, 0)  // B's config applied: B's totals, ordering anew
+	take(storeA, 11, 150, 2, 2) // A's delayed ack of batch 2, after B's totals
+	take(storeB, 1, 210, 2, 0)  // not newer in B's epoch
+	take(storeB, 2, 260, 3, 3)  // B acks batch 3
+	want := []applied{{100, 1}, {-1, 1}, {200, 1}, {-1, 2}, {-1, 2}, {260, 3}}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("updates %v, want %v (used -1: no totals)", got, want)
 	}
-	if c.revision.ControlPlane != controlPlaneB || c.revision.Sequence != 2 {
-		t.Errorf("revision %+v, want B's 2", *c.revision)
-	}
-
-	// The processes moved away from are remembered up to a bound: the oldest is
-	// forgotten first.
-	for i := range maxRetiredControlPlanes + 1 {
-		take(fmt.Sprintf("%032x", i+1), 1, 300+int64(i), 3, 0)
-	}
-	if len(c.retired) != maxRetiredControlPlanes || c.retired[0] == controlPlaneA || c.retired[0] == controlPlaneB {
-		t.Errorf("retired %v, want the latest %d, A and B forgotten", c.retired, maxRetiredControlPlanes)
+	if c.lastTotals.epoch != storeB || c.lastTotals.revision != 2 {
+		t.Errorf("last totals %+v, want B's 2", *c.lastTotals)
 	}
 }

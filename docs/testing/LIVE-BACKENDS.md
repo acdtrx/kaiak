@@ -34,7 +34,7 @@ model:
 |---|---|
 | `live-chat` | chat, Messages and Responses checks; output limit `-max-output` (default 1024) |
 | `live-capped` | output-limit ceiling check; ceiling `-ceiling` (default 16) |
-| `live-rpm` | limit check; 1 request per minute for the key's group |
+| `live-rpm` | limit check, sent with a second key whose group (`live-metered`) allows 1 request per minute: a limit counts every request of its group |
 | `live-embed` | embeddings, only with `-embeddings-model` — whatever the model's name on the backend (a path-style id too) |
 
 Chat models are priced at `-price-in` / `-price-out` USD per million tokens (default
@@ -322,7 +322,7 @@ context length. `go -C scripts/live run . -h` lists them all.
 | `service-tier` | OpenAI and Azure: a request asking for `service_tier: "priority"` runs on `default` (skipped when the answer does not report its tier) |
 | `endpoint-not-served` | every API the backend type does not serve (chat completions on Claude, Messages on OpenAI, `responses/input_tokens` on vLLM and Azure, …) is refused `400 endpoint_not_served`, in that API's error shape |
 | `output-ceiling` | a request for the model's whole context length in output tokens (`-context-length`; more is refused, `400 invalid_value`) is lowered to the ceiling: `completion_tokens` ≤ ceiling, `finish_reason: "length"`. vLLM and llama-server are asked through `max_tokens` (the gateway lowers the client's own key), OpenAI and Azure through `max_completion_tokens` (their reasoning models refuse `max_tokens`); Anthropic and Foundry through Messages' `max_tokens`, ending `stop_reason: "max_tokens"` |
-| `rate-limit` | the second `live-rpm` request in a minute gets `429 rate_limit_exceeded` with `Retry-After` and `x-ratelimit-*-requests` headers — before reaching the backend (through Messages on Anthropic and Foundry, in Anthropic's shape: `rate_limit_error`) |
+| `rate-limit` | the second `live-rpm` request in a minute (with the metered key) gets `429 rate_limit_exceeded` with `Retry-After` and `x-ratelimit-*-requests` headers — before reaching the backend (through Messages on Anthropic and Foundry, in Anthropic's shape: `rate_limit_error`) |
 | `metrics` | the admin `/metrics` shows the `live-chat` requests, their `tokens_out` and cost, the rate-limit refusal, and a request on each of the `messages` and `responses` endpoints the backend serves |
 | `spread` | two backends: six requests one after another are served by both (`kaiak.backend.id` on each log line) — tied deployments take turns |
 | `capacity` | two backends with `-max-in-flight N`: 2N+2 requests at once are all answered — those over the cap wait in the gateway's queue (the count queued is reported, not required) — and `kaiak_backend_max_in_flight` shows N for each |

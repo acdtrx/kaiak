@@ -1,7 +1,6 @@
 package limits
 
 import (
-	"slices"
 	"time"
 
 	"kaiak/internal/config"
@@ -40,9 +39,7 @@ type PushedWindow struct {
 	// Group is the group the limit belongs to; "" for a global limit.
 	Group string
 	Type  config.LimitType
-	// Models is the limit's model set, any order; nil = all models.
-	Models []string
-	Start  time.Time
+	Start time.Time
 	// Used counts tokens or nano-USD, as the counter does.
 	Used int64
 }
@@ -100,7 +97,7 @@ func (l *Limiter) warnSmallSharesLocked() {
 		}
 		for _, name := range l.applied.ModelNames {
 			m := l.applied.Models[name]
-			if !c.limit.Covers(name) || m.OutputLimit == nil || m.OutputLimit.Default <= c.w.limit {
+			if m.OutputLimit == nil || m.OutputLimit.Default <= c.w.limit {
 				continue
 			}
 			l.logger.Warn("per-minute share below the model's default output: a request at the default is admitted only while this gateway's window is empty",
@@ -132,9 +129,7 @@ func (l *Limiter) applyWaitingLocked(now time.Time) {
 	}
 	l.pushed = make(map[counterKey]PushedWindow, len(t.Windows))
 	for _, w := range t.Windows {
-		models := slices.Clone(w.Models)
-		slices.Sort(models)
-		l.pushed[keyOf(w.Group, config.Limit{Type: w.Type, Models: models})] = w
+		l.pushed[keyOf(w.Group, config.Limit{Type: w.Type})] = w
 		l.warnAheadLocked(w, now)
 	}
 }

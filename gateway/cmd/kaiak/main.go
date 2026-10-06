@@ -829,7 +829,7 @@ func limitsTotals(t *control.Totals) *limits.Totals {
 	out := &limits.Totals{Config: config.Version{Epoch: t.ConfigEpoch, Number: t.ConfigVersion},
 		LiveGateways: t.LiveGateways, Windows: make([]limits.PushedWindow, len(t.Windows))}
 	for i, w := range t.Windows {
-		out.Windows[i] = limits.PushedWindow{Group: w.Group, Type: w.Type, Models: w.Models,
+		out.Windows[i] = limits.PushedWindow{Group: w.Group, Type: w.Type,
 			Start: w.WindowStart, Used: w.Used}
 	}
 	return out

@@ -45,23 +45,10 @@ type Totals struct {
 	Windows        []TotalsWindow `json:"windows"`
 }
 
-// Revision orders totals messages: one is newer than another from the same control
-// plane when its sequence is higher; a message from another control plane (a
-// restarted one) starts a new order — unless it comes from a process the gateway
-// already moved away from (Client.takeTotals).
-type Revision struct {
-	// ControlPlane is random (128 bits, hex), created when the control-plane process
-	// starts.
-	ControlPlane string `json:"control_plane"`
-	// Sequence increases with every change to the totals in that process.
-	Sequence int64 `json:"sequence"`
-}
-
-// NewerThan reports whether r orders after prev: another control plane, or the same
-// one at a higher sequence.
-func (r Revision) NewerThan(prev Revision) bool {
-	return r.ControlPlane != prev.ControlPlane || r.Sequence > prev.Sequence
-}
+// Revision orders totals messages within their config epoch: the store's totals
+// sequence, which every control-plane process over the store shares and which grows
+// with every change to the totals (Client.takeTotals).
+type Revision int64
 
 // BatchPosition is a batch within its instance's epochs.
 type BatchPosition struct {
@@ -70,13 +57,11 @@ type BatchPosition struct {
 }
 
 // TotalsWindow is one limit's current window. The limit is identified as a config
-// reload identifies it: group (or global), type and model set (order ignored).
+// reload identifies it: its group (or global) and type.
 type TotalsWindow struct {
 	// Group is the group the limit belongs to; "" for a global limit.
 	Group string           `json:"group,omitempty"`
 	Type  config.LimitType `json:"type"`
-	// Models is the limit's model set; nil = all models.
-	Models []string `json:"models,omitempty"`
 	// WindowStart is the top of the hour (tokens_per_hour) or the first of the month
 	// (usd_per_month), UTC, by the control plane's clock.
 	WindowStart time.Time `json:"window_start"`
