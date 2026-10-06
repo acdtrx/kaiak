@@ -199,12 +199,17 @@ Expected reds inside phase 1:
 
 ## Verification
 
-- **Store contract tests** against the memory store:
+**Verification status:** done (2026-10-06); phases 1 and 2 green.
+
+- [x] **Store contract tests** against the memory store (`STEP-2-store-contract.md`,
+  `STEP-3-simple-limits.md`):
   - conditional batch, publish and live-set writes refused on a stale read
   - the sequence moving once per change
   - the consistent read
   - notifications reaching every subscriber
-- **Two cores over one memory store:**
+  - publishes and batches racing without refusing each other
+- [x] **Two cores over one memory store** (`STEP-4-core.md`, five runs and the
+  contended run):
   - concurrent batches from many instances counted exactly once
   - totals from either core ordered by one sequence
   - a publish on one core reaching streams on the other
@@ -212,11 +217,12 @@ Expected reds inside phase 1:
   - an edited limit value keeping its window
   - two sweeps and a sweep racing a status
   - a resend of one batch to both cores counted once
-- **Gateway:**
+- [x] **Gateway** (`STEP-5-gateway.md`):
   - totals applied by sequence within an epoch
-  - adopted on an epoch change
+  - another epoch's totals not applied (decision 10 as changed in step 1)
   - an older sequence ignored whichever core it came from
-- **Cross-half e2e:** two gateways on two sample cores over one store. Usage from
-  both counts once, and both gateways converge on the same totals; a config
-  published through one core reaches both.
-- **`scripts/check-all.sh` green at each phase end.**
+- [x] **Cross-half e2e** (`STEP-6-e2e-and-docs.md`, `gateway/e2e/replicas_test.go`):
+  two gateways on two sample cores over one store. Usage from both counts once in
+  totals both cores serve; a config published through one core reaches both; a gateway
+  moved to the other core resumes without a resync while the first is undisturbed.
+- [x] **`scripts/check-all.sh` green at each phase end** (steps 5 and 6).
