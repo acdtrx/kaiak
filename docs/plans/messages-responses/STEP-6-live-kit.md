@@ -1,6 +1,6 @@
 # Step 6 — live-test kit
 
-**Status:** in progress (2026-10-06) — kit, self-test, runbook and the vLLM live run done; the llama-server live run is pending (the DGX swap is done by the main session)
+**Status:** done (2026-10-06)
 
 ## Intent
 
@@ -178,8 +178,50 @@ A second run with thinking left on (no `-*-params`, `-max-output 4096`) also pas
   the check skips by design; nothing in the spec depends on it.
 - No finding contradicts the spec or step 1's recordings.
 
-**llama-server live run:** pending — the main session swaps the DGX and resumes
-this step.
+**Live — llama-server build b10802, `unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL` (alias
+`qwen38-27b`) on dgx.local:11434** (ctx 65536, `--jinja`, reasoning on with
+`reasoning_effort` medium, `--parallel 1`; the main session swapped the DGX, the kit
+sent ordinary requests only):
+
+```sh
+go -C scripts/live run . -kind llama-server -base-url http://dgx.local:11434/v1 \
+  -model qwen38-27b -max-output 4096
+```
+
+28 passed, 0 failed, 3 skipped:
+
+| Check | Result |
+|---|---|
+| auth-reject | PASS |
+| models | PASS — endpoints chat_completions, completions, embeddings, messages, messages_count_tokens, responses, responses_input_tokens |
+| chat, chat-stream, chat-stream-usage + usage logs | PASS |
+| embeddings, usage-log/embeddings | SKIP — no `-embeddings-model` |
+| messages | PASS — end_turn; the answer's `input_tokens` 4 beside 18 cache reads |
+| usage-log/messages | PASS — in 22 (cache read 18), out 75 |
+| messages-stream | PASS — 79 events, message_start … message_stop |
+| usage-log/msg-stream | PASS — in 22 (cache read 18), out 74 |
+| messages-cache | PASS — second request read 9943 of 9947 input tokens (the first wrote 0: llama-server reports no cache writes) |
+| messages-count | PASS — 22 input tokens, no usage record |
+| messages-models | PASS |
+| messages-errors | PASS |
+| messages-hosted-tool | PASS |
+| price-options | PASS — passed through |
+| responses | PASS — completed, 22+95 tokens |
+| usage-log/responses | PASS — in 22 (cache read 18), out 95 |
+| responses-stream | PASS — 82 events, response.created … response.completed |
+| usage-log/resp-stream | PASS |
+| responses-count | PASS — 22 input tokens, no usage record |
+| responses-stateful | PASS |
+| responses-hosted-tool | PASS |
+| endpoint-not-served | SKIP — llama-server serves every endpoint the kit checks |
+| output-ceiling | PASS — max_tokens 32768 → 16, finish length |
+| rate-limit | PASS |
+| metrics | PASS — 10 usage records, 1 rate-limited, 14 successful attempts |
+
+Consistent with step 1's recordings: Messages' `input_tokens` excludes the cache
+reads and the gateway adds them back (log line in 22 = 4 + 18), Responses'
+`input_tokens` includes them, and llama-server reports no reasoning count (the
+log's reasoning is 0, with reasoning on). Nothing contradicts the spec.
 
 **Suite** — `scripts/check-all.sh`: all checks passed (gateway gofmt, vet,
 staticcheck, race tests including the e2e; the live-test kit's lint and self-test,
