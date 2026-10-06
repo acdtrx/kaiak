@@ -307,15 +307,15 @@ Group entries under headings as themes emerge.
   Trust model). Revisit trigger: gateways run where their token cannot be kept as
   tightly as the control plane's own secrets (another team's cluster, a customer
   site), or a forged usage or status report is seen.
-- **Totals size bound** — every usage ack and totals push carries the full totals:
-  one window per configured hour or month limit with spend, about 115 B each with
-  ordinary IDs. The effective-limits bound (50 000) keeps that to about 5.8 MB, under
-  the 16 MiB message cap, but long group IDs and model sets can bring it close, and
-  every gateway receives it with every ack and push (2026-09-27 review, R5; past the
-  cap acks fail, batches retry forever, and after the outage grace priced
-  USD-limited models answer `503 budget_unavailable` fleet-wide). Fixes: totals as
-  deltas since a revision, or only the windows that changed. Revisit trigger: totals
-  messages above a few MiB, or active windows in the tens of thousands.
+- **Totals size bound** — every totals push carries the full totals: one window per
+  configured hour or month limit with spend, about 115 B each with ordinary IDs. The
+  effective-limits bound (50 000) keeps that to about 5.8 MB, under the 16 MiB message
+  cap, but long group IDs can bring it close, and every gateway receives it with every
+  push (2026-09-27 review, R5; past the cap a gateway's stream fails, and after the
+  outage grace priced USD-limited models answer `503 budget_unavailable`). Fixes:
+  totals as deltas since the stream's last push, or only the windows that changed.
+  Revisit trigger: totals messages above a few MiB, or active windows in the tens of
+  thousands.
 - **Seal usage batches by encoded size** — a gateway seals a batch at 500 records or
   5 s, never by size; a batch whose backend model names are made of characters Go's
   JSON encoder writes as six bytes (`<`, `>`, `&`) can pass the control plane's 2 MiB
