@@ -1,6 +1,6 @@
 # Step 7 — broadcast-only contract
 
-**Status:** not started
+**Status:** done (2026-10-07)
 
 ## Intent
 
@@ -146,4 +146,168 @@ used only for skip-if-identical and status, never compared for order.
 
 ## Result
 
-(filled in when the step is done)
+**What changed**
+
+- **`docs/specs/CONTROL-PROTOCOL.md`** (`3487e0a`, `a7aed61` for GATEWAY.md):
+  - Shape and Endpoints: one stream, no `GET /v1/config`.
+  - **Config versions** becomes **Current config** (settled 2026-10-07):
+    - the app owns config;
+    - publish replaces;
+    - `config_hash` (SHA-256 of the config's JSON as sent; content only, no order);
+    - the conditional replace inside the store;
+    - parents rule against the current config;
+    - the gateway applies what it is sent.
+  - Rejected: versions with history, resume and resync; "only newer" at the gateway;
+    the config epoch.
+  - **Config stream:**
+    - no parameters;
+    - the current config, then totals, on connect;
+    - per-stream **Order** by the store's sequence (internal);
+    - **Rollback**: a process that sees the sequence go back closes its streams;
+    - totals on the stream only.
+  - **Messages:**
+    - `config-event` `{ config_hash, config }`;
+    - totals `{ live_gateways, counted_through, windows }`;
+    - ack `{ batch }`;
+    - status `applied_config_hash`, `last_rejection { config_hash, codes }`;
+    - Matching totals to limits whatever the config (rejected: the H3 config gate and
+      its mismatch state).
+  - **Usage batches:** the ack names the batch only.
+  - **Usage intake:** counted whether or not a config is published.
+  - **Budgets:** totals on the stream only.
+  - **Control-plane processes:** one internal sequence; publish conditional on the
+    config it was checked against; the epoch-on-rollback rule replaced by Rollback.
+  - **Outage:** contact without a snapshot; the mismatch refusal removed.
+- **`docs/specs/GATEWAY.md`:**
+  - **Limits:**
+    - own usage leaves only through stream totals;
+    - "Totals apply whatever the config" replaces "Totals follow their config" and the
+      mismatch rule;
+    - `totals.json` format 4 without config identity.
+  - **Control-plane mode:**
+    - boot from the stream's first `config`, table updated;
+    - readiness;
+    - no totals yet;
+    - stream: skip by hash (running or last rejected), apply whatever it replaces;
+    - reconnect;
+    - rejections by hash;
+    - `last-known-good.json` format 7 (config + hash);
+    - usage batches: acks retire nothing.
+  - **Status:** `applied_config_hash`.
+  - **Metrics:** `kaiak_control_config_mismatch` removed; contact without a snapshot.
+  - **Log table:**
+    - `kaiak.config.hash` replaces `kaiak.config.version`/`epoch`;
+    - `previous_epoch`, `totals.config_epoch` and `totals.sequence` rows removed;
+    - boot attempt line renamed.
+- **Schemas** (`024eeca`):
+  - Deleted: `config-snapshot.schema.json`, `resync.schema.json`.
+  - New: `config-event.schema.json`.
+  - `common`: `config_epoch` and `config_version` defs removed, `config_hash` added
+    (64 lowercase hex).
+  - `totals`: `revision`, `config_epoch`, `config_version` removed.
+  - `usage-ack`: `totals` removed.
+  - `status`: the version/epoch pair and its if/then/else replaced by
+    `applied_config_hash`; `last_rejection.config_hash`.
+  - Copies synced into `control/kaiak-control/schema/`.
+- **Fixtures** (`024eeca`): a scripted transform (`config-snapshot` → `config-event`
+  with the real SHA-256 of each config; revision/epoch/version stripped from totals;
+  totals stripped from acks; status version/epoch → hash). A second script checked
+  all 55 rewritten files equal their `HEAD` version under exactly that transform.
+  - Deliberate deletions (each asserted a removed concept):
+    - `config-snapshot/invalid/{config-epoch-missing,config-epoch-uppercase,version-missing,version-string,version-zero}`
+    - the whole `resync/` kind
+    - `totals/invalid/{config-epoch-missing,config-epoch-uppercase,config-version-missing,revision-missing,revision-negative,revision-object}`
+    - `usage-ack/invalid/{totals-missing,totals-window-duplicate}`
+    - `status/invalid/{applied-epoch-missing,applied-epoch-shape,applied-epoch-without-version,applied-version-missing,applied-version-without-epoch}`
+    - `status/valid/rejected-below-applied`
+  - New:
+    - `config-event/invalid/{config-hash-missing,config-hash-uppercase}`
+    - `status/invalid/{applied-config-hash-missing,applied-config-hash-shape}`
+  - Duplicate members:
+    - `config-snapshot-version-twice` → `config-event-config-hash-twice`
+      (path `/config_hash`);
+    - `config-snapshot-inner-config-member-twice` →
+      `config-event-inner-config-member-twice`;
+    - the totals and ack duplicates lost their removed members (by hand; they are raw
+      bytes).
+  - Every fixture checked against the new schemas with Ajv: valid ones pass, schema
+    cases fail, rule and semantic cases pass the schema, and each duplicate file's
+    last-occurrence reading is valid.
+- **Store** (`58d9872`):
+  - `ConfigEntry { config, hash, publishedAt }` and
+    `CurrentConfig = ConfigEntry & { sequence }`.
+  - `currentConfig()`.
+  - `publishConfig(entry, expectedHash)`: a conditional replace, answering
+    `{ saved, sequence }` or `{ saved: false, current }`.
+  - **Removed:** `configEpoch`, `latestConfig`, `configsAfter`, `keep`, `StoredConfig`.
+  - `TotalsSnapshot.config` is the `CurrentConfig`; the sequence is documented as
+    internal.
+  - `config-published` carries `hash`.
+  - The memory store holds one config.
+  - Contract tests: the epoch test and the `keep` test removed; publish tests rewritten
+    to replace-by-hash (including the same content published again); 21 pass.
+  - `storage/memory.test.ts` deleted: both its tests asserted removed behaviour (a
+    store's own epoch; version order as a caller fault).
+
+**Decisions made in this step**
+
+- **`config-unavailable` is removed.** A usage batch is counted with no config
+  published (counting does not depend on the config, and the ack carries nothing that
+  needs one). A stream before the first publish stays open and sends the config when
+  it comes. The gateway's boot treats "no config within the wait" as unavailable, as
+  before. Its only mention left is the dated rejected alternative in Usage intake.
+- **A `config` event is skipped when its hash equals the running config's or the last
+  rejected one's.** The latter avoids re-validating and re-logging the same rejected
+  config on every reconnect.
+- **A publish of identical content is a publish:** it moves the sequence, and streams
+  skip it by hash.
+- **The publish condition is the hash of the config checked against.** A content
+  condition is correct even across an A-B-A of publishes: the parents rule holds for
+  identical content.
+- **Rejected alternatives in the specs keep naming the removed concepts**
+  (`resync`, `config-unavailable`, "config epoch", `revision`), dated. AGENTS.md asks
+  decisions to record what was rejected. This is the one exception to step 9's grep,
+  limited to `docs/specs/` "Rejected" text.
+- **`config_hash` is computed by the core over `JSON.stringify(config)`** (step 8).
+  Fixtures use `json.dumps(config, separators=(',', ':'))`, the same text for these
+  documents.
+
+**Removal checklist status** (outside `docs/plans/`, `docs/reviews/`):
+
+| Item | Specs | Schemas / fixtures | Store | Left for |
+|---|---|---|---|---|
+| `config_version` | done | done | done | kaiak-control core and sample (step 8); gateway (step 9); `docs/architecture/control-plane.html` (step 8) |
+| `config_epoch`, `applied_config_epoch` | done | done | done | core and sample (8); gateway, e2e (9) |
+| `applied_config_version` | done | done | — | core, sample, GUIDE, control-plane.html (8); gateway (9) |
+| totals `revision` | done | done | done (sequence internal) | core (8); gateway (9) |
+| `configsAfter`, `configsSince`, history size | done | — | done | core, GUIDE (8) |
+| `resync` | done, Rejected text only | done | — | core (8); gateway, sse, metrics, fakecontrol, e2e (9) |
+| `since` parameter | done | — | — | core, sample, control-plane.html (8); gateway, fakecontrol, e2e (9) |
+| `config-unavailable` | done, Rejected text only | — | — | core, sample, GUIDE, control-plane.html (8); gateway, fakecontrol, DEPLOYMENT (9) |
+| `GET /v1/config`, `config-snapshot` | done | done | — | core (8); gateway (9) |
+| config mismatch | done | — | — | gateway, metrics, limits, cmd, DEPLOYMENT, gateway.html (9); control-plane.html (8) |
+| ack totals | done | done | — | core (8); gateway (9) |
+| new epoch on restore | done | — | done | GUIDE (8) |
+
+**Suite** (2026-10-07):
+
+- Store contract (`store-contract/memory.test.ts`): 21 pass, 0 fail.
+- Control `npm test`: 566 tests, 401 pass, 164 fail. Every failure is in the core
+  and the sample, which still call the removed store methods (`configEpoch`,
+  `latestConfig`, `configsAfter`, versioned `publishConfig`) and build the removed
+  message shapes: config-versions, usage, control-plane, gateways, fastify, and the
+  sample's app, page and config-file tests. A second run under the TAP reporter
+  stalled in a stream test file whose streams never end while the core is broken.
+  **Expected, cleared by step 8.**
+- Control `npm run lint`: 29 TypeScript errors, all in the core and sample modules
+  (config-versions 13, usage 8, sample page 6, fastify 1, control-plane 1). **Expected,
+  cleared by step 8.** No errors in storage or store-contract.
+- Gateway: `scripts/check-gateway.sh` passed, but only from Go's test cache: the
+  fixture files live outside the gateway module, so a fixture change does not
+  invalidate cached results. Uncached (`go test -count=1 ./internal/control/`), 25
+  tests fail on the new schemas, fixtures and protocol shapes:
+  boot/stream/resync/version/epoch/last-known-good tests, `TestEveryFixtureKindHasADecoder`,
+  the fixture tests and the totals tests. **Expected, cleared by step 9.** Steps 8–9
+  must run the gateway tests with `-count=1`.
+- Cross-half tests: not run. They need both halves on the new protocol. **Expected red
+  until step 9.**
