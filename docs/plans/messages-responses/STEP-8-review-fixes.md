@@ -1,6 +1,6 @@
 # Step 8 — review fixes
 
-**Status:** not started
+**Status:** done (2026-10-06)
 
 ## Intent
 
@@ -118,4 +118,53 @@ Out: L7 and L8 stay recorded in the AUDIT only.
 
 ## Result
 
-(filled in when the step is done)
+Every finding of `docs/reviews/2026-10-06/AUDIT.md` is fixed with a regression test
+that failed before its fix, except L8 (recorded); the AUDIT's Outcome table maps
+each to its commit. The independent review [B] (`AUDIT-independent.md`) joined
+mid-step: its 11 reproduction tests are ported as `review_test.go` in `accounting`,
+`server` and `provider` (renamed to the packages' naming, scenarios kept), all
+failing on `85918e7` and passing now; its new findings became H4, M9, M10, L11–L13.
+
+**Commits:** `a282e6b` (H1, H2), `cb2f5d7` (M1, M2), `d437d74` (M4, L4), `5c2b27b`
+(H3, H4, M3, M5, M6, M9, L1, L2, L3, L11, L13), `bc70173` (M10/L7, L12), `43f4bbe`
+(L6), `bc367cf` (M7, M8, L5, L9, L10; `AUDIT-independent.md`), `009af29` (AUDIT
+outcome).
+
+**Deviations from the sketches** (each in the spec, dated 2026-10-06):
+- **H1:** output is `max(provisional, estimate)`, flagged estimated, whenever no
+  `message_delta`/body output count arrived — also a backend that never sends one.
+- **H2/M9:** one pass with scan roles for the documented content paths (Messages
+  blocks, sources, tool-result content; Responses item content and tool-call
+  output), not only the `source` rule; a `source`'s colon now stays text (test
+  expectations moved by one byte).
+- **M1:** per-module rules — self-hosted types keep the whole-word match; cloud types
+  read codes only (Anthropic: `not_found_error` whose message begins `model:`).
+- **M2:** a streaming token scan, still per attempt (not once per request: the backend
+  type is known only after routing) but copying nothing; repeated
+  `cache_control`/`ttl` refused as `duplicate_member`.
+- **M4:** two new codes — `503 upstream_overloaded` (also a backend `529`) and `400
+  upstream_refused` (names the backend's code when a plain identifier); first-event
+  busy events cool the deployment down; mid-stream kinds set the circuit and error
+  class.
+- **M5:** Responses refusals keep `stateful_responses_unsupported` ([B]'s test
+  expects it); Messages files use a new `stored_object_unsupported`. Checked in their
+  own pass, not inside the estimate (different purpose). `prompt` joins the stateful
+  fields.
+- **M3:** gateway-local memory per (backend, endpoint) for the probe interval; when
+  every deployment is remembered, all are tried again.
+- **M6:** refusal when the gateway would set `max_tokens` (ceiling or default) at or
+  below the budget; a client's own value goes to the backend.
+- **[B] L1:** any member named twice in a tools entry, `tool_choice`, shell
+  environment, input item, part, Messages block or source, `thinking` is refused.
+- **[B] M3:** up to 64 comment blocks held before the first data event; the half-open
+  trial test now waits for the backend before reading the held ping.
+
+**Suite:** `scripts/check-all.sh` green three times in a row with a cold test cache
+(gateway race tests and e2e, live-kit lint and self-test, control `npm test` 577/577
+and lint, cross-half e2e 58.8 s, 53.9 s, 48.7 s). **Phase 5 ends here.**
+
+**Live-kit reruns** (behaviour the kit can see changed): the `vllm` and
+`llama-server` kinds in full on the DGX (error events, first-event comments, the
+estimate, token-counting limits); the pending cloud kinds and client checks as
+before — Claude Code against an Anthropic-type model with a ceiling above its
+thinking budget (M6), Codex for `web_search`.
