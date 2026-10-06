@@ -51,6 +51,9 @@ func applyModelParams(_ context.Context, rq *request) *apiError {
 			return errOutputLimitTooLarge(k.name, *value, model.ContextLength)
 		}
 		if limit := model.OutputLimit; limit != nil && *value > limit.Ceiling {
+			if apiErr := fitsThinkingBudget(rq, k.name, limit.Ceiling, "ceiling"); apiErr != nil {
+				return apiErr
+			}
 			rq.params = append(rq.params, outputLimitParam(k.name, limit.Ceiling))
 			raise(limit.Ceiling)
 		} else {
@@ -59,11 +62,27 @@ func applyModelParams(_ context.Context, rq *request) *apiError {
 	}
 	if limit := model.OutputLimit; limit != nil && !anySet {
 		n := injectedOutputLimit(limit.Default, model.ContextLength, rq.input.LargestPrompt)
+		if apiErr := fitsThinkingBudget(rq, keys[0].name, n, "default"); apiErr != nil {
+			return apiErr
+		}
 		rq.params = append(rq.params, outputLimitParam(keys[0].name, n))
 		raise(n)
 	}
 	rq.outputLimit = effective
 	return nil
+}
+
+// fitsThinkingBudget refuses an output limit n the gateway would set (the model's
+// ceiling or default, named by which) at or below the request's thinking budget: the
+// backend requires budget_tokens below max_tokens and would refuse the request over a
+// value the client never sent (docs/specs/GATEWAY.md, Limits: output limit). The
+// answer names the model's limit, so the operator sees what to raise.
+func fitsThinkingBudget(rq *request, key string, n int64, which string) *apiError {
+	budget := rq.inbound.ThinkingBudget
+	if budget == nil || n > *budget {
+		return nil
+	}
+	return errOutputLimitBelowThinking(key, n, which, *budget)
 }
 
 // minInjectedOutputLimit is the least an injected default is lowered to: the input

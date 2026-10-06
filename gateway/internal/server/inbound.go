@@ -24,6 +24,9 @@ type inboundFields struct {
 	MaxTokens           *int64
 	MaxCompletionTokens *int64
 	MaxOutputTokens     *int64
+	// ThinkingBudget is a Messages request's thinking.budget_tokens when thinking is
+	// enabled; nil otherwise.
+	ThinkingBudget *int64
 	// IncludeUsage is the client's stream_options.include_usage.
 	IncludeUsage bool
 	// Sequences is how many output sequences the request asks the backend to
@@ -129,13 +132,17 @@ func parseOpenAIFields(rq *request, top map[string]json.RawMessage) *apiError {
 	return nil
 }
 
-// refuseHostedToolTypes refuses a tool list (raw, the request member param) holding a
-// tool the backend would run itself (docs/specs/GATEWAY.md, Client API → hosted tools
-// are refused): every entry whose type is set must be one clientRuns admits — an
-// allowlist, so a server tool released later is refused until it is judged. A tool
-// naming its type twice is refused: the gateway and the backend could read different
-// ones. An absent or null list holds none.
-func refuseHostedToolTypes(raw json.RawMessage, param string, clientRuns func(string) bool) *apiError {
+// toolJudge refuses a tool definition (its members, decoded; at, its parameter path)
+// the backend would run itself (docs/specs/GATEWAY.md, Client API → hosted tools are
+// refused), nil for one the client runs.
+type toolJudge func(at string, tool map[string]json.RawMessage) *apiError
+
+// refuseHostedTools refuses a tool list (raw, the request member param) holding a
+// tool the backend would run itself: judge looks at every entry — an allowlist, so a
+// server tool released later is refused until it is judged. An entry naming a member
+// twice is refused: the gateway and the backend could read different ones. An absent
+// or null list holds none.
+func refuseHostedTools(raw json.RawMessage, param string, judge toolJudge) *apiError {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil
 	}
@@ -149,15 +156,11 @@ func refuseHostedToolTypes(raw json.RawMessage, param string, clientRuns func(st
 		if !ok {
 			return errInvalidType(at, "an object")
 		}
-		if slices.Contains(repeats, "type") {
-			return errDuplicateMember(at + ".type")
+		if len(repeats) > 0 {
+			return errDuplicateMember(at + "." + repeats[0])
 		}
-		typ, apiErr := optionalField[string](members, "type", at+".type", "a string")
-		if apiErr != nil {
+		if apiErr := judge(at, members); apiErr != nil {
 			return apiErr
-		}
-		if typ != nil && !clientRuns(*typ) {
-			return errHostedTool(at+".type", *typ)
 		}
 	}
 	return nil
@@ -327,4 +330,10 @@ func optionalField[T any](object map[string]json.RawMessage, key, param, want st
 		return nil, errInvalidType(param, want)
 	}
 	return value, nil
+}
+
+// startsWith reports whether a JSON value, past leading whitespace, begins with c.
+func startsWith(raw json.RawMessage, c byte) bool {
+	raw = bytes.TrimLeft(raw, " \t\r\n")
+	return len(raw) > 0 && raw[0] == c
 }

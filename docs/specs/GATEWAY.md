@@ -31,11 +31,23 @@
 - **Responses is stateless** (settled 2026-10-06): the gateway keeps no conversation
   and lets no backend keep one. Every Responses request is sent with `store: false`
   (a client's `true` is replaced, not refused: clients default to it and work
-  without it); `previous_response_id`, `conversation` and `background: true` are
-  refused (`400 stateful_responses_unsupported`, `param` naming the field); there
-  are no `/v1/responses/{id}` routes (retrieve, delete, cancel, input items: `404
+  without it); `previous_response_id`, `conversation`, `prompt` (a stored prompt
+  template, which can carry tools of its own) and `background: true` are refused
+  (`400 stateful_responses_unsupported`, `param` naming the field); there are no
+  `/v1/responses/{id}` routes (retrieve, delete, cancel, input items: `404
   unknown_url`) and no Conversations API. A `null` value counts as absent, as for
-  every owned field. Rejected: a conversation store in the gateway — it would hold
+  every owned field.
+  **Stored objects** (settled 2026-10-06, the pre-merge review's M5 and [B] M1): a
+  reference to an object stored at the backend is refused the same way — an
+  `item_reference` input item, an input item with neither `type` nor `role` (the
+  reference's short form, `{"id": "msg_…"}`), a content part or a tool call's output
+  part naming a `file_id`; on Messages, a block whose `source` is of type `file`, or
+  a block naming a `file_id` (a container upload), in a message's, a tool result's or
+  a content source's content, answer `400 stored_object_unsupported`. The gateway
+  stores nothing and has no upload endpoint, so such an ID can only name another
+  application's object in the shared provider account; complete inline items that
+  carry their own IDs pass. Rejected: allowing file IDs — a leaked ID would read
+  another application's file, and its content would escape the input estimate. Rejected: a conversation store in the gateway — it would hold
   prompt content and state, against principles 1 and 9; routing follow-ups back to
   the backend that stored the response — no failover, per-replica stores on
   vLLM, and every translated or replaced deployment loses the conversation.
@@ -53,18 +65,33 @@
     type that merely shares the prefix, `computer_toolset_20260801`, is another
     tool, refused until judged); `mcp_servers` and `container` are refused the same
     way (`param` naming them).
-  - Responses: `function`, `custom`, `local_shell`, `shell`, `apply_patch`; a
-    `tool_choice` naming any other type (`{"type": "web_search"}`, …) is refused
-    too. A `tool_choice` of type `allowed_tools` names no tool of its own — it
-    narrows the `tools` list — so it passes, its own `tools` list held to the same
-    allowlist (settled 2026-10-06).
+  - Responses: `function`, `custom`, `local_shell`, `shell`, `apply_patch` — every
+    Responses tool names its type (a tool without one is refused, `invalid_type`);
+    a `shell` only when it runs on the client: no `environment`, or one of type
+    `local` (settled 2026-10-06, the pre-merge review's H3 and [B] H2: a
+    `container_auto` or `container_reference` environment runs the shell in the
+    backend's container, refused as a hosted tool). A `tool_choice` naming any other
+    type (`{"type": "web_search"}`, …) is refused too. A `tool_choice` of type
+    `allowed_tools` names no tool of its own — it narrows the `tools` list — so it
+    passes, its own `tools` list held to the same rule (settled 2026-10-06). Tools an
+    input item brings in — an `additional_tools` item's or a `tool_search_output`
+    item's `tools` — are held to it too, on both Responses endpoints (settled
+    2026-10-06, [B] H3).
+
+  **Every member the gateway reads to enforce these rules is read once** (settled
+  2026-10-06, [B] L1): a tools entry, a `tool_choice`, a shell's `environment`, an
+  input item, a content part, a Messages block or source naming any member twice is
+  refused (`400 duplicate_member`, `param` its path) — the gateway and the backend
+  could read different occurrences, one of them unchecked.
 
   Clients that attach a hosted tool by default need it turned off (Codex:
   `web_search = "disabled"`; `docs/testing/LIVE-BACKENDS.md`).
 - **Token-counting endpoints** (settled 2026-10-06): `/v1/messages/count_tokens` and
   `/v1/responses/input_tokens` run the whole pipeline — auth, model access, limits,
-  routing, the backend — and count toward requests-per-minute limits; they reserve
-  no tokens and produce **no usage record** (nothing is generated or billed). They
+  routing, the backend — and meet **only requests-per-minute limits**: they reserve
+  no tokens, no token or USD limit refuses them, nor does an unknown budget
+  (`budget_unavailable`), and they produce **no usage record** — nothing is
+  generated or billed (settled 2026-10-06, the pre-merge review's L1). They
   are logged and counted in the ops metrics like any request, and routed only to
   deployments whose backend has them (Providers → Endpoint support).
 - **Auth**: `Authorization: Bearer <key>` (scheme case-insensitive), or `x-api-key:
@@ -109,16 +136,17 @@
   | Not `Bearer <key>`; unknown, disabled or expired key | 401 | `invalid_request_error` | `invalid_api_key` |
   | Unknown model, or model not allowed for the key | 404 | `invalid_request_error` | `model_not_found` |
   | Body is not a JSON object | 400 | `invalid_request_error` | `invalid_json` |
-  | The top-level object, or `stream_options`, names a member twice — or a Messages `tools` entry its `type` (`param` names it; Request pipeline → duplicate members) | 400 | `invalid_request_error` | `duplicate_member` |
+  | The top-level object, or `stream_options`, names a member twice — or any member the gateway reads to enforce its rules: a tools entry, a `tool_choice`, a shell's `environment`, a Responses input item or part, a Messages block or source, `thinking`, a `cache_control` or its `ttl` on Anthropic types (`param` names it; Request pipeline → duplicate members; Client API → Hosted tools are refused) | 400 | `invalid_request_error` | `duplicate_member` |
   | Body could not be read | 400 | `invalid_request_error` | `invalid_body` |
   | `model` missing or empty (`param: "model"`) | 400 | `invalid_request_error` | `missing_required_parameter` |
   | An owned field has the wrong type (`param` names it) | 400 | `invalid_request_error` | `invalid_type` |
   | `n` or `best_of` above `global.max_n` (`param` names it) | 400 | `invalid_request_error` | `n_too_large` |
-  | `max_tokens` or `max_completion_tokens` below 0 or above the model's `context_length` (`param` names it; Limits → Output limit out of range) | 400 | `invalid_request_error` | `invalid_value` |
+  | `max_tokens`, `max_completion_tokens` or `max_output_tokens` below 0 or above the model's `context_length` (`param` names it; Limits → Output limit out of range); or a Messages output limit the gateway would set — the model's ceiling or default — at or below `thinking.budget_tokens` (Limits → Output limit) | 400 | `invalid_request_error` | `invalid_value` |
   | More generated sequences than `global.max_sequences_per_request` (`param`: `prompt`, `n` or `best_of`), or more embeddings inputs than `global.max_embedding_inputs` (`param: "input"`; Limits → Output multiplicity) | 400 | `invalid_request_error` | `invalid_value` |
   | Body over `max_request_body_bytes`, or over the whole body budget (`KAIAK_BODY_MEMORY_BYTES`) when that is smaller | 413 | `invalid_request_error` | `request_too_large` |
-  | A Responses request sets `previous_response_id`, `conversation` or `background: true` (`param` names it; Client API → Responses is stateless) | 400 | `invalid_request_error` | `stateful_responses_unsupported` |
-  | A tool type the backend would run, `mcp_servers`, `container`, or a Responses `tool_choice` naming such a type (`param` names it; Client API → Hosted tools are refused) | 400 | `invalid_request_error` | `hosted_tool_unsupported` |
+  | A Responses request sets `previous_response_id`, `conversation`, `prompt` or `background: true`, or refers to an item or file stored at the backend (`param` names it; Client API → Responses is stateless) | 400 | `invalid_request_error` | `stateful_responses_unsupported` |
+  | A Messages request refers to a file stored at the backend (`param` names it; Client API → Responses is stateless: stored objects) | 400 | `invalid_request_error` | `stored_object_unsupported` |
+  | A tool type the backend would run, a shell running in the backend's container, `mcp_servers`, `container`, or a Responses `tool_choice` or input item naming such a tool (`param` names it; Client API → Hosted tools are refused) | 400 | `invalid_request_error` | `hosted_tool_unsupported` |
   | A Messages request to an `anthropic` or `azure-anthropic` deployment asks for a price option the gateway does not price (`param` names it; Providers → Standard price on Anthropic types) | 400 | `invalid_request_error` | `price_option_unsupported` |
   | No deployment of the model is on a backend that serves the endpoint (Providers → Endpoint support) | 400 | `invalid_request_error` | `endpoint_not_served` |
   | Path matches no endpoint | 404 | `invalid_request_error` | `unknown_url` |
@@ -127,7 +155,7 @@
   | Backend refused the gateway's own credential (backend `401`/`403`) | 502 | `server_error` | `upstream_auth_failed` |
   | Backend answered `404` saying the deployment's model does not exist there (Providers: wrong model on a host) | 502 | `server_error` | `upstream_model_missing` |
   | Backend answered `404` the way its server answers a path it does not have — the backend's `base_url` is wrong (Providers: wrong path to a host) | 502 | `server_error` | `upstream_path_missing` |
-  | The same answer on an endpoint beyond OpenAI's three: the server version lacks an endpoint its type serves (Providers → An endpoint missing from a server) | 502 | `server_error` | `upstream_endpoint_missing` |
+  | The same answer on an endpoint beyond the type's core ones: the server version lacks an endpoint its type serves (Providers → An endpoint missing from a server) | 502 | `server_error` | `upstream_endpoint_missing` |
   | A stream got no first event within the backend's first-event timeout, or a non-stream response did not arrive within its response timeout | 504 | `server_error` | `upstream_timeout` |
   | Backend answered a `5xx` (its error code and type logged, its text neither logged nor relayed; its `Retry-After` kept) | the backend's `5xx` | `server_error` | `upstream_error` |
   | Backend answered `529` (Anthropic's `overloaded_error`), or a successful stream's first event was an error event naming the backend busy (settled 2026-10-06; Providers: error events) | `529`, or `503` for the event | `server_error` | `upstream_overloaded` |
@@ -156,14 +184,16 @@
     `stream_options.include_usage`, `n` and `best_of` (chat and completions),
     `prompt` (completions; only how many prompts it holds), `input` (embeddings;
     only how many inputs it holds).
-  - Messages (settled 2026-10-06): `model`, `stream`, `max_tokens`, each
-    `tools[].type`, `mcp_servers`, `container`; on Anthropic types also
+  - Messages (settled 2026-10-06): `model`, `stream`, `max_tokens`,
+    `thinking.budget_tokens` (read only), each `tools[].type`, `mcp_servers`,
+    `container`, the content blocks' `source` type and `file_id`; on Anthropic types also
     `service_tier` (on `anthropic`), `speed`, `inference_geo` and every `cache_control.ttl` (Providers
     → Standard price on Anthropic types).
   - Responses (settled 2026-10-06): `model`, `stream`, `max_output_tokens`, `store`,
-    `previous_response_id`, `conversation`, `background`, each `tools[].type`,
-    `tool_choice` (its `type` only), and `service_tier` on `openai` and
-    `azure-openai`.
+    `previous_response_id`, `conversation`, `prompt`, `background`, each
+    `tools[]`'s `type` and a shell's `environment`, `tool_choice`, the input items'
+    `type`, `role` and `tools`, and their parts' `file_id`, and `service_tier` on
+    `openai` and `azure-openai`.
   - The token-counting endpoints own `model` and the tool fields of their format,
     and `responses/input_tokens` the stateful fields too, refused as on
     `/v1/responses` (settled 2026-10-06: a stored response or conversation the
@@ -250,16 +280,22 @@ prompt logging later plug in:
    Client APIs: OpenAI, Messages or Responses; settled 2026-10-06, each format one
    plug): read the body up to the cap (request bodies, below), parse only the fields
    that format's owned fields name, keep the raw bytes for passthrough, refuse what
-   the gateway does not serve (stateful Responses fields, hosted tools). Then the
-   model-access check (Client API) — the second half of auth, which needs the model —
-   and the model's output limit (Model metadata, Limits), which fixes the request's
-   effective output limit before limits reserve it.
+   the gateway does not serve (stateful Responses fields, stored objects, hosted
+   tools). Then the model-access check (Client API) — the second half of auth, which
+   needs the model — and whether any of the model's deployments is on a backend that
+   serves the endpoint (Providers → Endpoint support; none: `400
+   endpoint_not_served`, settled 2026-10-06 here, before limits — the pre-merge
+   review's L2: a request no deployment can answer spends no request slot and gets
+   the answer that says what is wrong), and the model's output limit (Model
+   metadata, Limits), which fixes the request's effective output limit before limits
+   reserve it.
 3. **Limits** — check every applicable scope; reserve the output limit (below). The
    reservation settles in a request finisher that runs after accounting's settlement
    and reads its usage record (settled 2026-09-24).
 4. **Routing** — resolve alias → deployment, among the deployments whose backend
-   serves the endpoint (Providers → Endpoint support; none: `400
-   endpoint_not_served`, before queueing); queue for a concurrency slot.
+   serves the endpoint (Providers → Endpoint support), less those whose server was
+   found lacking it within the probe interval (Providers → An endpoint missing from a
+   server); queue for a concurrency slot.
 5. **Provider** — send upstream. Every request passes through in its own format
    (principle 4); translating providers (Bedrock) are later plugs.
 6. **Accounting** — settle usage, compute cost, emit metrics and a usage record (from
@@ -685,8 +721,13 @@ own, and a client sending repeats is broken either way.
   retried on deployments of other backends (every deployment on that backend runs
   the same server and is refused for the request's retries), produces no usage and
   is **not a circuit failure** — the deployment keeps serving its other endpoints.
-  Logged at warning level with the backend and the endpoint, attempt outcome
-  `endpoint_missing`. vLLM's `405 {"detail": "Method Not Allowed"}` on these
+  **Remembered for a probe interval** (settled 2026-10-06, the pre-merge review's
+  M3): the backend is left out of routing for that endpoint until the interval
+  passes — unless every deployment of the model is on such a backend, then they are
+  tried again (a server may have been upgraded) — so its instant `404`, which made it
+  look least loaded, no longer draws the endpoint's traffic and spends the retry
+  budget while a working deployment sits idle. Logged at warning level with the
+  backend and the endpoint once per interval, attempt outcome `endpoint_missing`. vLLM's `405 {"detail": "Method Not Allowed"}` on these
   endpoints reads the same way: its `POST /v1/responses/input_tokens` lands on the
   `GET /v1/responses/{id}` route (0.30.0), which is why `vllm` does not claim that
   endpoint. Rejected: a circuit failure — chat on a healthy server would stop for
@@ -1189,9 +1230,16 @@ own, and a client sending repeats is broken either way.
     `base64` (its raw `data`), `url` or `file` — the whole source counts as the item,
     whatever order its members come in; a `text` or `content` source is text, a
     `content` source's own blocks read by the same rules; a Responses `input_image` or
-    `input_file` part (its data URL, URL or file ID). Only a block's own `source` is
-    media: a tool's argument named `source` (in a `tool_use` input) is text (settled
-    2026-10-06, the pre-merge review's L1 of [S]).
+    `input_file` part (its data URL, URL or file ID). **Only at the format's
+    documented content paths** (settled 2026-10-06, the pre-merge review's [S] L1
+    and [B] M2): Messages blocks in `messages[].content`, `system`, a tool result's
+    or search result's `content` and a content source's `content`; Responses parts in
+    an input item's `content`, and in a function or custom tool call's `output` list
+    (a multimodal tool result). Exact keys, as the inbound stage reads them. Anywhere
+    else — a tool's arguments (`tool_use.input.source`), a function's JSON Schema that
+    holds a `content` list — such an object is text. Rejected: matching member names
+    anywhere — tool data that looked like a part swapped kilobytes of text for one
+    media figure, and media in a tool call's output went uncounted.
   - **One pass** (settled 2026-10-06, the pre-merge review's H2): every byte of the
     body is read once, however deep sources and content parts nest — a part's own
     count is held apart until its object closes, then kept or swapped for the media
@@ -1206,7 +1254,15 @@ own, and a client sending repeats is broken either way.
 - **Output limit**: each model has an output-limit **default** (applied when the request
   sets none) and **ceiling** (requests above it are lowered). While a request runs, its
   output limit counts as used against its scopes' local allowance; the unused part is
-  released at settlement.
+  released at settlement. **Thinking budgets** (settled 2026-10-06, the pre-merge
+  review's M6): Anthropic requires `thinking.budget_tokens` below `max_tokens`, so a
+  Messages request with thinking enabled whose `max_tokens` the gateway would set to
+  the model's ceiling or default at or below its budget is refused, `400
+  invalid_value` naming `max_tokens` and saying which of the model's limits is in
+  the way — the backend would refuse it over a value the client never sent. The
+  gateway reads `thinking.budget_tokens` and never edits it. Operators serving
+  clients that think with large budgets (Claude Code sends `max_tokens` 32000 with a
+  budget of 31999) set the ceiling above them.
 - **Output-limit keys** (settled 2026-09-24): chat reads `max_completion_tokens` and
   `max_tokens`; completions reads `max_tokens` only (`max_completion_tokens` is not a
   completions parameter and passes untouched); embeddings has no output limit. A
@@ -1664,8 +1720,9 @@ own, and a client sending repeats is broken either way.
   summaries, and tool-call names with their arguments or a custom tool's input
   (stream deltas likewise: `response.output_text.delta`, `response.refusal.delta`,
   `response.reasoning_text.delta`, `response.reasoning_summary_text.delta`,
-  `response.function_call_arguments.delta`, `response.custom_tool_call_input.delta`)
-  — settled 2026-10-06. JSON
+  `response.function_call_arguments.delta`, `response.custom_tool_call_input.delta`;
+  a tool call's name once, from the `response.output_item.added` event adding its
+  item — [B] L2) — settled 2026-10-06. JSON
   structure, roles, signatures, finish reasons and indexes do not count. A non-stream body's choices are kept up to
   4 MiB to be read; past that their raw size counts. The estimated input is all
   `tokens_in`; `tokens_cached`, `tokens_cache_write` and `tokens_reasoning` are 0.

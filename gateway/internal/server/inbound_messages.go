@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"kaiak/internal/accounting"
@@ -28,6 +29,16 @@ func parseMessagesFields(rq *request, top map[string]json.RawMessage) *apiError 
 	if apiErr := refuseMessagesHostedTools(top); apiErr != nil {
 		return apiErr
 	}
+	if apiErr := refuseStoredFiles(top["messages"]); apiErr != nil {
+		return apiErr
+	}
+	if rq.endpoint == endpointMessages {
+		budget, apiErr := thinkingBudget(top["thinking"])
+		if apiErr != nil {
+			return apiErr
+		}
+		rq.inbound.ThinkingBudget = budget
+	}
 	rq.input = accounting.EstimateInput(providerEndpoint(rq.endpoint), rq.body)
 	return nil
 }
@@ -51,7 +62,20 @@ func refuseMessagesHostedTools(top map[string]json.RawMessage) *apiError {
 			return errHostedMember(key)
 		}
 	}
-	return refuseHostedToolTypes(top["tools"], "tools", messagesClientTool)
+	return refuseHostedTools(top["tools"], "tools", judgeMessagesTool)
+}
+
+// judgeMessagesTool admits a Messages tool the client runs: one with no type (a
+// custom tool), or a type messagesClientTool admits.
+func judgeMessagesTool(at string, tool map[string]json.RawMessage) *apiError {
+	typ, apiErr := optionalField[string](tool, "type", at+".type", "a string")
+	if apiErr != nil || typ == nil {
+		return apiErr
+	}
+	if !messagesClientTool(*typ) {
+		return errHostedTool(at+".type", *typ)
+	}
+	return nil
 }
 
 // messagesClientTool reports whether a Messages tool of type t is one the client runs:
@@ -81,4 +105,90 @@ func isDigits(s string) bool {
 		}
 	}
 	return true
+}
+
+// thinkingBudget reads thinking.budget_tokens when thinking is enabled (Anthropic's
+// {"type": "enabled", "budget_tokens": n}): the gateway does not edit it, but an
+// output limit it sets must stay above it (applyModelParams). Exact keys; nil when
+// thinking is absent, disabled or adaptive.
+func thinkingBudget(raw json.RawMessage) (*int64, *apiError) {
+	if !startsWith(raw, '{') {
+		return nil, nil
+	}
+	thinking, repeats, ok := decodeMembersRepeats(raw)
+	if !ok {
+		return nil, errInvalidType("thinking", "an object")
+	}
+	if len(repeats) > 0 {
+		return nil, errDuplicateMember("thinking." + repeats[0])
+	}
+	typ, apiErr := optionalField[string](thinking, "type", "thinking.type", "a string")
+	if apiErr != nil || typ == nil || *typ != "enabled" {
+		return nil, apiErr
+	}
+	return optionalField[int64](thinking, "budget_tokens", "thinking.budget_tokens", "an integer")
+}
+
+// maxBlockNesting bounds how deep refuseStoredFiles follows block lists: a message's
+// content, a tool result's content inside it, a content source's content inside
+// that. Anthropic nests no deeper; a body nesting further is the backend's to refuse,
+// and the bound keeps the walk linear.
+const maxBlockNesting = 4
+
+// refuseStoredFiles refuses a Messages request referring to a file stored at the
+// backend (docs/specs/GATEWAY.md, Client API → stored objects): a block whose source
+// is of type file, or a block naming a file_id (a container upload), in any message's
+// content, a tool result's content or a content source's content. A block or source
+// naming a member twice is refused. A list of another shape is the backend's to judge.
+func refuseStoredFiles(messagesRaw json.RawMessage) *apiError {
+	var messages []json.RawMessage
+	if !startsWith(messagesRaw, '[') || json.Unmarshal(messagesRaw, &messages) != nil {
+		return nil
+	}
+	for i, message := range messages {
+		members, _, ok := decodeMembersRepeats(message)
+		if !ok {
+			continue
+		}
+		if apiErr := refuseStoredFileBlocks(members["content"], fmt.Sprintf("messages[%d].content", i), 1); apiErr != nil {
+			return apiErr
+		}
+	}
+	return nil
+}
+
+func refuseStoredFileBlocks(raw json.RawMessage, param string, nesting int) *apiError {
+	var blocks []json.RawMessage
+	if nesting > maxBlockNesting || !startsWith(raw, '[') || json.Unmarshal(raw, &blocks) != nil {
+		return nil
+	}
+	for j, block := range blocks {
+		at := fmt.Sprintf("%s[%d]", param, j)
+		members, repeats, ok := decodeMembersRepeats(block)
+		if !ok {
+			continue
+		}
+		if len(repeats) > 0 {
+			return errDuplicateMember(at + "." + repeats[0])
+		}
+		if id, ok := members["file_id"]; ok && string(id) != "null" {
+			return errStoredObject(at + ".file_id")
+		}
+		if source, repeats, ok := decodeMembersRepeats(members["source"]); ok {
+			if len(repeats) > 0 {
+				return errDuplicateMember(at + ".source." + repeats[0])
+			}
+			var typ string
+			if json.Unmarshal(source["type"], &typ) == nil && typ == "file" {
+				return errStoredObject(at + ".source")
+			}
+			if apiErr := refuseStoredFileBlocks(source["content"], at+".source.content", nesting+1); apiErr != nil {
+				return apiErr
+			}
+		}
+		if apiErr := refuseStoredFileBlocks(members["content"], at+".content", nesting+1); apiErr != nil {
+			return apiErr
+		}
+	}
+	return nil
 }

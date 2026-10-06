@@ -18,8 +18,9 @@ import (
 // effective output limit once per sequence it asks for, in tokens (the input estimate
 // alone when the output is unbounded), capped at accounting.MaxAmount — no amount the
 // protocol carries is larger, and the limiter's arithmetic stays far from int64's
-// edge. A token-counting request reserves no tokens: nothing is generated or billed
-// there, and it counts as a request only. The reservation settles in a finisher registered before the attempt
+// edge. A token-counting request reserves no tokens and meets only
+// requests-per-minute limits: nothing is generated or billed there, so no token or
+// cost limit — nor an unknown budget — refuses it. The reservation settles in a finisher registered before the attempt
 // loop's, so it runs after settlement and reads the request's usage records — the
 // sum of its attempts'.
 func checkLimits(rq *request, limiter *limits.Limiter) *apiError {
@@ -37,7 +38,7 @@ func checkLimits(rq *request, limiter *limits.Limiter) *apiError {
 	// Billability comes from the request's own snapshot and arrival, as its cost
 	// does (accounting.Cost): a reload since changes neither.
 	_, priced := accounting.PriceAt(rq.snapshot.Models[rq.model].Prices, rq.start)
-	subject := limits.Subject{Groups: rq.identity.Group.PathIDs, Model: rq.model, Priced: priced}
+	subject := limits.Subject{Groups: rq.identity.Group.PathIDs, Model: rq.model, Priced: priced, RequestsOnly: rq.endpoint.counts()}
 	res, rej := limiter.Reserve(subject, tokens)
 	rq.rejection = rej
 	if rej != nil && rej.Unavailable {

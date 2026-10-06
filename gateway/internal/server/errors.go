@@ -226,6 +226,15 @@ func errOutputLimitTooLarge(param string, value, contextLength int64) *apiError 
 			param, value, contextLength, value)}
 }
 
+// errOutputLimitBelowThinking refuses a Messages request whose output limit the
+// gateway would set to the model's ceiling or default (which), n, at or below the
+// request's thinking budget.
+func errOutputLimitBelowThinking(param string, n int64, which string, budget int64) *apiError {
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "invalid_value", param: param,
+		message: fmt.Sprintf("%s would be set to %d, this model's output-limit %s, which is not above thinking.budget_tokens (%d): "+
+			"send a smaller thinking budget, or ask the operator to raise the model's output-limit %s.", param, n, which, budget, which)}
+}
+
 // errOutputLimitNegative refuses an output limit (param: max_tokens or
 // max_completion_tokens) below 0, in OpenAI's wording for an integer below its
 // minimum.
@@ -394,6 +403,22 @@ func errHostedTool(param, toolType string) *apiError {
 func errStatefulResponses(param string) *apiError {
 	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "stateful_responses_unsupported", param: param,
 		message: fmt.Sprintf("'%s' relies on state kept between requests; the gateway serves Responses stateless: send the whole conversation in input.", param)}
+}
+
+// errStoredObjectResponses refuses a Responses request referring to an object stored
+// at the backend — an item, a file (docs/specs/GATEWAY.md, Client API → Responses is
+// stateless): the gateway stores nothing and has no upload endpoint, so such an ID
+// can only name another application's object in the shared provider account.
+func errStoredObjectResponses(param string) *apiError {
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "stateful_responses_unsupported", param: param,
+		message: fmt.Sprintf("'%s' refers to an object stored at the backend; the gateway serves Responses stateless: send the content itself.", param)}
+}
+
+// errStoredObject refuses a Messages request referring to a file stored at the
+// backend (docs/specs/GATEWAY.md, Client API → stored objects), for the same reason.
+func errStoredObject(param string) *apiError {
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "stored_object_unsupported", param: param,
+		message: fmt.Sprintf("'%s' refers to a file stored at the backend; the gateway serves no stored files: send the content itself.", param)}
 }
 
 // errHostedMember refuses a request member that hands the backend tools to run itself

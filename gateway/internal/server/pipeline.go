@@ -150,6 +150,9 @@ type request struct {
 	// modelAllowed: model passed the model-access check, so it is a name the config
 	// declares (safe as a metric label value).
 	modelAllowed bool
+	// serving is the model as routing sees it for a body request: only its
+	// deployments whose backend serves the endpoint (servingDeployments).
+	serving *config.Model
 	// Set by the inbound stage: the raw body, kept for passthrough, the fields the
 	// gateway owns, and the input estimate every stage reads (limits, the output
 	// default, estimated records) — taken once, from the body as received.
@@ -250,6 +253,7 @@ func (rq *request) finish() {
 func newPipeline(drain *Drain, keys *keyInFlight, bodies *BodyBudget, providers *provider.Registry, limiter *limits.Limiter,
 	router *routing.Router, recorder *accounting.Recorder, logger *slog.Logger) []stage {
 	budget := newRetryBudget(time.Now)
+	missing := newMissingEndpoints()
 	return []stage{
 		{"admission", func(_ context.Context, rq *request) *apiError { return admit(drain, rq) }},
 		{"auth", authenticateKey},
@@ -259,7 +263,7 @@ func newPipeline(drain *Drain, keys *keyInFlight, bodies *BodyBudget, providers 
 		{"model_params", applyModelParams},
 		{"limits", func(_ context.Context, rq *request) *apiError { return checkLimits(rq, limiter) }},
 		{"attempts", func(ctx context.Context, rq *request) *apiError {
-			return sendAttempts(ctx, rq, router, recorder, providers, budget, logger)
+			return sendAttempts(ctx, rq, router, recorder, providers, budget, missing, logger)
 		}},
 		{"models", answerModelEndpoint},
 	}
@@ -279,8 +283,9 @@ func authenticateKey(_ context.Context, rq *request) *apiError {
 	return nil
 }
 
-// authorizeModel applies the one model-access check (auth.Identity.AuthorizeModel).
-// Later stages may assume the model exists in the snapshot.
+// authorizeModel applies the one model-access check (auth.Identity.AuthorizeModel),
+// then, for a body request, finds the deployments that serve its endpoint. Later
+// stages may assume the model exists in the snapshot.
 func authorizeModel(_ context.Context, rq *request) *apiError {
 	if !rq.endpoint.namesModel() {
 		return nil
@@ -289,5 +294,14 @@ func authorizeModel(_ context.Context, rq *request) *apiError {
 		return authError(err)
 	}
 	rq.modelAllowed = true
+	if !rq.endpoint.takesBody() {
+		return nil
+	}
+	// A model none of whose backends serves the endpoint can never answer: refused
+	// here, before limits spend anything on it (docs/specs/GATEWAY.md, Providers →
+	// Endpoint support).
+	if rq.serving = servingDeployments(rq.snapshot.Models[rq.model], rq.endpoint); rq.serving == nil {
+		return errEndpointNotServed(rq.endpoint)
+	}
 	return nil
 }

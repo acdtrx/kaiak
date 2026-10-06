@@ -444,18 +444,23 @@ type Subject struct {
 	// config snapshot and arrival — the entry its usage is priced from
 	// (accounting.Cost), whatever a reload changed since.
 	Priced bool
+	// RequestsOnly: the request generates and costs nothing (a token-counting
+	// endpoint) — only requests-per-minute limits apply; no token or cost limit
+	// refuses it, nor does an unknown budget.
+	RequestsOnly bool
 }
 
 // applicable lists the counters of every scope the subject belongs to whose model
 // set covers its model: global and each group on its path. USD counters apply
 // only to a priced request (Subject.Priced): an unpriced model costs nothing, so no
 // budget refuses it or is spent by it (docs/specs/GATEWAY.md, Limits → Unpriced
-// models). Callers hold l.mu and have synced.
+// models); a request that generates nothing (Subject.RequestsOnly) meets only request
+// counters. Callers hold l.mu and have synced.
 func (l *Limiter) applicable(s Subject) []*counter {
 	var out []*counter
 	add := func(cs []*counter) {
 		for _, c := range cs {
-			if c.limit.Covers(s.Model) && (s.Priced || c.measure != MeasureCost) {
+			if c.limit.Covers(s.Model) && (s.Priced || c.measure != MeasureCost) && (!s.RequestsOnly || c.measure == MeasureRequests) {
 				out = append(out, c)
 			}
 		}

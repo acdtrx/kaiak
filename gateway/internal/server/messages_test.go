@@ -425,3 +425,28 @@ func waitLog(t *testing.T, g *testGateway, want string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// A token-counting request generates and costs nothing: only requests-per-minute
+// limits apply to it, so a spent token window refuses the next Messages request but
+// not a count (the pre-merge review's L1).
+func TestCountTokensMeetsOnlyRequestLimits(t *testing.T) {
+	g := newTestGateway(t)
+	withMessagesModels(t, g, func(doc string) string {
+		return strings.Replace(doc, `"allowed_models": ["*"] }`,
+			`"allowed_models": ["*"], "limits": [{ "type": "tokens_per_minute", "value": 100 }] }`, 1)
+	})
+	g.backend.SetReply(fakebackend.Reply{Usage: &fakebackend.Usage{PromptTokens: 100, CompletionTokens: 20}})
+	body := `{"model":"msg","max_tokens":32,"messages":[{"role":"user","content":"hi"}]}`
+	if w := do(t, g.h, call{method: "POST", path: "/v1/messages", key: workloadKey, body: body}); w.Code != http.StatusOK {
+		t.Fatalf("first request: %d %s", w.Code, w.Body.String())
+	}
+	w := do(t, g.h, call{method: "POST", path: "/v1/messages/count_tokens", key: workloadKey,
+		body: `{"model":"msg","messages":[{"role":"user","content":"hi"}]}`})
+	if w.Code != http.StatusOK {
+		t.Errorf("count_tokens under a spent token window: %d %s", w.Code, w.Body.String())
+	}
+	w = do(t, g.h, call{method: "POST", path: "/v1/messages", key: workloadKey, body: body})
+	if w.Code != http.StatusTooManyRequests {
+		t.Errorf("messages under a spent token window: %d, want 429", w.Code)
+	}
+}

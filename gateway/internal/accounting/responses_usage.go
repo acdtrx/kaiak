@@ -62,6 +62,10 @@ type responsesEvent struct {
 	Response *struct {
 		Usage json.RawMessage `json:"usage"`
 	} `json:"response"`
+	Item *struct {
+		Type string `json:"type"`
+		Name string `json:"name"`
+	} `json:"item"`
 }
 
 // responsesContentDeltas are the stream events whose delta is generated content:
@@ -77,9 +81,10 @@ var responsesContentDeltas = map[string]bool{
 }
 
 // streamEvent reads one stream event by its data's type: usage from the response the
-// final event carries, generated content from the deltas. Output items may overlap
-// (llama-server adds a function call before its reasoning item is done), so each
-// event counts on its own.
+// final event carries, generated content from the deltas and a tool call's name from
+// the event adding its item (once: the done events and the final response repeat
+// it). Output items may overlap (llama-server adds a function call before its
+// reasoning item is done), so each event counts on its own.
 func (u *responsesUsage) streamEvent(payload []byte) {
 	var ev responsesEvent
 	// A member of an unexpected type is skipped; the others are still read. Invalid
@@ -94,6 +99,9 @@ func (u *responsesUsage) streamEvent(payload []byte) {
 		}
 	case responsesContentDeltas[ev.Type]:
 		u.contentBytes += int64(len(ev.Delta))
+	case ev.Type == "response.output_item.added" && ev.Item != nil &&
+		(ev.Item.Type == "function_call" || ev.Item.Type == "custom_tool_call"):
+		u.contentBytes += int64(len(ev.Item.Name))
 	}
 }
 

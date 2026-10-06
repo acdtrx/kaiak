@@ -242,8 +242,10 @@ func TestMessages(t *testing.T) {
 			}
 			g.settled(t, id)
 		}
-		if n := len(old.Requests()); n == 0 {
-			t.Fatal("the old server got no request: the scenario did not run")
+		// After its first 404 the old server is left out for the endpoint for a probe
+		// interval: one request, not one per client request (the pre-merge review's M3).
+		if n := len(old.Requests()); n != 1 {
+			t.Fatalf("the old server got %d requests, want 1", n)
 		}
 		if v := g.metric(t, `kaiak_circuit_open{backend="old",deployment_model="Qwen/Qwen3-8B"}`); v != 0 {
 			t.Errorf("old's circuit open = %v, want closed", v)

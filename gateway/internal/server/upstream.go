@@ -64,18 +64,16 @@ type attempt struct {
 // the attempt that answers — or the last one — is relayed or answered with its
 // error. A request refused before its first attempt has a slot never reaches
 // accounting: no usage record; the limits finisher releases its reservation. Only the
-// model's deployments whose backend serves the endpoint take part; a model with none
-// is refused before routing (docs/specs/GATEWAY.md, Providers → Endpoint support).
+// model's deployments whose backend serves the endpoint take part (rq.serving); a
+// model with none was refused at model access (docs/specs/GATEWAY.md, Providers →
+// Endpoint support).
 // model_access has checked the model exists in the snapshot.
 func sendAttempts(ctx context.Context, rq *request, router *routing.Router, recorder *accounting.Recorder,
-	providers *provider.Registry, budget *retryBudget, logger *slog.Logger) *apiError {
+	providers *provider.Registry, budget *retryBudget, missing *missingEndpoints, logger *slog.Logger) *apiError {
 	if !rq.endpoint.takesBody() {
 		return nil
 	}
-	m := servingDeployments(rq.snapshot.Models[rq.model], rq.endpoint)
-	if m == nil {
-		return errEndpointNotServed(rq.endpoint)
-	}
+	m := missing.exclude(rq.serving, rq.endpoint, time.Now())
 	// However the request ends, its last attempt settles, tells the circuit breaker
 	// and frees its slot.
 	rq.finishers = append(rq.finishers, func() { rq.endAttempt(recorder) })
@@ -114,7 +112,7 @@ func sendAttempts(ctx context.Context, rq *request, router *routing.Router, reco
 		} else {
 			budget.retry(rq.model)
 		}
-		resp, failure := sendAttempt(ctx, rq, providers, logger)
+		resp, failure := sendAttempt(ctx, rq, providers, missing, logger)
 		switch {
 		case busyStatus(rq.upstreamStatus):
 			slot.Throttled(throttleCooldown(resp.Header(), time.Now()))
@@ -207,7 +205,8 @@ func serves(d config.Deployment, ep endpoint) bool {
 // the first event. A failure before any response is returned as the answer it would
 // get. The attempt's meter hears when the request was written in full (it counts the
 // input of an attempt that then gets no answer), and how the backend answered.
-func sendAttempt(ctx context.Context, rq *request, providers *provider.Registry, logger *slog.Logger) (provider.Response, *apiError) {
+func sendAttempt(ctx context.Context, rq *request, providers *provider.Registry, missing *missingEndpoints,
+	logger *slog.Logger) (provider.Response, *apiError) {
 	resp, err := providers.For(rq.deployment.Backend).Send(ctx, &provider.Request{
 		Endpoint:     providerEndpoint(rq.endpoint),
 		Deployment:   rq.deployment,
@@ -226,9 +225,11 @@ func sendAttempt(ctx context.Context, rq *request, providers *provider.Registry,
 				perr.Code == provider.CodePathMissing || perr.Code == provider.CodeEndpointMissing ||
 				perr.Code == provider.CodeErrorEvent) {
 			rq.meter.Refused()
-			if perr.Code == provider.CodeEndpointMissing {
-				// Not a circuit failure, so it shows here: the operator upgrades the
-				// server, or the deployment keeps refusing the endpoint.
+			if perr.Code == provider.CodeEndpointMissing &&
+				missing.remember(rq.deployment.Backend.ID, rq.endpoint, time.Now(), rq.snapshot.Circuit.ProbeInterval) {
+				// Not a circuit failure, so it shows here, once per interval: the
+				// operator upgrades the server; meanwhile routing leaves it out for the
+				// endpoint.
 				logger.Warn("the backend's server lacks an endpoint its type serves: an older version?",
 					"kaiak.request.id", rq.id, "kaiak.backend.id", rq.deployment.Backend.ID,
 					"kaiak.deployment.model", rq.deployment.Model, "kaiak.endpoint", rq.endpoint.name())

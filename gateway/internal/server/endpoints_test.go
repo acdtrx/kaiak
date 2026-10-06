@@ -32,9 +32,12 @@ func errorMessage(t *testing.T, w *httptest.ResponseRecorder) string {
 // withAnthropicModels swaps in the test config plus an anthropic backend "claude" on
 // the fake backend, a model served only there ("claude-only") and one with a
 // deployment there and one on "local" ("mixed").
-func withAnthropicModels(t *testing.T, g *testGateway) {
+func withAnthropicModels(t *testing.T, g *testGateway, edits ...func(doc string) string) {
 	t.Helper()
 	s := testSnapshotWith(t, g.backend.URL(), func(doc string) string {
+		for _, edit := range edits {
+			doc = edit(doc)
+		}
 		doc = strings.Replace(doc, `"backends": {`, `"backends": {
     "claude": { "type": "anthropic", "base_url": "`+g.backend.URL()+`/v1", "api_key_env": "ANTHROPIC_KEY" },`, 1)
 		meta := `"metadata": { "context_length": 8192,
@@ -238,4 +241,21 @@ func TestErrorEventsAndOverloadClassification(t *testing.T) {
 	if outcome, class, _ := classifyAttempt(overloaded); outcome != metrics.AttemptRateLimited || class != routing.Neutral {
 		t.Errorf("529 classified %s, %v", outcome, class)
 	}
+}
+
+// endpoint_not_served is decided before limits: a request its model can never answer
+// spends no request slot, and gets the answer that says what is wrong, not a 429
+// (the pre-merge review's L2).
+func TestEndpointNotServedComesBeforeLimits(t *testing.T) {
+	g := newTestGateway(t)
+	withAnthropicModels(t, g, func(doc string) string {
+		return strings.Replace(doc, `"allowed_models": ["*"] }`,
+			`"allowed_models": ["*"], "limits": [{ "type": "requests_per_minute", "value": 1 }] }`, 1)
+	})
+	if w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey, body: chatBody}); w.Code != http.StatusOK {
+		t.Fatalf("first request: %d %s", w.Code, w.Body.String())
+	}
+	w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey,
+		body: `{"model":"claude-only","messages":[]}`})
+	expectError(t, w, http.StatusBadRequest, "endpoint_not_served")
 }

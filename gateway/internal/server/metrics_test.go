@@ -535,6 +535,7 @@ func TestEveryErrorCodeHasItsClass(t *testing.T) {
 		"request_too_large": metrics.ErrorInvalidRequest, "method_not_allowed": metrics.ErrorInvalidRequest,
 		"stateful_responses_unsupported": metrics.ErrorInvalidRequest, "hosted_tool_unsupported": metrics.ErrorInvalidRequest,
 		"price_option_unsupported": metrics.ErrorInvalidRequest, "endpoint_not_served": metrics.ErrorInvalidRequest,
+		"stored_object_unsupported": metrics.ErrorInvalidRequest,
 		"upstream_endpoint_missing": metrics.ErrorUpstreamError,
 		"upstream_overloaded":       metrics.ErrorUpstreamRateLimited, "upstream_refused": metrics.ErrorUpstreamClientError,
 		"upstream_unavailable": metrics.ErrorUpstreamUnavailable, "upstream_auth_failed": metrics.ErrorUpstreamError,

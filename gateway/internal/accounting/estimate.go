@@ -77,7 +77,7 @@ func EstimateInput(ep provider.Endpoint, body []byte) InputEstimate {
 			continue
 		}
 		tokenIDs := ep == provider.Embeddings && key == "input"
-		if _, ok := s.value(key, "", tokenIDs, 1, &rest); !ok {
+		if _, ok := s.value(key, "", s.topRole(key), tokenIDs, 1, &rest); !ok {
 			return fallback
 		}
 	}
@@ -145,7 +145,7 @@ func (s *inputScan) promptList() ([]part, bool) {
 	}
 	var one part
 	if tok != json.Delim('[') {
-		if !s.handle(tok, s.dec.InputOffset()-start, "prompt", "", true, 1, &one) {
+		if !s.handle(tok, s.dec.InputOffset()-start, "prompt", "", roleNone, true, 1, &one) {
 			return nil, false
 		}
 		return []part{s.measured(start, one)}, true
@@ -155,7 +155,7 @@ func (s *inputScan) promptList() ([]part, bool) {
 	for s.dec.More() {
 		elemStart := s.dec.InputOffset()
 		var p part
-		first, ok := s.value("prompt", "", true, 2, &p)
+		first, ok := s.value("prompt", "", roleNone, true, 2, &p)
 		if !ok {
 			return nil, false
 		}
@@ -175,33 +175,98 @@ func (s *inputScan) promptList() ([]part, bool) {
 	return elems, true
 }
 
-// value scans one JSON value: the member key of an object that is itself member
-// parent (array elements carry their array's key and parent). Bytes it leaves out of
-// the text are subtracted from p.text; tokens it counts directly are added to
+// scanRole is where a value sits in a Messages or Responses body: media count as
+// such only at the format's documented content paths (docs/specs/GATEWAY.md, Limits:
+// the input estimate) — a tool's arguments or schema that merely look like a content
+// part are text.
+type scanRole int
+
+const (
+	roleNone scanRole = iota
+	// Messages: the messages list, one message, a list of content blocks (a message's
+	// content, the system prompt, a tool result's or search result's content, a
+	// content source's content), one block, a block's source.
+	roleMessages
+	roleMessage
+	roleBlocks
+	roleBlock
+	roleSource
+	// Responses: the input items, one item, a list of content parts (a message's
+	// content, a function or custom tool call's output), one part.
+	roleItems
+	roleItem
+	roleParts
+	rolePart
+)
+
+// topRole is the role of the body's top-level member key.
+func (s *inputScan) topRole(key string) scanRole {
+	switch {
+	case s.format == provider.FormatMessages && key == "messages":
+		return roleMessages
+	case s.format == provider.FormatMessages && key == "system":
+		return roleBlocks
+	case s.format == provider.FormatResponses && key == "input":
+		return roleItems
+	}
+	return roleNone
+}
+
+// elementRole is the role of an element of an array whose role is r.
+func elementRole(r scanRole) scanRole {
+	switch r {
+	case roleMessages:
+		return roleMessage
+	case roleBlocks:
+		return roleBlock
+	case roleItems:
+		return roleItem
+	case roleParts:
+		return rolePart
+	}
+	return roleNone
+}
+
+// memberRole is the role of member name of an object whose role is r.
+func memberRole(r scanRole, name string) scanRole {
+	switch {
+	case r == roleMessage && name == "content", r == roleBlock && name == "content", r == roleSource && name == "content":
+		return roleBlocks
+	case r == roleBlock && name == "source":
+		return roleSource
+	case r == roleItem && (name == "content" || name == "output"):
+		return roleParts
+	}
+	return roleNone
+}
+
+// value scans one JSON value, of role r: the member key of an object that is itself
+// member parent (array elements carry their array's key and parent). Bytes it leaves
+// out of the text are subtracted from p.text; tokens it counts directly are added to
 // p.fixed. It returns the value's first token.
-func (s *inputScan) value(key, parent string, tokenIDs bool, depth int, p *part) (json.Token, bool) {
+func (s *inputScan) value(key, parent string, r scanRole, tokenIDs bool, depth int, p *part) (json.Token, bool) {
 	start := s.dec.InputOffset()
 	tok, err := s.dec.Token()
 	if err != nil {
 		return nil, false
 	}
-	return tok, s.handle(tok, s.dec.InputOffset()-start, key, parent, tokenIDs, depth, p)
+	return tok, s.handle(tok, s.dec.InputOffset()-start, key, parent, r, tokenIDs, depth, p)
 }
 
 // handle scans the value whose first token tok, span bytes of the body, was just
 // read (see value).
-func (s *inputScan) handle(tok json.Token, span int64, key, parent string, tokenIDs bool, depth int, p *part) bool {
+func (s *inputScan) handle(tok json.Token, span int64, key, parent string, r scanRole, tokenIDs bool, depth int, p *part) bool {
 	switch v := tok.(type) {
 	case json.Delim:
 		if depth > maxEstimateDepth {
 			return false
 		}
 		if v == '{' {
-			_, ok := s.object(key, tokenIDs, depth, p)
+			_, ok := s.object(key, r, tokenIDs, depth, p)
 			return ok
 		}
 		for s.dec.More() {
-			if _, ok := s.value(key, parent, tokenIDs, depth+1, p); !ok {
+			if _, ok := s.value(key, parent, elementRole(r), tokenIDs, depth+1, p); !ok {
 				return false
 			}
 		}
@@ -221,17 +286,22 @@ func (s *inputScan) handle(tok json.Token, span int64, key, parent string, token
 	return true
 }
 
-// object scans the rest of an object, its opening brace just read, as member key, and
-// returns its type member when that is a string. Every byte is read once, whatever
-// the nesting (docs/specs/GATEWAY.md, Limits: the input estimate). A part's type
-// may come after its data, so the object's own count is held apart until it closes:
+// object scans the rest of an object of role r, its opening brace just read, as
+// member key, and returns its type member when that is a string. Every byte is read
+// once, whatever the nesting (docs/specs/GATEWAY.md, Limits: the input estimate). A
+// part's type may come after its data, so the object's own count is held apart until
+// it closes:
 //
-//   - a Responses input_image or input_file part counts InlineMediaTokens, whatever
-//     it carries (a data URL, a URL or a file ID);
-//   - a Messages image or document block counts its source as InlineMediaTokens when
-//     the source is base64 data, a URL or a file ID — only there: a tool's input
-//     member named source is text.
-func (s *inputScan) object(key string, tokenIDs bool, depth int, p *part) (string, bool) {
+//   - a Responses content part (a message's content, a tool call's output) of type
+//     input_image or input_file counts InlineMediaTokens, whatever it carries (a data
+//     URL, a URL or a file ID);
+//   - a Messages content block of type image or document (in a message, a tool
+//     result, a content source) counts its source as InlineMediaTokens when the
+//     source is base64 data, a URL or a file ID.
+//
+// Exact keys only, as the inbound stage reads them; anywhere else such an object is
+// text.
+func (s *inputScan) object(key string, r scanRole, tokenIDs bool, depth int, p *part) (string, bool) {
 	start := s.dec.InputOffset() - 1 // the opening brace
 	var own, source part
 	var typ, sourceType string
@@ -243,13 +313,13 @@ func (s *inputScan) object(key string, tokenIDs bool, depth int, p *part) (strin
 			return "", false
 		}
 		member, _ := name.(string)
-		if s.format == provider.FormatMessages && member == "source" {
+		if r == roleBlock && member == "source" {
 			if sourceType, sourceSpan, ok = s.messagesSource(key, tokenIDs, depth+1, &source); !ok {
 				return "", false
 			}
 			continue
 		}
-		first, valueOK := s.value(member, key, tokenIDs, depth+1, &own)
+		first, valueOK := s.value(member, key, memberRole(r, member), tokenIDs, depth+1, &own)
 		if !valueOK {
 			return "", false
 		}
@@ -261,10 +331,10 @@ func (s *inputScan) object(key string, tokenIDs bool, depth int, p *part) (strin
 		return "", false
 	}
 	switch {
-	case s.format == provider.FormatResponses && (typ == "input_image" || typ == "input_file"):
+	case r == rolePart && (typ == "input_image" || typ == "input_file"):
 		p.text -= s.dec.InputOffset() - start
 		p.fixed += InlineMediaTokens
-	case s.format == provider.FormatMessages && (typ == "image" || typ == "document") && isMediaSource(sourceType):
+	case r == roleBlock && (typ == "image" || typ == "document") && isMediaSource(sourceType):
 		own.text -= sourceSpan
 		own.fixed += InlineMediaTokens
 		p.text += own.text
@@ -276,8 +346,8 @@ func (s *inputScan) object(key string, tokenIDs bool, depth int, p *part) (strin
 	return typ, true
 }
 
-// messagesSource scans a Messages member named source, counted into p, and returns
-// its type and its span when it is an object (an object's span is its own bytes).
+// messagesSource scans a Messages block's source, counted into p, and returns its type
+// and its span when it is an object (an object's span is its own bytes).
 func (s *inputScan) messagesSource(parent string, tokenIDs bool, depth int, p *part) (typ string, span int64, ok bool) {
 	before := s.dec.InputOffset()
 	tok, err := s.dec.Token()
@@ -285,13 +355,13 @@ func (s *inputScan) messagesSource(parent string, tokenIDs bool, depth int, p *p
 		return "", 0, false
 	}
 	if tok != json.Delim('{') {
-		return "", 0, s.handle(tok, s.dec.InputOffset()-before, "source", parent, tokenIDs, depth, p)
+		return "", 0, s.handle(tok, s.dec.InputOffset()-before, "source", parent, roleSource, tokenIDs, depth, p)
 	}
 	if depth > maxEstimateDepth {
 		return "", 0, false
 	}
 	start := s.dec.InputOffset() - 1 // the opening brace
-	if typ, ok = s.object("source", tokenIDs, depth, p); !ok {
+	if typ, ok = s.object("source", roleSource, tokenIDs, depth, p); !ok {
 		return "", 0, false
 	}
 	return typ, s.dec.InputOffset() - start, true
