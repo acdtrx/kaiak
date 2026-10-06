@@ -16,7 +16,7 @@ import type { PageSources } from "./sections.ts";
 export interface StatusPageOptions {
   controlPlane: Pick<
     ControlPlane,
-    "currentConfig" | "configEpoch" | "gateways" | "totals" | "recentRecords" | "onConfigPublished" | "onTotalsChanged" | "onGatewaysChanged"
+    "currentConfig" | "gateways" | "totals" | "recentRecords" | "onConfigPublished" | "onTotalsChanged" | "onGatewaysChanged"
   >;
   // The config file's latest runs, read at every render of the config section.
   configFile: () => ConfigFileState;

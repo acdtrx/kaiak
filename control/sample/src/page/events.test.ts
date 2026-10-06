@@ -87,7 +87,6 @@ async function start(pushIntervalMs = 50, maxStreams?: number): Promise<Running>
     };
   const controlPlane: StatusPageOptions["controlPlane"] = {
     currentConfig: core.currentConfig,
-    configEpoch: core.configEpoch,
     gateways: core.gateways,
     totals: core.totals,
     recentRecords: core.recentRecords,
@@ -206,7 +205,7 @@ test("a browser gets every section on connect, and again on reconnect", { timeou
   const first = await running.open();
   const sections = await readAllSections(first);
   assert.deepEqual([...sections.keys()], ["gateways", "config", "totals", "usage"]);
-  assert.match(sections.get("config") ?? "", /Config <span class="muted">v1<\/span>/);
+  assert.match(sections.get("config") ?? "", /Config <span class="muted"><code>[0-9a-f]{12}<\/code><\/span>/);
   first.abort();
 
   const again = await running.open();

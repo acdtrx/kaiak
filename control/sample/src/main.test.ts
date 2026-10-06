@@ -44,16 +44,37 @@ async function lineMatching(child: ChildProcess, pattern: RegExp): Promise<strin
   return assert.fail(`the process ended without printing ${pattern}`);
 }
 
+// The config_hash of the first config event the stream at `url` sends; the stream is
+// closed after it.
+async function firstConfigHash(url: string): Promise<string> {
+  const abort = new AbortController();
+  try {
+    const response = await fetch(`${url}/v1/stream`, {
+      headers: { authorization: `Bearer ${TOKEN}`, "kaiak-protocol": "5", "kaiak-instance": "gw-1" },
+      signal: abort.signal,
+    });
+    assert.equal(response.status, 200);
+    assert.ok(response.body);
+    const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+    let text = "";
+    for (;;) {
+      const match = /event: config\ndata: (.*)\n\n/.exec(text);
+      if (match) return (JSON.parse(match[1] ?? "") as { config_hash: string }).config_hash;
+      const chunk = await reader.read();
+      assert.ok(!chunk.done, "the stream stayed open");
+      text += chunk.value;
+    }
+  } finally {
+    abort.abort();
+  }
+}
+
 test("the server logs its address once listening, serves gateways and exits 0 on SIGTERM", { timeout: 10000 }, async () => {
   const child = start({ KAIAK_SAMPLE_CONFIG: configFile() });
   const line = await lineMatching(child, /"msg":"sample control plane listening on http:\/\/127\.0\.0\.1:\d+"/);
   const { url } = JSON.parse(line) as { url: string };
 
-  const response = await fetch(`${url}/v1/config`, {
-    headers: { authorization: `Bearer ${TOKEN}`, "kaiak-protocol": "5", "kaiak-instance": "gw-1" },
-  });
-  assert.equal(response.status, 200);
-  assert.equal(((await response.json()) as { version: number }).version, 1);
+  assert.match(await firstConfigHash(url), /^[0-9a-f]{64}$/);
 
   const exited = once(child, "exit");
   child.kill("SIGTERM");
@@ -62,7 +83,6 @@ test("the server logs its address once listening, serves gateways and exits 0 on
 
 test("protocol replicas each log their address and serve the gateway endpoints over the one store", { timeout: 10000 }, async () => {
   const child = start({ KAIAK_SAMPLE_CONFIG: configFile(), KAIAK_SAMPLE_PROTOCOL_PORTS: "0,0" });
-  const headers = { authorization: `Bearer ${TOKEN}`, "kaiak-protocol": "5", "kaiak-instance": "gw-1" };
   const urls: string[] = [];
   assert.ok(child.stdout);
   for await (const line of createInterface({ input: child.stdout })) {
@@ -70,13 +90,9 @@ test("protocol replicas each log their address and serve the gateway endpoints o
     if (urls.length === 3) break;
   }
   assert.equal(new Set(urls).size, 3);
-  const epochs = new Set<string>();
-  for (const url of urls) {
-    const response = await fetch(`${url}/v1/config`, { headers });
-    assert.equal(response.status, 200);
-    epochs.add(((await response.json()) as { config_epoch: string }).config_epoch);
-  }
-  assert.equal(epochs.size, 1, "one store behind every port");
+  const hashes = new Set<string>();
+  for (const url of urls) hashes.add(await firstConfigHash(url));
+  assert.equal(hashes.size, 1, "one store behind every port: every port serves its current config");
 
   const exited = once(child, "exit");
   child.kill("SIGTERM");

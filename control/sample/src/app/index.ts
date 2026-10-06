@@ -52,8 +52,8 @@ const IN_MEMORY_WARNING =
 
 // Builds the app. The config file is first read when the app becomes ready (before it
 // listens), and watched from then until it closes. A file that is missing or invalid
-// at startup does not stop the app: gateways get 503 config-unavailable until the file
-// is fixed.
+// at startup does not stop the app: gateway streams stay open with no config until
+// the file is fixed.
 export function createSampleApp(options: SampleAppOptions): SampleApp {
   const store = createMemoryStore();
   const app = Fastify({ logger: options.logger });
@@ -105,11 +105,11 @@ function createCore(store: ControlPlaneStore, token: string, log: FastifyBaseLog
 
 function logReload(log: FastifyBaseLogger, run: ReloadRun): void {
   if (run.ok && run.outcome === "published") {
-    log.info({ trigger: run.trigger, version: run.version }, `config file published as version ${run.version}`);
+    log.info({ trigger: run.trigger, configHash: run.hash }, "config file published");
   } else if (run.ok) {
-    log.info({ trigger: run.trigger, version: run.version }, `config file unchanged; version ${run.version} stays`);
+    log.info({ trigger: run.trigger, configHash: run.hash }, "config file unchanged; the current config stays");
   } else {
-    log.error({ trigger: run.trigger, rejection: run.error }, `config file rejected (${run.error.code}): ${run.error.message}; current version stays`);
+    log.error({ trigger: run.trigger, rejection: run.error }, `config file rejected (${run.error.code}): ${run.error.message}; the current config stays`);
   }
 }
 

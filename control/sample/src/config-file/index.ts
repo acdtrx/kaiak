@@ -1,8 +1,8 @@
-// The sample's config source: one JSON file, read and published as a new config
-// version. Reloading is an invocable run (startup, the file watcher and tests are its
-// triggers); every run records its trigger, time and result. A file that fails to
-// read, parse or validate is rejected: the current version stays, and the failure is
-// kept until a later run succeeds.
+// The sample's config source: one JSON file, read and published as the current config.
+// Reloading is an invocable run (startup, the file watcher and tests are its triggers);
+// every run records its trigger, time and result. A file that fails to read, parse or
+// validate is rejected: the current config stays, and the failure is kept until a
+// later run succeeds.
 
 import { watch } from "node:fs";
 import type { FSWatcher } from "node:fs";
@@ -16,10 +16,11 @@ export type ConfigFileError =
   | { code: "json-invalid"; message: string }
   | { code: "config-invalid"; message: string; issues: ConfigIssue[] };
 
-// "unchanged": the file holds the document last published from it, so no new version
-// is made — editors and `touch` rewrite files without changing them.
+// "unchanged": the file holds the document last published from it, so nothing is
+// published — editors and `touch` rewrite files without changing them. `hash` is the
+// current config's config_hash.
 export type ReloadRun =
-  | { trigger: string; at: number; ok: true; outcome: "published" | "unchanged"; version: number }
+  | { trigger: string; at: number; ok: true; outcome: "published" | "unchanged"; hash: string }
   | { trigger: string; at: number; ok: false; error: ConfigFileError };
 
 export type FailedReloadRun = ReloadRun & { ok: false };
@@ -74,8 +75,8 @@ export function createConfigFile(options: ConfigFileOptions): ConfigFile {
   const filePath = path.resolve(options.path);
   let lastRun: ReloadRun | undefined;
   let lastFailure: FailedReloadRun | undefined;
-  // The document last published from the file (as JSON text) and its version.
-  let lastPublished: { text: string; version: number } | undefined;
+  // The document last published from the file (as JSON text) and its config_hash.
+  let lastPublished: { text: string; hash: string } | undefined;
   let queue: Promise<unknown> = Promise.resolve();
   let watcher: FSWatcher | undefined;
   let debounce: NodeJS.Timeout | undefined;
@@ -96,15 +97,15 @@ export function createConfigFile(options: ConfigFileOptions): ConfigFile {
     }
     const canonical = JSON.stringify(doc);
     if (lastPublished?.text === canonical) {
-      return { trigger, at: clock(), ok: true, outcome: "unchanged", version: lastPublished.version };
+      return { trigger, at: clock(), ok: true, outcome: "unchanged", hash: lastPublished.hash };
     }
     const result = await controlPlane.publishConfig(doc);
     if (!result.ok) {
       const count = result.issues.length;
       return failed({ code: "config-invalid", message: `${count} issue${count === 1 ? "" : "s"}`, issues: result.issues });
     }
-    lastPublished = { text: canonical, version: result.published.version };
-    return { trigger, at: clock(), ok: true, outcome: "published", version: result.published.version };
+    lastPublished = { text: canonical, hash: result.published.hash };
+    return { trigger, at: clock(), ok: true, outcome: "published", hash: result.published.hash };
   };
 
   const record = (run: ReloadRun): ReloadRun => {

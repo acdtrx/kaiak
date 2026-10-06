@@ -3,7 +3,7 @@
 // goes through `html`, which escapes it.
 
 import { resolveScopes } from "kaiak-control";
-import type { Config, ControlPlane, DeploymentStatus, GatewayStatus, GatewayView, Limit, ReceivedRecord, ResolvedScope, StoredConfig, Totals } from "kaiak-control";
+import type { Config, ControlPlane, DeploymentStatus, GatewayStatus, GatewayView, Limit, CurrentConfig, ReceivedRecord, ResolvedScope, Totals } from "kaiak-control";
 
 import type { ConfigFileState } from "../config-file/index.ts";
 
@@ -17,7 +17,7 @@ export const SECTION_IDS: readonly SectionId[] = ["gateways", "config", "totals"
 
 // What the sections read.
 export interface PageSources {
-  core: Pick<ControlPlane, "currentConfig" | "configEpoch" | "gateways" | "totals" | "recentRecords">;
+  core: Pick<ControlPlane, "currentConfig" | "gateways" | "totals" | "recentRecords">;
   configFile: () => ConfigFileState;
   // Milliseconds since the epoch.
   clock: () => number;
@@ -40,7 +40,7 @@ export function renderSection(id: SectionId, sources: PageSources): Promise<Mark
 // ---- Gateways
 
 async function renderGateways({ core, clock }: PageSources): Promise<Markup> {
-  const [gateways, current, epoch] = await Promise.all([core.gateways(), core.currentConfig(), core.configEpoch()]);
+  const [gateways, current] = await Promise.all([core.gateways(), core.currentConfig()]);
   const now = clock();
   const live = gateways.filter((gateway) => gateway.live).length;
   const heading = html`<h2>Gateways <span class="muted">${live} live of ${gateways.length}</span></h2>`;
@@ -48,19 +48,19 @@ async function renderGateways({ core, clock }: PageSources): Promise<Markup> {
   return html`${heading}
 <div class="scroll"><table>
 <thead><tr><th>Instance</th><th>State</th><th>Live</th><th>Config</th><th>Serving</th><th>Last report</th><th>Started</th><th>Conflict</th></tr></thead>
-<tbody>${gateways.map((gateway) => gatewayRow(gateway, current, epoch, now))}</tbody>
+<tbody>${gateways.map((gateway) => gatewayRow(gateway, current, now))}</tbody>
 </table></div>
 ${gateways.map((gateway) => routingDetail(gateway, now))}`;
 }
 
-function gatewayRow(gateway: GatewayView, current: StoredConfig | undefined, epoch: string, now: number): Markup {
+function gatewayRow(gateway: GatewayView, current: CurrentConfig | undefined, now: number): Markup {
   const { status } = gateway;
   const started = parseTimestamp(status.started_at);
   return html`<tr>
 <td class="id">${gateway.instance}</td>
 <td><span class="tag state-${status.state}">${status.state}</span></td>
 <td>${gateway.live ? html`<span class="tag ok">live</span>` : html`<span class="tag warn">expired</span>`}</td>
-<td>${appliedConfig(gateway, current, epoch)}</td>
+<td>${appliedConfig(gateway, current)}</td>
 <td>${servingSummary(status)}</td>
 <td>${timeAgo(gateway.receivedAt, now)}</td>
 <td>${started === undefined ? status.started_at : formatAbsolute(started)}</td>
@@ -68,20 +68,23 @@ function gatewayRow(gateway: GatewayView, current: StoredConfig | undefined, epo
 </tr>`;
 }
 
-// The gateway's applied config against this store's current one. A version compares
-// only within its epoch: a gateway running another store's config (its last-known-good
-// copy from before a restart of the control plane) is flagged whatever its number.
-function appliedConfig({ status }: GatewayView, current: StoredConfig | undefined, epoch: string): Markup {
-  const applied = status.applied_config_version;
-  const version =
+// The gateway's applied config against the current one, by config_hash: a gateway
+// running anything else (a config it was sent before, its last-known-good copy) is
+// flagged as not current.
+function appliedConfig({ status }: GatewayView, current: CurrentConfig | undefined): Markup {
+  const applied = status.applied_config_hash;
+  const shown =
     applied === null
       ? html`<span class="muted">none applied</span>`
-      : status.applied_config_epoch !== epoch
-        ? html`v${applied} <span class="tag warn">from another store</span>`
-        : html`v${applied}${current !== undefined && applied !== current.version && html` <span class="tag warn">behind v${current.version}</span>`}`;
+      : html`<code>${shortHash(applied)}</code>${current !== undefined && applied !== current.hash && html` <span class="tag warn">not current</span>`}`;
   const rejection = status.last_rejection;
-  if (!rejection) return version;
-  return html`${version}<br><span class="tag bad">rejected v${rejection.version}</span> ${rejection.codes.join(", ")}`;
+  if (!rejection) return shown;
+  return html`${shown}<br><span class="tag bad">rejected <code>${shortHash(rejection.config_hash)}</code></span> ${rejection.codes.join(", ")}`;
+}
+
+// The first 12 hex digits of a config_hash: enough to tell configs apart on the page.
+function shortHash(hash: string): string {
+  return hash.slice(0, 12);
 }
 
 // One line per gateway: requests in flight and queued, circuits open and half-open;
@@ -151,12 +154,12 @@ async function renderConfig({ core, configFile, clock }: PageSources): Promise<M
   const file = configFile();
   const now = clock();
   const failure = file.lastFailure;
-  const heading = html`<h2>Config ${current && html`<span class="muted">v${current.version}</span>`}</h2>`;
-  const source = html`<p>From <code>${file.path}</code>${current && html`; v${current.version} published ${timeAgo(current.publishedAt, now)}`}.</p>`;
+  const heading = html`<h2>Config ${current && html`<span class="muted"><code>${shortHash(current.hash)}</code></span>`}</h2>`;
+  const source = html`<p>From <code>${file.path}</code>${current && html`; published ${timeAgo(current.publishedAt, now)}`}.</p>`;
   const rejected =
     failure &&
     html`<div class="error"><strong>The latest edit was rejected (${failure.error.code})</strong> — ${failure.trigger}, ${timeAgo(failure.at, now)}.
-${current ? html`Gateways keep v${current.version}.` : html`Nothing is published: gateways get 503 until the file is fixed.`}
+${current ? html`Gateways keep the current config.` : html`Nothing is published: gateways wait for a config until the file is fixed.`}
 <p>${failure.error.message}</p>
 ${failure.error.code === "config-invalid" && html`<ul>${failure.error.issues.map((issue) => html`<li><code>${issue.path || "/"}</code> ${issue.code}: ${issue.message}</li>`)}</ul>`}</div>`;
   if (!current) return html`${heading}${source}${rejected}<p class="muted">No config published yet.</p>`;

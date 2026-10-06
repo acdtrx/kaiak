@@ -7,7 +7,7 @@ import path from "node:path";
 import { afterEach, test } from "node:test";
 
 import Fastify from "fastify";
-import type { Config, GatewayView, ReceivedRecord, StoredConfig, Totals, UsageRecord } from "kaiak-control";
+import type { Config, CurrentConfig, GatewayView, ReceivedRecord, Totals, UsageRecord } from "kaiak-control";
 
 import type { ConfigFileState } from "../config-file/index.ts";
 
@@ -48,8 +48,11 @@ function fixtureRecords(): ReceivedRecord[] {
   ];
 }
 
-// The store's config epoch; TOTALS count in it.
-const STORE_EPOCH = "e".repeat(32);
+// config_hash values: the current config's, an earlier config's, and one no config of
+// this control plane has (a last-known-good copy from before it).
+const CURRENT_HASH = "7".repeat(64);
+const EARLIER_HASH = "6".repeat(64);
+const OTHER_HASH = "f".repeat(64);
 
 const GATEWAYS: GatewayView[] = [
   {
@@ -59,8 +62,7 @@ const GATEWAYS: GatewayView[] = [
       protocol_version: 5,
       state: "ready",
       started_at: "2026-09-24T09:58:12.5Z",
-      applied_config_version: 7,
-      applied_config_epoch: STORE_EPOCH,
+      applied_config_hash: CURRENT_HASH,
       last_rejection: null,
       backends: {
         "vllm-a": { in_flight: 3, max_in_flight: 4, deployments: { "Qwen/Qwen3-32B": { circuit: "closed" } } },
@@ -81,9 +83,8 @@ const GATEWAYS: GatewayView[] = [
       protocol_version: 5,
       state: "draining",
       started_at: "2026-09-24T08:00:00Z",
-      applied_config_version: 6,
-      applied_config_epoch: STORE_EPOCH,
-      last_rejection: { version: 7, codes: ["key-group-unknown", EVIL] },
+      applied_config_hash: EARLIER_HASH,
+      last_rejection: { config_hash: CURRENT_HASH, codes: ["key-group-unknown", EVIL] },
       backends: { "vllm-a": { in_flight: 0, deployments: {} } },
       models: {},
     },
@@ -92,16 +93,14 @@ const GATEWAYS: GatewayView[] = [
     conflict: { reason: "started-at-alternating", detectedAt: NOW - 50_000 },
   },
   {
-    // Another store's version 7 (a last-known-good copy from before the control
-    // plane restarted): the same number as the current config, another config.
+    // A config this control plane does not hold (a last-known-good copy from before it).
     instance: "gw-3",
     status: {
       instance: "gw-3",
       protocol_version: 5,
       state: "ready",
       started_at: "2026-09-24T07:00:00Z",
-      applied_config_version: 7,
-      applied_config_epoch: "f".repeat(32),
+      applied_config_hash: OTHER_HASH,
       last_rejection: null,
       backends: {
         "llama-embed": { in_flight: 0, deployments: { "/models/qwen3-embedding-0.6b-q8_0.gguf": { circuit: "half_open", opened_at: "2026-09-24T10:29:00Z" } } },
@@ -115,9 +114,6 @@ const GATEWAYS: GatewayView[] = [
 
 // Used amounts for three of the config's counted limits; the rest have used nothing.
 const TOTALS: Totals = {
-  revision: 4,
-  config_epoch: STORE_EPOCH,
-  config_version: 7,
   live_gateways: 1,
   counted_through: null,
   windows: [
@@ -142,11 +138,10 @@ const FILE_STATE: ConfigFileState = {
   },
 };
 
-function fakeCore(published: StoredConfig | undefined): StatusPageOptions["controlPlane"] {
+function fakeCore(published: CurrentConfig | undefined): StatusPageOptions["controlPlane"] {
   const never = () => () => {};
   return {
     currentConfig: async () => published,
-    configEpoch: async () => STORE_EPOCH,
     gateways: async () => GATEWAYS,
     totals: async () => (published ? TOTALS : undefined),
     recentRecords: async () => (published ? fixtureRecords() : []),
@@ -162,7 +157,7 @@ afterEach(async () => {
   for (const close of closers.splice(0)) await close();
 });
 
-async function fetchPage(published: StoredConfig | undefined, fileState: ConfigFileState = FILE_STATE) {
+async function fetchPage(published: CurrentConfig | undefined, fileState: ConfigFileState = FILE_STATE) {
   const app = Fastify();
   closers.push(() => app.close());
   registerStatusPage(app, { controlPlane: fakeCore(published), configFile: () => fileState, clock: () => NOW });
@@ -171,7 +166,7 @@ async function fetchPage(published: StoredConfig | undefined, fileState: ConfigF
   return response;
 }
 
-const PUBLISHED: StoredConfig = { version: 7, config: fixtureConfig(), publishedAt: NOW - 3_600_000 };
+const PUBLISHED: CurrentConfig = { config: fixtureConfig(), hash: CURRENT_HASH, publishedAt: NOW - 3_600_000, sequence: 7 };
 
 // The part of the page between two section tags.
 function section(page: string, id: string): string {
@@ -190,17 +185,19 @@ test("the page is HTML with a policy that allows only its own inline style and s
   assert.match(response.body, /No authentication: this page is for local and demo use/);
 });
 
-test("gateways: state, live or expired, applied version or rejection, serving summary, times, conflict", async () => {
+test("gateways: state, live or expired, applied config or rejection by hash, serving summary, times, conflict", async () => {
   const gateways = section((await fetchPage(PUBLISHED)).body, "gateways");
   assert.match(gateways, /1 live of 3/);
   assert.match(
     gateways,
-    /gw-1[\s\S]*ready[\s\S]*live[\s\S]*v7[\s\S]*6 in flight · <span class="tag warn">3 queued<\/span> · <span class="tag bad">2 circuits open<\/span>[\s\S]*2 s ago[\s\S]*2026-09-24 09:58:12 UTC/,
+    /gw-1[\s\S]*ready[\s\S]*live[\s\S]*<code>777777777777<\/code><\/td>[\s\S]*6 in flight · <span class="tag warn">3 queued<\/span> · <span class="tag bad">2 circuits open<\/span>[\s\S]*2 s ago[\s\S]*2026-09-24 09:58:12 UTC/,
   );
-  assert.match(gateways, /gw-2[\s\S]*draining[\s\S]*expired[\s\S]*v6[\s\S]*behind v7[\s\S]*rejected v7<\/span> key-group-unknown[\s\S]*idle/);
+  assert.match(
+    gateways,
+    /gw-2[\s\S]*draining[\s\S]*expired[\s\S]*<code>666666666666<\/code> <span class="tag warn">not current<\/span><br><span class="tag bad">rejected <code>777777777777<\/code><\/span> key-group-unknown[\s\S]*idle/,
+  );
   assert.match(gateways, /conflict<\/span> started-at-alternating/);
-  // Versions compare within their epoch: another store's v7 is not the current v7.
-  assert.match(gateways, /gw-3[\s\S]*v7 <span class="tag warn">from another store<\/span>[\s\S]*<span class="tag warn">1 circuit half-open<\/span>/);
+  assert.match(gateways, /gw-3[\s\S]*<code>ffffffffffff<\/code> <span class="tag warn">not current<\/span>[\s\S]*<span class="tag warn">1 circuit half-open<\/span>/);
 });
 
 // The part of the gateways section detailing one gateway's backends and queues.
@@ -236,11 +233,12 @@ test("gateways: per gateway, backends with in flight against the cap, circuits, 
   );
 });
 
-test("config: version and publish time, the file's rejection with its issues, a summary without hashes", async () => {
+test("config: its hash and publish time, the file's rejection with its issues, a summary without key hashes", async () => {
   const config = section((await fetchPage(PUBLISHED)).body, "config");
-  assert.match(config, /v7 published <time datetime="2026-09-24T09:30:00.000Z" data-relative>1 h ago<\/time>/);
+  assert.match(config, /<h2>Config <span class="muted"><code>777777777777<\/code><\/span><\/h2>/);
+  assert.match(config, /published <time datetime="2026-09-24T09:30:00.000Z" data-relative>1 h ago<\/time>/);
   assert.match(config, /The latest edit was rejected \(config-invalid\)<\/strong> — file-changed/);
-  assert.match(config, /Gateways keep v7/);
+  assert.match(config, /Gateways keep the current config/);
   assert.match(config, /<code>\/keys\/k-new\/group<\/code> key-group-unknown/);
   assert.match(config, /3 backends · 5 models · 7 keys · 8 groups/);
   assert.match(config, /qwen3-32b<\/span> → vllm-a\/Qwen\/Qwen3-32B/);
@@ -280,7 +278,7 @@ test("config: before any publish the page says so, and the startup rejection sho
   const state: ConfigFileState = { ...FILE_STATE, lastFailure: { trigger: "startup", at: NOW, ok: false, error: { code: "json-invalid", message: "Unexpected token" } } };
   const page = (await fetchPage(undefined, state)).body;
   const config = section(page, "config");
-  assert.match(config, /rejected \(json-invalid\)[\s\S]*Nothing is published: gateways get 503/);
+  assert.match(config, /rejected \(json-invalid\)[\s\S]*Nothing is published: gateways wait for a config until the file is fixed/);
   assert.match(config, /No config published yet/);
   assert.match(section(page, "totals"), /No config published yet/);
   assert.match(section(page, "usage"), /No usage received yet/);

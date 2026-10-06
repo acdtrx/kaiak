@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, watch, writeFileSync } from "node:fs";
 import type { FSWatcher } from "node:fs";
@@ -19,6 +20,12 @@ function configText(n: number): string {
   const config = JSON.parse(readFileSync(MINIMAL, "utf8")) as { models: { llama: { metadata: { context_length: number } } } };
   config.models.llama.metadata.context_length = 1000 + n;
   return JSON.stringify(config, null, 2);
+}
+
+// The config_hash configText(n) is published under: SHA-256 of the document as the
+// control plane writes it.
+function hashOf(n: number): string {
+  return createHash("sha256").update(JSON.stringify(JSON.parse(configText(n)))).digest("hex");
 }
 
 interface Fixture {
@@ -115,8 +122,8 @@ async function startWatchingLive(fixture: Fixture): Promise<void> {
   }
 }
 
-const publishedAs = (version: number) => (run: ReloadRun) =>
-  run.trigger === WATCH_TRIGGER && run.ok && run.outcome === "published" && run.version === version;
+const publishedAs = (n: number) => (run: ReloadRun) =>
+  run.trigger === WATCH_TRIGGER && run.ok && run.outcome === "published" && run.hash === hashOf(n);
 const failedWith = (code: string) => (run: ReloadRun) =>
   run.trigger === WATCH_TRIGGER && !run.ok && run.error.code === code;
 
@@ -126,18 +133,18 @@ test("a reload publishes the file and records its trigger, time and result", asy
   assert.equal(run.ok, true);
   assert.equal(run.trigger, "manual");
   assert.equal(typeof run.at, "number");
-  assert.ok(run.ok && run.outcome === "published" && run.version === 1);
-  assert.equal((await controlPlane.currentConfig())?.version, 1);
+  assert.ok(run.ok && run.outcome === "published" && run.hash === hashOf(1));
+  assert.equal((await controlPlane.currentConfig())?.hash, hashOf(1));
   assert.deepEqual(configFile.state().lastRun, run);
   assert.equal(configFile.state().lastFailure, undefined);
 });
 
-test("reloading an unchanged file makes no new version", async () => {
+test("reloading an unchanged file publishes nothing", async () => {
   const { configFile, controlPlane } = setUp(configText(1));
   await configFile.reload("manual");
   const again = await configFile.reload("manual");
-  assert.ok(again.ok && again.outcome === "unchanged" && again.version === 1);
-  assert.equal((await controlPlane.currentConfig())?.version, 1);
+  assert.ok(again.ok && again.outcome === "unchanged" && again.hash === hashOf(1));
+  assert.equal((await controlPlane.currentConfig())?.hash, hashOf(1));
 });
 
 test("each failure kind is rejected, kept, and cleared by the next good run", async () => {
@@ -159,7 +166,7 @@ test("each failure kind is rejected, kept, and cleared by the next good run", as
   assert.ok(!invalid.ok && invalid.error.code === "config-invalid");
   assert.ok(invalid.error.code === "config-invalid" && invalid.error.issues.length > 0);
   assert.deepEqual(configFile.state().lastFailure, invalid);
-  assert.equal((await controlPlane.currentConfig())?.version, 1, "the current version stays");
+  assert.equal((await controlPlane.currentConfig())?.hash, hashOf(1), "the current config stays");
 
   // Back to the published document: nothing new to publish, but the failure is over.
   writeFileSync(file, configText(1));
@@ -168,7 +175,7 @@ test("each failure kind is rejected, kept, and cleared by the next good run", as
   assert.equal(configFile.state().lastFailure, undefined);
 });
 
-test("the watcher publishes an edit as a new version", { timeout: 5000 }, async () => {
+test("the watcher publishes an edit as the current config", { timeout: 5000 }, async () => {
   const fixture = setUp(configText(1));
   await startWatchingLive(fixture);
   await fixture.configFile.reload("startup");
@@ -185,10 +192,10 @@ test("the watcher sees an edit saved by renaming a new file over the old one", {
   await startWatchingLive(fixture);
   await fixture.configFile.reload("startup");
 
-  for (const version of [2, 3]) {
-    const published = fixture.nextRun(publishedAs(version));
-    const temp = path.join(fixture.dir, `.config.json.${version}.tmp`);
-    writeFileSync(temp, configText(version));
+  for (const n of [2, 3]) {
+    const published = fixture.nextRun(publishedAs(n));
+    const temp = path.join(fixture.dir, `.config.json.${n}.tmp`);
+    writeFileSync(temp, configText(n));
     renameSync(temp, fixture.file);
     await published;
   }
@@ -203,7 +210,7 @@ test("the watcher keeps an invalid edit out and exposes its error until a good e
   writeFileSync(fixture.file, "{ broken");
   const run = await rejected;
   assert.deepEqual(fixture.configFile.state().lastFailure, run);
-  assert.equal((await fixture.controlPlane.currentConfig())?.version, 1);
+  assert.equal((await fixture.controlPlane.currentConfig())?.hash, hashOf(1));
 
   const published = fixture.nextRun(publishedAs(2));
   writeFileSync(fixture.file, configText(2));
@@ -227,7 +234,7 @@ test("the watcher sees a projected volume's atomic symlink swap and publishes it
   await fixture.configFile.reload("startup");
   assert.equal((await fixture.controlPlane.currentConfig())?.config.models["llama"]?.metadata.context_length, 1000);
 
-  const published = fixture.nextRun(publishedAs(2));
+  const published = fixture.nextRun(publishedAs(1000));
   project("..2026_09_25_00_01_00.2", 1000);
   symlinkSync("..2026_09_25_00_01_00.2", path.join(fixture.dir, "..data_tmp"));
   renameSync(path.join(fixture.dir, "..data_tmp"), path.join(fixture.dir, "..data"));
@@ -238,7 +245,7 @@ test("the watcher sees a projected volume's atomic symlink swap and publishes it
   // Every other run the swap's events caused found the content unchanged.
   fixture.configFile.stopWatching();
   const settled = await fixture.configFile.reload("check");
-  assert.ok(settled.ok && settled.outcome === "unchanged" && settled.version === 2);
+  assert.ok(settled.ok && settled.outcome === "unchanged" && settled.hash === hashOf(1000));
   assert.equal(fixture.runs.filter((run) => run.ok && run.outcome === "published").length, 2);
 });
 
@@ -261,12 +268,12 @@ test("the watcher reloads on the entries of a projected volume's swap", { timeou
   symlinkSync(path.basename(stamp2), path.join(fixture.dir, "..data_tmp"));
   renameSync(path.join(fixture.dir, "..data_tmp"), path.join(fixture.dir, "..data"));
   rmSync(stamp1, { recursive: true });
-  const published = fixture.nextRun(publishedAs(2));
+  const published = fixture.nextRun(publishedAs(1000));
   for (const name of [path.basename(stamp2), "..data_tmp", "..data", path.basename(stamp1)]) emit("rename", name);
   await published;
 
   const unchanged = fixture.nextRun((run) => run.trigger === WATCH_TRIGGER);
   emit("rename", "..data");
   const again = await unchanged;
-  assert.ok(again.ok && again.outcome === "unchanged" && again.version === 2);
+  assert.ok(again.ok && again.outcome === "unchanged" && again.hash === hashOf(1000));
 });

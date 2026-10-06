@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -27,6 +28,30 @@ interface Fixture extends SampleApp {
   logs: LogLine[];
   // Resolves with the first line, logged from now on, that matches.
   nextLog(match: (line: LogLine) => boolean): Promise<LogLine>;
+}
+
+// The config_hash configText(n) is published under.
+function hashOf(n: number): string {
+  return createHash("sha256").update(JSON.stringify(JSON.parse(configText(n)))).digest("hex");
+}
+
+// Reads a gateway stream until its first config event and returns that event's data.
+async function firstConfigEvent(url: string, cleanups: (() => void)[]): Promise<{ config_hash: string; config: { models: { llama: { metadata: { context_length: number } } } } }> {
+  const abort = new AbortController();
+  cleanups.push(() => abort.abort());
+  const response = await fetch(url, { headers: GATEWAY_HEADERS, signal: abort.signal });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("kaiak-protocol"), "5");
+  assert.ok(response.body);
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let text = "";
+  for (;;) {
+    const match = /event: config\ndata: (.*)\n\n/.exec(text);
+    if (match) return JSON.parse(match[1] ?? "");
+    const chunk = await reader.read();
+    assert.ok(!chunk.done, "the stream stayed open");
+    text += chunk.value;
+  }
 }
 
 const cleanups: (() => Promise<void> | void)[] = [];
@@ -106,16 +131,16 @@ test("the app warns at startup that its state lives in memory and resets on rest
   assert.match(String(warning["msg"]), /budgets, usage totals and usage batch de-duplication reset when this process restarts — the sample is not a billing system/);
 });
 
-test("the app serves the config file to gateways through kaiak-control's plugin", async () => {
+test("the app serves the config file to gateways through kaiak-control's plugin", { timeout: 5000 }, async () => {
   const { app } = setUp(configText(1));
-  const response = await app.inject({ method: "GET", url: "/v1/config", headers: GATEWAY_HEADERS });
-  assert.equal(response.statusCode, 200);
-  assert.equal(response.headers["kaiak-protocol"], "5");
-  const snapshot = response.json<{ version: number; config: { models: { llama: { metadata: { context_length: number } } } } }>();
-  assert.equal(snapshot.version, 1);
-  assert.equal(snapshot.config.models.llama.metadata.context_length, 1001);
+  await app.listen({ host: "127.0.0.1", port: 0 });
+  const address = app.server.address();
+  assert.ok(address && typeof address === "object");
+  const event = await firstConfigEvent(`http://127.0.0.1:${address.port}/v1/stream`, cleanups as (() => void)[]);
+  assert.equal(event.config_hash, hashOf(1));
+  assert.equal(event.config.models.llama.metadata.context_length, 1001);
 
-  const refused = await app.inject({ method: "GET", url: "/v1/config", headers: { ...GATEWAY_HEADERS, authorization: "Bearer wrong" } });
+  const refused = await app.inject({ method: "GET", url: "/v1/stream", headers: { ...GATEWAY_HEADERS, authorization: "Bearer wrong" } });
   assert.equal(refused.statusCode, 401);
 });
 
@@ -126,12 +151,7 @@ test("protocol replicas share the app's store: a batch counts once for all, a pu
   assert.ok(one && two);
   await Promise.all([one.app.ready(), two.app.ready()]);
 
-  const snapshot = await one.app.inject({ method: "GET", url: "/v1/config", headers: GATEWAY_HEADERS });
-  assert.equal(snapshot.statusCode, 200);
-  assert.deepEqual(
-    { epoch: snapshot.json<{ config_epoch: string }>().config_epoch, version: snapshot.json<{ version: number }>().version },
-    { epoch: await fixture.controlPlane.configEpoch(), version: 1 },
-  );
+  for (const replica of [one, two]) assert.equal((await replica.controlPlane.currentConfig())?.hash, hashOf(1));
 
   const batch = readFileSync(USAGE_BATCH, "utf8");
   const post = (replica: { app: Fixture["app"] }) =>
@@ -145,10 +165,10 @@ test("protocol replicas share the app's store: a batch counts once for all, a pu
 
   writeFileSync(fixture.file, configText(2));
   await fixture.configFile.reload("test");
-  for (const replica of [one, two]) assert.equal((await replica.controlPlane.currentConfig())?.version, 2);
+  for (const replica of [one, two]) assert.equal((await replica.controlPlane.currentConfig())?.hash, hashOf(2));
 });
 
-test("an edit to the file is pushed on the gateway stream as a new version", { timeout: 5000 }, async () => {
+test("an edit to the file is pushed on the gateway stream as the current config", { timeout: 5000 }, async () => {
   const fixture = setUp(configText(1));
   await fixture.app.listen({ host: "127.0.0.1", port: 0 });
   await watchLive(fixture);
@@ -157,8 +177,7 @@ test("an edit to the file is pushed on the gateway stream as a new version", { t
 
   const abort = new AbortController();
   cleanups.push(() => abort.abort());
-  const epoch = await fixture.controlPlane.configEpoch();
-  const response = await fetch(`http://127.0.0.1:${address.port}/v1/stream?since=1&config_epoch=${epoch}`, {
+  const response = await fetch(`http://127.0.0.1:${address.port}/v1/stream`, {
     headers: GATEWAY_HEADERS,
     signal: abort.signal,
   });
@@ -168,38 +187,38 @@ test("an edit to the file is pushed on the gateway stream as a new version", { t
 
   writeFileSync(fixture.file, configText(2));
   let text = "";
+  // The stream's first config event is the current config on connect (config 1); the
+  // edit is the next one.
   for (;;) {
-    const match = /event: config\nid: (\d+)\ndata: (.*)\n\n/.exec(text);
-    if (match) {
-      assert.equal(match[1], "2");
-      const snapshot = JSON.parse(match[2] ?? "") as { version: number; config: { models: { llama: { metadata: { context_length: number } } } } };
-      assert.equal(snapshot.version, 2);
-      assert.equal(snapshot.config.models.llama.metadata.context_length, 1002);
+    const events = [...text.matchAll(/event: config\ndata: (.*)\n\n/g)];
+    const edit = events[1];
+    if (edit) {
+      const event = JSON.parse(edit[1] ?? "") as { config_hash: string; config: { models: { llama: { metadata: { context_length: number } } } } };
+      assert.equal(event.config_hash, hashOf(2));
+      assert.equal(event.config.models.llama.metadata.context_length, 1002);
       break;
     }
     const chunk = await reader.read();
     assert.ok(!chunk.done, "the stream stayed open");
     text += chunk.value;
   }
-  assert.ok(fixture.logs.some((line) => line["msg"] === "config file published as version 2" && line["trigger"] === "file-changed"));
+  assert.ok(fixture.logs.some((line) => line["msg"] === "config file published" && line["configHash"] === hashOf(2) && line["trigger"] === "file-changed"));
 });
 
-test("an invalid file at startup: gateways get 503 until the file is fixed, the error is logged", { timeout: 5000 }, async () => {
+test("an invalid file at startup: nothing is published until the file is fixed, the error is logged", { timeout: 5000 }, async () => {
   const fixture = setUp("{ not json");
-  const unavailable = await fixture.app.inject({ method: "GET", url: "/v1/config", headers: GATEWAY_HEADERS });
-  assert.equal(unavailable.statusCode, 503);
-  assert.equal(unavailable.json<{ error: string }>().error, "config-unavailable");
+  await fixture.app.ready();
+  assert.equal(await fixture.controlPlane.currentConfig(), undefined);
   assert.equal(fixture.configFile.state().lastFailure?.trigger, "startup");
   const logged = fixture.logs.find((line) => line["trigger"] === "startup");
   assert.equal(logged?.["level"], 50, "logged as an error");
   assert.match(String(logged?.["msg"]), /^config file rejected \(json-invalid\)/);
 
   await watchLive(fixture);
-  const published = fixture.nextLog((line) => line["trigger"] === "file-changed" && line["version"] === 1);
+  const published = fixture.nextLog((line) => line["trigger"] === "file-changed" && line["configHash"] === hashOf(1));
   writeFileSync(fixture.file, configText(1));
   await published;
-  const served = await fixture.app.inject({ method: "GET", url: "/v1/config", headers: GATEWAY_HEADERS });
-  assert.equal(served.statusCode, 200);
+  assert.equal((await fixture.controlPlane.currentConfig())?.hash, hashOf(1));
   assert.equal(fixture.configFile.state().lastFailure, undefined);
 });
 
@@ -213,7 +232,7 @@ test("the status page is served without the gateway token and shows a rejected e
   const page = await fetch(`${base}/`);
   assert.equal(page.status, 200);
   const body = await page.text();
-  assert.match(body, /<section id="config"><h2>Config <span class="muted">v1<\/span>/);
+  assert.ok(body.includes(`<section id="config"><h2>Config <span class="muted"><code>${hashOf(1).slice(0, 12)}</code></span>`));
   assert.ok(!body.includes(TOKEN), "the page never holds the gateway token");
 
   const abort = new AbortController();
