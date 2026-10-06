@@ -3,7 +3,7 @@ package server
 // The usage path end to end inside one gateway: a request's record published to the
 // control client's usage batch, the batch sealed, sent and acknowledged by the
 // control plane (fakecontrol), and the limiter settling the request against the
-// totals the ack carries.
+// totals the stream carries once the batch is counted.
 
 import (
 	"bytes"
@@ -34,8 +34,8 @@ type controlledGateway struct {
 	*testGateway
 	cp     *fakecontrol.Server
 	client *control.Client
-	// acks receives every totals update the client hands the limiter.
-	acks chan control.TotalsUpdate
+	// totals receives every totals update the client hands the limiter.
+	totals chan control.TotalsUpdate
 }
 
 const controlToken = "server-test-token"
@@ -49,13 +49,13 @@ func newControlledGateway(t *testing.T, maxRecords int, edit func(doc string) st
 	t.Cleanup(backend.Close)
 	cp := fakecontrol.New(controlToken)
 	t.Cleanup(cp.Close)
+	// Every counted batch pushes the totals that count it, as kaiak-control does.
+	cp.PushTotalsOnChange()
 	doc := testDocWith(backend.URL(), edit)
 	cp.Publish([]byte(doc))
 
 	holder := &config.Holder{}
-	snap := parseTestDoc(t, doc)
-	snap.Version = config.Version{Epoch: cp.ConfigEpoch(), Number: 1} // the published version
-	holder.Swap(snap)
+	holder.Swap(parseTestDoc(t, doc))
 	env := map[string]string{"LOCAL_KEY": localBackendKey, "AZURE_KEY": azureBackendKey}
 	lookupEnv := func(name string) (string, bool) { v, ok := env[name]; return v, ok }
 	var logs bytes.Buffer
@@ -72,7 +72,7 @@ func newControlledGateway(t *testing.T, maxRecords int, edit func(doc string) st
 		connected, last := client.Contact()
 		return limits.Contact{Connected: connected, Last: last, UsageWaitingSince: client.UsageWaitingSince()}
 	}, nil)
-	acks := make(chan control.TotalsUpdate, 64)
+	totals := make(chan control.TotalsUpdate, 64)
 	// The client's own config follower applies into a holder of its own: this
 	// gateway serves the test config, the client only carries usage.
 	applier := config.NewApplier(&config.Holder{}, logger, lookupEnv, nil)
@@ -81,12 +81,17 @@ func newControlledGateway(t *testing.T, maxRecords int, edit func(doc string) st
 		BackoffBase: 10 * time.Millisecond, BackoffCap: 50 * time.Millisecond,
 		OnTotals: func(up control.TotalsUpdate) {
 			limiter.TakeTotals(testLimitsTotals(up.Totals), up.Counted)
-			acks <- up
+			totals <- up
 		}})
 	ctx, cancel := context.WithCancel(context.Background())
 	var running sync.WaitGroup
 	running.Go(func() { client.Run(ctx) })
 	t.Cleanup(func() { cancel(); running.Wait() })
+	select { // totals reach the gateway on its stream: open before any request
+	case <-cp.Connected():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the control client's stream did not connect")
+	}
 
 	providers := provider.NewRegistry(lookupEnv)
 	usage := &usageSink{settled: make(chan accounting.UsageRecord, 64)}
@@ -100,17 +105,13 @@ func newControlledGateway(t *testing.T, maxRecords int, edit func(doc string) st
 	h := NewAPI(holder, drain, NewBodyBudget(DefaultBodyMemory), providers, limiter, router, recorder, metrics.NewOps(reg, router, holder), logger)
 	g := &testGateway{h: h, logs: &logs, log: log, backend: backend, holder: holder, router: router,
 		limiter: limiter, usage: usage, metrics: reg, drain: drain}
-	return &controlledGateway{testGateway: g, cp: cp, client: client, acks: acks}
+	return &controlledGateway{testGateway: g, cp: cp, client: client, totals: totals}
 }
 
 // testLimitsTotals converts the control plane's totals for the limiter, as the
 // binary's wiring does.
-func testLimitsTotals(t *control.Totals) *limits.Totals {
-	if t == nil {
-		return nil
-	}
-	out := &limits.Totals{Config: config.Version{Epoch: t.ConfigEpoch, Number: t.ConfigVersion},
-		LiveGateways: t.LiveGateways}
+func testLimitsTotals(t control.Totals) limits.Totals {
+	out := limits.Totals{LiveGateways: t.LiveGateways}
 	for _, w := range t.Windows {
 		out.Windows = append(out.Windows, limits.PushedWindow{Group: w.Group, Type: w.Type,
 			Start: w.WindowStart, Used: w.Used})
@@ -124,12 +125,12 @@ func (g *controlledGateway) nextCounted(t *testing.T) control.TotalsUpdate {
 	timeout := time.After(10 * time.Second)
 	for {
 		select {
-		case up := <-g.acks:
+		case up := <-g.totals:
 			if up.Counted != 0 {
 				return up
 			}
 		case <-timeout:
-			t.Fatal("no batch acknowledged")
+			t.Fatal("no totals showing a batch counted")
 		}
 	}
 }
@@ -149,7 +150,7 @@ func workloadLimits(limitsJSON string) func(doc string) string {
 }
 
 // H4: the record that fills a batch seals it as the request finishes. Its usage is
-// counted by the control plane (the ack's totals hold it) and must leave the
+// counted by the control plane (the pushed totals hold it) and must leave the
 // gateway's own count in the same step — no later traffic comes to clear it.
 func TestRecordFillingABatchIsCountedOnce(t *testing.T) {
 	g := newControlledGateway(t, 1, workloadLimits(`[{ "type": "tokens_per_hour", "value": 1000 }]`))
@@ -163,7 +164,7 @@ func TestRecordFillingABatchIsCountedOnce(t *testing.T) {
 	}
 	g.nextCounted(t)
 	if got := counterUsed(t, g.testGateway, "eval", config.LimitTokensPerHour); got != 600 {
-		t.Errorf("hour used %d after the ack, want the control plane's 600 and nothing of its own", got)
+		t.Errorf("hour used %d after the push, want the control plane's 600 and nothing of its own", got)
 	}
 	// 400 tokens are left: a request reserving 20 fits.
 	if w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey, body: chatBody}); w.Code != 200 {

@@ -8,23 +8,19 @@ import (
 )
 
 // Control-plane mode (docs/specs/GATEWAY.md, Limits → Control-plane mode). The hour
-// and month windows count the control plane's totals — pushed on the config stream
-// and in every usage ack — plus this gateway's own usage the control plane has not
-// counted yet. That usage is tagged by usage generation: each record carries the
-// generation of the usage batch the control client sealed it in, and TakeTotals drops
-// every generation the control plane has counted, in the same step as it adopts the
-// totals that include it, so nothing is counted twice or dropped in between.
+// and month windows count the control plane's totals — pushed on the config stream —
+// plus this gateway's own usage the control plane has not counted yet. That usage is
+// tagged by usage generation: each record carries the generation of the usage batch
+// the control client sealed it in, and TakeTotals drops every generation the control
+// plane has counted, in the same step as it adopts the totals that include it, so
+// nothing is counted twice or dropped in between.
 //
-// Totals apply only to the config they were computed under: a message whose
-// (config_epoch, config_version) is not the applied config's changes neither the
-// bases nor the own usage — its windows describe another config's limits, and the
-// bases it would replace are the only record of what this config's limits spent. It
-// waits, and applies when its config does.
+// Totals apply whatever config the gateway runs: windows are counted per scope and
+// type whatever the config, so a window means the same under every config, and each
+// one is matched to the counter of its group (or global) and type.
 
 // Totals are the control plane's totals as the limiter takes them.
 type Totals struct {
-	// Config is the config the totals were computed under.
-	Config config.Version
 	// LiveGateways is the live-gateway count per-minute shares divide by; 0 counts
 	// as 1.
 	LiveGateways int64
@@ -44,41 +40,46 @@ type PushedWindow struct {
 	Used int64
 }
 
-// TakeTotals takes one totals message, in one step under the limiter's lock. t, when
-// not nil, is the newest totals: its live-gateway count applies at once (per-minute
-// shares keep what they counted), and its windows become the bases — each hour and
-// month counter's base its pushed window, 0 without one, a window matching no counter
-// ignored — when t was computed under the applied config; otherwise t waits for its
-// config (sync applies it then) and the bases stay. counted, when not 0, is the newest
-// usage generation the message shows counted: it leaves the counters' own usage now
-// when the newest totals are applied (they include it), else once they are. It
-// reports whether t was applied.
-func (l *Limiter) TakeTotals(t *Totals, counted uint64) (applied bool) {
+// TakeTotals takes one totals message, in one step under the limiter's lock: its
+// live-gateway count applies at once (per-minute shares keep what they counted), and
+// its windows become the bases — each hour and month counter's base its pushed window,
+// 0 without one, a window matching no counter ignored. counted, when not 0, is the
+// newest usage generation the message shows counted: it leaves the counters' own
+// usage now, as the totals that include it are applied.
+func (l *Limiter) TakeTotals(t Totals, counted uint64) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.sync()
 	now := l.now()
-	if t != nil {
-		applied = l.applied != nil && t.Config == l.applied.Version
-		if !l.firstClosed {
-			l.firstClosed = true
-			close(l.firstTotals)
-		}
-		l.live = max(t.LiveGateways, 1)
-		l.latest, l.haveLatest = t.Config, true
-		l.waiting = t
-		if applied {
-			l.applyWaitingLocked(now)
-		}
+	if !l.firstClosed {
+		l.firstClosed = true
+		close(l.firstTotals)
+	}
+	l.live = max(t.LiveGateways, 1)
+	l.totalsAt = now
+	l.totalsKnown = true
+	if l.restoredUntagged {
+		// Restored uncounted usage whose batches were no longer spooled at boot: the
+		// control plane counted them (or they were lost), so the first totals applied
+		// hold all of it that will ever be counted.
+		l.restoredUntagged = false
 		for _, c := range l.counters {
-			l.applyLimit(c)
+			if c.w.shared {
+				c.w.counted(0)
+				l.checkCountLocked(c)
+			}
 		}
 	}
-	l.pendingCounted = max(l.pendingCounted, counted)
-	l.retireCountedLocked()
-	l.noteMismatchLocked(now)
+	l.pushed = make(map[counterKey]PushedWindow, len(t.Windows))
+	for _, w := range t.Windows {
+		l.pushed[keyOf(w.Group, config.Limit{Type: w.Type})] = w
+		l.warnAheadLocked(w, now)
+	}
+	for _, c := range l.counters {
+		l.applyLimit(c)
+	}
+	l.retireCountedLocked(counted)
 	l.warnSmallSharesLocked()
-	return applied
 }
 
 // warnSmallSharesLocked logs, once per applied config and live-gateway count, each
@@ -108,32 +109,6 @@ func (l *Limiter) warnSmallSharesLocked() {
 	}
 }
 
-// applyWaitingLocked makes the waiting totals the applied ones. Callers hold l.mu and
-// apply the counters' limits after.
-func (l *Limiter) applyWaitingLocked(now time.Time) {
-	t := l.waiting
-	l.waiting = nil
-	l.totalsAt = now
-	l.totalsKnown = true
-	if l.restoredUntagged {
-		// Restored uncounted usage whose batches were no longer spooled at boot: the
-		// control plane counted them (or they were lost), so the first totals applied
-		// hold all of it that will ever be counted.
-		l.restoredUntagged = false
-		for _, c := range l.counters {
-			if c.w.shared {
-				c.w.counted(0)
-				l.checkCountLocked(c)
-			}
-		}
-	}
-	l.pushed = make(map[counterKey]PushedWindow, len(t.Windows))
-	for _, w := range t.Windows {
-		l.pushed[keyOf(w.Group, config.Limit{Type: w.Type})] = w
-		l.warnAheadLocked(w, now)
-	}
-}
-
 // aheadMargin is how far ahead of the gateway's clock a pushed window may start
 // before it is logged: a control plane whose clock leads by seconds pushes the next
 // window a little early at every boundary, which is harmless.
@@ -152,13 +127,13 @@ func (l *Limiter) warnAheadLocked(w PushedWindow, now time.Time) {
 		"kaiak.limit.type", w.Type, "kaiak.limit.window_start", w.Start.UTC(), "kaiak.gateway_time", now.UTC())...)
 }
 
-// retireCountedLocked drops the generations shown counted from the counters' own
-// usage, when the newest totals are the applied ones. Callers hold l.mu.
-func (l *Limiter) retireCountedLocked() {
-	if l.waiting != nil || l.pendingCounted <= l.counted {
+// retireCountedLocked drops the generations up to counted from the counters' own
+// usage: the totals just applied include them. Callers hold l.mu.
+func (l *Limiter) retireCountedLocked(counted uint64) {
+	if counted <= l.counted {
 		return
 	}
-	l.counted = l.pendingCounted
+	l.counted = counted
 	for _, c := range l.counters {
 		if c.w.shared {
 			c.w.counted(l.counted)
@@ -173,50 +148,12 @@ func (l *Limiter) countedLocked(generation uint64) bool {
 	return l.counted != 0 && generation <= l.counted
 }
 
-// configChangedLocked follows a newly applied config: totals waiting for it apply now.
-// Callers hold l.mu, have rebuilt the counters, and have l.applied set.
-func (l *Limiter) configChangedLocked(now time.Time) {
-	if l.waiting != nil && l.waiting.Config == l.applied.Version {
-		l.applyWaitingLocked(now)
-		for _, c := range l.counters {
-			l.applyLimit(c)
-		}
-		l.retireCountedLocked()
-	}
-	l.noteMismatchLocked(now)
+// configChangedLocked follows a newly applied config: the counters were rebuilt from
+// the pushed windows already (by group or global and type), so only the small-share
+// warning runs again. Callers hold l.mu, have rebuilt the counters, and have l.applied
+// set.
+func (l *Limiter) configChangedLocked() {
 	l.warnSmallSharesLocked()
-}
-
-// noteMismatchLocked tracks whether the newest totals were computed under a config
-// other than the applied one (the control plane counts another config's limits —
-// typically one this gateway rejected), and since when. Callers hold l.mu.
-func (l *Limiter) noteMismatchLocked(now time.Time) {
-	mismatch := l.haveLatest && l.applied != nil && l.latest != l.applied.Version
-	switch {
-	case !mismatch:
-		l.mismatchSince = time.Time{}
-	case l.mismatchSince.IsZero():
-		l.mismatchSince = now
-	}
-}
-
-// mismatchPastGraceLocked reports whether the totals have been for another config for
-// longer than the outage grace: the applied limits' spend is then unknown, as in an
-// outage. Callers hold l.mu and have synced.
-func (l *Limiter) mismatchPastGraceLocked(now time.Time) bool {
-	return !l.mismatchSince.IsZero() && now.Sub(l.mismatchSince) > l.applied.ControlOutageGrace
-}
-
-// ConfigMismatch reports whether the newest totals were computed under a config
-// other than the applied one — typically one this gateway rejected. Once that has
-// lasted past the outage grace, priced USD-limited models are refused as in an
-// outage (docs/specs/GATEWAY.md, Limits → Control-plane mode: totals follow their
-// config). Always false in file mode.
-func (l *Limiter) ConfigMismatch() bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.sync()
-	return !l.mismatchSince.IsZero()
 }
 
 // TotalsAppliedAt is when totals were last applied; false before any.
@@ -282,10 +219,8 @@ func (l *Limiter) outageLocked(now time.Time) bool {
 
 // FirstTotals is closed once the first totals message is taken: the control plane has
 // said what was spent (docs/specs/GATEWAY.md, Control-plane mode → Readiness waits for
-// the first totals). Totals computed under another config than the applied one close
-// it too — the wait for matching ones could last until the operator fixes the
-// config — but they do not end the no-totals refusal (noTotalsLocked). A restored copy
-// of earlier totals does not close it. Never closed in file mode.
+// the first totals). A restored copy of earlier totals does not close it. Never
+// closed in file mode.
 func (l *Limiter) FirstTotals() <-chan struct{} { return l.firstTotals }
 
 // noTotalsLocked reports whether the spend of this gateway's limits is still unknown:

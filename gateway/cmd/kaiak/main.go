@@ -431,12 +431,10 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 			},
 			Observer: metrics.NewUsageDelivery(registry), UsageMemoryBytes: s.usageMemory,
 			OnTotals: func(u control.TotalsUpdate) {
-				applied := limiter.TakeTotals(limitsTotals(u.Totals), u.Counted)
+				limiter.TakeTotals(limitsTotals(u.Totals), u.Counted)
 				// Backend caps are split among the live gateways the totals count.
 				router.SetLiveGateways(limiter.LiveGateways())
-				if applied {
-					saveShared(limiter, dir, logger, "totals")
-				}
+				saveShared(limiter, dir, logger, "totals")
 			}})
 		metrics.RegisterControlState(registry, controlState{client, limiter})
 		// A model's queue starting or ending and a circuit opening or closing are
@@ -457,9 +455,9 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 			// requests admitted during the grace period run on the newest config. It
 			// starts before the listeners: the first totals come on its stream.
 			background.Go(func() { client.Run(bgCtx) })
-			// A seed boot (no control-plane version) serves only free models: no
-			// budget waits for totals.
-			if _, fromControlPlane := client.AppliedVersion(); fromControlPlane {
+			// A seed boot (no config hash) serves only free models: no budget waits
+			// for totals.
+			if _, fromControlPlane := client.AppliedConfigHash(); fromControlPlane {
 				waitFirstTotals(bootCtx, limiter, bootDeadline, logger)
 			}
 		}
@@ -766,7 +764,7 @@ func controlContact(client *control.Client) limits.Contact {
 }
 
 // controlState is the control-plane connection for the metrics: the client's contact
-// and the limiter's outage and config mismatch.
+// and the limiter's outage.
 type controlState struct {
 	client  *control.Client
 	limiter *limits.Limiter
@@ -774,7 +772,6 @@ type controlState struct {
 
 func (s controlState) Contact() (bool, time.Time) { return s.client.Contact() }
 func (s controlState) Outage() bool               { return s.limiter.Outage() }
-func (s controlState) ConfigMismatch() bool       { return s.limiter.ConfigMismatch() }
 func (s controlState) TotalsAppliedAt() (time.Time, bool) {
 	return s.limiter.TotalsAppliedAt()
 }
@@ -820,14 +817,9 @@ func servingStatus(inFlight, queued map[string]int, circuits map[routing.Deploym
 	return out
 }
 
-// limitsTotals converts the control plane's totals for the limiter; nil stays nil
-// (totals older than the ones applied).
-func limitsTotals(t *control.Totals) *limits.Totals {
-	if t == nil {
-		return nil
-	}
-	out := &limits.Totals{Config: config.Version{Epoch: t.ConfigEpoch, Number: t.ConfigVersion},
-		LiveGateways: t.LiveGateways, Windows: make([]limits.PushedWindow, len(t.Windows))}
+// limitsTotals converts the control plane's totals for the limiter.
+func limitsTotals(t control.Totals) limits.Totals {
+	out := limits.Totals{LiveGateways: t.LiveGateways, Windows: make([]limits.PushedWindow, len(t.Windows))}
 	for i, w := range t.Windows {
 		out.Windows[i] = limits.PushedWindow{Group: w.Group, Type: w.Type,
 			Start: w.WindowStart, Used: w.Used}

@@ -851,7 +851,7 @@ func TestSettlementReachesAncestorsOfADeletedGroup(t *testing.T) {
 			l := c.limiter(holder)
 			if mode == "shared" {
 				l, _ = c.shared(holder)
-				l.TakeTotals(&Totals{}, 0)
+				l.TakeTotals(Totals{}, 0)
 			}
 			subject := Subject{Groups: []string{"team", "env", "workload"}, Model: "m1"}
 			res := admitN(t, l, subject, 1, 5000)[0]
@@ -883,7 +883,7 @@ func TestGlobalLimitLinesCarryNoGroup(t *testing.T) {
 	var logs bytes.Buffer
 	cs := &contactState{connected: true, last: clk.t}
 	l := NewShared(holder, clk.now, cs.get, slog.New(slog.NewJSONHandler(&logs, nil)))
-	l.TakeTotals(&Totals{LiveGateways: 4}, 0) // a 15 000 share, below m1's default output
+	l.TakeTotals(Totals{LiveGateways: 4}, 0) // a 15 000 share, below m1's default output
 	var line map[string]any
 	if err := json.Unmarshal(bytes.SplitN(bytes.TrimSpace(logs.Bytes()), []byte("\n"), 2)[0], &line); err != nil {
 		t.Fatalf("decode the share line: %v; %s", err, logs.Bytes())

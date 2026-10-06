@@ -126,30 +126,16 @@ type Limiter struct {
 	pushed map[counterKey]PushedWindow
 	// totalsAt is when totals were last applied; zero before any.
 	totalsAt time.Time
-	// totalsKnown: totals for the applied config were applied or restored since the
-	// start — before that, the hour and month spend is unknown, not zero
-	// (noTotalsLocked). firstTotals is closed, and firstClosed set, when the first
-	// totals are taken, whatever their config (FirstTotals).
+	// totalsKnown: totals were applied or restored since the start — before that, the
+	// hour and month spend is unknown, not zero (noTotalsLocked). firstTotals is
+	// closed, and firstClosed set, when the first totals are taken (FirstTotals).
 	totalsKnown bool
 	firstTotals chan struct{}
 	firstClosed bool
-	// latest is the config the newest totals taken were computed under, applied or
-	// not; haveLatest is false before any.
-	latest     config.Version
-	haveLatest bool
-	// waiting holds the newest totals while they were computed under a config other
-	// than the applied one: they are applied when that config is, and replaced by
-	// newer totals. Nil when the newest totals are applied.
-	waiting *Totals
-	// pendingCounted is the newest usage generation the control plane has shown
-	// counted while the newest totals were not applied; counted is the newest
-	// generation dropped from the counters' own usage — a record of that generation
-	// or an older one settled later is already inside the applied bases.
-	pendingCounted uint64
-	counted        uint64
-	// mismatchSince is when the newest totals and the applied config started to
-	// differ; zero while they agree.
-	mismatchSince time.Time
+	// counted is the newest usage generation dropped from the counters' own usage — a
+	// record of that generation or an older one settled later is already inside the
+	// applied bases.
+	counted uint64
 	// outageSince is when the outage the log announced began (its grace ran out);
 	// zero while none is announced (outageLocked).
 	outageSince time.Time
@@ -229,7 +215,6 @@ func (l *Limiter) sync() {
 		start := time.Now()
 		defer func() { l.observeSync(time.Since(start)) }()
 	}
-	now := l.now()
 	next := make(map[counterKey]*counter, len(l.counters))
 	build := func(group string, limits []config.Limit) []*counter {
 		out := make([]*counter, len(limits))
@@ -258,7 +243,7 @@ func (l *Limiter) sync() {
 	l.counters = next
 	l.applied = snap
 	if l.shared() {
-		l.configChangedLocked(now)
+		l.configChangedLocked()
 	}
 }
 
@@ -433,7 +418,7 @@ func (l *Limiter) Reserve(s Subject, tokens int64) (*Reservation, *Rejection) {
 	counters := l.applicable(s)
 
 	// The outage first: deciding it on every request is what logs its start and end.
-	if l.outageLocked(now) || l.noTotalsLocked() || l.mismatchPastGraceLocked(now) {
+	if l.outageLocked(now) || l.noTotalsLocked() {
 		for _, c := range counters {
 			if c.measure == MeasureCost {
 				return nil, &Rejection{Scope: c.key.scope(), Group: c.key.group, Type: c.limit.Type, Measure: c.measure,

@@ -157,7 +157,7 @@ func (h *harness) usageClient(maxRecords int, tune func(*Options)) (*Client, *te
 			tune(o)
 		}
 	})
-	c.Boot(context.Background())
+	h.boot(c)
 	return c, obs, h.run(c)
 }
 
@@ -245,11 +245,6 @@ func TestUsageBatchesSealAtTheSizeLimit(t *testing.T) {
 	if first.Batch.Epoch != second.Batch.Epoch || first.Batch.Instance != testInstance {
 		t.Errorf("batches %+v and %+v", first.Batch, second.Batch)
 	}
-	for _, want := range []uint64{1, 2} {
-		if u := h.nextTotals(); u.Counted != want || u.Totals == nil || u.Totals.ConfigVersion != 1 {
-			t.Errorf("totals update %+v, want generation %d counted and totals under version 1", u, want)
-		}
-	}
 	// The seventh record waits for the next seal; a flush seals it.
 	flush(t, c)
 	h.wantUsage(fakecontrol.OutcomeCounted, 3, 1)
@@ -282,7 +277,7 @@ func TestUsageBatchesSealOnTheInterval(t *testing.T) {
 func TestOneBatchOutstandingOthersQueueBehindIt(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))
-	h.cp.SetUsageFault(&fakecontrol.UsageFault{Status: http.StatusServiceUnavailable, Code: "config-unavailable"})
+	h.cp.SetUsageFault(&fakecontrol.UsageFault{Status: http.StatusServiceUnavailable, Code: "internal-error"})
 	c, obs, _ := h.usageClient(1, nil)
 	for i := range 3 {
 		c.Record(testRecord(i))
@@ -335,9 +330,6 @@ func TestLostAckIsResentAndCountedOnce(t *testing.T) {
 	}
 	if n := len(h.cp.CountedRecords()); n != 2 {
 		t.Errorf("%d records counted, want 2", n)
-	}
-	if u := h.nextTotals(); u.Counted != 1 || u.Totals == nil {
-		t.Errorf("totals update %+v, want the batch's generation counted with the totals", u)
 	}
 	if got := []string{obs.next(t), obs.next(t)}; !slices.Equal(got, []string{BatchFailed, BatchAcked}) {
 		t.Errorf("results %v", got)
@@ -468,7 +460,7 @@ func TestSpoolSurvivesARestart(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))
 	h.cp.FailUsage(fakecontrol.UsageFault{DropAck: true})
-	h.cp.SetUsageFault(&fakecontrol.UsageFault{Status: http.StatusServiceUnavailable, Code: "config-unavailable"})
+	h.cp.SetUsageFault(&fakecontrol.UsageFault{Status: http.StatusServiceUnavailable, Code: "internal-error"})
 	c, _, stop := h.usageClient(2, nil)
 	for i := range 3 {
 		c.Record(testRecord(i))
@@ -506,10 +498,12 @@ func TestSpoolSurvivesARestart(t *testing.T) {
 func TestSpoolOfAnotherFormatStartsANewEpoch(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))
-	c, _, stop := h.usageClient(1, nil)
+	c, obs, stop := h.usageClient(1, nil)
 	c.Record(testRecord(1))
 	old := h.wantUsage(fakecontrol.OutcomeCounted, 1, 1)
-	h.nextTotals() // the ack is taken: nothing left to resend
+	if r := obs.next(t); r != BatchAcked { // the ack is taken: nothing left to resend
+		t.Fatalf("result %s, want %s", r, BatchAcked)
+	}
 	stop()
 
 	if err := h.dir.WriteVersioned(SpoolFile, spoolFormat-1, map[string]any{}); err != nil {
@@ -617,7 +611,7 @@ func TestFreshDataDirectoryStartsANewEpoch(t *testing.T) {
 func TestSpoolOfAnotherInstanceIsDeliveredUnderIt(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))
-	h.cp.SetUsageFault(&fakecontrol.UsageFault{Status: http.StatusServiceUnavailable, Code: "config-unavailable"})
+	h.cp.SetUsageFault(&fakecontrol.UsageFault{Status: http.StatusServiceUnavailable, Code: "internal-error"})
 	c, _, stop := h.usageClient(1, nil)
 	c.Record(testRecord(1))
 	h.wantUsage(fakecontrol.OutcomeRefused, 1, 1)

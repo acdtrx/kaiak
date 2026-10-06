@@ -36,10 +36,10 @@ const (
 	maxTestDelay = 5 * time.Millisecond
 )
 
-// snapshotConfig reads the config inside a config snapshot fixture.
-func snapshotConfig(t *testing.T, dir, name string) []byte {
+// fixtureConfig reads the config inside a config event fixture.
+func fixtureConfig(t *testing.T, dir, name string) []byte {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(fixturesDir, "config-snapshot", dir, name))
+	data, err := os.ReadFile(filepath.Join(fixturesDir, "config-event", dir, name))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func snapshotConfig(t *testing.T, dir, name string) []byte {
 
 // Configs the tests publish: two valid ones that tell apart by their models, one the
 // gateway rejects.
-func configA(t *testing.T) []byte { return snapshotConfig(t, "valid", "minimal.json") }
+func configA(t *testing.T) []byte { return fixtureConfig(t, "valid", "minimal.json") }
 
 func configB(t *testing.T) []byte {
 	t.Helper()
@@ -66,7 +66,7 @@ func configB(t *testing.T) []byte {
 }
 
 func configRejected(t *testing.T) []byte {
-	return snapshotConfig(t, "invalid", "config-semantic-invalid.json")
+	return fixtureConfig(t, "invalid", "config-semantic-invalid.json")
 }
 
 // syncBuffer lets the test read logs written by the client's goroutine.
@@ -105,6 +105,9 @@ type harness struct {
 	delays []time.Duration
 	// delayed receives every scheduled delay, when set.
 	delayed chan time.Duration
+	// bootStreams is how many streams were opened when the last boot returned: a boot
+	// closes its stream once it has the config, so nextStream skips them.
+	bootStreams int
 }
 
 // newHarness starts a fake control plane and prepares a data directory; client builds
@@ -114,7 +117,7 @@ func newHarness(t *testing.T) *harness {
 	cp := fakecontrol.New(testToken)
 	t.Cleanup(cp.Close)
 	// The client's tests script every totals message they expect: none follows the
-	// replay unasked.
+	// first config unasked.
 	cp.HoldTotalsOnConnect(true)
 	logs := &syncBuffer{}
 	dir, err := state.Open(t.TempDir(), slog.New(slog.NewTextHandler(logs, nil)))
@@ -219,71 +222,71 @@ func (h *harness) noLoadPending() {
 	}
 }
 
-// nextStream waits for the next config stream to connect.
+// boot runs c.Boot, then marks the streams opened so far as the boot's: nextStream
+// skips them.
+func (h *harness) boot(c *Client) error {
+	err := c.Boot(context.Background())
+	h.mu.Lock()
+	h.bootStreams = h.cp.Opened()
+	h.mu.Unlock()
+	return err
+}
+
+// nextStream waits for the next config stream to connect after the last boot.
 func (h *harness) nextStream() *fakecontrol.Stream {
 	h.t.Helper()
-	select {
-	case st := <-h.cp.Connected():
-		return st
-	case <-time.After(testWaitLimit):
-		h.t.Fatal("no stream connected")
-		return nil
+	for {
+		select {
+		case st := <-h.cp.Connected():
+			h.mu.Lock()
+			boot := st.Seq <= h.bootStreams
+			h.mu.Unlock()
+			if !boot {
+				return st
+			}
+		case <-time.After(testWaitLimit):
+			h.t.Fatal("no stream connected")
+			return nil
+		}
 	}
 }
 
-func wantApplied(t *testing.T, c *Client, want int64) {
+func wantApplied(t *testing.T, c *Client, want string) {
 	t.Helper()
-	if got, ok := c.AppliedVersion(); !ok || got != want {
-		t.Fatalf("applied version %d (%v), want %d", got, ok, want)
+	if got, ok := c.AppliedConfigHash(); !ok || got != want {
+		t.Fatalf("applied config %s (%v), want %s", got, ok, want)
 	}
 }
 
-// savedEpoch is the config epoch in the last-known-good file; "" when there is none.
-func (h *harness) savedEpoch() string {
+// savedHash is the config hash in the last-known-good file; "" when there is none.
+func (h *harness) savedHash() string {
 	h.t.Helper()
 	var saved lastKnownGood
 	if _, err := h.dir.ReadVersioned(LastKnownGoodFile, lastKnownGoodFormat, &saved); err != nil {
 		h.t.Fatal(err)
 	}
-	return saved.ConfigEpoch
+	return saved.ConfigHash
 }
 
-// savedVersion is the version in the last-known-good file; 0 when there is none.
-func (h *harness) savedVersion() int64 {
-	h.t.Helper()
-	var saved lastKnownGood
-	found, err := h.dir.ReadVersioned(LastKnownGoodFile, lastKnownGoodFormat, &saved)
-	if err != nil {
-		h.t.Fatal(err)
-	}
-	if !found {
-		return 0
-	}
-	return saved.Version
-}
-
-func TestBootAppliesTheSnapshotAndSendsTheProtocolHeaders(t *testing.T) {
+func TestBootAppliesTheStreamsFirstConfigAndSendsTheProtocolHeaders(t *testing.T) {
 	h := newHarness(t)
-	h.cp.Publish(configA(t))
+	hash := h.cp.Publish(configA(t))
 	c := h.client(nil)
 
-	if err := c.Boot(context.Background()); err != nil {
+	if err := h.boot(c); err != nil {
 		t.Fatalf("Boot: %v", err)
 	}
 	h.wantLoad(load{TriggerControl, true})
-	wantApplied(t, c, 1)
+	wantApplied(t, c, hash)
 	if !h.holder.Loaded() || h.holder.Current().Models["llama"] == nil {
-		t.Fatal("snapshot not in the holder")
+		t.Fatal("config not in the holder")
 	}
-	if got, want := h.holder.Current().Version, (config.Version{Epoch: h.cp.ConfigEpoch(), Number: 1}); got != want {
-		t.Errorf("snapshot version %+v, want %+v (totals apply to it by this identity)", got, want)
-	}
-	if got := h.savedVersion(); got != 1 {
-		t.Errorf("last-known-good version %d, want 1", got)
+	if got := h.savedHash(); got != hash {
+		t.Errorf("last-known-good hash %s, want %s", got, hash)
 	}
 	reqs := h.cp.Requests()
-	if len(reqs) != 1 || reqs[0].Path != "/v1/config" {
-		t.Fatalf("requests %+v", reqs)
+	if len(reqs) != 1 || reqs[0].Path != "/v1/stream" || reqs[0].Query != "" {
+		t.Fatalf("requests %+v, want one stream with no parameters", reqs)
 	}
 	for name, want := range map[string]string{"Authorization": "Bearer " + testToken, "Kaiak-Protocol": "5",
 		"Kaiak-Instance": testInstance} {
@@ -291,7 +294,7 @@ func TestBootAppliesTheSnapshotAndSendsTheProtocolHeaders(t *testing.T) {
 			t.Errorf("%s = %q, want %q", name, got, want)
 		}
 	}
-	if !strings.Contains(h.logs.String(), `msg="config applied" kaiak.trigger=control kaiak.config.version=1`) {
+	if !strings.Contains(h.logs.String(), `msg="config applied" kaiak.trigger=control kaiak.config.hash=`+hash) {
 		t.Errorf("applied line missing:\n%s", h.logs.String())
 	}
 }
@@ -299,47 +302,38 @@ func TestBootAppliesTheSnapshotAndSendsTheProtocolHeaders(t *testing.T) {
 func TestNoConfigPublishedThenOneArrives(t *testing.T) {
 	h := newHarness(t)
 	c := h.client(nil)
-	if err := c.Boot(context.Background()); err == nil {
+	if err := h.boot(c); err == nil {
 		t.Fatal("Boot reports a config with none published")
 	}
 	if h.holder.Loaded() {
 		t.Fatal("holder loaded")
 	}
-	if !strings.Contains(h.logs.String(), "config-unavailable") {
-		t.Errorf("503 config-unavailable not logged:\n%s", h.logs.String())
+	if !strings.Contains(h.logs.String(), "nothing published yet") {
+		t.Errorf("no config within the boot wait not logged:\n%s", h.logs.String())
 	}
 
-	h.mu.Lock()
-	h.delayed = make(chan time.Duration, 100)
-	h.mu.Unlock()
 	h.run(c)
-	<-h.delayed // Run failed once more and is waiting to retry
-	h.cp.Publish(configA(t))
+	h.nextStream() // Run's: open, waiting for a config
+	hash := h.cp.Publish(configA(t))
 	h.wantLoad(load{TriggerControl, true})
-	wantApplied(t, c, 1)
-	if st := h.nextStream(); st.Since != 1 {
-		t.Errorf("stream since %d, want 1", st.Since)
-	}
+	wantApplied(t, c, hash)
 }
 
 func TestStreamAppliesUpdatesAndIgnoresHeartbeats(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))
 	c := h.client(nil)
-	c.Boot(context.Background())
+	h.boot(c)
 	h.wantLoad(load{TriggerControl, true})
 	stop := h.run(c)
 
-	st := h.nextStream()
-	if st.Since != 1 {
-		t.Fatalf("stream since %d, want 1", st.Since)
-	}
+	st := h.nextStream() // its first config is the one booted: skipped
 	st.Comment("heartbeat")
-	h.cp.Publish(configB(t))
+	hash := h.cp.Publish(configB(t))
 	h.wantLoad(load{TriggerControl, true})
-	wantApplied(t, c, 2)
+	wantApplied(t, c, hash)
 	if h.holder.Current().Models["large"] == nil {
-		t.Fatal("version 2 not in the holder")
+		t.Fatal("config B not in the holder")
 	}
 	// The heartbeat neither ended the stream nor reached the apply path.
 	select {
@@ -349,16 +343,21 @@ func TestStreamAppliesUpdatesAndIgnoresHeartbeats(t *testing.T) {
 	}
 	h.noLoadPending()
 	stop() // the last-known-good write follows the apply on the client's goroutine
-	if got := h.savedVersion(); got != 2 {
-		t.Errorf("last-known-good version %d, want 2", got)
+	if got := h.savedHash(); got != hash {
+		t.Errorf("last-known-good hash %s, want %s", got, hash)
+	}
+	if !strings.Contains(h.logs.String(), "config event skipped: the config already applied or rejected") {
+		t.Errorf("the stream's first config, the one booted, not skipped:\n%s", h.logs.String())
 	}
 }
 
-func TestReconnectResumesAfterTheAppliedVersion(t *testing.T) {
+// A reconnect takes the control plane's current config: the one already running is
+// skipped, a newer one applied.
+func TestReconnectTakesTheCurrentConfig(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))
 	c := h.client(nil)
-	c.Boot(context.Background())
+	h.boot(c)
 	h.wantLoad(load{TriggerControl, true})
 	h.run(c)
 
@@ -366,338 +365,209 @@ func TestReconnectResumesAfterTheAppliedVersion(t *testing.T) {
 	h.cp.Publish(configB(t))
 	h.wantLoad(load{TriggerControl, true})
 	st.Close()
-	next := h.nextStream()
-	if next.Since != 2 {
-		t.Fatalf("reconnected with since %d, want 2", next.Since)
-	}
-	h.cp.Publish(configA(t))
+	h.nextStream()
+	h.noLoadPending() // B again: running
+	hash := h.cp.Publish(configA(t))
 	h.wantLoad(load{TriggerControl, true})
-	wantApplied(t, c, 3)
-	if n := len(h.cp.Gets()); n != 3 { // snapshot, two streams
-		t.Errorf("%d GET requests, want 3", n)
+	wantApplied(t, c, hash)
+	for _, r := range h.cp.Gets() {
+		if r.Path != "/v1/stream" || r.Query != "" {
+			t.Errorf("request %s?%s, want only streams with no parameters", r.Path, r.Query)
+		}
 	}
 }
 
-func TestResyncAppliesALowerVersion(t *testing.T) {
+// A control plane restored to an older config (a backup, an in-memory store started
+// over) sends it, and the gateway applies it: the control plane is the authority on
+// which config is current.
+func TestRestoredOlderConfigIsApplied(t *testing.T) {
 	h := newHarness(t)
-	h.cp.Publish(configA(t))
-	h.cp.Publish(configA(t))
-	h.cp.Publish(configA(t))
+	older := h.cp.Publish(configA(t))
+	h.cp.Publish(configB(t))
 	c := h.client(nil)
-	c.Boot(context.Background())
+	h.boot(c)
 	h.wantLoad(load{TriggerControl, true})
-	wantApplied(t, c, 3)
 	h.run(c)
 	h.nextStream()
 
-	// The control plane restarts with an empty store: its first version is 1, and the
-	// gateway's since=3 is ahead of it.
 	h.cp.Restart()
-	h.cp.Publish(configB(t))
+	h.cp.Publish(configA(t))
 	h.wantLoad(load{TriggerControl, true})
-	wantApplied(t, c, 1)
-	if h.holder.Current().Models["large"] == nil {
-		t.Fatal("the resync snapshot is not in the holder")
-	}
-	if st := h.nextStream(); st.Since != 1 {
-		t.Errorf("stream after resync since %d, want 1", st.Since)
-	}
-	if !strings.Contains(h.logs.String(), "config stream ended: resync") {
-		t.Errorf("resync not logged:\n%s", h.logs.String())
+	wantApplied(t, c, older)
+	if h.holder.Current().Models["llama"] == nil {
+		t.Fatal("the restored config is not in the holder")
 	}
 }
 
-func TestStreamNeverGoesBackAVersion(t *testing.T) {
+// Every config event is applied whatever it replaces — a config the gateway ran
+// before included — except one identical to the running config.
+func TestEveryConfigEventIsApplied(t *testing.T) {
 	h := newHarness(t)
-	h.cp.Publish(configA(t))
-	h.cp.Publish(configB(t))
+	a := h.cp.Publish(configA(t))
 	c := h.client(nil)
-	c.Boot(context.Background())
+	h.boot(c)
 	h.wantLoad(load{TriggerControl, true})
 	h.run(c)
 	st := h.nextStream()
 
-	running := h.holder.Current()
-	st.SendConfig(1, configA(t))
-	st.SendConfig(2, configA(t))
-	st.SendConfig(3, configA(t))
-	h.wantLoad(load{TriggerControl, true}) // only version 3
-	wantApplied(t, c, 3)
-	if h.holder.Current() == running || h.holder.Current().Models["llama"] == nil {
-		t.Fatal("version 3 not applied")
-	}
+	st.SendConfig(configB(t))
+	h.wantLoad(load{TriggerControl, true})
+	st.SendConfig(configA(t))
+	h.wantLoad(load{TriggerControl, true})
+	wantApplied(t, c, a)
+	st.SendConfig(configA(t))
+	st.Comment("after")
+	h.cp.Publish(configB(t)) // a load to wait on: nothing came between
+	h.wantLoad(load{TriggerControl, true})
 	h.noLoadPending()
-	if !strings.Contains(h.logs.String(), "config event ignored: version already taken") {
-		t.Errorf("ignored versions not logged:\n%s", h.logs.String())
-	}
 }
 
 func TestRejectedConfigIsKeptOutAndReported(t *testing.T) {
 	h := newHarness(t)
-	h.cp.Publish(configA(t))
+	applied := h.cp.Publish(configA(t))
 	c := h.client(nil)
-	c.Boot(context.Background())
+	h.boot(c)
 	h.wantLoad(load{TriggerControl, true})
 	h.run(c)
 	st := h.nextStream()
 	running := h.holder.Current()
 
-	h.cp.Publish(configRejected(t))
+	rejected := h.cp.Publish(configRejected(t))
 	h.wantLoad(load{TriggerControl, false})
 	if h.holder.Current() != running {
 		t.Fatal("a rejected config replaced the running one")
 	}
-	wantApplied(t, c, 1)
+	wantApplied(t, c, applied)
 	r, ok := c.LastRejection()
-	if !ok || r.Version != 2 || !slices.Equal(r.Codes, []string{config.CodeKeyGroupUnknown}) {
-		t.Fatalf("last rejection %+v (%v), want version 2 [key-group-unknown]", r, ok)
+	if !ok || r.ConfigHash != rejected || !slices.Equal(r.Codes, []string{config.CodeKeyGroupUnknown}) {
+		t.Fatalf("last rejection %+v (%v), want %s [key-group-unknown]", r, ok, rejected)
 	}
-	if got := h.savedVersion(); got != 1 {
-		t.Errorf("last-known-good version %d, want 1: a rejected config is never saved", got)
+	if got := h.savedHash(); got != applied {
+		t.Errorf("last-known-good hash %s, want %s: a rejected config is never saved", got, applied)
 	}
-	if out := h.logs.String(); !strings.Contains(out, `msg="config rejected" kaiak.trigger=control kaiak.config.version=2`) ||
+	if out := h.logs.String(); !strings.Contains(out, `msg="config rejected" kaiak.trigger=control kaiak.config.hash=`+rejected) ||
 		!strings.Contains(out, "kaiak.config.running=kept") {
 		t.Errorf("rejection not logged:\n%s", out)
 	}
 
-	// A reconnect resumes after the rejected version: it is not replayed.
+	// A reconnect gets the rejected config again: skipped by its hash, not checked
+	// again — the next load is config B's. A config applied ends the report.
 	st.Close()
-	if next := h.nextStream(); next.Since != 2 {
-		t.Fatalf("reconnected with since %d, want 2", next.Since)
-	}
-	h.noLoadPending()
-
-	// A newer applied version ends the report.
-	h.cp.Publish(configB(t))
-	h.wantLoad(load{TriggerControl, true})
-	if r, ok := c.LastRejection(); ok {
-		t.Errorf("rejection %+v still reported after version 3 applied", r)
-	}
-}
-
-// After a control-plane restart its versions count from 1 again: a rejected config
-// with a lower version than the one in force is still the latest config received,
-// so it is reported; the next config applied ends the report.
-func TestRejectionBelowTheAppliedVersionIsReported(t *testing.T) {
-	h := newHarness(t)
-	h.cp.Publish(configA(t))
-	h.cp.Publish(configA(t))
-	h.cp.Publish(configA(t))
-	c := h.client(nil)
-	c.Boot(context.Background())
-	h.wantLoad(load{TriggerControl, true})
-	h.run(c)
-	h.nextStream()
-
-	h.cp.Restart()
-	h.cp.Publish(configRejected(t))
-	h.wantLoad(load{TriggerControl, false}) // the resync snapshot, version 1
-	wantApplied(t, c, 3)
-	if r, ok := c.LastRejection(); !ok || r.Version != 1 {
-		t.Fatalf("last rejection %+v (%v), want version 1 while version 3 is applied", r, ok)
-	}
-
 	h.nextStream()
 	h.cp.Publish(configB(t))
 	h.wantLoad(load{TriggerControl, true})
-	wantApplied(t, c, 2)
 	if r, ok := c.LastRejection(); ok {
-		t.Errorf("rejection %+v still reported after version 2 applied", r)
+		t.Errorf("rejection %+v still reported after config B applied", r)
 	}
 }
 
-func TestRejectedSnapshotAtBootFallsBackToLastKnownGood(t *testing.T) {
+func TestRejectedConfigAtBootFallsBackToLastKnownGood(t *testing.T) {
 	h := newHarness(t)
-	h.cp.Publish(configA(t))
-	h.client(nil).Boot(context.Background())
+	applied := h.cp.Publish(configA(t))
+	h.boot(h.client(nil))
 	h.wantLoad(load{TriggerControl, true})
 
-	h.cp.Publish(configRejected(t))
+	rejected := h.cp.Publish(configRejected(t))
 	h.holder.Swap(nil) // a new process
 	c := h.client(nil)
-	if err := c.Boot(context.Background()); err != nil {
+	if err := h.boot(c); err != nil {
 		t.Fatalf("Boot: %v", err)
 	}
 	h.wantLoad(load{TriggerControl, false})
 	h.wantLoad(load{TriggerLastKnownGood, true})
-	wantApplied(t, c, 1)
-	if r, ok := c.LastRejection(); !ok || r.Version != 2 {
-		t.Errorf("last rejection %+v (%v), want version 2", r, ok)
+	wantApplied(t, c, applied)
+	if r, ok := c.LastRejection(); !ok || r.ConfigHash != rejected {
+		t.Errorf("last rejection %+v (%v), want %s", r, ok, rejected)
 	}
 	h.run(c)
-	if st := h.nextStream(); st.Since != 2 {
-		t.Errorf("stream since %d, want 2 (after the rejected snapshot)", st.Since)
-	}
+	h.nextStream() // the rejected config again: skipped by its hash
+	h.cp.Publish(configB(t))
+	h.wantLoad(load{TriggerControl, true}) // the first load since: nothing came before
 }
 
 func TestBootFromLastKnownGoodWhenTheControlPlaneIsDown(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))
-	h.cp.Publish(configB(t))
-	h.client(nil).Boot(context.Background())
+	hash := h.cp.Publish(configB(t))
+	h.boot(h.client(nil))
 	h.wantLoad(load{TriggerControl, true})
 
 	h.cp.SetDown(true)
 	h.holder.Swap(nil) // a new process on the same data directory
 	c := h.client(nil)
-	if err := c.Boot(context.Background()); err != nil {
+	if err := h.boot(c); err != nil {
 		t.Fatalf("Boot did not fall back to the last-known-good config: %v", err)
 	}
 	h.wantLoad(load{TriggerLastKnownGood, true})
-	wantApplied(t, c, 2)
+	wantApplied(t, c, hash)
 	if h.holder.Current().Models["large"] == nil {
 		t.Fatal("last-known-good config not in the holder")
 	}
-	if got, want := h.holder.Current().Version, (config.Version{Epoch: h.cp.ConfigEpoch(), Number: 2}); got != want {
-		t.Errorf("last-known-good snapshot version %+v, want %+v", got, want)
-	}
-	if !strings.Contains(h.logs.String(), `msg="config applied" kaiak.trigger=last-known-good kaiak.config.version=2`) {
+	if !strings.Contains(h.logs.String(), `msg="config applied" kaiak.trigger=last-known-good kaiak.config.hash=`+hash) {
 		t.Errorf("last-known-good load not logged:\n%s", h.logs.String())
 	}
 
-	// Once the control plane is back, the stream resumes after the saved version.
+	// Once the control plane is back, its current config is the one running: skipped.
 	h.run(c)
 	h.cp.SetDown(false)
-	if st := h.nextStream(); st.Since != 2 {
-		t.Fatalf("stream since %d, want 2", st.Since)
-	}
-	h.noLoadPending()
+	h.nextStream()
+	h.cp.Publish(configA(t))
+	h.wantLoad(load{TriggerControl, true}) // the first load since: nothing came before
 }
 
-// The audit's scenario (M10): the last-known-good copy is version 2 of a store that
-// is gone; the control plane now runs a new store that has also reached version 2,
-// with another config. The stream resumes from version 2 of the old epoch, so the
-// control plane answers resync and the gateway takes the new version 2.
-func TestLastKnownGoodFromAnotherEpochIsReplacedAtTheSameVersion(t *testing.T) {
+// The last-known-good copy is a config the control plane no longer has (it started
+// over with another): the stream's current config replaces it once the control plane
+// answers.
+func TestLastKnownGoodIsReplacedByTheCurrentConfig(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))
-	h.cp.Publish(configA(t))
-	h.client(nil).Boot(context.Background())
+	h.boot(h.client(nil))
 	h.wantLoad(load{TriggerControl, true})
-	oldEpoch := h.cp.ConfigEpoch()
-	if got := h.savedEpoch(); got != oldEpoch {
-		t.Fatalf("last-known-good epoch %q, want the snapshot's %q", got, oldEpoch)
-	}
 
-	// The control plane starts over with a new store, which reaches version 2 again.
 	h.cp.Restart()
-	h.cp.Publish(configB(t))
-	h.cp.Publish(configB(t))
+	current := h.cp.Publish(configB(t))
 	h.cp.SetDown(true)
 	h.holder.Swap(nil) // a new process on the same data directory
 	c := h.client(nil)
-	if err := c.Boot(context.Background()); err != nil {
+	if err := h.boot(c); err != nil {
 		t.Fatalf("Boot did not fall back to the last-known-good config: %v", err)
 	}
 	h.wantLoad(load{TriggerLastKnownGood, true})
-	wantApplied(t, c, 2)
 	if h.holder.Current().Models["llama"] == nil {
 		t.Fatal("the last-known-good config is not in the holder")
 	}
 
 	stop := h.run(c)
 	h.cp.SetDown(false)
-	h.wantLoad(load{TriggerControl, true}) // the resync snapshot: the new store's version 2
-	resumed := url.Values{"since": {"2"}, "config_epoch": {oldEpoch}}.Encode()
-	if !slices.ContainsFunc(h.cp.Gets(), func(r fakecontrol.Request) bool {
-		return r.Path == "/v1/stream" && r.Query == resumed
-	}) {
-		t.Fatalf("no stream resumed from version 2 of the old epoch: %+v", h.cp.Gets())
-	}
-	wantApplied(t, c, 2)
+	h.wantLoad(load{TriggerControl, true})
+	wantApplied(t, c, current)
 	if h.holder.Current().Models["large"] == nil {
-		t.Fatal("the new store's version 2 is not in the holder")
-	}
-	if next := h.nextStream(); next.Since != 2 || next.SinceEpoch != h.cp.ConfigEpoch() {
-		t.Errorf("stream after resync since %d in epoch %q, want 2 in %q", next.Since, next.SinceEpoch,
-			h.cp.ConfigEpoch())
+		t.Fatal("the current config is not in the holder")
 	}
 	stop() // the last-known-good write follows the apply on the client's goroutine
-	if got := h.savedEpoch(); got != h.cp.ConfigEpoch() {
-		t.Errorf("last-known-good epoch %q, want the new store's %q", got, h.cp.ConfigEpoch())
+	if got := h.savedHash(); got != current {
+		t.Errorf("last-known-good hash %s, want the current config's %s", got, current)
 	}
 }
 
-// A last-known-good file whose epoch is not an epoch (N-P10) is discarded at boot, with
-// a log line: resuming from it would be refused (400 since-invalid) on every reconnect.
+// A last-known-good file whose hash is not a config hash is discarded at boot, with a
+// log line: status would report it, and the schema refuses it.
 func TestMalformedLastKnownGoodIsDiscarded(t *testing.T) {
-	for name, saved := range map[string]lastKnownGood{
-		"epoch":   {ConfigEpoch: "NOT-AN-EPOCH", Version: 2},
-		"version": {ConfigEpoch: "0123456789abcdef0123456789abcdef", Version: 0},
-	} {
-		t.Run(name, func(t *testing.T) {
-			h := newHarness(t)
-			saved.Config = configA(t)
-			if err := h.dir.WriteVersioned(LastKnownGoodFile, lastKnownGoodFormat, saved); err != nil {
-				t.Fatal(err)
-			}
-			h.cp.SetDown(true)
-			c := h.client(nil)
-			if err := c.Boot(context.Background()); err == nil {
-				t.Fatal("Boot applied a last-known-good copy with a malformed position")
-			}
-			if h.holder.Loaded() {
-				t.Fatal("holder loaded")
-			}
-			if !strings.Contains(h.logs.String(), `msg="last-known-good config discarded: malformed position"`) {
-				t.Errorf("discard not logged:\n%s", h.logs.String())
-			}
-		})
-	}
-}
-
-// A stream the control plane refuses to open with 400 since-invalid (N-P10) is not
-// retried from the same position forever: the client fetches the snapshot, whose
-// position the next stream resumes from.
-func TestSinceInvalidFetchesTheSnapshot(t *testing.T) {
 	h := newHarness(t)
-	h.cp.Publish(configA(t))
-	c := h.client(nil)
-	if err := c.Boot(context.Background()); err != nil {
+	saved := lastKnownGood{ConfigHash: "NOT-A-HASH", Config: configA(t)}
+	if err := h.dir.WriteVersioned(LastKnownGoodFile, lastKnownGoodFormat, saved); err != nil {
 		t.Fatal(err)
 	}
-	h.wantLoad(load{TriggerControl, true})
-	c.mu.Lock()
-	c.position.epoch = "NOT-AN-EPOCH" // a position the control plane refuses
-	c.mu.Unlock()
-	h.run(c)
-	h.wantLoad(load{TriggerControl, true}) // the snapshot again
-	if st := h.nextStream(); st.Since != 1 || st.SinceEpoch != h.cp.ConfigEpoch() {
-		t.Errorf("stream since %d in epoch %q, want 1 in %q", st.Since, st.SinceEpoch, h.cp.ConfigEpoch())
-	}
-}
-
-// A config event of another epoch is another store's count: applied whatever its
-// version, lower included.
-func TestStreamConfigFromAnotherEpochIsAppliedWhateverItsVersion(t *testing.T) {
-	h := newHarness(t)
-	h.cp.Publish(configA(t))
-	h.cp.Publish(configA(t))
-	h.cp.Publish(configA(t))
+	h.cp.SetDown(true)
 	c := h.client(nil)
-	c.Boot(context.Background())
-	h.wantLoad(load{TriggerControl, true})
-	h.run(c)
-	st := h.nextStream()
-	if st.SinceEpoch != h.cp.ConfigEpoch() {
-		t.Fatalf("stream epoch %q, want %q", st.SinceEpoch, h.cp.ConfigEpoch())
+	if err := h.boot(c); err == nil {
+		t.Fatal("Boot applied a last-known-good copy with a malformed hash")
 	}
-
-	other := "0123456789abcdef0123456789abcdef"
-	st.Send("config", "1", fakecontrol.Snapshot(other, 1, configB(t)))
-	h.wantLoad(load{TriggerControl, true})
-	wantApplied(t, c, 1)
-	if h.holder.Current().Models["large"] == nil {
-		t.Fatal("the other epoch's version 1 is not in the holder")
+	if h.holder.Loaded() {
+		t.Fatal("holder loaded")
 	}
-	// Within the new epoch the usual rule holds again.
-	st.Send("config", "1", fakecontrol.Snapshot(other, 1, configA(t)))
-	st.SendConfig(4, configA(t)) // the old epoch, a higher number: another store's count too
-	h.wantLoad(load{TriggerControl, true})
-	wantApplied(t, c, 4)
-	h.noLoadPending()
-	if !strings.Contains(h.logs.String(), "config event from another config epoch") {
-		t.Errorf("epoch change not logged:\n%s", h.logs.String())
+	if !strings.Contains(h.logs.String(), `msg="last-known-good config discarded: malformed config hash"`) {
+		t.Errorf("discard not logged:\n%s", h.logs.String())
 	}
 }
 
@@ -708,7 +578,7 @@ func TestClientFollowsTheControlPlaneFromNoConfig(t *testing.T) {
 	h := newHarness(t)
 	h.cp.SetDown(true)
 	c := h.client(nil)
-	if err := c.Boot(context.Background()); err == nil {
+	if err := h.boot(c); err == nil {
 		t.Fatal("Boot reports a config with no source")
 	}
 	if h.holder.Loaded() {
@@ -729,7 +599,8 @@ func TestClientFollowsTheControlPlaneFromNoConfig(t *testing.T) {
 	}
 }
 
-func TestBootWaitBoundsTheSnapshotFetch(t *testing.T) {
+// A stream endpoint that never answers does not hold the boot past its wait.
+func TestBootWaitBoundsTheWaitForAConfig(t *testing.T) {
 	hung := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		select {
@@ -746,7 +617,7 @@ func TestBootWaitBoundsTheSnapshotFetch(t *testing.T) {
 	}
 	c := h.client(func(o *Options) { o.URL = u; o.BootWait = 50 * time.Millisecond })
 	done := make(chan error)
-	go func() { done <- c.Boot(context.Background()) }()
+	go func() { done <- h.boot(c) }()
 	select {
 	case err := <-done:
 		if err == nil {
@@ -758,18 +629,17 @@ func TestBootWaitBoundsTheSnapshotFetch(t *testing.T) {
 }
 
 // D7: a control plane that comes up within the boot wait — restarting beside the
-// gateway, or not yet published — gives the gateway its config: boot retries the
-// snapshot with jittered backoff (250 ms doubling, capped at 2 s) instead of giving
-// up after one attempt.
+// gateway — gives the gateway its config: boot opens the stream again with jittered
+// backoff (250 ms doubling, capped at 2 s) instead of giving up after one attempt.
 func TestBootRetriesUntilTheControlPlaneComesUp(t *testing.T) {
 	for name, c := range map[string]struct{ down, up func(h *harness) }{
 		"unreachable": {
 			down: func(h *harness) { h.cp.Publish(configA(t)); h.cp.SetDown(true) },
 			up:   func(h *harness) { h.cp.SetDown(false) },
 		},
-		"503 config-unavailable": {
-			down: func(*harness) {},
-			up:   func(h *harness) { h.cp.Publish(configA(t)) },
+		"500": {
+			down: func(h *harness) { h.cp.Publish(configA(t)); h.cp.SetProtocol("") },
+			up:   func(h *harness) { h.cp.SetProtocol("5") },
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -781,7 +651,7 @@ func TestBootRetriesUntilTheControlPlaneComesUp(t *testing.T) {
 			h.mu.Unlock()
 			client := h.client(func(o *Options) { o.BootWait = testWaitLimit })
 			done := make(chan error, 1)
-			go func() { done <- client.Boot(context.Background()) }()
+			go func() { done <- h.boot(client) }()
 			var delays []time.Duration
 			for range 2 {
 				select {
@@ -811,7 +681,9 @@ func TestBootRetriesUntilTheControlPlaneComesUp(t *testing.T) {
 				t.Fatal("Boot did not return once the control plane came up")
 			}
 			h.wantLoad(load{TriggerControl, true})
-			wantApplied(t, client, 1)
+			if _, ok := client.AppliedConfigHash(); !ok {
+				t.Fatal("no config applied")
+			}
 			h.mu.Lock()
 			h.delayed = nil
 			h.mu.Unlock()
@@ -820,7 +692,33 @@ func TestBootRetriesUntilTheControlPlaneComesUp(t *testing.T) {
 	}
 }
 
-// D7: what the operator must fix is never retried — a refused token, a snapshot the
+// A control plane with nothing published keeps the boot's stream open; the config
+// published within the boot wait arrives on it, with no retry.
+func TestBootTakesAConfigPublishedWithinTheWait(t *testing.T) {
+	h := newHarness(t)
+	client := h.client(func(o *Options) { o.BootWait = testWaitLimit })
+	done := make(chan error, 1)
+	go func() { done <- h.boot(client) }()
+	h.nextStream() // the boot's, open with nothing to send
+	hash := h.cp.Publish(configA(t))
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Boot: %v", err)
+		}
+	case <-time.After(testWaitLimit):
+		t.Fatal("Boot did not return once a config was published")
+	}
+	h.wantLoad(load{TriggerControl, true})
+	wantApplied(t, client, hash)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.delays) != 0 {
+		t.Errorf("boot retried %d times, want the open stream to deliver the config", len(h.delays))
+	}
+}
+
+// D7: what the operator must fix is never retried — a refused token, a config the
 // gateway rejects: boot goes on at once (last-known-good, else exit).
 func TestBootDoesNotRetryWhatTheOperatorMustFix(t *testing.T) {
 	for name, c := range map[string]struct {
@@ -828,15 +726,15 @@ func TestBootDoesNotRetryWhatTheOperatorMustFix(t *testing.T) {
 		token string
 		want  string
 	}{
-		"refused token":     {func(h *harness) { h.cp.Publish(configA(t)) }, "wrong", "401"},
-		"rejected snapshot": {func(h *harness) { h.cp.Publish(configRejected(t)) }, testToken, "was rejected"},
+		"refused token":   {func(h *harness) { h.cp.Publish(configA(t)) }, "wrong", "401"},
+		"rejected config": {func(h *harness) { h.cp.Publish(configRejected(t)) }, testToken, "was rejected"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t)
 			c.setup(h)
 			client := h.client(func(o *Options) { o.Token = c.token; o.BootWait = testWaitLimit })
 			started := time.Now()
-			err := client.Boot(context.Background())
+			err := h.boot(client)
 			if err == nil || !strings.Contains(err.Error(), c.want) {
 				t.Fatalf("Boot error %v, want one naming %q", err, c.want)
 			}
@@ -885,7 +783,7 @@ func TestReconnectDelaysGrowWhileDownAndResetAfterAHealthyStream(t *testing.T) {
 		o.BackoffCap = 400 * time.Millisecond
 		o.HealthyAfter = time.Hour
 	})
-	c.Boot(context.Background())
+	h.boot(c)
 	h.wantLoad(load{TriggerControl, true})
 	h.cp.SetDown(true)
 	h.mu.Lock()
@@ -907,7 +805,7 @@ func TestReconnectDelaysGrowWhileDownAndResetAfterAHealthyStream(t *testing.T) {
 	h2 := newHarness(t)
 	h2.cp.Publish(configA(t))
 	c2 := h2.client(func(o *Options) { o.BackoffBase = 100 * time.Millisecond; o.HealthyAfter = time.Nanosecond })
-	c2.Boot(context.Background())
+	h2.boot(c2)
 	h2.wantLoad(load{TriggerControl, true})
 	h2.mu.Lock()
 	h2.delayed = make(chan time.Duration, 100)
@@ -926,7 +824,7 @@ func TestSilentStreamIsReconnected(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))
 	c := h.client(func(o *Options) { o.IdleTimeout = 50 * time.Millisecond })
-	c.Boot(context.Background())
+	h.boot(c)
 	h.wantLoad(load{TriggerControl, true})
 	h.run(c)
 	first := h.nextStream()
@@ -962,7 +860,7 @@ func TestStreamOpenIsBounded(t *testing.T) {
 	}
 	c := h.client(func(o *Options) { o.URL = u; o.IdleTimeout = 50 * time.Millisecond })
 	done := make(chan streamResult, 1)
-	go func() { done <- c.followStream(context.Background()) }()
+	go func() { done <- c.followStream(context.Background(), false) }()
 	select {
 	case res := <-done:
 		if res.err == nil || !strings.Contains(res.err.Error(), "config stream not open within 50ms") || res.lasted != 0 {
@@ -999,7 +897,7 @@ func TestRedirectsAreNotFollowedWithTheToken(t *testing.T) {
 
 	h := newHarness(t)
 	c := h.client(func(o *Options) { o.URL = u })
-	if err := c.Boot(context.Background()); err == nil {
+	if err := h.boot(c); err == nil {
 		t.Fatal("Boot applied a config through a redirect")
 	}
 	if n := reached.Load(); n != 0 {
@@ -1015,7 +913,7 @@ func TestProtocolMismatchIsLoggedAsAnErrorAndRetried(t *testing.T) {
 	h.cp.Publish(configA(t))
 	h.cp.SetProtocol("4")
 	c := h.client(nil)
-	if err := c.Boot(context.Background()); err == nil {
+	if err := h.boot(c); err == nil {
 		t.Fatal("Boot applied a config from a control plane speaking another version")
 	}
 	out := h.logs.String()
@@ -1032,7 +930,7 @@ func TestProtocolMismatchIsLoggedAsAnErrorAndRetried(t *testing.T) {
 	h.cp.SetProtocol("5")
 	h.wantLoad(load{TriggerControl, true})
 	if n := len(h.cp.Gets()); n < 3 {
-		t.Errorf("%d requests, want the boot fetch and at least two retries", n)
+		t.Errorf("%d requests, want the boot's stream and at least two retries", n)
 	}
 }
 
@@ -1040,26 +938,21 @@ func TestTotalsEventsReachTheConsumer(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))
 	c := h.client(nil)
-	c.Boot(context.Background())
+	h.boot(c)
 	h.wantLoad(load{TriggerControl, true})
 	h.run(c)
 	st := h.nextStream()
 
-	data, err := os.ReadFile(filepath.Join(fixturesDir, "totals", "valid", "windows.json"))
+	raw, err := os.ReadFile(filepath.Join(fixturesDir, "totals", "valid", "windows.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The fixture's totals, of the config epoch the gateway runs: totals of another
-	// epoch are not applied.
-	var fields map[string]any
-	if err := json.Unmarshal(data, &fields); err != nil {
+	var compacted bytes.Buffer // an event's data is one line
+	if err := json.Compact(&compacted, raw); err != nil {
 		t.Fatal(err)
 	}
-	fields["config_epoch"] = h.cp.ConfigEpoch()
-	if data, err = json.Marshal(fields); err != nil {
-		t.Fatal(err)
-	}
-	st.Send("totals", "", []byte(`{"broken":`)) // malformed: logged, skipped
+	data := compacted.Bytes()
+	st.Send("totals", []byte(`{"broken":`)) // malformed: logged, skipped
 	h.cp.PushTotals(data)
 	want, err := DecodeTotals(data)
 	if err != nil {
@@ -1067,8 +960,8 @@ func TestTotalsEventsReachTheConsumer(t *testing.T) {
 	}
 	select {
 	case got := <-h.totals:
-		if got.Totals == nil || got.Totals.ConfigVersion != want.ConfigVersion ||
-			len(got.Totals.Windows) != len(want.Windows) || len(got.Totals.Windows) == 0 || got.Counted != 0 {
+		if got.Totals.LiveGateways != want.LiveGateways || len(got.Totals.Windows) != len(want.Windows) ||
+			len(got.Totals.Windows) == 0 || got.Counted != 0 {
 			t.Errorf("totals %+v, want %+v and nothing counted", got, want)
 		}
 	case <-time.After(testWaitLimit):

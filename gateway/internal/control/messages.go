@@ -12,29 +12,23 @@ import (
 // Records, Backends, Deployments, Models, Codes) must be non-nil when encoded: nil encodes as null, which
 // the schemas refuse.
 
-// ConfigSnapshot is the answer to GET /v1/config and the data of a config event.
+// ConfigEvent is the data of a config event: the control plane's current config.
 // Config is the config document as sent; config.Parse validates it, and a config it
 // rejects is a config rejection (reported in status), not a malformed message.
-type ConfigSnapshot struct {
-	// ConfigEpoch is the control-plane store's epoch the version counts in: versions
-	// compare only within one epoch.
-	ConfigEpoch string          `json:"config_epoch"`
-	Version     int64           `json:"version"`
-	Config      json.RawMessage `json:"config"`
+type ConfigEvent struct {
+	// ConfigHash identifies the config's content (the SHA-256 of Config as sent): the
+	// gateway skips a config it already runs or last rejected, and reports which it
+	// applied or rejected. It carries no order.
+	ConfigHash string          `json:"config_hash"`
+	Config     json.RawMessage `json:"config"`
 }
 
-// Totals is the data of a totals event and part of every usage ack: the control
-// plane's usage in its current window of every hour and month limit with usage, as
-// one gateway gets it. A limit it does not list has used nothing in the control
-// plane's current window. Each message is a consistent snapshot: its windows hold
-// every batch the control plane had counted at its revision, CountedThrough among
-// them, and no other.
+// Totals is the data of a totals event: the control plane's usage in its current
+// window of every hour and month limit with usage, as one gateway gets it. A limit it
+// does not list has used nothing in the control plane's current window. Each message
+// is a consistent snapshot: its windows hold every batch the control plane had counted
+// when it read them, CountedThrough among them, and no other.
 type Totals struct {
-	Revision Revision `json:"revision"`
-	// ConfigEpoch and ConfigVersion identify the config the totals were computed
-	// under: a gateway applies them only to that config.
-	ConfigEpoch   string `json:"config_epoch"`
-	ConfigVersion int64  `json:"config_version"`
 	// LiveGateways is the live-gateway count; per-minute shares divide by it (at
 	// least 1).
 	LiveGateways int64 `json:"live_gateways"`
@@ -44,11 +38,6 @@ type Totals struct {
 	CountedThrough *BatchPosition `json:"counted_through"`
 	Windows        []TotalsWindow `json:"windows"`
 }
-
-// Revision orders totals messages within their config epoch: the store's totals
-// sequence, which every control-plane process over the store shares and which grows
-// with every change to the totals (Client.takeTotals).
-type Revision int64
 
 // BatchPosition is a batch within its instance's epochs.
 type BatchPosition struct {
@@ -71,22 +60,16 @@ type TotalsWindow struct {
 	Used int64 `json:"used,string"`
 }
 
-// TotalsUpdate is what one totals message (a totals event, or the totals in a usage
-// ack) gives the totals consumer. Both parts come in one call, so the consumer can
-// adopt the totals and stop counting what they include in one step.
+// TotalsUpdate is what one totals event gives the totals consumer. Both parts come in
+// one call, so the consumer can adopt the totals and stop counting what they include
+// in one step.
 type TotalsUpdate struct {
-	// Totals are the message's totals when they are newer than the last applied (by
-	// revision); nil when they are not — the consumer keeps the totals it has.
-	Totals *Totals
-	// Counted is the newest usage generation (Client.Record) of the batches the
-	// message shows counted: an acknowledged batch, and every queued batch at or below
-	// counted_through in its epoch. The totals applied now or before include them,
-	// since every message is a consistent snapshot. 0 when the message counts none.
+	Totals Totals
+	// Counted is the newest usage generation (Client.Record) of the queued batches at
+	// or below counted_through in its epoch: the totals include them, since every
+	// message is a consistent snapshot. 0 when the message counts none.
 	Counted uint64
 }
-
-// Resync is the data of a resync event: the gateway fetches the snapshot again.
-type Resync struct{}
 
 // BatchID identifies a usage batch; the control plane counts each one once.
 type BatchID struct {
@@ -103,10 +86,10 @@ type UsageBatch struct {
 	Records []accounting.UsageRecord `json:"records"`
 }
 
-// UsageAck is the answer to POST /v1/usage.
+// UsageAck is the answer to POST /v1/usage: the batch is counted, now or before, and
+// may leave the spool. It carries no totals: they come on the stream.
 type UsageAck struct {
-	Batch  BatchID `json:"batch"`
-	Totals Totals  `json:"totals"`
+	Batch BatchID `json:"batch"`
 }
 
 // State is the gateway's serving state.
@@ -118,10 +101,10 @@ const (
 	StateDraining State = "draining"
 )
 
-// Rejection is a config version the gateway rejected and its issue codes.
+// Rejection is a config the gateway rejected, by its hash, and its issue codes.
 type Rejection struct {
-	Version int64    `json:"version"`
-	Codes   []string `json:"codes"`
+	ConfigHash string   `json:"config_hash"`
+	Codes      []string `json:"codes"`
 }
 
 // Status is the body of POST /v1/status.
@@ -130,11 +113,10 @@ type Status struct {
 	ProtocolVersion int       `json:"protocol_version"`
 	State           State     `json:"state"`
 	StartedAt       time.Time `json:"started_at"`
-	// AppliedConfigVersion is nil before the first config is applied, and while the
-	// seed config (no version) is in force; AppliedConfigEpoch is the epoch it counts
-	// in, nil exactly when it is.
-	AppliedConfigVersion *int64  `json:"applied_config_version"`
-	AppliedConfigEpoch   *string `json:"applied_config_epoch"`
+	// AppliedConfigHash is the hash of the config in force; nil before the first
+	// config from the control plane (or its last-known-good copy) is applied, and while
+	// the seed config is in force.
+	AppliedConfigHash *string `json:"applied_config_hash"`
 	// LastRejection is the latest config received from the control plane when the
 	// gateway rejected it; nil once a later one is applied, and before any rejection.
 	LastRejection *Rejection `json:"last_rejection"`

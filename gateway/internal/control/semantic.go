@@ -74,10 +74,6 @@ func (r *ruleCheck) usageBatch(tree any) {
 	}
 }
 
-func (r *ruleCheck) usageAck(tree any) {
-	r.totals(tree.(map[string]any)["totals"], "/totals")
-}
-
 func (r *ruleCheck) status(tree any) {
 	m := tree.(map[string]any)
 	r.timestamp(m["started_at"], "/started_at")

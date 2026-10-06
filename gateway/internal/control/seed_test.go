@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"kaiak/internal/fakecontrol"
 )
 
 // withSeed gives a client the seed config seed.
@@ -17,46 +19,43 @@ func withSeed(seed []byte) func(*Options) {
 
 // E2: a boot with the control plane out of reach and no last-known-good copy serves
 // the seed config. It is never saved as last-known-good, the status says ready with
-// no control-plane version (N-P11), and the first config from the control plane
+// no control-plane config hash (N-P11), and the first config from the control plane
 // replaces it.
 func TestSeedConfigServesABootWithTheControlPlaneDown(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))
 	h.cp.SetDown(true)
 	c := h.client(withSeed(configB(t)))
-	if err := c.Boot(context.Background()); err != nil {
+	if err := h.boot(c); err != nil {
 		t.Fatalf("Boot with a seed config: %v", err)
 	}
 	h.wantLoad(load{TriggerSeed, true})
 	if h.holder.Current().Models["large"] == nil {
 		t.Fatal("the seed config is not in the holder")
 	}
-	if _, ok := c.AppliedVersion(); ok {
-		t.Error("the seed config counts as a control-plane version")
+	if _, ok := c.AppliedConfigHash(); ok {
+		t.Error("the seed config counts as a control-plane config")
 	}
-	if s := c.currentStatus(); s.State != StateReady || s.AppliedConfigVersion != nil {
-		t.Errorf("status after a seed boot: state %s, version %v; want ready with no version", s.State,
-			s.AppliedConfigVersion)
+	if s := c.currentStatus(); s.State != StateReady || s.AppliedConfigHash != nil {
+		t.Errorf("status after a seed boot: state %s, config %v; want ready with no config hash", s.State,
+			s.AppliedConfigHash)
 	}
-	if got := h.savedVersion(); got != 0 {
-		t.Errorf("last-known-good version %d after a seed boot, want none", got)
+	if got := h.savedHash(); got != "" {
+		t.Errorf("last-known-good hash %s after a seed boot, want none", got)
 	}
 	if !strings.Contains(h.logs.String(), `msg="config applied" kaiak.trigger=seed file.path=seed.json`) {
 		t.Errorf("seed load not logged:\n%s", h.logs.String())
 	}
 
-	h.run(c)
+	stop := h.run(c)
 	h.cp.SetDown(false)
 	h.wantLoad(load{TriggerControl, true})
 	if h.holder.Current().Models["llama"] == nil {
 		t.Fatal("the control plane's config did not replace the seed")
 	}
-	// The stream opens once the snapshot's config is applied and saved.
-	if st := h.nextStream(); st.Since != 1 {
-		t.Errorf("stream since %d, want 1 (after the snapshot)", st.Since)
-	}
-	if got := h.savedVersion(); got != 1 {
-		t.Errorf("last-known-good version %d, want the control plane's 1", got)
+	stop() // the last-known-good write follows the apply on the client's goroutine
+	if got, want := h.savedHash(), fakecontrol.Hash(configA(t)); got != want {
+		t.Errorf("last-known-good hash %s, want the control plane's %s", got, want)
 	}
 }
 
@@ -65,7 +64,7 @@ func TestSeedConfigServesABootWithTheControlPlaneDown(t *testing.T) {
 func TestLastKnownGoodWinsOverTheSeedConfig(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))
-	h.client(nil).Boot(context.Background())
+	h.boot(h.client(nil))
 	h.wantLoad(load{TriggerControl, true})
 
 	h.cp.SetDown(true)
@@ -94,8 +93,8 @@ func TestSeedConfigIsIgnoredWhenTheControlPlaneAnswers(t *testing.T) {
 	}
 }
 
-// E2: a control plane that answers it has no config (503 config-unavailable) cannot
-// give one: the seed serves.
+// E2: a control plane with nothing published cannot give a config within the boot
+// wait: the seed serves.
 func TestSeedConfigServesWhenTheControlPlaneHasNoConfig(t *testing.T) {
 	h := newHarness(t)
 	if err := h.client(withSeed(configB(t))).Boot(context.Background()); err != nil {
@@ -144,12 +143,12 @@ func TestSeedConfigIsNotUsedForAnOperatorError(t *testing.T) {
 		}
 		h.noLoadPending()
 	})
-	t.Run("rejected snapshot", func(t *testing.T) {
+	t.Run("rejected config", func(t *testing.T) {
 		h := newHarness(t)
 		h.cp.Publish(configRejected(t))
 		err := h.client(withSeed(configB(t))).Boot(context.Background())
-		if err == nil || !strings.Contains(err.Error(), "rejected") || !strings.Contains(err.Error(), "version 1") {
-			t.Fatalf("Boot error %v, want no config naming the rejected version", err)
+		if err == nil || !strings.Contains(err.Error(), "was rejected") || !strings.Contains(err.Error(), "key-group-unknown") {
+			t.Fatalf("Boot error %v, want no config naming the rejection and its codes", err)
 		}
 		h.wantLoad(load{TriggerControl, false})
 		h.noLoadPending()
@@ -161,7 +160,7 @@ func TestSeedConfigIsNotUsedForAnOperatorError(t *testing.T) {
 func TestBootFailsWithNoSourceOfConfig(t *testing.T) {
 	h := newHarness(t)
 	h.cp.SetDown(true)
-	err := h.client(nil).Boot(context.Background())
+	err := h.boot(h.client(nil))
 	if err == nil || !strings.Contains(err.Error(), "no config: control plane unavailable and no seed") {
 		t.Fatalf("Boot error %v", err)
 	}
@@ -174,7 +173,7 @@ func TestBootFailsWithNoSourceOfConfig(t *testing.T) {
 // before tokens_cache_write) is discarded and logged: the boot falls back to the seed.
 func TestLastKnownGoodOfAnotherFormatIsDiscarded(t *testing.T) {
 	h := newHarness(t)
-	old := lastKnownGood{ConfigEpoch: "0123456789abcdef0123456789abcdef", Version: 3,
+	old := lastKnownGood{ConfigHash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		Config: []byte(`{"format_version": 3, "models": {"m": {"prices": [{"effective_from": "2026-01-01", ` +
 			`"tiers": [{"above_input_tokens": 0, "usd_per_million": {"tokens_in": 1}}]}]}}}`)}
 	if err := h.dir.WriteVersioned(LastKnownGoodFile, lastKnownGoodFormat-1, old); err != nil {

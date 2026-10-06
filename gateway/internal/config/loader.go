@@ -55,18 +55,8 @@ func NewApplier(holder *Holder, logger *slog.Logger, lookupEnv func(string) (str
 // Apply validates data and swaps it in. A config that fails anywhere is logged with
 // its issue codes and not applied; the running snapshot, if any, stays, and the error
 // is a *ValidationError. trigger names what asked for the load; attrs describe the
-// source (file, config version) for both log lines.
+// source (file, config hash) for both log lines.
 func (a *Applier) Apply(trigger string, data []byte, attrs ...any) (*Snapshot, error) {
-	return a.apply(trigger, data, Version{}, attrs)
-}
-
-// ApplyPublished is Apply for a config a control plane published as version v: the
-// snapshot carries v (Snapshot.Version).
-func (a *Applier) ApplyPublished(trigger string, data []byte, v Version, attrs ...any) (*Snapshot, error) {
-	return a.apply(trigger, data, v, attrs)
-}
-
-func (a *Applier) apply(trigger string, data []byte, v Version, attrs []any) (*Snapshot, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -78,7 +68,6 @@ func (a *Applier) apply(trigger string, data []byte, v Version, attrs []any) (*S
 		a.reject(Load{Trigger: trigger, Document: true, Bytes: len(data), Duration: time.Since(start)}, err, attrs)
 		return nil, err
 	}
-	snapshot.Version = v
 	a.holder.Swap(snapshot)
 	load := Load{Trigger: trigger, Applied: true, Document: true, Bytes: len(data), Duration: time.Since(start)}
 	a.logger.Info("config applied", append(append([]any{"kaiak.trigger", trigger}, attrs...),

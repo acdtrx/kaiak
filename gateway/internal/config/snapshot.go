@@ -89,14 +89,6 @@ const (
 	UnitTokensReasoning  Unit = "tokens_reasoning"
 )
 
-// Version identifies a config a control plane published: its version number and the
-// epoch of the control-plane store it counts in (docs/specs/CONTROL-PROTOCOL.md,
-// Config versions). Two configs are the same one only when both are equal.
-type Version struct {
-	Epoch  string
-	Number int64
-}
-
 // Snapshot is one validated config, resolved for serving: references are pointers,
 // defaults applied, each group's effective allowed models and limits derived along its
 // path.
@@ -104,8 +96,6 @@ type Version struct {
 // and must not modify anything reachable from it. A request takes the current
 // snapshot once (Holder.Current) and uses it until it finishes.
 type Snapshot struct {
-	// Version is the control plane's identity of the config: zero in file mode.
-	Version             Version
 	MaxRequestBodyBytes int64
 	// KeyIDLabel: label usage metrics with the key ID; GroupLabel: with the key's
 	// group, key_group (the top-level group labels them either way).

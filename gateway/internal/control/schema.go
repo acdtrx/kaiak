@@ -14,6 +14,7 @@ import (
 var (
 	instancePattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$`)
 	hex32Pattern      = regexp.MustCompile(`^[0-9a-f]{32}$`)
+	configHashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	requestIDPattern  = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 	amountPattern     = regexp.MustCompile(`^(0|[1-9][0-9]{0,17})$`)
 	codePattern       = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
@@ -59,8 +60,12 @@ func (w *walker) count() func(v any, path string) {
 	return w.IntegerBetween(0, schemacheck.MaxSafeInteger)
 }
 
-func (w *walker) configVersion() func(v any, path string) {
+func (w *walker) positive() func(v any, path string) {
 	return w.IntegerBetween(1, schemacheck.MaxSafeInteger)
+}
+
+func (w *walker) configHash() func(v any, path string) {
+	return w.StringMatching(configHashPattern, "64 lowercase hex digits")
 }
 
 func (w *walker) hex32() func(v any, path string) {
@@ -95,11 +100,10 @@ func (w *walker) usageRecord(v any, path string) {
 	})
 }
 
-// configSnapshot checks the envelope; the config inside is config.Parse's to check.
-func (w *walker) configSnapshot(v any, path string) {
+// configEvent checks the envelope; the config inside is config.Parse's to check.
+func (w *walker) configEvent(v any, path string) {
 	w.Object(v, path, map[string]schemacheck.Field{
-		"config_epoch": {Required: true, Check: w.hex32()},
-		"version":      {Required: true, Check: w.configVersion()},
+		"config_hash": {Required: true, Check: w.configHash()},
 		"config": {Required: true, Check: func(v any, path string) {
 			if _, ok := v.(map[string]any); !ok {
 				w.Fail(path, "must be an object")
@@ -110,14 +114,11 @@ func (w *walker) configSnapshot(v any, path string) {
 
 func (w *walker) totals(v any, path string) {
 	w.Object(v, path, map[string]schemacheck.Field{
-		"revision":       {Required: true, Check: w.count()},
-		"config_epoch":   {Required: true, Check: w.hex32()},
-		"config_version": {Required: true, Check: w.configVersion()},
-		"live_gateways":  {Required: true, Check: w.count()},
+		"live_gateways": {Required: true, Check: w.count()},
 		"counted_through": {Required: true, Check: schemacheck.Nullable(func(v any, path string) {
 			w.Object(v, path, map[string]schemacheck.Field{
 				"epoch":    {Required: true, Check: w.hex32()},
-				"sequence": {Required: true, Check: w.configVersion()},
+				"sequence": {Required: true, Check: w.positive()},
 			})
 		})},
 		"windows": {Required: true, Check: w.ArrayOf(0, 0, false, w.totalsWindow)},
@@ -150,15 +151,11 @@ func (w *walker) totalsWindow(v any, path string) {
 	}
 }
 
-func (w *walker) resync(v any, path string) {
-	w.Object(v, path, map[string]schemacheck.Field{})
-}
-
 func (w *walker) batchID(v any, path string) {
 	w.Object(v, path, map[string]schemacheck.Field{
 		"instance": {Required: true, Check: w.instance()},
 		"epoch":    {Required: true, Check: w.hex32()},
-		"sequence": {Required: true, Check: w.configVersion()},
+		"sequence": {Required: true, Check: w.positive()},
 	})
 }
 
@@ -171,22 +168,20 @@ func (w *walker) usageBatch(v any, path string) {
 
 func (w *walker) usageAck(v any, path string) {
 	w.Object(v, path, map[string]schemacheck.Field{
-		"batch":  {Required: true, Check: w.batchID},
-		"totals": {Required: true, Check: w.totals},
+		"batch": {Required: true, Check: w.batchID},
 	})
 }
 
 func (w *walker) status(v any, path string) {
-	m := w.Object(v, path, map[string]schemacheck.Field{
-		"instance":               {Required: true, Check: w.instance()},
-		"protocol_version":       {Required: true, Check: w.Const(ProtocolVersion)},
-		"state":                  {Required: true, Check: w.Enum(states)},
-		"started_at":             {Required: true, Check: w.timestamp()},
-		"applied_config_version": {Required: true, Check: schemacheck.Nullable(w.configVersion())},
-		"applied_config_epoch":   {Required: true, Check: schemacheck.Nullable(w.hex32())},
+	w.Object(v, path, map[string]schemacheck.Field{
+		"instance":            {Required: true, Check: w.instance()},
+		"protocol_version":    {Required: true, Check: w.Const(ProtocolVersion)},
+		"state":               {Required: true, Check: w.Enum(states)},
+		"started_at":          {Required: true, Check: w.timestamp()},
+		"applied_config_hash": {Required: true, Check: schemacheck.Nullable(w.configHash())},
 		"last_rejection": {Required: true, Check: schemacheck.Nullable(func(v any, path string) {
 			w.Object(v, path, map[string]schemacheck.Field{
-				"version": {Required: true, Check: w.configVersion()},
+				"config_hash": {Required: true, Check: w.configHash()},
 				"codes": {Required: true, Check: w.ArrayOf(1, 0, true,
 					w.StringMatching(codePattern, "a lowercase code, words joined by '-'"))},
 			})
@@ -199,14 +194,6 @@ func (w *walker) status(v any, path string) {
 				})
 			})},
 	})
-	if m == nil {
-		return
-	}
-	version, hasVersion := m["applied_config_version"]
-	epoch, hasEpoch := m["applied_config_epoch"]
-	if hasVersion && hasEpoch && (version == nil) != (epoch == nil) {
-		w.Fail(schemacheck.Pointer(path, "applied_config_epoch"), "is null exactly when applied_config_version is")
-	}
 }
 
 func (w *walker) backendStatus(v any, path string) {

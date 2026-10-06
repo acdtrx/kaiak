@@ -51,21 +51,20 @@ func decodeWith[T any](decode func([]byte) (T, error)) decoder {
 
 // decoders maps each fixture directory to its message's decoder.
 var decoders = map[string]decoder{
-	"config-snapshot": func(data []byte) (any, []string) {
-		snapshot, err := DecodeConfigSnapshot(data)
+	"config-event": func(data []byte) (any, []string) {
+		event, err := DecodeConfigEvent(data)
 		if err != nil {
 			return nil, codesOf(err)
 		}
-		if _, err := config.Parse(snapshot.Config); err != nil {
+		if _, err := config.Parse(event.Config); err != nil {
 			var invalid *config.ValidationError
 			if !errors.As(err, &invalid) {
 				return nil, []string{"not a *config.ValidationError: " + err.Error()}
 			}
 			return nil, invalid.Codes()
 		}
-		return snapshot, nil
+		return event, nil
 	},
-	"resync":       decodeWith(DecodeResync),
 	"status":       decodeWith(DecodeStatus),
 	"totals":       decodeWith(DecodeTotals),
 	"usage-ack":    decodeWith(DecodeUsageAck),
@@ -289,18 +288,13 @@ func TestTotalsAmountBeyondSafeInteger(t *testing.T) {
 
 // Integer fields written with a fraction or exponent are integers, as the schemas say.
 func TestIntegerSpellings(t *testing.T) {
-	resync, err := DecodeResync([]byte(`{}`))
-	if err != nil || resync != (Resync{}) {
-		t.Fatalf("resync: %v", err)
-	}
 	status, err := DecodeStatus([]byte(`{"instance":"gw-1","protocol_version":5.0,"state":"ready",
-		"started_at":"2026-09-24T10:00:00Z","applied_config_version":4e1,"applied_config_epoch":"0f1e2d3c4b5a69788796a5b4c3d2e1f0","last_rejection":null,
+		"started_at":"2026-09-24T10:00:00Z","applied_config_hash":null,"last_rejection":null,
 		"backends":{"b":{"in_flight":2.0,"max_in_flight":4e0,"deployments":{}}},"models":{"m":{"queued":1.0}}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.AppliedConfigVersion == nil || *status.AppliedConfigVersion != 40 ||
-		status.Backends["b"].InFlight != 2 || status.Backends["b"].MaxInFlight != 4 || status.Models["m"].Queued != 1 {
+	if status.Backends["b"].InFlight != 2 || status.Backends["b"].MaxInFlight != 4 || status.Models["m"].Queued != 1 {
 		t.Errorf("status = %+v", status)
 	}
 }
@@ -372,10 +366,8 @@ func TestDuplicateMemberFixtures(t *testing.T) {
 // decodeByKind runs the message decoder of kind and returns its error.
 func decodeByKind(kind string, raw []byte) (any, error) {
 	switch kind {
-	case "config-snapshot":
-		return DecodeConfigSnapshot(raw)
-	case "resync":
-		return DecodeResync(raw)
+	case "config-event":
+		return DecodeConfigEvent(raw)
 	case "status":
 		return DecodeStatus(raw)
 	case "totals":

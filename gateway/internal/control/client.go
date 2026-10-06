@@ -20,8 +20,8 @@ import (
 )
 
 // This file is the control-plane client: the only code in the gateway that talks to
-// a control plane (docs/ARCHITECTURE.md). It boots the config (snapshot, else the
-// last-known-good copy, else the seed), then follows the config stream for as long as it runs,
+// a control plane (docs/ARCHITECTURE.md). It boots the config (the stream's first
+// config, else the last-known-good copy, else the seed), then follows the config stream for as long as it runs,
 // beside the usage sender (usage.go, spool.go) and the status reporter (status.go).
 // Nothing here is on the request path: requests read the config Holder, which the
 // client fills through the config Applier like any other source, and settled usage
@@ -45,7 +45,7 @@ const (
 	DefaultIdleTimeout = 45 * time.Second
 )
 
-// The boot retries: while the control plane is unavailable, the snapshot is fetched
+// The boot retries: while the control plane is unavailable, the stream is opened
 // again after a jittered delay, 250 ms doubling up to 2 s, until the boot wait ends.
 // Shorter than the reconnect backoff: nothing serves yet, and a control plane
 // restarting beside the gateway answers within seconds.
@@ -56,7 +56,7 @@ const (
 
 // responseHeaderTimeout bounds the wait for any control-plane answer's headers once
 // the request is sent: a backstop under each request's own bound (the stream's
-// opening bound, the snapshot, status and usage timeouts).
+// opening bound, the status and usage timeouts).
 const responseHeaderTimeout = 30 * time.Second
 
 // defaultHTTPClient is the client for control-plane requests: no overall timeout
@@ -71,10 +71,6 @@ func defaultHTTPClient() *http.Client {
 	return &http.Client{Transport: transport,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
-
-// snapshotTimeout bounds one GET /v1/config after boot, so a control plane that
-// accepts the connection and never answers does not stall the client.
-const snapshotTimeout = 30 * time.Second
 
 // IsInstanceID reports whether id has the instance ID shape (CONTROL-PROTOCOL.md,
 // Messages): a letter or digit, then up to 252 letters, digits, '.', '_' or '-'.
@@ -96,8 +92,9 @@ type Options struct {
 	Logger *slog.Logger
 	// HTTPClient carries every request; nil is defaultHTTPClient.
 	HTTPClient *http.Client
-	// BootWait bounds the snapshot fetches at boot — retried while the control plane
-	// is unavailable — before falling back to the last-known-good or seed config.
+	// BootWait bounds the wait for the stream's first config at boot — the stream
+	// opened again while the control plane is unavailable — before falling back to the
+	// last-known-good or seed config.
 	BootWait time.Duration
 	// SeedConfig, when set, is the config document a boot applies when the control
 	// plane is unavailable and there is no last-known-good copy
@@ -113,8 +110,8 @@ type Options struct {
 	// IdleTimeout: a stream silent this long (no event, no heartbeat) is treated as
 	// dead and reconnected.
 	IdleTimeout time.Duration
-	// OnTotals receives what each totals message gives — every totals event and
-	// every usage ack — one call at a time (never concurrently); nil drops them.
+	// OnTotals receives what each totals event gives, one call at a time, in the order
+	// the stream delivered them; nil drops them.
 	OnTotals func(TotalsUpdate)
 	// BatchInterval seals the filling usage batch this often; BatchMaxRecords seals it
 	// once it holds that many records (at most MaxBatchRecords).
@@ -154,15 +151,8 @@ type Client struct {
 	backoff backoff
 	usage   *usageSender
 	status  *statusReporter
-	// totalsMu makes OnTotals calls one at a time — the stream and the usage sender
-	// deliver from different goroutines — and guards lastTotals.
-	totalsMu sync.Mutex
-	// lastTotals is the config epoch and revision of the totals last applied; nil
-	// before any.
-	lastTotals *appliedTotals
-
 	// lastContact is when the control plane was last in contact (unix nanoseconds):
-	// a snapshot fetched, bytes on the config stream, an ack. It starts when the
+	// bytes on the config stream, an ack. It starts when the
 	// client is created, so a gateway that boots without reaching the control plane
 	// (last-known-good or seed config) counts its outage from its start. streamOpen is set
 	// while a config stream is open.
@@ -170,23 +160,15 @@ type Client struct {
 	streamOpen  atomic.Bool
 
 	mu sync.Mutex
-	// applied is the version and epoch of the config in force, nil before one is
-	// applied (and while the seed, which has none, is).
-	applied *configPosition
-	// position is the latest version taken from the control plane, applied or
-	// rejected, with its epoch: the stream resumes after it, so a rejected config is
-	// not replayed on every reconnect. Version 0 before any.
-	position configPosition
+	// appliedHash is the hash of the config in force from the control plane (or its
+	// last-known-good copy); "" before one is applied, and while the seed, which has
+	// none, is.
+	appliedHash string
 	// rejection is the latest config received from the control plane when it was
-	// rejected; nil before any, and once a later one is applied.
+	// rejected; nil before any, and once a later one is applied. A config event with
+	// its hash is skipped, so the same rejected config is not checked again on every
+	// reconnect.
 	rejection *Rejection
-}
-
-// configPosition is a config version and the control-plane store epoch it counts in
-// (CONTROL-PROTOCOL.md, Config versions): versions of different epochs never compare.
-type configPosition struct {
-	epoch   string
-	version int64
 }
 
 // New returns a client; Boot and Run use it. It restores the usage spool from the data
@@ -258,54 +240,54 @@ func New(opts Options) *Client {
 
 // Contact reports whether a config stream is open — contact for as long as it stays
 // open, since a silent one is closed after IdleTimeout — and when the control plane
-// was last in contact: a snapshot fetched, bytes on the stream (heartbeats
-// included), an ack. Before any, last is when the client was created.
+// was last in contact: bytes on the stream (heartbeats included), an ack. Before any,
+// last is when the client was created.
 func (c *Client) Contact() (connected bool, last time.Time) {
 	return c.streamOpen.Load(), time.Unix(0, c.lastContact.Load())
 }
 
 func (c *Client) touch() { c.lastContact.Store(time.Now().UnixNano()) }
 
-// AppliedVersion is the version of the config in force; false before one is applied.
-func (c *Client) AppliedVersion() (int64, bool) {
+// AppliedConfigHash is the hash of the config in force from the control plane (or
+// its last-known-good copy); false before one is applied, and while the seed is.
+func (c *Client) AppliedConfigHash() (string, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.applied == nil {
-		return 0, false
-	}
-	return c.applied.version, true
+	return c.appliedHash, c.appliedHash != ""
 }
 
 // LastRejection is the status report's last_rejection: the latest config received
 // from the control plane, when the gateway rejected it. A config applied from the
-// control plane afterwards clears it, whatever the version numbers say — a restarted
-// control plane counts from 1 again, so a rejected config can have a lower version
-// than the one in force. False when there is none.
+// control plane afterwards clears it. False when there is none.
 func (c *Client) LastRejection() (Rejection, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.rejection == nil {
 		return Rejection{}, false
 	}
-	return Rejection{Version: c.rejection.Version, Codes: slices.Clone(c.rejection.Codes)}, true
+	return Rejection{ConfigHash: c.rejection.ConfigHash, Codes: slices.Clone(c.rejection.Codes)}, true
 }
 
+// errNoConfigYet: the stream was open when the boot wait ended, but the control plane
+// had no config published to send.
+var errNoConfigYet = errors.New("the control plane sent no config within the boot wait: nothing published yet")
+
 // Boot gets the gateway its first config (docs/specs/GATEWAY.md, Control-plane mode →
-// Boot): the snapshot, fetched again with backoff while the control plane is
-// unavailable, until BootWait ends; failing that (unavailable through the wait, a
-// config the gateway rejects, a refused token — the last two at once), the
-// last-known-good copy when there is a data directory; failing that too, when the
-// control plane is unavailable, the seed config (Options.SeedConfig). With none, Boot
-// returns an error saying why: the process exits on it rather than run without a
-// config. Cancelling ctx ends the boot with its error.
+// Boot): the stream's first config event, the stream opened again with backoff while
+// the control plane is unavailable, until BootWait ends; failing that (unavailable
+// through the wait, a config the gateway rejects, a refused token — the last two at
+// once), the last-known-good copy when there is a data directory; failing that too,
+// when the control plane is unavailable, the seed config (Options.SeedConfig). With
+// none, Boot returns an error saying why: the process exits on it rather than run
+// without a config. Cancelling ctx ends the boot with its error.
 func (c *Client) Boot(ctx context.Context) error {
-	snapshot, err := c.bootSnapshot(ctx)
+	first, err := c.bootConfig(ctx)
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 	if err != nil {
-		c.logFetchFailure("config snapshot not fetched at startup", err)
-	} else if c.takeSnapshot(snapshot) {
+		c.logFetchFailure("config not received at startup", err)
+	} else if c.applyConfig(first) {
 		return nil
 	}
 	if c.bootFromLastKnownGood() {
@@ -314,8 +296,8 @@ func (c *Client) Boot(ctx context.Context) error {
 	switch {
 	case err == nil:
 		r, _ := c.LastRejection()
-		return fmt.Errorf("no config: the control plane's config version %d was rejected (codes %s; see the config rejected line) "+
-			"and there is no last-known-good config: fix the published config", r.Version, strings.Join(r.Codes, ", "))
+		return fmt.Errorf("no config: the control plane's config was rejected (codes %s; see the config rejected line) "+
+			"and there is no last-known-good config: fix the published config", strings.Join(r.Codes, ", "))
 	case !unavailable(err):
 		return fmt.Errorf("no config: %w, and there is no last-known-good config; the seed config serves only while the "+
 			"control plane is unavailable", err)
@@ -327,18 +309,30 @@ func (c *Client) Boot(ctx context.Context) error {
 	return nil
 }
 
-// bootSnapshot fetches the snapshot within BootWait: an unavailable control plane (a
-// restart, a rollout of the control plane beside the gateways) is asked again after a
-// jittered delay until the wait ends; any other failure — the token refused, a
-// snapshot the message rules refuse — returns at once, as waiting cannot fix it.
-func (c *Client) bootSnapshot(ctx context.Context) (ConfigSnapshot, error) {
+// bootConfig waits for the stream's first config event within BootWait: an
+// unavailable control plane (a restart, a rollout of the control plane beside the
+// gateways) is asked again after a jittered delay until the wait ends; any other
+// failure — the token refused, a config event the message rules refuse — returns at
+// once, as waiting cannot fix it. The stream is closed once the config arrives: Run
+// opens its own, which sends the same config (skipped by its hash) and then totals.
+func (c *Client) bootConfig(ctx context.Context) (ConfigEvent, error) {
 	bootCtx, cancel := context.WithTimeout(ctx, c.opts.BootWait)
 	defer cancel()
 	retry := backoff{base: bootBackoffBase, cap: bootBackoffCap, random: c.opts.random}
 	for attempt := 1; ; attempt++ {
-		snapshot, err := c.fetchSnapshot(bootCtx)
-		if err == nil || !unavailable(err) || bootCtx.Err() != nil {
-			return snapshot, err
+		result := c.followStream(bootCtx, true)
+		if result.first != nil {
+			return *result.first, nil
+		}
+		err := result.err
+		switch {
+		case err == nil:
+			err = errors.New("the config stream ended before a config")
+		case result.lasted > 0 && bootCtx.Err() != nil && ctx.Err() == nil:
+			err = errNoConfigYet
+		}
+		if !unavailable(err) || bootCtx.Err() != nil {
+			return ConfigEvent{}, err
 		}
 		level := slog.LevelDebug
 		if attempt == 1 {
@@ -347,21 +341,21 @@ func (c *Client) bootSnapshot(ctx context.Context) (ConfigSnapshot, error) {
 				level = slog.LevelError
 			}
 		}
-		c.logger.Log(ctx, level, "config snapshot not fetched at startup: retrying within the boot wait",
+		c.logger.Log(ctx, level, "config not received at startup: retrying within the boot wait",
 			"kaiak.control.attempt", attempt, logattr.Seconds("kaiak.control.boot_wait", c.opts.BootWait), "exception.message", err)
 		if c.opts.wait(bootCtx, retry.next()) != nil {
-			return snapshot, err // the wait is over
+			return ConfigEvent{}, err // the wait is over
 		}
 	}
 }
 
-// unavailable reports whether a failed snapshot fetch means the control plane cannot
-// give a config now: the connection failed or timed out, the body was cut off, the
-// answer lacked this protocol version (a proxy answering for a control plane that is
-// down, or a control plane of another version), or it answered 5xx (503
-// config-unavailable: nothing published yet; 500: failing on its side). A 4xx (the
-// token refused) or a snapshot the message rules refuse is an error for the operator
-// to fix, not an outage.
+// unavailable reports whether a failed boot attempt means the control plane cannot
+// give a config now: the connection failed or timed out, the stream was cut off or
+// stayed silent, the answer lacked this protocol version (a proxy answering for a
+// control plane that is down, or a control plane of another version), it answered 5xx
+// (failing on its side), or it had nothing published yet. A 4xx (the token refused)
+// or a config event the message rules refuse is an error for the operator to fix, not
+// an outage.
 func unavailable(err error) bool {
 	if s, ok := errors.AsType[*statusError](err); ok {
 		return s.status >= 500
@@ -371,9 +365,8 @@ func unavailable(err error) bool {
 }
 
 // bootFromSeed applies the seed config through the shared apply path; it reports
-// whether it was applied. The seed is never saved as the last-known-good copy and
-// carries no control-plane version: the stream starts from the snapshot, whose config
-// replaces it.
+// whether it was applied. The seed is never saved as the last-known-good copy and has
+// no config hash: the stream's config replaces it.
 func (c *Client) bootFromSeed() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -394,64 +387,24 @@ func (c *Client) Run(ctx context.Context) {
 	c.http.CloseIdleConnections()
 }
 
-// appliedTotals is where the totals last applied stand: their store's config epoch
-// and their revision, the store's totals sequence within it.
-type appliedTotals struct {
-	epoch    string
-	revision Revision
-}
-
-// takeTotals hands one totals message to the consumer, one call at a time: its totals
-// when they are of the config epoch the gateway runs and their revision is higher
-// than the last applied in that epoch (the first in an epoch whatever its revision;
-// CONTROL-PROTOCOL.md, Messages → Totals), and the usage it shows counted — whatever
-// the revision or epoch, since the totals applied are at least as new and every
-// message is a consistent snapshot. acked is the generation of the batch an ack
-// acknowledges (0 for a totals event).
-func (c *Client) takeTotals(t Totals, acked uint64) {
-	c.totalsMu.Lock()
-	defer c.totalsMu.Unlock()
-	update := TotalsUpdate{Counted: acked}
+// takeTotals hands one totals event to the consumer with the usage it shows counted:
+// every totals event is applied, in the order the stream delivered it — the control
+// plane keeps its stream in order (CONTROL-PROTOCOL.md, Config stream → Order).
+func (c *Client) takeTotals(t Totals) {
+	update := TotalsUpdate{Totals: t}
 	if t.CountedThrough != nil {
-		update.Counted = max(update.Counted, c.usage.countedGeneration(*t.CountedThrough))
+		update.Counted = c.usage.countedGeneration(*t.CountedThrough)
 	}
-	switch running := c.appliedEpoch(); {
-	case t.ConfigEpoch != running:
-		c.logger.Info("totals ignored: from another config epoch",
-			"kaiak.totals.config_epoch", t.ConfigEpoch, "kaiak.config.epoch", running)
-	case c.lastTotals == nil || c.lastTotals.epoch != t.ConfigEpoch || t.Revision > c.lastTotals.revision:
-		c.lastTotals = &appliedTotals{epoch: t.ConfigEpoch, revision: t.Revision}
-		update.Totals = &t
-	default:
-		c.logger.Debug("totals ignored: not newer than the totals applied", "kaiak.totals.sequence", t.Revision,
-			"kaiak.totals.applied_sequence", c.lastTotals.revision)
-	}
-	if c.opts.OnTotals != nil && (update.Totals != nil || update.Counted != 0) {
+	if c.opts.OnTotals != nil {
 		c.opts.OnTotals(update)
 	}
 }
 
-// followConfig follows the config until ctx is cancelled: the config stream from the
-// latest version taken, the snapshot again when nothing was taken yet or the stream
-// says resync, and a backoff delay before every reconnect.
+// followConfig follows the config until ctx is cancelled: the config stream, with a
+// backoff delay before every reconnect.
 func (c *Client) followConfig(ctx context.Context) {
-	needSnapshot := c.currentPosition().version == 0
 	for ctx.Err() == nil {
-		if needSnapshot {
-			fetchCtx, cancel := context.WithTimeout(ctx, snapshotTimeout)
-			snapshot, err := c.fetchSnapshot(fetchCtx)
-			cancel()
-			if err != nil {
-				if ctx.Err() == nil {
-					c.logFetchFailure("config snapshot not fetched", err)
-				}
-				c.pause(ctx)
-				continue
-			}
-			c.takeSnapshot(snapshot)
-			needSnapshot = false
-		}
-		result := c.followStream(ctx)
+		result := c.followStream(ctx, false)
 		if ctx.Err() != nil {
 			return
 		}
@@ -459,17 +412,8 @@ func (c *Client) followConfig(ctx context.Context) {
 		if result.lasted >= c.opts.HealthyAfter {
 			c.backoff.reset()
 		}
-		needSnapshot = result.resync || positionRefused(result.err)
 		c.pause(ctx)
 	}
-}
-
-// positionRefused reports whether the control plane refused to open the stream from
-// the position sent (400 since-invalid): resuming from it again would be refused
-// again, so the client fetches the snapshot and resumes from its position.
-func positionRefused(err error) bool {
-	s, ok := errors.AsType[*statusError](err)
-	return ok && s.status == http.StatusBadRequest && s.code == "since-invalid"
 }
 
 // pause waits the next backoff delay, or until ctx is cancelled.
@@ -479,71 +423,39 @@ func (c *Client) pause(ctx context.Context) {
 	_ = c.opts.wait(ctx, d) // cancelled: the loop sees ctx and stops
 }
 
-// appliedEpoch is the config epoch of the config in force; "" while none from the
-// control plane is (before one, or with the seed).
-func (c *Client) appliedEpoch() string {
+// takeConfig applies a config event — whatever config it replaces: the control plane
+// is the authority on which config is current (CONTROL-PROTOCOL.md, Current config) —
+// unless its hash is the config the gateway runs or the one it last rejected.
+func (c *Client) takeConfig(e ConfigEvent) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.applied == nil {
-		return ""
-	}
-	return c.applied.epoch
-}
-
-func (c *Client) currentPosition() configPosition {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.position
-}
-
-// takeSnapshot applies a snapshot whatever its version: at boot nothing is in force,
-// and after a resync a lower version is the control plane's new count, or the same
-// number in another epoch another config (CONTROL-PROTOCOL.md, Config versions). It
-// reports whether the config was applied.
-func (c *Client) takeSnapshot(s ConfigSnapshot) bool {
-	return c.applyConfig(s)
-}
-
-// takeStreamConfig applies a config event unless its version was already taken in the
-// same epoch: within an epoch the stream never takes the gateway back to an older
-// version; a version of another epoch is another store's count, applied whatever its
-// number.
-func (c *Client) takeStreamConfig(s ConfigSnapshot) {
-	position := c.currentPosition()
-	if s.ConfigEpoch == position.epoch && s.Version <= position.version {
-		c.logger.Debug("config event ignored: version already taken", "kaiak.config.version", s.Version,
-			"kaiak.config.position", position.version)
+	same := e.ConfigHash == c.appliedHash || (c.rejection != nil && e.ConfigHash == c.rejection.ConfigHash)
+	c.mu.Unlock()
+	if same {
+		c.logger.Debug("config event skipped: the config already applied or rejected", "kaiak.config.hash", e.ConfigHash)
 		return
 	}
-	if s.ConfigEpoch != position.epoch {
-		c.logger.Info("config event from another config epoch: applied whatever its version",
-			"kaiak.config.epoch", s.ConfigEpoch, "kaiak.config.previous_epoch", position.epoch)
-	}
-	c.applyConfig(s)
+	c.applyConfig(e)
 }
 
 // applyConfig runs the config through the shared apply path. Applied, it becomes the
 // last-known-good copy and ends any rejection report; rejected, it is kept for the
-// status report and the running config stays. Either way the stream resumes after its version. c.mu is held across
-// the apply, so the applied version and rejection read by the status report always
-// match the config in force.
-func (c *Client) applyConfig(s ConfigSnapshot) bool {
-	version := s.Version
+// status report and the running config stays. c.mu is held across the apply, so the
+// applied hash and rejection read by the status report always match the config in
+// force.
+func (c *Client) applyConfig(e ConfigEvent) bool {
 	c.mu.Lock()
-	_, err := c.opts.Applier.ApplyPublished(TriggerControl, s.Config, config.Version{Epoch: s.ConfigEpoch, Number: version},
-		"kaiak.config.version", version, "kaiak.config.epoch", s.ConfigEpoch)
-	c.position = configPosition{epoch: s.ConfigEpoch, version: version}
+	_, err := c.opts.Applier.Apply(TriggerControl, e.Config, "kaiak.config.hash", e.ConfigHash)
 	if err != nil {
-		c.rejection = &Rejection{Version: version, Codes: rejectionCodes(err)}
+		c.rejection = &Rejection{ConfigHash: e.ConfigHash, Codes: rejectionCodes(err)}
 		c.mu.Unlock()
 		c.status.requestReport(statusTriggerChange)
 		return false
 	}
-	c.applied = &configPosition{epoch: s.ConfigEpoch, version: version}
+	c.appliedHash = e.ConfigHash
 	c.rejection = nil
 	c.mu.Unlock()
 	c.status.requestReport(statusTriggerChange)
-	c.saveLastKnownGood(configPosition{epoch: s.ConfigEpoch, version: version}, s.Config)
+	c.saveLastKnownGood(e)
 	return true
 }
 
@@ -567,8 +479,6 @@ func (c *Client) logFetchFailure(msg string, err error) {
 func (c *Client) logStreamEnd(r streamResult) {
 	attrs := []any{logattr.Seconds("kaiak.lasted", r.lasted)}
 	switch {
-	case r.resync:
-		c.logger.Info("config stream ended: resync", attrs...)
 	case r.err == nil:
 		c.logger.Info("config stream ended by the control plane", attrs...)
 	case errors.Is(r.err, errProtocolMismatch):

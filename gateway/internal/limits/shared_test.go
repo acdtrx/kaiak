@@ -64,7 +64,7 @@ func pushedWindow(group string, typ config.LimitType, start string, used int64) 
 func TestSharedWindowsCountPushedTotalsPlusOwnUsage(t *testing.T) {
 	c := newClock("2026-09-24T10:30:00Z")
 	l, _ := c.shared(holderOf(snapshot(t, limitsDoc{workload: hourLimit, team: usdLimit})))
-	l.TakeTotals(&Totals{LiveGateways: 2, Windows: []PushedWindow{
+	l.TakeTotals(Totals{LiveGateways: 2, Windows: []PushedWindow{
 		pushedWindow("w", config.LimitTokensPerHour, "2026-09-24T10:00:00Z", 600),
 		pushedWindow("t", config.LimitUSDPerMonth, "2026-09-01T00:00:00Z", 900_000_000),
 	}}, 0)
@@ -82,13 +82,13 @@ func TestSharedWindowsCountPushedTotalsPlusOwnUsage(t *testing.T) {
 	if rej := refused(t, l, workload, 10); rej.Group != "t" || rej.Measure != MeasureCost {
 		t.Errorf("rejection %+v, want the team's USD limit", rej)
 	}
-	// m2 is outside the USD limit's model set.
+	// m2 is unpriced: no budget counts it.
 	admitN(t, l, workload.on("m2"), 1, 10)
 }
 
-// The control plane counts a batch; the push that includes it and the ack that
-// follows both report its generation counted: the gateway's own copy leaves in the
-// same step the totals holding it arrive, never before and never twice.
+// The control plane counts a batch; the push that includes it reports its generation
+// counted: the gateway's own copy leaves in the same step the totals holding it
+// arrive, never before and never twice.
 func TestCountedUsageIsNeitherDoubledNorDropped(t *testing.T) {
 	c := newClock("2026-09-24T10:30:00Z")
 	l, _ := c.shared(holderOf(snapshot(t, limitsDoc{workload: hourLimit})))
@@ -103,20 +103,20 @@ func TestCountedUsageIsNeitherDoubledNorDropped(t *testing.T) {
 
 	// Another gateway used 600; the push counts batch 1 (700 in all).
 	window := pushedWindow("w", config.LimitTokensPerHour, "2026-09-24T10:00:00Z", 700)
-	l.TakeTotals(&Totals{Windows: []PushedWindow{window}}, sealed)
+	l.TakeTotals(Totals{Windows: []PushedWindow{window}}, sealed)
 	if got := hour(); got != 750 {
 		t.Errorf("after the push: hour used %d, want 700 pushed + 50 not yet counted", got)
 	}
-	// The ack of batch 1, older than the push: no totals, the generation again.
-	l.TakeTotals(nil, sealed)
+	// The same totals again (nothing new counted): batch 1 is not retired twice.
+	l.TakeTotals(Totals{Windows: []PushedWindow{window}}, sealed)
 	if got := hour(); got != 750 {
-		t.Errorf("after the ack: hour used %d, want 750 still", got)
+		t.Errorf("after the same push: hour used %d, want 750 still", got)
 	}
-	// An ack's totals older than the push are never applied, but a stale totals-less
-	// update keeps the base: nothing regresses.
-	l.TakeTotals(nil, 0)
+	// The push that counts batch 2: its 50 move from the own usage into the base.
+	l.TakeTotals(Totals{Windows: []PushedWindow{
+		pushedWindow("w", config.LimitTokensPerHour, "2026-09-24T10:00:00Z", 750)}}, 2)
 	if got := hour(); got != 750 {
-		t.Errorf("hour used %d, want 750", got)
+		t.Errorf("after batch 2 counted: hour used %d, want 750 pushed and nothing own", got)
 	}
 }
 
@@ -127,7 +127,7 @@ func TestPushedWindowRolloverMidBatch(t *testing.T) {
 	c := newClock("2026-09-24T10:59:58Z")
 	l, _ := c.shared(holderOf(snapshot(t, limitsDoc{workload: hourLimit})))
 	hour := func() int64 { return used(t, l, "w", config.LimitTokensPerHour) }
-	l.TakeTotals(&Totals{Windows: []PushedWindow{
+	l.TakeTotals(Totals{Windows: []PushedWindow{
 		pushedWindow("w", config.LimitTokensPerHour, "2026-09-24T10:00:00Z", 500)}}, 0)
 	const sealed = 1
 	l.Settle(admitN(t, l, workload, 1, 10)[0], inGeneration(sealed, record(100, 0, 0, 0, 0, 0)))
@@ -135,13 +135,13 @@ func TestPushedWindowRolloverMidBatch(t *testing.T) {
 		t.Fatalf("hour used %d, want 600", got)
 	}
 	// Mid-batch, the control plane's 11:00 window starts (30 from others).
-	l.TakeTotals(&Totals{Windows: []PushedWindow{
+	l.TakeTotals(Totals{Windows: []PushedWindow{
 		pushedWindow("w", config.LimitTokensPerHour, "2026-09-24T11:00:00Z", 30)}}, 0)
 	if got := hour(); got != 30 {
 		t.Errorf("hour used %d, want 30 pushed for 11:00 (the 100 belongs to 10:00)", got)
 	}
 	// The batch lands in 10:00 at the control plane.
-	l.TakeTotals(&Totals{Windows: []PushedWindow{
+	l.TakeTotals(Totals{Windows: []PushedWindow{
 		pushedWindow("w", config.LimitTokensPerHour, "2026-09-24T11:00:00Z", 30)}}, sealed)
 	if got := hour(); got != 30 {
 		t.Errorf("hour used %d, want 30", got)
@@ -172,7 +172,7 @@ func TestEarlierPushedWindowMatchingTheGatewayClockIsTaken(t *testing.T) {
 		slog.New(slog.NewTextHandler(&logs, nil)))
 	hour := func() int64 { return used(t, l, "w", config.LimitTokensPerHour) }
 	push := func(start string, n int64) {
-		l.TakeTotals(&Totals{Windows: []PushedWindow{
+		l.TakeTotals(Totals{Windows: []PushedWindow{
 			pushedWindow("w", config.LimitTokensPerHour, start, n)}}, 0)
 	}
 	push("2026-09-24T10:00:00Z", 700)
@@ -209,7 +209,7 @@ func TestUncountedUsageStaysInItsOwnWindow(t *testing.T) {
 	c := newClock("2026-09-24T10:00:00Z")
 	l, contact := c.shared(holderOf(snapshot(t, limitsDoc{workload: hourLimit})))
 	hour := func() int64 { return used(t, l, "w", config.LimitTokensPerHour) }
-	l.TakeTotals(&Totals{}, 0)
+	l.TakeTotals(Totals{}, 0)
 	contact.set(false, c.t) // no totals and no acks from here: an outage
 	generation := uint64(1)
 	for range 3 {
@@ -237,7 +237,7 @@ func TestUncountedUsageStaysInItsOwnWindow(t *testing.T) {
 
 	// Recovery: the backlog is counted and the totals for 13:00 apply.
 	contact.set(true, c.t)
-	l.TakeTotals(&Totals{Windows: []PushedWindow{
+	l.TakeTotals(Totals{Windows: []PushedWindow{
 		pushedWindow("w", config.LimitTokensPerHour, "2026-09-24T13:00:00Z", 600)}}, generation)
 	if got := hour(); got != 600 {
 		t.Errorf("hour used %d after recovery, want the control plane's 600", got)
@@ -254,7 +254,7 @@ func TestTotalsMatching(t *testing.T) {
 	hourW := pushedWindow("w", config.LimitTokensPerHour, "2026-09-24T10:00:00Z", 400)
 	hourT := pushedWindow("t", config.LimitTokensPerHour, "2026-09-24T10:00:00Z", 250)
 	stray := pushedWindow("t", config.LimitUSDPerMonth, "2026-09-01T00:00:00Z", 1)
-	l.TakeTotals(&Totals{Windows: []PushedWindow{hourW, hourT, stray}}, 0)
+	l.TakeTotals(Totals{Windows: []PushedWindow{hourW, hourT, stray}}, 0)
 	if got := used(t, l, "w", config.LimitTokensPerHour); got != 400 {
 		t.Errorf("workload hour %d, want 400", got)
 	}
@@ -262,7 +262,7 @@ func TestTotalsMatching(t *testing.T) {
 	if got := used(t, l, "t", config.LimitTokensPerHour); got != 250 {
 		t.Errorf("team hour %d after the reload, want the applied totals' 250", got)
 	}
-	l.TakeTotals(&Totals{Windows: []PushedWindow{hourT}}, 0)
+	l.TakeTotals(Totals{Windows: []PushedWindow{hourT}}, 0)
 	if got := used(t, l, "w", config.LimitTokensPerHour); got != 0 {
 		t.Errorf("workload hour %d, want 0: not listed", got)
 	}
@@ -294,19 +294,19 @@ func TestPerMinuteShares(t *testing.T) {
 		t.Errorf("headers %+v, want limit 10, remaining 7", h)
 	}
 	// Four live gateways: a share of 2, and the 3 counted stay counted.
-	l.TakeTotals(&Totals{LiveGateways: 4}, 0)
+	l.TakeTotals(Totals{LiveGateways: 4}, 0)
 	rej := refused(t, l, workload, 10)
 	if rej.Limit != 2 || rej.Used != 3 || rej.Headers.Requests == nil || rej.Headers.Requests.Limit != 2 {
 		t.Errorf("rejection %+v, want the share 2 with 3 used, in the headers too", rej)
 	}
-	l.TakeTotals(&Totals{LiveGateways: 1}, 0)
+	l.TakeTotals(Totals{LiveGateways: 1}, 0)
 	admitN(t, l, workload, 7, 10)
 }
 
 func TestOutageRefusesMoneyLimitedModelsAfterTheGrace(t *testing.T) {
 	c := newClock("2026-09-24T10:30:00Z")
 	l, contact := c.shared(holderOf(snapshot(t, limitsDoc{team: usdLimit, grace: "60000"})))
-	l.TakeTotals(&Totals{}, 0) // the first totals: the spend is known
+	l.TakeTotals(Totals{}, 0) // the first totals: the spend is known
 	lost := c.t
 	contact.set(false, lost)
 
@@ -348,7 +348,7 @@ func TestOutageRefusesMoneyLimitedModelsAfterTheGrace(t *testing.T) {
 func TestZeroGrace(t *testing.T) {
 	c := newClock("2026-09-24T10:30:00Z")
 	l, contact := c.shared(holderOf(snapshot(t, limitsDoc{team: usdLimit, grace: "0"})))
-	l.TakeTotals(&Totals{}, 0)
+	l.TakeTotals(Totals{}, 0)
 	contact.set(true, c.t.Add(-time.Minute))
 	admitN(t, l, workload, 1, 10)
 	contact.set(false, c.t)
@@ -368,7 +368,7 @@ func TestUsageSettledAfterItsBatchIsCountedIsNotCountedTwice(t *testing.T) {
 
 	res := admitN(t, l, workload, 1, 10)[0]
 	// Batch 1 holds the request's record; its ack arrives before the request settles.
-	l.TakeTotals(&Totals{Windows: []PushedWindow{
+	l.TakeTotals(Totals{Windows: []PushedWindow{
 		pushedWindow("w", config.LimitTokensPerHour, "2026-09-24T10:00:00Z", 600)}}, 1)
 	if got := hour(); got != 610 {
 		t.Fatalf("hour used %d before settlement, want 600 pushed + the 10 reserved", got)
@@ -392,101 +392,61 @@ func TestOlderGenerationSettledLateLeavesWithItsBatch(t *testing.T) {
 	hour := func() int64 { return used(t, l, "w", config.LimitTokensPerHour) }
 	l.Settle(admitN(t, l, workload, 1, 10)[0], inGeneration(2, record(50, 0, 0, 0, 0, 0)))
 	l.Settle(admitN(t, l, workload, 1, 10)[0], inGeneration(1, record(100, 0, 0, 0, 0, 0)))
-	l.TakeTotals(&Totals{Windows: []PushedWindow{
+	l.TakeTotals(Totals{Windows: []PushedWindow{
 		pushedWindow("w", config.LimitTokensPerHour, "2026-09-24T10:00:00Z", 100)}}, 1)
 	if got := hour(); got != 150 {
 		t.Errorf("hour used %d, want 100 pushed (batch 1) + 50 of batch 2", got)
 	}
 }
 
-// versioned is s as the control plane's version n of epoch "e1".
-func versioned(s *config.Snapshot, n int64) *config.Snapshot {
-	s.Version = config.Version{Epoch: "e1", Number: n}
-	return s
-}
-
-// H3, [B]'s scenario: v1 has a $1 team budget, spent. v2 raises it and this gateway
-// rejects v2 (a credential missing here), so it keeps v1. The control
-// plane counts v2's limits and every ack carries v2 totals: they must not erase v1's
-// spend, nor retire the gateway's own usage they were not applied with. Past the
-// outage grace the budget cannot be known, as in an outage; when a config whose
-// totals come applies, they do.
-func TestTotalsOfAnotherConfigKeepTheSpentBudget(t *testing.T) {
+// Totals apply whatever config the gateway runs: windows are counted per scope and
+// type whatever the config, so a gateway that keeps its own config (it rejected the
+// control plane's) enforces its budgets on the stream's totals, and the usage they
+// show counted leaves its own count. A config applied later keeps them by group and
+// type.
+func TestTotalsApplyWhateverTheConfig(t *testing.T) {
 	c := newClock("2026-09-24T10:30:00Z")
 	doc := limitsDoc{team: usdLimit, workload: hourLimit, grace: "60000"}
-	h := holderOf(versioned(snapshot(t, doc), 1))
+	h := holderOf(snapshot(t, doc))
 	l, _ := c.shared(h)
 	month := func() int64 { return used(t, l, "t", config.LimitUSDPerMonth) }
 	hour := func() int64 { return used(t, l, "w", config.LimitTokensPerHour) }
-	v1 := config.Version{Epoch: "e1", Number: 1}
-	v2 := config.Version{Epoch: "e1", Number: 2}
 	spent := pushedWindow("t", config.LimitUSDPerMonth, "2026-09-01T00:00:00Z", 1_100_000_000)
-	l.TakeTotals(&Totals{Config: v1, Windows: []PushedWindow{spent}}, 0)
+	l.TakeTotals(Totals{Windows: []PushedWindow{spent}}, 0)
 	if rej := refused(t, l, workload, 10); rej.Measure != MeasureCost || rej.Unavailable {
 		t.Fatalf("rejection %+v, want the spent budget", rej)
-	}
-	if l.ConfigMismatch() {
-		t.Fatal("mismatch reported with totals for the applied config")
 	}
 	// A request on m2 (unpriced: no budget refuses it) is recorded in batch 1.
 	l.Settle(admitN(t, l, workload.on("m2"), 1, 10)[0], inGeneration(1, record(10, 0, 0, 0, 0, 50_000_000)))
 
-	// v2 rejected here; acks keep coming with v2's totals (its raised limit's window,
-	// and the other limits unlisted), batch 1 among them.
+	// The control plane runs a config this gateway rejected; its totals keep coming,
+	// batch 1 counted in them. They are applied: the spend grows, batch 1 leaves the
+	// own usage, and past the grace the budget is refused as spent — never unavailable.
 	widened := pushedWindow("t", config.LimitUSDPerMonth, "2026-09-01T00:00:00Z", 1_150_000_000)
-	for range 3 {
-		l.TakeTotals(&Totals{Config: v2, Windows: []PushedWindow{widened}}, 1)
-		if got := month(); got != 1_100_000_000 {
-			t.Fatalf("team month used %d after v2 totals, want v1's 1.1 USD kept", got)
-		}
-		if rej := refused(t, l, workload, 10); rej.Measure != MeasureCost || rej.Unavailable {
-			t.Fatalf("rejection %+v, want the budget still spent", rej)
-		}
-		if got := hour(); got != 10 {
-			t.Fatalf("workload hour used %d, want batch 1's 10 tokens still the gateway's own", got)
-		}
-	}
-
-	// N-P3: the mismatch shows at once (the gauge), before the grace.
-	if !l.ConfigMismatch() {
-		t.Fatal("no mismatch reported with totals for v2 and v1 applied")
-	}
-	if l.Outage() {
-		t.Fatal("a mismatch reported as an outage")
-	}
-	// Past the grace with the totals still for v2: USD-limited requests are refused as
-	// in an outage; others keep serving.
-	c.advance(time.Minute + time.Millisecond)
-	if rej := refused(t, l, workload, 10); !rej.Unavailable {
-		t.Errorf("rejection %+v past the grace, want unavailable", rej)
-	}
-	admitN(t, l, workload.on("m2"), 1, 10)
-
-	// v3 is published and totals for it arrive first: they wait for the config, and
-	// apply with it (v3 keeps v1's budget; the control plane counts 1.2 USD there).
-	v3 := config.Version{Epoch: "e1", Number: 3}
-	l.TakeTotals(&Totals{Config: v3, Windows: []PushedWindow{
-		pushedWindow("t", config.LimitUSDPerMonth, "2026-09-01T00:00:00Z", 200_000_000)}}, 0)
-	if got := month(); got != 1_100_000_000 {
-		t.Errorf("team month used %d before v3 applies, want 1.1 USD", got)
-	}
-	h.Swap(versioned(snapshot(t, doc), 3))
-	if got := month(); got != 200_000_000 {
-		t.Errorf("team month used %d once v3 applies, want v3's totals", got)
-	}
-	if l.ConfigMismatch() {
-		t.Error("mismatch still reported once v3, the totals' config, applies")
+	counted := pushedWindow("w", config.LimitTokensPerHour, "2026-09-24T10:00:00Z", 10)
+	l.TakeTotals(Totals{Windows: []PushedWindow{widened, counted}}, 1)
+	if got := month(); got != 1_150_000_000 {
+		t.Errorf("team month used %d, want the stream's 1.15 USD", got)
 	}
 	if got := hour(); got != 10 {
-		t.Errorf("workload hour used %d once v3 applies, want batch 1 retired, the m2 reservation left", got)
+		t.Errorf("workload hour used %d, want the pushed 10 and batch 1 retired", got)
+	}
+	c.advance(time.Minute + time.Millisecond)
+	if rej := refused(t, l, workload, 10); rej.Measure != MeasureCost || rej.Unavailable {
+		t.Errorf("rejection %+v past the grace, want the spent budget", rej)
+	}
+
+	// A config raising the budget applies: the window is kept by group and type.
+	h.Swap(snapshot(t, limitsDoc{team: `[{ "type": "usd_per_month", "value": 2 }]`, workload: hourLimit, grace: "60000"}))
+	if got := month(); got != 1_150_000_000 {
+		t.Errorf("team month used %d under the new config, want 1.15 USD kept", got)
 	}
 	admitN(t, l, workload, 1, 10)
 }
 
 // D6: a model with no price in force costs nothing, so no budget ever refuses it —
-// neither a spent USD limit covering it nor the outage and mismatch refusals, which
-// exist because spend is unknown; priced models covered by the same limit are
-// refused.
+// neither a spent USD limit nor the outage refusal, which exists because spend is
+// unknown; priced models under the same limit are refused.
 func TestUnpricedModelsAreNeverRefusedForBudgets(t *testing.T) {
 	c := newClock("2026-09-24T10:30:00Z")
 	l, contact := c.shared(holderOf(snapshot(t, limitsDoc{global: `[{ "type": "usd_per_month", "value": 1 }]`, grace: "60000"})))
@@ -502,7 +462,7 @@ func TestUnpricedModelsAreNeverRefusedForBudgets(t *testing.T) {
 	// Back in contact with the budget spent: m1 refused, m2 still serves and spends
 	// nothing.
 	contact.set(true, c.t)
-	l.TakeTotals(&Totals{Windows: []PushedWindow{
+	l.TakeTotals(Totals{Windows: []PushedWindow{
 		pushedWindow("", config.LimitUSDPerMonth, "2026-09-01T00:00:00Z", 1_000_000_000),
 	}}, 0)
 	if rej := refused(t, l, workload, 10); rej.Unavailable || rej.Measure != MeasureCost {
@@ -513,14 +473,6 @@ func TestUnpricedModelsAreNeverRefusedForBudgets(t *testing.T) {
 	if got := used(t, l, "", config.LimitUSDPerMonth); got != 1_000_000_000 {
 		t.Errorf("global USD used %d, want the pushed 1 USD only", got)
 	}
-
-	// Totals for another config past the grace: the same split.
-	l.TakeTotals(&Totals{Config: config.Version{Epoch: "other", Number: 9}, Windows: nil}, 0)
-	c.advance(2 * time.Minute)
-	if rej := refused(t, l, workload, 10); !rej.Unavailable {
-		t.Errorf("m1 on mismatched totals: %+v, want unavailable", rej)
-	}
-	admitN(t, l, workload.on("m2"), 1, 10)
 }
 
 // [A]'s numbers: 60 000 tokens a minute over 4 gateways is a 15 000 share, below one
@@ -533,7 +485,7 @@ func TestShareNeverMakesARequestImpossible(t *testing.T) {
 	cs := &contactState{connected: true, last: c.t}
 	l := NewShared(holderOf(snapshot(t, limitsDoc{team: `[{ "type": "tokens_per_minute", "value": 60000 }]`})), c.now, cs.get,
 		slog.New(slog.NewTextHandler(&logs, nil)))
-	l.TakeTotals(&Totals{LiveGateways: 4}, 0)
+	l.TakeTotals(Totals{LiveGateways: 4}, 0)
 	const request = 16384 + 100
 
 	res := admitN(t, l, workload, 1, request)[0]
@@ -557,7 +509,7 @@ func TestShareNeverMakesARequestImpossible(t *testing.T) {
 		t.Errorf("warning names the model and scope kind:\n%s", logs.String())
 	}
 	// The same live count again: no new warning.
-	l.TakeTotals(&Totals{LiveGateways: 4}, 0)
+	l.TakeTotals(Totals{LiveGateways: 4}, 0)
 	if n := strings.Count(logs.String(), "per-minute share below"); n != 1 {
 		t.Errorf("%d share warnings after the same count, want 1", n)
 	}
@@ -571,7 +523,7 @@ func TestOutageStartAndEndAreLoggedOnce(t *testing.T) {
 	contact := &contactState{connected: true, last: c.t}
 	l := NewShared(holderOf(snapshot(t, limitsDoc{team: usdLimit, grace: "60000"})), c.now, contact.get,
 		slog.New(slog.NewTextHandler(&logs, nil)))
-	l.TakeTotals(&Totals{}, 0)
+	l.TakeTotals(Totals{}, 0)
 	const (
 		started = `level=WARN msg="control plane outage: priced USD-limited models refused"`
 		over    = `level=INFO msg="control plane outage over: contact is back"`
@@ -644,7 +596,7 @@ func TestOutageStartAndEndAreLoggedOnce(t *testing.T) {
 func TestUsageWaitingPastTheGraceIsAnOutage(t *testing.T) {
 	c := newClock("2026-09-24T10:30:00Z")
 	l, contact := c.shared(holderOf(snapshot(t, limitsDoc{team: usdLimit, grace: "60000"})))
-	l.TakeTotals(&Totals{}, 0)
+	l.TakeTotals(Totals{}, 0)
 	contact.setWaiting(c.t)
 	c.advance(59 * time.Second)
 	contact.set(true, c.t)
@@ -667,7 +619,7 @@ func TestEditedLimitKeepsTheSpend(t *testing.T) {
 	c := newClock("2026-09-24T10:30:00Z")
 	holder := holderOf(snapshot(t, limitsDoc{team: usdLimit}))
 	l, _ := c.shared(holder)
-	l.TakeTotals(&Totals{Windows: []PushedWindow{
+	l.TakeTotals(Totals{Windows: []PushedWindow{
 		pushedWindow("t", config.LimitUSDPerMonth, "2026-09-01T00:00:00Z", 900_000_000),
 	}}, 0)
 	l.Settle(admitN(t, l, workload, 1, 10)[0], inGeneration(1, record(10, 0, 0, 0, 0, 100_000_000)))
@@ -684,14 +636,14 @@ func TestEditedLimitKeepsTheSpend(t *testing.T) {
 
 // M5 at the limiter: the pushed bases and the uncounted usage survive a restart; the
 // usage leaves once the restored spool batches carrying it are counted (or with the
-// first totals when none were restored); a file of another config is discarded, and
-// uncounted usage of a past window is not brought back.
+// first totals when none were restored); windows are matched to the booted config by
+// group and type, and uncounted usage of a past window is not brought back.
 func TestSharedStateSurvivesARestart(t *testing.T) {
 	c := newClock("2026-09-24T10:30:00Z")
 	dir, _ := openDir(t)
 	doc := limitsDoc{workload: hourLimit, team: usdLimit}
 	l, _ := c.shared(holderOf(snapshot(t, doc)))
-	l.TakeTotals(&Totals{LiveGateways: 3, Windows: []PushedWindow{
+	l.TakeTotals(Totals{LiveGateways: 3, Windows: []PushedWindow{
 		pushedWindow("w", config.LimitTokensPerHour, "2026-09-24T10:00:00Z", 600),
 		pushedWindow("t", config.LimitUSDPerMonth, "2026-09-01T00:00:00Z", 1_000_000_000),
 	}}, 0)
@@ -718,12 +670,12 @@ func TestSharedStateSurvivesARestart(t *testing.T) {
 	}
 	// The restored batch 1 counted: its usage may be in there, but batch 2 may carry
 	// some too; batch 2 counted: the usage leaves.
-	l.TakeTotals(&Totals{Windows: []PushedWindow{
+	l.TakeTotals(Totals{Windows: []PushedWindow{
 		pushedWindow("w", config.LimitTokensPerHour, "2026-09-24T10:00:00Z", 620)}}, 1)
 	if got := used(t, l, "w", config.LimitTokensPerHour); got != 670 {
 		t.Errorf("hour used %d, want 620 pushed + the 50 still uncounted", got)
 	}
-	l.TakeTotals(&Totals{Windows: []PushedWindow{
+	l.TakeTotals(Totals{Windows: []PushedWindow{
 		pushedWindow("w", config.LimitTokensPerHour, "2026-09-24T10:00:00Z", 650)}}, 2)
 	if got := used(t, l, "w", config.LimitTokensPerHour); got != 650 {
 		t.Errorf("hour used %d, want the control plane's 650", got)
@@ -731,7 +683,7 @@ func TestSharedStateSurvivesARestart(t *testing.T) {
 
 	// No batches restored: the usage leaves with the first totals applied.
 	l = restart(0)
-	l.TakeTotals(&Totals{Windows: []PushedWindow{
+	l.TakeTotals(Totals{Windows: []PushedWindow{
 		pushedWindow("w", config.LimitTokensPerHour, "2026-09-24T10:00:00Z", 650)}}, 0)
 	if got := used(t, l, "w", config.LimitTokensPerHour); got != 650 {
 		t.Errorf("hour used %d, want the control plane's 650 and nothing restored of its own", got)
@@ -744,12 +696,11 @@ func TestSharedStateSurvivesARestart(t *testing.T) {
 		t.Errorf("hour used %d at 11:05, want 0", got)
 	}
 
-	// Booted on another config: discarded.
-	other := snapshot(t, doc)
-	other.Version = config.Version{Epoch: "e", Number: 7}
-	l2, _ := c.shared(holderOf(other))
-	if r, err := l2.LoadShared(dir, 2); err != nil || r.Discarded != "another config" || r.Restored != 0 {
-		t.Errorf("restore on another config %+v (%v), want discarded", r, err)
+	// Booted on a config without the team's budget: the workload's window is restored
+	// by group and type, the team's dropped.
+	l2, _ := c.shared(holderOf(snapshot(t, limitsDoc{workload: hourLimit})))
+	if r, err := l2.LoadShared(dir, 2); err != nil || r.Discarded != "" || r.Restored != 1 || r.Dropped != 1 {
+		t.Errorf("restore on another config %+v (%v), want the workload's window restored, the team's dropped", r, err)
 	}
 }
 
@@ -764,7 +715,7 @@ func TestBootWithoutTheControlPlaneIsAnOutageAfterTheGrace(t *testing.T) {
 		doc := limitsDoc{team: usdLimit, grace: "60000"}
 		if restore {
 			l, _ := c.shared(holderOf(snapshot(t, doc)))
-			l.TakeTotals(&Totals{}, 0)
+			l.TakeTotals(Totals{}, 0)
 			if _, err := l.SaveShared(dir); err != nil {
 				t.Fatal(err)
 			}
@@ -796,7 +747,7 @@ func TestHoldOfAClearedWindowIsNeverReleasedAfterAClockCorrection(t *testing.T) 
 	c := newClock("2026-09-24T10:30:00Z")
 	l, _ := c.shared(holderOf(snapshot(t, limitsDoc{workload: hourLimit})))
 	push := func(start string) {
-		l.TakeTotals(&Totals{Windows: []PushedWindow{pushedWindow("w", config.LimitTokensPerHour, start, 0)}}, 0)
+		l.TakeTotals(Totals{Windows: []PushedWindow{pushedWindow("w", config.LimitTokensPerHour, start, 0)}}, 0)
 	}
 	push("2026-09-24T10:00:00Z")
 	res := admitN(t, l, workload, 1, 900)[0]
@@ -810,16 +761,14 @@ func TestHoldOfAClearedWindowIsNeverReleasedAfterAClockCorrection(t *testing.T) 
 	admitN(t, l, workload, 1, 1)
 }
 
-// D8: a fresh gateway does not know what was spent until its first totals for the
-// applied config arrive. "No totals yet" is not "totals with no usage": priced
-// USD-limited requests are refused as unavailable until then; token limits keep
-// counting locally from zero; totals for another config do not end it; totals for
-// the applied config (or the restored copy of them) do.
+// D8: a fresh gateway does not know what was spent until its first totals arrive.
+// "No totals yet" is not "totals with no usage": priced USD-limited requests are
+// refused as unavailable until then; token limits keep counting locally from zero;
+// the first totals (or the restored copy of them) end it.
 func TestNoTotalsYetRefusesMoneyLimitedModels(t *testing.T) {
 	c := newClock("2026-09-24T10:30:00Z")
 	doc := limitsDoc{team: usdLimit, workload: hourLimit, grace: "60000"}
-	h := holderOf(versioned(snapshot(t, doc), 1))
-	l, _ := c.shared(h)
+	l, _ := c.shared(holderOf(snapshot(t, doc)))
 	select {
 	case <-l.FirstTotals():
 		t.Fatal("first totals reported before any")
@@ -832,22 +781,17 @@ func TestNoTotalsYetRefusesMoneyLimitedModels(t *testing.T) {
 	// Not the unpriced model, and not the hour token limit: they count from zero.
 	admitN(t, l, workload.on("m2"), 1, 10)
 
-	// Totals for another config wait, and do not end it — though the control plane has
-	// answered: the first totals are reported (the readiness wait ends).
-	l.TakeTotals(&Totals{Config: config.Version{Epoch: "e1", Number: 2}}, 0)
-	if rej := refused(t, l, workload, 10); !rej.Unavailable {
-		t.Fatalf("rejection %+v with totals for another config, want unavailable", rej)
+	// The first totals end it, and are reported (the readiness wait ends): the budget
+	// is spent, so budget_exceeded.
+	spent := pushedWindow("t", config.LimitUSDPerMonth, "2026-09-01T00:00:00Z", 1_000_000_000)
+	l.TakeTotals(Totals{Windows: []PushedWindow{spent}}, 0)
+	if rej := refused(t, l, workload, 10); rej.Unavailable || rej.Measure != MeasureCost {
+		t.Fatalf("rejection %+v after the totals, want the spent budget", rej)
 	}
 	select {
 	case <-l.FirstTotals():
 	default:
 		t.Fatal("first totals not reported once taken")
-	}
-	// Totals for the applied config end it: the budget is spent, so budget_exceeded.
-	spent := pushedWindow("t", config.LimitUSDPerMonth, "2026-09-01T00:00:00Z", 1_000_000_000)
-	l.TakeTotals(&Totals{Config: config.Version{Epoch: "e1", Number: 1}, Windows: []PushedWindow{spent}}, 0)
-	if rej := refused(t, l, workload, 10); rej.Unavailable || rej.Measure != MeasureCost {
-		t.Fatalf("rejection %+v after the totals, want the spent budget", rej)
 	}
 
 	// Restored totals are known totals: a restart with a data directory serves on them.
@@ -855,7 +799,7 @@ func TestNoTotalsYetRefusesMoneyLimitedModels(t *testing.T) {
 	if _, err := l.SaveShared(dir); err != nil {
 		t.Fatal(err)
 	}
-	restarted, _ := c.shared(holderOf(versioned(snapshot(t, doc), 1)))
+	restarted, _ := c.shared(holderOf(snapshot(t, doc)))
 	if _, err := restarted.LoadShared(dir, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -872,14 +816,14 @@ func TestNoTotalsYetRefusesMoneyLimitedModels(t *testing.T) {
 	admitN(t, New(holderOf(snapshot(t, doc)), c.now, nil), workload, 1, 10)
 }
 
-// totals.json of the previous format (version 1, limits named by scope and owner ID)
-// is discarded and the discard logged: nothing is restored from it.
+// totals.json of the previous format is discarded and the discard logged: nothing is
+// restored from it.
 func TestSharedStateOfAnotherVersionIsDiscarded(t *testing.T) {
 	c := newClock("2026-09-24T10:30:00Z")
 	dir, logs := openDir(t)
 	path := filepath.Join(dir.Path(), SharedFile)
-	old := `{"format_version": 1, "data": {"config_epoch": "", "config_version": 0, "live_gateways": 1,
-		"windows": [{"scope": "workload", "id": "w", "type": "tokens_per_hour", "models": null,
+	old := `{"format_version": 3, "data": {"live_gateways": 1,
+		"windows": [{"group": "w", "type": "tokens_per_hour",
 		"base_window_start": "2026-09-24T10:00:00Z", "base": 600,
 		"window_start": "2026-09-24T10:00:00Z", "uncounted": 0}]}}`
 	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
@@ -892,7 +836,7 @@ func TestSharedStateOfAnotherVersionIsDiscarded(t *testing.T) {
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Error("the file with another version was kept")
 	}
-	if !strings.Contains(logs.String(), "kaiak.data_file.found_version=1") || !strings.Contains(logs.String(), "kaiak.data_file.want_version=3") {
+	if !strings.Contains(logs.String(), "kaiak.data_file.found_version=3") || !strings.Contains(logs.String(), "kaiak.data_file.want_version=4") {
 		t.Errorf("discard not logged:\n%s", logs)
 	}
 }

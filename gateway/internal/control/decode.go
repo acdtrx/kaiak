@@ -17,21 +17,18 @@ import (
 // dropped). A rejection is a *ValidationError listing the issues of the first stage
 // that failed.
 
-// DecodeConfigSnapshot reads GET /v1/config's answer or a config event's data. The
-// config inside is returned as sent, for config.Parse.
-func DecodeConfigSnapshot(data []byte) (ConfigSnapshot, error) {
-	return decode("config snapshot", data, (*walker).configSnapshot, func(*ruleCheck, any) {},
-		func(tree any, data []byte) (ConfigSnapshot, error) {
+// DecodeConfigEvent reads a config event's data. The config inside is returned as
+// sent, for config.Parse.
+func DecodeConfigEvent(data []byte) (ConfigEvent, error) {
+	return decode("config event", data, (*walker).configEvent, func(*ruleCheck, any) {},
+		func(tree any, data []byte) (ConfigEvent, error) {
 			var raw struct {
 				Config json.RawMessage `json:"config"`
 			}
 			if err := json.Unmarshal(data, &raw); err != nil {
-				return ConfigSnapshot{}, err
+				return ConfigEvent{}, err
 			}
-			fields := tree.(map[string]any)
-			version := schemacheck.NumberValue(fields["version"].(json.Number))
-			return ConfigSnapshot{ConfigEpoch: fields["config_epoch"].(string), Version: int64(version),
-				Config: raw.Config}, nil
+			return ConfigEvent{ConfigHash: tree.(map[string]any)["config_hash"].(string), Config: raw.Config}, nil
 		})
 }
 
@@ -39,11 +36,6 @@ func DecodeConfigSnapshot(data []byte) (ConfigSnapshot, error) {
 func DecodeTotals(data []byte) (Totals, error) {
 	return decode("totals", data, (*walker).totals,
 		func(r *ruleCheck, tree any) { r.totals(tree, "") }, decodeTyped[Totals])
-}
-
-// DecodeResync reads a resync event's data.
-func DecodeResync(data []byte) (Resync, error) {
-	return decode("resync", data, (*walker).resync, func(*ruleCheck, any) {}, decodeTyped[Resync])
 }
 
 // DecodeUsageRecord reads one usage record.
@@ -59,7 +51,7 @@ func DecodeUsageBatch(data []byte) (UsageBatch, error) {
 
 // DecodeUsageAck reads the answer to POST /v1/usage.
 func DecodeUsageAck(data []byte) (UsageAck, error) {
-	return decode("usage ack", data, (*walker).usageAck, (*ruleCheck).usageAck, decodeTyped[UsageAck])
+	return decode("usage ack", data, (*walker).usageAck, func(*ruleCheck, any) {}, decodeTyped[UsageAck])
 }
 
 // DecodeStatus reads the body of POST /v1/status.

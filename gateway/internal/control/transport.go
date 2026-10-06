@@ -9,7 +9,6 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strconv"
 
@@ -25,8 +24,8 @@ const (
 
 var protocolHeaderValue = strconv.Itoa(ProtocolVersion)
 
-// maxMessageBytes bounds a snapshot body and one stream event: a config document is
-// far smaller.
+// maxMessageBytes bounds one stream event and a usage ack: a config document is far
+// smaller.
 const maxMessageBytes = 16 << 20
 
 // errProtocolMismatch: the control plane answered without the protocol version this
@@ -151,33 +150,10 @@ func errorCode(body io.Reader) string {
 	return e.Error
 }
 
-// fetchSnapshot gets GET /v1/config: the current config and its version. The config
-// inside is validated by the apply path, not here.
-func (c *Client) fetchSnapshot(ctx context.Context) (ConfigSnapshot, error) {
-	resp, err := c.get(ctx, "/config")
-	if err != nil {
-		return ConfigSnapshot{}, fmt.Errorf("fetch config snapshot: %w", err)
-	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxMessageBytes+1))
-	if err != nil {
-		return ConfigSnapshot{}, fmt.Errorf("read config snapshot: %s", netfail.Class(err))
-	}
-	if len(data) > maxMessageBytes {
-		return ConfigSnapshot{}, fmt.Errorf("config snapshot exceeds %d bytes", maxMessageBytes)
-	}
-	snapshot, err := DecodeConfigSnapshot(data)
-	if err == nil {
-		c.touch()
-	}
-	return snapshot, err
-}
-
-// openStream opens GET /v1/stream resuming after since: its version, and the epoch the
-// version counts in.
-func (c *Client) openStream(ctx context.Context, since configPosition) (*http.Response, error) {
-	query := url.Values{"since": {strconv.FormatInt(since.version, 10)}, "config_epoch": {since.epoch}}
-	resp, err := c.get(ctx, "/stream?"+query.Encode())
+// openStream opens GET /v1/stream: the control plane sends its current config, then
+// totals, then every change.
+func (c *Client) openStream(ctx context.Context) (*http.Response, error) {
+	resp, err := c.get(ctx, "/stream")
 	if err != nil {
 		return nil, fmt.Errorf("open config stream: %w", err)
 	}

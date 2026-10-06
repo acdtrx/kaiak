@@ -22,18 +22,19 @@ func remoteClient(url string, logs *syncBuffer) *Client {
 		logger: slog.New(slog.NewJSONHandler(logs, nil))}
 }
 
-// fetchFailureLog is the line the client logs when a snapshot fetch from answer fails.
+// fetchFailureLog is the line the client logs when opening the stream at answer fails.
 func fetchFailureLog(t *testing.T, answer http.HandlerFunc) string {
 	t.Helper()
 	remote := httptest.NewServer(answer)
 	defer remote.Close()
 	var logs syncBuffer
 	c := remoteClient(remote.URL, &logs)
-	_, err := c.fetchSnapshot(context.Background())
+	resp, err := c.openStream(context.Background())
 	if err == nil {
-		t.Fatal("the fetch succeeded")
+		resp.Body.Close()
+		t.Fatal("the stream opened")
 	}
-	c.logFetchFailure("config snapshot not fetched", err)
+	c.logFetchFailure("config not received", err)
 	return logs.String()
 }
 
@@ -115,7 +116,7 @@ func TestTransportFailuresAreLoggedAsTheirClass(t *testing.T) {
 	if strings.Contains(out, testToken) {
 		t.Errorf("the answer's bytes reached the log: %s", out)
 	}
-	if !strings.Contains(out, `"exception.message":"fetch config snapshot: malformed response"`) {
+	if !strings.Contains(out, `"exception.message":"open config stream: malformed response"`) {
 		t.Errorf("log %s, want the failure's class", out)
 	}
 }

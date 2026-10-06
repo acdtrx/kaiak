@@ -9,7 +9,7 @@ import (
 
 // The control-plane-mode limits state (docs/specs/GATEWAY.md, Limits → Control-plane
 // mode: Restart): each hour and month counter's pushed base and the usage the control
-// plane had not counted yet, with the config they were matched to, so a restart —
+// plane had not counted yet, by group (or global) and type, so a restart —
 // above all one with the control plane down — keeps enforcing what was spent instead
 // of counting from zero until totals arrive again. Written when totals are applied and
 // at shutdown, never per request; restored at boot, before traffic. A cache: the
@@ -17,16 +17,12 @@ import (
 const (
 	SharedFile = "totals.json"
 	// sharedVersion is the file's format version; a file with another is discarded.
-	sharedVersion = 3
+	sharedVersion = 4
 )
 
 type sharedData struct {
-	// ConfigEpoch and ConfigVersion identify the config the counters were matched
-	// to; a file of another config is discarded.
-	ConfigEpoch   string        `json:"config_epoch"`
-	ConfigVersion int64         `json:"config_version"`
-	LiveGateways  int64         `json:"live_gateways"`
-	Windows       []savedShared `json:"windows"`
+	LiveGateways int64         `json:"live_gateways"`
+	Windows      []savedShared `json:"windows"`
 }
 
 // savedShared is one hour or month counter: its limit identity, the control plane's
@@ -53,8 +49,7 @@ func (l *Limiter) SaveShared(dir *state.Dir) (int, error) {
 		return 0, nil
 	}
 	now := l.now()
-	data := sharedData{ConfigEpoch: l.applied.Version.Epoch, ConfigVersion: l.applied.Version.Number,
-		LiveGateways: l.live, Windows: []savedShared{}}
+	data := sharedData{LiveGateways: l.live, Windows: []savedShared{}}
 	for _, c := range l.counters {
 		if !c.w.shared {
 			continue
@@ -82,8 +77,8 @@ func (l *Limiter) SaveShared(dir *state.Dir) (int, error) {
 type SharedRestore struct {
 	// Found: a file of the current format was read.
 	Found bool
-	// Discarded names why the whole file was not used ("" when it was): no config in
-	// force, or the file belongs to another config than the one booted.
+	// Discarded names why the whole file was not used ("" when it was): not in
+	// control-plane mode, or no config in force.
 	Discarded string
 	// Restored and Dropped count the counters restored and those whose limit no
 	// longer exists.
@@ -96,8 +91,8 @@ type SharedRestore struct {
 // newest usage generation the control client gave the batches it restored from its
 // spool — the batches that usage travels in — so it leaves once they are counted; 0
 // (no batches restored: they were acknowledged, or lost) lets it leave with the
-// first totals applied. A file whose config is not the applied one is discarded: its
-// bases describe other limits.
+// first totals applied. Windows are matched to the booted config's counters by group
+// (or global) and type, as totals are.
 func (l *Limiter) LoadShared(dir *state.Dir, restoredGeneration uint64) (SharedRestore, error) {
 	var data sharedData
 	found, err := dir.ReadVersioned(SharedFile, sharedVersion, &data)
@@ -114,9 +109,6 @@ func (l *Limiter) LoadShared(dir *state.Dir, restoredGeneration uint64) (SharedR
 		return out, nil
 	case l.applied == nil:
 		out.Discarded = "no config in force"
-		return out, nil
-	case l.applied.Version != (config.Version{Epoch: data.ConfigEpoch, Number: data.ConfigVersion}):
-		out.Discarded = "another config"
 		return out, nil
 	}
 	now := l.now()

@@ -80,7 +80,7 @@ func TestWithoutADataDirectoryAnUndeliveredFlushIsLoggedAsLost(t *testing.T) {
 func TestWithoutADataDirectoryQueuedRecordsAreBounded(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))
-	h.cp.SetUsageFault(&fakecontrol.UsageFault{Status: http.StatusServiceUnavailable, Code: "config-unavailable"})
+	h.cp.SetUsageFault(&fakecontrol.UsageFault{Status: http.StatusServiceUnavailable, Code: "internal-error"})
 	c, obs, _ := h.usageClient(2, func(o *Options) {
 		withoutDataDir(o)
 		o.UsageMemoryBytes = 4 * recordSize(t, testRecord(9))
@@ -115,7 +115,7 @@ func TestWithoutADataDirectoryQueuedRecordsAreBounded(t *testing.T) {
 func TestWithoutADataDirectoryTheBoundCountsEncodedBytes(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))
-	h.cp.SetUsageFault(&fakecontrol.UsageFault{Status: http.StatusServiceUnavailable, Code: "config-unavailable"})
+	h.cp.SetUsageFault(&fakecontrol.UsageFault{Status: http.StatusServiceUnavailable, Code: "internal-error"})
 	small := recordSize(t, testRecord(1))
 	c, obs, _ := h.usageClient(2, func(o *Options) {
 		withoutDataDir(o)
@@ -182,20 +182,20 @@ func (o *testObserver) waitMemoryBytes(t *testing.T, want int64) {
 func TestWithoutADataDirectoryNoLastKnownGoodIsWrittenOrRead(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))
-	if err := h.client(withoutDataDir).Boot(context.Background()); err != nil {
+	if err := h.boot(h.client(withoutDataDir)); err != nil {
 		t.Fatal(err)
 	}
 	h.wantLoad(load{TriggerControl, true})
-	if got := h.savedVersion(); got != 0 {
-		t.Errorf("last-known-good version %d written with no data directory", got)
+	if got := h.savedHash(); got != "" {
+		t.Errorf("last-known-good %s written with no data directory", got)
 	}
 
 	// A copy in the directory is not read without it.
-	h.client(nil).Boot(context.Background())
+	h.boot(h.client(nil))
 	h.wantLoad(load{TriggerControl, true})
 	h.cp.SetDown(true)
 	h.holder.Swap(nil)
-	if err := h.client(withoutDataDir).Boot(context.Background()); err == nil {
+	if err := h.boot(h.client(withoutDataDir)); err == nil {
 		t.Fatal("Boot found a config with the control plane down, no seed and no data directory")
 	}
 	h.noLoadPending()

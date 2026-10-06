@@ -465,7 +465,7 @@ func TestRunInControlModeBootsFromTheControlPlane(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cp.Publish(data)
+	hash := cp.Publish(data)
 	var logs syncBuffer
 	logger := slog.New(slog.NewTextHandler(&logs, nil))
 	dataDir := t.TempDir()
@@ -490,7 +490,7 @@ func TestRunInControlModeBootsFromTheControlPlane(t *testing.T) {
 		t.Errorf("goroutines left after run returned:\n%s", strings.Join(left, "\n\n"))
 	}
 	out := logs.String()
-	for _, want := range []string{"kaiak.control.url=" + cp.URL(), `msg="config applied" kaiak.trigger=control kaiak.config.version=1`,
+	for _, want := range []string{"kaiak.control.url=" + cp.URL(), `msg="config applied" kaiak.trigger=control kaiak.config.hash=` + hash,
 		`msg="kaiak stopped"`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("log misses %q:\n%s", want, out)
@@ -573,15 +573,14 @@ func TestServingStatusCoversTheAppliedConfig(t *testing.T) {
 	}
 }
 
-// The limiter applies totals only to the config they were computed under, so the
-// conversion must carry that identity: epoch and version.
-func TestLimitsTotalsCarryTheirConfig(t *testing.T) {
-	got := limitsTotals(&control.Totals{ConfigEpoch: "c0ffee00c0ffee00c0ffee00c0ffee00", ConfigVersion: 7, LiveGateways: 3})
-	if want := (config.Version{Epoch: "c0ffee00c0ffee00c0ffee00c0ffee00", Number: 7}); got.Config != want || got.LiveGateways != 3 {
-		t.Errorf("limitsTotals = %+v, want config %+v and 3 live gateways", got, want)
-	}
-	if limitsTotals(nil) != nil {
-		t.Error("nil totals must stay nil")
+// The conversion carries the live-gateway count and every window by group and type.
+func TestLimitsTotalsCarryWindowsByGroupAndType(t *testing.T) {
+	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	got := limitsTotals(control.Totals{LiveGateways: 3, Windows: []control.TotalsWindow{
+		{Group: "team", Type: config.LimitUSDPerMonth, WindowStart: start, Used: 42}}})
+	want := limits.PushedWindow{Group: "team", Type: config.LimitUSDPerMonth, Start: start, Used: 42}
+	if got.LiveGateways != 3 || len(got.Windows) != 1 || got.Windows[0] != want {
+		t.Errorf("limitsTotals = %+v, want 3 live gateways and %+v", got, want)
 	}
 }
 
@@ -598,7 +597,7 @@ func TestStopSignalDuringTheBootWaitExits(t *testing.T) {
 		waiting string // the log line that shows the boot waiting
 	}{
 		"control plane down": {func(cp *fakecontrol.Server) { cp.SetDown(true) },
-			"config snapshot not fetched at startup"},
+			"config not received at startup"},
 		"first totals withheld": {func(cp *fakecontrol.Server) { cp.HoldTotalsOnConnect(true) },
 			"waiting for the first totals"},
 	} {

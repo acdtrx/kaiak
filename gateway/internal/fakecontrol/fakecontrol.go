@@ -1,21 +1,20 @@
-// Package fakecontrol is a control plane for tests: it serves the config snapshot and
-// the config stream of docs/specs/CONTROL-PROTOCOL.md from configs the test
-// publishes, takes usage batches (de-duplicated by batch ID as the protocol settles, so
-// a test can check exactly-once counting) and status reports, runs the request checks,
-// records every request, and lets the test script stream events, go down, restart,
-// answer with another protocol version, or fail usage batches (an error answer, an
-// ack dropped after counting, or an ack naming another batch). Its totals are
-// scripted: the test sets the windows and the live-gateway count, and the server
-// keeps the revision (a random control-plane ID, new on Restart, and a sequence
-// bumped by every change) and each instance's counted_through, as kaiak-control
-// does; it does not aggregate usage itself. Test tooling only: nothing in the gateway
-// binary imports it. It speaks raw JSON and imports nothing from the gateway, so the
-// control package's own tests can use it.
+// Package fakecontrol is a control plane for tests: it serves the config stream of
+// docs/specs/CONTROL-PROTOCOL.md — the current config the test publishes, then totals,
+// then every change — takes usage batches (de-duplicated by batch ID as the protocol
+// settles, so a test can check exactly-once counting) and status reports, runs the
+// request checks, records every request, and lets the test script stream events, go
+// down, restart, answer with another protocol version, or fail usage batches (an error
+// answer, an ack dropped after counting, or an ack naming another batch). Its totals
+// are scripted: the test sets the windows and the live-gateway count, and the server
+// keeps each instance's counted_through, as kaiak-control does; it does not aggregate
+// usage itself. Test tooling only: nothing in the gateway binary imports it. It speaks
+// raw JSON and imports nothing from the gateway, so the control package's own tests
+// can use it.
 package fakecontrol
 
 import (
 	"bytes"
-	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -23,7 +22,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
-	"strconv"
 	"sync"
 )
 
@@ -35,13 +33,14 @@ type Server struct {
 	mu       sync.Mutex
 	protocol string // the Kaiak-Protocol value answered; "" omits the header
 	down     bool
-	// configs[i] is version i+1, counted in configEpoch: the store's epoch, new on
-	// Restart (an in-memory store starts over).
-	configs     [][]byte
-	configEpoch string
-	streams     map[*Stream]struct{}
-	requests    []Request
-	connected   chan *Stream
+	// config is the current config, on one line (the text sent and hashed); nil
+	// before the first Publish and after Restart.
+	config  []byte
+	streams map[*Stream]struct{}
+	// opened counts the streams opened so far; each stream's Seq is its count.
+	opened    int
+	requests  []Request
+	connected chan *Stream
 
 	// Usage intake: the last counted batch per instance, the counted batches, the
 	// scripted faults (queued, then the persistent one).
@@ -49,15 +48,13 @@ type Server struct {
 	counted     []UsageBatch
 	usageFaults []UsageFault
 	usageFault  *UsageFault
-	// Totals: the revision (the store's totals sequence in the config epoch), the
-	// scripted windows (a JSON array) and live-gateway count, and whether changes push
-	// totals to the open streams.
-	sequence   int64
+	// Totals: the scripted windows (a JSON array) and live-gateway count, and whether
+	// changes push totals to the open streams.
 	windows    []byte
 	live       int64
 	pushTotals bool
-	// holdConnectTotals leaves the totals out after a stream's replay (a control plane
-	// slow to send them).
+	// holdConnectTotals leaves the totals out after a stream's first config (a control
+	// plane slow to send them).
 	holdConnectTotals bool
 	usageEvents       chan UsageEvent
 	statuses          [][]byte
@@ -107,7 +104,7 @@ type UsageEvent struct {
 // UsageFault scripts the answer to a usage batch.
 type UsageFault struct {
 	// Status and Code answer with this error instead of taking the batch (e.g. 400
-	// usage-batch-invalid, 503 config-unavailable, 500 internal-error).
+	// usage-batch-invalid, 500 internal-error).
 	Status int
 	Code   string
 	// DropAck takes the batch as usual (counted, or a duplicate), then drops the
@@ -133,18 +130,18 @@ type Request struct {
 // Stream is one open config stream. The test adds events to it; the server writes
 // them in order.
 type Stream struct {
-	// Since and SinceEpoch are the version the gateway resumed from and its epoch;
-	// Instance is its Kaiak-Instance.
-	Since      int64
-	SinceEpoch string
-	Instance   string
-	// epoch is the server's config epoch when the stream opened.
-	epoch  string
-	server *Server
-	frames chan []byte
-	close  chan struct{}
-	once   sync.Once
-	done   chan struct{}
+	// Instance is the gateway's Kaiak-Instance; Seq counts the streams opened on the
+	// server, from 1.
+	Instance string
+	Seq      int
+	// gotConfig: the stream has been sent a config, so totals may follow (kaiak-control
+	// sends none before). Guarded by the server's mu.
+	gotConfig bool
+	server    *Server
+	frames    chan []byte
+	close     chan struct{}
+	once      sync.Once
+	done      chan struct{}
 }
 
 // protocolVersion is the Kaiak-Protocol value the fake speaks
@@ -159,10 +156,9 @@ const connectedBuffer = 64
 func New(token string) *Server {
 	s := &Server{token: token, protocol: protocolVersion, streams: map[*Stream]struct{}{},
 		connected: make(chan *Stream, connectedBuffer), lastBatch: map[string]BatchID{},
-		configEpoch: newEpoch(), windows: []byte("[]"), live: 1,
+		windows: []byte("[]"), live: 1,
 		usageEvents: make(chan UsageEvent, eventsBuffer), statusEvents: make(chan []byte, eventsBuffer)}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/config", s.serveConfig)
 	mux.HandleFunc("GET /v1/stream", s.serveStream)
 	mux.HandleFunc("POST /v1/usage", s.serveUsage)
 	mux.HandleFunc("POST /v1/status", s.serveStatus)
@@ -179,31 +175,36 @@ func (s *Server) Close() {
 	s.srv.Close()
 }
 
-// Publish stores config as the next version, pushes it to every open stream (then
-// the totals, with PushTotalsOnChange) and returns its version.
-func (s *Server) Publish(config []byte) int64 {
+// Publish makes config the current config, sends it to every open stream — then the
+// totals to a stream that had none yet (unless HoldTotalsOnConnect), and to every
+// stream with PushTotalsOnChange — and returns its hash.
+func (s *Server) Publish(config []byte) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.configs = append(s.configs, bytes.Clone(config))
-	version := int64(len(s.configs))
-	frame := configFrame(s.configEpoch, version, config)
+	s.config = compact(config)
+	frame := eventFrame("config", ConfigEvent(s.config))
 	for st := range s.streams {
 		st.enqueue(frame)
+		if !st.gotConfig {
+			st.gotConfig = true
+			if !s.holdConnectTotals && !s.pushTotals {
+				st.enqueue(eventFrame("totals", s.totalsLocked(st.Instance)))
+			}
+		}
 	}
 	s.totalsChangedLocked()
-	return version
+	return Hash(config)
 }
 
-// Restart forgets every published version, the last counted batch of each instance
-// and the totals, starts a new config epoch with its totals sequence at 0, and ends
-// the open streams, as a control plane with an in-memory store does when it restarts:
-// versions start again at 1, in a new epoch. Counted keeps what was counted before,
-// for the test.
+// Restart forgets the current config, the last counted batch of each instance and the
+// totals, and ends the open streams, as a control plane with an in-memory store does
+// when it restarts: nothing is published until the next Publish. Counted keeps what
+// was counted before, for the test.
 func (s *Server) Restart() {
 	s.mu.Lock()
-	s.configs, s.configEpoch = nil, newEpoch()
+	s.config = nil
 	s.lastBatch = map[string]BatchID{}
-	s.sequence, s.windows = 0, []byte("[]")
+	s.windows = []byte("[]")
 	s.mu.Unlock()
 	s.closeStreams()
 }
@@ -246,21 +247,6 @@ func (s *Server) SetLiveGateways(n int64) {
 	s.totalsChangedLocked()
 }
 
-// ConfigEpoch returns the epoch the published versions count in.
-func (s *Server) ConfigEpoch() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.configEpoch
-}
-
-// Revision returns the current totals revision: the store's totals sequence within
-// the config epoch.
-func (s *Server) Revision() int64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.sequence
-}
-
 // Totals returns the current totals as instance gets them (its counted_through).
 func (s *Server) Totals(instance string) []byte {
 	s.mu.Lock()
@@ -276,46 +262,38 @@ func (s *Server) PushCurrentTotals() {
 	s.pushCurrentLocked()
 }
 
-// totalsChangedLocked bumps the revision and, with PushTotalsOnChange, pushes the
-// totals.
+// totalsChangedLocked pushes the totals with PushTotalsOnChange.
 func (s *Server) totalsChangedLocked() {
-	s.sequence++
 	if s.pushTotals {
 		s.pushCurrentLocked()
 	}
 }
 
+// pushCurrentLocked sends the totals to every open stream that has been sent a config:
+// kaiak-control sends no totals before.
 func (s *Server) pushCurrentLocked() {
-	if len(s.configs) == 0 {
-		return // no config: no totals, as kaiak-control
-	}
 	for st := range s.streams {
-		st.enqueue(eventFrame("totals", "", s.totalsLocked(st.Instance)))
+		if st.gotConfig {
+			st.enqueue(eventFrame("totals", s.totalsLocked(st.Instance)))
+		}
 	}
 }
 
-// totalsLocked is the totals message instance gets: the revision, the current config
-// (epoch and version), the live-gateway count, the instance's last counted batch and the windows.
+// totalsLocked is the totals message instance gets: the live-gateway count, the
+// instance's last counted batch and the windows.
 func (s *Server) totalsLocked(instance string) []byte {
 	counted := []byte("null")
 	if last, ok := s.lastBatch[instance]; ok {
 		counted = fmt.Appendf(nil, `{"epoch":%q,"sequence":%d}`, last.Epoch, last.Sequence)
 	}
-	return fmt.Appendf(nil, `{"revision":%d,"config_epoch":%q,"config_version":%d,"live_gateways":%d,"counted_through":%s,"windows":%s}`,
-		s.sequence, s.configEpoch, len(s.configs), s.live, counted, s.windows)
-}
-
-func newEpoch() string {
-	var b [16]byte
-	_, _ = rand.Read(b[:]) // crypto/rand.Read never returns an error
-	return hex.EncodeToString(b[:])
+	return fmt.Appendf(nil, `{"live_gateways":%d,"counted_through":%s,"windows":%s}`, s.live, counted, s.windows)
 }
 
 // PushTotals sends a totals event with data to every open stream.
 func (s *Server) PushTotals(data []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	frame := eventFrame("totals", "", data)
+	frame := eventFrame("totals", data)
 	for st := range s.streams {
 		st.enqueue(frame)
 	}
@@ -349,7 +327,7 @@ func (s *Server) Requests() []Request {
 	return out
 }
 
-// Gets returns the GET requests received so far (snapshot and stream).
+// Gets returns the GET requests received so far (the stream).
 func (s *Server) Gets() []Request {
 	var out []Request
 	for _, r := range s.Requests() {
@@ -404,16 +382,23 @@ func (s *Server) Statuses() [][]byte {
 // StatusEvents delivers the body of every status report accepted, in order.
 func (s *Server) StatusEvents() <-chan []byte { return s.statusEvents }
 
-// Connected delivers each stream once its replay is queued, in connection order.
+// Connected delivers each stream once its first events are queued, in connection
+// order.
 func (s *Server) Connected() <-chan *Stream { return s.connected }
 
-// Send adds an event to the stream; id may be empty.
-func (st *Stream) Send(event, id string, data []byte) { st.enqueue(eventFrame(event, id, data)) }
+// Opened is how many streams have been opened so far: the Seq of the latest.
+func (s *Server) Opened() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.opened
+}
 
-// SendConfig adds a config event carrying the snapshot of version and config in the
-// server's config epoch.
-func (st *Stream) SendConfig(version int64, config []byte) {
-	st.enqueue(configFrame(st.epoch, version, config))
+// Send adds an event to the stream.
+func (st *Stream) Send(event string, data []byte) { st.enqueue(eventFrame(event, data)) }
+
+// SendConfig adds a config event carrying config and its hash.
+func (st *Stream) SendConfig(config []byte) {
+	st.enqueue(eventFrame("config", ConfigEvent(config)))
 }
 
 // Comment adds a comment line (a heartbeat).
@@ -440,23 +425,20 @@ func (st *Stream) enqueue(frame []byte) {
 	}
 }
 
-// Snapshot is the answer body of GET /v1/config for version and config in epoch.
-func Snapshot(epoch string, version int64, config []byte) []byte {
-	return fmt.Appendf(nil, `{"config_epoch":%q,"version":%d,"config":%s}`, epoch, version, compact(config))
+// Hash is a config's config_hash: the lowercase hex SHA-256 of the config as sent, on
+// one line.
+func Hash(config []byte) string {
+	sum := sha256.Sum256(compact(config))
+	return hex.EncodeToString(sum[:])
 }
 
-func configFrame(epoch string, version int64, config []byte) []byte {
-	return eventFrame("config", strconv.FormatInt(version, 10), Snapshot(epoch, version, config))
+// ConfigEvent is the data of a config event carrying config.
+func ConfigEvent(config []byte) []byte {
+	return fmt.Appendf(nil, `{"config_hash":%q,"config":%s}`, Hash(config), compact(config))
 }
 
-func eventFrame(event, id string, data []byte) []byte {
-	var b bytes.Buffer
-	fmt.Fprintf(&b, "event: %s\n", event)
-	if id != "" {
-		fmt.Fprintf(&b, "id: %s\n", id)
-	}
-	fmt.Fprintf(&b, "data: %s\n\n", data)
-	return b.Bytes()
+func eventFrame(event string, data []byte) []byte {
+	return fmt.Appendf(nil, "event: %s\ndata: %s\n\n", event, data)
 }
 
 // compact puts a JSON document on one line, as an event's data line needs; a
@@ -470,7 +452,7 @@ func compact(doc []byte) []byte {
 }
 
 // closeStreams ends every open stream. They leave the set under the lock, so a
-// Publish after it (a new epoch's first version, after Restart) never queues on one.
+// Publish after it (after Restart) never queues on one.
 func (s *Server) closeStreams() {
 	s.mu.Lock()
 	open := make([]*Stream, 0, len(s.streams))
@@ -523,50 +505,18 @@ func writeError(w http.ResponseWriter, status int, code string) {
 	_, _ = fmt.Fprintf(w, `{"error":%q}`, code) // a failed write means the gateway left
 }
 
-func (s *Server) serveConfig(w http.ResponseWriter, _ *http.Request) {
-	s.mu.Lock()
-	n := len(s.configs)
-	var body []byte
-	if n > 0 {
-		body = Snapshot(s.configEpoch, int64(n), s.configs[n-1])
-	}
-	s.mu.Unlock()
-	if body == nil {
-		writeError(w, http.StatusServiceUnavailable, "config-unavailable")
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write(body) // a failed write means the gateway left
-}
-
-var (
-	sincePattern = regexp.MustCompile(`^(0|[1-9][0-9]*)$`)
-	epochPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
-)
-
-// serveStream resumes from since and its config epoch: every newer version, then each
-// one published while the stream is open; resync when since cannot be resumed from
-// (another epoch, nothing published, or newer than the current version). History is
-// unbounded.
+// serveStream sends the current config, then the totals, then every config
+// published while the stream is open; with nothing published yet it stays open and
+// sends both once a config is published.
 func (s *Server) serveStream(w http.ResponseWriter, r *http.Request) {
-	raw, rawEpoch := r.URL.Query()["since"], r.URL.Query()["config_epoch"]
-	var since int64
-	var err error
-	if len(raw) == 1 && sincePattern.MatchString(raw[0]) {
-		since, err = strconv.ParseInt(raw[0], 10, 64)
-	}
-	if len(raw) != 1 || !sincePattern.MatchString(raw[0]) || err != nil ||
-		len(rawEpoch) != 1 || !epochPattern.MatchString(rawEpoch[0]) {
-		writeError(w, http.StatusBadRequest, "since-invalid")
-		return
-	}
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
 	flush := func() { _ = http.NewResponseController(w).Flush() } // fails only once the gateway left
 
-	st := &Stream{Since: since, SinceEpoch: rawEpoch[0], Instance: r.Header.Get("Kaiak-Instance"), server: s, frames: make(chan []byte, 256), close: make(chan struct{}), done: make(chan struct{})}
+	st := &Stream{Instance: r.Header.Get("Kaiak-Instance"), server: s, frames: make(chan []byte, 256),
+		close: make(chan struct{}), done: make(chan struct{})}
 	// done closes before the stream leaves the set: a Publish blocked on a full
 	// buffer (holding s.mu) must be released first.
 	defer func() {
@@ -577,19 +527,14 @@ func (s *Server) serveStream(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	s.mu.Lock()
-	current := int64(len(s.configs))
-	st.epoch = s.configEpoch
-	if st.SinceEpoch != s.configEpoch || current == 0 || since > current {
-		s.mu.Unlock()
-		_, _ = w.Write(eventFrame("resync", "", []byte("{}")))
-		flush()
-		return
-	}
-	for v := since + 1; v <= current; v++ {
-		st.frames <- configFrame(s.configEpoch, v, s.configs[v-1])
-	}
-	if !s.holdConnectTotals {
-		st.frames <- eventFrame("totals", "", s.totalsLocked(st.Instance))
+	s.opened++
+	st.Seq = s.opened
+	if s.config != nil {
+		st.gotConfig = true
+		st.frames <- eventFrame("config", ConfigEvent(s.config))
+		if !s.holdConnectTotals {
+			st.frames <- eventFrame("totals", s.totalsLocked(st.Instance))
+		}
 	}
 	s.streams[st] = struct{}{}
 	s.mu.Unlock()
@@ -633,8 +578,9 @@ const (
 
 // serveUsage takes a usage batch as kaiak-control's intake does, in its order: the
 // batch message (a light check: shape, 1 to 500 records, the records' instance and
-// unique record IDs), the instance against the header, a published config; then the
-// scripted fault, if any; then de-duplication by the instance's last counted batch.
+// unique record IDs), the instance against the header; then the scripted fault, if
+// any; then de-duplication by the instance's last counted batch. A batch is counted
+// whether or not a config is published.
 func (s *Server) serveUsage(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxUsageBody))
 	if err != nil {
@@ -664,11 +610,6 @@ func (s *Server) serveUsage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.mu.Lock()
-	if len(s.configs) == 0 {
-		s.mu.Unlock()
-		refuse(http.StatusServiceUnavailable, "config-unavailable")
-		return
-	}
 	var fault *UsageFault
 	if len(s.usageFaults) > 0 {
 		fault = &s.usageFaults[0]
@@ -679,11 +620,10 @@ func (s *Server) serveUsage(w http.ResponseWriter, r *http.Request) {
 	if fault != nil && fault.AckOther {
 		other := batch.Batch
 		other.Sequence++
-		totals := s.totalsLocked(batch.Batch.Instance)
 		s.mu.Unlock()
 		event.Outcome = OutcomeAckOther
 		s.announceUsage(event)
-		writeAck(w, other, totals)
+		writeAck(w, other)
 		return
 	}
 	if fault != nil && !fault.DropAck {
@@ -699,7 +639,6 @@ func (s *Server) serveUsage(w http.ResponseWriter, r *http.Request) {
 		s.counted = append(s.counted, batch)
 		s.totalsChangedLocked()
 	}
-	totals := s.totalsLocked(batch.Batch.Instance)
 	s.mu.Unlock()
 
 	if fault != nil && fault.DropAck {
@@ -711,14 +650,14 @@ func (s *Server) serveUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.announceUsage(event)
-	writeAck(w, batch.Batch, totals)
+	writeAck(w, batch.Batch)
 }
 
-// writeAck answers a usage batch with the ack naming batch, carrying totals.
-func writeAck(w http.ResponseWriter, batch BatchID, totals []byte) {
+// writeAck answers a usage batch with the ack naming batch.
+func writeAck(w http.ResponseWriter, batch BatchID) {
 	id, _ := json.Marshal(batch) // a struct of strings and an integer always encodes
 	w.Header().Set("Content-Type", "application/json")
-	_, _ = fmt.Fprintf(w, `{"batch":%s,"totals":%s}`, id, totals) // a failed write means the gateway left
+	_, _ = fmt.Fprintf(w, `{"batch":%s}`, id) // a failed write means the gateway left
 }
 
 // checkRecords applies the batch rules on records: every record of the batch's

@@ -114,7 +114,12 @@ type usageSender struct {
 	sealed             []sealedBatch // sealed, not yet saved: no batch ID yet
 	sealedRecords      int
 	queue              []spoolEntry // saved, not acknowledged, in send order; queue[0] is outstanding
-	queuedRecords      int
+	// acked are the batches acknowledged but not yet shown counted by stream totals, in
+	// send order: an ack only lets a batch leave the store, and its usage leaves the
+	// limiter once a totals event's counted_through covers it (countedGeneration).
+	acked         []BatchPosition
+	ackedGens     []uint64
+	queuedRecords int
 	// sealedBytes and queuedBytes are the encoded sizes of the checked sealed
 	// batches and of the queued ones sealed by this process (memoryBytesLocked).
 	sealedBytes int64
@@ -293,23 +298,33 @@ func (c *Client) UsageWaitingSince() time.Time {
 	return c.usage.waitingSince
 }
 
-// countedGeneration is the newest usage generation among the queued batches at or
-// before pos in its epoch: the control plane has counted them. 0 when none.
+// countedGeneration is the newest usage generation among the batches a totals event
+// shows counted: in send order — acknowledged ones first, then the queue — every
+// batch up to the last one at or before pos in pos's epoch. Batches go out one at a
+// time, so the control plane counts them in that order, and counted_through names the
+// last. Acknowledged batches it covers are forgotten: their usage leaves the limiter
+// now. 0 when it covers none.
 func (u *usageSender) countedGeneration(pos BatchPosition) uint64 {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	var generation uint64
-	for _, e := range u.queue {
-		if e.id.Epoch == pos.Epoch && e.id.Sequence <= pos.Sequence {
-			generation = max(generation, e.generation)
+	covered := -1 // the last acknowledged batch covered
+	for i, id := range u.acked {
+		if id.Epoch == pos.Epoch && id.Sequence <= pos.Sequence {
+			covered, generation = i, u.ackedGens[i]
 		}
 	}
+	for _, e := range u.queue {
+		if e.id.Epoch == pos.Epoch && e.id.Sequence <= pos.Sequence {
+			covered, generation = len(u.acked)-1, max(generation, e.generation)
+		}
+	}
+	u.acked, u.ackedGens = u.acked[covered+1:], u.ackedGens[covered+1:]
 	return generation
 }
 
 // answered restarts the ack clock: the control plane answered the outstanding batch
-// (ack or refusal), so what still waits waits from now — before the answer's totals
-// reach the limiter.
+// (ack or refusal), so what still waits waits from now.
 func (u *usageSender) answered() {
 	u.mu.Lock()
 	u.waitingSince = time.Now()
@@ -340,6 +355,14 @@ func (u *usageSender) dropHead(e spoolEntry) {
 	u.depthChangedLocked()
 	close(u.changed)
 	u.changed = make(chan struct{})
+}
+
+// noteAcked keeps e among the acknowledged batches until a totals event covers it.
+func (u *usageSender) noteAcked(e spoolEntry) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.acked = append(u.acked, BatchPosition{Epoch: e.id.Epoch, Sequence: e.id.Sequence})
+	u.ackedGens = append(u.ackedGens, e.generation)
 }
 
 // runSender sends the outstanding batch until the control plane acknowledges or
@@ -384,15 +407,15 @@ func (u *usageSender) load(e spoolEntry) (UsageBatch, bool) {
 }
 
 // sendOutstanding sends one attempt of the outstanding batch and acts on the answer:
-// acknowledged → the totals go to the consumer (the batch counted, whatever the
-// totals' revision) and the batch leaves the store;
+// acknowledged → the batch leaves the store, and waits among the acknowledged batches
+// until a totals event shows it counted;
 // refused → set aside; anything else → the backoff delay, then the same batch again.
 func (u *usageSender) sendOutstanding(ctx context.Context, e spoolEntry, batch UsageBatch) {
 	attrs := []any{"kaiak.usage.epoch", e.id.Epoch, "kaiak.usage.sequence", e.id.Sequence, "kaiak.usage.records", e.records}
 	if e.id.Instance != u.instance {
 		attrs = append(attrs, "kaiak.usage.batch_instance", e.id.Instance)
 	}
-	ack, err := u.post(ctx, batch)
+	_, err := u.post(ctx, batch)
 	if err != nil && ctx.Err() != nil {
 		return // stopping: the batch stays queued
 	}
@@ -400,12 +423,12 @@ func (u *usageSender) sendOutstanding(ctx context.Context, e spoolEntry, batch U
 	switch {
 	case err == nil:
 		u.answered()
-		u.c.takeTotals(ack.Totals, e.generation)
 		if err := u.store.remove(e); err != nil {
 			u.logger.Warn("acknowledged usage batch not removed from the spool; a restart resends it and the control plane acknowledges it again without counting",
 				append(attrs, "exception.message", err)...)
 		}
 		u.dropHead(e)
+		u.noteAcked(e)
 		u.backoff.reset()
 		u.observe(BatchAcked)
 		u.logger.Debug("usage batch acknowledged", attrs...)

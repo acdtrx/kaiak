@@ -48,7 +48,7 @@ func (h *harness) statusUntil(what string, match func(Status) bool) Status {
 
 func TestFirstStatusReportsWhatTheGatewayRuns(t *testing.T) {
 	h := newHarness(t)
-	h.cp.Publish(configA(t))
+	hash := h.cp.Publish(configA(t))
 	started := time.Date(2026, 9, 24, 9, 58, 12, 500_000_000, time.FixedZone("EEST", 3*3600))
 	c := h.client(func(o *Options) {
 		o.StartedAt = started
@@ -62,11 +62,11 @@ func TestFirstStatusReportsWhatTheGatewayRuns(t *testing.T) {
 			}
 		}
 	})
-	c.Boot(context.Background())
+	h.boot(c)
 	h.run(c)
 	s := h.nextStatus()
 	if s.Instance != testInstance || s.ProtocolVersion != 5 || s.State != StateReady || !s.StartedAt.Equal(started) ||
-		s.AppliedConfigVersion == nil || *s.AppliedConfigVersion != 1 || s.LastRejection != nil ||
+		s.AppliedConfigHash == nil || *s.AppliedConfigHash != hash || s.LastRejection != nil ||
 		len(s.Backends) != 2 || len(s.Models) != 1 {
 		t.Errorf("status %+v", s)
 	}
@@ -84,14 +84,14 @@ func TestFirstStatusReportsWhatTheGatewayRuns(t *testing.T) {
 func TestStatusIsStartingUntilAConfigIsApplied(t *testing.T) {
 	h := newHarness(t)
 	c := h.client(nil)
-	c.Boot(context.Background())
+	h.boot(c)
 	h.run(c)
-	if s := h.nextStatus(); s.State != StateStarting || s.AppliedConfigVersion != nil || s.Backends == nil || s.Models == nil {
+	if s := h.nextStatus(); s.State != StateStarting || s.AppliedConfigHash != nil || s.Backends == nil || s.Models == nil {
 		t.Errorf("status %+v, want starting with nothing applied", s)
 	}
-	h.cp.Publish(configA(t))
+	hash := h.cp.Publish(configA(t))
 	h.statusUntil("state ready", func(s Status) bool {
-		return s.State == StateReady && s.AppliedConfigVersion != nil && *s.AppliedConfigVersion == 1
+		return s.State == StateReady && s.AppliedConfigHash != nil && *s.AppliedConfigHash == hash
 	})
 }
 
@@ -99,7 +99,7 @@ func TestStatusIsSentOnTheInterval(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))
 	c := h.client(func(o *Options) { o.StatusInterval = 10 * time.Millisecond })
-	c.Boot(context.Background())
+	h.boot(c)
 	h.run(c)
 	for range 4 {
 		h.nextStatus()
@@ -108,25 +108,21 @@ func TestStatusIsSentOnTheInterval(t *testing.T) {
 
 func TestStatusFollowsRejectionsAndTheDrain(t *testing.T) {
 	h := newHarness(t)
-	h.cp.Publish(configA(t))
-	h.cp.Publish(configA(t))
-	h.cp.Publish(configA(t))
+	applied := h.cp.Publish(configA(t))
 	c := h.client(nil) // the interval (10 s) never fires here: every report below is a change
-	c.Boot(context.Background())
+	h.boot(c)
 	h.run(c)
 	h.nextStatus()
 	h.nextStream()
 
-	// A rejected config after a control-plane restart: version 1, below the applied 3.
-	h.cp.Restart()
-	h.cp.Publish(configRejected(t))
+	rejected := h.cp.Publish(configRejected(t))
 	s := h.statusUntil("the rejection", func(s Status) bool { return s.LastRejection != nil })
-	if s.LastRejection.Version != 1 || *s.AppliedConfigVersion != 3 || len(s.LastRejection.Codes) == 0 {
-		t.Errorf("status %+v %+v, want rejection 1 with version 3 applied", s, s.LastRejection)
+	if s.LastRejection.ConfigHash != rejected || *s.AppliedConfigHash != applied || len(s.LastRejection.Codes) == 0 {
+		t.Errorf("status %+v %+v, want the rejection of %s with %s applied", s, s.LastRejection, rejected, applied)
 	}
-	h.cp.Publish(configB(t))
-	h.statusUntil("version 2 applied and no rejection", func(s Status) bool {
-		return s.LastRejection == nil && *s.AppliedConfigVersion == 2
+	next := h.cp.Publish(configB(t))
+	h.statusUntil("config B applied and no rejection", func(s Status) bool {
+		return s.LastRejection == nil && *s.AppliedConfigHash == next
 	})
 
 	c.SetDraining()
@@ -148,7 +144,7 @@ func TestServingChangeIsReported(t *testing.T) {
 			return Serving{Backends: map[string]BackendStatus{}, Models: map[string]ModelStatus{"llama": {Queued: queued.Load()}}}
 		}
 	}) // the interval (10 s) never fires here
-	c.Boot(context.Background())
+	h.boot(c)
 	h.run(c)
 	h.nextStatus()
 	queued.Store(2)

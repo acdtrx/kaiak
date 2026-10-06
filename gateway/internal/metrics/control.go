@@ -11,9 +11,6 @@ type ControlState interface {
 	// Outage reports whether the control plane has been out of reach past the outage
 	// grace, so money-limited models are refused.
 	Outage() bool
-	// ConfigMismatch reports whether the newest totals are for another config than
-	// the applied one (past the outage grace, money-limited models are refused).
-	ConfigMismatch() bool
 	// TotalsAppliedAt is when the control plane's totals were last applied; false
 	// before any.
 	TotalsAppliedAt() (time.Time, bool)
@@ -29,13 +26,13 @@ func RegisterControlState(reg *Registry, s ControlState) {
 			emit(boolValue(connected))
 		})
 	reg.GaugeFunc("kaiak_control_last_contact_timestamp_seconds",
-		"Unix time of the last contact with the control plane: stream bytes (heartbeats included), a snapshot or an ack; the process start before any.", nil,
+		"Unix time of the last contact with the control plane: stream bytes (heartbeats included) or an ack; the process start before any.", nil,
 		func(emit func(float64, ...string)) {
 			_, last := s.Contact()
 			emit(float64(last.UnixMilli()) / 1000)
 		})
 	reg.GaugeFunc("kaiak_control_totals_applied_timestamp_seconds",
-		"Unix time the control plane's usage totals were last applied (a newer totals event or ack); absent before any.", nil,
+		"Unix time the control plane's usage totals were last applied (a totals event); absent before any.", nil,
 		func(emit func(float64, ...string)) {
 			if at, ok := s.TotalsAppliedAt(); ok {
 				emit(float64(at.UnixMilli()) / 1000)
@@ -44,9 +41,6 @@ func RegisterControlState(reg *Registry, s ControlState) {
 	reg.GaugeFunc("kaiak_control_outage",
 		"1 while the control plane has been out of reach past the outage grace (money-limited models refused), else 0.", nil,
 		func(emit func(float64, ...string)) { emit(boolValue(s.Outage())) })
-	reg.GaugeFunc("kaiak_control_config_mismatch",
-		"1 while the control plane's newest usage totals are for another config than the applied one (typically a config this gateway rejected), else 0; past the outage grace money-limited models are refused.", nil,
-		func(emit func(float64, ...string)) { emit(boolValue(s.ConfigMismatch())) })
 }
 
 func boolValue(b bool) float64 {

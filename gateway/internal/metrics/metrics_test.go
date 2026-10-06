@@ -432,13 +432,12 @@ kaiak_log_export_records_total{outcome="failed"} 0
 }
 
 type fakeControlState struct {
-	connected, outage, mismatch bool
-	last, totalsAt              time.Time
+	connected, outage bool
+	last, totalsAt    time.Time
 }
 
 func (s *fakeControlState) Contact() (bool, time.Time) { return s.connected, s.last }
 func (s *fakeControlState) Outage() bool               { return s.outage }
-func (s *fakeControlState) ConfigMismatch() bool       { return s.mismatch }
 func (s *fakeControlState) TotalsAppliedAt() (time.Time, bool) {
 	return s.totalsAt, !s.totalsAt.IsZero()
 }
@@ -457,14 +456,14 @@ func TestControlStateMetrics(t *testing.T) {
 		}
 	}
 	check("kaiak_control_connected 0", "kaiak_control_last_contact_timestamp_seconds 1.70000000025e+09",
-		"kaiak_control_outage 0", "kaiak_control_config_mismatch 0")
+		"kaiak_control_outage 0")
 	if strings.Contains(text(reg), "\nkaiak_control_totals_applied_timestamp_seconds ") {
 		t.Error("totals applied time present before any totals")
 	}
 	s.connected, s.outage, s.totalsAt = true, true, time.UnixMilli(1_700_000_001_000)
 	check("kaiak_control_connected 1", "kaiak_control_outage 1", "kaiak_control_totals_applied_timestamp_seconds 1.700000001e+09")
-	s.outage, s.mismatch = false, true
-	check("kaiak_control_outage 0", "kaiak_control_config_mismatch 1")
+	s.outage = false
+	check("kaiak_control_outage 0")
 }
 
 // Two public models sharing one deployment emit one circuit sample for it, closed or

@@ -11,7 +11,7 @@ import (
 )
 
 // Status reports (CONTROL-PROTOCOL.md, Gateway status): POST /v1/status when Run
-// starts, whenever what the report says changes (state, applied version, rejection)
+// starts, whenever what the report says changes (state, applied config, rejection)
 // or a config stream connects, and every StatusInterval. Routing changes (a queue
 // starting or ending, a circuit opening or closing) are spaced by StatusMinGap: one
 // inside the gap waits for its end, and that one report carries the latest state.
@@ -164,15 +164,15 @@ func (c *Client) currentStatus() Status {
 		Backends: map[string]BackendStatus{}, Models: map[string]ModelStatus{}}
 	c.mu.Lock()
 	// A config is in force from the control plane, the last-known-good copy or the
-	// seed; the seed carries no version.
+	// seed; the seed carries no hash.
 	loaded := c.opts.Applier.Loaded()
-	if c.applied != nil {
-		v, epoch := c.applied.version, c.applied.epoch
-		s.AppliedConfigVersion, s.AppliedConfigEpoch = &v, &epoch
+	if c.appliedHash != "" {
+		hash := c.appliedHash
+		s.AppliedConfigHash = &hash
 	}
 	if c.rejection != nil {
 		codes := append([]string{}, c.rejection.Codes...)
-		s.LastRejection = &Rejection{Version: c.rejection.Version, Codes: codes}
+		s.LastRejection = &Rejection{ConfigHash: c.rejection.ConfigHash, Codes: codes}
 	}
 	c.mu.Unlock()
 	r.mu.Lock()
