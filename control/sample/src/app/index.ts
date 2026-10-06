@@ -49,10 +49,6 @@ export function createSampleApp(options: SampleAppOptions): SampleApp {
     onListenerError: (error: unknown, event: ListenerEvent) =>
       log.error({ err: error, event: event.type }, "control-plane listener failed"),
     onExpirySweep: (run) => logExpirySweep(log, run),
-    onLimitCarriedOver: (carry) =>
-      carry.ambiguous
-        ? log.warn({ carry }, "limit keeps the largest spend of the limits it replaced")
-        : log.info({ carry }, "limit keeps its spend across a model-set change"),
   });
   const page = registerStatusPage(app, { controlPlane, configFile: () => configFile.state() });
   const configFile = createConfigFile({

@@ -27,10 +27,11 @@ export type UsageUnit = "tokens_in" | "tokens_cached" | "tokens_cache_write" | "
 // Units a price entry may name.
 export type PriceUnit = Exclude<UsageUnit, "tokens_reasoning">;
 
+// A scope's limit: at most one per type in a scope, so its type is its identity there
+// (docs/specs/CONTROL-PROTOCOL.md, Config → The group tree).
 export interface Limit {
   type: LimitType;
   value: number;
-  models?: string[];
 }
 
 export interface Backend {

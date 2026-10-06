@@ -14,27 +14,12 @@ export interface ResolvedScope {
   // The group and its ancestors, top-level first; empty for global.
   path: string[];
   // Effective limits: the parent's child_defaults.limits in their order, each
-  // replaced in place by the group's limit of the same identity, then the group's
-  // other limits in their order. Each limit as written in config.
+  // replaced in place by the group's limit of the same type, then the group's other
+  // limits in their order. Each limit as written in config.
   limits: Limit[];
   // The models the group's keys may use across the whole path, sorted by code point;
   // absent when no level on the path restricts (always absent for global).
   allowed_models?: string[];
-}
-
-const ALL_MODELS = "*";
-
-// The identity a limit keeps within its scope: its type and model set, order ignored;
-// "all models" is its own set. Two limits in one list never share it (limit-duplicate),
-// and a config reload keeps a counter by it.
-export function limitIdentity(limit: Pick<Limit, "type" | "models">): string {
-  const models = limit.models ? [...limit.models].sort().join("\n") : ALL_MODELS;
-  return `${limit.type}\n${models}`;
-}
-
-// Whether a limit counts requests to model: models omitted covers every model.
-export function limitCovers(limit: Limit, model: string): boolean {
-  return limit.models === undefined || limit.models.includes(model);
 }
 
 // Every scope of a valid config: global first, then each group in the order
@@ -65,19 +50,20 @@ export function resolveScopes(config: Config): ResolvedScope[] {
   return scopes;
 }
 
-// A group's own limit replaces the default with the same identity, in its place;
-// defaults not replaced still apply; the group's other limits follow.
+// A group's own limit replaces the default of the same type, in its place; defaults
+// not replaced still apply; the group's other limits follow.
 export function mergeLimits(defaults: readonly Limit[], own: readonly Limit[]): Limit[] {
-  const byIdentity = new Map(own.map((limit) => [limitIdentity(limit), limit]));
+  const byType = new Map(own.map((limit) => [limit.type, limit]));
   const merged = defaults.map((limit) => {
-    const identity = limitIdentity(limit);
-    const replacement = byIdentity.get(identity);
+    const replacement = byType.get(limit.type);
     if (!replacement) return limit;
-    byIdentity.delete(identity);
+    byType.delete(limit.type);
     return replacement;
   });
-  return [...merged, ...byIdentity.values()];
+  return [...merged, ...byType.values()];
 }
+
+const ALL_MODELS = "*";
 
 // The intersection of every restricting level's list along the path; undefined when
 // no level restricts. A level's list is its own allowed_models, else its parent's

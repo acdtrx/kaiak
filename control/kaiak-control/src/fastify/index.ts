@@ -84,9 +84,8 @@ function registerGatewayRoutes(routes: FastifyInstance, options: ControlProtocol
     return reply.code(check.error.status).send(errorBody(check.error));
   });
 
-  // The core starts with the app: it takes the store's lease — an app whose store
-  // another process holds fails to start — and runs the expiry sweep, without which
-  // the live set never shrinks.
+  // The core starts with the app: it runs the expiry sweep, without which the live set
+  // never shrinks.
   routes.addHook("onReady", async () => {
     await controlPlane.start();
   });

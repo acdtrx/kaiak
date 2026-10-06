@@ -33,25 +33,15 @@ export interface ConfigSnapshot {
 // Limit types whose windows the control plane counts; per-minute limits stay local.
 export type TotalsLimitType = "tokens_per_hour" | "usd_per_month";
 
-// One limit's current window. group is absent for a global limit; models absent means
-// the limit covers all models.
+// One limit's current window, by its scope and type. group is absent for a global
+// limit.
 export interface TotalsWindow {
   group?: string;
   type: TotalsLimitType;
-  models?: string[];
   window_start: string;
   // Decimal digits: tokens, or nano-USD for usd_per_month. A string because a month of
   // nano-USD can pass 2^53; read it with BigInt.
   used: string;
-}
-
-// Orders totals messages: a gateway applies one only when it is newer than the last
-// it applied — the same control plane and a higher sequence, or another control plane.
-export interface TotalsRevision {
-  // 32 lowercase hex digits, random, created when the control-plane process starts.
-  control_plane: string;
-  // Increases with every change to the totals in that process.
-  sequence: number;
 }
 
 // A batch within its instance's epochs.
@@ -64,7 +54,10 @@ export interface BatchPosition {
 // consistent snapshot whose windows include every batch counted at its revision —
 // counted_through, the recipient instance's last counted batch, among them.
 export interface Totals {
-  revision: TotalsRevision;
+  // The store's totals sequence at the snapshot: an integer from 0 that grows with
+  // every change to the totals, whichever process made it. Within one config epoch a
+  // gateway applies a message only when its revision is higher than the last applied.
+  revision: number;
   // With config_version, the config the totals were computed under (the store's
   // epoch and the version in it): a gateway applies them only to that config.
   config_epoch: string;

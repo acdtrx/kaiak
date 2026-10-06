@@ -2,7 +2,7 @@
 // the page on load, and every live update, is these renders. Everything interpolated
 // goes through `html`, which escapes it.
 
-import { limitIdentity, resolveScopes } from "kaiak-control";
+import { resolveScopes } from "kaiak-control";
 import type { Config, ControlPlane, DeploymentStatus, GatewayStatus, GatewayView, Limit, ReceivedRecord, ResolvedScope, StoredConfig, Totals } from "kaiak-control";
 
 import type { ConfigFileState } from "../config-file/index.ts";
@@ -240,7 +240,7 @@ async function renderTotals({ core, clock }: PageSources): Promise<Markup> {
   if (rows.length === 0) return html`${heading}${intro}<p class="muted">The config sets no limits.</p>`;
   return html`${heading}${intro}
 <div class="scroll"><table>
-<thead><tr><th>Scope</th><th>Limit</th><th>Models</th><th>Used</th><th class="bar">Of limit</th><th>Window from</th></tr></thead>
+<thead><tr><th>Scope</th><th>Limit</th><th>Used</th><th class="bar">Of limit</th><th>Window from</th></tr></thead>
 <tbody>${rows}</tbody>
 </table></div>`;
 }
@@ -250,9 +250,9 @@ interface UsedWindow {
   windowStart: string;
 }
 
-// A limit's identity: its group (none for global), type and model set.
-function limitKey(group: string | undefined, limit: Pick<Limit, "type" | "models">): string {
-  return JSON.stringify([group ?? null, limitIdentity(limit)]);
+// A limit's identity: its group (none for global) and type.
+function limitKey(group: string | undefined, limit: Pick<Limit, "type">): string {
+  return JSON.stringify([group ?? null, limit.type]);
 }
 
 // The totals list only windows with usage; limits missing here have used nothing yet.
@@ -265,10 +265,9 @@ function usedByLimit(totals: Totals): Map<string, UsedWindow> {
 }
 
 function limitRow(label: Markup, limit: Limit, window: UsedWindow | undefined, now: number): Markup {
-  const models = limit.models ? limit.models.join(", ") : html`<span class="muted">all</span>`;
   if (limit.type !== "tokens_per_hour" && limit.type !== "usd_per_month") {
     const unit = limit.type === "requests_per_minute" ? "requests" : "tokens";
-    return html`<tr><td>${label}</td><td>${formatCount(limit.value)} ${unit} / min</td><td>${models}</td><td colspan="3" class="muted">per gateway share, not counted here</td></tr>`;
+    return html`<tr><td>${label}</td><td>${formatCount(limit.value)} ${unit} / min</td><td colspan="3" class="muted">per gateway share, not counted here</td></tr>`;
   }
   const used = window?.used ?? 0n;
   const money = limit.type === "usd_per_month";
@@ -276,7 +275,7 @@ function limitRow(label: Markup, limit: Limit, window: UsedWindow | undefined, n
   const format = (amount: bigint): string => (money ? formatNanoUsd(amount) : formatCount(amount));
   const windowStart = window ? parseTimestamp(window.windowStart) : undefined;
   const start = windowStart ?? (money ? monthStart(now) : Math.floor(now / HOUR_MS) * HOUR_MS);
-  return html`<tr><td>${label}</td><td>${format(ceiling)} ${money ? "/ month" : "tokens / hour"}</td><td>${models}</td>
+  return html`<tr><td>${label}</td><td>${format(ceiling)} ${money ? "/ month" : "tokens / hour"}</td>
 <td class="num">${format(used)}</td><td class="bar">${share(used, ceiling)}</td><td>${formatAbsolute(start)}</td></tr>`;
 }
 

@@ -37,10 +37,8 @@ export function checkTotals(totals: Totals, path = ""): ValidationIssue[] {
   totals.windows.forEach((window, index) => {
     const windowPath = pointer(path, "windows", index);
     checkTimestamp(window.window_start, pointer(windowPath, "window_start"), report);
-    // A window belongs to one limit: its group (or global), type and model set (order
-    // ignored).
-    const models = window.models ? [...window.models].sort().join("\n") : "*";
-    const identity = JSON.stringify([window.group ?? null, window.type, models]);
+    // A window belongs to one limit: its group (or global) and type.
+    const identity = JSON.stringify([window.group ?? null, window.type]);
     const first = seen.get(identity);
     if (first !== undefined) {
       report("totals-window-duplicate", windowPath, `same limit as ${pointer(path, "windows", first)}`);

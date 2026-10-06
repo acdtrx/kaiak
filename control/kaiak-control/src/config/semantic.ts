@@ -6,7 +6,6 @@ import { isRealDate, isRealTimestamp } from "../calendar/index.ts";
 import { pointer } from "../schemas/index.ts";
 import type { ValidationIssue } from "../schemas/index.ts";
 
-import { limitIdentity } from "./limits.ts";
 import { MAX_GROUP_DEPTH, ancestries } from "./tree.ts";
 import type { Ancestry } from "./tree.ts";
 import type { Config, Group, Limit, Model } from "./types.ts";
@@ -21,7 +20,6 @@ export type SemanticRuleCode =
   | "deployment-backend-unknown"
   | "allowed-model-unknown"
   | "allowed-models-wildcard-mixed"
-  | "limit-model-unknown"
   | "limit-duplicate"
   | "output-limit-default-above-ceiling"
   | "output-limit-above-context"
@@ -64,19 +62,12 @@ export function checkSemantics(config: Config): ValidationIssue[] {
   const checkLimits = (limits: readonly Limit[] | undefined, path: string): void => {
     const seen = new Map<string, number>();
     (limits ?? []).forEach((limit, index) => {
-      const limitPath = pointer(path, index);
-      (limit.models ?? []).forEach((model, modelIndex) => {
-        if (!modelNames.has(model)) {
-          report("limit-model-unknown", pointer(limitPath, "models", modelIndex), `model "${model}" is not defined`);
-        }
-      });
-      const identity = limitIdentity(limit);
-      const first = seen.get(identity);
+      const first = seen.get(limit.type);
       if (first !== undefined) {
-        report("limit-duplicate", limitPath, `same type and model set as ${pointer(path, first)}`);
+        report("limit-duplicate", pointer(path, index), `same type as ${pointer(path, first)}`);
         return;
       }
-      seen.set(identity, index);
+      seen.set(limit.type, index);
     });
   };
 
@@ -152,18 +143,18 @@ function checkAncestry(ancestry: Ancestry, path: string, report: Report): void {
 
 // How many effective limits global and every group hold, counted without merging
 // each group's list: a group's own limits plus its parent's child_defaults.limits
-// whose identity none of its own limits has. Only the direct parent matters, so the
+// whose type none of its own limits has. Only the direct parent matters, so the
 // count stands whatever the tree rules find; a parent with no entry adds no defaults.
 function countEffectiveLimits(config: Config): number {
   const groups: Readonly<Record<string, Group>> = config.groups ?? {};
-  const defaultIdentities = new Map<string, Set<string>>();
+  const defaultTypes = new Map<string, Set<string>>();
   const defaultsOf = (parentId: string): Set<string> => {
-    let identities = defaultIdentities.get(parentId);
-    if (identities === undefined) {
-      identities = new Set((groups[parentId]?.child_defaults?.limits ?? []).map(limitIdentity));
-      defaultIdentities.set(parentId, identities);
+    let types = defaultTypes.get(parentId);
+    if (types === undefined) {
+      types = new Set((groups[parentId]?.child_defaults?.limits ?? []).map((limit) => limit.type));
+      defaultTypes.set(parentId, types);
     }
-    return identities;
+    return types;
   };
   let count = config.global.limits?.length ?? 0;
   for (const group of Object.values(groups)) {
@@ -171,7 +162,7 @@ function countEffectiveLimits(config: Config): number {
     count += own.length;
     if (group.parent === undefined || !Object.hasOwn(groups, group.parent)) continue;
     const defaults = defaultsOf(group.parent);
-    const overridden = new Set(own.map(limitIdentity).filter((identity) => defaults.has(identity)));
+    const overridden = new Set(own.map((limit) => limit.type).filter((type) => defaults.has(type)));
     count += defaults.size - overridden.size;
   }
   return count;

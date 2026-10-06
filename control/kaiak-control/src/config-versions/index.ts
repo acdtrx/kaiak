@@ -1,7 +1,10 @@
 // Config versions (docs/specs/CONTROL-PROTOCOL.md, Config versions): publishing
 // validates a document — and that no group changes parent from the current version —
-// and stores it as the next version, subscribers hear of every published version, and
-// a bounded history lets a stream resume from a version it already has.
+// and stores it as the next version, subscribers hear of every published version
+// (whichever process published it), and a bounded history lets a stream resume from a
+// version it already has. The store decides the order of versions: a publish is
+// stored only as the version after the one it was checked against, so publishes from
+// several processes never claim the same version.
 
 import { validateConfig } from "../config/index.ts";
 import type { Config, ConfigIssue } from "../config/index.ts";
@@ -24,22 +27,18 @@ export type ConfigsSince = { resync: false; epoch: string; configs: StoredConfig
 
 export type ConfigPublishedListener = (published: StoredConfig) => void;
 
-// Runs once a publish's document is valid and before its version is stored: what must
-// be in the store before any reader can see the version (the usage module's
-// carry-over). A rejection fails the publish with nothing stored or announced.
-export type BeforeSave = (previous: StoredConfig | undefined, next: StoredConfig) => Promise<void>;
-
 // Hears of a listener that threw while being told of a published version.
 export type ConfigListenerErrorHandler = (error: unknown, published: StoredConfig) => void;
 
 export interface ConfigVersions {
-  publishConfig(doc: unknown, beforeSave?: BeforeSave): Promise<PublishResult>;
+  // Resolves once the version is stored and this process's listeners have heard of it.
+  publishConfig(doc: unknown): Promise<PublishResult>;
   currentConfig(): Promise<StoredConfig | undefined>;
   // The store's config epoch (ControlPlaneStore.configEpoch).
   configEpoch(): Promise<string>;
   configsSince(position: ConfigPosition): Promise<ConfigsSince>;
-  // Calls listener with every version published from now on; returns the unsubscribe,
-  // which is safe to call more than once.
+  // Calls listener with every version published from now on, by any process, in
+  // version order; returns the unsubscribe, which is safe to call more than once.
   onConfigPublished(listener: ConfigPublishedListener): () => void;
 }
 
@@ -66,25 +65,13 @@ export function createConfigVersions({
   }
 
   const listeners = new Set<ConfigPublishedListener>();
-  // Publishes run one at a time, so two cannot claim the same version.
-  let publishing: Promise<unknown> = Promise.resolve();
+  // Delivery to this process's listeners: the store announces a version number, the
+  // version is read back and handed out in order. `delivered` is the newest version
+  // handed out (undefined until the first announcement); `deliveries` orders the
+  // reads. Both only order this process's own listeners.
+  let delivered: number | undefined;
+  let deliveries: Promise<unknown> = Promise.resolve();
 
-  const publishOne = async (doc: unknown, beforeSave?: BeforeSave): Promise<PublishResult> => {
-    const result = validateConfig(doc);
-    if (!result.ok) return { ok: false, issues: result.issues };
-    const latest = await store.latestConfig();
-    const moved = latest ? parentChanges(latest.config, result.config) : [];
-    if (moved.length > 0) return { ok: false, issues: moved };
-    const published: StoredConfig = { version: (latest?.version ?? 0) + 1, config: result.config, publishedAt: clock() };
-    await beforeSave?.(latest, published);
-    await store.saveConfig(published, historySize);
-    notify(published);
-    return { ok: true, published };
-  };
-
-  // Every listener hears of the version even if an earlier one throws. A listener's
-  // failure is its own: it goes to onListenerError and never fails the publish, which
-  // has already stored the version.
   const notify = (published: StoredConfig): void => {
     for (const listener of [...listeners]) {
       try {
@@ -95,14 +82,60 @@ export function createConfigVersions({
     }
   };
 
-  return {
-    publishConfig(doc, beforeSave) {
-      const run = publishing.then(() => publishOne(doc, beforeSave));
-      publishing = run.catch(() => {
-        // The caller gets this publish's failure from `run`; the queue only orders publishes.
+  // Hands out every stored version after the last delivered, up to `version`. A
+  // version that left the history before it was read is skipped: streams that missed
+  // it resync from their position.
+  const deliverThrough = (version: number): Promise<void> => {
+    const run = deliveries.then(async () => {
+      if (delivered !== undefined && version <= delivered) return;
+      const after = delivered ?? version - 1;
+      for (const entry of await store.configsAfter(after)) {
+        if (entry.version > version) break;
+        delivered = entry.version;
+        notify(entry);
+      }
+      if (delivered === undefined || delivered < version) delivered = version;
+    });
+    deliveries = run.catch(() => {
+      // A failed read is retried by the next announcement, which reads from `delivered`.
+    });
+    return run;
+  };
+
+  store.subscribe((change) => {
+    if (change.type !== "config-published") return;
+    void deliverThrough(change.version).catch(() => {
+      // Nothing to hand out this time; deliveries stays ordered (above).
+    });
+  });
+
+  const publishOne = async (doc: unknown): Promise<PublishResult> => {
+    const result = validateConfig(doc);
+    if (!result.ok) return { ok: false, issues: result.issues };
+    // A publish that lost to another process's publish is checked again against the
+    // version that won, so the parent rule holds against what is really stored.
+    for (;;) {
+      const latest = await store.latestConfig();
+      const moved = latest ? parentChanges(latest.config, result.config) : [];
+      if (moved.length > 0) return { ok: false, issues: moved };
+      const published: StoredConfig = {
+        version: (latest?.version ?? 0) + 1,
+        config: result.config,
+        publishedAt: clock(),
+      };
+      const written = await store.publishConfig(published, latest?.version, historySize);
+      if (!written.saved) continue;
+      await deliverThrough(published.version).catch(() => {
+        // The version is stored: the publish succeeded. A store that failed to read it
+        // back leaves this process's streams to get it with the next announcement, or
+        // from the replay when they reconnect.
       });
-      return run;
-    },
+      return { ok: true, published };
+    }
+  };
+
+  return {
+    publishConfig: publishOne,
 
     currentConfig() {
       return store.latestConfig();
