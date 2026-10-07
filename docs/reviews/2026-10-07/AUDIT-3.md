@@ -234,6 +234,34 @@ Recorded in the plan's OVERVIEW as decisions 29–34 and implemented in phase 6 
   - a one-group change 273 B;
   - feed fan-out 5 ms sparse, 66 ms near-full.
 
-## Outcome
+## Outcome (2026-10-07)
 
-Filled in by step 17.
+Phase 6 (`docs/plans/control-replicas/STEP-15..17`). Commits:
+- `86b905d`: the specs, both halves;
+- `a7526cd`: kaiak-control, the store contract, the GUIDE, the fixtures;
+- `f5cfcba`: the gateway;
+- `e206388`: gateway docs and format notes;
+- `740989b`: the remaining docs.
+
+The regression tests and their before-fix runs are tabled in each step's Result.
+
+| Finding | Outcome | Commit | How |
+|---|---|---|---|
+| 3H1: stale totals unnoticed | fixed | `86b905d`, `a7526cd`, `f5cfcba` | Decision 29: an acknowledged batch waits to be shown counted, its own outage reason past the grace. Decision 30: a stream's first totals come from a read issued after it connected, and nothing is sent while reads fail. Decision 31: a malformed totals event ends the stream. R3-L2's hung store call: the contract says every call settles (statement timeouts). |
+| 3H2: a crash forgets spooled spend | fixed | `f5cfcba`, `e206388` | Decision 32: spool format 4 keeps acknowledged batches until a covering `totals.json` write, and boot rebuilds own usage from the batches beyond the saved `counted_through`. `totals.json` format 5 is written in the background every 30 s and at shutdown (G3-M2: 15.2 ms on every push on the stream goroutine → at most every 30 s, off it). |
+| 3M1: a recreated group forgets its spend | fixed | `f5cfcba` | Decision 33: a removed scope's hour and month counters are retained while their window holds own usage, and taken back by a recreated ID. Ended pushed windows are pruned once an hour (C8). |
+| 3M2: the bound no longer bounds memory | fixed | `a7526cd`, `f5cfcba` | Decision 34: `counters-exceeded` (two per scope plus each effective per-minute limit, 50 000) on both halves, replacing `effective-limits-exceeded`. Minute buckets for per-minute windows only (counter heap at 7k groups 29.7 → 7.6 MiB). A changes-only `TakeTotals` 1.49 ms → 0.21 µs. |
+| 3M3: parents checked against a mutable object | fixed | `a7526cd` | The publish takes the text once before its first wait; the parents rule and the returned `config` parse it. |
+| 3M4: restore guidance | documented | `86b905d`, `a7526cd` | Contract and GUIDE: restore with every process stopped, the revision allocator moved past every value issued, then start (each start catches up). No ported test: the memory store has no restore operation, so a test could only show a broken store is broken. |
+| 3M5: read after notification tested for batches only | fixed | `a7526cd` | A contract test per change type, and the `early-announcement-store` negative control. GUIDE: every read after a notification goes to the primary. |
+| 3M6: the Postgres sketch fails the contract | fixed | `a7526cd` | An insertion-order column, with ties defined in `types.ts`; the sweep forgets in instance order; "likely to catch"; the `int8`/`numeric` note. |
+| 3M7: file-mode limits "start empty" | fixed | `740989b` | `DEPLOYMENT.md`: in both modes a limit added mid-window checks its scope's count so far. |
+| 3L1: a failing prune fails a counted batch | fixed | `a7526cd` | Past windows are dropped by the expiry sweep, once an hour per process; a failure fails that sweep run, reported through `onExpirySweep`. The brief's "best-effort, logged" was not possible: the core has no logger, and silent catches are not allowed. |
+| 3L2: a hung store call stalls delivery | fixed | `a7526cd` | `types.ts` and the GUIDE: every call settles, and a database store sets statement timeouts. |
+| 3L3: negative controls matched by name only | fixed | `a7526cd` | Each control asserts the failure count and the assertion text. |
+| 3L4: the acknowledged list unbounded for priced traffic | fixed | `f5cfcba` | With a data directory the acknowledged batches live in the spool. Without one, at most 10 000 are remembered and the wait keeps its time. The quadratic walk is gone with `clearedAt`. |
+| 3L5: no control-side test of the "0" rule | fixed | `a7526cd` | `fastify/round-3.test.ts`. |
+| 3L6: migration note gaps | fixed | `740989b` | `configEpoch()`, `configsSince()`, `beforeSave`, the `ListenerEvent` variants, `StoredConfig` → `PublishedConfig`/`ConfigEntry`, `counters-exceeded`, and this phase's store contract rules. The spool 4 and `totals.json` 5 notes come from `e206388`. |
+| 3L7: Rejected lines narrate | fixed | `740989b` | Each says the failure the alternative causes: `CONTROL-PROTOCOL.md` (the history, the config epoch, `config-unavailable`, counting under the config's limits) and `GATEWAY.md` (the totals revision). |
+| 3L8: stale wording | fixed | `86b905d`, `f5cfcba`, `740989b` | The ack metric is not contact; `cases.json` "names"; the boot diagram (the running stream brings totals); the ack box (kept until covered); the retried-ID list; `CONTROL-PROTOCOL.md:43, 722`; `spool.go`'s invariant; fakecontrol's ended window; the OVERVIEW's superseded lines. |
+| Clock skew within a second | accepted | — | Decision 28. |
