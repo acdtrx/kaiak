@@ -395,7 +395,7 @@ Ranked by payoff against cost. Each package is independent unless noted.
 
 Items 1–5 carry most of the value: two real fixes (the stale log code and the drifted
 test copy) and most of the lockstep-edit cost. Items 6–9 are local tidy-ups. Items 10
-and 11 can wait for the change that needs them.
+and 11 pay off at the next protocol bump or endpoint; they are in scope too (Decision 7).
 
 The metrics-facing findings move to the OTel metrics plan, which comes after items 2
 and 4. Those items create the label lists the metrics read (attempt outcomes, limit
@@ -420,12 +420,14 @@ Taken (user, 2026-10-07 and 2026-10-08):
    user, 2026-10-08), in the leftovers batch, with no version bump: no current gateway
    can send it.
 
-Open:
-
-5. **Outbound-only Go validators** (status and usage batch, about 100 lines only tests
-   use): move them into `_test.go`, or keep them (control-main F7)?
-6. **Embeddings/completions output-limit keys**: the gateway type-checks keys it then
-   ignores. Should S4 stop checking them? Passthrough is unchanged either way.
+5. **Outbound-only Go validators move into `_test.go`** (control-main F7; user,
+   2026-10-08): they stay the oracle for the fixture tests and leave the binary.
+6. **Embeddings and completions stop type-checking output-limit keys they ignore**
+   (server S4; user, 2026-10-08), matching GATEWAY.md's settled output-limit keys.
+   Passthrough is unchanged.
+7. **Every package is in scope, 10 and 11 included** (user, 2026-10-08): the point of
+   the work is cheaper future changes, and a "next change that needs it" trigger would
+   only move that cost into a feature. The plan is `docs/plans/structure/`.
 
 ## Bugs and gaps noticed in passing
 
