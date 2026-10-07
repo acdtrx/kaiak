@@ -3,8 +3,8 @@
 // It holds the messages — their Go types, and strict decoding with validation that
 // mirrors protocol/schema/, kept in agreement with kaiak-control by the shared
 // fixtures in protocol/fixtures/messages — and the client: it boots and follows the
-// config (client.go), sends usage batches through a spool in the data directory
-// (usage.go, spool.go) and reports status (status.go).
+// config (client.go), sends usage batches queued in memory (usage.go, queue.go) and
+// reports status (status.go).
 package control
 
 import (

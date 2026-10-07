@@ -111,7 +111,7 @@ var limitTypes = []config.LimitType{config.LimitRequestsPerMinute, config.LimitT
 // configTriggers and configResults are the label values of kaiak_config_loads_total:
 // the file loader's triggers and the control client's (control.Trigger*).
 var (
-	configTriggers = []string{"startup", "sighup", "control", "seed", "last-known-good"}
+	configTriggers = []string{"startup", "sighup", "control", "seed"}
 	configResults  = []string{"applied", "rejected"}
 )
 
@@ -182,7 +182,7 @@ func NewOps(reg *Registry, router *routing.Router, holder *config.Holder) *Ops {
 			"Duration of every upstream attempt, from its send to its end: the end of the relay, or its failure.",
 			durationBuckets, "backend"),
 		configLoads: reg.Counter("kaiak_config_loads_total",
-			"Config loads by trigger (startup, sighup, control, seed, last-known-good) and result (applied, rejected).", "trigger", "result"),
+			"Config loads by trigger (startup, sighup, control, seed) and result (applied, rejected).", "trigger", "result"),
 		configApplied: reg.Gauge("kaiak_config_last_applied_timestamp_seconds",
 			"Unix time the running config was applied."),
 		configSize: reg.Gauge("kaiak_config_size_bytes",

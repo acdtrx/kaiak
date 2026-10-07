@@ -3,9 +3,6 @@ package limits
 import (
 	"bytes"
 	"log/slog"
-	"os"
-	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -739,131 +736,21 @@ func TestEditedLimitKeepsTheSpend(t *testing.T) {
 	admitN(t, l, workload, 1, 10) // under the raised budget
 }
 
-// M5 at the limiter: the pushed bases and the counted_through they include survive a
-// restart, and the own usage of the spooled batches those bases do not include is
-// rebuilt in its own window; it leaves once totals show its batch counted. Bases are
-// matched to the booted config by group and type, a window that has ended is not
-// brought back, and own usage of a past window is not rebuilt.
-func TestSharedStateSurvivesARestart(t *testing.T) {
-	c := newClock("2026-09-24T10:30:00Z")
-	dir, _ := openDir(t)
-	doc := limitsDoc{workload: hourLimit, team: usdLimit}
-	l, _ := c.shared(holderOf(snapshot(t, doc)))
-	counted := []CountedBatch{{Epoch: "e1", Sequence: 3}}
-	l.TakeTotals(Totals{LiveGateways: 3, CountedThrough: counted, Windows: []PushedWindow{
-		pushedWindow("w", config.LimitTokensPerHour, "2026-09-24T10:00:00Z", 600),
-		pushedWindow("t", config.LimitUSDPerMonth, "2026-09-01T00:00:00Z", 1_000_000_000),
-	}}, 0)
-	l.Settle(admitN(t, l, workload.on("m2"), 1, 10)[0], inGeneration(1, record(50, 0, 0, 0, 0, 0)))
-	saved, err := l.SaveShared(dir)
-	if err != nil || saved.Windows != 2 || !slices.Equal(saved.CountedThrough, counted) {
-		t.Fatalf("saved %+v (%v), want the 2 pushed windows and their counted_through", saved, err)
-	}
-
-	// The spooled batch the saved totals do not include: 50 tokens settled at 10:30.
-	own := record(50, 0, 0, 0, 0, 0)
-	own.Groups, own.GatewayTime = workload.Groups, c.t
-	restart := func(doc limitsDoc, restored, dropped int) *Limiter {
-		t.Helper()
-		l, _ := c.shared(holderOf(snapshot(t, doc)))
-		r, err := l.LoadShared(dir)
-		if err != nil || !r.Found || r.Discarded != "" || r.Restored != restored || r.Dropped != dropped ||
-			!slices.Equal(r.CountedThrough, counted) {
-			t.Fatalf("restore %+v (%v), want %d restored, %d dropped and the saved counted_through", r, err, restored, dropped)
-		}
-		l.RestoreOwn([]OwnBatch{{Generation: 1, Records: []accounting.UsageRecord{own}}})
-		return l
-	}
-	l = restart(doc, 2, 0)
-	if got := used(t, l, "w", config.LimitTokensPerHour); got != 650 {
-		t.Errorf("hour used %d after the restart, want 600 pushed + 50 rebuilt", got)
-	}
-	if got := used(t, l, "", config.LimitTokensPerHour); got != 50 {
-		t.Errorf("global hour used %d, want the 50 rebuilt on every scope of the path", got)
-	}
-	if rej := refused(t, l, workload, 10); rej.Measure != MeasureCost || rej.Unavailable {
-		t.Errorf("rejection %+v, want the spent budget enforced", rej)
-	}
-	// The rebuilt batch shown counted: its usage leaves, inside the new base.
-	l.TakeTotals(Totals{Windows: []PushedWindow{
-		pushedWindow("w", config.LimitTokensPerHour, "2026-09-24T10:00:00Z", 650)}}, 1)
-	if got := used(t, l, "w", config.LimitTokensPerHour); got != 650 {
-		t.Errorf("hour used %d, want the control plane's 650", got)
-	}
-
-	// The next hour: the hour base has ended, and the rebuilt usage was 10:00's.
-	c.set("2026-09-24T11:05:00Z")
-	l = restart(doc, 1, 1)
-	if got := used(t, l, "w", config.LimitTokensPerHour); got != 0 {
-		t.Errorf("hour used %d at 11:05, want 0", got)
-	}
-
-	// Booted on a config without the team's budget: its scope is still counted, so
-	// its month is restored by group and type.
-	l = restart(limitsDoc{workload: hourLimit}, 1, 1)
-	if got := used(t, l, "t", config.LimitUSDPerMonth); got != 1_000_000_000 {
-		t.Errorf("team month %d without its budget, want the restored 1 USD", got)
-	}
-}
-
-// A crash restores the spend settled after the last totals.json write: the bases of
-// the last write plus the own usage rebuilt from the spool, so a gateway restarted
-// with the control plane still down cannot spend the budget again (AUDIT-3 3H2).
-func TestACrashKeepsTheSpendSettledAfterTheLastWrite(t *testing.T) {
-	c := newClock("2026-10-07T12:30:00Z")
-	dir, _ := openDir(t)
-	doc := limitsDoc{team: usdLimit}
-	l, _ := c.shared(holderOf(snapshot(t, doc)))
-	l.TakeTotals(Totals{Complete: true}, 0)
-	if _, err := l.SaveShared(dir); err != nil {
-		t.Fatal(err)
-	}
-	// 1 USD settled and spooled after the write; then the process dies.
-	spend := record(1, 0, 0, 0, 0, 1_000_000_000)
-	spend.Groups, spend.GatewayTime = workload.Groups, c.t
-	l.Settle(admitN(t, l, workload, 1, 1)[0], inGeneration(1, spend))
-
-	restarted, _ := c.shared(holderOf(snapshot(t, doc)))
-	if _, err := restarted.LoadShared(dir); err != nil {
-		t.Fatal(err)
-	}
-	restarted.RestoreOwn([]OwnBatch{{Generation: 1, Records: []accounting.UsageRecord{spend}}})
-	if rej := refused(t, restarted, workload, 1); rej.Measure != MeasureCost || rej.Unavailable {
-		t.Errorf("rejection %+v, want the spooled spend enforcing the spent budget", rej)
-	}
-}
-
-// M5: restored totals enforce what was spent, but they do not lift the outage rule:
-// a gateway that boots without reaching the control plane refuses priced USD-limited
-// requests once the grace has passed since it started. Without restored totals it
-// refuses them from the start (D8: no totals yet).
+// A gateway that boots without reaching the control plane does not know what was
+// spent: it refuses priced USD-limited requests from the start (D8: no totals yet), and
+// past the grace since it started the outage rule refuses them too.
 func TestBootWithoutTheControlPlaneIsAnOutageAfterTheGrace(t *testing.T) {
-	for _, restore := range []bool{false, true} {
-		c := newClock("2026-09-24T10:30:00Z")
-		dir, _ := openDir(t)
-		doc := limitsDoc{team: usdLimit, grace: "60000"}
-		if restore {
-			l, _ := c.shared(holderOf(snapshot(t, doc)))
-			l.TakeTotals(Totals{}, 0)
-			if _, err := l.SaveShared(dir); err != nil {
-				t.Fatal(err)
-			}
-		}
-		started := c.t
-		l, contact := c.shared(holderOf(snapshot(t, doc)))
-		contact.set(false, started) // never reached: contact counts from the start
-		if _, err := l.LoadShared(dir); err != nil {
-			t.Fatal(err)
-		}
-		if restore {
-			admitN(t, l, workload, 1, 10)
-		} else if rej := refused(t, l, workload, 10); !rej.Unavailable {
-			t.Errorf("no totals: rejection %+v, want unavailable from the start", rej)
-		}
-		c.advance(time.Minute + time.Millisecond)
-		if rej := refused(t, l, workload, 10); !rej.Unavailable {
-			t.Errorf("restored=%v: rejection %+v, want unavailable past the grace since the start", restore, rej)
-		}
+	c := newClock("2026-09-24T10:30:00Z")
+	doc := limitsDoc{team: usdLimit, grace: "60000"}
+	started := c.t
+	l, contact := c.shared(holderOf(snapshot(t, doc)))
+	contact.set(false, started) // never reached: contact counts from the start
+	if rej := refused(t, l, workload, 10); !rej.Unavailable {
+		t.Errorf("no totals: rejection %+v, want unavailable from the start", rej)
+	}
+	c.advance(time.Minute + time.Millisecond)
+	if rej := refused(t, l, workload, 10); !rej.Unavailable {
+		t.Errorf("rejection %+v, want unavailable past the grace since the start", rej)
 	}
 }
 
@@ -893,7 +780,7 @@ func TestHoldOfAClearedWindowIsNeverReleasedAfterAClockCorrection(t *testing.T) 
 // D8: a fresh gateway does not know what was spent until its first totals arrive.
 // "No totals yet" is not "totals with no usage": priced USD-limited requests are
 // refused as unavailable until then; token limits keep counting locally from zero;
-// the first totals (or the restored copy of them) end it.
+// the first totals end it.
 func TestNoTotalsYetRefusesMoneyLimitedModels(t *testing.T) {
 	c := newClock("2026-09-24T10:30:00Z")
 	doc := limitsDoc{team: usdLimit, workload: hourLimit, grace: "60000"}
@@ -923,51 +810,8 @@ func TestNoTotalsYetRefusesMoneyLimitedModels(t *testing.T) {
 		t.Fatal("first totals not reported once taken")
 	}
 
-	// Restored totals are known totals: a restart with a data directory serves on them.
-	dir, _ := openDir(t)
-	if _, err := l.SaveShared(dir); err != nil {
-		t.Fatal(err)
-	}
-	restarted, _ := c.shared(holderOf(snapshot(t, doc)))
-	if _, err := restarted.LoadShared(dir); err != nil {
-		t.Fatal(err)
-	}
-	if rej := refused(t, restarted, workload, 10); rej.Unavailable || rej.Measure != MeasureCost {
-		t.Fatalf("rejection %+v after a restore, want the restored spent budget", rej)
-	}
-	select {
-	case <-restarted.FirstTotals():
-		t.Fatal("a restore reported as the first totals from the control plane")
-	default:
-	}
-
 	// File mode has no such state.
 	admitN(t, New(holderOf(snapshot(t, doc)), c.now, nil), workload, 1, 10)
-}
-
-// totals.json of the previous format is discarded and the discard logged: nothing is
-// restored from it.
-func TestSharedStateOfAnotherVersionIsDiscarded(t *testing.T) {
-	c := newClock("2026-09-24T10:30:00Z")
-	dir, logs := openDir(t)
-	path := filepath.Join(dir.Path(), SharedFile)
-	old := `{"format_version": 4, "data": {"live_gateways": 1,
-		"windows": [{"group": "w", "type": "tokens_per_hour",
-		"base_window_start": "2026-09-24T10:00:00Z", "base": 600,
-		"window_start": "2026-09-24T10:00:00Z", "uncounted": 0}]}}`
-	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	l, _ := c.shared(holderOf(snapshot(t, limitsDoc{workload: hourLimit})))
-	if r, err := l.LoadShared(dir); err != nil || r.Found || r.Restored != 0 {
-		t.Fatalf("restore %+v (%v), want nothing found", r, err)
-	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Error("the file with another version was kept")
-	}
-	if !strings.Contains(logs.String(), "kaiak.data_file.found_version=4") || !strings.Contains(logs.String(), "kaiak.data_file.want_version=5") {
-		t.Errorf("discard not logged:\n%s", logs)
-	}
 }
 
 // A gateway still enforcing a limit the control plane's current config dropped (it

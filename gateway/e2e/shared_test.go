@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -39,7 +38,7 @@ func TestSharedLimitsAcrossGateways(t *testing.T) {
 	cp.Publish(data)
 
 	start := func(instance string) *gateway {
-		env := append(controlEnv(cp.URL(), token, filepath.Join(t.TempDir(), "data")), "KAIAK_INSTANCE_ID="+instance)
+		env := append(controlEnv(cp.URL(), token), "KAIAK_INSTANCE_ID="+instance)
 		g := startGatewayEnv(t, env)
 		g.waitMetric(t, instance+"'s first totals", "kaiak_control_totals_applied_timestamp_seconds",
 			func(float64) bool { return true })
@@ -170,7 +169,7 @@ func TestRejectedConfigKeepsBudgetsEnforcedFromStreamTotals(t *testing.T) {
 	publish(v1)
 
 	start := func(instance string, extra ...string) *gateway {
-		env := append(controlEnv(cp.URL(), token, filepath.Join(t.TempDir(), "data")), "KAIAK_INSTANCE_ID="+instance)
+		env := append(controlEnv(cp.URL(), token), "KAIAK_INSTANCE_ID="+instance)
 		g := startGatewayEnv(t, append(env, extra...))
 		g.waitMetric(t, instance+"'s first totals", "kaiak_control_totals_applied_timestamp_seconds",
 			func(float64) bool { return true })

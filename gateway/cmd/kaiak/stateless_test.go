@@ -1,6 +1,6 @@
 package main
 
-// E1–E3 at the process level (in-process run): no data directory by default, the boot
+// E1–E3 at the process level (in-process run): nothing written to disk, the boot
 // order with the seed, the seed's startup checks and the drain's flush reserve.
 
 import (
@@ -39,14 +39,12 @@ func wantEmptyDir(t *testing.T, dir string) {
 		names = append(names, e.Name())
 	}
 	if len(names) > 0 {
-		t.Errorf("files written with no data directory: %v", names)
+		t.Errorf("files written: %v", names)
 	}
 }
 
-// E1: with KAIAK_DATA_DIR unset the gateway writes nothing — no data directory, no
-// lock, no spool, no last-known-good copy, no totals, no limits snapshot — in either
-// mode, through boot, serving and the drain.
-func TestRunWithoutADataDirectoryWritesNothing(t *testing.T) {
+// E1: the gateway writes nothing, in either mode, through boot, serving and the drain.
+func TestRunWritesNothing(t *testing.T) {
 	fixture := absFixture(t)
 	data, err := os.ReadFile(fixture)
 	if err != nil {
@@ -76,11 +74,6 @@ func TestRunWithoutADataDirectoryWritesNothing(t *testing.T) {
 				t.Errorf("log misses %q:\n%s", want, out)
 			}
 		}
-		for _, unwanted := range []string{"last-known-good", "limits totals", "data directory lock"} {
-			if strings.Contains(out, unwanted) {
-				t.Errorf("log mentions %q with no data directory:\n%s", unwanted, out)
-			}
-		}
 		wantEmptyDir(t, cwd)
 	})
 	t.Run("file mode", func(t *testing.T) {
@@ -92,21 +85,8 @@ func TestRunWithoutADataDirectoryWritesNothing(t *testing.T) {
 		if err := run(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)), env, make(chan os.Signal), stop); err != nil {
 			t.Fatalf("run returned %v:\n%s", err, logs.String())
 		}
-		if out := logs.String(); strings.Contains(out, "limits snapshot") {
-			t.Errorf("limits snapshot used with no data directory:\n%s", out)
-		}
 		wantEmptyDir(t, cwd)
 	})
-}
-
-func TestDataDirectoryHasNoDefault(t *testing.T) {
-	s, err := readSettings(envOf(map[string]string{"KAIAK_CONFIG_FILE": "c.json", "KAIAK_INSTANCE_ID": "i"}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if s.dataDir != "" {
-		t.Errorf("data directory %q by default, want none", s.dataDir)
-	}
 }
 
 // E2: in control-plane mode with no config from anywhere, run exits with the reason

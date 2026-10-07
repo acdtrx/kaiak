@@ -18,8 +18,8 @@ import { currentWindows, formatWindowStart, previousWindows, windowStartFor } fr
 // - first: the instance's first batch;
 // - next: the next sequence in the same epoch;
 // - gap: a later sequence in the same epoch, some skipped (lost on the gateway side);
-// - new-epoch: an epoch with nothing counted yet, after batches of another (a fresh
-//   spool);
+// - new-epoch: an epoch with nothing counted yet, after batches of another (a new
+//   gateway process);
 // - duplicate: counted before (its epoch's last counted batch is at or past it) — acked
 //   again, not counted.
 export type BatchOutcome = "first" | "next" | "gap" | "new-epoch" | "duplicate";

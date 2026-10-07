@@ -25,7 +25,6 @@ import (
 	"kaiak/internal/metrics"
 	"kaiak/internal/provider"
 	"kaiak/internal/routing"
-	"kaiak/internal/state"
 )
 
 // controlledGateway is a test gateway in control-plane mode: a shared limiter fed by
@@ -61,10 +60,6 @@ func newControlledGateway(t *testing.T, maxRecords int, edit func(doc string) st
 	var logs bytes.Buffer
 	log := &lockedWriter{w: &logs}
 	logger := slog.New(slog.NewJSONHandler(log, nil))
-	dir, err := state.Open(t.TempDir(), logger)
-	if err != nil {
-		t.Fatal(err)
-	}
 	u, _ := url.Parse(cp.URL())
 
 	var client *control.Client
@@ -77,7 +72,7 @@ func newControlledGateway(t *testing.T, maxRecords int, edit func(doc string) st
 	// gateway serves the test config, the client only carries usage.
 	applier := config.NewApplier(&config.Holder{}, logger, lookupEnv, nil)
 	client = control.New(control.Options{URL: u, Token: controlToken, Instance: "gw-test", Applier: applier,
-		Dir: dir, Logger: logger, BatchInterval: time.Hour, BatchMaxRecords: maxRecords,
+		Logger: logger, BatchInterval: time.Hour, BatchMaxRecords: maxRecords,
 		BackoffBase: 10 * time.Millisecond, BackoffCap: 50 * time.Millisecond,
 		OnTotals: func(up control.TotalsUpdate) {
 			limiter.TakeTotals(testLimitsTotals(up.Totals), up.Counted)

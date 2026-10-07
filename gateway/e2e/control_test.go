@@ -3,9 +3,6 @@ package e2e
 import (
 	"encoding/json"
 	"net/http"
-	"os"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -17,16 +14,14 @@ import (
 // TestControlModeEndToEnd runs kaiak from a control plane (the Go test double; the
 // sample control plane joins in its own end-to-end test): boot from the stream, a
 // served request, a config pushed on the stream; usage batches reaching the control
-// plane, a batch whose ack was lost resent with its ID after the gateway is killed,
-// the drain flushing the last records; then a restart with the control plane gone
-// that boots from the last-known-good config and keeps its usage spooled.
+// plane, a batch whose ack was lost resent with its ID and counted once, the drain
+// flushing the last records.
 func TestControlModeEndToEnd(t *testing.T) {
 	backend := fakebackend.New()
 	defer backend.Close()
 	const token = "e2e-control-token"
 	cp := fakecontrol.New(token)
 	defer cp.Close()
-	dataDir := filepath.Join(t.TempDir(), "data")
 	evalKey, evalHash := newKey()
 	_, annHash := newKey()
 	publish := func(extraModel string) {
@@ -38,7 +33,7 @@ func TestControlModeEndToEnd(t *testing.T) {
 	}
 	publish("")
 
-	g := startGatewayEnv(t, controlEnv(cp.URL(), token, dataDir))
+	g := startGatewayEnv(t, controlEnv(cp.URL(), token))
 	g.logs.wait(t, "the boot from the control plane", msg("config applied", "kaiak.trigger", "control"))
 
 	t.Run("serves from the pushed config", func(t *testing.T) {
@@ -96,25 +91,14 @@ func TestControlModeEndToEnd(t *testing.T) {
 		}
 	})
 
-	var lost fakecontrol.UsageEvent
-	t.Run("a gateway killed before an ack keeps the batch", func(t *testing.T) {
-		cp.SetUsageFault(&fakecontrol.UsageFault{DropAck: true})
+	t.Run("a batch whose ack is lost is resent with its ID, counted once", func(t *testing.T) {
+		cp.FailUsage(fakecontrol.UsageFault{DropAck: true})
 		if r := g.post(t, "/v1/chat/completions", evalKey, "e2e-usage-2", chatBody("chat", false, nil)); r.StatusCode != http.StatusOK {
 			t.Fatalf("chat: %d %s", r.StatusCode, r.body)
 		}
-		lost = waitUsage(t, cp, "the batch whose ack is dropped", func(e fakecontrol.UsageEvent) bool {
+		lost := waitUsage(t, cp, "the batch whose ack is dropped", func(e fakecontrol.UsageEvent) bool {
 			return e.Outcome == fakecontrol.OutcomeAckDropped
 		})
-	})
-	// Killed between the send and the ack: nothing flushed, no drain.
-	if err := g.cmd.Process.Kill(); err != nil {
-		t.Fatal(err)
-	}
-	<-g.exited
-	cp.SetUsageFault(nil)
-	g = startGatewayEnv(t, controlEnv(cp.URL(), token, dataDir))
-
-	t.Run("the restarted gateway resends it with its ID, counted once", func(t *testing.T) {
 		resent := waitUsage(t, cp, "the resent batch", func(e fakecontrol.UsageEvent) bool {
 			return e.Outcome == fakecontrol.OutcomeDuplicate
 		})
@@ -124,7 +108,6 @@ func TestControlModeEndToEnd(t *testing.T) {
 		if n := countedIDs(t, cp)["e2e-usage-2"]; n != 1 {
 			t.Errorf("e2e-usage-2 counted %d times, want 1", n)
 		}
-		g.logs.wait(t, "the restored spool", msg("usage spool restored", "kaiak.usage.batches", "1"))
 	})
 
 	t.Run("SIGTERM flushes the last records and reports draining", func(t *testing.T) {
@@ -142,62 +125,6 @@ func TestControlModeEndToEnd(t *testing.T) {
 		g.logs.wait(t, "the flush", msg("usage flushed", "kaiak.trigger", "drain"))
 	})
 
-	cp.Close()
-
-	t.Run("boots from the last-known-good config with the control plane down", func(t *testing.T) {
-		g := startGatewayEnv(t, append(controlEnv(cp.URL(), token, dataDir), "KAIAK_DRAIN_TIMEOUT_MS=500",
-			"KAIAK_CONTROL_BOOT_WAIT_MS=1000"))
-		g.logs.wait(t, "the last-known-good boot",
-			msg("config applied", "kaiak.trigger", "last-known-good"))
-		if status, body := g.get(t, "/v1/models/chat-2", evalKey); status != http.StatusOK {
-			t.Fatalf("/v1/models/chat-2 from last-known-good = %d %s", status, body)
-		}
-		if r := g.post(t, "/v1/chat/completions", evalKey, "", chatBody("chat", false, nil)); r.StatusCode != http.StatusOK {
-			t.Fatalf("chat from last-known-good: %d %s", r.StatusCode, r.body)
-		}
-		g.stop(t)
-		// The drain could not deliver: the batch stays spooled for the next start, beside
-		// any acknowledged batch no totals.json save has covered yet — the index names
-		// those acknowledged, so they are never sent again.
-		g.logs.wait(t, "the failed flush", msg("usage not flushed: left in the spool for the next start", "kaiak.usage.batches", "1"))
-		if unsent := unacknowledgedSpool(t, dataDir); len(unsent) != 1 {
-			t.Errorf("unacknowledged spooled batches %v, want 1", unsent)
-		}
-	})
-}
-
-// unacknowledgedSpool lists the spooled batch files the spool's index does not name
-// acknowledged (docs/specs/GATEWAY.md, Usage spool).
-func unacknowledgedSpool(t *testing.T, dataDir string) []string {
-	t.Helper()
-	raw, err := os.ReadFile(filepath.Join(dataDir, "usage-spool.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var index struct {
-		Data struct {
-			Acknowledged map[string]int64 `json:"acknowledged"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(raw, &index); err != nil {
-		t.Fatal(err)
-	}
-	batches, err := filepath.Glob(filepath.Join(dataDir, "usage-batch-*.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var unsent []string
-	for _, b := range batches {
-		epoch, seq, ok := strings.Cut(strings.TrimSuffix(strings.TrimPrefix(filepath.Base(b), "usage-batch-"), ".json"), "-")
-		n, err := strconv.ParseInt(seq, 10, 64)
-		if !ok || err != nil {
-			t.Fatalf("spool file %s not understood", b)
-		}
-		if last, acked := index.Data.Acknowledged[epoch]; !acked || n > last {
-			unsent = append(unsent, b)
-		}
-	}
-	return unsent
 }
 
 // waitUsage reads the control plane's usage events until match accepts one.
@@ -248,56 +175,6 @@ func countedRecord(t *testing.T, cp *fakecontrol.Server, requestID string) map[s
 	return nil
 }
 
-// M5: a gateway restarted while the control plane is down keeps enforcing the spent
-// budget it last knew — its applied totals are kept in the data directory and
-// restored before traffic — instead of counting the month from zero until totals
-// arrive again.
-func TestRestartWithTheControlPlaneDownKeepsASpentBudget(t *testing.T) {
-	backend := fakebackend.New()
-	defer backend.Close()
-	const token = "e2e-control-token"
-	cp := fakecontrol.New(token)
-	defer cp.Close()
-	dataDir := filepath.Join(t.TempDir(), "data")
-	_, evalHash := newKey()
-	_, annHash := newKey()
-	data, err := json.Marshal(testConfig(backend.URL(), evalHash, annHash, ""))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cp.Publish(data)
-
-	g := startGatewayEnv(t, controlEnv(cp.URL(), token, dataDir))
-	g.logs.waitCount(t, "the stream", 2, waitLimit, msg("config stream connected"))
-	// The group budgeted's budget (0.0001 USD) is spent this month.
-	month := time.Now().UTC().Format("2006-01") + "-01T00:00:00Z"
-	cp.SetWindows([]byte(`[{"group":"budgeted","type":"usd_per_month","window_start":"` + month +
-		`","used":"200000"}]`))
-	cp.PushCurrentTotals()
-	deadline := time.Now().Add(waitLimit)
-	for {
-		r := g.post(t, "/v1/chat/completions", budgetKey, "", chatBody("priced", false, nil))
-		if r.StatusCode == http.StatusTooManyRequests && strings.Contains(string(r.body), "budget_exceeded") {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the pushed spent budget never refused: %d %s", r.StatusCode, r.body)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	g.stop(t)
-	cp.Close()
-
-	g = startGatewayEnv(t, append(controlEnv(cp.URL(), token, dataDir), "KAIAK_DRAIN_TIMEOUT_MS=500",
-		"KAIAK_CONTROL_BOOT_WAIT_MS=1000"))
-	g.logs.wait(t, "the last-known-good boot", msg("config applied", "kaiak.trigger", "last-known-good"))
-	r := g.post(t, "/v1/chat/completions", budgetKey, "", chatBody("priced", false, nil))
-	if r.StatusCode != http.StatusTooManyRequests || !strings.Contains(string(r.body), "budget_exceeded") {
-		t.Errorf("after the restart: %d %s, want the spent budget still refusing", r.StatusCode, r.body)
-	}
-	g.stop(t)
-}
-
 // A control plane restored to an older config — a backup, an in-memory store started
 // over — sends it on the stream, and the gateway applies it: the control plane is the
 // authority on which config is current, whatever the gateway ran before.
@@ -317,7 +194,7 @@ func TestRestoredOlderConfigIsApplied(t *testing.T) {
 		return cp.Publish(data)
 	}
 	older := publish("")
-	g := startGatewayEnv(t, controlEnv(cp.URL(), token, ""))
+	g := startGatewayEnv(t, controlEnv(cp.URL(), token))
 	g.logs.wait(t, "the boot", msg("config applied", "kaiak.trigger", "control", "kaiak.config.hash", older))
 	newer := publish("chat-2")
 	g.logs.wait(t, "the newer config", msg("config applied", "kaiak.trigger", "control", "kaiak.config.hash", newer))

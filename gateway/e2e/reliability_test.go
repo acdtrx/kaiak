@@ -73,7 +73,7 @@ func startReliability(t *testing.T, aURL, bURL string, tune func(cfg map[string]
 	key, hash := newKey()
 	configFile := filepath.Join(dir, "config.json")
 	writeJSON(t, configFile, reliabilityConfig(aURL, bURL, hash, tune))
-	return startGateway(t, configFile, filepath.Join(dir, "data")), key
+	return startGateway(t, configFile), key
 }
 
 // tried is the log line's list of attempts for deployments on the given backends,

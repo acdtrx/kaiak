@@ -81,7 +81,7 @@ type TotalsUpdate struct {
 // BatchID identifies a usage batch; the control plane counts each one once.
 type BatchID struct {
 	Instance string `json:"instance"`
-	// Epoch is random (128 bits, hex), created with a fresh spool.
+	// Epoch is random (128 bits, hex), created with every gateway process.
 	Epoch string `json:"epoch"`
 	// Sequence increases by one per batch within the epoch, from 1.
 	Sequence int64 `json:"sequence"`
@@ -94,7 +94,7 @@ type UsageBatch struct {
 }
 
 // UsageAck is the answer to POST /v1/usage: the batch is counted, now or before, and
-// may leave the spool. It carries no totals: they come on the stream.
+// is not sent again. It carries no totals: they come on the stream.
 type UsageAck struct {
 	Batch BatchID `json:"batch"`
 }
@@ -121,8 +121,7 @@ type Status struct {
 	State           State     `json:"state"`
 	StartedAt       time.Time `json:"started_at"`
 	// AppliedConfigHash is the hash of the config in force; nil before the first
-	// config from the control plane (or its last-known-good copy) is applied, and while
-	// the seed config is in force.
+	// config from the control plane is applied, and while the seed config is in force.
 	AppliedConfigHash *string `json:"applied_config_hash"`
 	// LastRejection is the latest config received from the control plane when the
 	// gateway rejected it; nil once a later one is applied or the running one is

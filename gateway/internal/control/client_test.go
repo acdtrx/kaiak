@@ -24,7 +24,6 @@ import (
 
 	"kaiak/internal/config"
 	"kaiak/internal/fakecontrol"
-	"kaiak/internal/state"
 )
 
 const (
@@ -96,7 +95,6 @@ type harness struct {
 	t      *testing.T
 	cp     *fakecontrol.Server
 	holder *config.Holder
-	dir    *state.Dir
 	logs   *syncBuffer
 	loads  chan load
 	totals chan TotalsUpdate
@@ -110,8 +108,7 @@ type harness struct {
 	bootStreams int
 }
 
-// newHarness starts a fake control plane and prepares a data directory; client builds
-// clients against them.
+// newHarness starts a fake control plane; client builds clients against it.
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 	cp := fakecontrol.New(testToken)
@@ -120,11 +117,7 @@ func newHarness(t *testing.T) *harness {
 	// first config unasked.
 	cp.HoldTotalsOnConnect(true)
 	logs := &syncBuffer{}
-	dir, err := state.Open(t.TempDir(), slog.New(slog.NewTextHandler(logs, nil)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	h := &harness{t: t, cp: cp, dir: dir, logs: logs, holder: &config.Holder{},
+	h := &harness{t: t, cp: cp, logs: logs, holder: &config.Holder{},
 		loads: make(chan load, 100), totals: make(chan TotalsUpdate, 10)}
 	t.Cleanup(func() {
 		if t.Failed() {
@@ -148,7 +141,7 @@ func (h *harness) client(tune func(*Options)) *Client {
 		func(l config.Load) { h.loads <- load{l.Trigger, l.Applied} })
 	// A short boot wait: a boot with the control plane down retries (at test speed)
 	// until it ends.
-	opts := Options{URL: u, Token: testToken, Instance: testInstance, Applier: applier, Dir: h.dir, Logger: logger,
+	opts := Options{URL: u, Token: testToken, Instance: testInstance, Applier: applier, Logger: logger,
 		OnTotals: func(u TotalsUpdate) { h.totals <- u }, BootWait: 200 * time.Millisecond,
 		wait: h.wait, random: func() float64 { return 0.5 }}
 	if tune != nil {
@@ -258,16 +251,6 @@ func wantApplied(t *testing.T, c *Client, want string) {
 	}
 }
 
-// savedHash is the config hash in the last-known-good file; "" when there is none.
-func (h *harness) savedHash() string {
-	h.t.Helper()
-	var saved lastKnownGood
-	if _, err := h.dir.ReadVersioned(LastKnownGoodFile, lastKnownGoodFormat, &saved); err != nil {
-		h.t.Fatal(err)
-	}
-	return saved.ConfigHash
-}
-
 func TestBootAppliesTheStreamsFirstConfigAndSendsTheProtocolHeaders(t *testing.T) {
 	h := newHarness(t)
 	hash := h.cp.Publish(configA(t))
@@ -280,9 +263,6 @@ func TestBootAppliesTheStreamsFirstConfigAndSendsTheProtocolHeaders(t *testing.T
 	wantApplied(t, c, hash)
 	if !h.holder.Loaded() || h.holder.Current().Models["llama"] == nil {
 		t.Fatal("config not in the holder")
-	}
-	if got := h.savedHash(); got != hash {
-		t.Errorf("last-known-good hash %s, want %s", got, hash)
 	}
 	reqs := h.cp.Requests()
 	if len(reqs) != 1 || reqs[0].Path != "/v1/stream" || reqs[0].Query != "" {
@@ -325,7 +305,7 @@ func TestStreamAppliesUpdatesAndIgnoresHeartbeats(t *testing.T) {
 	c := h.client(nil)
 	h.boot(c)
 	h.wantLoad(load{TriggerControl, true})
-	stop := h.run(c)
+	h.run(c)
 
 	st := h.nextStream() // its first config is the one booted: skipped
 	st.Comment("heartbeat")
@@ -342,10 +322,6 @@ func TestStreamAppliesUpdatesAndIgnoresHeartbeats(t *testing.T) {
 	default:
 	}
 	h.noLoadPending()
-	stop() // the last-known-good write follows the apply on the client's goroutine
-	if got := h.savedHash(); got != hash {
-		t.Errorf("last-known-good hash %s, want %s", got, hash)
-	}
 	if !strings.Contains(h.logs.String(), "config event skipped: the config already applied or rejected") {
 		t.Errorf("the stream's first config, the one booted, not skipped:\n%s", h.logs.String())
 	}
@@ -442,9 +418,6 @@ func TestRejectedConfigIsKeptOutAndReported(t *testing.T) {
 	if !ok || r.ConfigHash != rejected || !slices.Equal(r.Codes, []string{config.CodeKeyGroupUnknown}) {
 		t.Fatalf("last rejection %+v (%v), want %s [key-group-unknown]", r, ok, rejected)
 	}
-	if got := h.savedHash(); got != applied {
-		t.Errorf("last-known-good hash %s, want %s: a rejected config is never saved", got, applied)
-	}
 	if out := h.logs.String(); !strings.Contains(out, `msg="config rejected" kaiak.trigger=control kaiak.config.hash=`+rejected) ||
 		!strings.Contains(out, "kaiak.config.running=kept") {
 		t.Errorf("rejection not logged:\n%s", out)
@@ -484,116 +457,6 @@ func TestRunningConfigReceivedAgainClearsTheRejection(t *testing.T) {
 		t.Errorf("rejection %+v still reported with the running config received again", r)
 	}
 	h.noLoadPending()
-}
-
-func TestRejectedConfigAtBootFallsBackToLastKnownGood(t *testing.T) {
-	h := newHarness(t)
-	applied := h.cp.Publish(configA(t))
-	h.boot(h.client(nil))
-	h.wantLoad(load{TriggerControl, true})
-
-	rejected := h.cp.Publish(configRejected(t))
-	h.holder.Swap(nil) // a new process
-	c := h.client(nil)
-	if err := h.boot(c); err != nil {
-		t.Fatalf("Boot: %v", err)
-	}
-	h.wantLoad(load{TriggerControl, false})
-	h.wantLoad(load{TriggerLastKnownGood, true})
-	wantApplied(t, c, applied)
-	if r, ok := c.LastRejection(); !ok || r.ConfigHash != rejected {
-		t.Errorf("last rejection %+v (%v), want %s", r, ok, rejected)
-	}
-	h.run(c)
-	h.nextStream() // the rejected config again: skipped by its hash
-	h.cp.Publish(configB(t))
-	h.wantLoad(load{TriggerControl, true}) // the first load since: nothing came before
-}
-
-func TestBootFromLastKnownGoodWhenTheControlPlaneIsDown(t *testing.T) {
-	h := newHarness(t)
-	h.cp.Publish(configA(t))
-	hash := h.cp.Publish(configB(t))
-	h.boot(h.client(nil))
-	h.wantLoad(load{TriggerControl, true})
-
-	h.cp.SetDown(true)
-	h.holder.Swap(nil) // a new process on the same data directory
-	c := h.client(nil)
-	if err := h.boot(c); err != nil {
-		t.Fatalf("Boot did not fall back to the last-known-good config: %v", err)
-	}
-	h.wantLoad(load{TriggerLastKnownGood, true})
-	wantApplied(t, c, hash)
-	if h.holder.Current().Models["large"] == nil {
-		t.Fatal("last-known-good config not in the holder")
-	}
-	if !strings.Contains(h.logs.String(), `msg="config applied" kaiak.trigger=last-known-good kaiak.config.hash=`+hash) {
-		t.Errorf("last-known-good load not logged:\n%s", h.logs.String())
-	}
-
-	// Once the control plane is back, its current config is the one running: skipped.
-	h.run(c)
-	h.cp.SetDown(false)
-	h.nextStream()
-	h.cp.Publish(configA(t))
-	h.wantLoad(load{TriggerControl, true}) // the first load since: nothing came before
-}
-
-// The last-known-good copy is a config the control plane no longer has (it started
-// over with another): the stream's current config replaces it once the control plane
-// answers.
-func TestLastKnownGoodIsReplacedByTheCurrentConfig(t *testing.T) {
-	h := newHarness(t)
-	h.cp.Publish(configA(t))
-	h.boot(h.client(nil))
-	h.wantLoad(load{TriggerControl, true})
-
-	h.cp.Restart()
-	current := h.cp.Publish(configB(t))
-	h.cp.SetDown(true)
-	h.holder.Swap(nil) // a new process on the same data directory
-	c := h.client(nil)
-	if err := h.boot(c); err != nil {
-		t.Fatalf("Boot did not fall back to the last-known-good config: %v", err)
-	}
-	h.wantLoad(load{TriggerLastKnownGood, true})
-	if h.holder.Current().Models["llama"] == nil {
-		t.Fatal("the last-known-good config is not in the holder")
-	}
-
-	stop := h.run(c)
-	h.cp.SetDown(false)
-	h.wantLoad(load{TriggerControl, true})
-	wantApplied(t, c, current)
-	if h.holder.Current().Models["large"] == nil {
-		t.Fatal("the current config is not in the holder")
-	}
-	stop() // the last-known-good write follows the apply on the client's goroutine
-	if got := h.savedHash(); got != current {
-		t.Errorf("last-known-good hash %s, want the current config's %s", got, current)
-	}
-}
-
-// A last-known-good file whose hash is not a config hash is discarded at boot, with a
-// log line: status would report it, and the schema refuses it.
-func TestMalformedLastKnownGoodIsDiscarded(t *testing.T) {
-	h := newHarness(t)
-	saved := lastKnownGood{ConfigHash: "NOT-A-HASH", Config: configA(t)}
-	if err := h.dir.WriteVersioned(LastKnownGoodFile, lastKnownGoodFormat, saved); err != nil {
-		t.Fatal(err)
-	}
-	h.cp.SetDown(true)
-	c := h.client(nil)
-	if err := h.boot(c); err == nil {
-		t.Fatal("Boot applied a last-known-good copy with a malformed hash")
-	}
-	if h.holder.Loaded() {
-		t.Fatal("holder loaded")
-	}
-	if !strings.Contains(h.logs.String(), `msg="last-known-good config discarded: malformed config hash"`) {
-		t.Errorf("discard not logged:\n%s", h.logs.String())
-	}
 }
 
 // The process exits on a failed boot (TestBootFailsWithNoSourceOfConfig); the
@@ -744,7 +607,7 @@ func TestBootTakesAConfigPublishedWithinTheWait(t *testing.T) {
 }
 
 // D7: what the operator must fix is never retried — a refused token, a config the
-// gateway rejects: boot goes on at once (last-known-good, else exit).
+// gateway rejects: boot exits at once.
 func TestBootDoesNotRetryWhatTheOperatorMustFix(t *testing.T) {
 	for name, c := range map[string]struct {
 		setup func(h *harness)

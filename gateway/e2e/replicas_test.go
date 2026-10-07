@@ -47,7 +47,7 @@ func TestAcrossHalvesReplicas(t *testing.T) {
 	proxyB.setUpstream(t, sample.replicas[0])
 
 	gatewayEnv := func(proxy *controlProxy, instance string) []string {
-		return append(controlEnv(proxy.URL(), token, filepath.Join(dir, instance)), "KAIAK_INSTANCE_ID="+instance)
+		return append(controlEnv(proxy.URL(), token), "KAIAK_INSTANCE_ID="+instance)
 	}
 	// Only gw-a has the key of the backend the last config adds, so gw-b rejects it.
 	const keyedEnv = "E2E_REPLICAS_KEYED_KEY"

@@ -112,7 +112,6 @@ func TestGatewayEndToEnd(t *testing.T) {
 	defer backend.Close()
 	dir := t.TempDir()
 	configFile := filepath.Join(dir, "config.json")
-	dataDir := filepath.Join(dir, "data")
 	evalKey, evalHash := newKey()
 	annKey, annHash := newKey()
 	writeJSON(t, configFile, testConfig(backend.URL(), evalHash, annHash, ""))
@@ -120,7 +119,7 @@ func TestGatewayEndToEnd(t *testing.T) {
 	// the embedding deployment, and requests still go out.
 	backend.SetModels(backendChatModel)
 
-	g := startGateway(t, configFile, dataDir)
+	g := startGateway(t, configFile)
 
 	t.Run("a deployment whose model the backend does not list is warned about", func(t *testing.T) {
 		line := g.logs.wait(t, "the model check", msg("the backend does not list the deployment's model", "kaiak.backend.id", "fake"))
@@ -353,21 +352,12 @@ func TestGatewayEndToEnd(t *testing.T) {
 	})
 
 	g.stop(t)
-	g.logs.wait(t, "the shutdown snapshot", msg("limits snapshot written", "kaiak.trigger", "shutdown"))
-	if _, err := os.Stat(filepath.Join(dataDir, "limits.json")); err != nil {
-		t.Fatalf("snapshot: %v", err)
-	}
+	g = startGateway(t, configFile)
 
-	// A second process on the same data directory.
-	g = startGateway(t, configFile, dataDir)
-
-	t.Run("usage snapshot survives a restart", func(t *testing.T) {
-		g.logs.wait(t, "the restored snapshot", msg("limits snapshot restored"))
-		r := g.post(t, "/v1/chat/completions", budgetKey, "", chatBody("priced", false, nil))
-		if r.StatusCode != http.StatusTooManyRequests || r.errorCode(t) != "budget_exceeded" {
-			t.Fatalf("priced after restart: %d %s", r.StatusCode, r.body)
+	t.Run("file mode counts from zero after a restart", func(t *testing.T) {
+		if r := g.post(t, "/v1/chat/completions", budgetKey, "", chatBody("priced", false, nil)); r.StatusCode != http.StatusOK {
+			t.Fatalf("priced after restart: %d %s, want the budget counted from zero", r.StatusCode, r.body)
 		}
-		// Per-minute windows are not kept.
 		if r := g.post(t, "/v1/chat/completions", rpmKey, "", chatBody("rpm", false, nil)); r.StatusCode != http.StatusOK {
 			t.Fatalf("rpm after restart: %d %s", r.StatusCode, r.body)
 		}
@@ -446,7 +436,7 @@ func TestTieredPrices(t *testing.T) {
 		}}},
 	}
 	writeJSON(t, configFile, cfg)
-	g := startGateway(t, configFile, "")
+	g := startGateway(t, configFile)
 
 	for _, c := range []struct {
 		name           string
@@ -511,7 +501,7 @@ func TestInputWrittenToTheCache(t *testing.T) {
 			"tokens_in": 1, "tokens_cached": 0.1, "tokens_out": 2}},
 	)
 	writeJSON(t, configFile, cfg)
-	g := startGateway(t, configFile, "")
+	g := startGateway(t, configFile)
 
 	for _, c := range []struct {
 		name                    string

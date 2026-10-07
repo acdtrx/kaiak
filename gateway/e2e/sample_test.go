@@ -70,15 +70,13 @@ func TestAcrossHalves(t *testing.T) {
 	proxy := newControlProxy(t)
 	proxy.setUpstream(t, sample.url)
 
-	dataA := filepath.Join(dir, "gw-a")
-	gatewayEnv := func(instance, dataDir string, extra ...string) []string {
-		env := append(controlEnv(proxy.URL(), token, dataDir), "KAIAK_INSTANCE_ID="+instance,
+	gatewayEnv := func(instance string) []string {
+		return append(controlEnv(proxy.URL(), token), "KAIAK_INSTANCE_ID="+instance,
 			// Bounds the drain's flush when the control plane is down.
 			"KAIAK_DRAIN_TIMEOUT_MS=2000")
-		return append(env, extra...)
 	}
-	a := startGatewayEnv(t, gatewayEnv("gw-a", dataA))
-	b := startGatewayEnv(t, gatewayEnv("gw-b", filepath.Join(dir, "gw-b")))
+	a := startGatewayEnv(t, gatewayEnv("gw-a"))
+	b := startGatewayEnv(t, gatewayEnv("gw-b"))
 	for _, g := range []*gateway{a, b} {
 		g.logs.wait(t, "the boot from the sample", msg("config applied", "kaiak.trigger", "control"))
 	}
@@ -342,7 +340,7 @@ func TestAcrossHalves(t *testing.T) {
 	// Every batch acknowledged before the sample stops: a batch counted by this sample
 	// and resent to the next would count in both stores.
 	for _, g := range []*gateway{a, b} {
-		g.waitMetric(t, "an empty spool", "kaiak_usage_spool_batches", func(v float64) bool { return v == 0 })
+		g.waitMetric(t, "an empty queue", "kaiak_usage_queue_batches", func(v float64) bool { return v == 0 })
 	}
 	sample.stop(t)
 	proxy.setUpstream(t, "")
@@ -359,32 +357,20 @@ func TestAcrossHalves(t *testing.T) {
 		}
 	})
 
-	// Restarted in the outage. The drain sealed the outage's records; with nowhere to
-	// send them they stay in the spool.
-	a.stop(t)
-	a.logs.wait(t, "the failed flush", msg("usage not flushed: left in the spool for the next start"))
-	a = startGatewayEnv(t, gatewayEnv("gw-a", dataA, "KAIAK_CONTROL_BOOT_WAIT_MS=500"))
-
-	t.Run("a gateway restarted in the outage boots from last-known-good", func(t *testing.T) {
-		a.logs.wait(t, "the last-known-good boot", msg("config applied", "kaiak.trigger", "last-known-good"))
-		a.logs.wait(t, "the restored spool", msg("usage spool restored"))
-		served(t, "chat-2 from last-known-good", chat(t, a, "chat-2"))
-	})
-
 	restarted := float64(time.Now().UnixNano()) / 1e9
 	controlApplied := msg("config applied", "kaiak.trigger", "control")
 	appliedBefore := map[*gateway]int{a: a.logs.count(controlApplied), b: b.logs.count(controlApplied)}
 	sample = startSample(t, node, root, configFile, token)
 	proxy.setUpstream(t, sample.url)
 
-	t.Run("the control plane back: reconnected, serving, spool delivered", func(t *testing.T) {
+	t.Run("the control plane back: reconnected, serving, queue delivered", func(t *testing.T) {
 		// The new sample's current config is the one both gateways run (the file did
 		// not change): its config event is skipped by its hash, and nothing reloads.
 		// Its totals come on the stream (acks carry none): until they are applied, gw-a
-		// enforces the old store's spend it restored at its boot.
+		// enforces the old store's spend.
 		for _, g := range []*gateway{a, b} {
 			g.waitMetricWithin(t, "the outage over", "kaiak_control_outage", recoverLimit, func(v float64) bool { return v == 0 })
-			g.waitMetricWithin(t, "the spool delivered", "kaiak_usage_spool_batches", recoverLimit, func(v float64) bool { return v == 0 })
+			g.waitMetricWithin(t, "the queue delivered", "kaiak_usage_queue_batches", recoverLimit, func(v float64) bool { return v == 0 })
 			g.waitMetricWithin(t, "the new store's totals", "kaiak_control_totals_applied_timestamp_seconds", recoverLimit,
 				func(v float64) bool { return v >= restarted })
 		}

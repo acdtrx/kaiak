@@ -23,7 +23,7 @@ func TestSeriesStartAtZero(t *testing.T) {
 	key, hash := newKey()
 	configFile := filepath.Join(dir, "config.json")
 	writeJSON(t, configFile, reliabilityConfig(a.URL(), b.URL(), hash, nil))
-	g := startGateway(t, configFile, filepath.Join(dir, "data"))
+	g := startGateway(t, configFile)
 
 	outcomes := []string{"success", "unavailable", "timeout", "auth_failed", "model_missing", "path_missing",
 		"server_error", "broke_off", "response_timeout", "rate_limited", "client_error", "canceled", "internal"}
@@ -63,7 +63,7 @@ func TestSeriesStartAtZero(t *testing.T) {
 	}
 
 	want(`kaiak_config_loads_total{trigger="startup",result="applied"}`, 1)
-	for _, trigger := range []string{"startup", "sighup", "control", "seed", "last-known-good"} {
+	for _, trigger := range []string{"startup", "sighup", "control", "seed"} {
 		want(fmt.Sprintf(`kaiak_config_loads_total{trigger=%q,result="rejected"}`, trigger), 0)
 	}
 	want(`kaiak_errors_total{class="internal"}`, 0)

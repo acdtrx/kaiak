@@ -1,9 +1,8 @@
 package control
 
-// E1: with no data directory (Options.Dir nil) the client keeps everything in memory:
-// usage batches until acknowledged (bounded), a fresh epoch per process, no
-// last-known-good copy. The filesystem side — nothing written at all — is checked on
-// the whole process (cmd/kaiak).
+// E1: the client keeps everything in memory: usage batches until acknowledged
+// (bounded), a fresh epoch per process. The filesystem side — nothing written at all —
+// is checked on the whole process (cmd/kaiak).
 
 import (
 	"context"
@@ -19,12 +18,10 @@ import (
 	"kaiak/internal/fakecontrol"
 )
 
-func withoutDataDir(o *Options) { o.Dir = nil }
-
-func TestWithoutADataDirectoryBatchesAreDeliveredFromMemory(t *testing.T) {
+func TestBatchesAreDeliveredFromMemory(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))
-	c, _, _ := h.usageClient(2, withoutDataDir)
+	c, _, _ := h.usageClient(2, nil)
 	for i := range 5 {
 		c.Record(testRecord(i))
 	}
@@ -35,15 +32,12 @@ func TestWithoutADataDirectoryBatchesAreDeliveredFromMemory(t *testing.T) {
 	if got := len(h.cp.CountedRecords()); got != 5 {
 		t.Errorf("%d records counted, want 5", got)
 	}
-	if files := h.spoolFiles("usage-"); len(files) != 0 {
-		t.Errorf("files in the (unused) data directory: %v", files)
-	}
-	if !strings.Contains(h.logs.String(), "usage batches kept in memory until acknowledged: no data directory") {
+	if !strings.Contains(h.logs.String(), "usage batches kept in memory until acknowledged") {
 		t.Errorf("memory mode not logged:\n%s", h.logs.String())
 	}
 
 	// Every process starts a fresh epoch: nothing ties it to the previous one.
-	c2, _, _ := h.usageClient(1, withoutDataDir)
+	c2, _, _ := h.usageClient(1, nil)
 	c2.Record(testRecord(9))
 	if e := h.wantUsage(fakecontrol.OutcomeCounted, 1, 1); e.Batch.Epoch == first.Batch.Epoch {
 		t.Errorf("second process reused epoch %s", e.Batch.Epoch)
@@ -52,11 +46,11 @@ func TestWithoutADataDirectoryBatchesAreDeliveredFromMemory(t *testing.T) {
 
 // O7: batches the flush could not deliver are lost with the process — billing data
 // lost, logged at error level like the other losses.
-func TestWithoutADataDirectoryAnUndeliveredFlushIsLoggedAsLost(t *testing.T) {
+func TestAnUndeliveredFlushIsLoggedAsLost(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))
 	h.cp.SetDown(true)
-	c, _, _ := h.usageClient(MaxBatchRecords, withoutDataDir)
+	c, _, _ := h.usageClient(MaxBatchRecords, nil)
 	c.Record(testRecord(1))
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
@@ -65,7 +59,7 @@ func TestWithoutADataDirectoryAnUndeliveredFlushIsLoggedAsLost(t *testing.T) {
 	}
 	logged := false
 	for line := range strings.SplitSeq(h.logs.String(), "\n") {
-		logged = logged || strings.Contains(line, `level=ERROR msg="usage not flushed: lost at exit (no data directory)"`) &&
+		logged = logged || strings.Contains(line, `level=ERROR msg="usage not flushed: lost at exit"`) &&
 			strings.HasSuffix(line, "kaiak.trigger=drain kaiak.usage.batches=1 kaiak.usage.records=1")
 	}
 	if !logged {
@@ -77,19 +71,16 @@ func TestWithoutADataDirectoryAnUndeliveredFlushIsLoggedAsLost(t *testing.T) {
 // which may be on the wire — logged and counted with their own reason. The bound is
 // 4 records' worth of encoded bytes (testRecord(1) to (9) are the same size,
 // testRecord(0) smaller).
-func TestWithoutADataDirectoryQueuedRecordsAreBounded(t *testing.T) {
+func TestQueuedRecordsAreBounded(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))
 	h.cp.SetUsageFault(&fakecontrol.UsageFault{Status: http.StatusServiceUnavailable, Code: "internal-error"})
-	c, obs, _ := h.usageClient(2, func(o *Options) {
-		withoutDataDir(o)
-		o.UsageMemoryBytes = 4 * recordSize(t, testRecord(9))
-	})
+	c, obs, _ := h.usageClient(2, func(o *Options) { o.UsageMemoryBytes = 4 * recordSize(t, testRecord(9)) })
 	for i := range 10 {
 		c.Record(testRecord(i))
 	}
 	obs.waitDropped(t, DroppedMemoryBound, 6)
-	if out := h.logs.String(); !strings.Contains(out, "oldest queued usage batches dropped to bound memory (no data directory)") {
+	if out := h.logs.String(); !strings.Contains(out, "oldest queued usage batches dropped to bound memory") {
 		t.Errorf("drop not logged:\n%s", out)
 	}
 	h.cp.SetUsageFault(nil)
@@ -112,15 +103,12 @@ func TestWithoutADataDirectoryQueuedRecordsAreBounded(t *testing.T) {
 // The bound weighs records by their encoded size, not their number: two records with
 // long request IDs take the room of more than four short ones, and the queued bytes
 // are reported for the metrics.
-func TestWithoutADataDirectoryTheBoundCountsEncodedBytes(t *testing.T) {
+func TestTheBoundCountsEncodedBytes(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))
 	h.cp.SetUsageFault(&fakecontrol.UsageFault{Status: http.StatusServiceUnavailable, Code: "internal-error"})
 	small := recordSize(t, testRecord(1))
-	c, obs, _ := h.usageClient(2, func(o *Options) {
-		withoutDataDir(o)
-		o.UsageMemoryBytes = 4 * small
-	})
+	c, obs, _ := h.usageClient(2, func(o *Options) { o.UsageMemoryBytes = 4 * small })
 	long := func(n int) accounting.UsageRecord {
 		rec := testRecord(n)
 		rec.RequestID = fmt.Sprintf("req-%d-%s", n, strings.Repeat("x", 120))
@@ -177,26 +165,4 @@ func (o *testObserver) waitMemoryBytes(t *testing.T, want int64) {
 			t.Fatalf("%d bytes held in memory, want %d", got, want)
 		}
 	}
-}
-
-func TestWithoutADataDirectoryNoLastKnownGoodIsWrittenOrRead(t *testing.T) {
-	h := newHarness(t)
-	h.cp.Publish(configA(t))
-	if err := h.boot(h.client(withoutDataDir)); err != nil {
-		t.Fatal(err)
-	}
-	h.wantLoad(load{TriggerControl, true})
-	if got := h.savedHash(); got != "" {
-		t.Errorf("last-known-good %s written with no data directory", got)
-	}
-
-	// A copy in the directory is not read without it.
-	h.boot(h.client(nil))
-	h.wantLoad(load{TriggerControl, true})
-	h.cp.SetDown(true)
-	h.holder.Swap(nil)
-	if err := h.boot(h.client(withoutDataDir)); err == nil {
-		t.Fatal("Boot found a config with the control plane down, no seed and no data directory")
-	}
-	h.noLoadPending()
 }

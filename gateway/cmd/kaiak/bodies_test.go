@@ -40,7 +40,7 @@ func TestBodyCapAboveTheBudgetIsWarned(t *testing.T) {
 	var logs syncBuffer
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // stop at once: the startup load is what the test reads
-	env := envOf(map[string]string{"KAIAK_CONFIG_FILE": minimalFixture, "KAIAK_DATA_DIR": t.TempDir(),
+	env := envOf(map[string]string{"KAIAK_CONFIG_FILE": minimalFixture,
 		"KAIAK_INSTANCE_ID": "test-1", "KAIAK_LISTEN_ADDR": "127.0.0.1:0", "KAIAK_ADMIN_ADDR": "127.0.0.1:0",
 		"KAIAK_BODY_MEMORY_BYTES": "1000"})
 	if err := run(ctx, slog.New(slog.NewTextHandler(&logs, nil)), env, make(chan os.Signal), make(chan os.Signal)); err != nil {

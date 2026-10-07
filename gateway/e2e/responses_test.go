@@ -106,7 +106,7 @@ func TestResponses(t *testing.T) {
 	key, hash := newKey()
 	configFile := filepath.Join(dir, "config.json")
 	writeJSON(t, configFile, responsesConfig(backend.URL(), old.URL(), hash))
-	g := startGatewayEnv(t, append(gatewayEnv(configFile, ""),
+	g := startGatewayEnv(t, append(gatewayEnv(configFile),
 		openAIKeyEnv+"=sk-e2e", azureKeyEnv+"=e2e-azure", anthropicKeyEnv+"=sk-ant-e2e"))
 
 	for _, b := range responsesBackends {

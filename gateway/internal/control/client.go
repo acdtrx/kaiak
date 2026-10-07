@@ -16,23 +16,21 @@ import (
 
 	"kaiak/internal/config"
 	"kaiak/internal/logattr"
-	"kaiak/internal/state"
 )
 
 // This file is the control-plane client: the only code in the gateway that talks to
 // a control plane (docs/ARCHITECTURE.md). It boots the config (the stream's first
-// config, else the last-known-good copy, else the seed), then follows the config stream for as long as it runs,
-// beside the usage sender (usage.go, spool.go) and the status reporter (status.go).
+// config, else the seed), then follows the config stream for as long as it runs,
+// beside the usage sender (usage.go, queue.go) and the status reporter (status.go).
 // Nothing here is on the request path: requests read the config Holder, which the
 // client fills through the config Applier like any other source, and settled usage
 // only joins a batch in memory (Record).
 
-// TriggerControl, TriggerLastKnownGood and TriggerSeed name the client's config loads
-// in the log and in kaiak_config_loads_total.
+// TriggerControl and TriggerSeed name the client's config loads in the log and in
+// kaiak_config_loads_total.
 const (
-	TriggerControl       = "control"
-	TriggerLastKnownGood = "last-known-good"
-	TriggerSeed          = "seed"
+	TriggerControl = "control"
+	TriggerSeed    = "seed"
 )
 
 // Defaults for Options left zero.
@@ -86,19 +84,16 @@ type Options struct {
 	// Instance is the gateway's instance ID (Kaiak-Instance header).
 	Instance string
 	Applier  *config.Applier
-	// Dir is the data directory: the usage spool and the last-known-good copy live
-	// there. Nil keeps usage batches in memory and has no last-known-good copy.
-	Dir    *state.Dir
-	Logger *slog.Logger
+	Logger   *slog.Logger
 	// HTTPClient carries every request; nil is defaultHTTPClient.
 	HTTPClient *http.Client
 	// BootWait bounds the wait for the stream's first config at boot — the stream
 	// opened again while the control plane is unavailable — before falling back to the
-	// last-known-good or seed config.
+	// seed config.
 	BootWait time.Duration
 	// SeedConfig, when set, is the config document a boot applies when the control
-	// plane is unavailable and there is no last-known-good copy
-	// (KAIAK_SEED_CONFIG_FILE); SeedFile names its file in the log.
+	// plane is unavailable (KAIAK_SEED_CONFIG_FILE); SeedFile names its file in the
+	// log.
 	SeedConfig []byte
 	SeedFile   string
 	// BackoffBase and BackoffCap shape the reconnect delay: exponential from base,
@@ -156,15 +151,14 @@ type Client struct {
 	// bytes on the config stream — the only channel that brings totals, so an ack is
 	// not contact (docs/specs/GATEWAY.md, Limits → Outage refusal). It starts when the
 	// client is created, so a gateway that boots without reaching the control plane
-	// (last-known-good or seed config) counts its outage from its start. streamOpen is
+	// (the seed config) counts its outage from its start. streamOpen is
 	// set while a config stream is open.
 	lastContact atomic.Int64
 	streamOpen  atomic.Bool
 
 	mu sync.Mutex
-	// appliedHash is the hash of the config in force from the control plane (or its
-	// last-known-good copy); "" before one is applied, and while the seed, which has
-	// none, is.
+	// appliedHash is the hash of the config in force from the control plane; "" before
+	// one is applied, and while the seed, which has none, is.
 	appliedHash string
 	// rejection is the latest config received from the control plane when it was
 	// rejected; nil before any, once a later one is applied, and once the config
@@ -173,9 +167,8 @@ type Client struct {
 	rejection *Rejection
 }
 
-// New returns a client; Boot and Run use it. It restores the usage spool from the data
-// directory (or starts a fresh one, or none without a data directory), so Record can
-// take records at once.
+// New returns a client; Boot and Run use it. It starts the process's usage epoch, so
+// Record can take records at once.
 func New(opts Options) *Client {
 	if opts.HTTPClient == nil {
 		opts.HTTPClient = defaultHTTPClient()
@@ -250,8 +243,8 @@ func (c *Client) Contact() (connected bool, last time.Time) {
 
 func (c *Client) touch() { c.lastContact.Store(time.Now().UnixNano()) }
 
-// AppliedConfigHash is the hash of the config in force from the control plane (or
-// its last-known-good copy); false before one is applied, and while the seed is.
+// AppliedConfigHash is the hash of the config in force from the control plane; false
+// before one is applied, and while the seed is.
 func (c *Client) AppliedConfigHash() (string, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -279,9 +272,8 @@ var errNoConfigYet = errors.New("the control plane sent no config within the boo
 // Boot): the stream's first config event, the stream opened again with backoff while
 // the control plane is unavailable, until BootWait ends; failing that (unavailable
 // through the wait, a config the gateway rejects, a refused token — the last two at
-// once), the last-known-good copy when there is a data directory; failing that too,
-// when the control plane is unavailable, the seed config (Options.SeedConfig). With
-// none, Boot returns an error saying why: the process exits on it rather than run
+// once), the seed config (Options.SeedConfig) when the control plane is unavailable.
+// With none, Boot returns an error saying why: the process exits on it rather than run
 // without a config. Cancelling ctx ends the boot with its error.
 func (c *Client) Boot(ctx context.Context) error {
 	first, err := c.bootConfig(ctx)
@@ -293,19 +285,15 @@ func (c *Client) Boot(ctx context.Context) error {
 	} else if c.applyConfig(first) {
 		return nil
 	}
-	if c.bootFromLastKnownGood() {
-		return nil
-	}
 	switch {
 	case err == nil:
 		r, _ := c.LastRejection()
-		return fmt.Errorf("no config: the control plane's config was rejected (codes %s; see the config rejected line) "+
-			"and there is no last-known-good config: fix the published config", strings.Join(r.Codes, ", "))
+		return fmt.Errorf("no config: the control plane's config was rejected (codes %s; see the config rejected line): "+
+			"fix the published config", strings.Join(r.Codes, ", "))
 	case !unavailable(err):
-		return fmt.Errorf("no config: %w, and there is no last-known-good config; the seed config serves only while the "+
-			"control plane is unavailable", err)
+		return fmt.Errorf("no config: %w; the seed config serves only while the control plane is unavailable", err)
 	case c.opts.SeedConfig == nil:
-		return fmt.Errorf("no config: control plane unavailable and no seed config (KAIAK_SEED_CONFIG_FILE) or last-known-good config: %w", err)
+		return fmt.Errorf("no config: control plane unavailable and no seed config (KAIAK_SEED_CONFIG_FILE): %w", err)
 	case !c.bootFromSeed():
 		return errors.New("no config: control plane unavailable and the seed config was rejected (see the config rejected line)")
 	}
@@ -368,8 +356,8 @@ func unavailable(err error) bool {
 }
 
 // bootFromSeed applies the seed config through the shared apply path; it reports
-// whether it was applied. The seed is never saved as the last-known-good copy and has
-// no config hash: the stream's config replaces it.
+// whether it was applied. The seed has no config hash: the stream's config replaces
+// it.
 func (c *Client) bootFromSeed() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -379,7 +367,7 @@ func (c *Client) bootFromSeed() bool {
 
 // Run works with the control plane until ctx is cancelled, and returns once all of
 // its goroutines have: it follows the config, sends usage batches and reports status.
-// When ctx ends the filling usage batch is sealed into the spool.
+// When ctx ends the filling usage batch is sealed and queued.
 func (c *Client) Run(ctx context.Context) {
 	var work sync.WaitGroup
 	work.Go(func() { c.usage.runSealer(ctx) })
@@ -449,9 +437,9 @@ func (c *Client) takeConfig(e ConfigEvent) {
 	c.applyConfig(e)
 }
 
-// applyConfig runs the config through the shared apply path. Applied, it becomes the
-// last-known-good copy and ends any rejection report; rejected, it is kept for the
-// status report and the running config stays. c.mu is held across the apply, so the
+// applyConfig runs the config through the shared apply path. Applied, it ends any
+// rejection report; rejected, it is kept for the status report and the running config
+// stays. c.mu is held across the apply, so the
 // applied hash and rejection read by the status report always match the config in
 // force.
 func (c *Client) applyConfig(e ConfigEvent) bool {
@@ -467,7 +455,6 @@ func (c *Client) applyConfig(e ConfigEvent) bool {
 	c.rejection = nil
 	c.mu.Unlock()
 	c.status.requestReport(statusTriggerChange)
-	c.saveLastKnownGood(e)
 	return true
 }
 

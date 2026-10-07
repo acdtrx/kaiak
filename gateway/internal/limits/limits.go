@@ -2,11 +2,11 @@
 // reserved before a request is routed, settled with the request's actual usage once it
 // is over (docs/specs/GATEWAY.md, Limits). Every scope — global and each group — has an
 // hour and a month count whether or not it has a limit of that type, and a limit is a
-// check over its scope's count; a scope's counts outlive the config that has it, until
-// their window ends. Per-minute windows exist only for the limits that have them. In
-// file mode the counters enforce every window at
-// the full limit, and the hour and month windows survive restarts through a snapshot
-// in the data directory. In control-plane mode (NewShared) the hour and month windows
+// check over its scope's count; a scope's counts outlive the config that has it while
+// own usage or a running request holds them. Per-minute windows exist only for the
+// limits that have them. In file mode the counters enforce every window at the full
+// limit, and every count starts from zero at each start. In control-plane mode
+// (NewShared) the hour and month windows
 // enforce the control plane's pushed totals plus this gateway's own usage not yet
 // counted there, per-minute windows enforce the limit's share among the live
 // gateways, and money-limited requests are refused once the control plane has been
@@ -99,18 +99,21 @@ var countedTypes = []config.LimitType{config.LimitTokensPerHour, config.LimitUSD
 func (k counterKey) scope() Scope { return scopeOf(k.group) }
 
 // counter is one scope's window of one type. limited: the scope has a limit of the
-// type, limit; a counter without one only counts, and never refuses.
+// type, limit; a counter without one only counts, and never refuses. refs counts the
+// running requests holding a reservation on it, of any amount: a retained counter
+// stays while one does, whatever its window holds.
 type counter struct {
 	key     counterKey
 	limited bool
 	limit   config.Limit
 	measure Measure
 	w       *window
+	refs    int
 }
 
 // Limiter holds every counter of the live config — each scope's hour and month counts
 // and each per-minute limit's window — and the hour and month counts of scopes a reload
-// removed, while their window still holds own usage. Its lock guards all counters, so
+// removed, while their window holds own usage or a running request holds them. Its lock guards all counters, so
 // checking and reserving across a request's scopes is all-or-nothing: two concurrent
 // requests can never both take the last unit.
 type Limiter struct {
@@ -134,9 +137,10 @@ type Limiter struct {
 	// re-shares.
 	minute []*counter
 	// retained are the hour and month counts of scopes the live config does not have,
-	// kept while their current window holds own usage (settled or reserved): a group
-	// created again under its ID takes them back, and in-flight reservations stay on
-	// them (docs/specs/GATEWAY.md, Limits → A count outlives its scope's config).
+	// kept while their current window holds own usage or a running request holds a
+	// reservation on them: a group created again under its ID takes them back, and the
+	// requests running settle on them (docs/specs/GATEWAY.md, Limits → A count outlives
+	// its scope's config).
 	retained map[counterKey]*counter
 	// owning are the shared counters holding settled own usage by generation, the ones
 	// retiring a generation visits; a counter that rolled its window may stay listed
@@ -151,18 +155,15 @@ type Limiter struct {
 	pushed map[counterKey]PushedWindow
 	// totalsAt is when totals were last applied; zero before any.
 	totalsAt time.Time
-	// totalsKnown: totals were applied or restored since the start — before that, the
-	// hour and month spend is unknown, not zero (noTotalsLocked). firstTotals is
-	// closed, and firstClosed set, when the first totals are taken (FirstTotals).
-	totalsKnown bool
+	// firstTotals is closed, and firstClosed set, when the first totals are taken
+	// (FirstTotals): before that, the hour and month spend is unknown, not zero
+	// (noTotalsLocked).
 	firstTotals chan struct{}
 	firstClosed bool
 	// counted is the newest usage generation dropped from the counters' own usage — a
 	// record of that generation or an older one settled later is already inside the
-	// applied bases. countedThrough is the counted_through of the totals applied last,
-	// which the bases include: totals.json saves it with them.
-	counted        uint64
-	countedThrough []CountedBatch
+	// applied bases.
+	counted uint64
 	// prunedAt is the hour start the pushed windows were last pruned at: windows that
 	// ended are dropped once an hour.
 	prunedAt time.Time
@@ -207,8 +208,8 @@ type Contact struct {
 	// for the control plane's next answer; zero while none waits.
 	UsageWaitingSince time.Time
 	// UsageUncountedSince is when the oldest batch acknowledged but not yet shown
-	// counted by applied totals was acknowledged (or restored at boot); zero while
-	// none waits (docs/specs/GATEWAY.md, Limits → Usage acks count for money limits).
+	// counted by applied totals was acknowledged; zero while none waits
+	// (docs/specs/GATEWAY.md, Limits → Usage acks count for money limits).
 	UsageUncountedSince time.Time
 }
 
@@ -241,7 +242,8 @@ func (l *Limiter) ObserveSyncs(f func(time.Duration)) {
 // removed applies to the count so far), and so does a scope created again while its
 // counts are retained; new ones start empty (in control-plane mode, from their pushed
 // base). The hour and month counts of a deleted scope are retained while they hold own
-// usage; removed per-minute limits are dropped. Callers hold l.mu.
+// usage or a running request holds them; removed per-minute limits are dropped.
+// Callers hold l.mu.
 func (l *Limiter) sync() {
 	snap := l.holder.Current()
 	if snap == nil || snap == l.applied {
@@ -307,35 +309,20 @@ func (l *Limiter) sync() {
 	}
 }
 
-// pruneRetainedLocked drops the retained counts whose current window holds no own
-// usage: the window they kept usage for has ended, or it was all shown counted.
-// Callers hold l.mu.
+// pruneRetainedLocked drops the retained counts no running request holds whose
+// current window holds no own usage: the window they kept usage for has ended, or it
+// was all shown counted. A count a request holds stays, whatever its window holds — a
+// USD reservation holds nothing, and a token reservation's window may have rolled —
+// so the request settles on the counter a group created again takes back. Callers
+// hold l.mu.
 func (l *Limiter) pruneRetainedLocked(now time.Time) {
 	for k, c := range l.retained {
 		c.w.roll(now)
-		if c.w.used == 0 {
+		if c.refs == 0 && c.w.used == 0 {
 			delete(l.retained, k)
 			delete(l.owning, c)
 		}
 	}
-}
-
-// countOf is the hour or month counter of group (or global) and type, the live
-// config's or a retained one; one is retained, empty, when neither has it — usage of a
-// scope the config no longer has still counts until its window ends. Callers hold l.mu.
-func (l *Limiter) countOf(group string, typ config.LimitType) *counter {
-	k := keyOf(group, typ)
-	if c, ok := l.counters[k]; ok {
-		return c
-	}
-	c, ok := l.retained[k]
-	if !ok {
-		c = l.newCounter(k)
-		c.limit = config.Limit{Type: typ}
-		l.applyLimit(c)
-		l.retained[k] = c
-	}
-	return c
 }
 
 // newCounter is the counter of a scope and type no existing counter has: it starts
@@ -549,6 +536,7 @@ func (l *Limiter) Reserve(s Subject, tokens int64) (*Reservation, *Rejection) {
 
 	res := &Reservation{holds: make([]heldCounter, 0, len(counters))}
 	for _, c := range counters {
+		c.refs++
 		res.holds = append(res.holds, heldCounter{c: c, h: c.w.reserve(now, need(c, tokens))})
 	}
 	res.headers = headersFor(counters, now, nil)
@@ -563,8 +551,9 @@ func (l *Limiter) Reserve(s Subject, tokens int64) (*Reservation, *Rejection) {
 // attempts). A request that never produced a
 // record passes none; its token reservations are then released, and the request still
 // counts: it took a slot.
-// Settle runs once per reservation; counters dropped by a reload since are settled
-// harmlessly.
+// Settle runs once per reservation. A per-minute counter a reload dropped since is
+// settled harmlessly; an hour or month counter a reload removed is retained until its
+// last reservation settles.
 //
 // In control-plane mode each record's usage counts in the hour and month windows as
 // usage of its generation (UsageRecord.Generation, the batch it was sealed in) —
@@ -582,6 +571,7 @@ func (l *Limiter) Settle(r *Reservation, recs ...accounting.UsageRecord) {
 	r.settled = true
 	now := l.now()
 	for _, hc := range r.holds {
+		hc.c.refs--
 		if hc.c.measure == MeasureRequests {
 			hc.c.w.keep(now, hc.h)
 			l.checkCountLocked(hc.c)

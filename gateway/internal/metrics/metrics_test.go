@@ -312,7 +312,7 @@ func TestConfigLoadMetrics(t *testing.T) {
 	out := text(reg)
 	for _, want := range []string{
 		`kaiak_config_apply_duration_seconds_count{trigger="startup",result="applied"} 0`,
-		`kaiak_config_apply_duration_seconds_count{trigger="last-known-good",result="rejected"} 0`,
+		`kaiak_config_apply_duration_seconds_count{trigger="seed",result="rejected"} 0`,
 		`kaiak_limits_sync_duration_seconds_count 0`,
 	} {
 		if !strings.Contains(out, want+"\n") {
@@ -377,7 +377,7 @@ func TestBuildVersion(t *testing.T) {
 func TestUsageDeliveryMetrics(t *testing.T) {
 	reg := NewRegistry()
 	d := NewUsageDelivery(reg)
-	if out := text(reg); !strings.Contains(out, "kaiak_usage_spool_batches 0\n") ||
+	if out := text(reg); !strings.Contains(out, "kaiak_usage_queue_batches 0\n") ||
 		!strings.Contains(out, "kaiak_usage_queued_bytes 0\n") ||
 		!strings.Contains(out, `kaiak_usage_batch_sends_total{result="rejected"} 0`+"\n") ||
 		strings.Contains(out, "kaiak_usage_last_ack_timestamp_seconds 0") {
@@ -387,7 +387,7 @@ func TestUsageDeliveryMetrics(t *testing.T) {
 	d.UsageBatchSent(control.BatchFailed, time.UnixMilli(1_700_000_000_000))
 	d.UsageBatchSent(control.BatchAcked, time.UnixMilli(1_700_000_000_500))
 	d.UsageBatchSent(control.BatchRejected, time.UnixMilli(1_700_000_001_000))
-	d.UsageSpoolDepth(3, 1200, 612_345)
+	d.UsageQueueDepth(3, 1200, 612_345)
 	expectPanic(t, "unknown batch result", func() { d.UsageBatchSent("lost", time.Now()) })
 	out := text(reg)
 	for _, want := range []string{
@@ -395,8 +395,8 @@ func TestUsageDeliveryMetrics(t *testing.T) {
 		`kaiak_usage_batch_sends_total{result="rejected"} 1`,
 		`kaiak_usage_batch_sends_total{result="failed"} 1`,
 		`kaiak_usage_last_ack_timestamp_seconds 1.7000000005e+09`,
-		`kaiak_usage_spool_batches 3`,
-		`kaiak_usage_spool_records 1200`,
+		`kaiak_usage_queue_batches 3`,
+		`kaiak_usage_queue_records 1200`,
 		`kaiak_usage_queued_bytes 612345`,
 	} {
 		if !strings.Contains(out, want+"\n") {

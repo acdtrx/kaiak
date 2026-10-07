@@ -90,7 +90,7 @@ func TestBackendTypes(t *testing.T) {
 	key, hash := newKey()
 	configFile := filepath.Join(dir, "config.json")
 	writeJSON(t, configFile, typesConfig(backend.URL(), hash))
-	g := startGatewayEnv(t, append(gatewayEnv(configFile, ""),
+	g := startGatewayEnv(t, append(gatewayEnv(configFile),
 		openAIKeyEnv+"=sk-e2e-openai", azureKeyEnv+"=e2e-azure"))
 
 	for _, b := range typedBackends {
@@ -164,7 +164,7 @@ func TestWrongBaseURLIsWarnedAtApply(t *testing.T) {
 	}
 	configFile := filepath.Join(dir, "config.json")
 	writeJSON(t, configFile, cfg)
-	g := startGatewayEnv(t, append(gatewayEnv(configFile, ""),
+	g := startGatewayEnv(t, append(gatewayEnv(configFile),
 		openAIKeyEnv+"=sk-e2e-openai", azureKeyEnv+"=e2e-azure"))
 
 	line := g.logs.wait(t, "the base_url warning", msg("the backend has no models list at its base_url", "kaiak.backend.id", "lost"))

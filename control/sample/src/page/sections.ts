@@ -69,8 +69,8 @@ function gatewayRow(gateway: GatewayView, current: PublishedConfig | undefined, 
 }
 
 // The gateway's applied config against the current one, by config_hash: a gateway
-// running anything else (a config it was sent before, its last-known-good copy) is
-// flagged as not current.
+// running anything else (a config it was sent before, one from a control plane that
+// started over) is flagged as not current.
 function appliedConfig({ status }: GatewayView, current: PublishedConfig | undefined): Markup {
   const applied = status.applied_config_hash;
   const shown =

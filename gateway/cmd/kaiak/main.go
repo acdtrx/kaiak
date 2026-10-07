@@ -27,7 +27,6 @@ import (
 	"kaiak/internal/provider"
 	"kaiak/internal/routing"
 	"kaiak/internal/server"
-	"kaiak/internal/state"
 )
 
 func main() {
@@ -70,8 +69,6 @@ type settings struct {
 	// configFile is set in file mode; control in control-plane mode. Exactly one is.
 	configFile string
 	control    *controlSettings
-	// dataDir is the data directory (KAIAK_DATA_DIR); "" writes nothing anywhere.
-	dataDir    string
 	instanceID string
 	listenAddr string
 	adminAddr  string
@@ -138,7 +135,6 @@ func readSettings(lookupEnv func(string) (string, bool)) (settings, error) {
 	if seed, _ := lookupEnv("KAIAK_SEED_CONFIG_FILE"); seed != "" && s.control == nil {
 		return s, errors.New("KAIAK_SEED_CONFIG_FILE is for control-plane mode: in file mode KAIAK_CONFIG_FILE is the config")
 	}
-	s.dataDir, _ = lookupEnv("KAIAK_DATA_DIR")
 	if addr, _ := lookupEnv("KAIAK_LISTEN_ADDR"); addr != "" {
 		s.listenAddr = addr
 	}
@@ -209,8 +205,8 @@ func readSettings(lookupEnv func(string) (string, bool)) (settings, error) {
 }
 
 // defaultBootWait bounds the boot's wait for the stream's first config — the stream
-// opened again while the control plane is unavailable — before the last-known-good or
-// seed config is used; what is left of it bounds the wait for the first totals.
+// opened again while the control plane is unavailable — before the seed config is
+// used; what is left of it bounds the wait for the first totals.
 const defaultBootWait = control.DefaultBootWait
 
 // readControlSettings reads control-plane mode's variables: nil when none is set. The
@@ -307,9 +303,8 @@ func durationMS(lookupEnv func(string) (string, bool), name string, def time.Dur
 // until the drain is over. A value on stop, or a
 // listener failing, starts the drain (server.Drain.Run); a further value on stop
 // hurries it, the final log flush included. Cancelling ctx stops without waiting: the drain runs hurried. Once the
-// API has drained, run flushes usage to the control plane (control-plane mode) or
-// writes the limits snapshot (file mode, with a data directory), stops the admin
-// listener and returns. Its last line is `kaiak stopped`, or `kaiak stopped with an
+// API has drained, run flushes usage to the control plane (control-plane mode), stops
+// the admin listener and returns. Its last line is `kaiak stopped`, or `kaiak stopped with an
 // error` with the error it returns. With OTLP log export configured, every line
 // from `kaiak starting` on also goes to the collector, and the export's final flush
 // is run's last act.
@@ -349,24 +344,8 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 		logger = slog.New(logExport.Handler(logger.Handler()))
 		source = append(source, "kaiak.log_export.endpoint", s.logExport.EndpointHost())
 	}
-	logger.Info("kaiak starting", append([]any{"process.pid", os.Getpid(), "service.instance.id", s.instanceID,
-		"kaiak.data_dir", s.dataDir}, source...)...)
-
-	// With no data directory nothing is written anywhere: usage batches wait in
-	// memory, and there is no last-known-good copy, totals cache or limits snapshot.
-	var dir *state.Dir
-	if s.dataDir != "" {
-		if dir, err = state.Open(s.dataDir, logger); err != nil {
-			return err
-		}
-		// The directory's lock is held until run returns (and released by the OS if
-		// the process dies first).
-		defer func() {
-			if err := dir.Close(); err != nil {
-				logger.Warn("data directory lock not released", "exception.message", err)
-			}
-		}()
-	}
+	logger.Info("kaiak starting", append([]any{"process.pid", os.Getpid(), "service.instance.id", s.instanceID},
+		source...)...)
 
 	// Background work stops when the drain is over, or when run returns early (a
 	// listener that cannot bind): the control client runs before the listeners bind.
@@ -416,7 +395,6 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 		}
 		limiter = limits.New(holder, time.Now, logger)
 		limiter.ObserveSyncs(ops.ObserveLimitsSync)
-		restoreLimits(limiter, dir, logger)
 	} else {
 		// The limiter reads the client's contact (the outage) and the client feeds
 		// the limiter totals and usage generations; client is set before any request
@@ -424,7 +402,7 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 		limiter = limits.NewShared(holder, time.Now, func() limits.Contact { return controlContact(client) }, logger)
 		limiter.ObserveSyncs(ops.ObserveLimitsSync)
 		client = control.New(control.Options{URL: s.control.url, Token: s.control.token, Instance: s.instanceID,
-			Applier: applier, Dir: dir, Logger: logger, BootWait: s.control.bootWait, StartedAt: startedAt,
+			Applier: applier, Logger: logger, BootWait: s.control.bootWait, StartedAt: startedAt,
 			SeedConfig: s.control.seed, SeedFile: s.control.seedFile,
 			Serving: func() control.Serving {
 				return servingStatus(router.InFlightByBackend(), router.QueuedByModel(), router.Circuits(), holder.Current())
@@ -440,16 +418,14 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 		// told within the status minimum gap; depth changes in between wait for the
 		// regular report.
 		router.OnServingChange(client.ServingChanged)
-		// No config from the control plane, the last-known-good copy or the seed:
-		// the process exits, and its supervisor restarts it with backoff.
+		// No config from the control plane or the seed: the process exits, and its
+		// supervisor restarts it with backoff.
 		bootDeadline := time.Now().Add(s.control.bootWait)
 		// A stop signal during the boot wait ends it: nothing is served and no usage
 		// exists yet, so run returns at once instead of binding the listeners.
 		bootCtx, endBoot := stopOnSignal(ctx, stop)
 		err := client.Boot(bootCtx)
 		if err == nil {
-			restoreShared(limiter, client, dir, logger)
-			router.SetLiveGateways(limiter.LiveGateways())
 			// The client follows the control plane until the drain is over, so
 			// requests admitted during the grace period run on the newest config. It
 			// starts before the listeners: the first totals come on its stream.
@@ -511,14 +487,8 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 	background.Go(func() { modelChecker.Run(bgCtx) })
 	if loader != nil {
 		background.Go(func() { reloadOnSignal(bgCtx, reload, loader) })
-		if dir != nil {
-			background.Go(func() { saveLimitsPeriodically(bgCtx, limiter, dir, logger) })
-		}
 	} else {
 		background.Go(func() { ignoreReloads(bgCtx, reload, logger) })
-		if dir != nil {
-			background.Go(func() { saveSharedPeriodically(bgCtx, limiter, client, dir, logger) })
-		}
 	}
 
 	var cause error
@@ -571,13 +541,6 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 	}
 	stopBackground()
 	background.Wait()
-	switch {
-	case dir == nil:
-	case loader != nil:
-		saveLimits(limiter, dir, logger, "shutdown")
-	default:
-		saveShared(limiter, client, dir, logger, "shutdown")
-	}
 	admin.Shutdown(adminShutdownTimeout)
 	listeners.Wait()
 	close(failed)
@@ -653,8 +616,7 @@ const finalStatusTimeout = 2 * time.Second
 // (docs/specs/GATEWAY.md, Lifecycle), run once the drained requests' records are
 // settled and before the client stops: the usage flush — the filling batch sealed,
 // queued batches sent until acknowledged, the drain's deadline or a hurry — then a
-// final draining status. What is not delivered stays in the spool for the next start
-// (with a data directory) or is lost with the process.
+// final draining status. What is not delivered is lost with the process.
 func finishWithControlPlane(client *control.Client, deadline time.Time, hurry <-chan struct{}) {
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
@@ -826,144 +788,10 @@ func servingStatus(inFlight, queued map[string]int, circuits map[routing.Deploym
 
 // limitsTotals converts the control plane's totals for the limiter.
 func limitsTotals(t control.Totals, complete bool) limits.Totals {
-	out := limits.Totals{LiveGateways: t.LiveGateways, Complete: complete, Windows: make([]limits.PushedWindow, len(t.Windows)),
-		CountedThrough: make([]limits.CountedBatch, len(t.CountedThrough))}
+	out := limits.Totals{LiveGateways: t.LiveGateways, Complete: complete, Windows: make([]limits.PushedWindow, len(t.Windows))}
 	for i, w := range t.Windows {
 		out.Windows[i] = limits.PushedWindow{Group: w.Group, Type: w.Type,
 			Start: w.WindowStart, Used: w.Used}
 	}
-	for i, p := range t.CountedThrough {
-		out.CountedThrough[i] = limits.CountedBatch{Epoch: p.Epoch, Sequence: p.Sequence}
-	}
 	return out
-}
-
-// batchPositions converts a counted_through the limiter saved for the control client.
-func batchPositions(counted []limits.CountedBatch) []control.BatchPosition {
-	out := make([]control.BatchPosition, len(counted))
-	for i, c := range counted {
-		out[i] = control.BatchPosition{Epoch: c.Epoch, Sequence: c.Sequence}
-	}
-	return out
-}
-
-// restoreLimits loads the file-mode usage snapshot before traffic starts, when there
-// is a data directory. The
-// snapshot is a cache: one that cannot be read is logged and the gateway starts with
-// empty windows.
-func restoreLimits(limiter *limits.Limiter, dir *state.Dir, logger *slog.Logger) {
-	if dir == nil {
-		return
-	}
-	restored, dropped, err := limiter.LoadSnapshot(dir)
-	if err != nil {
-		logger.Warn("limits snapshot not restored", "file.name", limits.SnapshotFile, "exception.message", err)
-		return
-	}
-	logger.Info("limits snapshot restored", "file.name", limits.SnapshotFile, "kaiak.limit.windows", restored, "kaiak.limit.windows_dropped", dropped)
-}
-
-// saveLimits writes the file-mode usage snapshot; trigger names what asked for it
-// (interval, shutdown). The routine interval write logs at debug level.
-func saveLimits(limiter *limits.Limiter, dir *state.Dir, logger *slog.Logger, trigger string) {
-	n, err := limiter.SaveSnapshot(dir)
-	if err != nil {
-		logger.Error("limits snapshot not written", "kaiak.trigger", trigger, "file.name", limits.SnapshotFile, "exception.message", err)
-		return
-	}
-	level := slog.LevelInfo
-	if trigger == "interval" {
-		level = slog.LevelDebug
-	}
-	logger.Log(context.Background(), level, "limits snapshot written", "kaiak.trigger", trigger,
-		"file.name", limits.SnapshotFile, "kaiak.limit.windows", n)
-}
-
-// restoreShared loads the control-plane-mode limits state before traffic starts, when
-// there is a data directory: the saved totals (limits.LoadShared), then the own usage
-// of the spooled batches those totals do not include (limits.RestoreOwn). The totals
-// file is a cache: one that cannot be read is logged, and every spooled batch counts
-// as own usage until totals show it counted.
-func restoreShared(limiter *limits.Limiter, client *control.Client, dir *state.Dir, logger *slog.Logger) {
-	if dir == nil {
-		return
-	}
-	r, err := limiter.LoadShared(dir)
-	switch {
-	case err != nil:
-		logger.Warn("limits totals not restored", "file.name", limits.SharedFile, "exception.message", err)
-	case !r.Found:
-	case r.Discarded != "":
-		logger.Info("limits totals discarded", "file.name", limits.SharedFile, "kaiak.reason", r.Discarded)
-	default:
-		logger.Info("limits totals restored", "file.name", limits.SharedFile, "kaiak.limit.windows", r.Restored, "kaiak.limit.windows_dropped", r.Dropped)
-	}
-	spooled := client.RestoreSpooled(batchPositions(r.CountedThrough))
-	own := make([]limits.OwnBatch, len(spooled))
-	for i, b := range spooled {
-		own[i] = limits.OwnBatch{Generation: b.Generation, Records: b.Records}
-	}
-	if records := limiter.RestoreOwn(own); records > 0 {
-		logger.Info("own usage restored from the usage spool", "kaiak.usage.batches", len(own), "kaiak.usage.records", records)
-	}
-}
-
-// saveShared writes the control-plane-mode limits state, when there is a data
-// directory, then lets the spooled batches the written bases include leave the spool;
-// trigger names what asked for it (interval, shutdown). The routine interval write logs
-// at debug level.
-func saveShared(limiter *limits.Limiter, client *control.Client, dir *state.Dir, logger *slog.Logger, trigger string) {
-	if dir == nil {
-		return
-	}
-	saved, err := limiter.SaveShared(dir)
-	if err != nil {
-		logger.Error("limits totals not written", "kaiak.trigger", trigger, "file.name", limits.SharedFile, "exception.message", err)
-		return
-	}
-	client.SpoolCovered(batchPositions(saved.CountedThrough))
-	level := slog.LevelInfo
-	if trigger == "interval" {
-		level = slog.LevelDebug
-	}
-	logger.Log(context.Background(), level, "limits totals written", "kaiak.trigger", trigger,
-		"file.name", limits.SharedFile, "kaiak.limit.windows", saved.Windows)
-}
-
-// saveSharedPeriodically writes the control-plane-mode limits state every
-// limits.SnapshotInterval while totals were applied since the last write — in the
-// background, never on the stream's goroutine (docs/specs/GATEWAY.md, Limits →
-// Control-plane mode: Restart keeps the last totals) — stopped by ctx; the shutdown
-// write is run's, once the drain is over.
-func saveSharedPeriodically(ctx context.Context, limiter *limits.Limiter, client *control.Client, dir *state.Dir, logger *slog.Logger) {
-	ticker := time.NewTicker(limits.SnapshotInterval)
-	defer ticker.Stop()
-	var written time.Time
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if applied, ok := limiter.TotalsAppliedAt(); !ok || !applied.After(written) {
-				continue
-			}
-			written = time.Now()
-			saveShared(limiter, client, dir, logger, "interval")
-		}
-	}
-}
-
-// saveLimitsPeriodically is the interval trigger for the usage snapshot, stopped by
-// ctx; the shutdown write is run's, once the drain is over.
-func saveLimitsPeriodically(ctx context.Context, limiter *limits.Limiter, dir *state.Dir, logger *slog.Logger) {
-	ticker := time.NewTicker(limits.SnapshotInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			saveLimits(limiter, dir, logger, "interval")
-		}
-	}
 }

@@ -2,14 +2,11 @@ package control
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
-
-	"kaiak/internal/fakecontrol"
 )
 
 // withSeed gives a client the seed config seed.
@@ -17,10 +14,9 @@ func withSeed(seed []byte) func(*Options) {
 	return func(o *Options) { o.SeedConfig, o.SeedFile = seed, "seed.json" }
 }
 
-// E2: a boot with the control plane out of reach and no last-known-good copy serves
-// the seed config. It is never saved as last-known-good, the status says ready with
-// no control-plane config hash (N-P11), and the first config from the control plane
-// replaces it.
+// E2: a boot with the control plane out of reach serves the seed config. The status
+// says ready with no control-plane config hash (N-P11), and the first config from the
+// control plane replaces it.
 func TestSeedConfigServesABootWithTheControlPlaneDown(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))
@@ -40,42 +36,15 @@ func TestSeedConfigServesABootWithTheControlPlaneDown(t *testing.T) {
 		t.Errorf("status after a seed boot: state %s, config %v; want ready with no config hash", s.State,
 			s.AppliedConfigHash)
 	}
-	if got := h.savedHash(); got != "" {
-		t.Errorf("last-known-good hash %s after a seed boot, want none", got)
-	}
 	if !strings.Contains(h.logs.String(), `msg="config applied" kaiak.trigger=seed file.path=seed.json`) {
 		t.Errorf("seed load not logged:\n%s", h.logs.String())
 	}
 
-	stop := h.run(c)
+	h.run(c)
 	h.cp.SetDown(false)
 	h.wantLoad(load{TriggerControl, true})
 	if h.holder.Current().Models["llama"] == nil {
 		t.Fatal("the control plane's config did not replace the seed")
-	}
-	stop() // the last-known-good write follows the apply on the client's goroutine
-	if got, want := h.savedHash(), fakecontrol.Hash(configA(t)); got != want {
-		t.Errorf("last-known-good hash %s, want the control plane's %s", got, want)
-	}
-}
-
-// With a data directory the last-known-good copy wins over the seed: it is a config
-// the control plane sent.
-func TestLastKnownGoodWinsOverTheSeedConfig(t *testing.T) {
-	h := newHarness(t)
-	h.cp.Publish(configA(t))
-	h.boot(h.client(nil))
-	h.wantLoad(load{TriggerControl, true})
-
-	h.cp.SetDown(true)
-	h.holder.Swap(nil) // a new process on the same data directory
-	if err := h.client(withSeed(configB(t))).Boot(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	h.wantLoad(load{TriggerLastKnownGood, true})
-	h.noLoadPending()
-	if h.holder.Current().Models["llama"] == nil {
-		t.Fatal("the last-known-good config is not in the holder")
 	}
 }
 
@@ -155,8 +124,8 @@ func TestSeedConfigIsNotUsedForAnOperatorError(t *testing.T) {
 	})
 }
 
-// E2: with neither the control plane, a last-known-good copy nor a seed, Boot fails
-// with the message the process exits on.
+// E2: with neither the control plane nor a seed, Boot fails with the message the
+// process exits on.
 func TestBootFailsWithNoSourceOfConfig(t *testing.T) {
 	h := newHarness(t)
 	h.cp.SetDown(true)
@@ -166,27 +135,5 @@ func TestBootFailsWithNoSourceOfConfig(t *testing.T) {
 	}
 	if h.holder.Loaded() {
 		t.Fatal("holder loaded")
-	}
-}
-
-// A last-known-good file of the previous format (a format-3 config inside, from
-// before tokens_cache_write) is discarded and logged: the boot falls back to the seed.
-func TestLastKnownGoodOfAnotherFormatIsDiscarded(t *testing.T) {
-	h := newHarness(t)
-	old := lastKnownGood{ConfigHash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		Config: []byte(`{"format_version": 3, "models": {"m": {"prices": [{"effective_from": "2026-01-01", ` +
-			`"tiers": [{"above_input_tokens": 0, "usd_per_million": {"tokens_in": 1}}]}]}}}`)}
-	if err := h.dir.WriteVersioned(LastKnownGoodFile, lastKnownGoodFormat-1, old); err != nil {
-		t.Fatal(err)
-	}
-	h.cp.SetDown(true)
-	if err := h.client(withSeed(configB(t))).Boot(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	h.wantLoad(load{TriggerSeed, true})
-	h.noLoadPending()
-	if out := h.logs.String(); !strings.Contains(out, "discarded data file with a different format version") ||
-		!strings.Contains(out, fmt.Sprintf("kaiak.data_file.found_version=%d", lastKnownGoodFormat-1)) {
-		t.Errorf("discard not logged:\n%s", out)
 	}
 }

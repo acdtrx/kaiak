@@ -66,7 +66,7 @@ func TestBootWaitsForAControlPlaneComingUp(t *testing.T) {
 	up := time.AfterFunc(3*time.Second, func() { cp.SetDown(false) }) // the control plane's own start
 	defer up.Stop()
 
-	g := startGatewayEnv(t, controlEnv(cp.URL(), startupToken, ""))
+	g := startGatewayEnv(t, controlEnv(cp.URL(), startupToken))
 	g.logs.wait(t, "a boot retry", msg("config not received at startup: retrying within the boot wait", "kaiak.control.attempt", "1"))
 	g.logs.wait(t, "the boot from the control plane", msg("config applied", "kaiak.trigger", "control"))
 	if r := g.post(t, "/v1/chat/completions", evalKey, "", chatBody("chat", false, nil)); r.StatusCode != http.StatusOK {
@@ -88,7 +88,7 @@ func TestReadinessWaitsForTheFirstTotals(t *testing.T) {
 	cp := spentBudgetControlPlane(t, backend.URL(), evalHash, annHash)
 	cp.HoldTotalsOnConnect(true)
 
-	g := startProcess(t, "", controlEnv(cp.URL(), startupToken, ""))
+	g := startProcess(t, "", controlEnv(cp.URL(), startupToken))
 	select {
 	case <-cp.Connected():
 	case <-time.After(waitLimit):
@@ -130,7 +130,7 @@ func TestFirstTotalsLateRefuseBudgetsUntilTheyArrive(t *testing.T) {
 	cp := spentBudgetControlPlane(t, backend.URL(), evalHash, annHash)
 	cp.HoldTotalsOnConnect(true)
 
-	g := startGatewayEnv(t, append(controlEnv(cp.URL(), startupToken, ""), "KAIAK_CONTROL_BOOT_WAIT_MS=1500"))
+	g := startGatewayEnv(t, append(controlEnv(cp.URL(), startupToken), "KAIAK_CONTROL_BOOT_WAIT_MS=1500"))
 	g.logs.wait(t, "the wait running out", msg("first totals not received within the boot wait: priced USD-limited requests are refused until they arrive"))
 	r := g.post(t, "/v1/chat/completions", budgetKey, "", chatBody("priced", false, nil))
 	if r.StatusCode != http.StatusServiceUnavailable || r.errorCode(t) != "budget_unavailable" {

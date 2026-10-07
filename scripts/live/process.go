@@ -43,7 +43,6 @@ func startGateway(ctx context.Context, o options, ws *workspace, configFile stri
 	}
 	g.cmd.Env = append(g.cmd.Env,
 		"KAIAK_CONFIG_FILE="+configFile,
-		"KAIAK_DATA_DIR="+filepath.Join(ws.dir, o.label()+".data"),
 		"KAIAK_LISTEN_ADDR=127.0.0.1:0",
 		"KAIAK_ADMIN_ADDR=127.0.0.1:0",
 		"KAIAK_LOG_FORMAT=json",

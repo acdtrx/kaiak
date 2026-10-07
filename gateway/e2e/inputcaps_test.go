@@ -26,7 +26,7 @@ func TestRequestInputCapsThroughTheBinary(t *testing.T) {
 	evalKey, evalHash := newKey()
 	_, annHash := newKey()
 	writeJSON(t, configFile, testConfig(backend.URL(), evalHash, annHash, ""))
-	g := startGateway(t, configFile, "")
+	g := startGateway(t, configFile)
 
 	// refused posts body raw (json.RawMessage keeps a repeated member) and wants a 400
 	// with code and param.
@@ -65,7 +65,7 @@ func TestConnectionCapThroughTheBinary(t *testing.T) {
 	evalKey, evalHash := newKey()
 	_, annHash := newKey()
 	writeJSON(t, configFile, testConfig(backend.URL(), evalHash, annHash, ""))
-	g := startGatewayEnv(t, append(gatewayEnv(configFile, ""), "KAIAK_MAX_CONNECTIONS=1"))
+	g := startGatewayEnv(t, append(gatewayEnv(configFile), "KAIAK_MAX_CONNECTIONS=1"))
 	if v := g.metric(t, "kaiak_connections_refused_total"); v != 0 {
 		t.Fatalf("refused connections at start: %v", v)
 	}

@@ -113,7 +113,7 @@ func TestMinimalControlPlaneSetup(t *testing.T) {
 
 	g := startGatewayIn(t, cwd, minimalControlEnv(cp.URL(), token))
 	g.logs.wait(t, "the boot from the control plane", msg("config applied", "kaiak.trigger", "control"))
-	g.logs.wait(t, "memory mode", msg("usage batches kept in memory until acknowledged: no data directory"))
+	g.logs.wait(t, "memory mode", msg("usage batches kept in memory until acknowledged"))
 	if r := g.post(t, "/v1/chat/completions", evalKey, "e2e-minimal-1", chatBody("chat", false, nil)); r.StatusCode != http.StatusOK {
 		t.Fatalf("chat: %d %s", r.StatusCode, r.body)
 	}
@@ -131,11 +131,6 @@ func TestMinimalControlPlaneSetup(t *testing.T) {
 		var st map[string]any
 		if err := json.Unmarshal(body, &st); err != nil || (st["state"] != "ready" && st["state"] != "draining") {
 			t.Errorf("status %s", body)
-		}
-	}
-	for _, line := range []string{"not written", "lock", "last-known-good", "spool"} {
-		if strings.Contains(g.logs.text(), line) {
-			t.Errorf("log mentions %q in the minimal setup", line)
 		}
 	}
 	wantEmpty(t, cwd)
@@ -179,7 +174,7 @@ func TestSeedServesWithTheControlPlaneDown(t *testing.T) {
 		t.Fatalf("chat on the seed: %d %s", r.StatusCode, r.body)
 	}
 	g.stop(t)
-	g.logs.wait(t, "the undelivered usage", msg("usage not flushed: lost at exit (no data directory)", "level", "ERROR", "kaiak.usage.batches", "1"))
+	g.logs.wait(t, "the undelivered usage", msg("usage not flushed: lost at exit", "level", "ERROR", "kaiak.usage.batches", "1"))
 }
 
 // E2: a seed with a priced model fails the start, naming the model.
@@ -223,9 +218,9 @@ func streamInBackground(g *gateway, key, requestID, model string) (done <-chan s
 	return ch
 }
 
-// E3: with no data directory, batches keep going out on the 5 s interval through the
-// drain, and a stream still running at drain timeout − flush reserve is cut there;
-// its partial record reaches the control plane in the reserve, before the exit.
+// E3: batches keep going out on the 5 s interval through the drain, and a stream
+// still running at drain timeout − flush reserve is cut there; its partial record
+// reaches the control plane in the reserve, before the exit.
 func TestDrainReserveDeliversTheCutRequestsUsage(t *testing.T) {
 	backend := fakebackend.New()
 	defer backend.Close()
@@ -240,7 +235,7 @@ func TestDrainReserveDeliversTheCutRequestsUsage(t *testing.T) {
 	}
 	cp.Publish(data)
 
-	g := startGatewayEnv(t, append(controlEnv(cp.URL(), token, ""),
+	g := startGatewayEnv(t, append(controlEnv(cp.URL(), token),
 		"KAIAK_DRAIN_TIMEOUT_MS=8000", "KAIAK_DRAIN_FLUSH_RESERVE_MS=1500"))
 	g.logs.waitCount(t, "the stream", 2, waitLimit, msg("config stream connected"))
 

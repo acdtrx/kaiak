@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"errors"
 	"log/slog"
 	"net"
 	"os"
@@ -55,10 +54,8 @@ func (b *syncBuffer) String() string {
 func TestRunLoadsConfigAndReturnsWhenContextIsCancelled(t *testing.T) {
 	var logs syncBuffer
 	logger := slog.New(slog.NewTextHandler(&logs, nil))
-	dataDir := filepath.Join(t.TempDir(), "data")
 	env := envOf(map[string]string{
 		"KAIAK_CONFIG_FILE": minimalFixture,
-		"KAIAK_DATA_DIR":    dataDir,
 		"KAIAK_INSTANCE_ID": "test-1",
 		"KAIAK_LISTEN_ADDR": "127.0.0.1:0",
 		"KAIAK_ADMIN_ADDR":  "127.0.0.1:0",
@@ -80,17 +77,10 @@ func TestRunLoadsConfigAndReturnsWhenContextIsCancelled(t *testing.T) {
 
 	out := logs.String()
 	for _, want := range []string{"kaiak starting", "service.instance.id=test-1", "config applied", "kaiak.trigger=startup",
-		"kaiak.listener.name=api", "kaiak.listener.name=admin", "limits snapshot restored", `msg="limits snapshot written" kaiak.trigger=shutdown`,
-		"kaiak stopped"} {
+		"kaiak.listener.name=api", "kaiak.listener.name=admin", "kaiak stopped"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("log misses %q:\n%s", want, out)
 		}
-	}
-	if info, err := os.Stat(dataDir); err != nil || !info.IsDir() {
-		t.Errorf("data directory not created: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(dataDir, limits.SnapshotFile)); err != nil {
-		t.Errorf("no limits snapshot written on shutdown: %v", err)
 	}
 }
 
@@ -125,11 +115,10 @@ func stopWhenServing(logs *syncBuffer, stop chan<- os.Signal) (wait func()) {
 }
 
 // drainEnv is a test environment with the given grace period.
-func drainEnv(t *testing.T, dataDir, graceMS string) func(string) (string, bool) {
+func drainEnv(t *testing.T, graceMS string) func(string) (string, bool) {
 	t.Helper()
 	return envOf(map[string]string{
 		"KAIAK_CONFIG_FILE":      minimalFixture,
-		"KAIAK_DATA_DIR":         dataDir,
 		"KAIAK_INSTANCE_ID":      "test-1",
 		"KAIAK_LISTEN_ADDR":      "127.0.0.1:0",
 		"KAIAK_ADMIN_ADDR":       "127.0.0.1:0",
@@ -138,16 +127,15 @@ func drainEnv(t *testing.T, dataDir, graceMS string) func(string) (string, bool)
 	})
 }
 
-func TestStopSignalDrainsThenWritesTheSnapshot(t *testing.T) {
+func TestStopSignalDrains(t *testing.T) {
 	var logs syncBuffer
 	logger := slog.New(slog.NewTextHandler(&logs, nil))
-	dataDir := t.TempDir()
 	stop := make(chan os.Signal, 1)
 	stop <- syscall.SIGTERM // taken once run serves
 
 	// run is called on the test goroutine: once it returns, nothing it started may
 	// still run.
-	if err := run(context.Background(), logger, drainEnv(t, dataDir, "0"), make(chan os.Signal), stop); err != nil {
+	if err := run(context.Background(), logger, drainEnv(t, "0"), make(chan os.Signal), stop); err != nil {
 		t.Fatalf("run returned %v, want nil", err)
 	}
 	if left := ourGoroutines(); len(left) > 0 {
@@ -156,8 +144,7 @@ func TestStopSignalDrainsThenWritesTheSnapshot(t *testing.T) {
 	out := logs.String()
 	last := -1
 	for _, want := range []string{`msg="kaiak stopping" kaiak.reason="signal terminated"`, `msg=draining kaiak.drain.grace=0 kaiak.drain.timeout=3600`,
-		`msg="draining: refusing new requests"`, `msg=drained`, `msg="limits snapshot written" kaiak.trigger=shutdown`,
-		`msg="kaiak stopped"`} {
+		`msg="draining: refusing new requests"`, `msg=drained`, `msg="kaiak stopped"`} {
 		i := strings.Index(out, want)
 		if i < 0 {
 			t.Errorf("log misses %q:\n%s", want, out)
@@ -168,21 +155,17 @@ func TestStopSignalDrainsThenWritesTheSnapshot(t *testing.T) {
 		}
 		last = i
 	}
-	if _, err := os.Stat(filepath.Join(dataDir, limits.SnapshotFile)); err != nil {
-		t.Errorf("no limits snapshot written on shutdown: %v", err)
-	}
 }
 
 func TestSecondStopSignalSkipsTheRemainingDrain(t *testing.T) {
 	var logs syncBuffer
 	logger := slog.New(slog.NewTextHandler(&logs, nil))
-	dataDir := t.TempDir()
 	stop := make(chan os.Signal, 2)
 	stop <- syscall.SIGTERM
 	stop <- os.Interrupt
 
 	// A one-hour grace period: run returns only because the second signal hurried it.
-	if err := run(context.Background(), logger, drainEnv(t, dataDir, "3600000"), make(chan os.Signal), stop); err != nil {
+	if err := run(context.Background(), logger, drainEnv(t, "3600000"), make(chan os.Signal), stop); err != nil {
 		t.Fatalf("run returned %v, want nil", err)
 	}
 	if left := ourGoroutines(); len(left) > 0 {
@@ -190,13 +173,10 @@ func TestSecondStopSignalSkipsTheRemainingDrain(t *testing.T) {
 	}
 	out := logs.String()
 	for _, want := range []string{`msg="second stop signal: skipping the remaining drain" kaiak.signal=interrupt`,
-		`msg=drained`, `msg="limits snapshot written" kaiak.trigger=shutdown`, `msg="kaiak stopped"`} {
+		`msg=drained`, `msg="kaiak stopped"`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("log misses %q:\n%s", want, out)
 		}
-	}
-	if _, err := os.Stat(filepath.Join(dataDir, limits.SnapshotFile)); err != nil {
-		t.Errorf("no limits snapshot written on shutdown: %v", err)
 	}
 }
 
@@ -276,7 +256,6 @@ func TestRunFailsWhenAListenAddressIsTaken(t *testing.T) {
 	defer taken.Close()
 	env := envOf(map[string]string{
 		"KAIAK_CONFIG_FILE": minimalFixture,
-		"KAIAK_DATA_DIR":    t.TempDir(),
 		"KAIAK_INSTANCE_ID": "test-1",
 		"KAIAK_LISTEN_ADDR": "127.0.0.1:0",
 		"KAIAK_ADMIN_ADDR":  taken.Addr().String(),
@@ -310,7 +289,7 @@ func TestRunFailsOnAnInvalidConfigFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"format_version": 5}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	env := envOf(map[string]string{"KAIAK_CONFIG_FILE": path, "KAIAK_DATA_DIR": t.TempDir()})
+	env := envOf(map[string]string{"KAIAK_CONFIG_FILE": path})
 	err := run(context.Background(), slog.New(slog.DiscardHandler), env, make(chan os.Signal), make(chan os.Signal))
 	if err == nil || !strings.Contains(err.Error(), "config rejected") {
 		t.Fatalf("want a config rejection, got %v", err)
@@ -468,11 +447,9 @@ func TestRunInControlModeBootsFromTheControlPlane(t *testing.T) {
 	hash := cp.Publish(data)
 	var logs syncBuffer
 	logger := slog.New(slog.NewTextHandler(&logs, nil))
-	dataDir := t.TempDir()
 	env := envOf(map[string]string{
 		"KAIAK_CONTROL_URL":    cp.URL(),
 		"KAIAK_CONTROL_TOKEN":  "cp-token",
-		"KAIAK_DATA_DIR":       dataDir,
 		"KAIAK_INSTANCE_ID":    "test-1",
 		"KAIAK_LISTEN_ADDR":    "127.0.0.1:0",
 		"KAIAK_ADMIN_ADDR":     "127.0.0.1:0",
@@ -499,22 +476,12 @@ func TestRunInControlModeBootsFromTheControlPlane(t *testing.T) {
 	if strings.Contains(out, "cp-token") {
 		t.Error("the control token reached the log")
 	}
-	if _, err := os.Stat(filepath.Join(dataDir, control.LastKnownGoodFile)); err != nil {
-		t.Errorf("no last-known-good config written: %v", err)
-	}
 	statuses := cp.Statuses()
 	if len(statuses) == 0 || !strings.Contains(string(statuses[len(statuses)-1]), `"state":"draining"`) {
 		t.Errorf("statuses %s, want the last one draining", statuses)
 	}
 	if !strings.Contains(out, `msg="usage flushed" kaiak.control.url=`+cp.URL()+` kaiak.trigger=drain`) {
 		t.Errorf("no usage flush in the drain:\n%s", out)
-	}
-	// The control plane owns hour and month totals: no file-mode snapshot.
-	if strings.Contains(out, "limits snapshot") {
-		t.Errorf("limits snapshot used in control-plane mode:\n%s", out)
-	}
-	if _, err := os.Stat(filepath.Join(dataDir, limits.SnapshotFile)); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("limits snapshot written in control-plane mode: %v", err)
 	}
 }
 
@@ -612,7 +579,6 @@ func TestStopSignalDuringTheBootWaitExits(t *testing.T) {
 			env := envOf(map[string]string{
 				"KAIAK_CONTROL_URL":          cp.URL(),
 				"KAIAK_CONTROL_TOKEN":        "cp-token",
-				"KAIAK_DATA_DIR":             t.TempDir(),
 				"KAIAK_INSTANCE_ID":          "test-1",
 				"KAIAK_LISTEN_ADDR":          "127.0.0.1:0",
 				"KAIAK_ADMIN_ADDR":           "127.0.0.1:0",

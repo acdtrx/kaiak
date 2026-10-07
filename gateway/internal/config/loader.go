@@ -33,7 +33,7 @@ type Load struct {
 type LoadObserver func(Load)
 
 // Applier is the one path by which a config document becomes the live snapshot,
-// whatever its source (config file, control plane, last-known-good copy): validate it
+// whatever its source (config file, control plane, seed config): validate it
 // completely, swap it into the Holder atomically, log the result with its trigger and
 // report it to the observer. Sources read their documents and hand them over; they
 // never swap the Holder themselves.

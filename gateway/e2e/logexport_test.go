@@ -343,7 +343,7 @@ func TestLogExport(t *testing.T) {
 		}
 		return http.StatusOK
 	})
-	g := startGatewayEnv(t, append(gatewayEnv(configFile, ""),
+	g := startGatewayEnv(t, append(gatewayEnv(configFile),
 		"OTEL_EXPORTER_OTLP_ENDPOINT="+collector.URL+"/base",
 		"OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20"+secret,
 		"OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=e2e,service.instance.id=not-this-one"))
@@ -450,7 +450,7 @@ func TestLogExportOff(t *testing.T) {
 		"opted out":   {"OTEL_EXPORTER_OTLP_ENDPOINT=" + collector.URL, "OTEL_LOGS_EXPORTER=none"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			g := startGatewayEnv(t, append(gatewayEnv(configFile, ""), env...))
+			g := startGatewayEnv(t, append(gatewayEnv(configFile), env...))
 			if r := g.post(t, "/v1/chat/completions", evalKey, "off-ok", chatBody("chat", false, nil)); r.StatusCode != http.StatusOK {
 				t.Fatalf("chat: %d %s", r.StatusCode, r.body)
 			}
@@ -489,7 +489,7 @@ func TestLogExportRefusedBatch(t *testing.T) {
 		}
 		return http.StatusOK
 	})
-	g := startGatewayEnv(t, append(gatewayEnv(configFile, ""), "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT="+collector.URL+"/v1/logs"))
+	g := startGatewayEnv(t, append(gatewayEnv(configFile), "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT="+collector.URL+"/v1/logs"))
 
 	report := g.logs.wait(t, "the failure report", msg("log export failing"))
 	// The collector's message is never reported (Logs: no remote text).
@@ -554,7 +554,7 @@ func TestLogExportStalledCollectorAtExit(t *testing.T) {
 		<-r.Context().Done()
 		return http.StatusServiceUnavailable
 	})
-	g := startGatewayEnv(t, append(gatewayEnv(configFile, ""),
+	g := startGatewayEnv(t, append(gatewayEnv(configFile),
 		"OTEL_EXPORTER_OTLP_ENDPOINT="+collector.URL,
 		"OTEL_EXPORTER_OTLP_TIMEOUT=600000",
 		"KAIAK_DRAIN_TIMEOUT_MS=500"))
@@ -621,7 +621,7 @@ func TestLogExportRedirectIsNotFollowed(t *testing.T) {
 	}))
 	t.Cleanup(collector.Close)
 
-	g := startGatewayEnv(t, append(gatewayEnv(configFile, ""),
+	g := startGatewayEnv(t, append(gatewayEnv(configFile),
 		"OTEL_EXPORTER_OTLP_ENDPOINT="+collector.URL,
 		"OTEL_EXPORTER_OTLP_HEADERS=x-api-key="+secret))
 

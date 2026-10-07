@@ -2,19 +2,15 @@ package limits
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"runtime"
 	"testing"
 
 	"kaiak/internal/config"
-	"kaiak/internal/state"
 )
 
 // The limiter at the target scale (docs/specs/GATEWAY.md, Limits): one group per key,
 // 7 000 groups, every one counted for the hour and the month. The benchmarks measure
-// what a totals push costs under the request lock, what a totals.json write costs, and
-// the counters' heap.
+// what a totals push costs under the request lock, and the counters' heap.
 
 const scaleGroups = 7000
 
@@ -46,27 +42,6 @@ func BenchmarkTakeTotalsChangesOnly(b *testing.B) {
 	for i := range b.N {
 		l.TakeTotals(Totals{LiveGateways: 3, Windows: changed}, uint64(i+1))
 	}
-}
-
-// BenchmarkSaveShared is one totals.json write.
-func BenchmarkSaveShared(b *testing.B) {
-	l, _ := scaleLimiter(b)
-	dir, err := state.Open(b.TempDir(), nil)
-	if err != nil {
-		b.Fatal(err)
-	}
-	b.ResetTimer()
-	for range b.N {
-		if _, err := l.SaveShared(dir); err != nil {
-			b.Fatal(err)
-		}
-	}
-	b.StopTimer()
-	info, err := os.Stat(filepath.Join(dir.Path(), SharedFile))
-	if err != nil {
-		b.Fatal(err)
-	}
-	b.ReportMetric(float64(info.Size())/(1<<20), "MiB/file")
 }
 
 // BenchmarkCounterHeap reports the heap the counters of 7 000 groups take.

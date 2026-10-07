@@ -75,8 +75,8 @@ func TestAckedBatchLeavesWithTheTotalsThatCountIt(t *testing.T) {
 }
 
 // A push that already counts the outstanding batch (its ack lost) reports its
-// generation counted; the ack of its resend delivers nothing, and nothing is counted
-// twice.
+// generation counted; the ack of its resend finds the batch covered and remembers
+// nothing, so the next push counts nothing new, and nothing is counted twice.
 func TestPushCountingTheOutstandingBatch(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))
@@ -84,7 +84,7 @@ func TestPushCountingTheOutstandingBatch(t *testing.T) {
 	// test lets them through.
 	h.cp.FailUsage(fakecontrol.UsageFault{DropAck: true})
 	h.cp.SetUsageFault(&fakecontrol.UsageFault{Status: http.StatusServiceUnavailable, Code: "internal-error"})
-	c, _, _ := h.usageClient(1, nil)
+	c, obs, _ := h.usageClient(1, nil)
 	h.nextStream() // the push needs the stream open
 	c.Record(testRecord(1))
 	h.wantUsage(fakecontrol.OutcomeAckDropped, 1, 1)
@@ -98,9 +98,14 @@ func TestPushCountingTheOutstandingBatch(t *testing.T) {
 	h.cp.SetUsageFault(nil)
 	for e := h.nextUsage(); e.Outcome != fakecontrol.OutcomeDuplicate; e = h.nextUsage() {
 	}
+	for obs.next(t) != BatchAcked {
+	}
+	if got := c.UsageUncountedSince(); !got.IsZero() {
+		t.Errorf("the covered batch waits to be shown counted since %v", got)
+	}
 	h.cp.PushCurrentTotals()
-	if u := h.nextTotals(); u.Counted != 1 {
-		t.Errorf("update %+v after the ack, want generation 1 counted again and nothing else", u)
+	if u := h.nextTotals(); u.Counted != 0 {
+		t.Errorf("update %+v after the ack, want nothing newly counted", u)
 	}
 	if n := len(h.cp.CountedRecords()); n != 1 {
 		t.Errorf("%d records counted, want 1", n)
@@ -123,26 +128,24 @@ func TestCountedThroughOfAnotherEpoch(t *testing.T) {
 	}
 }
 
-// counted_through covers batches in send order, each by its own epoch's entry: every
-// acknowledged or queued batch at or before it, restored batches of an earlier epoch
-// before the current one; acknowledged batches it covers are forgotten.
+// counted_through covers batches in send order: every acknowledged or queued batch at
+// or before the epoch's entry; acknowledged batches it covers are forgotten.
 func TestCountedThroughCoversBatchesInSendOrder(t *testing.T) {
-	const restored, current = "00000000000000000000000000000001", "00000000000000000000000000000002"
+	const epoch = "00000000000000000000000000000001"
 	u := &usageSender{
-		store: newMemoryStore(),
 		acked: []ackedBatch{
-			{entry: spoolEntry{id: BatchID{Epoch: restored, Sequence: 7}, generation: 1}},
-			{entry: spoolEntry{id: BatchID{Epoch: current, Sequence: 1}, generation: 2}},
+			{id: BatchID{Epoch: epoch, Sequence: 1}, generation: 1},
+			{id: BatchID{Epoch: epoch, Sequence: 2}, generation: 2},
 		},
-		queue: []spoolEntry{
-			{id: BatchID{Epoch: current, Sequence: 2}, generation: 3},
-			{id: BatchID{Epoch: current, Sequence: 3}, generation: 4},
+		queue: []queuedBatch{
+			{id: BatchID{Epoch: epoch, Sequence: 3}, generation: 3},
+			{id: BatchID{Epoch: epoch, Sequence: 4}, generation: 4},
 		},
 	}
-	if got := u.countedGeneration([]BatchPosition{{Epoch: restored, Sequence: 7}}); got != 1 || len(u.acked) != 1 {
-		t.Fatalf("through the restored batch: generation %d, %d acknowledged left; want 1 and 1", got, len(u.acked))
+	if got := u.countedGeneration([]BatchPosition{{Epoch: epoch, Sequence: 1}}); got != 1 || len(u.acked) != 1 {
+		t.Fatalf("through the first acknowledged batch: generation %d, %d acknowledged left; want 1 and 1", got, len(u.acked))
 	}
-	if got := u.countedGeneration([]BatchPosition{{Epoch: restored, Sequence: 7}, {Epoch: current, Sequence: 2}}); got != 3 || len(u.acked) != 0 {
+	if got := u.countedGeneration([]BatchPosition{{Epoch: epoch, Sequence: 3}}); got != 3 || len(u.acked) != 0 {
 		t.Fatalf("through the first queued batch: generation %d, %d acknowledged left; want 3 and 0", got, len(u.acked))
 	}
 	if got := u.countedGeneration([]BatchPosition{{Epoch: "00000000000000000000000000000003", Sequence: 1}}); got != 0 {
@@ -153,9 +156,8 @@ func TestCountedThroughCoversBatchesInSendOrder(t *testing.T) {
 	}
 }
 
-// Contact starts at the client's creation, so a gateway booting from its last-known-
-// good copy with the control plane down counts its outage from its start; an open
-// stream is contact.
+// Contact starts at the client's creation, so a gateway booting from its seed with
+// the control plane down counts its outage from its start; an open stream is contact.
 func TestContact(t *testing.T) {
 	h := newHarness(t)
 	h.cp.SetDown(true)
@@ -191,8 +193,7 @@ func TestContact(t *testing.T) {
 // entry, whatever the other's (AUDIT-2 2M2).
 func TestEachEpochIsCoveredByItsOwnEntry(t *testing.T) {
 	const oldEpoch, newEpoch = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	u := &usageSender{store: newMemoryStore(), acked: []ackedBatch{
-		{entry: spoolEntry{id: BatchID{Epoch: newEpoch, Sequence: 1}, generation: 1}}}}
+	u := &usageSender{acked: []ackedBatch{{id: BatchID{Epoch: newEpoch, Sequence: 1}, generation: 1}}}
 	if got := u.countedGeneration([]BatchPosition{{Epoch: oldEpoch, Sequence: 1}, {Epoch: newEpoch, Sequence: 1}}); got != 1 {
 		t.Fatalf("totals counting both epochs retire generation %d, want 1", got)
 	}
@@ -206,8 +207,8 @@ func TestAckHandOffNeverHidesABatchFromTotals(t *testing.T) {
 	batch := UsageBatch{Batch: BatchID{Instance: "gw", Epoch: epoch, Sequence: 1}, Records: []accounting.UsageRecord{testRecord(1)}}
 	batch.Records[0].GatewayTime = time.Now()
 	for range 2000 {
-		e := spoolEntry{id: batch.Batch, generation: 1, records: 1}
-		u := &usageSender{store: newMemoryStore(), instance: "gw", queue: []spoolEntry{e}, queuedRecords: 1, changed: make(chan struct{})}
+		e := queuedBatch{id: batch.Batch, generation: 1, records: batch.Records}
+		u := &usageSender{instance: "gw", queue: []queuedBatch{e}, queuedRecords: 1, changed: make(chan struct{})}
 		var counted atomic.Uint64
 		c := &Client{usage: u, opts: Options{OnTotals: func(update TotalsUpdate) { counted.Store(update.Counted) }}}
 		start := make(chan struct{})
@@ -235,23 +236,24 @@ func TestAckHandOffNeverHidesABatchFromTotals(t *testing.T) {
 	}
 }
 
-// With no data directory at most ackedRemembered acknowledged batches are remembered:
-// past that the oldest is forgotten — a later batch shown counted retires every earlier
-// generation — and the wait to be shown counted keeps its time (AUDIT-3 3L4).
-func TestAcknowledgedBatchesAreBoundedWithoutADataDirectory(t *testing.T) {
+// At most ackedRemembered acknowledged batches are remembered: past that the oldest is
+// forgotten — a later batch shown counted retires every earlier generation — and the
+// wait to be shown counted keeps its time (AUDIT-3 3L4).
+func TestAcknowledgedBatchesAreBounded(t *testing.T) {
 	const epoch = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	u := &usageSender{store: newMemoryStore(), instance: "gw", changed: make(chan struct{})}
+	u := &usageSender{instance: "gw", changed: make(chan struct{})}
 	start := time.Now().Add(-time.Hour)
 	for i := range ackedRemembered {
-		u.acked = append(u.acked, ackedBatch{entry: spoolEntry{id: BatchID{Instance: "gw", Epoch: epoch, Sequence: int64(i + 1)},
-			generation: uint64(i + 1)}, ackedAt: start})
+		u.acked = append(u.acked, ackedBatch{id: BatchID{Instance: "gw", Epoch: epoch, Sequence: int64(i + 1)},
+			generation: uint64(i + 1), ackedAt: start})
 	}
 	u.uncountedSince = start
-	e := spoolEntry{id: BatchID{Instance: "gw", Epoch: epoch, Sequence: ackedRemembered + 1}, generation: ackedRemembered + 1, records: 1}
-	u.queue = []spoolEntry{e}
+	e := queuedBatch{id: BatchID{Instance: "gw", Epoch: epoch, Sequence: ackedRemembered + 1}, generation: ackedRemembered + 1,
+		records: []accounting.UsageRecord{testRecord(1)}}
+	u.queue = []queuedBatch{e}
 	u.acknowledged(e)
-	if len(u.acked) != ackedRemembered || u.acked[0].entry.id.Sequence != 2 {
-		t.Errorf("%d acknowledged from sequence %d, want %d from 2", len(u.acked), u.acked[0].entry.id.Sequence, ackedRemembered)
+	if len(u.acked) != ackedRemembered || u.acked[0].id.Sequence != 2 {
+		t.Errorf("%d acknowledged from sequence %d, want %d from 2", len(u.acked), u.acked[0].id.Sequence, ackedRemembered)
 	}
 	if !u.uncountedSince.Equal(start) {
 		t.Errorf("the wait restarted at %v, want it kept at %v", u.uncountedSince, start)

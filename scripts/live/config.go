@@ -133,8 +133,7 @@ func newKey() (key, hash string) {
 	return key, "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// workspace is the run's temporary directory: built binaries, configs, data
-// directories, gateway logs.
+// workspace is the run's temporary directory: built binaries, configs, gateway logs.
 type workspace struct {
 	dir  string
 	keep bool

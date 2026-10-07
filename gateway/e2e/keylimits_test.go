@@ -71,7 +71,7 @@ func TestPerKeyConcurrencyLimit(t *testing.T) {
 	evalKey, evalHash := newKey()
 	annKey, annHash := newKey()
 	writeJSON(t, configFile, testConfig(backend.URL(), evalHash, annHash, ""))
-	g := startGateway(t, configFile, "")
+	g := startGateway(t, configFile)
 
 	const limit = 16
 	held := make([]*heldStream, limit)
@@ -119,7 +119,7 @@ func TestOutputLimitAboveTheContextIsRefused(t *testing.T) {
 	evalKey, evalHash := newKey()
 	_, annHash := newKey()
 	writeJSON(t, configFile, testConfig(backend.URL(), evalHash, annHash, ""))
-	g := startGateway(t, configFile, "")
+	g := startGateway(t, configFile)
 
 	for _, param := range []string{"max_tokens", "max_completion_tokens"} {
 		r := g.post(t, "/v1/chat/completions", evalKey, "", chatBody("chat", false, map[string]any{param: 8193}))
@@ -162,7 +162,7 @@ func TestTokenRefusalBlockedByARunningRequestRetriesSoon(t *testing.T) {
 	eval := cfg["groups"].(map[string]any)["eval"].(map[string]any)
 	eval["limits"] = []any{map[string]any{"type": "tokens_per_minute", "value": 120}}
 	writeJSON(t, configFile, cfg)
-	g := startGateway(t, configFile, "")
+	g := startGateway(t, configFile)
 
 	// The first request is held after its first event until pace closes.
 	pace := make(chan struct{})

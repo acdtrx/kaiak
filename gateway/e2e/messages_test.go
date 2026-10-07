@@ -134,7 +134,7 @@ func TestMessages(t *testing.T) {
 	key, hash := newKey()
 	configFile := filepath.Join(dir, "config.json")
 	writeJSON(t, configFile, messagesConfig(backend.URL(), old.URL(), hash))
-	g := startGatewayEnv(t, append(gatewayEnv(configFile, ""),
+	g := startGatewayEnv(t, append(gatewayEnv(configFile),
 		anthropicKeyEnv+"=sk-ant-e2e", azureAnthropicKeyEnv+"=e2e-foundry"))
 
 	for _, b := range messagesBackends {

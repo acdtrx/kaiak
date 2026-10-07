@@ -31,16 +31,6 @@ type Totals struct {
 	// only the ones that changed, and every other count keeps its base.
 	Complete bool
 	Windows  []PushedWindow
-	// CountedThrough is the message's counted_through: the last batch of each epoch the
-	// windows include. totals.json saves it with the bases, so the usage spool knows
-	// which batches the saved bases hold.
-	CountedThrough []CountedBatch
-}
-
-// CountedBatch is one counted_through entry: the last counted batch of an epoch.
-type CountedBatch struct {
-	Epoch    string `json:"epoch"`
-	Sequence int64  `json:"sequence"`
 }
 
 // PushedWindow is one scope's current window of one type as the control plane counts
@@ -77,8 +67,6 @@ func (l *Limiter) TakeTotals(t Totals, counted uint64) {
 	reshare := live != l.live
 	l.live = live
 	l.totalsAt = now
-	l.totalsKnown = true
-	l.countedThrough = t.CountedThrough
 	if t.Complete {
 		l.pushed = make(map[counterKey]PushedWindow, len(t.Windows))
 	}
@@ -213,7 +201,7 @@ func (l *Limiter) TotalsAppliedAt() (time.Time, bool) {
 	return l.totalsAt, !l.totalsAt.IsZero()
 }
 
-// LiveGateways is the live-gateway count of the latest totals taken or restored; 1
+// LiveGateways is the live-gateway count of the latest totals taken; 1
 // before any, and in file mode.
 func (l *Limiter) LiveGateways() int64 {
 	l.mu.Lock()
@@ -273,14 +261,13 @@ func (l *Limiter) outageLocked(now time.Time) bool {
 
 // FirstTotals is closed once the first totals message is taken: the control plane has
 // said what was spent (docs/specs/GATEWAY.md, Control-plane mode → Readiness waits for
-// the first totals). A restored copy of earlier totals does not close it. Never
-// closed in file mode.
+// the first totals). Never closed in file mode.
 func (l *Limiter) FirstTotals() <-chan struct{} { return l.firstTotals }
 
 // noTotalsLocked reports whether the spend of this gateway's limits is still unknown:
-// control-plane mode, and no totals applied or restored since the start. It is not
-// "totals with no usage" — a counter with no pushed window then counts from zero
-// because the control plane said so. Callers hold l.mu.
+// control-plane mode, and no totals applied since the start. It is not "totals with no
+// usage" — a counter with no pushed window then counts from zero because the control
+// plane said so. Callers hold l.mu.
 func (l *Limiter) noTotalsLocked() bool {
-	return l.shared() && !l.totalsKnown
+	return l.shared() && !l.firstClosed
 }

@@ -163,8 +163,8 @@ func (c *Client) currentStatus() Status {
 	s := Status{Instance: c.opts.Instance, ProtocolVersion: ProtocolVersion, StartedAt: r.startedAt,
 		Backends: map[string]BackendStatus{}, Models: map[string]ModelStatus{}}
 	c.mu.Lock()
-	// A config is in force from the control plane, the last-known-good copy or the
-	// seed; the seed carries no hash.
+	// A config is in force from the control plane or the seed; the seed carries no
+	// hash.
 	loaded := c.opts.Applier.Loaded()
 	if c.appliedHash != "" {
 		hash := c.appliedHash

@@ -34,7 +34,7 @@ func startTimeoutGateway(t *testing.T, backendURL string) (*gateway, string) {
 	configFile := filepath.Join(dir, "config.json")
 	writeJSON(t, configFile, testConfig(backendURL, evalHash, annHash, ""))
 	ms := strconv.Itoa(int(clientTimeout.Milliseconds()))
-	env := append(gatewayEnv(configFile, filepath.Join(dir, "data")),
+	env := append(gatewayEnv(configFile),
 		"KAIAK_BODY_READ_TIMEOUT_MS="+ms, "KAIAK_IDLE_TIMEOUT_MS="+ms, "KAIAK_WRITE_TIMEOUT_MS="+ms)
 	return startGatewayEnv(t, env), evalKey
 }

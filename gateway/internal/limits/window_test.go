@@ -136,7 +136,7 @@ func TestReleaseSettleAndKeep(t *testing.T) {
 	kept := w.reserve(now, 5)
 	w.reserve(now, 7)
 	w.keep(now, kept)
-	if got := w.settled(now); got != 5 {
+	if got := w.usedAt(now) - w.inFlight(now); got != 5 {
 		t.Errorf("settled %d, want 5", got)
 	}
 }

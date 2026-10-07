@@ -1,7 +1,7 @@
 package e2e
 
 // The harness: builds the kaiak binary once, runs it as a subprocess with a config
-// file, a data directory and environment, and reads its JSON log lines — the log is
+// file and environment, and reads its JSON log lines — the log is
 // how the test learns the bound ports and waits for events (config applied, request
 // settled, draining), never fixed sleeps.
 
@@ -200,19 +200,18 @@ type gateway struct {
 }
 
 // gatewayEnv is the environment every file-mode gateway gets on top of the caller's.
-func gatewayEnv(configFile, dataDir string) []string {
-	return append(commonEnv(dataDir), "KAIAK_CONFIG_FILE="+configFile)
+func gatewayEnv(configFile string) []string {
+	return append(commonEnv(), "KAIAK_CONFIG_FILE="+configFile)
 }
 
 // controlEnv is the environment of a gateway in control-plane mode.
-func controlEnv(controlURL, token, dataDir string) []string {
-	return append(commonEnv(dataDir), "KAIAK_CONTROL_URL="+controlURL, "KAIAK_CONTROL_TOKEN="+token)
+func controlEnv(controlURL, token string) []string {
+	return append(commonEnv(), "KAIAK_CONTROL_URL="+controlURL, "KAIAK_CONTROL_TOKEN="+token)
 }
 
-// commonEnv is the environment every gateway gets; dataDir "" leaves the data
-// directory unset (nothing written).
-func commonEnv(dataDir string) []string {
-	env := []string{
+// commonEnv is the environment every gateway gets.
+func commonEnv() []string {
+	return []string{
 		"KAIAK_INSTANCE_ID=e2e",
 		"KAIAK_LISTEN_ADDR=127.0.0.1:0",
 		"KAIAK_ADMIN_ADDR=127.0.0.1:0",
@@ -220,17 +219,13 @@ func commonEnv(dataDir string) []string {
 		"KAIAK_DRAIN_GRACE_MS=0",
 		"KAIAK_DRAIN_TIMEOUT_MS=10000",
 	}
-	if dataDir != "" {
-		env = append(env, "KAIAK_DATA_DIR="+dataDir)
-	}
-	return env
 }
 
 // startGateway runs kaiak in file mode and returns once both listeners are bound and
 // /readyz answers 200. The process is killed at test cleanup if still running.
-func startGateway(t *testing.T, configFile, dataDir string) *gateway {
+func startGateway(t *testing.T, configFile string) *gateway {
 	t.Helper()
-	return startGatewayEnv(t, gatewayEnv(configFile, dataDir))
+	return startGatewayEnv(t, gatewayEnv(configFile))
 }
 
 // startGatewayEnv runs kaiak with env as startGateway does.

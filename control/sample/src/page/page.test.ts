@@ -49,7 +49,7 @@ function fixtureRecords(): ReceivedRecord[] {
 }
 
 // config_hash values: the current config's, an earlier config's, and one no config of
-// this control plane has (a last-known-good copy from before it).
+// this control plane has (one from before it started over).
 const CURRENT_HASH = "7".repeat(64);
 const EARLIER_HASH = "6".repeat(64);
 const OTHER_HASH = "f".repeat(64);
@@ -93,7 +93,7 @@ const GATEWAYS: GatewayView[] = [
     conflict: { reason: "started-at-alternating", detectedAt: NOW - 50_000 },
   },
   {
-    // A config this control plane does not hold (a last-known-good copy from before it).
+    // A config this control plane does not hold (one from before it started over).
     instance: "gw-3",
     status: {
       instance: "gw-3",

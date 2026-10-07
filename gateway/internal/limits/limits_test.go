@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -15,7 +13,6 @@ import (
 
 	"kaiak/internal/accounting"
 	"kaiak/internal/config"
-	"kaiak/internal/state"
 )
 
 // clock is the tests' injected time.
@@ -643,6 +640,60 @@ func TestARecreatedGroupKeepsItsSpend(t *testing.T) {
 	}
 }
 
+// A running request holds the counts of a group deleted under it, whatever their
+// window holds — a USD reservation holds nothing — so a reload in between drops none of
+// them, and the request's cost lands on the counts the group created again takes back
+// (AUDIT-4 D-H3, decision 36).
+func TestARunningRequestHoldsTheCountsOfADeletedGroup(t *testing.T) {
+	for _, shared := range []bool{false, true} {
+		t.Run(fmt.Sprint("shared=", shared), func(t *testing.T) {
+			c := newClock("2026-10-07T12:30:00Z")
+			h := holderOf(snapshot(t, limitsDoc{extraGroup: "temporary"}))
+			l := c.limiter(h)
+			if shared {
+				l, _ = c.shared(h)
+				l.TakeTotals(Totals{Complete: true}, 0)
+			}
+			subject := Subject{Groups: []string{"temporary"}, Model: "m1", Priced: true}
+			running := admitN(t, l, subject, 1, 10)[0]
+			h.Swap(snapshot(t, limitsDoc{}))
+			_ = l.Usage() // the deletion applied, its counts' windows holding nothing settled
+			l.Settle(running, inGeneration(1, record(10, 0, 0, 0, 0, 1_000_000_000)))
+			recreated := snapshot(t, limitsDoc{extraGroup: "temporary"})
+			recreated.Groups["temporary"].Limits = []config.Limit{{Type: config.LimitUSDPerMonth, Value: 1}}
+			h.Swap(recreated)
+			if got := used(t, l, "temporary", config.LimitUSDPerMonth); got != 1_000_000_000 {
+				t.Errorf("re-created group's month %d nano-USD, want the 1 USD its running request settled", got)
+			}
+			if _, rejected := l.Reserve(subject, 1); rejected == nil {
+				t.Error("request admitted against the re-created group's spent budget")
+			}
+		})
+	}
+}
+
+// A request's hold on a deleted group's counts outlives the hour: the roll-over clears
+// its tokens' reservation, and a reload in the new hour still keeps the counts it
+// holds, so the tokens it settles in the new hour count when the group comes back
+// (AUDIT-4 D-H3).
+func TestARunningRequestHoldsADeletedGroupsCountsAcrossTheHour(t *testing.T) {
+	c := newClock("2026-10-07T12:59:59Z")
+	h := holderOf(snapshot(t, limitsDoc{extraGroup: "temporary"}))
+	l := c.limiter(h)
+	subject := Subject{Groups: []string{"temporary"}, Model: "m1", Priced: true}
+	running := admitN(t, l, subject, 1, 10)[0]
+	h.Swap(snapshot(t, limitsDoc{}))
+	_ = l.Usage()
+	c.advance(2 * time.Second)
+	h.Swap(snapshot(t, limitsDoc{team: hourLimit})) // another reload, in the new hour
+	_ = l.Usage()
+	l.Settle(running, record(100, 0, 0, 0, 0, 0))
+	h.Swap(snapshot(t, limitsDoc{extraGroup: "temporary"}))
+	if got := used(t, l, "temporary", config.LimitTokensPerHour); got != 100 {
+		t.Fatalf("re-created group's hour %d tokens, want the 100 settled in the new hour", got)
+	}
+}
+
 func TestSyncIsObservedOncePerNewConfig(t *testing.T) {
 	c := newClock("2026-09-24T10:00:00Z")
 	holder := holderOf(snapshot(t, limitsDoc{team: rpm2}))
@@ -666,133 +717,6 @@ func TestSyncIsObservedOncePerNewConfig(t *testing.T) {
 		if d <= 0 {
 			t.Errorf("sync duration %v, want the time it took", d)
 		}
-	}
-}
-
-func openDir(t *testing.T) (*state.Dir, *bytes.Buffer) {
-	t.Helper()
-	var logs bytes.Buffer
-	dir, err := state.Open(t.TempDir(), slog.New(slog.NewTextHandler(&logs, nil)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return dir, &logs
-}
-
-var persisted = limitsDoc{
-	global:   `[{ "type": "usd_per_month", "value": 100 }]`,
-	team:     `[{ "type": "tokens_per_hour", "value": 100000 }]`,
-	workload: `[{ "type": "tokens_per_minute", "value": 100000 }, { "type": "requests_per_minute", "value": 100 }]`,
-	ann:      `[{ "type": "tokens_per_hour", "value": 100000 }]`,
-}
-
-func TestSnapshotRoundTrip(t *testing.T) {
-	dir, _ := openDir(t)
-	c := newClock("2026-09-24T10:20:00Z")
-	l := c.limiter(holderOf(snapshot(t, persisted)))
-	res := admitN(t, l, workload, 2, 1000)
-	l.Settle(res[0], record(100, 0, 0, 20, 0, 7000))
-	l.Settle(res[1], record(10, 0, 0, 5, 0, 500))
-	l.Settle(admitN(t, l, ann, 1, 1000)[0], record(42, 0, 0, 0, 0, 0))
-	admitN(t, l, workload, 1, 999) // in flight at save time: not saved
-	// Every scope with usage is saved, limited or not: hours of global, t, w, users
-	// and ann; months of global, t and w (ann's usage cost nothing).
-	n, err := l.SaveSnapshot(dir)
-	if err != nil || n != 8 {
-		t.Fatalf("saved %d windows (%v), want 8: five hours and three months", n, err)
-	}
-
-	c.advance(20 * time.Minute) // restart within the same hour
-	restarted := c.limiter(holderOf(snapshot(t, persisted)))
-	restored, dropped, err := restarted.LoadSnapshot(dir)
-	if err != nil || restored != 8 || dropped != 0 {
-		t.Fatalf("restored %d, dropped %d, err %v; want 8, 0", restored, dropped, err)
-	}
-	for _, w := range []struct {
-		group string
-		typ   config.LimitType
-		want  int64
-	}{
-		{"", config.LimitUSDPerMonth, 7500},
-		{"", config.LimitTokensPerHour, 177},
-		{"t", config.LimitTokensPerHour, 135},
-		{"t", config.LimitUSDPerMonth, 7500},
-		{"w", config.LimitTokensPerHour, 135},
-		{"users", config.LimitTokensPerHour, 42},
-		{"ann", config.LimitTokensPerHour, 42},
-		{"w", config.LimitTokensPerMinute, 0}, // minute windows are not kept
-		{"w", config.LimitRequestsPerMinute, 0},
-	} {
-		if got := used(t, restarted, w.group, w.typ); got != w.want {
-			t.Errorf("%q %s restored as %d, want %d", w.group, w.typ, got, w.want)
-		}
-	}
-}
-
-// A scope whose limit a reload removed keeps its count: the snapshot restores it.
-// A window that has passed is dropped.
-func TestSnapshotKeepsUnlimitedScopesAndDropsPassedWindows(t *testing.T) {
-	dir, _ := openDir(t)
-	c := newClock("2026-09-24T10:59:00Z")
-	l := c.limiter(holderOf(snapshot(t, persisted)))
-	l.Settle(admitN(t, l, workload, 1, 10)[0], record(100, 0, 0, 0, 0, 1000))
-	l.Settle(admitN(t, l, ann, 1, 10)[0], record(100, 0, 0, 0, 0, 0))
-	if _, err := l.SaveSnapshot(dir); err != nil {
-		t.Fatal(err)
-	}
-	next := persisted
-	next.ann = ""
-
-	// The same hour, with ann's limit removed: ann's hour is still counted.
-	c.set("2026-09-24T10:59:30Z")
-	restarted := c.limiter(holderOf(snapshot(t, next)))
-	restored, dropped, err := restarted.LoadSnapshot(dir)
-	if err != nil || restored != 8 || dropped != 0 {
-		t.Fatalf("same hour: restored %d, dropped %d, err %v; want 8, 0", restored, dropped, err)
-	}
-	if got := used(t, restarted, "ann", config.LimitTokensPerHour); got != 100 {
-		t.Errorf("ann's hour restored as %d without its limit, want 100", got)
-	}
-
-	// The next hour: the five hours have passed, the three months are current.
-	c.set("2026-09-24T11:00:30Z")
-	restarted = c.limiter(holderOf(snapshot(t, next)))
-	restored, dropped, err = restarted.LoadSnapshot(dir)
-	if err != nil || restored != 3 || dropped != 5 {
-		t.Fatalf("next hour: restored %d, dropped %d, err %v; want 3, 5", restored, dropped, err)
-	}
-	if got := used(t, restarted, "t", config.LimitTokensPerHour); got != 0 {
-		t.Errorf("passed hour restored as %d", got)
-	}
-	if got := used(t, restarted, "", config.LimitUSDPerMonth); got != 1000 {
-		t.Errorf("month restored as %d, want 1000", got)
-	}
-}
-
-// The previous format (version 1, limits named by scope and owner ID) is discarded
-// and the discard logged, as any other version is.
-func TestSnapshotWithAnotherVersionIsDiscarded(t *testing.T) {
-	dir, logs := openDir(t)
-	path := filepath.Join(dir.Path(), SnapshotFile)
-	old := `{"format_version": 1, "data": {"windows": [{"scope": "team", "id": "t", "type": "tokens_per_hour",
-		"models": null, "window_start": "2026-09-24T10:00:00Z", "used": 135}]}}`
-	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	l := newClock("2026-09-24T10:00:00Z").limiter(holderOf(snapshot(t, persisted)))
-	restored, dropped, err := l.LoadSnapshot(dir)
-	if err != nil || restored != 0 || dropped != 0 {
-		t.Fatalf("restored %d, dropped %d, err %v", restored, dropped, err)
-	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Error("the file with another version was kept")
-	}
-	if !strings.Contains(logs.String(), "kaiak.data_file.found_version=1") || !strings.Contains(logs.String(), "kaiak.data_file.want_version=3") {
-		t.Errorf("discard not logged:\n%s", logs)
-	}
-	// No file at all restores nothing, without error.
-	if restored, _, err := l.LoadSnapshot(dir); err != nil || restored != 0 {
-		t.Errorf("missing file: restored %d, err %v", restored, err)
 	}
 }
 

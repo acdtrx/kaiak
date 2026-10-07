@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -99,7 +98,7 @@ func (o *testObserver) UsageBatchSent(result string, _ time.Time) {
 	}
 }
 
-func (o *testObserver) UsageSpoolDepth(batches, records int, memoryBytes int64) {
+func (o *testObserver) UsageQueueDepth(batches, records int, memoryBytes int64) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.batches, o.records, o.memoryBytes = batches, records, memoryBytes
@@ -108,7 +107,7 @@ func (o *testObserver) UsageSpoolDepth(batches, records int, memoryBytes int64) 
 	o.changed = make(chan struct{})
 }
 
-// waitDepth waits until the spool depth is batches.
+// waitDepth waits until the queue depth is batches.
 func (o *testObserver) waitDepth(t *testing.T, batches int) {
 	t.Helper()
 	timeout := time.After(testWaitLimit)
@@ -122,7 +121,7 @@ func (o *testObserver) waitDepth(t *testing.T, batches int) {
 		select {
 		case <-changed:
 		case <-timeout:
-			t.Fatalf("spool depth %d batches, want %d", got, batches)
+			t.Fatalf("queue depth %d batches, want %d", got, batches)
 		}
 	}
 }
@@ -211,25 +210,12 @@ func recordIDs(t *testing.T, body []byte) []string {
 	return ids
 }
 
-func (h *harness) spoolFiles(prefix string) []string {
-	h.t.Helper()
-	files, err := h.dir.List(prefix)
-	if err != nil {
-		h.t.Fatal(err)
-	}
-	var names []string
-	for _, f := range files {
-		names = append(names, f.Name)
-	}
-	return names
-}
-
 func flush(t *testing.T, c *Client) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), testWaitLimit)
 	defer cancel()
 	if !c.FlushUsage(ctx, "test") {
-		t.Fatal("FlushUsage did not empty the spool")
+		t.Fatal("FlushUsage did not empty the queue")
 	}
 }
 
@@ -250,23 +236,6 @@ func TestUsageBatchesSealAtTheSizeLimit(t *testing.T) {
 	h.wantUsage(fakecontrol.OutcomeCounted, 3, 1)
 	if got := len(h.cp.CountedRecords()); got != 7 {
 		t.Errorf("%d records counted, want 7", got)
-	}
-	// Acknowledged batches stay spooled until a totals.json save covering them has
-	// completed; the index names them acknowledged, so a restart never sends them.
-	if files := h.spoolFiles(spoolBatchPrefix); len(files) != 3 {
-		t.Errorf("spool %v, want the 3 acknowledged batches kept", files)
-	}
-	var idx spoolIndex
-	if found, err := h.dir.ReadVersioned(SpoolFile, spoolFormat, &idx); err != nil || !found || idx.Acknowledged[first.Batch.Epoch] != 3 {
-		t.Errorf("index %+v (%v), want the epoch acknowledged through 3", idx, err)
-	}
-	c.SpoolCovered([]BatchPosition{{Epoch: first.Batch.Epoch, Sequence: 2}})
-	if files := h.spoolFiles(spoolBatchPrefix); len(files) != 1 {
-		t.Errorf("spool %v after a save covering 2, want only batch 3", files)
-	}
-	c.SpoolCovered([]BatchPosition{{Epoch: first.Batch.Epoch, Sequence: 3}})
-	if files := h.spoolFiles(spoolBatchPrefix); len(files) != 0 {
-		t.Errorf("spool %v after a save covering every batch, want none", files)
 	}
 }
 
@@ -323,10 +292,10 @@ func TestOneBatchOutstandingOthersQueueBehindIt(t *testing.T) {
 		t.Errorf("counted %v, want 1 2 3 in order", sequences)
 	}
 	if !<-flushed {
-		t.Error("flush did not see the spool empty")
+		t.Error("flush did not see the queue empty")
 	}
 	if batches, records, maxBatches := obs.depth(); batches != 0 || records != 0 || maxBatches != 3 {
-		t.Errorf("spool depth %d batches %d records (max %d), want 0 0 (max 3)", batches, records, maxBatches)
+		t.Errorf("queue depth %d batches %d records (max %d), want 0 0 (max 3)", batches, records, maxBatches)
 	}
 }
 
@@ -376,24 +345,23 @@ func TestAckNamingAnotherBatchIsNotTaken(t *testing.T) {
 	}
 }
 
-func TestRefusedBatchIsSetAsideAndTheNextSent(t *testing.T) {
+func TestRefusedBatchIsDroppedAndTheNextSent(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))
 	h.cp.FailUsage(fakecontrol.UsageFault{Status: http.StatusBadRequest, Code: "usage-batch-invalid"})
 	c, obs, _ := h.usageClient(1, nil)
 	c.Record(testRecord(1))
 	c.Record(testRecord(2))
-	refused := h.wantUsage(fakecontrol.OutcomeRefused, 1, 1)
+	h.wantUsage(fakecontrol.OutcomeRefused, 1, 1)
 	h.wantUsage(fakecontrol.OutcomeCounted, 2, 1)
 	if got := []string{obs.next(t), obs.next(t)}; !slices.Equal(got, []string{BatchRejected, BatchAcked}) {
 		t.Errorf("results %v", got)
 	}
-	want := batchFileName(spoolRejectedPrefix, BatchID(refused.Batch))
-	if got := h.spoolFiles(spoolRejectedPrefix); !slices.Equal(got, []string{want}) {
-		t.Errorf("refused files %v, want %s", got, want)
+	if n := len(h.cp.CountedRecords()); n != 1 {
+		t.Errorf("%d records counted, want only the next batch's", n)
 	}
 	if out := h.logs.String(); !strings.Contains(out, "level=ERROR") ||
-		!strings.Contains(out, "usage batch refused by the control plane") || !strings.Contains(out, "error.type=usage-batch-invalid") {
+		!strings.Contains(out, "usage batch refused by the control plane; dropped") || !strings.Contains(out, "error.type=usage-batch-invalid") {
 		t.Errorf("refusal not logged as an error with its code:\n%s", out)
 	}
 }
@@ -414,34 +382,7 @@ func TestBatchRefusalCodeOnAnotherStatusIsRetried(t *testing.T) {
 			if got := []string{obs.next(t), obs.next(t)}; !slices.Equal(got, []string{BatchFailed, BatchAcked}) {
 				t.Errorf("results %v", got)
 			}
-			if got := h.spoolFiles(spoolRejectedPrefix); len(got) != 0 {
-				t.Errorf("batch set aside: %v", got)
-			}
 		})
-	}
-}
-
-func TestRefusedBatchesKeptAreBounded(t *testing.T) {
-	h := newHarness(t)
-	h.cp.Publish(configA(t))
-	n := rejectedKept + 2
-	for range n {
-		h.cp.FailUsage(fakecontrol.UsageFault{Status: http.StatusBadRequest, Code: "record-id-duplicate"})
-	}
-	c, _, _ := h.usageClient(1, nil)
-	for i := range n + 1 {
-		c.Record(testRecord(i))
-	}
-	for range n {
-		h.nextUsage()
-	}
-	h.wantUsage(fakecontrol.OutcomeCounted, int64(n+1), 1)
-	files := h.spoolFiles(spoolRejectedPrefix)
-	if len(files) != rejectedKept {
-		t.Fatalf("%d refused batches kept, want %d: %v", len(files), rejectedKept, files)
-	}
-	if slices.ContainsFunc(files, func(f string) bool { return strings.HasSuffix(f, "-1.json") }) {
-		t.Errorf("the oldest refused batch was kept: %v", files)
 	}
 }
 
@@ -452,7 +393,7 @@ func TestConfigProblemsAreRetriedAndLoggedAsErrors(t *testing.T) {
 	c, obs, _ := h.usageClient(1, nil)
 	c.Record(testRecord(1))
 	h.wantUsage(fakecontrol.OutcomeRefused, 1, 1)
-	h.wantUsage(fakecontrol.OutcomeRefused, 1, 1) // retried, not set aside
+	h.wantUsage(fakecontrol.OutcomeRefused, 1, 1) // retried, not dropped
 	if got := obs.next(t); got != BatchFailed {
 		t.Fatalf("result %q, want failed", got)
 	}
@@ -462,156 +403,9 @@ func TestConfigProblemsAreRetriedAndLoggedAsErrors(t *testing.T) {
 	h.cp.SetUsageFault(nil)
 	for e := h.nextUsage(); e.Outcome != fakecontrol.OutcomeCounted; e = h.nextUsage() {
 	}
-	if files := h.spoolFiles(spoolRejectedPrefix); len(files) != 0 {
-		t.Errorf("batch set aside over a configuration problem: %v", files)
-	}
 }
 
-// A gateway stopped between a send and its ack (the ack lost) restarts from its
-// spool: same epoch, the outstanding batch resent with its ID and records, the
-// sequence continuing — and the control plane counts every record once.
-func TestSpoolSurvivesARestart(t *testing.T) {
-	h := newHarness(t)
-	h.cp.Publish(configA(t))
-	h.cp.FailUsage(fakecontrol.UsageFault{DropAck: true})
-	h.cp.SetUsageFault(&fakecontrol.UsageFault{Status: http.StatusServiceUnavailable, Code: "internal-error"})
-	c, _, stop := h.usageClient(2, nil)
-	for i := range 3 {
-		c.Record(testRecord(i))
-	}
-	first := h.wantUsage(fakecontrol.OutcomeAckDropped, 1, 2)
-	h.wantUsage(fakecontrol.OutcomeRefused, 1, 2)
-	stop() // the third record is sealed into the spool as the client stops
-	if files := h.spoolFiles(spoolBatchPrefix); len(files) != 2 {
-		t.Fatalf("spool after stop: %v, want 2 batches", files)
-	}
-
-	h.cp.SetUsageFault(nil)
-	c2, _, _ := h.usageClient(2, nil)
-	resent := h.wantUsage(fakecontrol.OutcomeDuplicate, 1, 2)
-	if resent.Batch != first.Batch || !slices.Equal(recordIDs(t, resent.Body), recordIDs(t, first.Body)) {
-		t.Errorf("resent %+v, want batch %+v with the same records", resent.Batch, first.Batch)
-	}
-	second := h.wantUsage(fakecontrol.OutcomeCounted, 2, 1)
-	c2.Record(testRecord(3))
-	flush(t, c2)
-	third := h.wantUsage(fakecontrol.OutcomeCounted, 3, 1)
-	if second.Batch.Epoch != first.Batch.Epoch || third.Batch.Epoch != first.Batch.Epoch {
-		t.Errorf("epochs %s %s %s: want one epoch across the restart", first.Batch.Epoch, second.Batch.Epoch,
-			third.Batch.Epoch)
-	}
-	if n := len(h.cp.CountedRecords()); n != 4 {
-		t.Errorf("%d records counted, want 4, each once", n)
-	}
-	if !strings.Contains(h.logs.String(), `msg="usage spool restored"`) {
-		t.Errorf("restore not logged:\n%s", h.logs.String())
-	}
-}
-
-// An index of another format is discarded: a new epoch starts. The acknowledged batch
-// it named is no longer known as acknowledged, so it is sent again, and the control
-// plane acknowledges it again without counting.
-func TestSpoolOfAnotherFormatStartsANewEpoch(t *testing.T) {
-	h := newHarness(t)
-	h.cp.Publish(configA(t))
-	c, obs, stop := h.usageClient(1, nil)
-	c.Record(testRecord(1))
-	old := h.wantUsage(fakecontrol.OutcomeCounted, 1, 1)
-	if r := obs.next(t); r != BatchAcked {
-		t.Fatalf("result %s, want %s", r, BatchAcked)
-	}
-	stop()
-
-	if err := h.dir.WriteVersioned(SpoolFile, spoolFormat-1, map[string]any{}); err != nil {
-		t.Fatal(err)
-	}
-	c2, _, _ := h.usageClient(1, nil)
-	if again := h.wantUsage(fakecontrol.OutcomeDuplicate, 1, 1); again.Batch != old.Batch {
-		t.Errorf("resent %+v, want the acknowledged batch %+v", again.Batch, old.Batch)
-	}
-	c2.Record(testRecord(2))
-	fresh := h.wantUsage(fakecontrol.OutcomeCounted, 1, 1)
-	if fresh.Batch.Epoch == old.Batch.Epoch {
-		t.Errorf("epoch %s kept after the spool was discarded", fresh.Batch.Epoch)
-	}
-	out := h.logs.String()
-	if !strings.Contains(out, "discarded data file with a different format version") ||
-		!strings.Contains(out, `msg="usage spool: new epoch"`) {
-		t.Errorf("discard and new epoch not logged:\n%s", out)
-	}
-}
-
-// A spool left by an older gateway — an index and a queued batch whose record has
-// that format's shape — is discarded whole: the batch is never sent, and the first
-// batch after the start opens a new epoch. Format 1 records name an owner, not groups;
-// format 2 records carry four token units, not tokens_cache_write. The versions are
-// written literally, so the test does not move with spoolFormat.
-func TestOlderFormatSpoolIsDiscardedWithItsBatches(t *testing.T) {
-	for _, old := range []struct {
-		format int
-		// scope and units are the record's members of that format.
-		scope, units string
-	}{
-		{1, `"owner":{"team":"research","workload":"eval"}`,
-			`{"tokens_in":10,"tokens_cached":0,"tokens_out":5,"tokens_reasoning":0}`},
-		{2, `"groups":["research","eval"]`,
-			`{"tokens_cached":0,"tokens_in":10,"tokens_out":5,"tokens_reasoning":0}`},
-	} {
-		t.Run(fmt.Sprintf("format %d", old.format), func(t *testing.T) {
-			const oldEpoch = "0123456789abcdef0123456789abcdef"
-			h := newHarness(t)
-			h.cp.Publish(configA(t))
-			index := json.RawMessage(`{"instance":"` + testInstance + `","epoch":"` + oldEpoch + `","next_sequence":2}`)
-			batchFile := spoolBatchPrefix + oldEpoch + "-1.json"
-			batch := json.RawMessage(`{"batch":{"instance":"` + testInstance + `","epoch":"` + oldEpoch + `","sequence":1},
-  "records":[{"record_id":"` + fmt.Sprintf("%032x", 99) + `","request_id":"req-old","gateway_instance":"` + testInstance + `",
-    "key_id":"k-eval",` + old.scope + `,"model":"llama",
-    "deployment":{"backend":"local","model":"llama-3"},
-    "units":` + old.units + `,
-    "cost_nano_usd":1,"estimated":false,"partial":false,"gateway_time":"2026-09-24T10:00:00Z"}]}`)
-			if err := h.dir.WriteVersioned(SpoolFile, old.format, index); err != nil {
-				t.Fatal(err)
-			}
-			if err := h.dir.WriteVersioned(batchFile, old.format, batch); err != nil {
-				t.Fatal(err)
-			}
-
-			c, _, _ := h.usageClient(1, nil)
-			c.Record(testRecord(1))
-			fresh := h.wantUsage(fakecontrol.OutcomeCounted, 1, 1)
-			if fresh.Batch.Epoch == oldEpoch {
-				t.Errorf("epoch %s of the discarded spool kept", oldEpoch)
-			}
-			counted := h.cp.CountedRecords()
-			if len(counted) != 1 {
-				t.Fatalf("%d records counted, want only the new one", len(counted))
-			}
-			var rec struct {
-				RequestID string           `json:"request_id"`
-				Groups    []string         `json:"groups"`
-				Units     map[string]int64 `json:"units"`
-			}
-			if err := json.Unmarshal(counted[0], &rec); err != nil || rec.RequestID == "req-old" || len(rec.Groups) == 0 {
-				t.Errorf("counted record %s is not the new one (err %v)", counted[0], err)
-			}
-			if _, ok := rec.Units["tokens_cache_write"]; !ok {
-				t.Errorf("counted record %s has no tokens_cache_write", counted[0])
-			}
-			if files := h.spoolFiles(spoolBatchPrefix); slices.Contains(files, batchFile) {
-				t.Errorf("format-%d batch file still spooled: %v", old.format, files)
-			}
-			out := h.logs.String()
-			if n := strings.Count(out, "discarded data file with a different format version"); n != 2 {
-				t.Errorf("%d discards logged, want 2 (index and batch):\n%s", n, out)
-			}
-			if !strings.Contains(out, fmt.Sprintf("kaiak.data_file.found_version=%d", old.format)) {
-				t.Errorf("the discarded format is not logged:\n%s", out)
-			}
-		})
-	}
-}
-
-func TestFreshDataDirectoryStartsANewEpoch(t *testing.T) {
+func TestEveryClientStartsANewEpoch(t *testing.T) {
 	a := newHarness(t)
 	a.cp.Publish(configA(t))
 	ca, _, _ := a.usageClient(1, nil)
@@ -625,51 +419,9 @@ func TestFreshDataDirectoryStartsANewEpoch(t *testing.T) {
 	}
 }
 
-// A spool left by another instance ID (a container whose hostname changed) is still
-// delivered, under that instance; the new instance seals in an epoch of its own.
-func TestSpoolOfAnotherInstanceIsDeliveredUnderIt(t *testing.T) {
-	h := newHarness(t)
-	h.cp.Publish(configA(t))
-	h.cp.SetUsageFault(&fakecontrol.UsageFault{Status: http.StatusServiceUnavailable, Code: "internal-error"})
-	c, _, stop := h.usageClient(1, nil)
-	c.Record(testRecord(1))
-	h.wantUsage(fakecontrol.OutcomeRefused, 1, 1)
-	stop()
-
-	h.cp.SetUsageFault(nil)
-	renamed := testRecord(2)
-	renamed.GatewayInstance = "gw-renamed"
-	c2, _, _ := h.usageClient(1, func(o *Options) { o.Instance = "gw-renamed" })
-	old := h.wantUsage(fakecontrol.OutcomeCounted, 1, 1)
-	c2.Record(renamed)
-	fresh := h.wantUsage(fakecontrol.OutcomeCounted, 1, 1)
-	if old.Batch.Instance != testInstance || fresh.Batch.Instance != "gw-renamed" || old.Batch.Epoch == fresh.Batch.Epoch {
-		t.Errorf("batches %+v then %+v", old.Batch, fresh.Batch)
-	}
-}
-
-func TestFlushLeavesUndeliveredBatchesSpooled(t *testing.T) {
-	h := newHarness(t)
-	h.cp.Publish(configA(t))
-	h.cp.SetDown(true)
-	c, _, _ := h.usageClient(MaxBatchRecords, nil)
-	c.Record(testRecord(1))
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	if c.FlushUsage(ctx, "drain") {
-		t.Fatal("FlushUsage reports an empty spool with the control plane down")
-	}
-	if files := h.spoolFiles(spoolBatchPrefix); len(files) != 1 {
-		t.Errorf("spool %v, want the sealed batch", files)
-	}
-	if !strings.Contains(h.logs.String(), `level=WARN msg="usage not flushed: left in the spool for the next start"`) {
-		t.Errorf("not logged:\n%s", h.logs.String())
-	}
-}
-
 // Record only appends in memory: with the sender stuck on an unreachable control
 // plane, many concurrent requests settle without waiting, and the batches seal into
-// the spool.
+// the queue.
 func TestRecordNeverBlocksOnTheSender(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))
@@ -698,15 +450,8 @@ func TestRecordNeverBlocksOnTheSender(t *testing.T) {
 	}
 	want := writers * each / MaxBatchRecords
 	obs.waitDepth(t, want)
-	// The depth counts sealed batches as soon as they seal; the files follow.
-	flushCtx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
-	defer cancel()
-	c.FlushUsage(flushCtx, "test") // writes what is sealed; the control plane stays down
-	if n := len(h.spoolFiles(spoolBatchPrefix)); n != want {
-		t.Fatalf("%d batches spooled, want %d", n, want)
-	}
 	if batches, records, _ := obs.depth(); batches != want || records != writers*each {
-		t.Errorf("spool depth %d batches %d records, want %d %d", batches, records, want, writers*each)
+		t.Errorf("queue depth %d batches %d records, want %d %d", batches, records, want, writers*each)
 	}
 }
 
@@ -724,9 +469,9 @@ func TestUsageBatchEncodesAsTheProtocolSays(t *testing.T) {
 
 // H5: a record the protocol refuses (here a unit past 2^53 − 1, which settlement
 // clamps — a record reaching the sender unclamped stands for any invalid record)
-// would make the control plane refuse its whole batch. It is set aside alone at
-// seal time; the rest of the batch is counted.
-func TestInvalidRecordIsSetAsideAloneAtSeal(t *testing.T) {
+// would make the control plane refuse its whole batch. It is dropped alone at seal
+// time; the rest of the batch is counted.
+func TestInvalidRecordIsDroppedAloneAtSeal(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))
 	c, obs, _ := h.usageClient(3, nil)
@@ -741,9 +486,6 @@ func TestInvalidRecordIsSetAsideAloneAtSeal(t *testing.T) {
 		t.Errorf("the invalid record was sent: %v", ids)
 	}
 	obs.waitDropped(t, DroppedInvalid, 1)
-	if got := h.spoolFiles(spoolRejectedPrefix); !slices.Equal(got, []string{spoolRejectedPrefix + "record-" + bad.RecordID + ".json"}) {
-		t.Errorf("refused files %v, want the record's", got)
-	}
 	if out := h.logs.String(); !strings.Contains(out, "usage record refused by the protocol's checks") ||
 		!strings.Contains(out, "kaiak.request.id="+bad.RequestID) {
 		t.Errorf("refused record not logged with its request ID:\n%s", out)
@@ -756,41 +498,4 @@ func TestInvalidRecordIsSetAsideAloneAtSeal(t *testing.T) {
 	c.Record(testRecord(4))
 	flush(t, c)
 	h.wantUsage(fakecontrol.OutcomeCounted, 2, 1)
-}
-
-// L16: while the spool cannot be written, sealed records wait in memory up to their
-// bound (their encoded bytes, here 4 records' worth: testRecord(1) to (9) are the
-// same size); past it the oldest sealed batches are dropped (logged, counted), so a disk
-// that stays unwritable cannot grow the process without bound. Once the disk
-// recovers, what was kept is written and sent.
-func TestSealedRecordsInMemoryAreBoundedWhileTheSpoolCannotBeWritten(t *testing.T) {
-	h := newHarness(t)
-	h.cp.Publish(configA(t))
-	c, obs, _ := h.usageClient(2, func(o *Options) { o.UsageMemoryBytes = 4 * recordSize(t, testRecord(9)) })
-	if err := os.Chmod(h.dir.Path(), 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(h.dir.Path(), 0o700) })
-	for i := range 10 {
-		c.Record(testRecord(i))
-	}
-	obs.waitDropped(t, DroppedSpoolFull, 6)
-	if out := h.logs.String(); !strings.Contains(out, "oldest sealed usage batches dropped to bound memory") {
-		t.Errorf("drop not logged:\n%s", out)
-	}
-	if err := os.Chmod(h.dir.Path(), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	flush(t, c)
-	var sent []string
-	for _, raw := range h.cp.CountedRecords() {
-		var rec accounting.UsageRecord
-		if err := json.Unmarshal(raw, &rec); err != nil {
-			t.Fatal(err)
-		}
-		sent = append(sent, rec.RequestID)
-	}
-	if want := []string{"req-6", "req-7", "req-8", "req-9"}; !slices.Equal(sent, want) {
-		t.Errorf("records counted %v, want the newest %v", sent, want)
-	}
 }

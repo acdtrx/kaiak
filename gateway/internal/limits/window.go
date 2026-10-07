@@ -402,10 +402,3 @@ func (w *window) liveBuckets(now time.Time) []hold {
 	slices.SortFunc(out, func(a, b hold) int { return cmp.Compare(a.at, b.at) })
 	return out
 }
-
-// settled is the amount counted in the current fixed window minus unsettled
-// reservations: what the file-mode snapshot keeps.
-func (w *window) settled(now time.Time) int64 {
-	w.roll(now)
-	return w.used - w.held
-}
