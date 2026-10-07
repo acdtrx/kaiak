@@ -1,11 +1,28 @@
 {
+  "counted-through-epoch-duplicate.json": {
+    "kind": "semantic",
+    "code": "counted-through-epoch-duplicate",
+    "reason": "one entry per epoch: the epoch's last counted batch"
+  },
+  "counted-through-epoch-missing.json": {
+    "kind": "schema",
+    "reason": "each entry names its epoch"
+  },
   "counted-through-instance.json": {
     "kind": "schema",
-    "reason": "counted_through is the recipient's own: epoch and sequence, no instance"
+    "reason": "counted_through lists the recipient's own batches: epoch and sequence, no instance"
   },
   "counted-through-missing.json": {
     "kind": "schema",
-    "reason": "totals say which of the recipient's batches they include (null before its first)"
+    "reason": "totals say which of the recipient's batches they include (an empty list before its first)"
+  },
+  "counted-through-null.json": {
+    "kind": "schema",
+    "reason": "no batch counted yet is an empty list, not null"
+  },
+  "counted-through-object.json": {
+    "kind": "schema",
+    "reason": "counted_through is a list, one entry per epoch, not one batch"
   },
   "counted-through-sequence-zero.json": {
     "kind": "schema",

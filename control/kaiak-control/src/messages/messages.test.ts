@@ -3,6 +3,7 @@
 // and a semantic fixture fails with the rule code its cases.json entry names.
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, test } from "node:test";
@@ -108,4 +109,16 @@ test("a totals amount above 2^53 reads exactly as a BigInt", () => {
   const used = result.message.windows.map((window) => BigInt(window.used));
   assert.equal(used[0], 123456789012345678n);
   assert.ok((used[0] ?? 0n) > BigInt(Number.MAX_SAFE_INTEGER));
+});
+
+// config_hash is the SHA-256 of the config's JSON text as the control plane sends it
+// (CONTROL-PROTOCOL.md, Current config): JSON.stringify of the config, in its members'
+// order as written in the fixture.
+test("every valid config event's config_hash is the SHA-256 of its config's JSON text", () => {
+  const dir = path.join(FIXTURES, "config-event", "valid");
+  for (const file of fixtureFiles(dir)) {
+    const event = readJson(path.join(dir, file)) as { config_hash: string; config: unknown };
+    const hash = createHash("sha256").update(JSON.stringify(event.config)).digest("hex");
+    assert.equal(event.config_hash, hash, file);
+  }
 });

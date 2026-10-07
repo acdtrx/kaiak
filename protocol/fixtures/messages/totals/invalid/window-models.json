@@ -1,6 +1,6 @@
 {
   "live_gateways": 2,
-  "counted_through": null,
+  "counted_through": [],
   "windows": [
     {
       "type": "usd_per_month",

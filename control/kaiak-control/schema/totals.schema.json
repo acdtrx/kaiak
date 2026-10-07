@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://kaiak.invalid/protocol/schema/totals.schema.json",
   "title": "kaiak usage totals",
-  "description": "The control plane's usage totals as one gateway gets them: the data of a totals event on that gateway's stream, the only way totals travel. A consistent snapshot: its windows include every batch the control plane had counted when it read them, and no other. Complete: it lists every hour and month limit window of the current config with usage in the control plane's current window; a limit it does not list has used nothing there. Per-minute limits are not listed (each gateway enforces its share locally).",
+  "description": "The control plane's usage totals as one gateway gets them: the data of a totals event on that gateway's stream, the only way totals travel. A consistent snapshot: its windows include every batch the control plane had counted when it read them, and no other. Every scope and type, whatever the config: the first totals on a stream list every hour and month window with usage in the control plane's current window (a window not listed has used nothing there); each later one lists only the windows that changed since the stream's last totals (a window not listed keeps its value). Per-minute limits are not listed (each gateway enforces its share locally).",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -16,15 +16,11 @@
       "$ref": "common.schema.json#/$defs/count"
     },
     "counted_through": {
-      "description": "The last usage batch the control plane has counted for the stream's gateway instance; null before its first. Included in the windows: the gateway stops counting that batch and every earlier one of the epoch as its own.",
-      "anyOf": [
-        {
-          "type": "null"
-        },
-        {
-          "$ref": "#/$defs/batch_position"
-        }
-      ]
+      "description": "For the stream's gateway instance, the last usage batch the control plane has counted in each epoch it still keeps a batch cursor for, one entry per epoch (message rule counted-through-epoch-duplicate), in no particular order; empty before its first. Included in the windows: the gateway stops counting each named batch and every earlier one of its epoch as its own.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/batch_position"
+      }
     },
     "windows": {
       "type": "array",
@@ -55,7 +51,7 @@
       }
     },
     "window": {
-      "description": "One limit's current window: the limit's identity (group or global, and type — as in config), the window start and the amount used.",
+      "description": "One scope's current window for one type: the scope (group or global) and type, whether or not the scope has a limit of that type, the window start and the amount used.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -65,7 +61,7 @@
       ],
       "properties": {
         "group": {
-          "description": "The group the limit belongs to. Absent for a global limit.",
+          "description": "The group whose usage it counts. Absent for global.",
           "$ref": "config.schema.json#/$defs/id"
         },
         "type": {

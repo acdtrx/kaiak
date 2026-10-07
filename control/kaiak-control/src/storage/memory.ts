@@ -7,8 +7,8 @@ import type { BatchId } from "../messages/index.ts";
 
 import type {
   BatchCursors,
+  ConfigEntry,
   ControlPlaneStore,
-  CurrentConfig,
   CurrentWindows,
   ReceivedRecord,
   StoreChange,
@@ -20,12 +20,10 @@ import type {
 
 export function createMemoryStore(): ControlPlaneStore {
   // The current config, replaced by every publish.
-  let config: CurrentConfig | undefined;
-  // The last counted batch per instance and epoch, when it was counted, and the store
-  // sequence its write moved to (the latest of an instance has the highest).
-  const lastBatches = new Map<string, Map<string, { batch: BatchId; countedAt: number; sequence: number }>>();
+  let config: ConfigEntry | undefined;
+  // The last counted batch per instance and epoch, and when it was counted.
+  const lastBatches = new Map<string, Map<string, { batch: BatchId; countedAt: number }>>();
   const totals = new Map<string, WindowTotal>();
-  let sequence = 0;
   // Oldest first; the last entry is the newest record.
   const records: ReceivedRecord[] = [];
   const gateways = new Map<string, StoredGateway>();
@@ -46,13 +44,13 @@ export function createMemoryStore(): ControlPlaneStore {
   const isCurrent = (total: WindowTotal, current: CurrentWindows): boolean =>
     total.windowStart === (total.type === "tokens_per_hour" ? current.hourStart : current.monthStart);
 
-  const liveCount = (): number => [...gateways.values()].filter((gateway) => gateway.live).length;
-
   const cursorsOf = (instance: string, epoch: string): BatchCursors => {
     const epochs = lastBatches.get(instance);
     const inEpoch = epochs?.get(epoch)?.batch;
-    let latest: { batch: BatchId; sequence: number } | undefined;
-    for (const cursor of epochs?.values() ?? []) if (!latest || cursor.sequence > latest.sequence) latest = cursor;
+    // The epoch counted last; of two counted at one instant, the one counted later
+    // (a Map iterates in insertion order, and a write moves its epoch to the end).
+    let latest: { batch: BatchId; countedAt: number } | undefined;
+    for (const cursor of epochs?.values() ?? []) if (!latest || cursor.countedAt >= latest.countedAt) latest = cursor;
     return { inEpoch: inEpoch && { ...inEpoch }, latest: latest && { ...latest.batch } };
   };
 
@@ -72,16 +70,14 @@ export function createMemoryStore(): ControlPlaneStore {
 
   return {
     async currentConfig() {
-      return structuredClone(config);
+      return config && { ...config };
     },
 
     async publishConfig(entry, expectedHash) {
-      if (config?.hash !== expectedHash) return { saved: false, current: structuredClone(config) };
-      sequence += 1;
-      // A copy, so a caller changing its document afterwards cannot change what is stored.
-      config = { ...structuredClone(entry), sequence };
-      notify({ type: "config-published", hash: entry.hash, sequence });
-      return { saved: true, sequence };
+      if (config?.hash !== expectedHash) return { saved: false, current: config && { ...config } };
+      config = { ...entry };
+      notify({ type: "config-published", hash: entry.hash });
+      return { saved: true };
     },
 
     async lastBatch(instance, epoch) {
@@ -95,21 +91,18 @@ export function createMemoryStore(): ControlPlaneStore {
       addTotals(counted.additions);
       records.push(...structuredClone(counted.records));
       if (records.length > keepRecords) records.splice(0, records.length - keepRecords);
-      sequence += 1;
       const epochs = lastBatches.get(instance) ?? new Map();
-      epochs.set(epoch, { batch: { ...counted.batch }, countedAt: counted.countedAt, sequence });
+      epochs.delete(epoch);
+      epochs.set(epoch, { batch: { ...counted.batch }, countedAt: counted.countedAt });
       lastBatches.set(instance, epochs);
-      notify({ type: "batch-counted", instance: counted.batch.instance, sequence });
-      return { saved: true, sequence };
+      notify({ type: "batch-counted", instance: counted.batch.instance });
+      return { saved: true };
     },
 
-    async totalsSnapshot(current, instance) {
+    async totalsSnapshot(current) {
       return {
-        sequence,
-        config: structuredClone(config),
-        last: instance === undefined ? undefined : cursorsOf(instance, "").latest,
         windows: [...totals.values()].filter((total) => isCurrent(total, current)).map((total) => structuredClone(total)),
-        liveGateways: liveCount(),
+        cursors: [...lastBatches.values()].flatMap((epochs) => [...epochs.values()].map(({ batch }) => ({ ...batch }))),
       };
     },
 
@@ -140,10 +133,8 @@ export function createMemoryStore(): ControlPlaneStore {
       gatewayWrites += 1;
       const revision = gatewayWrites;
       gateways.set(record.instance, { ...structuredClone(record), revision });
-      const liveChanged = (stored?.live ?? false) !== record.live;
-      if (liveChanged) sequence += 1;
-      notify({ type: "gateways-changed", liveChanged, sequence });
-      return { saved: true, revision, sequence };
+      notify({ type: "gateways-changed", liveChanged: (stored?.live ?? false) !== record.live });
+      return { saved: true, revision };
     },
 
     async forgetGateways(forget) {
@@ -157,8 +148,7 @@ export function createMemoryStore(): ControlPlaneStore {
         if (stored.live) liveChanged = true;
       }
       if (forgotten.length === 0) return [];
-      if (liveChanged) sequence += 1;
-      notify({ type: "gateways-changed", liveChanged, sequence });
+      notify({ type: "gateways-changed", liveChanged });
       return forgotten;
     },
 

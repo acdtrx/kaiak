@@ -1,0 +1,17 @@
+{
+  "live_gateways": 3,
+  "counted_through": [
+    {
+      "epoch": "5d41402abc4b2a76b9719d911017c592",
+      "sequence": 7
+    }
+  ],
+  "windows": [
+    {
+      "group": "bob",
+      "type": "usd_per_month",
+      "window_start": "2026-09-01T00:00:00Z",
+      "used": "1500000000"
+    }
+  ]
+}

@@ -4,37 +4,36 @@
 //
 // The store is where control-plane processes agree (docs/specs/CONTROL-PROTOCOL.md,
 // Control-plane processes): any number of cores may run over one store, and what they
-// must agree on — the sequence, the current config, the counted batches, the live set
-// — is decided here, by conditional writes and consistent reads, and
-// announced to every core through subscribe(). A store meant for several processes
+// must agree on — the current config, the counted batches, the live set — is decided
+// here, by conditional writes and consistent reads, and announced to every core
+// through subscribe(). The store keeps no order of its own: a core orders what it
+// sends on a stream by when it issued each read (CONTROL-PROTOCOL.md, Config stream →
+// Order). A store meant for several processes
 // holds each guarantee below across them; the in-memory store holds them across the
 // cores of one process. The contract tests (`kaiak-control/store-contract`) check
 // them against any store.
 
-import type { Config } from "../config/index.ts";
 import type { BatchId, GatewayStatus, TotalsLimitType, UsageRecord } from "../messages/index.ts";
 
-// A config to publish: the document, its content hash and when it was published.
+// A published config, as the store keeps it and gives it back: its JSON text, its
+// content hash and when it was published.
 export interface ConfigEntry {
-  config: Config;
+  // The config's JSON text exactly as the control plane sends it in a `config` event.
+  // The store keeps the text and returns it unchanged — a database keeps it as text,
+  // never as a JSON type that may reorder members — so `hash` stays the hash of what
+  // goes out.
+  text: string;
   // The config_hash (docs/specs/CONTROL-PROTOCOL.md, Current config): lowercase hex
-  // SHA-256 of the config's JSON text as the control plane sends it. It identifies
-  // content and carries no order.
+  // SHA-256 of `text`. It identifies content and carries no order.
   hash: string;
   // When it was published, by the control plane's clock (milliseconds since the epoch).
   publishedAt: number;
 }
 
-// The current config as the store holds it: the entry and the sequence its publish
-// moved the store to, which orders it against what a core already sent on a stream.
-export interface CurrentConfig extends ConfigEntry {
-  sequence: number;
-}
-
 // One scope's window for one limit type: the scope — a group, absent for global — the
 // type, and the window's start. Usage counts toward every scope on a record's path
-// whatever the config's limits (CONTROL-PROTOCOL.md, Usage intake → Counted toward);
-// totals list the windows the config limits.
+// whatever the config's limits (CONTROL-PROTOCOL.md, Usage intake → Counted toward),
+// and totals list every window with usage.
 export interface WindowKey {
   group?: string;
   type: TotalsLimitType;
@@ -75,43 +74,38 @@ export interface CountedBatch {
 }
 
 // Where an instance's counting stands, as a batch is decided against it: the last batch
-// counted in the batch's own epoch, and the last batch counted in any epoch — the one
-// totals name as counted_through. Each epoch keeps its own last batch for the batch
-// cursor retention, so a batch of an earlier epoch is still known as counted after its
-// gateway moved to a new epoch (docs/specs/CONTROL-PROTOCOL.md, Usage intake).
+// counted in the batch's own epoch, and the last batch counted in any epoch (the one
+// counted last, by countedAt) — which tells a fresh epoch from a first batch, and is
+// what the intake logs as the batch before it. Each epoch keeps its own last batch for
+// the batch cursor retention, so a batch of an earlier epoch is still known as counted
+// after its gateway moved to a new epoch (docs/specs/CONTROL-PROTOCOL.md, Usage
+// intake).
 export interface BatchCursors {
   inEpoch: BatchId | undefined;
   latest: BatchId | undefined;
 }
 
-// What the conditional batch write found: the batch saved with the sequence it moved
-// to, or — when the instance's last counted batch in the batch's epoch was no longer
-// the expected one — nothing written, and where the instance's counting stands now,
-// for the caller to decide again.
-export type SaveCountedBatchResult = { saved: true; sequence: number } | { saved: false; cursors: BatchCursors };
+// What the conditional batch write found: the batch saved, or — when the instance's
+// last counted batch in the batch's epoch was no longer the expected one — nothing
+// written, and where the instance's counting stands now, for the caller to decide
+// again.
+export type SaveCountedBatchResult = { saved: true } | { saved: false; cursors: BatchCursors };
 
-// What the conditional publish found: saved with the sequence it moved to, or nothing
-// written and the current config the store holds now.
-export type PublishConfigResult =
-  | { saved: true; sequence: number }
-  | { saved: false; current: CurrentConfig | undefined };
+// What the conditional publish found: saved, or nothing written and the current config
+// the store holds now.
+export type PublishConfigResult = { saved: true } | { saved: false; current: ConfigEntry | undefined };
 
 // The totals at one store snapshot (CONTROL-PROTOCOL.md, Messages → Totals: consistent
-// snapshot): every member read together, so the windows hold exactly the batches
-// counted at `sequence` — `last` among them.
+// snapshot): both members read together, so the windows hold exactly the batches the
+// cursors name as counted, whichever process counted them. One snapshot serves every
+// stream a core holds; each stream takes its own instance's cursors from it.
 export interface TotalsSnapshot {
-  // The sequence at the snapshot. It orders what a core sends on a stream and never
-  // goes on the wire.
-  sequence: number;
-  // The current config, or undefined before the first publish.
-  config: CurrentConfig | undefined;
-  // The asked instance's last counted batch in any epoch (undefined before its first,
-  // or when no instance was asked).
-  last: BatchId | undefined;
-  // The stored totals of the current windows asked for.
+  // The stored totals of the current windows asked for, every scope and type with
+  // usage.
   windows: WindowTotal[];
-  // The size of the live set.
-  liveGateways: number;
+  // Every instance's last counted batch of each epoch still kept (in no particular
+  // order).
+  cursors: BatchId[];
 }
 
 // Two processes reporting under one instance name (docs/specs/CONTROL-PROTOCOL.md,
@@ -148,11 +142,10 @@ export interface StoredGateway extends GatewayRecord {
   revision: number;
 }
 
-// What a conditional gateway write found: saved (with the sequence, which moved when
-// the write changed the live set), or nothing written and the record the store
-// holds now.
+// What a conditional gateway write found: saved with the record's new revision, or
+// nothing written and the record the store holds now.
 export type SaveGatewayResult =
-  | { saved: true; revision: number; sequence: number }
+  | { saved: true; revision: number }
   | { saved: false; current: StoredGateway | undefined };
 
 // A gateway to forget, with the revision of the record the sweep judged.
@@ -161,29 +154,27 @@ export interface ForgetGateway {
   revision: number;
 }
 
-// What any process changed in the store, as every subscriber hears of it. `sequence` is
-// the store's sequence after the change.
+// What any process changed in the store, as every subscriber hears of it.
 export type StoreChange =
-  // A config was published and is the current one (the totals moved with it).
-  | { type: "config-published"; hash: string; sequence: number }
+  // A config was published and is the current one.
+  | { type: "config-published"; hash: string }
   // A usage batch was counted.
-  | { type: "batch-counted"; instance: string; sequence: number }
+  | { type: "batch-counted"; instance: string }
   // A gateway record was written or forgotten; liveChanged when the live set gained or
-  // lost a member (the totals moved with it).
-  | { type: "gateways-changed"; liveChanged: boolean; sequence: number }
+  // lost a member.
+  | { type: "gateways-changed"; liveChanged: boolean }
   // The store's change channel may have missed changes (it reconnected): anything may
   // have changed, and every subscriber reads what it depends on again.
-  | { type: "catch-up"; sequence: number };
+  | { type: "catch-up" };
 
 export type StoreChangeListener = (change: StoreChange) => void;
 
 export interface ControlPlaneStore {
   // The current config, or undefined before the first publish.
-  currentConfig(): Promise<CurrentConfig | undefined>;
+  currentConfig(): Promise<ConfigEntry | undefined>;
   // Replaces the current config with entry, only when the current config is still the
   // one whose hash is expectedHash (undefined: none published yet) — the config the
-  // publish was checked against; the write moves the sequence on by one (the totals
-  // list the new config's limits). Otherwise nothing changes, and the answer names the
+  // publish was checked against. Otherwise nothing changes, and the answer names the
   // current config. The store keeps no earlier configs. A publish depends on no usage:
   // counted batches never refuse it, and it never refuses them.
   publishConfig(entry: ConfigEntry, expectedHash: string | undefined): Promise<PublishConfigResult>;
@@ -192,8 +183,7 @@ export interface ControlPlaneStore {
   // that epoch, and in any epoch.
   lastBatch(instance: string, epoch: string): Promise<BatchCursors>;
   // Stores a counted batch in one write — its ID as the instance's last batch in its
-  // epoch and in any epoch, its additions to the totals, its records, a step of the
-  // sequence — only when the instance's last counted batch in the batch's epoch is still
+  // epoch, its additions to the totals, its records — only when the instance's last counted batch in the batch's epoch is still
   // `expectedLast` (undefined: none yet in that epoch). So the batch is either counted
   // and remembered or neither, and no two writers can both count one batch, whichever
   // epochs were counted in between. The config plays no part: a publish never refuses
@@ -208,15 +198,15 @@ export interface ControlPlaneStore {
     keepRecords: number,
   ): Promise<SaveCountedBatchResult>;
 
-  // The totals at one snapshot: the sequence, the current config, `instance`'s last
-  // counted batch (when given), the stored totals of the current windows (tokens_per_hour
-  // windows starting at hourStart, usd_per_month windows at monthStart) and the live
-  // set's size, all as of one point between writes.
-  totalsSnapshot(current: CurrentWindows, instance?: string): Promise<TotalsSnapshot>;
+  // The totals at one snapshot: the stored totals of the current windows
+  // (tokens_per_hour windows starting at hourStart, usd_per_month windows at
+  // monthStart) and every instance's last counted batch of each epoch, both as of one
+  // point between writes.
+  totalsSnapshot(current: CurrentWindows): Promise<TotalsSnapshot>;
   // Totals of windows before `oldest` (tokens_per_hour windows starting before its
   // hourStart, usd_per_month windows before its monthStart) are no longer needed and
   // may be dropped. The caller passes the previous windows: late records still count
-  // there. Dropping changes no current window, so it does not move the sequence.
+  // there. Dropping changes no current window and is not announced.
   dropPastWindowTotals(oldest: CurrentWindows): Promise<void>;
 
   // The newest received records, newest first, at most `limit`.
@@ -227,12 +217,11 @@ export interface ControlPlaneStore {
   // Every gateway record, in no particular order.
   gateways(): Promise<StoredGateway[]>;
   // Writes a gateway's record, replacing the previous one, only when the stored record
-  // is still the one at `expectedRevision` (undefined: none stored). A write that
-  // changes `live` (or adds a live gateway) moves the sequence in the same write.
+  // is still the one at `expectedRevision` (undefined: none stored).
   saveGateway(record: GatewayRecord, expectedRevision: number | undefined): Promise<SaveGatewayResult>;
   // Forgets each gateway whose stored record is still at the given revision; returns the
-  // instances forgotten. Forgetting a live gateway moves the sequence (once for
-  // the call). Their last counted batches stay (dropBatchCursorsCountedBefore).
+  // instances forgotten, announced as one change. Their last counted batches stay
+  // (dropBatchCursorsCountedBefore).
   forgetGateways(gateways: ForgetGateway[]): Promise<string[]>;
   // Drops every instance's last counted batch of each epoch counted before `cutoff`
   // (milliseconds since the epoch), and names the instances that lost one.
@@ -245,6 +234,7 @@ export interface ControlPlaneStore {
   // the store's to report (the memory store rethrows it from a microtask). A store whose
   // change channel can drop changes (a database's listening connection) announces a
   // `catch-up` to every listener each time the channel is back, so nothing it missed
-  // stays missed; the in-memory store never drops one.
+  // stays missed — after the reconnect, so a read the listener makes then sees every
+  // change made while the channel was down; the in-memory store never drops one.
   subscribe(listener: StoreChangeListener): () => void;
 }

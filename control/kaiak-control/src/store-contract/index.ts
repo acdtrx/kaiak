@@ -3,7 +3,7 @@
 // own store runs them against it from a node:test file:
 //
 //   import { storeContractTests } from "kaiak-control/store-contract";
-//   storeContractTests({ name: "postgres", create: makeEmptyStore, attach: connectAgain });
+//   storeContractTests({ name: "postgres", create: makeEmptyStore, attach: connectAgain, reconnect: dropListener });
 //
 // `attach` gives a second handle on the same store, as a second process holds it (for a
 // database: another connection pool and listener). The tests then write through one
@@ -14,9 +14,9 @@
 // A separate entry from the library's, so a running control plane never loads node:test.
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { describe, test } from "node:test";
 
-import type { Config } from "../config/index.ts";
 import type { BatchId, UsageRecord } from "../messages/index.ts";
 import type {
   ControlPlaneStore,
@@ -25,13 +25,14 @@ import type {
   ConfigEntry,
   GatewayRecord,
   StoreChange,
+  TotalsSnapshot,
   WindowTotal,
 } from "../storage/index.ts";
 
 export interface StoreContractSubject {
   // Names the describe block.
   name: string;
-  // A new, empty store: no config, no batches, no gateways, sequence 0.
+  // A new, empty store: no config, no batches, no gateways.
   create(): ControlPlaneStore | Promise<ControlPlaneStore>;
   // Another handle on the same store, as another process holds it. Default: the store
   // itself (a store serving one process, such as the in-memory store).
@@ -40,10 +41,14 @@ export interface StoreContractSubject {
   dispose?(store: ControlPlaneStore): void | Promise<void>;
   // How long a notification may take to reach another handle. Default 5000.
   notifyTimeoutMs?: number;
-  // Makes a handle's change channel reconnect, as a dropped listening connection does
-  // (for a database: closes the LISTEN session). Without it the catch-up test is
-  // skipped: a store whose channel cannot drop changes (the in-memory store) needs none.
-  reconnect?(store: ControlPlaneStore): void | Promise<void>;
+  // Takes a handle's change channel down, runs `whileDown` (writes through the other
+  // handle, which the channel misses), and brings the channel back, as a dropped
+  // listening connection that the store opens again (for a database: closes the
+  // LISTEN session and holds it closed until `whileDown` resolves). Required for a
+  // store whose channel can drop changes; without it the catch-up test is skipped,
+  // which only a store whose channel cannot drop a change (the in-memory store) may
+  // do.
+  reconnect?(store: ControlPlaneStore, whileDown: () => Promise<void>): void | Promise<void>;
 }
 
 const HOUR = Date.UTC(2026, 9, 6, 12);
@@ -53,23 +58,25 @@ const PREVIOUS: CurrentWindows = { hourStart: HOUR - 3_600_000, monthStart: Date
 const BATCH_EPOCH = "b".repeat(32);
 const OTHER_EPOCH = "c".repeat(32);
 
-// The store keeps configs and hashes as given; computing the hash is the core's concern.
-const configDoc = (marker: number): Config => ({ marker }) as unknown as Config;
-const hashOf = (marker: number): string => marker.toString(16).padStart(64, "0");
-const entry = (marker: number): ConfigEntry => ({ config: configDoc(marker), hash: hashOf(marker), publishedAt: marker });
+// The store keeps a config's text and hash as given; producing them is the core's
+// concern, so the text needs to be no real config.
+const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex");
+const configText = (marker: number): string => JSON.stringify({ marker });
+const hashOf = (marker: number): string => sha256(configText(marker));
+const entry = (marker: number): ConfigEntry => ({ text: configText(marker), hash: hashOf(marker), publishedAt: marker });
 const batchId = (instance: string, sequence: number, epoch = BATCH_EPOCH): BatchId => ({ instance, epoch, sequence });
 const hourWindow = (used: bigint, group = "g"): WindowTotal => ({ group, type: "tokens_per_hour", windowStart: HOUR, used });
 
 function counted(
   instance: string,
   sequence: number,
-  options: { used?: bigint; countedAt?: number; record?: string; epoch?: string } = {},
+  options: { used?: bigint; countedAt?: number; record?: string; epoch?: string; group?: string } = {},
 ): CountedBatch {
-  const { used = 1n, countedAt = 0, record, epoch } = options;
+  const { used = 1n, countedAt = 0, record, epoch, group } = options;
   return {
     batch: batchId(instance, sequence, epoch),
     countedAt,
-    additions: used === 0n ? [] : [hourWindow(used)],
+    additions: used === 0n ? [] : [hourWindow(used, group)],
     records: record === undefined ? [] : [{ receivedAt: countedAt, record: { record_id: record } as unknown as UsageRecord }],
   };
 }
@@ -84,6 +91,15 @@ function gatewayRecord(instance: string, live: boolean, receivedAt = 0): Gateway
 }
 
 const sumUsed = (windows: WindowTotal[]): bigint => windows.reduce((sum, window) => sum + window.used, 0n);
+const byBatch = (a: BatchId, b: BatchId): number =>
+  a.instance.localeCompare(b.instance) || a.epoch.localeCompare(b.epoch) || a.sequence - b.sequence;
+const sortedCursors = (snapshot: TotalsSnapshot): BatchId[] => [...snapshot.cursors].sort(byBatch);
+// The sequence of the last batch a snapshot names counted for one instance and epoch,
+// 0 for none.
+const countedIn = (snapshot: TotalsSnapshot, instance: string, epoch = BATCH_EPOCH): number =>
+  snapshot.cursors.find((cursor) => cursor.instance === instance && cursor.epoch === epoch)?.sequence ?? 0;
+const usedBy = (snapshot: TotalsSnapshot, group: string): bigint =>
+  snapshot.windows.find((window) => window.group === group && window.type === "tokens_per_hour")?.used ?? 0n;
 
 export function storeContractTests(subject: StoreContractSubject): void {
   const { name, notifyTimeoutMs = 5000 } = subject;
@@ -102,15 +118,12 @@ export function storeContractTests(subject: StoreContractSubject): void {
     };
 
   // Publishes configs 1..n through `store`, each replacing the one before, from an
-  // empty store; returns the sequence.
-  const publishConfigs = async (store: ControlPlaneStore, n: number): Promise<number> => {
-    let sequence = 0;
+  // empty store.
+  const publishConfigs = async (store: ControlPlaneStore, n: number): Promise<void> => {
     for (let marker = 1; marker <= n; marker += 1) {
       const result = await store.publishConfig(entry(marker), marker === 1 ? undefined : hashOf(marker - 1));
       assert.ok(result.saved, `publishing config ${marker}`);
-      sequence = result.sequence;
     }
-    return sequence;
   };
 
   // Collects the changes `store`'s subscription hears; until() waits for a condition.
@@ -145,17 +158,32 @@ export function storeContractTests(subject: StoreContractSubject): void {
         "a config replaces the current one only against the expected current config",
         withStore(async (a, b) => {
           assert.equal(await a.currentConfig(), undefined);
-          assert.deepEqual(await a.publishConfig(entry(1), undefined), { saved: true, sequence: 1 });
+          assert.deepEqual(await a.publishConfig(entry(1), undefined), { saved: true });
           // Another process that checked against "no config yet" finds config 1.
-          assert.deepEqual(await b.publishConfig(entry(2), undefined), {
-            saved: false,
-            current: { ...entry(1), sequence: 1 },
-          });
-          assert.deepEqual(await b.publishConfig(entry(2), hashOf(1)), { saved: true, sequence: 2 });
-          assert.deepEqual(await a.currentConfig(), { ...entry(2), sequence: 2 });
+          assert.deepEqual(await b.publishConfig(entry(2), undefined), { saved: false, current: entry(1) });
+          assert.deepEqual(await b.publishConfig(entry(2), hashOf(1)), { saved: true });
+          assert.deepEqual(await a.currentConfig(), entry(2));
           // The same content published again is a publish like any other.
-          assert.deepEqual(await a.publishConfig(entry(2), hashOf(2)), { saved: true, sequence: 3 });
-          assert.deepEqual(await b.currentConfig(), { ...entry(2), sequence: 3 });
+          const again = { ...entry(2), publishedAt: 20 };
+          assert.deepEqual(await a.publishConfig(again, hashOf(2)), { saved: true });
+          assert.deepEqual(await b.currentConfig(), again);
+        }),
+      );
+
+      test(
+        "the config text comes back exactly as published, so its hash still matches",
+        withStore(async (a, b) => {
+          // Members in no sorted order, nested, with characters a JSON type might
+          // normalize: a store that keeps the document as anything but text can change
+          // it.
+          const text = '{"zeta":1,"alpha":{"y":[3,{"k":"v","c":null}],"b":"é\\u00e9 \\"q\\""},"mid":true,"n":-0.5}';
+          const published: ConfigEntry = { text, hash: sha256(text), publishedAt: 1 };
+          assert.ok((await a.publishConfig(published, undefined)).saved);
+          const read = await b.currentConfig();
+          assert.equal(read?.text, text);
+          assert.equal(sha256(read?.text ?? ""), published.hash);
+          const refused = await b.publishConfig(entry(2), undefined);
+          assert.equal(refused.saved === false && refused.current?.text, text);
         }),
       );
 
@@ -165,36 +193,20 @@ export function storeContractTests(subject: StoreContractSubject): void {
           await publishConfigs(a, 1);
           assert.ok((await a.saveCountedBatch(counted("gw-1", 1, { used: 40n }), undefined, 10)).saved);
           assert.ok((await b.publishConfig(entry(2), hashOf(1))).saved);
-          const snapshot = await a.totalsSnapshot(CURRENT);
-          assert.deepEqual([snapshot.sequence, snapshot.config?.hash, snapshot.windows], [3, hashOf(2), [hourWindow(40n)]]);
+          assert.deepEqual((await a.totalsSnapshot(CURRENT)).windows, [hourWindow(40n)]);
+          assert.equal((await a.currentConfig())?.hash, hashOf(2));
         }),
       );
 
       test(
         "two processes publishing against the same config: one is stored",
         withStore(async (a, b) => {
-          const sequence = await publishConfigs(a, 1);
-          const results = await Promise.all(
-            [2, 3, 4, 5].map((marker, i) => [a, b][i % 2]!.publishConfig(entry(marker), hashOf(1))),
-          );
-          assert.equal(results.filter((result) => result.saved).length, 1);
-          const current = await b.currentConfig();
-          assert.equal(current?.sequence, sequence + 1);
-          assert.equal((await b.totalsSnapshot(CURRENT)).sequence, sequence + 1);
-        }),
-      );
-
-      test(
-        "the stored config shares no state with what callers hold, read or written",
-        withStore(async (a) => {
-          const written = entry(1);
-          await a.publishConfig(written, undefined);
-          (written.config as unknown as { marker: number }).marker = 100;
-          const current = await a.currentConfig();
-          (current?.config as unknown as { marker: number }).marker = 200;
-          const snapshot = await a.totalsSnapshot(CURRENT);
-          (snapshot.config?.config as unknown as { marker: number }).marker = 400;
-          assert.equal(((await a.currentConfig())?.config as unknown as { marker: number }).marker, 1);
+          await publishConfigs(a, 1);
+          const markers = [2, 3, 4, 5];
+          const results = await Promise.all(markers.map((marker, i) => [a, b][i % 2]!.publishConfig(entry(marker), hashOf(1))));
+          const won = markers.filter((_, i) => results[i]!.saved);
+          assert.equal(won.length, 1);
+          assert.deepEqual(await b.currentConfig(), entry(won[0]!));
         }),
       );
     });
@@ -203,8 +215,8 @@ export function storeContractTests(subject: StoreContractSubject): void {
       test(
         "a batch is counted only against the expected last batch",
         withStore(async (a, b) => {
-          const sequence = await publishConfigs(a, 1);
-          assert.deepEqual(await a.saveCountedBatch(counted("gw-1", 1), undefined, 10), { saved: true, sequence: sequence + 1 });
+          await publishConfigs(a, 1);
+          assert.deepEqual(await a.saveCountedBatch(counted("gw-1", 1), undefined, 10), { saved: true });
           // Another process that decided against "no batch yet" finds batch 1.
           const standing = { inEpoch: batchId("gw-1", 1), latest: batchId("gw-1", 1) };
           assert.deepEqual(await b.saveCountedBatch(counted("gw-1", 1), undefined, 10), { saved: false, cursors: standing });
@@ -212,10 +224,7 @@ export function storeContractTests(subject: StoreContractSubject): void {
             saved: false,
             cursors: standing,
           });
-          assert.deepEqual(await b.saveCountedBatch(counted("gw-1", 2), batchId("gw-1", 1), 10), {
-            saved: true,
-            sequence: sequence + 2,
-          });
+          assert.deepEqual(await b.saveCountedBatch(counted("gw-1", 2), batchId("gw-1", 1), 10), { saved: true });
           assert.deepEqual(await a.lastBatch("gw-1", BATCH_EPOCH), { inEpoch: batchId("gw-1", 2), latest: batchId("gw-1", 2) });
           assert.deepEqual(await a.lastBatch("gw-2", BATCH_EPOCH), { inEpoch: undefined, latest: undefined });
         }),
@@ -225,41 +234,38 @@ export function storeContractTests(subject: StoreContractSubject): void {
         "a batch is decided against its own epoch's last batch, whatever epochs came after",
         withStore(async (a, b) => {
           await publishConfigs(a, 1);
-          assert.ok((await a.saveCountedBatch(counted("gw-1", 1), undefined, 10)).saved);
+          assert.ok((await a.saveCountedBatch(counted("gw-1", 1, { countedAt: 1 }), undefined, 10)).saved);
           // The gateway's resend of batch 2 is counted by one process, then it moves to a
           // new epoch; a write of batch 2 decided before all that is refused.
-          assert.ok((await b.saveCountedBatch(counted("gw-1", 2), batchId("gw-1", 1), 10)).saved);
-          assert.ok((await b.saveCountedBatch(counted("gw-1", 1, { epoch: OTHER_EPOCH }), undefined, 10)).saved);
-          assert.deepEqual(await a.saveCountedBatch(counted("gw-1", 2), batchId("gw-1", 1), 10), {
+          assert.ok((await b.saveCountedBatch(counted("gw-1", 2, { countedAt: 2 }), batchId("gw-1", 1), 10)).saved);
+          assert.ok((await b.saveCountedBatch(counted("gw-1", 1, { countedAt: 3, epoch: OTHER_EPOCH }), undefined, 10)).saved);
+          assert.deepEqual(await a.saveCountedBatch(counted("gw-1", 2, { countedAt: 4 }), batchId("gw-1", 1), 10), {
             saved: false,
             cursors: { inEpoch: batchId("gw-1", 2), latest: batchId("gw-1", 1, OTHER_EPOCH) },
           });
           // A batch of the earlier epoch never counted is counted against that epoch's
-          // last batch, and becomes the latest.
-          assert.ok((await a.saveCountedBatch(counted("gw-1", 3), batchId("gw-1", 2), 10)).saved);
+          // last batch, and becomes the one counted last.
+          assert.ok((await a.saveCountedBatch(counted("gw-1", 3, { countedAt: 5 }), batchId("gw-1", 2), 10)).saved);
           assert.deepEqual(await b.lastBatch("gw-1", OTHER_EPOCH), {
             inEpoch: batchId("gw-1", 1, OTHER_EPOCH),
             latest: batchId("gw-1", 3),
           });
-          assert.deepEqual((await b.totalsSnapshot(CURRENT, "gw-1")).last, batchId("gw-1", 3));
+          // Totals name each epoch's last batch, the late one of the earlier epoch
+          // included.
+          assert.deepEqual(sortedCursors(await b.totalsSnapshot(CURRENT)), [batchId("gw-1", 3), batchId("gw-1", 1, OTHER_EPOCH)]);
         }),
       );
 
       test(
         "publishes and batches never refuse each other",
         withStore(async (a, b) => {
-          let sequence = await publishConfigs(a, 1);
+          await publishConfigs(a, 1);
           // A publish lands between deciding a batch and writing it: the batch is counted.
-          const published = await b.publishConfig(entry(2), hashOf(1));
-          assert.ok(published.saved);
-          sequence = published.sequence;
-          assert.deepEqual(await a.saveCountedBatch(counted("gw-1", 1, { used: 7n }), undefined, 10), {
-            saved: true,
-            sequence: sequence + 1,
-          });
+          assert.ok((await b.publishConfig(entry(2), hashOf(1))).saved);
+          assert.deepEqual(await a.saveCountedBatch(counted("gw-1", 1, { used: 7n }), undefined, 10), { saved: true });
           // A batch lands between checking a publish and writing it: the publish is stored.
           assert.ok((await b.saveCountedBatch(counted("gw-2", 1, { used: 3n }), undefined, 10)).saved);
-          assert.deepEqual(await a.publishConfig(entry(3), hashOf(2)), { saved: true, sequence: sequence + 3 });
+          assert.deepEqual(await a.publishConfig(entry(3), hashOf(2)), { saved: true });
           // Racing at once, every write lands.
           const results = await Promise.all([
             a.publishConfig(entry(4), hashOf(3)),
@@ -267,8 +273,8 @@ export function storeContractTests(subject: StoreContractSubject): void {
             a.saveCountedBatch(counted("gw-2", 2, { used: 1n }), batchId("gw-2", 1), 10),
           ]);
           assert.ok(results.every((result) => result.saved));
-          const snapshot = await a.totalsSnapshot(CURRENT);
-          assert.deepEqual([snapshot.sequence, snapshot.config?.hash, sumUsed(snapshot.windows)], [sequence + 6, hashOf(4), 12n]);
+          assert.equal((await a.currentConfig())?.hash, hashOf(4));
+          assert.equal(sumUsed((await a.totalsSnapshot(CURRENT)).windows), 12n);
         }),
       );
 
@@ -319,109 +325,89 @@ export function storeContractTests(subject: StoreContractSubject): void {
           assert.deepEqual(await a.lastBatch("gw-1", BATCH_EPOCH), { inEpoch: undefined, latest: undefined });
           assert.deepEqual(await a.lastBatch("gw-2", OTHER_EPOCH), { inEpoch: undefined, latest: batchId("gw-2", 1) });
           assert.deepEqual((await a.lastBatch("gw-2", BATCH_EPOCH)).inEpoch, batchId("gw-2", 1));
+          assert.deepEqual((await b.totalsSnapshot(CURRENT)).cursors, [batchId("gw-2", 1)]);
         }),
       );
     });
 
-    describe("the sequence and snapshots", () => {
+    describe("snapshots", () => {
       test(
-        "moves by one with every change to the totals, and only then",
+        "a snapshot holds exactly the batches its cursors name, whichever process wrote",
         withStore(async (a, b) => {
-          const sequence = await publishConfigs(a, 1);
-          assert.equal(sequence, 1);
-          await a.saveCountedBatch(counted("gw-1", 1), undefined, 10);
-          assert.equal((await b.totalsSnapshot(CURRENT)).sequence, 2);
-          // Joining the live set moves it; a status that leaves it as it is does not.
-          const joined = await b.saveGateway(gatewayRecord("gw-1", true), undefined);
-          assert.ok(joined.saved);
-          assert.equal(joined.sequence, 3);
-          const again = await a.saveGateway(gatewayRecord("gw-1", true, 10), joined.revision);
-          assert.ok(again.saved);
-          assert.equal(again.sequence, 3);
-          // Leaving moves it.
-          const left = await a.saveGateway(gatewayRecord("gw-1", false, 10), again.revision);
-          assert.ok(left.saved);
-          assert.equal(left.sequence, 4);
-          // Refused writes and dropping past windows change nothing.
-          await b.saveCountedBatch(counted("gw-1", 1), undefined, 10);
-          await b.dropPastWindowTotals(PREVIOUS);
-          assert.equal((await a.totalsSnapshot(CURRENT)).sequence, 4);
-        }),
-      );
-
-      test(
-        "a snapshot holds exactly the batches counted at its sequence, whichever process wrote",
-        withStore(async (a, b) => {
-          const base = await publishConfigs(a, 1);
-          // Eight instances count four batches each through both handles while both read.
+          await publishConfigs(a, 1);
+          // Eight instances count three batches in each of two epochs through both
+          // handles while both read. Each (instance, epoch) adds 1 per batch to a group
+          // of its own, so in every snapshot that group's window equals the epoch's
+          // cursor.
+          const epochs = [BATCH_EPOCH, OTHER_EPOCH];
+          const group = (instance: string, epoch: string): string => `g-${instance}-${epoch[0]}`;
           const writes: Promise<unknown>[] = [];
-          const reads: Promise<{ sequence: number; used: bigint; last: BatchId | undefined }>[] = [];
-          for (let round = 1; round <= 4; round += 1) {
+          const reads: Promise<TotalsSnapshot>[] = [];
+          for (let round = 1; round <= 3; round += 1) {
             for (let gw = 0; gw < 8; gw += 1) {
-              const store = gw % 2 === 0 ? a : b;
-              const instance = `gw-${gw}`;
-              writes.push(
-                store.saveCountedBatch(counted(instance, round), round === 1 ? undefined : batchId(instance, round - 1), 1000),
-              );
-              const reader = gw % 2 === 0 ? b : a;
-              reads.push(
-                reader.totalsSnapshot(CURRENT, "gw-0").then((snapshot) => ({
-                  sequence: snapshot.sequence,
-                  used: sumUsed(snapshot.windows),
-                  last: snapshot.last,
-                })),
-              );
+              for (const epoch of epochs) {
+                const instance = `gw-${gw}`;
+                const store = gw % 2 === 0 ? a : b;
+                writes.push(
+                  store.saveCountedBatch(
+                    counted(instance, round, { epoch, group: group(instance, epoch) }),
+                    round === 1 ? undefined : batchId(instance, round - 1, epoch),
+                    1000,
+                  ),
+                );
+                reads.push((gw % 2 === 0 ? b : a).totalsSnapshot(CURRENT));
+              }
             }
           }
-          // Writes for one instance are issued in order; one refused because its
-          // predecessor had not landed yet is counted below.
+          // Writes for one epoch are issued in order; one refused because its predecessor
+          // had not landed yet is counted below.
           await Promise.all(writes);
           for (let gw = 0; gw < 8; gw += 1) {
-            const instance = `gw-${gw}`;
-            for (;;) {
-              const last = (await a.lastBatch(instance, BATCH_EPOCH)).inEpoch;
-              const next = (last?.sequence ?? 0) + 1;
-              if (next > 4) break;
-              await a.saveCountedBatch(counted(instance, next), last, 1000);
+            for (const epoch of epochs) {
+              const instance = `gw-${gw}`;
+              for (;;) {
+                const last = (await a.lastBatch(instance, epoch)).inEpoch;
+                const next = (last?.sequence ?? 0) + 1;
+                if (next > 3) break;
+                await a.saveCountedBatch(counted(instance, next, { epoch, group: group(instance, epoch) }), last, 1000);
+              }
             }
           }
-          for (const read of await Promise.all(reads)) {
-            // Every batch adds 1 and moves the sequence by one: the windows equal the
-            // batches counted since the publish.
-            assert.equal(read.used, BigInt(read.sequence - base), `snapshot at ${read.sequence}`);
+          reads.push(b.totalsSnapshot(CURRENT));
+          for (const snapshot of await Promise.all(reads)) {
+            for (let gw = 0; gw < 8; gw += 1) {
+              for (const epoch of epochs) {
+                const instance = `gw-${gw}`;
+                assert.equal(
+                  usedBy(snapshot, group(instance, epoch)),
+                  BigInt(countedIn(snapshot, instance, epoch)),
+                  `${instance} in epoch ${epoch[0]}`,
+                );
+              }
+            }
           }
-          const final = await b.totalsSnapshot(CURRENT, "gw-0");
-          assert.equal(final.sequence, base + 32);
-          assert.equal(sumUsed(final.windows), 32n);
-          assert.deepEqual(final.last, batchId("gw-0", 4));
+          const final = await a.totalsSnapshot(CURRENT);
+          assert.equal(sumUsed(final.windows), 48n);
+          assert.equal(final.cursors.length, 16);
         }),
       );
 
       test(
         "a snapshot names a batch counted exactly when its windows hold it",
         withStore(async (a, b) => {
-          const base = await publishConfigs(a, 1);
+          await publishConfigs(a, 1);
           // One instance counts batch after batch while reads through both handles run
-          // in between: each snapshot's cursor, windows and sequence agree.
-          const reads: Promise<{ sequence: number; used: bigint; last: BatchId | undefined }>[] = [];
+          // in between: each snapshot's cursor and windows agree.
+          const reads: Promise<TotalsSnapshot>[] = [];
           let last: BatchId | undefined;
           for (let sequence = 1; sequence <= 16; sequence += 1) {
-            for (const reader of [a, b]) {
-              reads.push(
-                reader.totalsSnapshot(CURRENT, "gw-0").then((snapshot) => ({
-                  sequence: snapshot.sequence,
-                  used: sumUsed(snapshot.windows),
-                  last: snapshot.last,
-                })),
-              );
-            }
+            for (const reader of [a, b]) reads.push(reader.totalsSnapshot(CURRENT));
             const written = await (sequence % 2 === 0 ? a : b).saveCountedBatch(counted("gw-0", sequence), last, 10);
             assert.ok(written.saved);
             last = batchId("gw-0", sequence);
           }
-          for (const read of await Promise.all(reads)) {
-            assert.equal(read.used, BigInt(read.sequence - base), `windows at ${read.sequence}`);
-            assert.equal(BigInt(read.last?.sequence ?? 0), read.used, `cursor at ${read.sequence}`);
+          for (const snapshot of await Promise.all(reads)) {
+            assert.equal(usedBy(snapshot, "g"), BigInt(countedIn(snapshot, "gw-0")), "cursor and windows");
           }
         }),
       );
@@ -469,15 +455,9 @@ export function storeContractTests(subject: StoreContractSubject): void {
       );
 
       test(
-        "a snapshot counts the live set",
-        withStore(async (a, b) => {
-          assert.equal((await a.totalsSnapshot(CURRENT)).liveGateways, 0);
-          await a.saveGateway(gatewayRecord("gw-1", true), undefined);
-          await b.saveGateway(gatewayRecord("gw-2", true), undefined);
-          await b.saveGateway(gatewayRecord("gw-3", false), undefined);
-          assert.equal((await a.totalsSnapshot(CURRENT)).liveGateways, 2);
-          const empty = await a.totalsSnapshot(CURRENT, "gw-1");
-          assert.deepEqual([empty.config, empty.last], [undefined, undefined]);
+        "an empty store's snapshot has no windows and no cursors",
+        withStore(async (a) => {
+          assert.deepEqual(await a.totalsSnapshot(CURRENT), { windows: [], cursors: [] });
         }),
       );
     });
@@ -488,16 +468,15 @@ export function storeContractTests(subject: StoreContractSubject): void {
         withStore(async (a, b) => {
           const first = await a.saveGateway(gatewayRecord("gw-1", true), undefined);
           assert.ok(first.saved);
-          assert.equal(first.revision, 1);
-          // Another process that judged against "no record" finds revision 1.
+          // Another process that judged against "no record" finds the first record.
           const stale = await b.saveGateway(gatewayRecord("gw-1", true, 5), undefined);
           assert.equal(stale.saved, false);
-          assert.equal(stale.saved === false && stale.current?.revision, 1);
-          const second = await b.saveGateway(gatewayRecord("gw-1", true, 5), 1);
+          assert.equal(stale.saved === false && stale.current?.revision, first.revision);
+          const second = await b.saveGateway(gatewayRecord("gw-1", true, 5), first.revision);
           assert.ok(second.saved);
-          assert.equal(second.revision, 2);
+          assert.ok(second.revision > first.revision, `revision ${second.revision} after ${first.revision}`);
           const stored = await a.gateway("gw-1");
-          assert.equal(stored?.revision, 2);
+          assert.equal(stored?.revision, second.revision);
           assert.equal(stored?.receivedAt, 5);
           assert.deepEqual(
             (await b.gateways()).map((gateway) => gateway.instance),
@@ -512,20 +491,23 @@ export function storeContractTests(subject: StoreContractSubject): void {
           const first = await a.saveGateway(gatewayRecord("gw-1", true), undefined);
           assert.ok(first.saved);
           const results = await Promise.all(
-            Array.from({ length: 6 }, (_, i) => (i % 2 === 0 ? a : b).saveGateway(gatewayRecord("gw-1", i % 3 !== 0, i), 1)),
+            Array.from({ length: 6 }, (_, i) =>
+              (i % 2 === 0 ? a : b).saveGateway(gatewayRecord("gw-1", i % 3 !== 0, i), first.revision),
+            ),
           );
-          assert.equal(results.filter((result) => result.saved).length, 1);
-          assert.equal((await b.gateway("gw-1"))?.revision, 2);
+          const written = results.filter((result) => result.saved);
+          assert.equal(written.length, 1);
+          assert.equal((await b.gateway("gw-1"))?.revision, written[0]!.revision);
+          assert.notEqual(written[0]!.revision, first.revision);
         }),
       );
 
       test(
-        "a gateway is forgotten only at the revision judged; forgetting a live one moves the sequence",
+        "a gateway is forgotten only at the revision judged, and its revisions never come back",
         withStore(async (a, b) => {
           const live = await a.saveGateway(gatewayRecord("gw-1", true), undefined);
           const idle = await a.saveGateway(gatewayRecord("gw-2", false), undefined);
           assert.ok(live.saved && idle.saved);
-          const sequence = (await a.totalsSnapshot(CURRENT)).sequence;
           // A status taken meanwhile by the other process moves gw-1's revision on.
           const moved = await b.saveGateway(gatewayRecord("gw-1", true, 9), live.revision);
           assert.ok(moved.saved);
@@ -537,9 +519,7 @@ export function storeContractTests(subject: StoreContractSubject): void {
             ]),
             ["gw-2"],
           );
-          assert.equal((await b.totalsSnapshot(CURRENT)).sequence, sequence);
           assert.deepEqual(await b.forgetGateways([{ instance: "gw-1", revision: moved.revision }]), ["gw-1"]);
-          assert.equal((await a.totalsSnapshot(CURRENT)).sequence, sequence + 1);
           assert.equal(await a.gateway("gw-1"), undefined);
           // A forgotten gateway that reports again gets a revision it never had, so a
           // write computed from its forgotten record never matches the new one.
@@ -576,9 +556,9 @@ export function storeContractTests(subject: StoreContractSubject): void {
             await b.saveCountedBatch(counted("gw-1", 1), undefined, 10);
             await a.saveGateway(gatewayRecord("gw-1", true), undefined);
             const expected: StoreChange[] = [
-              { type: "config-published", hash: hashOf(1), sequence: 1 },
-              { type: "batch-counted", instance: "gw-1", sequence: 2 },
-              { type: "gateways-changed", liveChanged: true, sequence: 3 },
+              { type: "config-published", hash: hashOf(1) },
+              { type: "batch-counted", instance: "gw-1" },
+              { type: "gateways-changed", liveChanged: true },
             ];
             for (const heard of [onA, onB]) {
               await heard.until("three changes", () => heard.changes.length >= 3);
@@ -627,8 +607,7 @@ export function storeContractTests(subject: StoreContractSubject): void {
               ),
             );
             for (const heard of [onA, onB]) await heard.until("twelve changes", () => heard.changes.length >= 12);
-            const sequences = onA.changes.map((change) => change.sequence);
-            assert.deepEqual(sequences, [...sequences].sort((x, y) => x - y), "in the store's order");
+            assert.equal(onA.changes.length, 12);
             assert.deepEqual(onB.changes, onA.changes);
           } finally {
             onA.unsubscribe();
@@ -638,19 +617,38 @@ export function storeContractTests(subject: StoreContractSubject): void {
       );
 
       test(
-        "a channel that reconnects announces a catch-up",
+        "a channel that reconnects announces a catch-up to every subscriber",
         { skip: subject.reconnect === undefined && "the store's channel never drops changes" },
         withStore(async (a, b) => {
-          const heard = listen(b);
+          // Two subscribers on the reconnecting handle, as two cores share a process's
+          // store handle.
+          const first = listen(b);
+          const second = listen(b);
+          const catchUps = (heard: ReturnType<typeof listen>): number =>
+            heard.changes.filter((change) => change.type === "catch-up").length;
           try {
             await publishConfigs(a, 1);
-            await heard.until("the publish", () => heard.changes.length >= 1);
-            await subject.reconnect?.(b);
-            await heard.until("a catch-up", () => heard.changes.some((change) => change.type === "catch-up"));
-            const catchUp = heard.changes.find((change) => change.type === "catch-up");
-            assert.ok((catchUp?.sequence ?? 0) >= 1);
+            for (const heard of [first, second]) await heard.until("the publish", () => heard.changes.length >= 1);
+            for (let round = 1; round <= 2; round += 1) {
+              // Written while the channel is down: the channel may miss them; the
+              // catch-up must cover them.
+              await subject.reconnect?.(b, async () => {
+                assert.ok((await a.publishConfig(entry(round + 1), hashOf(round))).saved);
+                assert.ok((await a.saveCountedBatch(counted("gw-1", round), round === 1 ? undefined : batchId("gw-1", round - 1), 10)).saved);
+              });
+              for (const heard of [first, second]) await heard.until(`catch-up ${round}`, () => catchUps(heard) >= round);
+              // What a subscriber reads after the catch-up holds what the channel missed.
+              assert.equal((await b.currentConfig())?.hash, hashOf(round + 1));
+              assert.equal(countedIn(await b.totalsSnapshot(CURRENT), "gw-1"), round);
+            }
+            // The channel is back: changes are heard again.
+            await a.saveGateway(gatewayRecord("gw-1", true), undefined);
+            for (const heard of [first, second]) {
+              await heard.until("a change after the reconnects", () => heard.changes.some((change) => change.type === "gateways-changed"));
+            }
           } finally {
-            heard.unsubscribe();
+            first.unsubscribe();
+            second.unsubscribe();
           }
         }),
       );
@@ -660,7 +658,7 @@ export function storeContractTests(subject: StoreContractSubject): void {
         withStore(async (a, b) => {
           const seen: Promise<number>[] = [];
           const unsubscribe = b.subscribe((change) => {
-            if (change.type === "batch-counted") seen.push(b.totalsSnapshot(CURRENT).then((snapshot) => snapshot.sequence));
+            if (change.type === "batch-counted") seen.push(b.totalsSnapshot(CURRENT).then((snapshot) => countedIn(snapshot, "gw-1")));
           });
           try {
             await publishConfigs(a, 1);
@@ -668,7 +666,7 @@ export function storeContractTests(subject: StoreContractSubject): void {
             const deadline = Date.now() + notifyTimeoutMs;
             while (seen.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
             assert.equal(seen.length, 1, "the batch was heard");
-            assert.ok((await seen[0]!) >= 2);
+            assert.equal(await seen[0]!, 1);
           } finally {
             unsubscribe();
           }

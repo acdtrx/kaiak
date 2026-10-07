@@ -1,8 +1,10 @@
 {
-  "counted_through": {
-    "epoch": "5d41402abc4b2a76b9719d911017c592",
-    "sequence": 1
-  },
+  "counted_through": [
+    {
+      "epoch": "5d41402abc4b2a76b9719d911017c592",
+      "sequence": 1
+    }
+  ],
   "windows": [
     {
       "type": "usd_per_month",

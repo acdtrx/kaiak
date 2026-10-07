@@ -1,0 +1,18 @@
+{
+  "live_gateways": 0,
+  "counted_through": [
+    {
+      "epoch": "5d41402abc4b2a76b9719d911017c592",
+      "sequence": 3
+    },
+    {
+      "epoch": "7d793037a0760186574b0282f2f435e7",
+      "sequence": 1
+    },
+    {
+      "epoch": "5d41402abc4b2a76b9719d911017c592",
+      "sequence": 4
+    }
+  ],
+  "windows": []
+}
