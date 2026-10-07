@@ -1,6 +1,6 @@
 # Step 18 — no data directory: contract and docs
 
-**Status:** not started
+**Status:** done (2026-10-07)
 
 ## Intent
 
@@ -85,3 +85,151 @@ The files listed above, plus `protocol/schema/status.schema.json` and its copy i
   green; name any red.
 
 ## Result
+
+**Commits:**
+- `064f21a`: `GATEWAY.md`, `CONTROL-PROTOCOL.md`, the two schema descriptions (both
+  copies), and the GUIDE's epoch wording;
+- `0327164`: `AGENTS.md`, `README.md`, `docs/kaiak.md`, `TECH-STACK.md`,
+  `ARCHITECTURE.md`, both architecture pages, `DEPLOYMENT.md`, `BACKLOG.md`,
+  `LIVE-BACKENDS.md` and the Dockerfile comment;
+- this Result.
+
+**What changed**
+
+- **`GATEWAY.md`:**
+  - Configuration sources:
+    - the minimal gateway is "stateless — it writes nothing, ever";
+    - `KAIAK_CONFIG_FILE` says file mode is for local and development use, counts
+      from zero at each start;
+    - the boot wait falls back to the seed only.
+  - **`KAIAK_DATA_DIR` is replaced by "Nothing is written to disk"** (settled
+    2026-09-25, E1; with no opt-in either, 2026-10-07). It carries the one dated
+    Rejected line: the opt-in data directory, and why it failed (ephemeral disks;
+    every review found its restart path mis-counting budgets).
+  - The boot table loses its last-known-good column. The last-known-good bullets go,
+    and so do the seed's "never saved as last-known-good" and the
+    data-directory-file duplicate-member clause.
+  - Usage batches:
+    - sealed batches queue in memory;
+    - the whole Usage spool section is removed;
+    - Record checks at seal time move under Usage batches in memory: an invalid
+      record is dropped alone;
+    - the epoch is 32 random hex digits, new with every process.
+  - Limits:
+    - "File mode keeps nothing across a restart" replaces the file-mode usage
+      snapshot;
+    - "A restart counts from the next totals" replaces "Restart keeps the last
+      totals";
+    - the usage-waiting clocks lose "(or restored at boot)" and the other-instance
+      sentence;
+    - the file-mode drift's restart line is updated, and so is the Limits intro.
+  - **Decision 36 is written into "A count outlives its scope's config":**
+    - counts are kept while own usage or a running request's reservation holds them,
+      of any amount, zero included, and across a window roll-over;
+    - they are dropped once neither holds;
+    - they are outside the `counters-exceeded` bound.
+  - Metrics:
+    - `last-known-good` trigger removed;
+    - `spool_unwritable` reason removed;
+    - `rejected` means dropped;
+    - the queued-bytes and spool-batches help say "in memory".
+  - Log table rows removed:
+    - `file.name`;
+    - `kaiak.data_dir`;
+    - `kaiak.usage.acknowledged_batches`;
+    - `kaiak.usage.next_sequence`;
+    - `kaiak.usage.batch_instance`;
+    - `kaiak.limit.windows`/`windows_dropped`;
+    - `kaiak.data_file.*`.
+
+    Also removed: the `last-known-good` trigger, the snapshot/totals write trigger,
+    and the "new usage epoch" and "discarded limits totals" reasons.
+  - Lifecycle: readiness sources; the flush loses "stays in the spool"; the drain and
+    `terminationGracePeriodSeconds` lose the snapshot and totals writes.
+- **`CONTROL-PROTOCOL.md`:**
+  - the epoch is new at every gateway process start;
+  - a batch ID is never reused within its epoch;
+  - a batch the control plane refuses for good is **dropped**, not set aside;
+  - the bullet on another instance's spooled batch is removed, and order is "the
+    order they were sealed";
+  - the ack and the batch rules lose the spool clauses;
+  - status and the outage section lose last-known-good;
+  - "no totals yet" loses the data directory.
+- **Schemas** (`npm run sync-schemas`):
+  - `status.applied_config_hash` loses "or its last-known-good copy";
+  - the batch epoch is "created at every gateway process start".
+- **`AGENTS.md`** (`[PROJECT]` only):
+  - the hard constraint: "the gateway holds no state and writes nothing to disk";
+  - Deployability: one stateless bullet with file mode for local and dev; the
+    persistent-state bullet is removed;
+  - Feature-Building Mode: the data-file paragraph becomes "no database, and the
+    gateway writes no files".
+- **Other docs:**
+  - `README.md`, `kaiak.md` and `TECH-STACK.md`: Persistence becomes "none in the
+    gateway" (settled 2026-10-07, pointing at `GATEWAY.md`), and the image bullet is
+    updated.
+  - `ARCHITECTURE.md`:
+    - the deployment shape;
+    - the `state` package bullet is removed;
+    - `limits` and `control` updated;
+    - the e2e line.
+  - `gateway.html`:
+    - Stateless;
+    - the `state` box, its dashed edge and its marker removed;
+    - the package table;
+    - the config-source diagram with three sources;
+    - the boot list;
+    - the drain caption;
+    - the backlog row.
+  - `control-plane.html`: the boot list; the usage diagram ("in memory"); "Dropped";
+    the memory bound; the outage table.
+  - `DEPLOYMENT.md`:
+    - the minimal gateway and probes;
+    - the outage sizing;
+    - What a pod loses;
+    - the env table row removed;
+    - the alerts;
+    - secrets;
+    - the **Optional: the data directory** section removed;
+    - the Upgrades spool bullet removed;
+    - **the migration note**: flush, delete the directory (its files named), remove
+      the volume, unset `KAIAK_DATA_DIR`.
+  - `BACKLOG.md`: "Old-epoch spool order" removed (resolved); the credentials entry
+    loses the last-known-good cache.
+  - `LIVE-BACKENDS.md` and the Dockerfile comment are updated.
+
+**Decisions made in this step**
+
+- **The word "spool" stays only in the metric names** `kaiak_usage_spool_batches` and
+  `kaiak_usage_spool_records`. Their help says "in memory". Renaming metrics is not
+  this removal's business; the queue they count still exists. The docs call it "the
+  queue" or "queued batches".
+- **A batch refused for good is dropped** (logged at error), in both specs. In memory
+  there is nowhere to set it aside, and that was already the no-data-directory
+  behaviour.
+- **Decision 36's text went into `GATEWAY.md` here** with decision 35, so step 19 has
+  one settled text for both.
+- **The one dated Rejected line is in `GATEWAY.md`** (Nothing is written to disk).
+  `TECH-STACK.md`'s Persistence bullet points at it rather than repeating it.
+
+**Removal checklist status** (`git grep -l -i -E <pattern> -- . ':!docs/plans'
+':!docs/reviews'`):
+
+| Pattern | Docs | Left for |
+|---|---|---|
+| `KAIAK_DATA_DIR`, `DataDir`, `dataDir`, `data director`, `data dir` | done; remaining hits `GATEWAY.md` (the dated Rejected line) and `DEPLOYMENT.md` (the migration note), both allowed | step 19: `cmd/kaiak` (main, tests incl. `datadir_test.go`, `stateless_test.go`), `e2e`, `internal/{control,limits,metrics,state}`, `scripts/live/{process,config}.go` |
+| `last-known-good`, `lastKnownGood`, `LastKnownGood`, `lastknowngood` | done; same two allowed hits | step 19: `cmd/kaiak`, `e2e`, `config/loader.go`, `control` (incl. `lastknowngood.go`, `messages.go`, `status.go`), `metrics/ops.go`, `state`; the sample page comment and test (`control/sample/src/page/`) |
+| `totals.json`, `limits.json`, `last-known-good.json` | done; the migration note (allowed). `protocol/fixtures/config/invalid/cases.json:286` `key-with-limits.json` is a fixture name, unrelated | step 19: `e2e`, `control` (`restart_test.go`, `spool*.go`, `usage*.go`), `limits` (`persist.go`, `snapshot.go`, tests) |
+| `spooldisk`, `batchStore`, the on-disk index, `usage-batch-` | done; the migration note names `usage-batch-*.json` (allowed); `usage-batch-invalid` is an error code, unrelated | step 19: `control/spool.go`, `spooldisk.go`, `usage.go`, `e2e/control_test.go` |
+| `RestoreSpooled`, `RestoreOwn`, `SpoolCovered`, `saveShared`, `SaveShared`, `LoadShared`, `saveSharedPeriodically`, `persistMu`, `WriteVersioned`, `internal/state` | no doc hits | step 19: `cmd/kaiak`, `control`, `limits`, `server/usage_path_test.go`, `state` |
+| `format version` / "flush before upgrading" for data files | done (the remaining "format version" hits are config and protocol versions) | — |
+| `PVC`, `volumeClaimTemplates`, `emptyDir`, `StatefulSet` | done | step 19: `cmd/kaiak/stateless_test.go` |
+| `restart keeps the last totals`, `rebuilt` own usage, `crash rebuild` | done | — |
+
+**Suite** (2026-10-07, after both commits; code unchanged in this step):
+- Control `npm test`: 614 tests, 613 pass, 0 fail, 1 skipped (the memory store's
+  catch-up contract test, as before); `npm run lint`: `tsc` clean, boundaries ok.
+- `scripts/check-gateway.sh` (uncached, race): green, gateway e2e 115.8 s, every
+  package ok, live-kit self-test passed. No red: the schema changes are descriptions
+  only.
+- Cross-half tests: not run in this step (no code changed).
