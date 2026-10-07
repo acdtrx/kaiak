@@ -161,7 +161,7 @@ test("protocol replicas share the app's store: a batch counts once for all, a pu
   assert.equal((await post(fixture)).statusCode, 200);
   assert.equal((await fixture.controlPlane.recentRecords()).length, 1);
   const totals = await one.controlPlane.totals("gw-1");
-  assert.deepEqual(totals?.counted_through, { epoch: "5d41402abc4b2a76b9719d911017c592", sequence: 1 });
+  assert.deepEqual(totals.counted_through, [{ epoch: "5d41402abc4b2a76b9719d911017c592", sequence: 1 }]);
 
   writeFileSync(fixture.file, configText(2));
   await fixture.configFile.reload("test");

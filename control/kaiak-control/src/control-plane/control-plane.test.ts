@@ -24,7 +24,8 @@ test("the core publishes and serves the current config with its clock", async ()
   assert.ok(result.ok);
   assert.equal(result.published.publishedAt, 42);
   assert.equal((await controlPlane.currentConfig())?.hash, result.published.hash);
-  assert.deepEqual(heard, [result.published.hash]);
+  // Heard for the store's announcement and for the publish's own read.
+  assert.deepEqual(heard, [result.published.hash, result.published.hash]);
 });
 
 test("the core checks gateway requests against its token", () => {
@@ -53,7 +54,7 @@ test("a listener's failure goes to the host's handler, not to the publish", asyn
   });
   const result = await controlPlane.publishConfig(JSON.parse(readFileSync(MINIMAL, "utf8")));
   assert.ok(result.ok);
-  assert.deepEqual(failures, [result.published.hash]);
+  assert.deepEqual(failures, [result.published.hash, result.published.hash]);
 });
 
 test("an empty token is refused", () => {
@@ -138,7 +139,7 @@ test("a gateway forgotten while silent keeps its last counted batch for the curs
   now += 8_001;
   const run = await controlPlane.expireSilentGateways("manual");
   assert.deepEqual(run.batchCursorsDropped, ["gw-1"]);
-  assert.equal((await controlPlane.totals("gw-1"))?.counted_through, null);
+  assert.deepEqual((await controlPlane.totals("gw-1")).counted_through, []);
 });
 
 describe("several cores over one store", () => {
@@ -213,7 +214,7 @@ describe("several cores over one store", () => {
     assert.ok((await b.acceptUsageBatch("gw-1", carolBatch("gw-1", 1, 5))).ok);
     const [ta, tb] = [await a.totals("gw-1"), await b.totals("gw-1")];
     assert.deepEqual(ta, tb);
-    assert.deepEqual(ta?.counted_through, { epoch: "e".repeat(32), sequence: 1 });
+    assert.deepEqual(ta.counted_through, [{ epoch: "e".repeat(32), sequence: 1 }]);
   });
 
   test("a publish through one core reaches the other core's listeners, and their totals follow", async () => {
@@ -279,55 +280,4 @@ describe("several cores over one store", () => {
     await swept;
     assert.equal(await b.liveGateways(), 1);
   });
-});
-
-// A memory store whose sequences can be set back, as a store restored from a backup or
-// failed over to a copy behind it reads.
-function restorableStore(): { store: ControlPlaneStore; setBack: (by: number) => void } {
-  const inner = createMemoryStore();
-  let back = 0;
-  const store: ControlPlaneStore = {
-    ...inner,
-    async currentConfig() {
-      const current = await inner.currentConfig();
-      return current && { ...current, sequence: current.sequence - back };
-    },
-    async totalsSnapshot(current, instance) {
-      const snapshot = await inner.totalsSnapshot(current, instance);
-      return { ...snapshot, sequence: snapshot.sequence - back };
-    },
-    subscribe(listener) {
-      return inner.subscribe((change) => listener({ ...change, sequence: change.sequence - back }));
-    },
-  };
-  return { store, setBack: (by) => (back = by) };
-}
-
-test("a store sequence going back is a rollback the core announces; going on is not", async () => {
-  const { store, setBack } = restorableStore();
-  const controlPlane = createControlPlane({ store, token: "t" });
-  let rollbacks = 0;
-  const unsubscribe = controlPlane.onRollback(() => (rollbacks += 1));
-  const doc: unknown = JSON.parse(readFileSync(FULL, "utf8"));
-  assert.ok((await controlPlane.publishConfig(doc)).ok);
-  assert.ok((await controlPlane.publishConfig(doc)).ok);
-  await controlPlane.totals("gw-1");
-  assert.equal(rollbacks, 0);
-
-  // The store goes back two writes: the next read shows it, once.
-  setBack(2);
-  await controlPlane.totals("gw-1");
-  assert.equal(rollbacks, 1);
-  await controlPlane.totals("gw-1");
-  assert.equal(rollbacks, 1, "the core reads on from where the store is now");
-
-  // A write after the rollback moves on from the restored sequence: no new rollback.
-  assert.ok((await controlPlane.publishConfig(doc)).ok);
-  assert.equal(rollbacks, 1);
-
-  unsubscribe();
-  unsubscribe();
-  setBack(5);
-  await controlPlane.totals("gw-1");
-  assert.equal(rollbacks, 1, "an unsubscribed listener hears nothing more");
 });

@@ -33,8 +33,7 @@ export interface ConfigEvent {
 // Limit types whose windows the control plane counts; per-minute limits stay local.
 export type TotalsLimitType = "tokens_per_hour" | "usd_per_month";
 
-// One limit's current window, by its scope and type. group is absent for a global
-// limit.
+// One scope's current window of one type. group is absent for global.
 export interface TotalsWindow {
   group?: string;
   type: TotalsLimitType;
@@ -50,13 +49,15 @@ export interface BatchPosition {
   sequence: number;
 }
 
-// The data of a totals event, as one gateway gets it on its stream: a consistent
-// snapshot whose windows include every batch counted at it — counted_through, the
-// recipient instance's last counted batch, among them. The gateway applies the windows
-// to the limits it runs, whatever config it runs.
+// The data of a totals event, as one gateway gets it on its stream: the windows of a
+// consistent snapshot — every batch counted at it inside them, counted_through (the
+// recipient instance's last counted batch of each epoch) among them. The first on a
+// stream lists every scope and type with usage; each later one only the windows that
+// changed since. The gateway applies them to its counts by scope and type, whatever
+// config it runs.
 export interface Totals {
   live_gateways: number;
-  counted_through: BatchPosition | null;
+  counted_through: BatchPosition[];
   windows: TotalsWindow[];
 }
 

@@ -6,7 +6,7 @@ import { describe, test } from "node:test";
 import type { Config } from "../config/index.ts";
 import { configHash } from "../config-publishing/index.ts";
 import { validateTotals } from "../messages/index.ts";
-import type { Totals, UsageBatch, UsageRecord } from "../messages/index.ts";
+import type { Totals, TotalsWindow, UsageBatch, UsageRecord } from "../messages/index.ts";
 import { createMemoryStore } from "../storage/index.ts";
 import type { ControlPlaneStore, CurrentWindows, WindowTotal } from "../storage/index.ts";
 
@@ -96,7 +96,7 @@ async function harness(options: Partial<Omit<UsageOptions, "clock">> = {}): Prom
     store,
     clock: () => now,
     recentRecordsSize: 100,
-    observeSequence: () => {},
+    liveGateways: async () => 0,
     onListenerError: (error) => listenerErrors.push(error),
     ...options,
   });
@@ -104,11 +104,18 @@ async function harness(options: Partial<Omit<UsageOptions, "clock">> = {}): Prom
   store.subscribe(usage.takeChange);
   const publish = async (config: Config): Promise<void> => {
     const current = (await store.currentConfig())?.hash;
-    const written = await store.publishConfig({ config, hash: configHash(config), publishedAt: now }, current);
+    const text = JSON.stringify(config);
+    const written = await store.publishConfig({ text, hash: configHash(config), publishedAt: now }, current);
     assert.ok(written.saved, "the harness's publish is stored");
   };
-  await publish(fullConfig());
   return { usage, store, setTime: (ms) => (now = ms), publish, listenerErrors };
+}
+
+// Windows in a fixed order, global first, then by group and type: the totals list them
+// in no particular order.
+function sorted(windows: readonly TotalsWindow[]): TotalsWindow[] {
+  const keyOf = (window: TotalsWindow): string => `${window.group === undefined ? "" : `~${window.group}`} ${window.type}`;
+  return [...windows].sort((a, b) => (keyOf(a) < keyOf(b) ? -1 : keyOf(a) > keyOf(b) ? 1 : 0));
 }
 
 function acked(intake: UsageIntake): Extract<UsageIntake, { ok: true }> {
@@ -118,36 +125,31 @@ function acked(intake: UsageIntake): Extract<UsageIntake, { ok: true }> {
 
 async function currentTotals(usage: Usage): Promise<Totals> {
   const totals = await usage.totals(INSTANCE);
-  assert.ok(totals, "a config is published");
   assert.ok(validateTotals(totals).ok, "totals pass the totals schema and rules");
-  return totals;
+  return { ...totals, windows: sorted(totals.windows) };
 }
 
-// carol's hour window, which her default tokens_per_hour limit lists.
+// carol's hour window.
 async function carolHourUsed(usage: Usage): Promise<string | undefined> {
   const totals = await currentTotals(usage);
   return totals.windows.find((window) => window.group === "carol" && window.type === "tokens_per_hour")?.used;
 }
 
 describe("aggregation", () => {
-  test("a mixed batch counts into every scope on each path; the totals list the limited windows", async () => {
+  test("a mixed batch counts into every scope on each path; the totals list every window with usage", async () => {
     const { usage } = await harness();
     const records = [
       // Every model counts toward every scope on the path. Token windows leave out
       // input read from the cache (eval-pipeline's 100, alice's 1024).
       record(EVAL, "qwen3-32b", [800, 100, 0, 300, 0], 5_000),
       record(EVAL, "gpt-4.1", [1000, 0, 0, 500, 0], 7_000_000),
-      // Group support has no limits: counted, not listed. support-bot's per-minute
-      // limits are each gateway's own.
+      // Group support has no limits in full.json: counted and listed all the same.
       record(SUPPORT, "gpt-4.1-mini", [10, 0, 0, 10, 0], 2_000),
-      // alice: the default hour limit and her own USD limit, which replaces the
-      // default's of the same type.
       record(["users", "alice"], "gpt-4.1-mini", [2048, 1024, 0, 377, 0], 1_524_000),
-      // bob: his own hour limit; reasoning is inside tokens_out. Cost 0 leaves his USD
-      // window empty, so it is not listed.
+      // Reasoning is inside tokens_out. Cost 0 leaves bob's USD window empty, so it is
+      // not listed.
       record(["users", "bob"], "qwen3-32b", [100, 0, 0, 50, 20], 0),
-      // Listed groups the config does not define count too, unlisted; the rest and
-      // global count as always.
+      // Groups no config defines count too, as does every scope on the path.
       record(["users", "ghost"], "gpt-4.1", [1, 1, 0, 1, 0], 1_000),
       record(["research", "gone"], "bge-m3", [5, 0, 0, 0, 0], 3),
     ];
@@ -155,19 +157,42 @@ describe("aggregation", () => {
     assert.equal(intake.outcome, "first");
 
     const totals = await currentTotals(usage);
+    const hour = (group: string | undefined, used: string): TotalsWindow => ({
+      ...(group !== undefined && { group }),
+      type: "tokens_per_hour",
+      window_start: HOUR_10,
+      used,
+    });
+    const month = (group: string | undefined, used: string): TotalsWindow => ({
+      ...(group !== undefined && { group }),
+      type: "usd_per_month",
+      window_start: SEPTEMBER,
+      used,
+    });
     assert.deepEqual(totals, {
       live_gateways: 0,
-      counted_through: { epoch: EPOCH_A, sequence: 1 },
-      windows: [
-        { type: "usd_per_month", window_start: SEPTEMBER, used: "8532003" },
-        { group: "research", type: "usd_per_month", window_start: SEPTEMBER, used: "7005003" },
-        { group: "eval-pipeline", type: "tokens_per_hour", window_start: HOUR_10, used: "2600" },
-        { group: "eval-pipeline", type: "usd_per_month", window_start: SEPTEMBER, used: "7005000" },
-        { group: "support-bot", type: "usd_per_month", window_start: SEPTEMBER, used: "2000" },
-        { group: "alice", type: "tokens_per_hour", window_start: HOUR_10, used: "2425" },
-        { group: "alice", type: "usd_per_month", window_start: SEPTEMBER, used: "1524000" },
-        { group: "bob", type: "tokens_per_hour", window_start: HOUR_10, used: "150" },
-      ],
+      counted_through: [{ epoch: EPOCH_A, sequence: 1 }],
+      windows: sorted([
+        hour(undefined, "5202"),
+        month(undefined, "8532003"),
+        hour("research", "2605"),
+        month("research", "7005003"),
+        hour("eval-pipeline", "2600"),
+        month("eval-pipeline", "7005000"),
+        hour("gone", "5"),
+        month("gone", "3"),
+        hour("support", "20"),
+        month("support", "2000"),
+        hour("support-bot", "20"),
+        month("support-bot", "2000"),
+        hour("users", "2577"),
+        month("users", "1525000"),
+        hour("alice", "2425"),
+        month("alice", "1524000"),
+        hour("bob", "150"),
+        hour("ghost", "2"),
+        month("ghost", "1000"),
+      ]),
     });
     assert.deepEqual(intake.ack, { batch: { instance: INSTANCE, epoch: EPOCH_A, sequence: 1 } });
   });
@@ -180,77 +205,34 @@ describe("aggregation", () => {
     assert.equal(await carolHourUsed(usage), "1052"); // 3 + 1009 + 40
   });
 
-  test("a deep path counts toward every listed group, and global; the limited ones are listed", async () => {
-    const { usage, store, publish } = await harness();
-    const config = fullConfig();
-    assert.ok(config.groups, "full.json has groups");
-    const limits = (value: number) => [
-      { type: "tokens_per_hour" as const, value },
-      { type: "usd_per_month" as const, value },
-    ];
-    // Five levels; region, in the middle, has no limits of its own.
-    Object.assign(config.groups, {
-      team: { limits: limits(1_000_000) },
-      project: { parent: "team", limits: limits(1_000_000) },
-      region: { parent: "project" },
-      env: { parent: "region", limits: limits(1_000_000) },
-      workload: { parent: "env", limits: limits(1_000_000) },
-    });
-    await publish(config);
-
+  test("a deep path counts toward every group on it, and global", async () => {
+    const { usage } = await harness();
     const path = ["team", "project", "region", "env", "workload"];
     acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [record(path, "gpt-4.1", [10, 0, 0, 5, 0], 4_000)])));
-    const levels = ["team", "project", "env", "workload"].flatMap((group) => [
-      { group, type: "tokens_per_hour", window_start: HOUR_10, used: "15" },
-      { group, type: "usd_per_month", window_start: SEPTEMBER, used: "4000" },
+    const levels = [undefined, ...path].flatMap((group) => [
+      { ...(group !== undefined && { group }), type: "tokens_per_hour" as const, window_start: HOUR_10, used: "15" },
+      { ...(group !== undefined && { group }), type: "usd_per_month" as const, window_start: SEPTEMBER, used: "4000" },
     ]);
-    assert.deepEqual((await currentTotals(usage)).windows, [
-      { type: "usd_per_month", window_start: SEPTEMBER, used: "4000" },
-      ...levels,
-    ]);
-    // region, with no limits, is counted all the same.
-    const region = (await storedWindows(store, { hourStart: Date.UTC(2026, 8, 24, 10), monthStart: Date.UTC(2026, 8, 1) }))
-      .filter((total) => total.group === "region")
-      .map((total) => [total.type, total.used]);
-    assert.deepEqual(region, [
-      ["tokens_per_hour", 15n],
-      ["usd_per_month", 4000n],
-    ]);
+    assert.deepEqual((await currentTotals(usage)).windows, sorted(levels));
   });
 
-  test("a record whose last group was deleted is listed under its surviving ancestors and global", async () => {
+  test("a publish changes no totals: limits removed, edited or added leave every window as it is", async () => {
     const { usage, publish } = await harness();
-    const config = fullConfig();
-    assert.ok(config.groups, "full.json has groups");
-    delete config.groups["eval-pipeline"];
-    delete config.keys["k-eval-ci"];
-    await publish(config);
-
-    acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [record(EVAL, "gpt-4.1", [10, 0, 0, 5, 0], 4_000)])));
-    assert.deepEqual((await currentTotals(usage)).windows, [
-      { type: "usd_per_month", window_start: SEPTEMBER, used: "4000" },
-      { group: "research", type: "usd_per_month", window_start: SEPTEMBER, used: "4000" },
-    ]);
-  });
-
-  test("records count whatever the config's limits; a limit removed and added back shows all of it", async () => {
-    const { usage, publish } = await harness();
+    await publish(fullConfig());
     acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [record(EVAL, "bge-m3", [1, 0, 0, 0, 0], 10)])));
+    acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 2, [record(SUPPORT, "gpt-4.1-mini", [1, 0, 0, 0, 0], 2_000)])));
+    const before = await currentTotals(usage);
 
-    // A config without research's limits: its window leaves the totals, and keeps counting.
     const config = fullConfig();
     const research = config.groups?.["research"];
-    assert.ok(research, "full.json has group research");
+    const support = config.groups?.["support"];
+    assert.ok(research && support, "full.json has groups research and support");
     delete research.limits;
+    support.limits = [{ type: "usd_per_month", value: 100 }];
+    config.global.limits = [{ type: "usd_per_month", value: 9000 }];
     await publish(config);
-    acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 2, [record(EVAL, "bge-m3", [1, 0, 0, 0, 0], 5)])));
-    let totals = await currentTotals(usage);
-    assert.equal(totals.windows.find((window) => window.group === "research"), undefined);
-
-    // The limit back: it holds everything counted in the window.
-    await publish(fullConfig());
-    totals = await currentTotals(usage);
-    assert.equal(totals.windows.find((window) => window.group === "research")?.used, "15");
+    assert.deepEqual(await currentTotals(usage), before);
+    assert.equal(before.windows.find((window) => window.group === "research" && window.type === "usd_per_month")?.used, "10");
   });
 
   test("cost sums stay exact beyond 2^53 nano-USD", async () => {
@@ -273,55 +255,12 @@ describe("aggregation", () => {
     assert.equal(carolUsd?.used, "999999999999999999");
   });
 
-  test("no config published: the batch is counted, and its totals are listed once a config limits them", async () => {
-    const store = createMemoryStore();
-    const usage = createUsage({
-      store,
-      clock: () => T0,
-      recentRecordsSize: 10,
-      observeSequence: () => {},
-      onListenerError: (error) => assert.fail(String(error)),
-    });
-    assert.equal(await usage.totals(INSTANCE), undefined);
+  test("with no config published, the totals list the batch's windows", async () => {
+    const { usage, store } = await harness();
+    assert.equal(await store.currentConfig(), undefined);
+    assert.deepEqual(await currentTotals(usage), { live_gateways: 0, counted_through: [], windows: [] });
     acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [record(["users", "carol"], "gpt-4.1-mini", [3, 0, 0, 0, 0], 4)])));
-    assert.equal(await usage.totals(INSTANCE), undefined, "no config: nothing to list yet");
-    const config = fullConfig();
-    assert.ok((await store.publishConfig({ config, hash: configHash(config), publishedAt: T0 }, undefined)).saved);
     assert.equal(await carolHourUsed(usage), "3");
-  });
-});
-
-describe("edited limits", () => {
-  const usdOf = async (usage: Usage, group?: string): Promise<string | undefined> =>
-    (await currentTotals(usage)).windows.find((w) => w.group === group && w.type === "usd_per_month")?.used;
-
-  test("a limit whose value changes keeps its window, globally and through child_defaults", async () => {
-    const h = await harness();
-    acked(await h.usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [record(["users", "carol"], "gpt-4.1-mini", [1, 0, 0, 0, 0], 700)])));
-    assert.equal(await usdOf(h.usage), "700");
-    assert.equal(await usdOf(h.usage, "carol"), "700");
-
-    const edited = fullConfig();
-    edited.global.limits = [{ type: "usd_per_month", value: 9000 }];
-    const defaults = edited.groups?.["users"]?.child_defaults;
-    assert.ok(defaults?.limits, "full.json's users group has default limits");
-    defaults.limits = defaults.limits.map((limit) => (limit.type === "usd_per_month" ? { ...limit, value: 50 } : limit));
-    await h.publish(edited);
-    assert.equal(await usdOf(h.usage), "700");
-    assert.equal(await usdOf(h.usage, "carol"), "700");
-  });
-
-  test("a limit added mid-window starts with the window's usage so far", async () => {
-    const h = await harness();
-    acked(await h.usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [record(SUPPORT, "gpt-4.1-mini", [1, 0, 0, 0, 0], 2_000)])));
-    assert.equal(await usdOf(h.usage, "support"), undefined, "support has no limit yet");
-
-    const config = fullConfig();
-    const support = config.groups?.["support"];
-    assert.ok(support, "full.json has group support");
-    support.limits = [{ type: "usd_per_month", value: 100 }];
-    await h.publish(config);
-    assert.equal(await usdOf(h.usage, "support"), "2000");
   });
 });
 
@@ -535,6 +474,7 @@ describe("windows by the control plane's clock", () => {
     assert.deepEqual((await currentTotals(usage)).windows, [
       { type: "usd_per_month", window_start: "2026-10-01T00:00:00Z", used: "20" },
       { group: "carol", type: "usd_per_month", window_start: "2026-10-01T00:00:00Z", used: "20" },
+      { group: "users", type: "usd_per_month", window_start: "2026-10-01T00:00:00Z", used: "20" },
     ]);
     // September is the previous month now: its windows stay while late records can
     // still count there.
@@ -649,7 +589,7 @@ describe("recent records and listeners", () => {
           store: createMemoryStore(),
           clock: () => T0,
           recentRecordsSize: -1,
-          observeSequence: () => {},
+          liveGateways: async () => 0,
           onListenerError: () => undefined,
         }),
       { code: "recent-records-size-invalid" },
@@ -657,19 +597,7 @@ describe("recent records and listeners", () => {
   });
 });
 
-describe("counted_through and the store's sequence", () => {
-  test("the store's sequence each totals read sees is heard, and never goes on the wire", async () => {
-    const seen: number[] = [];
-    const { usage, publish } = await harness({ observeSequence: (sequence) => seen.push(sequence) });
-    await currentTotals(usage);
-    acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [oneTokenRecord()])));
-    await publish(fullConfig());
-    const totals = await currentTotals(usage);
-    // The harness's publish, then the batch, then the second publish.
-    assert.deepEqual(seen, [1, 3]);
-    assert.deepEqual(Object.keys(totals).sort(), ["counted_through", "live_gateways", "windows"]);
-  });
-
+describe("counted_through", () => {
   test("two processes over one store read the same totals", async () => {
     const store = createMemoryStore();
     const a = await harness({ store });
@@ -678,17 +606,26 @@ describe("counted_through and the store's sequence", () => {
     assert.deepEqual(await currentTotals(a.usage), await currentTotals(b.usage));
   });
 
-  test("counted_through is the recipient instance's last counted batch", async () => {
+  test("counted_through is the recipient instance's last counted batch of each epoch", async () => {
     const { usage } = await harness();
-    assert.equal((await currentTotals(usage)).counted_through, null);
+    assert.deepEqual((await currentTotals(usage)).counted_through, []);
     acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 3, [oneTokenRecord()])));
+    acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_B, 1, [oneTokenRecord()])));
+    acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_B, 2, [oneTokenRecord()])));
     const other = { ...oneTokenRecord(), gateway_instance: "gw-2" };
     acked(
       await usage.acceptUsageBatch("gw-2", { batch: { instance: "gw-2", epoch: EPOCH_B, sequence: 7 }, records: [other] }),
     );
-    assert.deepEqual((await usage.totals("gw-2"))?.counted_through, { epoch: EPOCH_B, sequence: 7 });
-    assert.deepEqual((await currentTotals(usage)).counted_through, { epoch: EPOCH_A, sequence: 3 });
-    assert.equal((await usage.totals("gw-3"))?.counted_through, null);
+    assert.deepEqual((await usage.totals("gw-2")).counted_through, [{ epoch: EPOCH_B, sequence: 7 }]);
+    const own = (await currentTotals(usage)).counted_through;
+    assert.deepEqual(
+      [...own].sort((a, b) => (a.epoch < b.epoch ? -1 : 1)),
+      [
+        { epoch: EPOCH_A, sequence: 3 },
+        { epoch: EPOCH_B, sequence: 2 },
+      ],
+    );
+    assert.deepEqual((await usage.totals("gw-3")).counted_through, []);
   });
 
   test("an ack names the batch it acknowledges and nothing else", async () => {

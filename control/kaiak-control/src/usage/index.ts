@@ -3,16 +3,15 @@
 // stamped with the control plane's receipt time and counted into the hour and month
 // windows of every scope on their path — each in its gateway_time window when that is
 // the current or previous one — whether or not a config is published, and totals of
-// the current windows for stream pushes, each read from one store snapshot. Nothing
-// here is held per process that another process could disagree with: the store decides
-// which batches count.
+// the current windows, every scope and type with usage whatever the config, each read
+// from one store snapshot. Nothing here is held per process that another process could
+// disagree with: the store decides which batches count.
 
 import { validateUsageBatch } from "../messages/index.ts";
-import type { BatchId, Totals, TotalsWindow, UsageAck, UsageBatch } from "../messages/index.ts";
-import type { BatchCursors, ControlPlaneStore, CurrentConfig, CurrentWindows, ReceivedRecord, StoreChange } from "../storage/index.ts";
+import type { BatchId, Totals, TotalsLimitType, TotalsWindow, UsageAck, UsageBatch } from "../messages/index.ts";
+import type { BatchCursors, ControlPlaneStore, CurrentWindows, ReceivedRecord, StoreChange, WindowTotal } from "../storage/index.ts";
 
-import { batchAdditions, limitedWindowsOf, windowKeyOf } from "./aggregate.ts";
-import type { LimitedWindow } from "./aggregate.ts";
+import { batchAdditions } from "./aggregate.ts";
 import { currentWindows, formatWindowStart, previousWindows, windowStartFor } from "./windows.ts";
 
 // How a batch relates to the last one counted for its instance:
@@ -41,13 +40,27 @@ export type UsageIntake =
 
 export type TotalsChangedListener = () => void;
 
+// The totals at one store snapshot, for every gateway at once: each stream takes its
+// own instance's cursors (its counted_through) from it.
+export interface TotalsRead {
+  // Every scope and type with usage in its current window, whatever the config.
+  windows: TotalsWindow[];
+  // Every instance's last counted batch of each epoch still kept.
+  cursors: BatchId[];
+  // The live-gateway count, read apart from the snapshot.
+  liveGateways: number;
+  // The current windows the snapshot was read for, as window_start values.
+  windowStarts: Record<TotalsLimitType, string>;
+}
+
 export interface Usage {
   // Takes one usage batch from `instance` (the requester's checked instance ID).
   acceptUsageBatch(instance: string, doc: unknown): Promise<UsageIntake>;
-  // The totals of the current windows the current config limits, as the gateway
-  // `instance` gets them on its stream (its counted_through); undefined before the
-  // first config is published.
-  totals(instance: string): Promise<Totals | undefined>;
+  // The complete totals of the current windows as the gateway `instance` gets them
+  // first on its stream (its counted_through).
+  totals(instance: string): Promise<Totals>;
+  // The totals at one snapshot, for every gateway (TotalsRead).
+  readTotals(): Promise<TotalsRead>;
   // The newest received records, newest first.
   recentRecords(): Promise<ReceivedRecord[]>;
   // Calls listener after every batch any process counted (and on a store catch-up);
@@ -67,9 +80,8 @@ export interface UsageOptions {
   clock: () => number;
   // How many received records recentRecords keeps.
   recentRecordsSize: number;
-  // Hears of every store sequence a totals read sees (CONTROL-PROTOCOL.md, Config
-  // stream → Rollback).
-  observeSequence: (sequence: number) => void;
+  // The size of the live set.
+  liveGateways: () => Promise<number>;
   // Called for each totals listener that throws (the batch is counted either way).
   onListenerError: (error: unknown) => void;
 }
@@ -78,7 +90,7 @@ export interface UsageOptions {
 // A window past it is reported at the ceiling — beyond any limit a config can express.
 const MAX_USED = 10n ** 18n - 1n;
 
-export function createUsage({ store, clock, recentRecordsSize, observeSequence, onListenerError }: UsageOptions): Usage {
+export function createUsage({ store, clock, recentRecordsSize, liveGateways, onListenerError }: UsageOptions): Usage {
   if (!Number.isSafeInteger(recentRecordsSize) || recentRecordsSize < 0) {
     throw Object.assign(new Error(`recent records size must be a non-negative integer, got ${recentRecordsSize}`), {
       code: "recent-records-size-invalid",
@@ -90,19 +102,9 @@ export function createUsage({ store, clock, recentRecordsSize, observeSequence, 
   // its original here is decided without a refused write; across processes the
   // store's conditional write decides.
   const queues = new Map<string, Promise<unknown>>();
-  // A cache of the current config's limited windows, by its hash: derived from the
-  // store's config, never a decision of its own.
-  let limitedCache: { hash: string; limited: LimitedWindow[] } | undefined;
   // The hour this process last pruned past windows in: pruning is idempotent, so
   // every process prunes on its own first batch of an hour.
   let prunedHourStart: number | undefined;
-
-  const limitedOf = (config: CurrentConfig): LimitedWindow[] => {
-    if (limitedCache?.hash !== config.hash) {
-      limitedCache = { hash: config.hash, limited: limitedWindowsOf(config.config) };
-    }
-    return limitedCache.limited;
-  };
 
   const serialized = <T>(instance: string, run: () => Promise<T>): Promise<T> => {
     const result = (queues.get(instance) ?? Promise.resolve()).then(run);
@@ -133,21 +135,23 @@ export function createUsage({ store, clock, recentRecordsSize, observeSequence, 
   // that crossed an hour or month boundary — while a batch past it may have been
   // counted — reads again with the new windows, so a message never names a batch
   // counted while leaving out the window it was counted in.
-  const totalsAt = async (instance: string): Promise<Totals | undefined> => {
+  const readTotals = async (): Promise<TotalsRead> => {
     let windows = currentWindows(clock());
     for (;;) {
-      const snapshot = await store.totalsSnapshot(windows, instance);
-      observeSequence(snapshot.sequence);
+      const [snapshot, live] = await Promise.all([store.totalsSnapshot(windows), liveGateways()]);
       const after = currentWindows(clock());
       if (after.hourStart !== windows.hourStart || after.monthStart !== windows.monthStart) {
         windows = after;
         continue;
       }
-      if (!snapshot.config) return undefined;
       return {
-        live_gateways: snapshot.liveGateways,
-        counted_through: snapshot.last ? { epoch: snapshot.last.epoch, sequence: snapshot.last.sequence } : null,
-        windows: listedWindows(limitedOf(snapshot.config), snapshot.windows, windows),
+        windows: listedWindows(snapshot.windows, windows),
+        cursors: snapshot.cursors,
+        liveGateways: live,
+        windowStarts: {
+          tokens_per_hour: formatWindowStart(windows.hourStart),
+          usd_per_month: formatWindowStart(windows.monthStart),
+        },
       };
     }
   };
@@ -209,7 +213,11 @@ export function createUsage({ store, clock, recentRecordsSize, observeSequence, 
       }
       return serialized(instance, () => countBatch(message));
     },
-    totals: totalsAt,
+    async totals(instance) {
+      const read = await readTotals();
+      return { live_gateways: read.liveGateways, counted_through: countedThrough(read, instance), windows: read.windows };
+    },
+    readTotals,
     recentRecords: () => store.recentRecords(recentRecordsSize),
     onTotalsChanged(listener) {
       // A wrapper, so the same function subscribed twice is two subscriptions.
@@ -224,25 +232,24 @@ export function createUsage({ store, clock, recentRecordsSize, observeSequence, 
   };
 }
 
-// The windows a totals message lists: every limited scope and type with usage in its
-// current window, in the config's limit order. A window no limit names (a scope
-// without that limit type, a deleted group) is counted but not listed.
-function listedWindows(
-  limited: readonly LimitedWindow[],
-  stored: readonly { group?: string; type: LimitedWindow["type"]; windowStart: number; used: bigint }[],
-  windows: CurrentWindows,
-): TotalsWindow[] {
-  const used = new Map(stored.map((total) => [windowKeyOf(total), total.used]));
+// A gateway's counted_through in a read: its instance's cursor of each epoch.
+export function countedThrough(read: TotalsRead, instance: string): Totals["counted_through"] {
+  return read.cursors
+    .filter((cursor) => cursor.instance === instance)
+    .map(({ epoch, sequence }) => ({ epoch, sequence }));
+}
+
+// The windows a totals message lists: every scope and type with usage in its current
+// window, whatever the config.
+function listedWindows(stored: readonly WindowTotal[], windows: CurrentWindows): TotalsWindow[] {
   const listed: TotalsWindow[] = [];
-  for (const { group, type } of limited) {
-    const windowStart = windowStartFor(type, windows);
-    const amount = used.get(windowKeyOf({ ...(group !== undefined && { group }), type, windowStart })) ?? 0n;
-    if (amount === 0n) continue;
+  for (const { group, type, windowStart, used } of stored) {
+    if (windowStart !== windowStartFor(type, windows) || used === 0n) continue;
     listed.push({
       ...(group !== undefined && { group }),
       type,
       window_start: formatWindowStart(windowStart),
-      used: (amount > MAX_USED ? MAX_USED : amount).toString(),
+      used: (used > MAX_USED ? MAX_USED : used).toString(),
     });
   }
   return listed;

@@ -1,11 +1,8 @@
 // Which windows a usage record counts toward, and by how much
 // (docs/specs/CONTROL-PROTOCOL.md, Usage intake → Counted toward): the tokens_per_hour
 // and usd_per_month window of global and of every group the record's path lists,
-// whatever limits the config sets — so counting never depends on the config, and the
-// totals list only the windows the config limits.
+// whatever limits the config sets — so counting never depends on the config.
 
-import { resolveScopes } from "../config/index.ts";
-import type { Config } from "../config/index.ts";
 import type { TotalsLimitType, UsageRecord } from "../messages/index.ts";
 import type { CurrentWindows, WindowKey, WindowTotal } from "../storage/index.ts";
 
@@ -14,26 +11,6 @@ import { recordWindowStart } from "./windows.ts";
 // The limit types the control plane keeps totals for; the per-minute ones are each
 // gateway's own.
 const COUNTED_TYPES: readonly TotalsLimitType[] = ["tokens_per_hour", "usd_per_month"];
-
-// A scope and type a config limits, whose window the totals list.
-export interface LimitedWindow {
-  // Absent for global.
-  group?: string;
-  type: TotalsLimitType;
-}
-
-// The counted limits of a config: every scope's tokens_per_hour and usd_per_month
-// limit, global first, then the groups in resolution order.
-export function limitedWindowsOf(config: Config): LimitedWindow[] {
-  const limited: LimitedWindow[] = [];
-  for (const { group, limits } of resolveScopes(config)) {
-    for (const limit of limits) {
-      if (limit.type !== "tokens_per_hour" && limit.type !== "usd_per_month") continue;
-      limited.push({ ...(group !== undefined && { group }), type: limit.type });
-    }
-  }
-  return limited;
-}
 
 // Identifies one scope's window of one type.
 export function windowKeyOf({ group, type, windowStart }: WindowKey): string {

@@ -120,14 +120,15 @@ function totalsOf(item: SseItem): Totals {
   return validation.message;
 }
 
-// Wraps a core so a test sees how many streams hold a totals subscription.
+// Wraps a core so a test sees how many streams are open: each holds a config
+// subscription while it is.
 function countingStreams(controlPlane: ControlPlane) {
   let active = 0;
   const changes = new EventEmitter();
   const counted: ControlPlane = {
     ...controlPlane,
-    onTotalsChanged(listener) {
-      const unsubscribe = controlPlane.onTotalsChanged(listener);
+    onConfigRead(listener) {
+      const unsubscribe = controlPlane.onConfigRead(listener);
       active++;
       changes.emit("change");
       return () => {
@@ -238,10 +239,9 @@ describe("POST /v1/status", { timeout: 10_000 }, () => {
     assert.equal(await nextConfigHash(stream), configHash(readFixture("config/valid/minimal.json") as Config));
     await nextTotals(stream);
 
-    // A publish through B: A's stream gets the config, then the totals.
+    // A publish through B: A's stream gets the config (a publish changes no totals).
     await publishFixture(coreB, "full.json");
     assert.equal(await nextConfigHash(stream), configHash(readFixture("config/valid/full.json") as Config));
-    await nextTotals(stream);
 
     // A batch posted to B: A's stream pushes the totals it produced.
     const response = await fetch(`${appB.base}/v1/usage`, {
@@ -251,7 +251,8 @@ describe("POST /v1/status", { timeout: 10_000 }, () => {
     });
     assert.equal(response.status, 200);
     const pushed = await nextTotals(stream);
-    assert.deepEqual(pushed.counted_through, { epoch: "5d41402abc4b2a76b9719d911017c592", sequence: 18 });
+    assert.deepEqual(pushed.counted_through, [{ epoch: "5d41402abc4b2a76b9719d911017c592", sequence: 18 }]);
+    // The first totals listed no window, so the changes are every window.
     assert.deepEqual(pushed, await coreA.totals("gw-1"));
 
     // A status posted to B moves the live count A's stream reports.
@@ -267,7 +268,7 @@ describe("totals on the stream", { timeout: 20_000 }, () => {
     await publishFixture(controlPlane, "full.json");
     const stream = await openStream(await startApp(controlPlane));
     assert.equal(await nextConfigHash(stream), configHash(readFixture("config/valid/full.json") as Config));
-    assert.deepEqual(await nextTotals(stream), { live_gateways: 0, counted_through: null, windows: [] });
+    assert.deepEqual(await nextTotals(stream), { live_gateways: 0, counted_through: [], windows: [] });
   });
 
   test("a counted batch pushes the totals it produced", async () => {
@@ -288,10 +289,45 @@ describe("totals on the stream", { timeout: 20_000 }, () => {
     assert.ok(pushed.windows.length > 0);
     assert.deepEqual(pushed, await controlPlane.totals("gw-1"));
     // The stream is gw-1's, and the batch was gw-1's: the push counts it.
-    assert.deepEqual(pushed.counted_through, { epoch: "5d41402abc4b2a76b9719d911017c592", sequence: 18 });
+    assert.deepEqual(pushed.counted_through, [{ epoch: "5d41402abc4b2a76b9719d911017c592", sequence: 18 }]);
   });
 
-  test("a publish is followed by totals listing the new config's limits", async () => {
+  test("the first totals are complete; later ones list only the windows that changed", async () => {
+    const controlPlane = newControlPlane({ clock: () => Date.UTC(2026, 8, 24, 10, 30) });
+    const app = await startApp(controlPlane, { totalsPushIntervalMs: 10 });
+    const batchOf = (sequence: number, groups: string[]): unknown => {
+      const batch = readFixture("messages/usage-batch/valid/mixed-groups.json") as {
+        batch: { sequence: number };
+        records: { record_id: string; groups: string[] }[];
+      };
+      batch.batch.sequence = sequence;
+      batch.records = batch.records.slice(0, 1).map((record) => ({ ...record, record_id: `${sequence}`.padStart(32, "0"), groups }));
+      return batch;
+    };
+    const post = async (doc: unknown): Promise<void> => {
+      const response = await fetch(`${app.base}/v1/usage`, {
+        method: "POST",
+        headers: { ...headersFor("gw-1"), "content-type": "application/json" },
+        body: JSON.stringify(doc),
+      });
+      assert.equal(response.status, 200);
+    };
+    await publishFixture(controlPlane, "minimal.json");
+    await post(batchOf(100, ["users", "carol"]));
+    const stream = await openStream(app);
+    const first = await nextTotals(stream);
+    assert.deepEqual(first, await controlPlane.totals("gw-1"), "the first totals are complete");
+    assert.ok(first.windows.some((window) => window.group === "carol"));
+
+    // A batch for bob changes global's, users' and bob's windows, never carol's.
+    await post(batchOf(101, ["users", "bob"]));
+    const changes = await nextTotals(stream);
+    const groups = [...new Set(changes.windows.map((window) => window.group ?? "global"))].sort();
+    assert.deepEqual(groups, ["bob", "global", "users"]);
+    assert.deepEqual(changes.counted_through, [{ epoch: "5d41402abc4b2a76b9719d911017c592", sequence: 101 }]);
+  });
+
+  test("a publish pushes no totals, and the windows stay whatever the config", async () => {
     const controlPlane = newControlPlane({ clock: () => Date.UTC(2026, 8, 24, 10, 30) });
     await publishFixture(controlPlane, "full.json");
     const app = await startApp(controlPlane, { totalsPushIntervalMs: 10 });
@@ -304,10 +340,15 @@ describe("totals on the stream", { timeout: 20_000 }, () => {
     });
     assert.equal(response.status, 200);
     assert.ok((await nextTotals(stream)).windows.length > 0);
-    // A config without limits: the counted usage stays counted, and nothing is listed.
+    // A config without limits: the config goes out, and no totals with it. The next
+    // totals (a gateway joining) list no window: none changed.
     await publishFixture(controlPlane, "minimal.json");
     assert.equal(await nextConfigHash(stream), configHash(readFixture("config/valid/minimal.json") as Config));
-    assert.deepEqual((await nextTotals(stream)).windows, []);
+    assert.equal((await postStatus(app, "gw-2")).status, 204);
+    const next = totalsOf(await stream.nextEvent());
+    assert.equal(next.live_gateways, 1);
+    assert.deepEqual(next.windows, []);
+    assert.ok((await controlPlane.totals("gw-1")).windows.length > 0, "the windows are still counted");
   });
 
   test("gateways joining and leaving push the live count", async () => {

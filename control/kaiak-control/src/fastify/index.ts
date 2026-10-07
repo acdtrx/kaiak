@@ -9,6 +9,7 @@ import { PROTOCOL_HEADER, PROTOCOL_VERSION, errorBody } from "../protocol/index.
 import type { ErrorBody } from "../protocol/index.ts";
 
 import { streamToGateway } from "./gateway-stream.ts";
+import { createTotalsFeed } from "./totals-feed.ts";
 
 export interface ControlProtocolPluginOptions {
   controlPlane: ControlPlane;
@@ -16,7 +17,8 @@ export interface ControlProtocolPluginOptions {
   prefix?: string;
   // Milliseconds between heartbeat comments on an idle stream. Default 15000.
   heartbeatIntervalMs?: number;
-  // At most one totals event per stream per this many milliseconds. Default 1000.
+  // At most one totals read, and so one totals event per stream, per this many
+  // milliseconds. Default 1000.
   totalsPushIntervalMs?: number;
   // A stream whose gateway has not read earlier events for this many milliseconds is
   // ended, so the gateway reconnects. Default 30000.
@@ -82,15 +84,8 @@ function registerGatewayRoutes(routes: FastifyInstance, options: ControlProtocol
     return reply.code(check.error.status).send(errorBody(check.error));
   });
 
-  // The core starts with the app: it runs the expiry sweep, without which the live set
-  // never shrinks.
-  // A store that went back under this core may hold less than its streams were sent:
-  // every stream ends, and the gateways reconnect to the store's current state.
-  const unsubscribeRollback = controlPlane.onRollback(() => {
-    if (openStreams.size === 0) return;
-    routes.log.warn({ streams: openStreams.size }, "the store's sequence went back; ending every gateway stream");
-    for (const end of openStreams) end();
-  });
+  // One totals read per push serves every stream of this core.
+  const totals = createTotalsFeed({ core: controlPlane, intervalMs: totalsPushIntervalMs, log: routes.log });
   // A config this core could not read after a change, retries included, may be missing
   // from its streams: every stream ends, and the gateways reconnect and read the
   // current config on connect.
@@ -101,6 +96,8 @@ function registerGatewayRoutes(routes: FastifyInstance, options: ControlProtocol
     );
     for (const end of openStreams) end();
   });
+  // The core starts with the app: it runs the expiry sweep, without which the live set
+  // never shrinks.
   routes.addHook("onReady", async () => {
     await controlPlane.start();
   });
@@ -108,8 +105,8 @@ function registerGatewayRoutes(routes: FastifyInstance, options: ControlProtocol
     for (const end of openStreams) end();
   });
   routes.addHook("onClose", async () => {
-    unsubscribeRollback();
     unsubscribeDeliveryFailed();
+    totals.close();
     await controlPlane.stop();
   });
 
@@ -172,9 +169,9 @@ function registerGatewayRoutes(routes: FastifyInstance, options: ControlProtocol
   routes.get("/stream", { exposeHeadRoute: false }, async (request, reply) => {
     await streamToGateway(reply, {
       core: controlPlane,
+      totals,
       instance: instanceOf(request),
       heartbeatIntervalMs,
-      totalsPushIntervalMs,
       stalledStreamTimeoutMs,
       openStreams,
       log: request.log,

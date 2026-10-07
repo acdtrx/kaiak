@@ -11,6 +11,7 @@ import type { GatewayStatus, Totals, UsageBatch, UsageRecord } from "./types.ts"
 export type MessageRuleCode =
   | "timestamp-invalid"
   | "totals-window-duplicate"
+  | "counted-through-epoch-duplicate"
   | "record-instance-mismatch"
   | "record-id-duplicate";
 
@@ -37,14 +38,23 @@ export function checkTotals(totals: Totals): ValidationIssue[] {
   totals.windows.forEach((window, index) => {
     const windowPath = pointer("/windows", index);
     checkTimestamp(window.window_start, pointer(windowPath, "window_start"), report);
-    // A window belongs to one limit: its group (or global) and type.
+    // A window belongs to one count: its group (or global) and type.
     const identity = JSON.stringify([window.group ?? null, window.type]);
     const first = seen.get(identity);
     if (first !== undefined) {
-      report("totals-window-duplicate", windowPath, `same limit as ${pointer("/windows", first)}`);
+      report("totals-window-duplicate", windowPath, `same scope and type as ${pointer("/windows", first)}`);
       return;
     }
     seen.set(identity, index);
+  });
+  const epochs = new Map<string, number>();
+  totals.counted_through.forEach(({ epoch }, index) => {
+    const first = epochs.get(epoch);
+    if (first !== undefined) {
+      report("counted-through-epoch-duplicate", pointer("/counted_through", index), `same epoch as ${pointer("/counted_through", first)}`);
+      return;
+    }
+    epochs.set(epoch, index);
   });
   return issues;
 }

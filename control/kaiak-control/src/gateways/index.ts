@@ -137,18 +137,19 @@ export function createGateways(options: GatewaysOptions): Gateways {
   // A status is judged against the stored record and written only while that record is
   // still the one stored: a status or sweep of another process in between makes it
   // judged again against the record that won, so the live set and the conflict rule
-  // hold across processes. Its receipt time is taken once: a record that won with a
-  // later receipt time holds a newer status, and this one is dropped — written late, it
-  // would replace the newer status and read as its process coming back.
+  // hold across processes. Its receipt time is taken once: a stored record with a later
+  // receipt time — on the first read or after a refused write — holds a newer status,
+  // and this one is dropped: written late, it would replace the newer status and read
+  // as its process coming back.
   const recordStatus = async (status: GatewayStatus): Promise<StatusIntake> => {
     const receivedAt = clock();
     let previous = await store.gateway(status.instance);
     for (;;) {
+      if (previous && previous.receivedAt > receivedAt) return { ok: true, joined: false, conflictStarted: false };
       const judged = judgeStatus(status, previous, receivedAt);
       const written = await store.saveGateway(judged.record, previous?.revision);
       if (written.saved) return { ok: true, joined: judged.joined, conflictStarted: judged.conflictStarted };
       previous = written.current;
-      if (previous && previous.receivedAt > receivedAt) return { ok: true, joined: false, conflictStarted: false };
     }
   };
 

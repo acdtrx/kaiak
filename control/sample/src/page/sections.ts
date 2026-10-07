@@ -3,7 +3,7 @@
 // goes through `html`, which escapes it.
 
 import { resolveScopes } from "kaiak-control";
-import type { Config, ControlPlane, DeploymentStatus, GatewayStatus, GatewayView, Limit, CurrentConfig, ReceivedRecord, ResolvedScope, Totals } from "kaiak-control";
+import type { Config, ControlPlane, DeploymentStatus, GatewayStatus, GatewayView, Limit, PublishedConfig, ReceivedRecord, ResolvedScope, Totals } from "kaiak-control";
 
 import type { ConfigFileState } from "../config-file/index.ts";
 
@@ -53,7 +53,7 @@ async function renderGateways({ core, clock }: PageSources): Promise<Markup> {
 ${gateways.map((gateway) => routingDetail(gateway, now))}`;
 }
 
-function gatewayRow(gateway: GatewayView, current: CurrentConfig | undefined, now: number): Markup {
+function gatewayRow(gateway: GatewayView, current: PublishedConfig | undefined, now: number): Markup {
   const { status } = gateway;
   const started = parseTimestamp(status.started_at);
   return html`<tr>
@@ -71,7 +71,7 @@ function gatewayRow(gateway: GatewayView, current: CurrentConfig | undefined, no
 // The gateway's applied config against the current one, by config_hash: a gateway
 // running anything else (a config it was sent before, its last-known-good copy) is
 // flagged as not current.
-function appliedConfig({ status }: GatewayView, current: CurrentConfig | undefined): Markup {
+function appliedConfig({ status }: GatewayView, current: PublishedConfig | undefined): Markup {
   const applied = status.applied_config_hash;
   const shown =
     applied === null
@@ -231,7 +231,7 @@ const HOUR_MS = 3_600_000;
 async function renderTotals({ core, clock }: PageSources): Promise<Markup> {
   const heading = html`<h2>Totals vs limits</h2>`;
   const [current, totals] = await Promise.all([core.currentConfig(), core.totals(PAGE_READER)]);
-  if (!current || !totals) return html`${heading}<p class="muted">No config published yet.</p>`;
+  if (!current) return html`${heading}<p class="muted">No config published yet.</p>`;
   const now = clock();
   const used = usedByLimit(totals);
   const rows: Markup[] = [];

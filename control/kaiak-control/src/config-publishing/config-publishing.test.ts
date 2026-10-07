@@ -6,10 +6,10 @@ import { describe, test } from "node:test";
 
 import type { Config } from "../config/index.ts";
 import { createMemoryStore } from "../storage/index.ts";
-import type { ControlPlaneStore, CurrentConfig } from "../storage/index.ts";
+import type { ControlPlaneStore } from "../storage/index.ts";
 
 import { configHash, createConfigPublishing } from "./index.ts";
-import type { ConfigPublishing, PublishResult } from "./index.ts";
+import type { ConfigPublishing, PublishedConfig, PublishResult } from "./index.ts";
 
 const MINIMAL = path.resolve(import.meta.dirname, "../../../../protocol/fixtures/config/valid/minimal.json");
 
@@ -31,6 +31,13 @@ function numberOf(config: Config): number {
   return (config.models["llama"]?.metadata.context_length ?? 0) - 1000;
 }
 
+// A list with each run of repeats kept once: listeners may hear one config more than
+// once (a publish through this process is heard for its own read and for the store's
+// announcement).
+function runs<T>(list: readonly T[]): T[] {
+  return list.filter((item, index) => index === 0 || item !== list[index - 1]);
+}
+
 function failOnListenerError(error: unknown): void {
   assert.fail(`unexpected listener error: ${String(error)}`);
 }
@@ -39,14 +46,13 @@ function publishing(
   options: {
     store?: ControlPlaneStore;
     now?: () => number;
-    onListenerError?: (error: unknown, published: CurrentConfig) => void;
+    onListenerError?: (error: unknown, published: PublishedConfig) => void;
   } = {},
 ): ConfigPublishing {
   const store = options.store ?? createMemoryStore();
   const configs = createConfigPublishing({
     store,
     clock: options.now ?? (() => 0),
-    observeSequence: () => {},
     onListenerError: options.onListenerError ?? failOnListenerError,
     retryDelaysMs: [],
     onDeliveryFailed: (error) => assert.fail(`unexpected delivery failure: ${String(error)}`),
@@ -56,7 +62,7 @@ function publishing(
   return configs;
 }
 
-function published(result: PublishResult): CurrentConfig {
+function published(result: PublishResult): PublishedConfig {
   assert.ok(result.ok, "publish succeeded");
   return result.published;
 }
@@ -83,27 +89,59 @@ describe("publishing", () => {
     assert.equal(current?.publishedAt, 6000);
   });
 
-  test("the hash is the lowercase hex SHA-256 of the config's JSON as sent", async () => {
+  test("the store keeps the config's JSON text, and the hash is its lowercase hex SHA-256", async () => {
+    const store = createMemoryStore();
     const config = configNumbered(1);
     const expected = createHash("sha256").update(JSON.stringify(config)).digest("hex");
     assert.equal(configHash(config), expected);
-    assert.equal(published(await publishing().publishConfig(config)).hash, expected);
+    const entry = published(await publishing({ store }).publishConfig(config));
+    assert.equal(entry.hash, expected);
+    assert.equal(entry.text, JSON.stringify(config));
+    assert.deepEqual(await store.currentConfig(), { text: JSON.stringify(config), hash: expected, publishedAt: 0 });
   });
 
-  test("publishing identical content again is a publish with the same hash", async () => {
+  test("publishing identical content again is a publish with the same hash, heard again", async () => {
     const configs = publishing();
+    const heard: string[] = [];
+    configs.onConfigPublished((current) => heard.push(current.hash));
     const first = published(await configs.publishConfig(configNumbered(1)));
+    const count = heard.length;
     const again = published(await configs.publishConfig(configNumbered(1)));
     assert.equal(again.hash, first.hash);
-    assert.ok(again.sequence > first.sequence);
+    assert.ok(heard.length > count, "listeners hear the publish");
   });
 
-  test("concurrent publishes from one process each succeed; the last stored is current", async () => {
+  test("concurrent publishes from one process each succeed; one of them is current", async () => {
     const configs = publishing();
     const results = await Promise.all([1, 2, 3].map((n) => configs.publishConfig(configNumbered(n))));
-    const stored = results.map(published);
-    const last = stored.reduce((latest, entry) => (entry.sequence > latest.sequence ? entry : latest));
-    assert.equal((await configs.currentConfig())?.hash, last.hash);
+    const hashes = results.map((result) => published(result).hash);
+    assert.ok(hashes.includes((await configs.currentConfig())?.hash ?? ""));
+  });
+
+  test("every read takes its place in the order it was issued, however late it completes", async () => {
+    const store = createMemoryStore();
+    const release = Promise.withResolvers<void>();
+    let hold = true;
+    const slow: ControlPlaneStore = {
+      ...store,
+      async currentConfig() {
+        if (hold) {
+          hold = false;
+          await release.promise;
+        }
+        return store.currentConfig();
+      },
+    };
+    const configs = publishing({ store: slow });
+    const reads: number[] = [];
+    configs.onConfigRead((read) => reads.push(read.read));
+    const early = configs.readConfig();
+    // The publish's own check and its delivery reads are issued after the held read.
+    published(await configs.publishConfig(configNumbered(1)));
+    release.resolve();
+    const held = await early;
+    assert.ok(held, "the held read completes with the config");
+    assert.ok(reads.length > 0 && reads.every((read) => read > held.read), "reads issued later carry later places");
   });
 
   test("an invalid config is refused with its issues and the current config stays", async () => {
@@ -194,13 +232,11 @@ describe("several processes over one store", () => {
     return [publishing({ store }), publishing({ store })];
   }
 
-  test("publishes racing from both are each stored once, one after another", async () => {
+  test("publishes racing from both each succeed; one of them is current", async () => {
     const [a, b] = twoProcesses();
     const results = await Promise.all([1, 2, 3, 4].map((n) => (n % 2 ? a : b).publishConfig(configNumbered(n))));
-    const sequences = results.map((result) => published(result).sequence);
-    assert.equal(new Set(sequences).size, 4, "every publish moved the store on once");
-    const last = results.map(published).reduce((latest, entry) => (entry.sequence > latest.sequence ? entry : latest));
-    assert.equal((await b.currentConfig())?.hash, last.hash);
+    const hashes = results.map((result) => published(result).hash);
+    assert.ok(hashes.includes((await b.currentConfig())?.hash ?? ""));
   });
 
   test("each process's listeners hear every current config, whichever process published it, in order", async () => {
@@ -214,8 +250,8 @@ describe("several processes over one store", () => {
     await a.publishConfig(configNumbered(3));
     // The other process reads the current config back after the store's announcement.
     await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual(heardByA, [1, 2, 3]);
-    assert.deepEqual(heardByB, [1, 2, 3]);
+    assert.deepEqual(runs(heardByA), [1, 2, 3]);
+    assert.deepEqual(runs(heardByB), [1, 2, 3]);
   });
 
   test("a publish that lost the race is checked again against the config that won", async () => {
@@ -242,20 +278,20 @@ describe("several processes over one store", () => {
     // The same content as an earlier publish is handed out again once something else
     // was current in between: a hash says what, never when.
     await configs.publishConfig(configNumbered(1));
-    assert.deepEqual(heard, [1, 2, 1]);
+    assert.deepEqual(runs(heard), [1, 2, 1]);
   });
 });
 
 describe("subscriptions", () => {
   test("every subscriber hears of each published config", async () => {
     const configs = publishing();
-    const heard: CurrentConfig[][] = [[], [], []];
+    const heard: PublishedConfig[][] = [[], [], []];
     for (const list of heard) configs.onConfigPublished((current) => list.push(current));
 
     await publishMany(configs, 2);
     for (const list of heard) {
       assert.deepEqual(
-        list.map((entry) => numberOf(entry.config)),
+        runs(list.map((entry) => numberOf(entry.config))),
         [1, 2],
       );
     }
@@ -281,21 +317,23 @@ describe("subscriptions", () => {
     unsubscribe();
     await configs.publishConfig(configNumbered(2));
 
-    assert.deepEqual(first, [1]);
-    assert.deepEqual(second, [1, 2]);
+    assert.deepEqual(runs(first), [1]);
+    assert.deepEqual(runs(second), [1, 2]);
   });
 
   test("the same listener subscribed twice is two subscriptions", async () => {
     const configs = publishing();
     const heard: number[] = [];
-    const listener = (current: CurrentConfig) => heard.push(numberOf(current.config));
+    const listener = (current: PublishedConfig) => heard.push(numberOf(current.config));
     const unsubscribeFirst = configs.onConfigPublished(listener);
     configs.onConfigPublished(listener);
 
     await configs.publishConfig(configNumbered(1));
+    const reads = heard.length / 2;
     unsubscribeFirst();
     await configs.publishConfig(configNumbered(2));
-    assert.deepEqual(heard, [1, 1, 2]);
+    // Twice for every read of the first config, once for every read of the second.
+    assert.deepEqual(heard, [...Array<number>(reads * 2).fill(1), ...Array<number>(reads).fill(2)]);
   });
 
   test("many subscribers come and go cleanly", async () => {
@@ -307,11 +345,12 @@ describe("subscriptions", () => {
       }),
     );
     await configs.publishConfig(configNumbered(1));
+    const reads = counts[0] ?? 0;
     unsubscribes.forEach((unsubscribe, index) => {
       if (index % 2 === 0) unsubscribe();
     });
     await configs.publishConfig(configNumbered(2));
-    counts.forEach((count, index) => assert.equal(count, index % 2 === 0 ? 1 : 2, `subscriber ${index}`));
+    counts.forEach((count, index) => assert.equal(count, index % 2 === 0 ? reads : 2 * reads, `subscriber ${index}`));
   });
 
   test("a failing subscriber is reported, the others still hear, and the publish succeeds", async () => {
@@ -327,10 +366,8 @@ describe("subscriptions", () => {
 
     published(await configs.publishConfig(configNumbered(1)));
     published(await configs.publishConfig(configNumbered(2)));
-    assert.deepEqual(heard, [1, 2]);
-    assert.deepEqual(failures, [
-      ["broken subscriber", 1],
-      ["broken subscriber", 2],
-    ]);
+    assert.deepEqual(runs(heard), [1, 2]);
+    assert.equal(failures.length, heard.length, "one failure for every config handed out");
+    assert.deepEqual(runs(failures.map(([message, n]) => `${message} ${n}`)), ["broken subscriber 1", "broken subscriber 2"]);
   });
 });

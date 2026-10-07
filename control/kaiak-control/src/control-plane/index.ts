@@ -5,20 +5,21 @@
 // (docs/specs/CONTROL-PROTOCOL.md, Control-plane processes).
 
 import { createConfigPublishing } from "../config-publishing/index.ts";
-import type { ConfigPublishing } from "../config-publishing/index.ts";
+import type { ConfigPublishing, PublishedConfig } from "../config-publishing/index.ts";
 import { createGateways } from "../gateways/index.ts";
 import type { ExpirySweepRun, Gateways, GatewaysChange } from "../gateways/index.ts";
 import { checkGatewayRequest } from "../protocol/index.ts";
 import type { GatewayRequestCheck, RequestHeaders } from "../protocol/index.ts";
-import type { ControlPlaneStore, CurrentConfig, StoreChange } from "../storage/index.ts";
+import type { ControlPlaneStore, StoreChange } from "../storage/index.ts";
 import { createUsage } from "../usage/index.ts";
 import type { Usage } from "../usage/index.ts";
 
 // What a listener that threw was being told of.
 export type ListenerEvent =
-  | { type: "config-published"; published: CurrentConfig }
+  | { type: "config-published"; published: PublishedConfig }
   | { type: "totals-changed" }
-  | { type: "gateways-changed"; change: GatewaysChange };
+  | { type: "gateways-changed"; change: GatewaysChange }
+  | { type: "delivery-failed"; error: unknown };
 
 export type ListenerErrorHandler = (error: unknown, event: ListenerEvent) => void;
 
@@ -46,16 +47,12 @@ export interface ControlPlaneOptions {
   // Milliseconds to wait before each new read of the current config after a read that
   // failed; one read more than there are delays. Default [100, 200, 400, 800, 1600].
   deliveryRetryDelaysMs?: readonly number[];
-  // Hears of a config, totals or gateways listener that threw; the publish or the batch succeeds
-  // regardless. Default: rethrow the error from a microtask, so a listener bug surfaces
+  // Hears of a config, totals, gateways or delivery-failed listener that threw; the
+  // publish, the batch or the next config delivery goes ahead regardless. Default: rethrow the error from a microtask, so a listener bug surfaces
   // as an uncaught exception the way a throwing event listener does. A host that would
   // rather keep running logs it here.
   onListenerError?: ListenerErrorHandler;
 }
-
-// Hears that the store's sequence went back under this core: the store was restored
-// or failed over to a copy behind it (CONTROL-PROTOCOL.md, Config stream → Rollback).
-export type RollbackListener = () => void;
 
 // Hears that the current config could not be read after a change, every retry
 // included: this core's streams may not have it (CONTROL-PROTOCOL.md, Config stream).
@@ -63,15 +60,10 @@ export type DeliveryFailedListener = (error: unknown) => void;
 
 export interface ControlPlane
   extends Omit<ConfigPublishing, "takeChange">,
-    Pick<Usage, "acceptUsageBatch" | "totals" | "recentRecords" | "onTotalsChanged">,
+    Pick<Usage, "acceptUsageBatch" | "totals" | "readTotals" | "recentRecords" | "onTotalsChanged">,
     Omit<Gateways, "takeChange"> {
   // Checks a gateway request's token, protocol version and instance ID.
   checkGatewayRequest(headers: RequestHeaders): GatewayRequestCheck;
-  // Calls listener every time this core reads a store sequence below one it read
-  // before; whatever was sent on a stream may then be ahead of the store, so an adapter
-  // ends its streams and the gateways reconnect. Returns the unsubscribe, which is safe
-  // to call more than once.
-  onRollback(listener: RollbackListener): () => void;
   // Calls listener every time the current config could not be read after a change,
   // retries included; an adapter logs it and ends its streams, and the gateways
   // reconnect and read the current config on connect. Returns the unsubscribe, which is
@@ -112,26 +104,20 @@ export function createControlPlane(options: ControlPlaneOptions): ControlPlane {
   if (token.length === 0) {
     throw Object.assign(new Error("the gateway token must not be empty"), { code: "token-missing" });
   }
-  // The highest store sequence this core has read; a read below it is a rollback.
-  let highestSequence = 0;
-  const rollbackListeners = new Set<RollbackListener>();
-  const observeSequence = (sequence: number): void => {
-    if (sequence >= highestSequence) {
-      highestSequence = sequence;
-      return;
-    }
-    highestSequence = sequence;
-    for (const listener of [...rollbackListeners]) listener();
-  };
   const deliveryFailedListeners = new Set<DeliveryFailedListener>();
   const configPublishing = createConfigPublishing({
     store,
     clock,
-    observeSequence,
     onListenerError: (error, published) => onListenerError(error, { type: "config-published", published }),
     retryDelaysMs: deliveryRetryDelaysMs,
     onDeliveryFailed: (error) => {
-      for (const listener of [...deliveryFailedListeners]) listener(error);
+      for (const listener of [...deliveryFailedListeners]) {
+        try {
+          listener(error);
+        } catch (listenerError) {
+          onListenerError(listenerError, { type: "delivery-failed", error });
+        }
+      }
     },
   });
   const gateways = createGateways({
@@ -148,14 +134,11 @@ export function createControlPlane(options: ControlPlaneOptions): ControlPlane {
     store,
     clock,
     recentRecordsSize,
-    observeSequence,
+    liveGateways: gateways.liveGateways,
     onListenerError: (error) => onListenerError(error, { type: "totals-changed" }),
   });
-  // The core's one store subscription: every change goes to each module, and its
-  // sequence to the rollback check (a rollback shows on the first write after it,
-  // whatever reads this core makes).
+  // The core's one store subscription: every change goes to each module.
   const takeChange = (change: StoreChange): void => {
-    observeSequence(change.sequence);
     configPublishing.takeChange(change);
     usage.takeChange(change);
     gateways.takeChange(change);
@@ -165,9 +148,12 @@ export function createControlPlane(options: ControlPlaneOptions): ControlPlane {
   return {
     publishConfig: configPublishing.publishConfig,
     currentConfig: configPublishing.currentConfig,
+    readConfig: configPublishing.readConfig,
     onConfigPublished: configPublishing.onConfigPublished,
+    onConfigRead: configPublishing.onConfigRead,
     acceptUsageBatch: usage.acceptUsageBatch,
     totals: usage.totals,
+    readTotals: usage.readTotals,
     recentRecords: usage.recentRecords,
     onTotalsChanged: usage.onTotalsChanged,
     acceptStatus: gateways.acceptStatus,
@@ -178,14 +164,6 @@ export function createControlPlane(options: ControlPlaneOptions): ControlPlane {
     startExpirySweep: gateways.startExpirySweep,
     stopExpirySweep: gateways.stopExpirySweep,
     checkGatewayRequest: (headers) => checkGatewayRequest(headers, token),
-    onRollback(listener) {
-      // A wrapper, so the same function subscribed twice is two subscriptions.
-      const subscription: RollbackListener = () => listener();
-      rollbackListeners.add(subscription);
-      return () => {
-        rollbackListeners.delete(subscription);
-      };
-    },
     onDeliveryFailed(listener) {
       // A wrapper, so the same function subscribed twice is two subscriptions.
       const subscription: DeliveryFailedListener = (error) => listener(error);
@@ -199,7 +177,7 @@ export function createControlPlane(options: ControlPlaneOptions): ControlPlane {
       started = true;
       if (unsubscribe === undefined) {
         unsubscribe = store.subscribe(takeChange);
-        takeChange({ type: "catch-up", sequence: highestSequence });
+        takeChange({ type: "catch-up" });
       }
       gateways.startExpirySweep();
     },

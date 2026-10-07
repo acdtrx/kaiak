@@ -12,7 +12,7 @@ import type { ControlPlane } from "../control-plane/index.ts";
 import { configHash } from "../config-publishing/index.ts";
 import { validateConfigEvent } from "../messages/index.ts";
 import { createMemoryStore } from "../storage/index.ts";
-import type { ControlPlaneStore } from "../storage/index.ts";
+import type { ControlPlaneStore, StoreChangeListener } from "../storage/index.ts";
 
 import { controlProtocolPlugin } from "./index.ts";
 import type { ControlProtocolPluginOptions } from "./index.ts";
@@ -104,7 +104,7 @@ function configNumberOf(item: SseItem): number {
 }
 
 // The next event or comment other than totals, which the stream also pushes on connect
-// and after each publish (status-totals.test.ts covers them).
+// (status-totals.test.ts covers them).
 async function nextWithoutTotals(stream: SseStream): Promise<SseItem> {
   for (;;) {
     const item = await stream.next();
@@ -131,8 +131,8 @@ function countingSubscriptions(controlPlane: ControlPlane) {
   const changes = new EventEmitter();
   const counted: ControlPlane = {
     ...controlPlane,
-    onConfigPublished(listener) {
-      const unsubscribe = controlPlane.onConfigPublished(listener);
+    onConfigRead(listener) {
+      const unsubscribe = controlPlane.onConfigRead(listener);
       active++;
       changes.emit("change");
       let subscribed = true;
@@ -346,21 +346,22 @@ describe("GET /v1/stream", { timeout: 10_000 }, () => {
     await activeReaches(0);
   });
 
-  test("a config published while the current config is read is sent once, after it", async () => {
+  test("the same config reaching a stream twice during its connect read is sent once", async () => {
     const core = newControlPlane();
     await publish(core, 1);
-    // The publish lands after the stream subscribed and before its read returns: the
-    // config reaches it both ways, and is sent once.
+    // Config 1 published again after the stream subscribed and before its read returns:
+    // the reads issued for that publish go out first, the connect read's is not sent
+    // after them, and the content is sent once.
     const controlPlane: ControlPlane = {
       ...core,
-      async currentConfig() {
-        const read = await core.currentConfig();
-        await publish(core, 2);
+      async readConfig() {
+        const read = await core.readConfig();
+        await publish(core, 1);
         return read;
       },
     };
-    const stream = await openStream(await startApp(controlPlane));
-    assert.deepEqual(await nextConfigs(stream, 2), [1, 2]);
+    const stream = await openStream(await startApp(controlPlane, { heartbeatIntervalMs: 20 }));
+    assert.deepEqual(await nextConfigs(stream, 1), [1]);
     await publish(core, 3);
     assert.deepEqual(await nextConfigs(stream, 1), [3]);
   });
@@ -374,8 +375,8 @@ describe("GET /v1/stream", { timeout: 10_000 }, () => {
     const readHeld = new Promise<void>((resolve) => (releaseRead = resolve));
     const controlPlane: ControlPlane = {
       ...core,
-      async currentConfig() {
-        const read = await core.currentConfig();
+      async readConfig() {
+        const read = await core.readConfig();
         await readHeld;
         return read;
       },
@@ -390,38 +391,43 @@ describe("GET /v1/stream", { timeout: 10_000 }, () => {
     assert.deepEqual(await nextConfigs(stream, 1), [3]);
   });
 
-  test("a store going back ends every stream; the gateways reconnect to its current state", async () => {
-    const inner = createMemoryStore();
-    let back = 0;
-    const store: ControlPlaneStore = {
-      ...inner,
-      async currentConfig() {
-        const current = await inner.currentConfig();
-        return current && { ...current, sequence: current.sequence - back };
+  test("a store restored to an older config sends it to the open streams once its channel catches up", async () => {
+    // Two memory stores as one store and its backup: the backup holds config 1 only.
+    const live = createMemoryStore();
+    const backup = createMemoryStore();
+    let active = live;
+    const listeners: StoreChangeListener[] = [];
+    const store = new Proxy({} as ControlPlaneStore, {
+      get(_, name: keyof ControlPlaneStore) {
+        if (name === "subscribe") {
+          return (listener: StoreChangeListener) => {
+            listeners.push(listener);
+            const fromLive = live.subscribe((change) => active === live && listener(change));
+            const fromBackup = backup.subscribe((change) => active === backup && listener(change));
+            return () => {
+              fromLive();
+              fromBackup();
+            };
+          };
+        }
+        return (...args: unknown[]) => (active[name] as (...a: unknown[]) => unknown).apply(active, args);
       },
-      async totalsSnapshot(current, instance) {
-        const snapshot = await inner.totalsSnapshot(current, instance);
-        return { ...snapshot, sequence: snapshot.sequence - back };
-      },
-      subscribe(listener) {
-        return inner.subscribe((change) => listener({ ...change, sequence: change.sequence - back }));
-      },
-    };
+    });
+    await publish(newControlPlane(backup), 1);
     const controlPlane = newControlPlane(store);
-    await publish(controlPlane, 1, 2, 3);
+    await publish(controlPlane, 1, 2);
     const app = await startApp(controlPlane);
     const streams = [await openStream(app), await openStream(app)];
-    for (const stream of streams) assert.deepEqual(await nextConfigs(stream, 1), [3]);
+    for (const stream of streams) assert.deepEqual(await nextConfigs(stream, 1), [2]);
 
-    // Restored to a copy two writes behind: the next write shows it.
-    back = 2;
-    await publish(controlPlane, 1);
-    for (const stream of streams) {
-      let item = await nextWithoutTotals(stream);
-      // A config event may still go out before the rollback is seen.
-      while (item.kind !== "end") item = await nextWithoutTotals(stream);
-    }
-    assert.deepEqual(await nextConfigs(await openStream(app), 1), [1]);
+    // Restored: the store's channel comes back and announces a catch-up. Every stream
+    // gets the restored config, and stays open.
+    active = backup;
+    for (const listener of listeners) listener({ type: "catch-up" });
+    for (const stream of streams) assert.deepEqual(await nextConfigs(stream, 1), [1]);
+    // The app publishes its own current config again: it reaches the streams.
+    await publish(controlPlane, 2);
+    for (const stream of streams) assert.deepEqual(await nextConfigs(stream, 1), [2]);
   });
 
   test("closing the app ends open streams", async () => {

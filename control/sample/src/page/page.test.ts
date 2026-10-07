@@ -7,7 +7,7 @@ import path from "node:path";
 import { afterEach, test } from "node:test";
 
 import Fastify from "fastify";
-import type { Config, CurrentConfig, GatewayView, ReceivedRecord, Totals, UsageRecord } from "kaiak-control";
+import type { Config, GatewayView, PublishedConfig, ReceivedRecord, Totals, UsageRecord } from "kaiak-control";
 
 import type { ConfigFileState } from "../config-file/index.ts";
 
@@ -115,7 +115,7 @@ const GATEWAYS: GatewayView[] = [
 // Used amounts for three of the config's counted limits; the rest have used nothing.
 const TOTALS: Totals = {
   live_gateways: 1,
-  counted_through: null,
+  counted_through: [],
   windows: [
     { type: "usd_per_month", window_start: "2026-09-01T00:00:00Z", used: "1524000" },
     { group: "alice", type: "usd_per_month", window_start: "2026-09-01T00:00:00Z", used: "150000000000" },
@@ -138,12 +138,12 @@ const FILE_STATE: ConfigFileState = {
   },
 };
 
-function fakeCore(published: CurrentConfig | undefined): StatusPageOptions["controlPlane"] {
+function fakeCore(published: PublishedConfig | undefined): StatusPageOptions["controlPlane"] {
   const never = () => () => {};
   return {
     currentConfig: async () => published,
     gateways: async () => GATEWAYS,
-    totals: async () => (published ? TOTALS : undefined),
+    totals: async () => TOTALS,
     recentRecords: async () => (published ? fixtureRecords() : []),
     onConfigPublished: never,
     onTotalsChanged: never,
@@ -157,7 +157,7 @@ afterEach(async () => {
   for (const close of closers.splice(0)) await close();
 });
 
-async function fetchPage(published: CurrentConfig | undefined, fileState: ConfigFileState = FILE_STATE) {
+async function fetchPage(published: PublishedConfig | undefined, fileState: ConfigFileState = FILE_STATE) {
   const app = Fastify();
   closers.push(() => app.close());
   registerStatusPage(app, { controlPlane: fakeCore(published), configFile: () => fileState, clock: () => NOW });
@@ -166,7 +166,13 @@ async function fetchPage(published: CurrentConfig | undefined, fileState: Config
   return response;
 }
 
-const PUBLISHED: CurrentConfig = { config: fixtureConfig(), hash: CURRENT_HASH, publishedAt: NOW - 3_600_000, sequence: 7 };
+const PUBLISHED_CONFIG = fixtureConfig();
+const PUBLISHED: PublishedConfig = {
+  config: PUBLISHED_CONFIG,
+  text: JSON.stringify(PUBLISHED_CONFIG),
+  hash: CURRENT_HASH,
+  publishedAt: NOW - 3_600_000,
+};
 
 // The part of the page between two section tags.
 function section(page: string, id: string): string {

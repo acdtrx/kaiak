@@ -210,9 +210,6 @@ test("a totals read across an hour boundary lists the windows current after the 
   const stalled = held(store, "totalsSnapshot");
   const a = core(stalled.store, { clock: () => now });
   const b = core(store, { clock: () => now });
-  const doc = config();
-  doc.global.limits = [{ type: "tokens_per_hour", value: 10 }];
-  assert.ok((await b.publishConfig(doc)).ok);
   const pending = a.totals("gw-review");
   await stalled.entered;
   now = boundary + 1;
@@ -220,7 +217,10 @@ test("a totals read across an hour boundary lists the windows current after the 
   stalled.release();
   const late = await pending;
   assert.deepEqual(late, await b.totals("gw-review"));
-  assert.equal(late?.windows.length, 1, "the batch's window is listed");
+  assert.ok(
+    late.windows.some((window) => window.type === "tokens_per_hour" && window.window_start === "2026-10-07T13:00:00Z"),
+    "the batch's hour window is listed",
+  );
 });
 
 // M1 ([R] M2, [K] M2): a store whose change channel reconnected announces a catch-up;
@@ -252,8 +252,7 @@ test("a catch-up from the store delivers what was missed while its channel was d
   await settle();
   assert.deepEqual(configs, []);
   channelUp = true;
-  const sequence = (await store.totalsSnapshot({ hourStart: 0, monthStart: 0 })).sequence;
-  for (const listener of subscribers) listener({ type: "catch-up", sequence });
+  for (const listener of subscribers) listener({ type: "catch-up" });
   for (let i = 0; i < 50 && configs.length === 0; i += 1) await settle();
   assert.deepEqual(configs, [published.published.hash]);
   assert.ok(totalsHeard >= 1, "totals listeners hear of a possible change");
