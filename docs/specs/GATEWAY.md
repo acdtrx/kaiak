@@ -172,7 +172,7 @@
   | The body does not fit in what the requests in flight leave of the body budget (`Retry-After: 1`; Request pipeline → request bodies) | 503 | `server_error` | `server_busy` |
   | The gateway is draining and refuses new requests; or a request the drain cut off before its response started | 503 | `server_error` | `server_shutting_down` |
   | No config in force (the admission stage's guard; the binary binds its listeners only once a config is in force, in both modes) | 503 | `server_error` | `config_not_loaded` |
-  | A USD limit covers the request's priced model and the control plane has been out of reach past `control_outage_grace_ms` (no stream bytes, or usage waiting that long for an answer), or no totals have arrived since the start (control-plane mode) | 503 | `server_error` | `budget_unavailable` |
+  | A USD limit covers the request's priced model and the control plane has been out of reach past `control_outage_grace_ms` (no stream bytes, or usage waiting that long for an answer or to be shown counted), or no totals have arrived since the start (control-plane mode) | 503 | `server_error` | `budget_unavailable` |
 
   Upstream error messages never name the backend or its address; the log line does
   (settled 2026-09-24). A client string an error message echoes (the method, the
@@ -1369,11 +1369,14 @@ own, and a client sending repeats is broken either way.
   labelled by key for it (series per key would be unbounded; the per-key usage
   metrics already exist). Rejected: `requests_per_minute` before the body — it
   bounds arrivals, not requests held open; one counter per key is simpler.
-- **Local counters** (settled 2026-09-24): one window counter per limit and scope,
-  counting requests, tokens or nano-USD (accounting's cost unit) against an effective
-  limit — the configured value in file mode, the pushed share for per-minute windows
-  in control-plane mode. Sliding minutes count one-second buckets over the last 60 s;
-  hours and months reset at their UTC boundary. Every limit of a scope applies to every
+- **Local counters** (settled 2026-09-24; by scope 2026-10-07): an hour and a month
+  counter for every scope (Every scope is counted, below) and one per-minute counter
+  for each per-minute limit, counting requests, tokens or nano-USD (accounting's cost
+  unit) against an effective limit — the configured value in file mode, the pushed
+  share for per-minute windows in control-plane mode. Sliding minutes count one-second
+  buckets over the last 60 s, and only per-minute counters hold them; hours and months
+  reset at their UTC boundary. A config allocates at most 50 000 counters
+  (`CONTROL-PROTOCOL.md`, Config → The group tree: Counters are bounded). Every limit of a scope applies to every
   request in it, whatever its model (settled 2026-10-06: limits have no model sets,
   `CONTROL-PROTOCOL.md`, Config → The group tree); the scopes checked are global and
   every group on the key's path, a
@@ -1466,12 +1469,22 @@ own, and a client sending repeats is broken either way.
   Rejected: a count only for each configured limit — a limit added by a reload, or
   enforced by a gateway still running a config the control plane moved off, started
   from nothing until totals listed it.
+  **A count outlives its scope's config** (settled 2026-10-07): the hour and month
+  counts of a scope a reload removes are kept until their window ends — in-flight
+  reservations stay on them — and a group created again under its ID within the
+  window takes them back, in both modes. Pushed windows are dropped once their window
+  has passed. Rejected: rebuilding the counts from the config alone — a deleted
+  group's own usage not yet in the totals (in file mode, all of it) was lost, and a
+  group created again under its ID started a fresh budget, which the config contract
+  says it does not (`CONTROL-PROTOCOL.md`, Config → The group tree: Parents never
+  change).
 - **Config reload** (settled 2026-09-24): the limits follow the live config, not each
   request's snapshot, and a reload changes no hour or month count: a changed value
   applies at once to the count so far, a new limit checks its scope's count so far,
   and a removed limit's scope keeps being counted. A group deleted and created again
-  under the same ID within the window carries on with its ID's count (in control-plane
-  mode the totals carry it — `CONTROL-PROTOCOL.md`, Usage intake → Totals). A
+  under the same ID within the window carries on with its ID's count (A count outlives
+  its scope's config, above; in control-plane mode the totals carry it too —
+  `CONTROL-PROTOCOL.md`, Usage intake → Totals). A
   per-minute limit that still exists — same group (or global) and type — keeps its
   window; a new one starts empty; a removed one is dropped.
 - **File-mode usage snapshot** (settled 2026-09-24; only with a data directory —
@@ -1479,8 +1492,9 @@ own, and a client sending repeats is broken either way.
   directory, format version 3 (settled 2026-10-06: counts are named by group and
   type, no model set), holding
   each scope's hour and month window with settled usage (`group` — absent for
-  global —, `type`, `window_start`, `used`), limited or not — unsettled reservations
-  are left out. Written every 30 s and on shutdown; restored at startup, where a
+  global —, `type`, `window_start`, `used`), limited or not, the counts of scopes a
+  reload removed within their window included — unsettled reservations are left
+  out. Written every 30 s and on shutdown; restored at startup, where a
   window is kept only if it is the current one.
   Per-minute windows are not kept. A snapshot that cannot be read is logged and the
   gateway starts with empty windows (it is a cache).
@@ -1579,30 +1593,44 @@ own, and a client sending repeats is broken either way.
     gateway's share sat idle.
   - **Restart keeps the last totals** (settled 2026-09-25, M5; only with a data
     directory — without one, a restart counts from the next totals: a boot with the
-    control plane down serves only the seed's free models, which spend no budget): `limits.json` is
-    neither read nor written; instead `totals.json` (format version 4, settled
-    2026-10-07: counts are named by group or global and type, with no config they
-    belong to) holds each
-    scope's hour and month pushed base (`base_window_start`, `base`) and the usage
-    the control plane had not counted (`window_start`, `uncounted`), limited or not,
-    and the live-gateway count. It is written whenever totals are applied and at
-    shutdown — never per request — and restored at boot, after the config boot and
-    before traffic, by group (or global) and type, as totals are (Totals apply
-    whatever the config). Restored uncounted usage counts only when its window is still current
-    and is tagged with the newest generation of the batches restored from the usage
-    spool, so it leaves once they are counted; with none restored it leaves with the
-    first totals applied. Batches restored from another instance's spool (the
-    instance ID changed, the data directory kept) are never named by the totals,
-    which cover the recipient instance's own batches only: their usage leaves once
-    this instance's first batch is counted, and until then it is counted twice — an
-    over-count only, the safe side (settled 2026-10-07, AUDIT-2 2L5). So a gateway restarted with the control plane down keeps
-    enforcing a spent budget — and hour limits for as long as the outage lasts —
-    instead of counting from zero. Restored totals do not end the outage rule: with
-    no contact since the start, priced USD-limited requests are refused once the
-    grace has passed (Outage refusal), restored or not. Per-minute windows are never
-    kept. The file is a cache: the control plane's next totals replace it, and the
-    control plane stays the record. Rejected: counting from the next pushed totals —
-    every restart forgot the month until the control plane answered.
+    control plane down serves only the seed's free models, which spend no budget):
+    `limits.json` is neither read nor written; instead `totals.json` (format version
+    5, settled 2026-10-07) holds the last applied totals — each scope's hour and month
+    pushed base (`group`, absent for global, `type`, `window_start`, `used`) for the
+    windows still current when it is written, the `counted_through` entries those
+    bases include, and the live-gateway count. The gateway's **own usage is rebuilt
+    from the usage spool** (settled 2026-10-07): at boot, after the config boot and
+    before traffic, the bases are restored by group (or global) and type, as totals
+    are (Totals apply whatever the config), and every spooled batch of this
+    instance that the saved `counted_through` does not cover — acknowledged or not —
+    adds its records to `own`, in their own windows when still current, under the
+    batch's generation, as if just settled. The spool keeps a batch until a
+    `totals.json` save covering it has completed (Usage spool), so the saved bases
+    and the spool together hold every settled amount once: in a base, or in a
+    spooled batch the saved totals do not cover. Batches restored from another
+    instance's spool (the instance ID changed, the data directory kept) are never
+    named by the totals, which cover the recipient instance's own batches only:
+    their records are rebuilt into `own` too, and leave once this instance's first
+    batch is shown counted — they are sent before it, and the control plane counts a
+    batch before it acknowledges it — so until then they may be counted twice, an
+    over-count only (settled 2026-10-07, AUDIT-2 2L5). **Written in the background**
+    every 30 s while totals were applied since the last write, and at shutdown — never
+    on the stream's goroutine, never per request (settled 2026-10-07). So a gateway
+    restarted with the control plane down — crashed or not — keeps enforcing a spent
+    budget, and hour limits for as long as the outage lasts, instead of counting from
+    zero; what a crash loses is only what the spool loses (Usage spool → What a crash
+    can lose). Restored totals do not end the outage rule: with no contact since the
+    start, priced USD-limited requests are refused once the grace has passed (Outage
+    refusal), restored or not. Per-minute windows are never kept. The file is a
+    cache: the control plane's next totals replace it, and the control plane stays the
+    record. Rejected: counting from the next pushed totals — every restart forgot the
+    month until the control plane answered; saving own usage beside the bases on each
+    write — usage settled after the last write and spooled was in neither after a
+    crash, so a gateway restarted during an outage could spend the budget again;
+    writing the file on every push — at thousands of groups it is megabytes with two
+    fsyncs a second, on the goroutine config events wait behind; treating money totals
+    as unknown after an unclean restart — priced models then failed closed until the
+    control plane was back.
   - **Outage refusal**: *contact* is bytes on the config stream (heartbeats
     included), and nothing else (settled 2026-10-07: a usage ack brings no totals
     back, so it proves nothing about the bases — `CONTROL-PROTOCOL.md`, Control-plane
@@ -1631,14 +1659,29 @@ own, and a client sending repeats is broken either way.
     request or a metrics scrape (`kaiak_control_outage`) — and can lag it on an
     idle, unscraped gateway; the fields give the true times. Rejected: a timer of
     its own — a second clock for what the gauge and the requests already decide.
-  - **Usage acks count for money limits** (settled 2026-09-25, M16): while usage
-    batches wait for an answer (sealed or queued, not yet acknowledged or refused),
-    an open stream is not enough — the gateway is also in outage once they have
-    waited longer than the grace: since the first of them was sealed (or restored at
-    boot), or since the control plane's last answer to one, whichever is later. A
-    control plane that serves config but keeps failing `/v1/usage` cannot count this
-    gateway's spend, and each replica would enforce only its own view. With nothing
-    waiting, the stream alone decides. The ack clock restarts on the answer.
+  - **Usage acks count for money limits** (settled 2026-09-25, M16; counted usage
+    2026-10-07): while usage waits, an open stream is not enough — the gateway is also
+    in outage once it has waited longer than the grace. Usage waits two ways:
+    - **for an answer** — batches sealed or queued, not yet acknowledged or refused:
+      since the first of them was sealed (or restored at boot), or since the control
+      plane's last answer to one, whichever is later. A control plane that serves
+      config but keeps failing `/v1/usage` cannot count this gateway's spend, and
+      each replica would enforce only its own view. This clock restarts on the
+      answer.
+    - **to be shown counted** — batches of this instance acknowledged but not yet
+      covered by the `counted_through` of applied totals: since the oldest of them was
+      acknowledged (or restored at boot). Totals that stop coming while the stream
+      stays open — a control-plane process whose change channel died, or whose totals
+      reads keep failing — leave the bases frozen while acks still flow, and each
+      replica would again enforce only its own view. An ack does not restart this
+      clock; only totals covering the batch end its wait. Batches of another instance
+      restored from the spool wait only for an answer: no totals name them.
+
+    With nothing waiting, the stream alone decides. A gateway that spends nothing has
+    nothing waiting, and is never refused for frozen totals it does not use.
+    Rejected: closing the stream from the control plane when its totals reads keep
+    failing — the control plane cannot see a lost change channel, and this one rule
+    covers every cause.
   - **Drift in control-plane mode**: the other gateways' usage not yet reported
     (about one batch interval each) and the push delay; knowledge that a batch was
     counted lags the ack by up to a push (about a second), which only over-counts
@@ -2047,7 +2090,12 @@ own, and a client sending repeats is broken either way.
     **whatever it replaces** — the control plane is the authority on which config is
     current (`CONTROL-PROTOCOL.md`, Current config). `totals` events are decoded and
     handed to the limits consumer, which applies each one (Limits → Control-plane
-    mode: Totals apply whatever the config); malformed events are logged and
+    mode: Totals apply whatever the config). A `totals` event that cannot be
+    decoded **ends the stream** (logged at error level; the reconnect brings complete
+    totals — settled 2026-10-07): each later totals event lists only what changed
+    since the one before, so a skipped one leaves its changes out until those windows
+    change again, and a skipped first one makes the next count as complete, setting
+    every base it does not list to 0. Other malformed events are logged and
     skipped. Heartbeats only prove the connection alive: a stream silent for 45 s
     (three missed heartbeats) is closed and reopened — a connection that died
     without a close never ends on its own. Opening the stream (connecting and
@@ -2090,7 +2138,12 @@ own, and a client sending repeats is broken either way.
     on the other. One sealer, queue and sender serve both stores: only where a
     queued batch is kept differs. An ack removes its batch from the queue and nothing
     else: the batch's usage stays in the limiter's own usage until stream totals show
-    it counted (settled 2026-10-07).
+    it counted (settled 2026-10-07). Acknowledged batches of this instance are
+    remembered (batch ID, usage generation and acknowledgement time; no records)
+    until applied totals cover them, at most 10 000 — past that the oldest is
+    forgotten, which only over-counts until a later batch is shown counted (that
+    retires every earlier generation), and the wait to be shown counted (Limits →
+    Usage acks count for money limits) keeps its time.
   - **Usage batches in memory** (no data directory; settled 2026-09-25, E1): queued
     batches are held in memory until acknowledged, under an epoch new with every
     process. They are bounded like the spool's unwritable case: past
@@ -2115,17 +2168,22 @@ own, and a client sending repeats is broken either way.
       records — about 145 records/s through the 15-minute outage grace. Rejected: a
       record count (the fixed 10 000 records covered about 100 s at 100 records/s,
       far short of the grace, and records differ in size by their IDs and names).
-  - **Usage spool** (with a data directory; settled 2026-09-24; format version 3
-    because records carry `tokens_cache_write`, settled 2026-10-02): one file per
+  - **Usage spool** (with a data directory; settled 2026-09-24; format version 4
+    because the index records acknowledged batches, settled 2026-10-07): one file per
     sealed batch, `usage-batch-<epoch>-<sequence>.json` (the batch message exactly as
-    sent), and an index, `usage-spool.json` (instance, epoch, next sequence). The
+    sent), and an index, `usage-spool.json` (instance, epoch, next sequence, and each
+    epoch's last acknowledged sequence). The
     files are the queue: memory holds only their IDs and record counts, and the batch
     being sent, so a long outage costs disk, not memory, and each seal writes one
     batch — never the whole queue.
     - **Write policy**: a seal writes the batch file, then the index past it; only
       then is the batch queued, so no batch is ever sent before it and its sequence
       are durable, and a restart never reuses a sequence for other records. An ack
-      deletes the batch's file. A failed write leaves the batch sealed in memory,
+      writes the index with the batch's epoch acknowledged through its sequence, so a
+      restart never sends it again; the batch's file stays until a `totals.json` save
+      whose `counted_through` covers it has completed, and is deleted then (settled
+      2026-10-07; Limits → Control-plane mode: Restart keeps the last totals). Another
+      instance's batch is deleted on its ack: no totals name it. A failed write leaves the batch sealed in memory,
       unchanged, and is retried at the next seal tick (logged at error level); usage
       waits rather than risking a sequence bound to two record sets. The filling
       batch is not written: it is sealed every 5 s and at the drain, so a separate

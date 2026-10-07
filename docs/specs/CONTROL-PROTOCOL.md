@@ -40,9 +40,10 @@
 - `GET /v1/stream` → SSE events (behavior: Config stream; settled 2026-10-07, no
   parameters):
   - `config` — the current config with its `config_hash` (Current config);
-  - `totals` — the control plane's usage totals per limit (global and group limits)
-    for hourly and monthly windows, the number of live gateways, and the last of this
-    gateway's batches they include (Budgets; Messages → Totals).
+  - `totals` — the control plane's usage totals per scope and type (global and every
+    group with usage) for hourly and monthly windows, the number of live gateways, and
+    the last of this gateway's batches they include in each epoch (Budgets; Messages →
+    Totals).
 - `POST /v1/usage` → one usage batch; the answer is the ack, which names the batch and
   nothing else (Usage batches).
 - `POST /v1/status` → gateway status; `204` with no body when accepted (Status
@@ -149,7 +150,8 @@ the `{ error, detail }` body, `error` being the stable code:
   `Cache-Control: no-cache`, `X-Accel-Buffering: no` (proxies must not buffer it),
   never compressed, carrying `Kaiak-Protocol` like every response.
 - **On connect** the control plane subscribes to changes *before* it reads the current
-  config, then sends a `config` event with the current config, then a `totals` event.
+  config, then sends a `config` event with the current config, then a `totals` event
+  from a totals read issued after the stream connected (Totals, below).
   With no config published yet the stream stays open (heartbeats only) and sends both
   when the first config is published. Totals go out only once the stream has sent a
   config.
@@ -171,14 +173,20 @@ the `{ error, detail }` body, `error` being the stable code:
   delays (`kaiak-control`: 100 ms doubling, five retries, configurable), and one that
   still fails is reported to the host and closes every stream the process holds, so
   its gateways reconnect and read the current config on connect. A totals read that
-  fails is retried at the push interval. Rejected: dropping the failed read until the
-  next change — a published config (a revoked key) would stay off that process's
-  gateways with nothing reported.
+  fails is retried at the push interval; a stream sends no totals it has not got, so
+  a lasting failure shows on the gateways as usage that stays uncounted, which is an
+  outage past the grace (Control-plane outage → What counts as an outage). Rejected:
+  dropping the failed config read until the next change — a published config (a
+  revoked key) would stay off that process's gateways with nothing reported; closing
+  the streams once totals reads keep failing (settled 2026-10-07) — a second
+  mechanism for what the gateways' rule already covers, and blind to totals that stop
+  for other causes (a lost notification channel).
 - **A restored store is the current state** (settled 2026-10-07): after a restore from
   a backup, or a failover to a standby that was behind, the store's config and totals
   are what processes read, and they go out like any other — the restored config is
   sent to every gateway not running it, and the totals' windows are the restored
-  ones. Nothing in the protocol tells a restore apart. Rejected: detecting a rollback
+  ones. Nothing in the protocol tells a restore apart; how to restore is in
+  Control-plane processes → Restoring the store. Rejected: detecting a rollback
   (a store sequence going back) and closing every stream — the sequence arrives out of
   order on ordinary traffic, so the check fires with no restore, and a gateway
   reconnecting gets the same current state that a push carries; requiring a store
@@ -195,8 +203,18 @@ the `{ error, detail }` body, `error` being the stable code:
   the live set), **at most one per second per stream**, listing **only the windows
   that changed** since the stream's last totals: the first change after a quiet
   second is pushed at once, later ones within the second become one trailing push.
-  Each push carries the newest values its process has read. A publish changes no
-  totals. The stream is the only way totals reach a gateway (Usage batches: the ack
+  A counted batch that changes no window (it cost and counted nothing) still moves
+  its instance's `counted_through`, and is pushed for that. Each push carries the
+  newest values its process has read. A publish changes no
+  totals. **The first totals on a stream come from a totals read issued after the
+  stream connected** (settled 2026-10-07), so they include every batch counted
+  before it — whichever process counted it, and whatever another process already
+  sent the gateway; until that read succeeds the stream sends no totals. Rejected:
+  starting a new stream from the process's latest read — after a reconnect to
+  another process it can be older than the totals the gateway applied, whose usage
+  the gateway has already stopped counting as its own, so that usage is in neither
+  count until the next read; and a process whose reads fail would hand a new stream
+  its last good read as complete. The stream is the only way totals reach a gateway (Usage batches: the ack
   carries none). Rejected: the complete totals on every push — with every scope's
   windows listed, a deployment with thousands of groups sends megabytes to every
   gateway every second.
@@ -245,7 +263,11 @@ the `{ error, detail }` body, `error` being the stable code:
 
 - **Stream events**: SSE `event:` names the event, `data:` holds one JSON message on
   one line: `config` → a config event, `totals` → totals. The event name picks the
-  schema; the data carries no type field of its own.
+  schema; the data carries no type field of its own. A `totals` event the gateway
+  cannot decode ends the stream (settled 2026-10-07; `GATEWAY.md`, Control-plane
+  mode → Stream): a later totals event lists only what changed, so the reconnect's
+  complete totals are the only way back to what the control plane holds. Other
+  malformed events are logged and skipped.
 - **Config event**: valid only if its config passes the config schema and the
   semantic rules. The gateway reads the envelope first and hands the config to its
   config loader: a config it rejects is a *config rejection* — kept out of force and
@@ -257,9 +279,10 @@ the `{ error, detail }` body, `error` being the stable code:
   Every record's `gateway_instance` is the batch's instance, and record IDs are unique
   within a batch.
 - **Usage ack** (settled 2026-10-07): the batch ID it acknowledges — counted now or
-  before, the answer is the same — and nothing else. The gateway drops the batch from
-  its spool; its own usage leaves its counters only through stream totals (Totals:
-  `counted_through`). Rejected: fresh totals in every ack (settled 2026-09-24) — acks
+  before, the answer is the same — and nothing else. The gateway never sends the
+  batch again; its own usage leaves its counters only through stream totals (Totals:
+  `counted_through`), and with a data directory the batch stays in the spool until
+  totals covering it are saved (`GATEWAY.md`, Usage spool). Rejected: fresh totals in every ack (settled 2026-09-24) — acks
   and stream pushes travel on different connections and cross, so the gateway has to
   order totals by a revision, which a store restored from a backup sets back.
 - **Totals** — the `totals` event's data, made for the stream's gateway:
@@ -522,15 +545,21 @@ the `{ error, detail }` body, `error` being the stable code:
     every scope's limits apply). For the `users` example: the models and budget no
     person may exceed are `users`' own list and limits; its `child_defaults` are
     what each person gets unless their own group says otherwise.
-  - **Effective limits are bounded** (settled 2026-09-27): the sum over global and
-    every group of their effective limits (`global.limits`, and each group's own
-    limits merged with its parent's `child_defaults.limits`) is at most **50 000**
-    (`effective-limits-exceeded`). Every effective limit is a counter on every
-    gateway (about 1.4 KB each, so the bound is about 70 MB) and a window in the
-    control plane's totals; `child_defaults` multiply — D default limits on a group
-    with N children are D × N — so a config a few hundred KB long could otherwise
-    take gigabytes on every gateway, and a gateway killed by it refetches it on
-    restart: a fleet-wide crash loop. The value is a constant in both halves.
+  - **Counters are bounded** (settled 2026-09-27; counted by what is allocated,
+    2026-10-07): the counters a config allocates on every gateway are at most
+    **50 000** (`counters-exceeded`): two for global and two for every group (the
+    hour and month counts every scope keeps, limited or not — `GATEWAY.md`, Limits →
+    Every scope is counted), plus one for each effective per-minute limit
+    (`global.limits`, and each group's own limits merged with its parent's
+    `child_defaults.limits`). A per-minute counter holds a minute of one-second
+    buckets (about 1.4 KB), an hour or month counter a few hundred bytes, so the
+    bound keeps counter memory under about 70 MB. Groups and `child_defaults` multiply
+    — D default per-minute limits on a group with N children are D × N — so a config a
+    few hundred KB long could otherwise take gigabytes on every gateway, and a gateway
+    killed by it refetches it on restart: a fleet-wide crash loop. The value is a
+    constant in both halves. Rejected: bounding the effective limits only — every
+    scope is counted whether or not it has limits, so groups without limits passed
+    the bound however many there were.
   - **Parents never change** once published: a move is a delete and a create.
     `kaiak-control` refuses a publish that changes one (`group-parent-changed`,
     Current config); the gateway does not check it. A group created again under an
@@ -620,11 +649,12 @@ the `{ error, detail }` body, `error` being the stable code:
   - `group-depth-exceeded` — a group deeper than 8 levels (a top-level group is
     level 1). Depth is judged only where the parents reach a top-level group: a
     group below an unknown parent or a cycle reports those rules alone.
-  - `effective-limits-exceeded` — the effective limits of global and every group
-    add up to more than 50 000 (Config → The group tree). Reported once, at the
-    document root (path `""`). The count needs only each group's direct parent,
-    so it is made whatever the other tree rules find; a group whose `parent` has
-    no entry counts its own limits alone.
+  - `counters-exceeded` — the counters the config allocates (two per scope, global
+    and every group, plus one per effective per-minute limit) are more than 50 000
+    (Config → The group tree). Reported once, at the document root (path `""`). The
+    count needs only each group's direct parent, so it is made whatever the other
+    tree rules find; a group whose `parent` has no entry counts its own per-minute
+    limits alone.
   - `deployment-backend-unknown` — a deployment's `backend` has no entry.
   - `allowed-model-unknown` — an `allowed_models` entry (a group's or a
     `child_defaults`') names no model.
@@ -719,14 +749,17 @@ the `{ error, detail }` body, `error` being the stable code:
 - A batch carries an ID: the gateway's instance ID, an **epoch** (random, created with
   a fresh spool, so a replaced pod reusing an instance name is never mistaken for the
   old one) and a **sequence number** increasing per batch within the epoch.
-- The control plane remembers the last batch ID it counted per instance. A batch it
-  has already counted (a resend after a lost ack) is acked again without counting —
-  delivery is at-least-once, counting exactly-once, with constant state per gateway.
+- The control plane remembers the last batch ID it counted per instance and epoch. A
+  batch it has already counted (a resend after a lost ack) is acked again without
+  counting — delivery is at-least-once, counting exactly-once, with state bounded by
+  the epochs each gateway counted a batch in within the cursor retention.
   Record IDs stay in the records for audit and storage.
 - **The ack names the batch and nothing else** (settled 2026-10-07): on ack the
-  gateway drops the batch from the spool. It keeps counting the batch as its own until
+  gateway stops sending the batch. It keeps counting the batch as its own until
   stream totals show it counted (Messages → Totals: `counted_through`), so its own
-  usage is never counted twice or missed in between.
+  usage is never counted twice or missed in between, and with a data directory keeps
+  it in the spool until totals covering it are saved, so a crash in between loses
+  none of it from its budgets (`GATEWAY.md`, Usage spool).
 - Batches are sealed every 5 s or at 500 records, whichever comes first. With a data
   directory they are written to it (the spool) before they are sent, so a restart
   resends them with their IDs, and a crash loses only the records settled since the
@@ -862,9 +895,13 @@ How the control plane takes `POST /v1/usage`, as `kaiak-control` implements it.
   window past the 18-digit ceiling of `used` is reported at the ceiling.
 - **Sums are exact**: amounts are summed as `BigInt` from record to wire.
 - **Past windows** older than the previous hour or month are no longer needed (the
-  previous one still takes late records); the first counted batch of each hour lets
-  the store drop them (the drop can also be run by hand). Totals only ever read
-  current windows, so a store that keeps old ones (for audit) answers the same.
+  previous one still takes late records); each process's expiry sweep lets the store
+  drop them once an hour (settled 2026-10-07; a manual sweep run included). Totals
+  only ever read current windows, so a store that keeps old ones (for audit) answers
+  the same. A store that fails the drop fails that sweep run, reported to the host
+  like any sweep failure. Rejected: dropping them while counting the first batch of
+  an hour — a failing drop answered an already counted batch with an error, and the
+  gateway resent it.
 - **Recent records**: the last 100 received records (configurable) are kept with their
   receipt time, for a host's view of recent traffic; duplicates add none.
 
@@ -937,8 +974,9 @@ How the control plane takes `POST /v1/status`, as `kaiak-control` implements it.
   stored one and is dropped (accepted, not written) — written late, it would replace
   the newer status and, after a restart, read as the replaced process coming back.
   A gateway record's revision, which these writes compare, never repeats for an
-  instance, a forgotten and recreated one included: a write computed from a forgotten
-  record never matches the new one.
+  instance, a forgotten and recreated one included, nor across a restore of the store
+  (Control-plane processes → Restoring the store): a write computed from a record
+  that is gone never matches the record there now.
 - **Live set**: an instance joins with its first accepted status and leaves when an
   expiry sweep finds it silent for 30 s (configurable). The live-gateway count is the
   set's size, the same for every control-plane process, read apart from the totals
@@ -952,7 +990,10 @@ How the control plane takes `POST /v1/status`, as `kaiak-control` implements it.
   instances, or the failure) to the host. **Every process sweeps** (settled
   2026-10-06): each expiry or forgetting is a write conditional on the record the
   sweep read, so a status taken meanwhile by any process keeps its gateway live, and
-  two sweeps racing expire a gateway once. A gateway expired and still silent after an hour
+  two sweeps racing expire a gateway once; it forgets gateways in instance order, so
+  two sweeps never take a database's records in opposite orders. Each run also drops
+  past batch cursors (below) and, once an hour, past windows (Usage intake → Past
+  windows). A gateway expired and still silent after an hour
   (configurable) is forgotten — instance names churn with pods, and the list must not
   grow without bound. A forgotten gateway that reports again simply joins again.
 - **Batch cursor retention** (settled 2026-09-25; per epoch 2026-10-07): each epoch's
@@ -999,9 +1040,17 @@ How the control plane takes `POST /v1/status`, as `kaiak-control` implements it.
     every stream a process holds.
   - **The config as text**: the store returns the config's JSON text exactly as
     published (Current config → `config_hash`).
+  - **Every call settles**: a store call resolves or rejects; one that never does
+    holds that process's config deliveries (one at a time) behind it with nothing
+    reported, so a database store bounds every statement (a statement timeout).
   - **Change notification**: every process hears of every publish, totals change and
     live-set change any process made, so each sends to the streams it holds (Config
-    stream). A store whose change channel can drop notifications (a database's
+    stream). **A read after a notification sees the change** (settled 2026-10-07): a
+    process that hears of a publish reads the current config, of a live-set change the
+    gateway records, of a counted batch the totals, and each read sees what it was
+    told of — a database store reads them from its primary, never from a replica that
+    may lag the notification. A read that missed the change would send the old config
+    (a revoked key still usable) until the next publish. A store whose change channel can drop notifications (a database's
     listening connection) announces a **catch-up** to every process each time the
     channel is back (settled 2026-10-07), after which a read sees every change made
     while it was down; the process then reads the current config, the totals and the
@@ -1010,6 +1059,14 @@ How the control plane takes `POST /v1/status`, as `kaiak-control` implements it.
     change.
   - **No order of its own** (settled 2026-10-07): the store keeps no sequence. A
     process orders what it sends by when it issued each read (Config stream → Order).
+- **Restoring the store** (settled 2026-10-07): stop every control-plane process;
+  restore; move the gateway-record revisions past every value issued before the
+  restore (a database sequence set ahead of anything it handed out); start the
+  processes, each of which reads the current config, totals and live set on start
+  (`start()` catches up). Rejected: restoring under running processes — an expiry or
+  status write a process computed before the restore can match a restored revision
+  and overwrite or expire a record written after it, and with the change channel up
+  nothing tells the processes to read again, so their streams keep the old state.
 - **Processes start and stop freely**: no process owns the store, so rolling updates,
   restarts and replicas need no ordering. The expiry sweep runs on every process
   (Status intake). What a process keeps for itself — the streams it holds, the
@@ -1057,10 +1114,19 @@ How the control plane takes `POST /v1/status`, as `kaiak-control` implements it.
   first contact ends it; status reports and usage acks are not counted as contact
   (they carry no totals back, so they prove nothing about the bases — a stream broken
   behind a proxy while acks still flow would otherwise never become an outage, and
-  each gateway would spend the remaining budget on its own). While usage batches wait for an answer, the
-  gateway is also in outage once they have waited past the grace, an open stream
+  each gateway would spend the remaining budget on its own). While its usage waits,
+  the gateway is also in outage once it has waited past the grace, an open stream
   notwithstanding (settled 2026-09-25, M16; `GATEWAY.md`, Limits → Usage acks count
-  for money limits).
+  for money limits): a batch waits **for an answer** until it is acknowledged or
+  refused, and an acknowledged batch of the gateway's own instance waits **to be
+  shown counted** until stream totals whose `counted_through` covers it are applied
+  (settled 2026-10-07). Totals that stop coming while the stream stays open — a
+  process whose change channel died, or whose totals reads keep failing — leave a
+  spending gateway's acknowledged batches uncovered, so the gateway that spends
+  enters outage; one that spends nothing risks nothing. Heartbeats are contact, but
+  they prove the connection, not the bases. Rejected: the control plane closing its
+  streams when its totals reads keep failing — one rule on the gateway covers every
+  cause, a dead change channel included, which the control plane cannot see.
 - **Not an outage, same refusal: no totals yet** (settled 2026-09-25, D8): a gateway
   that has not yet applied totals since it started (nor restored them from its data
   directory) does not know the spend, and refuses the same
