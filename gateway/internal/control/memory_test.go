@@ -8,11 +8,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"net/url"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+	"weak"
 
 	"kaiak/internal/accounting"
 	"kaiak/internal/fakecontrol"
@@ -164,5 +168,68 @@ func (o *testObserver) waitMemoryBytes(t *testing.T, want int64) {
 		case <-timeout:
 			t.Fatalf("%d bytes held in memory, want %d", got, want)
 		}
+	}
+}
+
+// recordWatched records the n-th test record and returns a weak pointer into it, so a
+// test can tell whether anything still holds the record. It is not inlined, so no
+// strong reference stays on the caller's stack.
+//
+//go:noinline
+func recordWatched(c *Client, n int) weak.Pointer[string] {
+	rec := testRecord(n)
+	p := weak.Make(&rec.Groups[0])
+	c.Record(rec)
+	return p
+}
+
+// A record dropped to keep within the memory bound leaves memory: nothing — the
+// sealed batches' backing array included — still holds it, so the bound really bounds
+// the heap.
+func TestRecordsDroppedAtTheBoundLeaveMemory(t *testing.T) {
+	c := New(Options{URL: &url.URL{Scheme: "http", Host: "localhost"},
+		Instance: testInstance, Logger: slog.New(slog.DiscardHandler),
+		BatchMaxRecords: 1, UsageMemoryBytes: recordSize(t, testRecord(1))})
+	recordWatched(c, 1) // the outstanding batch, never dropped
+	dropped := recordWatched(c, 2)
+	for i := 3; i < 64; i++ {
+		recordWatched(c, i)
+	}
+	c.usage.queueSealed()
+	if len(c.usage.queue) != 1 || len(c.usage.sealed) != 0 {
+		t.Fatalf("%d queued and %d sealed batches, want only the outstanding one", len(c.usage.queue), len(c.usage.sealed))
+	}
+	runtime.GC()
+	if dropped.Value() != nil {
+		t.Error("a record dropped at the bound is still held after a collection")
+	}
+	runtime.KeepAlive(c)
+}
+
+// A batch removed from the head of the queue (acknowledged or refused) leaves memory
+// with it.
+func TestARemovedHeadBatchLeavesMemory(t *testing.T) {
+	c := New(Options{URL: &url.URL{Scheme: "http", Host: "localhost"},
+		Instance: testInstance, Logger: slog.New(slog.DiscardHandler), BatchMaxRecords: 1})
+	removed := recordWatched(c, 1)
+	recordWatched(c, 2)
+	c.usage.queueSealed()
+	if len(c.usage.queue) != 2 {
+		t.Fatalf("%d queued batches, want 2", len(c.usage.queue))
+	}
+	acknowledgeHead(c)
+	runtime.GC()
+	if removed.Value() != nil {
+		t.Error("an acknowledged batch's record is still held by the queue after a collection")
+	}
+	runtime.KeepAlive(c)
+}
+
+// acknowledgeHead acknowledges the outstanding batch, holding it only for the call.
+//
+//go:noinline
+func acknowledgeHead(c *Client) {
+	if head, ok := c.usage.head(); ok {
+		c.usage.acknowledged(head)
 	}
 }

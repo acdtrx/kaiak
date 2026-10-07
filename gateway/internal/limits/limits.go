@@ -142,6 +142,9 @@ type Limiter struct {
 	// requests running settle on them (docs/specs/GATEWAY.md, Limits → A count outlives
 	// its scope's config).
 	retained map[counterKey]*counter
+	// retainedPrunedAt is the start of the hour the retained counts were last pruned
+	// in (expireRetainedLocked).
+	retainedPrunedAt time.Time
 	// owning are the shared counters holding settled own usage by generation, the ones
 	// retiring a generation visits; a counter that rolled its window may stay listed
 	// with nothing left.
@@ -245,6 +248,7 @@ func (l *Limiter) ObserveSyncs(f func(time.Duration)) {
 // usage or a running request holds them; removed per-minute limits are dropped.
 // Callers hold l.mu.
 func (l *Limiter) sync() {
+	l.expireRetainedLocked(l.now())
 	snap := l.holder.Current()
 	if snap == nil || snap == l.applied {
 		return
@@ -323,6 +327,19 @@ func (l *Limiter) pruneRetainedLocked(now time.Time) {
 			delete(l.owning, c)
 		}
 	}
+}
+
+// expireRetainedLocked prunes the retained counts once an hour, on whatever brings the
+// limiter into use: a retained count's window ends on an hour boundary, and neither a
+// reload nor a totals event (file mode has none) need come after it. Callers hold
+// l.mu.
+func (l *Limiter) expireRetainedLocked(now time.Time) {
+	hour := windowStart(UTCHour, now)
+	if !hour.After(l.retainedPrunedAt) {
+		return
+	}
+	l.retainedPrunedAt = hour
+	l.pruneRetainedLocked(now)
 }
 
 // newCounter is the counter of a scope and type no existing counter has: it starts

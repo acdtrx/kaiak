@@ -37,6 +37,19 @@ type queuedBatch struct {
 	generation uint64
 }
 
+// dropFirst removes s's first element and clears its slot, so the backing array no
+// longer holds what it held: a batch leaving the sealed batches or the queue leaves
+// memory with it, which is what the memory bound counts on. An emptied slice lets go
+// of its backing array.
+func dropFirst[T any](s []T) []T {
+	var zero T
+	s[0] = zero
+	if len(s) == 1 {
+		return nil
+	}
+	return s[1:]
+}
+
 func newEpoch() string {
 	var b [16]byte
 	_, _ = rand.Read(b[:]) // crypto/rand.Read never returns an error
@@ -63,7 +76,7 @@ func (u *usageSender) queueSealed() {
 		records, size := u.checkRecords(sealed.records)
 
 		u.mu.Lock()
-		u.sealed = u.sealed[1:]
+		u.sealed = dropFirst(u.sealed)
 		u.sealedRecords -= len(sealed.records)
 		if len(records) == 0 {
 			u.depthChangedLocked()

@@ -902,3 +902,32 @@ func TestGlobalLimitLinesCarryNoGroup(t *testing.T) {
 			line["kaiak.limit.scope"], g, ok)
 	}
 }
+
+// In file mode no totals ever arrive, and the config need not change: a deleted
+// group's counters still end once their windows have passed and no request holds them,
+// through the limiter's ordinary use alone.
+func TestADeletedGroupsCountersEndWithTheirWindowsWithoutAReload(t *testing.T) {
+	c := newClock("2026-10-07T12:30:00Z")
+	h := holderOf(snapshot(t, limitsDoc{extraGroup: "temporary"}))
+	l := c.limiter(h)
+	subject := Subject{Groups: []string{"temporary"}, Model: "m1", Priced: true}
+	r := admitN(t, l, subject, 1, 0)[0]
+	h.Swap(snapshot(t, limitsDoc{}))
+	_ = l.Usage()
+	l.Settle(r, record(10, 0, 0, 0, 0, 1_000_000_000))
+	l.Settle(r) // a repeated settle releases nothing more
+	c.set("2026-11-01T00:30:00Z")
+	l.Settle(admitN(t, l, workload, 1, 0)[0])
+	_ = l.Usage()
+	_ = l.Outage()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for k, counter := range l.retained {
+		if counter.refs != 0 {
+			t.Errorf("%v holds %d references after every request settled", k, counter.refs)
+		}
+	}
+	if len(l.retained) != 0 {
+		t.Fatalf("%d counters of the deleted group kept after their windows passed", len(l.retained))
+	}
+}

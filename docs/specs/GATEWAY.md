@@ -1473,8 +1473,10 @@ own, and a client sending repeats is broken either way.
   counts of a scope a reload removes are kept while their current window holds own
   usage or a running request holds a reservation on them — of any amount, zero
   included, and across a window roll-over — and a group created again under its ID
-  meanwhile takes them back, in both modes; they are dropped once neither holds. They
-  are outside the `counters-exceeded` bound: each ends with its window. Pushed windows
+  meanwhile takes them back, in both modes; they are dropped once neither holds, at
+  the latest within the hour after, on whatever next uses the limits — no reload or
+  totals event is needed. They are outside the `counters-exceeded` bound: each ends
+  with its window. Pushed windows
   are dropped once their window has passed. Rejected: rebuilding the counts from the config alone — a deleted
   group's own usage not yet in the totals (in file mode, all of it) was lost, and a
   group created again under its ID started a fresh budget, which the config contract

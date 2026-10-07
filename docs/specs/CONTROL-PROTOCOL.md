@@ -509,8 +509,8 @@ the `{ error, detail }` body, `error` being the stable code:
   - **Limits** (settled 2026-10-06): `{ type, value }`, at most one per type in a
     scope (global, a group, a group's `child_defaults`), covering all of the scope's
     usage — every model, counted together. A limit's **identity** is (group, type); a
-    global limit has no group. Totals windows, the gateway's counters and the
-    file-mode snapshot all key limits by it. An unpriced model costs nothing, so a
+    global limit has no group. Totals windows and the gateway's counters key limits
+    by it. An unpriced model costs nothing, so a
     `usd_per_month` limit already counts only priced models' spend. Rejected:
     - limits on a set of models (the `models` member, settled 2026-09-24): budgets
       are set per group, a model set made one scope hold several limits of a type,

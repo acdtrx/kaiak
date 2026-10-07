@@ -369,7 +369,7 @@ func (u *usageSender) dropHeadLocked(b queuedBatch) {
 	if len(u.queue) == 0 || u.queue[0].id != b.id {
 		return
 	}
-	u.queue = u.queue[1:]
+	u.queue = dropFirst(u.queue)
 	u.queuedRecords -= len(b.records)
 	u.queuedBytes -= b.bytes
 	u.depthChangedLocked()
