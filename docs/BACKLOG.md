@@ -347,15 +347,22 @@ Group entries under headings as themes emerge.
     export); a collector can also still read stderr (OTel Collector `filelog`,
     Vector, Fluent Bit). Either path may drop lines under pressure: fine for
     outcomes, never for billing (usage records stay the record).
-  - *Metrics* — `/metrics` is Prometheus text, which the Collector's `prometheus`
-    receiver scrapes; native OTLP metrics only if a backend cannot scrape.
+  - *Metrics* — wanted (user, 2026-10-07): OTLP metrics export alongside
+    `/metrics`, the way the logs layer was added, with metric names and units
+    renamed to the OpenTelemetry semantic conventions where one exists (`kaiak.*`
+    for the rest). It takes in the metrics-facing findings of the structure review
+    (`docs/reviews/2026-10-07-structure/STRUCTURE.md`: observability F3, F4, F5, F8
+    and T12 — label lists read from the code that produces the values, routing
+    observation built once), so each metric changes once. Trigger: structure-review
+    packages 2 (attempt classification) and 4 (limit-type table and unit sets) are
+    merged — they create the label lists the metrics read.
   - *Traces* — new work. Confined test first: forward the W3C `traceparent` header
     to backends (vLLM can continue the trace) and log `trace_id` on the request line,
     linking client traces to gateway lines. Span export (per request, per attempt,
     queue wait) needs OTLP: the OTel Go SDK is a third-party dependency (a dated
     ruling in `TECH-STACK.md`), or a hand-written OTLP/HTTP exporter using its JSON
     encoding.
-  Revisit trigger (traces; the logs layer is built): a question about a request
-  that the log line cannot answer, or a client team that traces its own calls and
-  needs the gateway's part linked in.
+  Revisit trigger (traces; the logs layer is built, metrics are wanted): a question
+  about a request that the log line cannot answer, or a client team that traces its
+  own calls and needs the gateway's part linked in.
 
