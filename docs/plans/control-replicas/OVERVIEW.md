@@ -408,6 +408,8 @@ merge.
   19. `STEP-19-gateway.md`: the gateway removal, and decision 36.
   20. `STEP-20-green.md`: leftovers, the checklist greps clean, AUDIT-4's outcome,
       three green runs.
+- **Phase 8 — round-5 fixes** (step 21). Green at the end.
+  21. `STEP-21-round-5.md`: the Codex-only fifth review's three findings.
 
 Expected reds inside phase 1:
 - After step 1, both halves fail the totals fixtures. Step 4 clears `kaiak-control`'s
