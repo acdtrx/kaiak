@@ -394,19 +394,3 @@ func (w *window) settled(now time.Time) int64 {
 	w.roll(now)
 	return w.used - w.held
 }
-
-// copySettled returns a copy of w without its unsettled reservations — they belong to
-// the requests holding w and settle there: a limit carried over from w to a second
-// new identity starts from what w counted.
-func (w *window) copySettled(now time.Time) *window {
-	w.roll(now)
-	c := *w
-	c.local = slices.Clone(w.local)
-	c.used -= c.held
-	c.held = 0
-	for i := range c.n {
-		c.n[i] -= c.nHeld[i]
-		c.nHeld[i] = 0
-	}
-	return &c
-}

@@ -290,8 +290,8 @@ func TestResolvedFixtures(t *testing.T) {
 					t.Errorf("%s: allowed models %s, want %s", id, gotAllowed, encoded)
 				}
 
-				// A snapshot limit holds its model set sorted; the fixture writes it as
-				// the config does. Identity ignores the order, the list order counts.
+				// The fixture lists the effective limits in the order the merge gives
+				// them: the parent's defaults in place, then the group's own.
 				wantLimits := make([]Limit, len(want.Limits))
 				for i, l := range want.Limits {
 					wantLimits[i] = Limit{Type: LimitType(l.Type), Value: l.Value}

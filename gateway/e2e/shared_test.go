@@ -97,8 +97,8 @@ func TestSharedLimitsAcrossGateways(t *testing.T) {
 		if r.StatusCode != http.StatusTooManyRequests || r.errorCode(t) != "budget_exceeded" {
 			t.Fatalf("gw-b after the push: %d %s, want 429 budget_exceeded", r.StatusCode, r.body)
 		}
-		if r := b.post(t, "/v1/chat/completions", evalKey, "", chatBody("rpm", false, nil)); r.StatusCode != http.StatusOK {
-			t.Fatalf("gw-b on an unpriced model, which no budget refuses: %d %s", r.StatusCode, r.body)
+		if r := b.post(t, "/v1/chat/completions", evalKey, "", chatBody("priced", false, nil)); r.StatusCode != http.StatusOK {
+			t.Fatalf("gw-b on a priced model outside every USD limit: %d %s", r.StatusCode, r.body)
 		}
 		cp.SetLiveGateways(2)
 		for _, g := range []*gateway{a, b} {
@@ -118,8 +118,8 @@ func TestSharedLimitsAcrossGateways(t *testing.T) {
 		if r.StatusCode != http.StatusServiceUnavailable || r.errorCode(t) != "budget_unavailable" {
 			t.Fatalf("money-limited model in the outage: %d %s, want 503 budget_unavailable", r.StatusCode, r.body)
 		}
-		if r := a.post(t, "/v1/chat/completions", evalKey, "", chatBody("rpm", false, nil)); r.StatusCode != http.StatusOK {
-			t.Fatalf("unpriced model in the outage: %d %s", r.StatusCode, r.body)
+		if r := a.post(t, "/v1/chat/completions", evalKey, "", chatBody("priced", false, nil)); r.StatusCode != http.StatusOK {
+			t.Fatalf("priced model outside every USD limit in the outage: %d %s", r.StatusCode, r.body)
 		}
 		if got := a.metric(t, `kaiak_errors_total{class="budget_unavailable"}`); got != 1 {
 			t.Errorf("budget_unavailable errors = %v, want 1", got)
@@ -156,7 +156,7 @@ func TestRejectedConfigKeepsBudgetsEnforcedFromStreamTotals(t *testing.T) {
 	defer cp.Close()
 	cp.PushTotalsOnChange()
 	cp.SetLiveGateways(2)
-	_, evalHash := newKey()
+	evalKey, evalHash := newKey()
 	_, annHash := newKey()
 	publish := func(cfg map[string]any) string {
 		data, err := json.Marshal(cfg)
@@ -231,8 +231,8 @@ func TestRejectedConfigKeepsBudgetsEnforcedFromStreamTotals(t *testing.T) {
 		t.Errorf("gw-a under v2's budget: %d %s, want 200", r.StatusCode, r.body)
 	}
 	budgetExceeded(t, b, "gw-b under v1's budget on the stream's totals")
-	if r := chat(b, "rpm"); r.StatusCode != http.StatusOK {
-		t.Errorf("gw-b on an unpriced model, which no budget refuses: %d %s, want 200", r.StatusCode, r.body)
+	if r := b.post(t, "/v1/chat/completions", evalKey, "", chatBody("priced", false, nil)); r.StatusCode != http.StatusOK {
+		t.Errorf("gw-b on a priced model outside every USD limit: %d %s, want 200", r.StatusCode, r.body)
 	}
 	// Nothing spent: gw-b serves under v1's budget too — the stream's totals, not stale
 	// bases, decide.

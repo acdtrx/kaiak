@@ -515,6 +515,21 @@ func TestShareNeverMakesARequestImpossible(t *testing.T) {
 	}
 }
 
+// The small-share warning names only models the limit's scope may use: a group allowed
+// only m2 (no default output) gets no warning about m1's ([G] L1 in the 2026-10-07
+// review).
+func TestShareWarningNamesOnlyModelsTheScopeMayUse(t *testing.T) {
+	c := newClock("2026-09-24T10:30:00Z")
+	var logs bytes.Buffer
+	cs := &contactState{connected: true, last: c.t}
+	doc := limitsDoc{team: `[{ "type": "tokens_per_minute", "value": 60000 }]`, teamModels: `["m2"]`}
+	l := NewShared(holderOf(snapshot(t, doc)), c.now, cs.get, slog.New(slog.NewTextHandler(&logs, nil)))
+	l.TakeTotals(Totals{LiveGateways: 4}, 0)
+	if strings.Contains(logs.String(), "per-minute share below") {
+		t.Errorf("a share warning for a model group t may not use:\n%s", logs.String())
+	}
+}
+
 // O6: the outage's start is logged once as a warning, its end once at info — on
 // the transitions, whatever the requests and scrapes in between.
 func TestOutageStartAndEndAreLoggedOnce(t *testing.T) {

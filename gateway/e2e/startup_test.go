@@ -139,8 +139,10 @@ func TestFirstTotalsLateRefuseBudgetsUntilTheyArrive(t *testing.T) {
 	if !strings.Contains(string(r.body), "not known") {
 		t.Errorf("budget_unavailable message %s, want it to say the spend is not known", r.body)
 	}
-	if r := g.post(t, "/v1/chat/completions", evalKey, "", chatBody("rpm", false, nil)); r.StatusCode != http.StatusOK {
-		t.Errorf("unpriced model: %d %s, want 200", r.StatusCode, r.body)
+	// A priced model no USD limit covers costs nothing any budget counts: it serves
+	// while the spend is unknown.
+	if r := g.post(t, "/v1/chat/completions", evalKey, "", chatBody("priced", false, nil)); r.StatusCode != http.StatusOK {
+		t.Errorf("priced model outside every USD limit: %d %s, want 200", r.StatusCode, r.body)
 	}
 
 	cp.PushCurrentTotals()

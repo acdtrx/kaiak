@@ -31,6 +31,8 @@ func (c *clock) limiter(h *config.Holder) *Limiter { return New(h, c.now, nil) }
 type limitsDoc struct {
 	global, defaultUser, team, workload, ann string
 	grace                                    string
+	// teamModels, when set, is group t's allowed_models list (JSON).
+	teamModels string
 }
 
 func list(s string) string {
@@ -58,7 +60,7 @@ func snapshot(t *testing.T, l limitsDoc) *config.Snapshot {
       "output_limit": { "default": 16384, "ceiling": 16384 }, "metadata"`, 1) + `,
     "m2": ` + model + ` },
   "groups": {
-    "t": { "limits": ` + list(l.team) + ` },
+    "t": { ` + allowedModels(l.teamModels) + `"limits": ` + list(l.team) + ` },
     "w": { "parent": "t", "limits": ` + list(l.workload) + ` },
     "users": { "child_defaults": { "limits": ` + list(l.defaultUser) + ` } },
     "ann": { "parent": "users", "limits": ` + list(l.ann) + ` },
@@ -71,6 +73,13 @@ func snapshot(t *testing.T, l limitsDoc) *config.Snapshot {
 		t.Fatal(err)
 	}
 	return s
+}
+
+func allowedModels(list string) string {
+	if list == "" {
+		return ""
+	}
+	return `"allowed_models": ` + list + `, `
 }
 
 func graceField(ms string) string {

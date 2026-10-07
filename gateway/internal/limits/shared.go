@@ -83,10 +83,11 @@ func (l *Limiter) TakeTotals(t Totals, counted uint64) {
 }
 
 // warnSmallSharesLocked logs, once per applied config and live-gateway count, each
-// per-minute token limit whose share is below the default output of a model it
-// covers: output default × live gateways > limit. Such a request is admitted only
-// while this gateway's window for the limit is empty (counter.admits), so the limit
-// works as about one request a minute per gateway. Callers hold l.mu.
+// per-minute token limit whose share is below the default output of a model its scope
+// may use (a group's allowed models; every model for a global limit): output default
+// × live gateways > limit. Such a request is admitted only while this gateway's window
+// for the limit is empty (counter.admits), so the limit works as about one request a
+// minute per gateway. Callers hold l.mu.
 func (l *Limiter) warnSmallSharesLocked() {
 	if l.applied == nil || (l.applied == l.sharesChecked.snapshot && l.live == l.sharesChecked.live) {
 		return
@@ -96,9 +97,13 @@ func (l *Limiter) warnSmallSharesLocked() {
 		if c.limit.Type != config.LimitTokensPerMinute || c.w.limit >= effectiveLimit(c.limit) {
 			continue
 		}
+		group := l.applied.Groups[c.key.group]
 		for _, name := range l.applied.ModelNames {
 			m := l.applied.Models[name]
 			if m.OutputLimit == nil || m.OutputLimit.Default <= c.w.limit {
+				continue
+			}
+			if group != nil && !group.AllowedModels.Allows(name) {
 				continue
 			}
 			l.logger.Warn("per-minute share below the model's default output: a request at the default is admitted only while this gateway's window is empty",

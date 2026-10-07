@@ -155,8 +155,8 @@ type Limiter struct {
 }
 
 // New returns a file-mode limiter for the config held by holder. now is the clock
-// (time.Now outside tests); logger (nil: discard) hears of limits that carry their
-// usage across a config change.
+// (time.Now outside tests); logger (nil: discard) hears of a counter that went
+// negative (a bug, clamped).
 func New(holder *config.Holder, now func() time.Time, logger *slog.Logger) *Limiter {
 	return &Limiter{holder: holder, now: now, logger: orDiscard(logger), counters: map[counterKey]*counter{}}
 }
@@ -181,7 +181,7 @@ type Contact struct {
 }
 
 // NewShared returns a control-plane-mode limiter: its hour and month windows count
-// the totals ApplyTotals pushes plus the usage not yet counted by the control plane,
+// the totals TakeTotals takes plus the usage not yet counted by the control plane,
 // its per-minute windows a share of their limit. contact reports the control plane's
 // contact now; it decides the outage (Outage). logger (nil: discard) also hears of
 // per-minute shares too small for a model's default output.
@@ -203,9 +203,9 @@ func (l *Limiter) ObserveSyncs(f func(time.Duration)) {
 }
 
 // sync matches the counters to the live snapshot when it changed: limits that still
-// exist keep their counters (a changed value applies to the count so far), a limit
-// whose only change is its model set keeps its predecessor's (carryOver), other new
-// ones start empty, removed ones are dropped. Callers hold l.mu.
+// exist — matched by group (or global) and type — keep their counters (a changed value
+// applies to the count so far), new ones start empty, removed ones are dropped.
+// Callers hold l.mu.
 func (l *Limiter) sync() {
 	snap := l.holder.Current()
 	if snap == nil || snap == l.applied {
