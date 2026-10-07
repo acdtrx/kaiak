@@ -2075,8 +2075,8 @@ own, and a client sending repeats is broken either way.
   - **Usage batches in memory** (settled 2026-09-25, E1): queued batches are held in
     memory until acknowledged, under an epoch new with every process (32 random hex
     digits). They are bounded: past
-    **`KAIAK_USAGE_MEMORY_BYTES`** held (default 64 MiB, queued and sealed records
-    by their encoded size), the oldest queued batches are dropped —
+    **`KAIAK_USAGE_MEMORY_BYTES`** held (default 64 MiB: the encoded size of the
+    queued batches' records), the oldest queued batches are dropped —
     except the outstanding one, which may be on the wire and whose ack must still
     find it — logged at error level and counted in
     `kaiak_usage_dropped_records_total{reason="memory_bound"}`. A record the checks

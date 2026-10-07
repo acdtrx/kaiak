@@ -42,6 +42,15 @@ What phase 6 (steps 15–17) added:
 | D-L1, [G] G4-L3 | Low | Wording: an ack "lets the batch leave the spool"; the 10 000 bound "in every mode"; a wrong warning at `usage.go:367` | dissolved: decision 35 (the text goes with the data directory) |
 | [G] G4-L3 | Low | Retained counters are outside the `counters-exceeded` bound | decision 36: bounded by their window, accepted |
 
-## Outcome
+## Outcome (2026-10-07)
 
-Filled in by step 20.
+| ID | Outcome |
+|---|---|
+| D-H3 | **Fixed** in `0a00dc6` (decision 36): `counter.refs` counts the running requests holding a reservation on a counter, zero amounts included. A retained counter is pruned only with no reference and nothing in its current window, so the reference outlives a roll-over. Regression tests: `TestARunningRequestHoldsTheCountsOfADeletedGroup` (both modes) and `TestARunningRequestHoldsADeletedGroupsCountsAcrossTheHour`. Each fails with the reference check reverted (STEP-19 Result) |
+| D-H1, [G] G4-L2 | **Dissolved** by decision 35 (`0a00dc6`): no spool on disk, so nothing is restored from another instance and nothing deleted on its ack |
+| D-H2, [G] G4-L1 | **Dissolved** by decision 35: no spool index and no restored epochs; every start takes a fresh epoch, and generations follow send order within the process |
+| [G] G4-M1 | **Dissolved** by decision 35: no batch is restored at boot, so none can wait for a cursor that no longer exists |
+| D-L1, [G] G4-L3 (wording) | **Dissolved** by decision 35: the text went with the data directory (`064f21a`, `0327164`). The memory-bound wording (`GATEWAY.md`, Usage batches in memory) now says what the code counts: the encoded size of the queued batches' records (step 20) |
+| [G] G4-L3 (bound) | **Accepted** (decision 36): retained counters are outside `counters-exceeded`, and each ends with its window |
+
+Not ported: D-H1's, D-H2's and G4-M1's reproductions, whose code is removed.
