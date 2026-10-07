@@ -5,7 +5,14 @@
 
 import { validateGatewayStatus } from "../messages/index.ts";
 import type { GatewayStatus } from "../messages/index.ts";
-import type { ControlPlaneStore, ForgetGateway, GatewayConflict, GatewayRecord, StoredGateway } from "../storage/index.ts";
+import type {
+  ControlPlaneStore,
+  ForgetGateway,
+  GatewayConflict,
+  GatewayRecord,
+  StoreChange,
+  StoredGateway,
+} from "../storage/index.ts";
 
 export type { GatewayConflict } from "../storage/index.ts";
 
@@ -63,9 +70,11 @@ export interface Gateways {
   // The size of the live set.
   liveGateways(): Promise<number>;
   // Calls listener after every gateway record any process wrote or forgot — every
-  // accepted status, every sweep that changed a record; returns the unsubscribe,
-  // which is safe to call more than once.
+  // accepted status, every sweep that changed a record — and on a store catch-up (as a
+  // live-set change); returns the unsubscribe, which is safe to call more than once.
   onGatewaysChanged(listener: GatewaysChangedListener): () => void;
+  // Takes one change the store announced (the core passes every one on).
+  takeChange(change: StoreChange): void;
   // Drops gateways silent for the live timeout from the live set, forgets those
   // silent for the forget delay, and drops last counted batches past the batch cursor
   // retention. Resolves with the run (also given to onExpirySweep);
@@ -112,9 +121,10 @@ export function createGateways(options: GatewaysOptions): Gateways {
 
   // Every listener hears of every change to the gateway records, this process's or
   // another's; a listener's failure goes to onListenerError and never reaches the store.
-  store.subscribe((storeChange) => {
-    if (storeChange.type !== "gateways-changed") return;
-    const change: GatewaysChange = { liveChanged: storeChange.liveChanged };
+  // A store catching up after its channel was down may have missed a live-set change.
+  const takeChange = (storeChange: StoreChange): void => {
+    if (storeChange.type !== "gateways-changed" && storeChange.type !== "catch-up") return;
+    const change: GatewaysChange = { liveChanged: storeChange.type === "catch-up" || storeChange.liveChanged };
     for (const listener of [...listeners]) {
       try {
         listener(change);
@@ -122,19 +132,23 @@ export function createGateways(options: GatewaysOptions): Gateways {
         onListenerError(error, change);
       }
     }
-  });
+  };
 
   // A status is judged against the stored record and written only while that record is
   // still the one stored: a status or sweep of another process in between makes it
   // judged again against the record that won, so the live set and the conflict rule
-  // hold across processes.
+  // hold across processes. Its receipt time is taken once: a record that won with a
+  // later receipt time holds a newer status, and this one is dropped — written late, it
+  // would replace the newer status and read as its process coming back.
   const recordStatus = async (status: GatewayStatus): Promise<StatusIntake> => {
+    const receivedAt = clock();
     let previous = await store.gateway(status.instance);
     for (;;) {
-      const judged = judgeStatus(status, previous, clock());
+      const judged = judgeStatus(status, previous, receivedAt);
       const written = await store.saveGateway(judged.record, previous?.revision);
       if (written.saved) return { ok: true, joined: judged.joined, conflictStarted: judged.conflictStarted };
       previous = written.current;
+      if (previous && previous.receivedAt > receivedAt) return { ok: true, joined: false, conflictStarted: false };
     }
   };
 
@@ -252,6 +266,8 @@ export function createGateways(options: GatewaysOptions): Gateways {
     },
 
     expireSilentGateways: sweep,
+
+    takeChange,
 
     startExpirySweep() {
       if (sweepTimer !== undefined) return;

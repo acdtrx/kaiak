@@ -9,7 +9,7 @@
 
 import { validateUsageBatch } from "../messages/index.ts";
 import type { BatchId, Totals, TotalsWindow, UsageAck, UsageBatch } from "../messages/index.ts";
-import type { ControlPlaneStore, CurrentConfig, CurrentWindows, ReceivedRecord } from "../storage/index.ts";
+import type { BatchCursors, ControlPlaneStore, CurrentConfig, CurrentWindows, ReceivedRecord, StoreChange } from "../storage/index.ts";
 
 import { batchAdditions, limitedWindowsOf, windowKeyOf } from "./aggregate.ts";
 import type { LimitedWindow } from "./aggregate.ts";
@@ -19,9 +19,10 @@ import { currentWindows, formatWindowStart, previousWindows, windowStartFor } fr
 // - first: the instance's first batch;
 // - next: the next sequence in the same epoch;
 // - gap: a later sequence in the same epoch, some skipped (lost on the gateway side);
-// - new-epoch: a different epoch (a fresh spool);
-// - duplicate: counted before (same epoch, sequence at or below the last) — acked again,
-//   not counted.
+// - new-epoch: an epoch with nothing counted yet, after batches of another (a fresh
+//   spool);
+// - duplicate: counted before (its epoch's last counted batch is at or past it) — acked
+//   again, not counted.
 export type BatchOutcome = "first" | "next" | "gap" | "new-epoch" | "duplicate";
 
 export interface UsageBatchError {
@@ -49,9 +50,11 @@ export interface Usage {
   totals(instance: string): Promise<Totals | undefined>;
   // The newest received records, newest first.
   recentRecords(): Promise<ReceivedRecord[]>;
-  // Calls listener after every batch any process counted; returns the unsubscribe,
-  // which is safe to call more than once.
+  // Calls listener after every batch any process counted (and on a store catch-up);
+  // returns the unsubscribe, which is safe to call more than once.
   onTotalsChanged(listener: TotalsChangedListener): () => void;
+  // Takes one change the store announced (the core passes every one on).
+  takeChange(change: StoreChange): void;
   // Lets the store drop totals of windows before the previous ones (a late record can
   // still count in the previous window). Intake runs it on the first batch of every
   // hour.
@@ -115,8 +118,8 @@ export function createUsage({ store, clock, recentRecordsSize, observeSequence, 
 
   // Every listener hears of every counted batch, this process's or another's; a
   // listener's failure goes to onListenerError and never reaches the store.
-  store.subscribe((change) => {
-    if (change.type !== "batch-counted") return;
+  const takeChange = (change: StoreChange): void => {
+    if (change.type !== "batch-counted" && change.type !== "catch-up") return;
     for (const listener of [...listeners]) {
       try {
         listener();
@@ -124,18 +127,29 @@ export function createUsage({ store, clock, recentRecordsSize, observeSequence, 
         onListenerError(error);
       }
     }
-  });
+  };
 
-  const totalsAt = async (instance: string, now: number): Promise<Totals | undefined> => {
-    const windows = currentWindows(now);
-    const snapshot = await store.totalsSnapshot(windows, instance);
-    observeSequence(snapshot.sequence);
-    if (!snapshot.config) return undefined;
-    return {
-      live_gateways: snapshot.liveGateways,
-      counted_through: snapshot.last ? { epoch: snapshot.last.epoch, sequence: snapshot.last.sequence } : null,
-      windows: listedWindows(limitedOf(snapshot.config), snapshot.windows, windows),
-    };
+  // The windows a snapshot reads are the ones current once the read is over: a read
+  // that crossed an hour or month boundary — while a batch past it may have been
+  // counted — reads again with the new windows, so a message never names a batch
+  // counted while leaving out the window it was counted in.
+  const totalsAt = async (instance: string): Promise<Totals | undefined> => {
+    let windows = currentWindows(clock());
+    for (;;) {
+      const snapshot = await store.totalsSnapshot(windows, instance);
+      observeSequence(snapshot.sequence);
+      const after = currentWindows(clock());
+      if (after.hourStart !== windows.hourStart || after.monthStart !== windows.monthStart) {
+        windows = after;
+        continue;
+      }
+      if (!snapshot.config) return undefined;
+      return {
+        live_gateways: snapshot.liveGateways,
+        counted_through: snapshot.last ? { epoch: snapshot.last.epoch, sequence: snapshot.last.sequence } : null,
+        windows: listedWindows(limitedOf(snapshot.config), snapshot.windows, windows),
+      };
+    }
   };
 
   // The previous windows stay: a late record still counts in its own window when that
@@ -146,12 +160,13 @@ export function createUsage({ store, clock, recentRecordsSize, observeSequence, 
   };
 
   const countBatch = async ({ batch, records }: UsageBatch): Promise<UsageIntake> => {
-    // The write is conditional on the last batch the outcome was decided against: when
-    // another writer counted a batch of this instance in between, nothing is written
-    // and the outcome is decided again against the store's last batch — so a batch is
-    // counted once however many processes take it.
-    let previous = await store.lastBatch(batch.instance);
-    let outcome = outcomeOf(batch, previous);
+    // The write is conditional on the last batch of the batch's epoch the outcome was
+    // decided against: when another writer counted a batch of this instance in that
+    // epoch in between, nothing is written and the outcome is decided again against the
+    // store's — so a batch is counted once however many processes take it, and however
+    // many epochs its gateway went through meanwhile.
+    let cursors = await store.lastBatch(batch.instance, batch.epoch);
+    let outcome = outcomeOf(batch, cursors);
     while (outcome !== "duplicate") {
       const receivedAt = clock();
       const windows = currentWindows(receivedAt);
@@ -162,17 +177,18 @@ export function createUsage({ store, clock, recentRecordsSize, observeSequence, 
           additions: batchAdditions(records, windows),
           records: records.map((record) => ({ receivedAt, record })),
         },
-        previous,
+        cursors.inEpoch,
         recentRecordsSize,
       );
       if (written.saved) {
         if (prunedHourStart !== windows.hourStart) await dropPastWindowsAt(windows);
         break;
       }
-      previous = written.last;
-      outcome = outcomeOf(batch, previous);
+      cursors = written.cursors;
+      outcome = outcomeOf(batch, cursors);
     }
 
+    const previous = cursors.inEpoch ?? cursors.latest;
     return { ok: true, ack: { batch }, outcome, ...(previous !== undefined && { previous }) };
   };
 
@@ -193,7 +209,7 @@ export function createUsage({ store, clock, recentRecordsSize, observeSequence, 
       }
       return serialized(instance, () => countBatch(message));
     },
-    totals: (instance) => totalsAt(instance, clock()),
+    totals: totalsAt,
     recentRecords: () => store.recentRecords(recentRecordsSize),
     onTotalsChanged(listener) {
       // A wrapper, so the same function subscribed twice is two subscriptions.
@@ -204,6 +220,7 @@ export function createUsage({ store, clock, recentRecordsSize, observeSequence, 
       };
     },
     dropPastWindows: () => dropPastWindowsAt(currentWindows(clock())),
+    takeChange,
   };
 }
 
@@ -231,11 +248,11 @@ function listedWindows(
   return listed;
 }
 
-function outcomeOf(batch: BatchId, previous: BatchId | undefined): BatchOutcome {
-  if (!previous) return "first";
-  if (batch.epoch !== previous.epoch) return "new-epoch";
-  if (batch.sequence <= previous.sequence) return "duplicate";
-  return batch.sequence === previous.sequence + 1 ? "next" : "gap";
+function outcomeOf(batch: BatchId, { inEpoch, latest }: BatchCursors): BatchOutcome {
+  if (!latest) return "first";
+  if (!inEpoch) return "new-epoch";
+  if (batch.sequence <= inEpoch.sequence) return "duplicate";
+  return batch.sequence === inEpoch.sequence + 1 ? "next" : "gap";
 }
 
 function invalid(code: string, message: string): UsageIntake {

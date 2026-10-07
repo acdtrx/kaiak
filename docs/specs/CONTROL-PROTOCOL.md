@@ -156,6 +156,14 @@ the `{ error, detail }` body, `error` being the stable code:
   it read before something it already sent there. It orders by the store's sequence
   (Control-plane processes), which it keeps for itself; nothing on the wire carries it.
   A read that is older than what the stream already got is dropped.
+- **A config that cannot be read** (settled 2026-10-07): after a change, a process
+  reads the current config to send it; a read that fails is tried again with growing
+  delays (`kaiak-control`: 100 ms doubling, five retries, configurable), and one that
+  still fails is reported to the host and closes every stream the process holds, so
+  its gateways reconnect and read the current config on connect. A totals read that
+  fails is retried at the push interval. Rejected: dropping the failed read until the
+  next change — a published config (a revoked key) then stayed off that process's
+  gateways with nothing reported.
 - **Rollback** (settled 2026-10-07): when a process sees the store's sequence go back
   — a restore from a backup, a failover to a standby that was behind — it closes every
   stream it holds. The gateways reconnect and take the current config and totals.
@@ -258,9 +266,12 @@ the `{ error, detail }` body, `error` being the stable code:
     store guarantees it (settled 2026-10-06, Control-plane processes): a batch's
     counting is one store write, and a message's `counted_through` and windows are
     read from one store snapshot, so it holds whichever process counted and whichever
-    reads. Rejected: a read without that guarantee, where a message could show a
-    batch counted that its windows lack — usage dropped from enforcement until the
-    next push.
+    reads. The windows read are the ones current once the read is over (settled
+    2026-10-07): a read that crossed an hour or month boundary is made again with the
+    new windows, since a batch counted past the boundary meanwhile is in a window the
+    first read did not ask for. Rejected: a read without that guarantee, where a
+    message could show a batch counted that its windows lack — usage dropped from
+    enforcement until the next push.
   - `windows` — **complete**: every hour and month limit of the current config with
     usage in the control plane's current window, one entry per limit. A limit not
     listed has used nothing in the control plane's current window. Per-minute limits
@@ -653,7 +664,11 @@ the `{ error, detail }` body, `error` being the stable code:
 - Sent in batches in the background, never on the request path (Usage batches).
 - **Time reference is the control plane**: its clock decides which windows are
   current; a record's `gateway_time` picks its window among the current and the
-  previous one (Usage intake → Counted in its own window).
+  previous one (Usage intake → Counted in its own window). Several control-plane
+  processes need clocks kept in step (settled 2026-10-07): NTP-synchronized, within
+  a second of each other. Two processes on either side of an hour boundary serve
+  windows of different hours for as long as they disagree, and the expiry sweep
+  compares one process's clock with a receipt time another wrote (Status intake).
 
 ## Usage batches (settled 2026-09-24)
 
@@ -716,15 +731,21 @@ How the control plane takes `POST /v1/usage`, as `kaiak-control` implements it.
   the config (Counted whatever the config), and the ack carries nothing a config is
   needed for. Rejected: `503 config-unavailable` before the first publish (settled
   2026-09-24) — it existed because counting and the ack's totals needed a config.
-- **De-duplication** by the last counted batch ID per instance: no batch yet → counted;
-  same epoch and a sequence above the last → counted (a skipped sequence is counted
-  too and logged: records lost on the gateway side are its loss, and the control plane
-  must not stall on them); same epoch and a sequence at or below the last → acked
-  again, not counted (a resend, or a straggler behind a later batch); a different epoch
-  → counted and logged (a fresh spool). Batches from one instance are taken one at a
-  time within a control-plane process; across processes the store's conditional
-  write (below) decides, so two copies racing (a retry beside the original) are
-  counted once either way.
+- **De-duplication** by the last counted batch ID per instance **and epoch** (settled
+  2026-10-07): nothing counted for the instance yet → counted; a sequence above the
+  last of its epoch → counted (a skipped sequence is counted too and logged: records
+  lost on the gateway side are its loss, and the control plane must not stall on
+  them); a sequence at or below the last of its epoch → acked again, not counted (a
+  resend, or a straggler behind a later batch); nothing counted yet in its epoch
+  after batches of another → counted and logged as a new epoch (a fresh spool).
+  Batches from one instance are taken one at a time within a control-plane process;
+  across processes the store's conditional write (below) decides, so two copies racing
+  (a retry beside the original) are counted once either way — also when the gateway
+  moved to a new epoch while one copy's write stalled. The totals' `counted_through`
+  is the instance's last counted batch of any epoch. Rejected: one last batch per
+  instance (settled 2026-09-24) — a write of an earlier epoch's batch, stalled while
+  its resend was counted elsewhere and the gateway started a new spool, read the new
+  epoch's batch as "a different epoch" and counted the batch again.
 - **Counted atomically**: the batch ID becomes the instance's last, its amounts join
   the totals, its records join the recent records and the store's sequence moves on by
   one (Control-plane processes) in one store write — a batch is counted and
@@ -737,10 +758,11 @@ How the control plane takes `POST /v1/usage`, as `kaiak-control` implements it.
   write conditional on that version — it made every publish race usage, and existed
   only for model-set carry-over.
 - **Exactly once in the store** (settled 2026-09-25, D7): the write is conditional on
-  the last batch ID the decision was made against — the store compares and writes in
-  one atomic operation, and when another writer counted a batch of the instance in
-  between, it writes nothing and returns the last batch it holds, and the batch is
-  decided again (typically a duplicate now). So the store, not one process's
+  the last batch ID of the batch's epoch the decision was made against — the store
+  compares and writes in one atomic operation, and when another writer counted a batch
+  of the instance in that epoch in between, it writes nothing and returns where the
+  instance's counting stands, and the batch is decided again (typically a duplicate
+  now). So the store, not one process's
   serialization, guarantees a batch is counted once; the per-instance serialization
   stays as the common-case shortcut. Rejected: de-duplication read and write as two
   store calls, which two processes on one store (or one process and a stale retry of
@@ -869,7 +891,13 @@ How the control plane takes `POST /v1/status`, as `kaiak-control` implements it.
   the record the status was judged against (settled 2026-10-06): a status another
   control-plane process took in between makes it fail, and the status is judged
   again against that one, so joining the live set and the conflict rule below hold
-  across processes.
+  across processes. A status's receipt time is read once (settled 2026-10-07): when
+  the record that won holds a later receipt time, this status is older than the
+  stored one and is dropped (accepted, not written) — written late, it would replace
+  the newer status and, after a restart, read as the replaced process coming back.
+  A gateway record's revision, which these writes compare, never repeats for an
+  instance, a forgotten and recreated one included: a write computed from a forgotten
+  record never matches the new one.
 - **Live set**: an instance joins with its first accepted status and leaves when an
   expiry sweep finds it silent for 30 s (configurable). The live-gateway count is the
   set's size, the same for every control-plane process; a gateway joining or leaving
@@ -886,8 +914,9 @@ How the control plane takes `POST /v1/status`, as `kaiak-control` implements it.
   two sweeps racing expire a gateway once. A gateway expired and still silent after an hour
   (configurable) is forgotten — instance names churn with pods, and the list must not
   grow without bound. A forgotten gateway that reports again simply joins again.
-- **Batch cursor retention** (settled 2026-09-25): an instance's last counted batch
-  (the de-duplication cursor) is kept for 7 days (configurable) after it was counted,
+- **Batch cursor retention** (settled 2026-09-25; per epoch 2026-10-07): each epoch's
+  last counted batch of an instance (the de-duplication cursor) is kept for 7 days
+  (configurable) after it was counted,
   whether or not its gateway is still remembered, and the same sweep drops cursors
   past that (reporting the instances). A gateway partitioned for longer than the
   forget delay that resends a batch counted before its silence (an ack lost just
@@ -934,8 +963,12 @@ How the control plane takes `POST /v1/status`, as `kaiak-control` implements it.
     one store snapshot (Messages → Totals: consistent snapshot).
   - **Change notification**: every process hears of every publish, totals change and
     live-set change any process made, so each sends to the streams it holds (Config
-    stream). A process that misses a notification leaves its streams behind until
-    the next change of that kind.
+    stream). A store whose change channel can drop notifications (a database's
+    listening connection) announces a **catch-up** to every process each time the
+    channel is back (settled 2026-10-07); the process then reads the current config,
+    the totals and the live set again. A notification missed without a catch-up
+    leaves that process's streams on an old config until the next publish, and their
+    totals until the next change.
 - **Processes start and stop freely**: no process owns the store, so rolling updates,
   restarts and replicas need no ordering. The expiry sweep runs on every process
   (Status intake). What a process keeps for itself — the streams it holds, the

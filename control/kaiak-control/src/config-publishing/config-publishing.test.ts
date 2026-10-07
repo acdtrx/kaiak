@@ -42,12 +42,18 @@ function publishing(
     onListenerError?: (error: unknown, published: CurrentConfig) => void;
   } = {},
 ): ConfigPublishing {
-  return createConfigPublishing({
-    store: options.store ?? createMemoryStore(),
+  const store = options.store ?? createMemoryStore();
+  const configs = createConfigPublishing({
+    store,
     clock: options.now ?? (() => 0),
     observeSequence: () => {},
     onListenerError: options.onListenerError ?? failOnListenerError,
+    retryDelaysMs: [],
+    onDeliveryFailed: (error) => assert.fail(`unexpected delivery failure: ${String(error)}`),
   });
+  // The core hands its modules every change the store announces.
+  store.subscribe(configs.takeChange);
+  return configs;
 }
 
 function published(result: PublishResult): CurrentConfig {

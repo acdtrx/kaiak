@@ -22,8 +22,9 @@ function setup(options: Partial<GatewaysOptions> = {}) {
   let now = Date.UTC(2026, 8, 24, 10, 0);
   const runs: ExpirySweepRun[] = [];
   const changes: GatewaysChange[] = [];
+  const store = options.store ?? createMemoryStore();
   const gateways = createGateways({
-    store: createMemoryStore(),
+    store,
     clock: () => now,
     liveTimeoutMs: 30_000,
     forgetAfterMs: 600_000,
@@ -33,6 +34,8 @@ function setup(options: Partial<GatewaysOptions> = {}) {
     onListenerError: (error) => assert.fail(`listener failed: ${String(error)}`),
     ...options,
   });
+  // The core hands its modules every change the store announces.
+  store.subscribe(gateways.takeChange);
   gateways.onGatewaysChanged((change) => changes.push(change));
   return {
     gateways,

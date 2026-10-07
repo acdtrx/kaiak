@@ -88,6 +88,9 @@ export async function streamToGateway(reply: FastifyReply, options: GatewayStrea
   let readingTotals = false;
   let pushAfterRead = false;
   let pushAfterDrain = false;
+  // A failed totals read is retried after the push interval until one succeeds; the
+  // first failure of a run is logged, not every retry.
+  let readFailing = false;
 
   // Totals follow the first config: none is pushed before a config was sent.
   const requestTotals = (): void => {
@@ -115,16 +118,20 @@ export async function streamToGateway(reply: FastifyReply, options: GatewayStrea
     readingTotals = true;
     lastTotalsAt = performance.now();
     let totals: Totals | undefined;
+    let failed = false;
     try {
       totals = await core.totals(instance);
     } catch (error) {
-      log.error({ err: error }, "config stream: reading the totals to push failed");
+      failed = true;
+      if (!readFailing) log.error({ err: error }, "config stream: reading the totals to push failed; retrying");
     }
     readingTotals = false;
     if (connection.signal.aborted) return;
+    if (readFailing && !failed) log.info("config stream: reading the totals to push works again");
+    readFailing = failed;
     // Undefined before the first config: there is nothing to push.
     if (totals) write(`event: totals\ndata: ${JSON.stringify(totals)}\n\n`);
-    if (pushAfterRead) {
+    if (pushAfterRead || failed) {
       pushAfterRead = false;
       requestTotals();
     }

@@ -91,6 +91,16 @@ function registerGatewayRoutes(routes: FastifyInstance, options: ControlProtocol
     routes.log.warn({ streams: openStreams.size }, "the store's sequence went back; ending every gateway stream");
     for (const end of openStreams) end();
   });
+  // A config this core could not read after a change, retries included, may be missing
+  // from its streams: every stream ends, and the gateways reconnect and read the
+  // current config on connect.
+  const unsubscribeDeliveryFailed = controlPlane.onDeliveryFailed((error) => {
+    routes.log.error(
+      { err: error, streams: openStreams.size },
+      "reading the current config after a change failed; ending every gateway stream",
+    );
+    for (const end of openStreams) end();
+  });
   routes.addHook("onReady", async () => {
     await controlPlane.start();
   });
@@ -99,6 +109,7 @@ function registerGatewayRoutes(routes: FastifyInstance, options: ControlProtocol
   });
   routes.addHook("onClose", async () => {
     unsubscribeRollback();
+    unsubscribeDeliveryFailed();
     await controlPlane.stop();
   });
 

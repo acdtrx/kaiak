@@ -74,11 +74,21 @@ export interface CountedBatch {
   records: ReceivedRecord[];
 }
 
+// Where an instance's counting stands, as a batch is decided against it: the last batch
+// counted in the batch's own epoch, and the last batch counted in any epoch — the one
+// totals name as counted_through. Each epoch keeps its own last batch for the batch
+// cursor retention, so a batch of an earlier epoch is still known as counted after its
+// gateway moved to a new epoch (docs/specs/CONTROL-PROTOCOL.md, Usage intake).
+export interface BatchCursors {
+  inEpoch: BatchId | undefined;
+  latest: BatchId | undefined;
+}
+
 // What the conditional batch write found: the batch saved with the sequence it moved
-// to, or — when the instance's last counted batch was no longer the expected
-// one — nothing written, and the last batch the store holds, for the caller to decide
-// again.
-export type SaveCountedBatchResult = { saved: true; sequence: number } | { saved: false; last: BatchId | undefined };
+// to, or — when the instance's last counted batch in the batch's epoch was no longer
+// the expected one — nothing written, and where the instance's counting stands now,
+// for the caller to decide again.
+export type SaveCountedBatchResult = { saved: true; sequence: number } | { saved: false; cursors: BatchCursors };
 
 // What the conditional publish found: saved with the sequence it moved to, or nothing
 // written and the current config the store holds now.
@@ -95,8 +105,8 @@ export interface TotalsSnapshot {
   sequence: number;
   // The current config, or undefined before the first publish.
   config: CurrentConfig | undefined;
-  // The asked instance's last counted batch (undefined before its first, or when no
-  // instance was asked).
+  // The asked instance's last counted batch in any epoch (undefined before its first,
+  // or when no instance was asked).
   last: BatchId | undefined;
   // The stored totals of the current windows asked for.
   windows: WindowTotal[];
@@ -131,8 +141,10 @@ export interface GatewayRecord {
 // A gateway as the store holds it: the record and its write count, which a conditional
 // write names to say which record it was computed from.
 export interface StoredGateway extends GatewayRecord {
-  // Starts at 1 with the first write of the instance and moves on by one with every
-  // write; a forgotten gateway that reports again starts at 1 again.
+  // Changes with every write of the instance and never repeats for it, a gateway
+  // forgotten and recreated included: a conditional write naming a revision can only
+  // match the record it was computed from (the in-memory store numbers every gateway
+  // write of the store).
   revision: number;
 }
 
@@ -158,7 +170,10 @@ export type StoreChange =
   | { type: "batch-counted"; instance: string; sequence: number }
   // A gateway record was written or forgotten; liveChanged when the live set gained or
   // lost a member (the totals moved with it).
-  | { type: "gateways-changed"; liveChanged: boolean; sequence: number };
+  | { type: "gateways-changed"; liveChanged: boolean; sequence: number }
+  // The store's change channel may have missed changes (it reconnected): anything may
+  // have changed, and every subscriber reads what it depends on again.
+  | { type: "catch-up"; sequence: number };
 
 export type StoreChangeListener = (change: StoreChange) => void;
 
@@ -173,15 +188,20 @@ export interface ControlPlaneStore {
   // counted batches never refuse it, and it never refuses them.
   publishConfig(entry: ConfigEntry, expectedHash: string | undefined): Promise<PublishConfigResult>;
 
-  // The last batch counted for an instance, or undefined before its first.
-  lastBatch(instance: string): Promise<BatchId | undefined>;
-  // Stores a counted batch in one write — its ID as the instance's last batch, its
-  // additions to the totals, its records, a step of the sequence — only when the
-  // instance's last counted batch is still `expectedLast` (undefined: none yet). So the
-  // batch is either counted and remembered or neither, and no two writers can both
-  // count one batch. The config plays no part: a publish never refuses a batch.
-  // Records older than the newest `keepRecords` are no longer needed and may be
-  // dropped.
+  // Where an instance's counting stands for a batch of `epoch`: its last counted batch in
+  // that epoch, and in any epoch.
+  lastBatch(instance: string, epoch: string): Promise<BatchCursors>;
+  // Stores a counted batch in one write — its ID as the instance's last batch in its
+  // epoch and in any epoch, its additions to the totals, its records, a step of the
+  // sequence — only when the instance's last counted batch in the batch's epoch is still
+  // `expectedLast` (undefined: none yet in that epoch). So the batch is either counted
+  // and remembered or neither, and no two writers can both count one batch, whichever
+  // epochs were counted in between. The config plays no part: a publish never refuses
+  // a batch. Records older than the newest `keepRecords` are no longer needed and may
+  // be dropped. A store that also keeps every record for good (a ledger) inserts them
+  // idempotently by record_id: a batch resent after its cursor's retention is counted
+  // again (Usage intake → Batch cursor retention), and a ledger refusing its records
+  // would refuse the batch for ever.
   saveCountedBatch(
     counted: CountedBatch,
     expectedLast: BatchId | undefined,
@@ -214,14 +234,17 @@ export interface ControlPlaneStore {
   // instances forgotten. Forgetting a live gateway moves the sequence (once for
   // the call). Their last counted batches stay (dropBatchCursorsCountedBefore).
   forgetGateways(gateways: ForgetGateway[]): Promise<string[]>;
-  // Drops the last counted batch of every instance whose last batch was counted
-  // before `cutoff` (milliseconds since the epoch), and names those instances.
+  // Drops every instance's last counted batch of each epoch counted before `cutoff`
+  // (milliseconds since the epoch), and names the instances that lost one.
   dropBatchCursorsCountedBefore(cutoff: number): Promise<string[]>;
 
   // Calls listener with every change any process makes from now on — this one's
   // included — after the write it describes; returns the unsubscribe, which is safe to
   // call more than once. A listener hears changes in the order the store made them. The
   // store calls every listener whatever another one does; a listener that throws is
-  // the store's to report (the memory store rethrows it from a microtask).
+  // the store's to report (the memory store rethrows it from a microtask). A store whose
+  // change channel can drop changes (a database's listening connection) announces a
+  // `catch-up` to every listener each time the channel is back, so nothing it missed
+  // stays missed; the in-memory store never drops one.
   subscribe(listener: StoreChangeListener): () => void;
 }

@@ -40,6 +40,10 @@ export interface StoreContractSubject {
   dispose?(store: ControlPlaneStore): void | Promise<void>;
   // How long a notification may take to reach another handle. Default 5000.
   notifyTimeoutMs?: number;
+  // Makes a handle's change channel reconnect, as a dropped listening connection does
+  // (for a database: closes the LISTEN session). Without it the catch-up test is
+  // skipped: a store whose channel cannot drop changes (the in-memory store) needs none.
+  reconnect?(store: ControlPlaneStore): void | Promise<void>;
 }
 
 const HOUR = Date.UTC(2026, 9, 6, 12);
@@ -47,22 +51,23 @@ const MONTH = Date.UTC(2026, 9, 1);
 const CURRENT: CurrentWindows = { hourStart: HOUR, monthStart: MONTH };
 const PREVIOUS: CurrentWindows = { hourStart: HOUR - 3_600_000, monthStart: Date.UTC(2026, 8, 1) };
 const BATCH_EPOCH = "b".repeat(32);
+const OTHER_EPOCH = "c".repeat(32);
 
 // The store keeps configs and hashes as given; computing the hash is the core's concern.
 const configDoc = (marker: number): Config => ({ marker }) as unknown as Config;
 const hashOf = (marker: number): string => marker.toString(16).padStart(64, "0");
 const entry = (marker: number): ConfigEntry => ({ config: configDoc(marker), hash: hashOf(marker), publishedAt: marker });
-const batchId = (instance: string, sequence: number): BatchId => ({ instance, epoch: BATCH_EPOCH, sequence });
+const batchId = (instance: string, sequence: number, epoch = BATCH_EPOCH): BatchId => ({ instance, epoch, sequence });
 const hourWindow = (used: bigint, group = "g"): WindowTotal => ({ group, type: "tokens_per_hour", windowStart: HOUR, used });
 
 function counted(
   instance: string,
   sequence: number,
-  options: { used?: bigint; countedAt?: number; record?: string } = {},
+  options: { used?: bigint; countedAt?: number; record?: string; epoch?: string } = {},
 ): CountedBatch {
-  const { used = 1n, countedAt = 0, record } = options;
+  const { used = 1n, countedAt = 0, record, epoch } = options;
   return {
-    batch: batchId(instance, sequence),
+    batch: batchId(instance, sequence, epoch),
     countedAt,
     additions: used === 0n ? [] : [hourWindow(used)],
     records: record === undefined ? [] : [{ receivedAt: countedAt, record: { record_id: record } as unknown as UsageRecord }],
@@ -201,20 +206,42 @@ export function storeContractTests(subject: StoreContractSubject): void {
           const sequence = await publishConfigs(a, 1);
           assert.deepEqual(await a.saveCountedBatch(counted("gw-1", 1), undefined, 10), { saved: true, sequence: sequence + 1 });
           // Another process that decided against "no batch yet" finds batch 1.
-          assert.deepEqual(await b.saveCountedBatch(counted("gw-1", 1), undefined, 10), {
-            saved: false,
-            last: batchId("gw-1", 1),
-          });
+          const standing = { inEpoch: batchId("gw-1", 1), latest: batchId("gw-1", 1) };
+          assert.deepEqual(await b.saveCountedBatch(counted("gw-1", 1), undefined, 10), { saved: false, cursors: standing });
           assert.deepEqual(await b.saveCountedBatch(counted("gw-1", 2), batchId("gw-1", 3), 10), {
             saved: false,
-            last: batchId("gw-1", 1),
+            cursors: standing,
           });
           assert.deepEqual(await b.saveCountedBatch(counted("gw-1", 2), batchId("gw-1", 1), 10), {
             saved: true,
             sequence: sequence + 2,
           });
-          assert.deepEqual(await a.lastBatch("gw-1"), batchId("gw-1", 2));
-          assert.equal(await a.lastBatch("gw-2"), undefined);
+          assert.deepEqual(await a.lastBatch("gw-1", BATCH_EPOCH), { inEpoch: batchId("gw-1", 2), latest: batchId("gw-1", 2) });
+          assert.deepEqual(await a.lastBatch("gw-2", BATCH_EPOCH), { inEpoch: undefined, latest: undefined });
+        }),
+      );
+
+      test(
+        "a batch is decided against its own epoch's last batch, whatever epochs came after",
+        withStore(async (a, b) => {
+          await publishConfigs(a, 1);
+          assert.ok((await a.saveCountedBatch(counted("gw-1", 1), undefined, 10)).saved);
+          // The gateway's resend of batch 2 is counted by one process, then it moves to a
+          // new epoch; a write of batch 2 decided before all that is refused.
+          assert.ok((await b.saveCountedBatch(counted("gw-1", 2), batchId("gw-1", 1), 10)).saved);
+          assert.ok((await b.saveCountedBatch(counted("gw-1", 1, { epoch: OTHER_EPOCH }), undefined, 10)).saved);
+          assert.deepEqual(await a.saveCountedBatch(counted("gw-1", 2), batchId("gw-1", 1), 10), {
+            saved: false,
+            cursors: { inEpoch: batchId("gw-1", 2), latest: batchId("gw-1", 1, OTHER_EPOCH) },
+          });
+          // A batch of the earlier epoch never counted is counted against that epoch's
+          // last batch, and becomes the latest.
+          assert.ok((await a.saveCountedBatch(counted("gw-1", 3), batchId("gw-1", 2), 10)).saved);
+          assert.deepEqual(await b.lastBatch("gw-1", OTHER_EPOCH), {
+            inEpoch: batchId("gw-1", 1, OTHER_EPOCH),
+            latest: batchId("gw-1", 3),
+          });
+          assert.deepEqual((await b.totalsSnapshot(CURRENT, "gw-1")).last, batchId("gw-1", 3));
         }),
       );
 
@@ -285,10 +312,13 @@ export function storeContractTests(subject: StoreContractSubject): void {
           const saved = await a.saveGateway(gatewayRecord("gw-1", true), undefined);
           assert.ok(saved.saved);
           assert.deepEqual(await a.forgetGateways([{ instance: "gw-1", revision: saved.revision }]), ["gw-1"]);
-          assert.deepEqual(await b.lastBatch("gw-1"), batchId("gw-1", 1));
-          assert.deepEqual(await b.dropBatchCursorsCountedBefore(150), ["gw-1"]);
-          assert.equal(await a.lastBatch("gw-1"), undefined);
-          assert.deepEqual(await a.lastBatch("gw-2"), batchId("gw-2", 1));
+          assert.deepEqual((await b.lastBatch("gw-1", BATCH_EPOCH)).inEpoch, batchId("gw-1", 1));
+          // Each epoch's last batch ages on its own.
+          await b.saveCountedBatch(counted("gw-2", 1, { countedAt: 100, epoch: OTHER_EPOCH }), undefined, 10);
+          assert.deepEqual((await b.dropBatchCursorsCountedBefore(150)).sort(), ["gw-1", "gw-2"]);
+          assert.deepEqual(await a.lastBatch("gw-1", BATCH_EPOCH), { inEpoch: undefined, latest: undefined });
+          assert.deepEqual(await a.lastBatch("gw-2", OTHER_EPOCH), { inEpoch: undefined, latest: batchId("gw-2", 1) });
+          assert.deepEqual((await a.lastBatch("gw-2", BATCH_EPOCH)).inEpoch, batchId("gw-2", 1));
         }),
       );
     });
@@ -349,7 +379,7 @@ export function storeContractTests(subject: StoreContractSubject): void {
           for (let gw = 0; gw < 8; gw += 1) {
             const instance = `gw-${gw}`;
             for (;;) {
-              const last = await a.lastBatch(instance);
+              const last = (await a.lastBatch(instance, BATCH_EPOCH)).inEpoch;
               const next = (last?.sequence ?? 0) + 1;
               if (next > 4) break;
               await a.saveCountedBatch(counted(instance, next), last, 1000);
@@ -364,6 +394,35 @@ export function storeContractTests(subject: StoreContractSubject): void {
           assert.equal(final.sequence, base + 32);
           assert.equal(sumUsed(final.windows), 32n);
           assert.deepEqual(final.last, batchId("gw-0", 4));
+        }),
+      );
+
+      test(
+        "a snapshot names a batch counted exactly when its windows hold it",
+        withStore(async (a, b) => {
+          const base = await publishConfigs(a, 1);
+          // One instance counts batch after batch while reads through both handles run
+          // in between: each snapshot's cursor, windows and sequence agree.
+          const reads: Promise<{ sequence: number; used: bigint; last: BatchId | undefined }>[] = [];
+          let last: BatchId | undefined;
+          for (let sequence = 1; sequence <= 16; sequence += 1) {
+            for (const reader of [a, b]) {
+              reads.push(
+                reader.totalsSnapshot(CURRENT, "gw-0").then((snapshot) => ({
+                  sequence: snapshot.sequence,
+                  used: sumUsed(snapshot.windows),
+                  last: snapshot.last,
+                })),
+              );
+            }
+            const written = await (sequence % 2 === 0 ? a : b).saveCountedBatch(counted("gw-0", sequence), last, 10);
+            assert.ok(written.saved);
+            last = batchId("gw-0", sequence);
+          }
+          for (const read of await Promise.all(reads)) {
+            assert.equal(read.used, BigInt(read.sequence - base), `windows at ${read.sequence}`);
+            assert.equal(BigInt(read.last?.sequence ?? 0), read.used, `cursor at ${read.sequence}`);
+          }
         }),
       );
 
@@ -468,7 +527,8 @@ export function storeContractTests(subject: StoreContractSubject): void {
           assert.ok(live.saved && idle.saved);
           const sequence = (await a.totalsSnapshot(CURRENT)).sequence;
           // A status taken meanwhile by the other process moves gw-1's revision on.
-          assert.ok((await b.saveGateway(gatewayRecord("gw-1", true, 9), live.revision)).saved);
+          const moved = await b.saveGateway(gatewayRecord("gw-1", true, 9), live.revision);
+          assert.ok(moved.saved);
           assert.deepEqual(
             await a.forgetGateways([
               { instance: "gw-1", revision: live.revision },
@@ -478,12 +538,15 @@ export function storeContractTests(subject: StoreContractSubject): void {
             ["gw-2"],
           );
           assert.equal((await b.totalsSnapshot(CURRENT)).sequence, sequence);
-          assert.deepEqual(await b.forgetGateways([{ instance: "gw-1", revision: 2 }]), ["gw-1"]);
+          assert.deepEqual(await b.forgetGateways([{ instance: "gw-1", revision: moved.revision }]), ["gw-1"]);
           assert.equal((await a.totalsSnapshot(CURRENT)).sequence, sequence + 1);
           assert.equal(await a.gateway("gw-1"), undefined);
-          // A forgotten gateway that reports again starts over.
+          // A forgotten gateway that reports again gets a revision it never had, so a
+          // write computed from its forgotten record never matches the new one.
           const back = await b.saveGateway(gatewayRecord("gw-1", true), undefined);
-          assert.equal(back.saved && back.revision, 1);
+          assert.ok(back.saved);
+          assert.ok(![live.revision, moved.revision].includes(back.revision), `revision ${back.revision} repeats`);
+          assert.deepEqual(await a.forgetGateways([{ instance: "gw-1", revision: live.revision }]), []);
         }),
       );
 
@@ -524,6 +587,70 @@ export function storeContractTests(subject: StoreContractSubject): void {
           } finally {
             onA.unsubscribe();
             onB.unsubscribe();
+          }
+        }),
+      );
+
+      test(
+        "every status is announced, the live set changed or not; forgetting a live gateway changes it",
+        withStore(async (a, b) => {
+          const heard = listen(b);
+          try {
+            const joined = await a.saveGateway(gatewayRecord("gw-1", true), undefined);
+            assert.ok(joined.saved);
+            const again = await a.saveGateway(gatewayRecord("gw-1", true, 5), joined.revision);
+            assert.ok(again.saved);
+            assert.deepEqual(await a.forgetGateways([{ instance: "gw-1", revision: again.revision }]), ["gw-1"]);
+            await heard.until("three gateway changes", () => heard.changes.length >= 3);
+            assert.deepEqual(
+              heard.changes.map((change) => change.type === "gateways-changed" && change.liveChanged),
+              [true, false, true],
+            );
+          } finally {
+            heard.unsubscribe();
+          }
+        }),
+      );
+
+      test(
+        "changes written at once through both handles are heard in one order by every subscriber",
+        withStore(async (a, b) => {
+          await publishConfigs(a, 1);
+          const onA = listen(a);
+          const onB = listen(b);
+          try {
+            await Promise.all(
+              Array.from({ length: 12 }, (_, i) =>
+                i % 3 === 0
+                  ? (i % 2 === 0 ? a : b).saveGateway(gatewayRecord(`gw-${i}`, true), undefined)
+                  : (i % 2 === 0 ? a : b).saveCountedBatch(counted(`gw-${i}`, 1), undefined, 10),
+              ),
+            );
+            for (const heard of [onA, onB]) await heard.until("twelve changes", () => heard.changes.length >= 12);
+            const sequences = onA.changes.map((change) => change.sequence);
+            assert.deepEqual(sequences, [...sequences].sort((x, y) => x - y), "in the store's order");
+            assert.deepEqual(onB.changes, onA.changes);
+          } finally {
+            onA.unsubscribe();
+            onB.unsubscribe();
+          }
+        }),
+      );
+
+      test(
+        "a channel that reconnects announces a catch-up",
+        { skip: subject.reconnect === undefined && "the store's channel never drops changes" },
+        withStore(async (a, b) => {
+          const heard = listen(b);
+          try {
+            await publishConfigs(a, 1);
+            await heard.until("the publish", () => heard.changes.length >= 1);
+            await subject.reconnect?.(b);
+            await heard.until("a catch-up", () => heard.changes.some((change) => change.type === "catch-up"));
+            const catchUp = heard.changes.find((change) => change.type === "catch-up");
+            assert.ok((catchUp?.sequence ?? 0) >= 1);
+          } finally {
+            heard.unsubscribe();
           }
         }),
       );

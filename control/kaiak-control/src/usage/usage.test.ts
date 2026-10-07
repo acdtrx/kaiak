@@ -100,6 +100,8 @@ async function harness(options: Partial<Omit<UsageOptions, "clock">> = {}): Prom
     onListenerError: (error) => listenerErrors.push(error),
     ...options,
   });
+  // The core hands its modules every change the store announces.
+  store.subscribe(usage.takeChange);
   const publish = async (config: Config): Promise<void> => {
     const current = (await store.currentConfig())?.hash;
     const written = await store.publishConfig({ config, hash: configHash(config), publishedAt: now }, current);

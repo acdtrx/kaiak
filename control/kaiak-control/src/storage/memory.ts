@@ -6,6 +6,7 @@
 import type { BatchId } from "../messages/index.ts";
 
 import type {
+  BatchCursors,
   ControlPlaneStore,
   CurrentConfig,
   CurrentWindows,
@@ -20,13 +21,17 @@ import type {
 export function createMemoryStore(): ControlPlaneStore {
   // The current config, replaced by every publish.
   let config: CurrentConfig | undefined;
-  // The last counted batch per instance and when it was counted.
-  const lastBatches = new Map<string, { batch: BatchId; countedAt: number }>();
+  // The last counted batch per instance and epoch, when it was counted, and the store
+  // sequence its write moved to (the latest of an instance has the highest).
+  const lastBatches = new Map<string, Map<string, { batch: BatchId; countedAt: number; sequence: number }>>();
   const totals = new Map<string, WindowTotal>();
   let sequence = 0;
   // Oldest first; the last entry is the newest record.
   const records: ReceivedRecord[] = [];
   const gateways = new Map<string, StoredGateway>();
+  // Numbers every gateway write of the store, so a revision never repeats for an
+  // instance, a forgotten and recreated one included.
+  let gatewayWrites = 0;
   const listeners = new Set<StoreChangeListener>();
 
   const addTotals = (additions: WindowTotal[]): void => {
@@ -42,6 +47,14 @@ export function createMemoryStore(): ControlPlaneStore {
     total.windowStart === (total.type === "tokens_per_hour" ? current.hourStart : current.monthStart);
 
   const liveCount = (): number => [...gateways.values()].filter((gateway) => gateway.live).length;
+
+  const cursorsOf = (instance: string, epoch: string): BatchCursors => {
+    const epochs = lastBatches.get(instance);
+    const inEpoch = epochs?.get(epoch)?.batch;
+    let latest: { batch: BatchId; sequence: number } | undefined;
+    for (const cursor of epochs?.values() ?? []) if (!latest || cursor.sequence > latest.sequence) latest = cursor;
+    return { inEpoch: inEpoch && { ...inEpoch }, latest: latest && { ...latest.batch } };
+  };
 
   // Every listener hears of the change even if an earlier one throws; a listener's
   // failure is rethrown from a microtask, the way a throwing event listener surfaces.
@@ -71,29 +84,30 @@ export function createMemoryStore(): ControlPlaneStore {
       return { saved: true, sequence };
     },
 
-    async lastBatch(instance) {
-      const last = lastBatches.get(instance);
-      return last && { ...last.batch };
+    async lastBatch(instance, epoch) {
+      return cursorsOf(instance, epoch);
     },
 
     async saveCountedBatch(counted, expectedLast, keepRecords) {
-      const last = lastBatches.get(counted.batch.instance)?.batch;
-      if (!sameBatch(last, expectedLast)) return { saved: false, last: last && { ...last } };
-      lastBatches.set(counted.batch.instance, { batch: { ...counted.batch }, countedAt: counted.countedAt });
+      const { instance, epoch } = counted.batch;
+      const cursors = cursorsOf(instance, epoch);
+      if (!sameBatch(cursors.inEpoch, expectedLast)) return { saved: false, cursors };
       addTotals(counted.additions);
       records.push(...structuredClone(counted.records));
       if (records.length > keepRecords) records.splice(0, records.length - keepRecords);
       sequence += 1;
+      const epochs = lastBatches.get(instance) ?? new Map();
+      epochs.set(epoch, { batch: { ...counted.batch }, countedAt: counted.countedAt, sequence });
+      lastBatches.set(instance, epochs);
       notify({ type: "batch-counted", instance: counted.batch.instance, sequence });
       return { saved: true, sequence };
     },
 
     async totalsSnapshot(current, instance) {
-      const last = instance === undefined ? undefined : lastBatches.get(instance)?.batch;
       return {
         sequence,
         config: structuredClone(config),
-        last: last && { ...last },
+        last: instance === undefined ? undefined : cursorsOf(instance, "").latest,
         windows: [...totals.values()].filter((total) => isCurrent(total, current)).map((total) => structuredClone(total)),
         liveGateways: liveCount(),
       };
@@ -123,7 +137,8 @@ export function createMemoryStore(): ControlPlaneStore {
     async saveGateway(record, expectedRevision) {
       const stored = gateways.get(record.instance);
       if (stored?.revision !== expectedRevision) return { saved: false, current: stored && structuredClone(stored) };
-      const revision = (stored?.revision ?? 0) + 1;
+      gatewayWrites += 1;
+      const revision = gatewayWrites;
       gateways.set(record.instance, { ...structuredClone(record), revision });
       const liveChanged = (stored?.live ?? false) !== record.live;
       if (liveChanged) sequence += 1;
@@ -149,11 +164,16 @@ export function createMemoryStore(): ControlPlaneStore {
 
     async dropBatchCursorsCountedBefore(cutoff) {
       const dropped: string[] = [];
-      for (const [instance, last] of lastBatches) {
-        if (last.countedAt < cutoff) {
-          lastBatches.delete(instance);
-          dropped.push(instance);
+      for (const [instance, epochs] of lastBatches) {
+        let any = false;
+        for (const [epoch, cursor] of epochs) {
+          if (cursor.countedAt < cutoff) {
+            epochs.delete(epoch);
+            any = true;
+          }
         }
+        if (epochs.size === 0) lastBatches.delete(instance);
+        if (any) dropped.push(instance);
       }
       return dropped;
     },

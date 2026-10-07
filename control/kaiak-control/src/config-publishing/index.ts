@@ -10,7 +10,7 @@ import { createHash } from "node:crypto";
 import { validateConfig } from "../config/index.ts";
 import type { Config, ConfigIssue } from "../config/index.ts";
 import { pointer } from "../schemas/index.ts";
-import type { ControlPlaneStore, CurrentConfig } from "../storage/index.ts";
+import type { ControlPlaneStore, CurrentConfig, StoreChange } from "../storage/index.ts";
 
 export type PublishResult = { ok: true; published: CurrentConfig } | { ok: false; issues: ConfigIssue[] };
 
@@ -26,6 +26,8 @@ export interface ConfigPublishing {
   // Calls listener with the current config every time it changes, by any process;
   // returns the unsubscribe, which is safe to call more than once.
   onConfigPublished(listener: ConfigPublishedListener): () => void;
+  // Takes one change the store announced (the core passes every one on).
+  takeChange(change: StoreChange): void;
 }
 
 export interface ConfigPublishingOptions {
@@ -37,6 +39,13 @@ export interface ConfigPublishingOptions {
   observeSequence: (sequence: number) => void;
   // Called for each listener that throws; the publish has succeeded either way.
   onListenerError: ConfigListenerErrorHandler;
+  // Milliseconds to wait before each new read of the current config after a read that
+  // failed; one read more than there are delays.
+  retryDelaysMs: readonly number[];
+  // Hears that the current config could not be read after every retry: this process's
+  // listeners may not have it (their streams should end, so the gateways reconnect and
+  // read it on connect).
+  onDeliveryFailed: (error: unknown) => void;
 }
 
 // The config_hash: lowercase hex SHA-256 of the config's JSON text exactly as the
@@ -50,6 +59,8 @@ export function createConfigPublishing({
   clock,
   observeSequence,
   onListenerError,
+  retryDelaysMs,
+  onDeliveryFailed,
 }: ConfigPublishingOptions): ConfigPublishing {
   const listeners = new Set<ConfigPublishedListener>();
   // Delivery to this process's listeners: the store announces a change, the current
@@ -70,27 +81,42 @@ export function createConfigPublishing({
     }
   };
 
+  // A read that fails is tried again after each retry delay; one that still fails is
+  // announced (onDeliveryFailed), never dropped quietly. The returned promise never
+  // rejects.
+  const readCurrent = async (): Promise<CurrentConfig | undefined> => {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await store.currentConfig();
+      } catch (error) {
+        const delay = retryDelaysMs[attempt];
+        if (delay === undefined) {
+          onDeliveryFailed(error);
+          return undefined;
+        }
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+  };
+
   const deliverCurrent = (): Promise<void> => {
     const run = deliveries.then(async () => {
-      const current = await store.currentConfig();
+      const current = await readCurrent();
       if (!current) return;
       observeSequence(current.sequence);
       if (current.hash === delivered) return;
       delivered = current.hash;
       notify(current);
     });
-    deliveries = run.catch(() => {
-      // The caller gets the failure from `run`; the chain only orders the reads.
-    });
+    deliveries = run;
     return run;
   };
 
-  store.subscribe((change) => {
-    if (change.type !== "config-published") return;
-    void deliverCurrent().catch(() => {
-      // The next change announced reads the current config again.
-    });
-  });
+  // A publish by any process, or a store catching up after its channel was down, is
+  // followed by reading the current config.
+  const takeChange = (change: StoreChange): void => {
+    if (change.type === "config-published" || change.type === "catch-up") void deliverCurrent();
+  };
 
   const publishOne = async (doc: unknown): Promise<PublishResult> => {
     const result = validateConfig(doc);
@@ -105,11 +131,9 @@ export function createConfigPublishing({
       const entry = { config: result.config, hash, publishedAt: clock() };
       const written = await store.publishConfig(entry, current?.hash);
       if (!written.saved) continue;
-      await deliverCurrent().catch(() => {
-        // The config is current: the publish succeeded. A store that failed to read it
-        // back leaves this process's listeners to hear of it with the next change, and
-        // its streams to get it when they reconnect.
-      });
+      // The config is current: the publish succeeded whether or not this process's
+      // listeners could be given it (a failed read is announced).
+      await deliverCurrent();
       return { ok: true, published: { ...entry, sequence: written.sequence } };
     }
   };
@@ -129,6 +153,8 @@ export function createConfigPublishing({
         listeners.delete(subscription);
       };
     },
+
+    takeChange,
   };
 }
 
