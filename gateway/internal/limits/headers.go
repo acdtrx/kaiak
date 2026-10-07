@@ -27,14 +27,15 @@ type Rejection struct {
 	RetryAfter time.Duration
 	Headers    Headers
 	// Unavailable: the request's priced model is covered by a USD limit (Scope, Type)
-	// whose spend is unknown — the control plane out of reach, or its totals for
-	// another config, past the outage grace, or no totals yet since the start; Used,
-	// Requested, RetryAfter and Headers are not set.
+	// whose spend is unknown — the control plane out of reach past the outage grace,
+	// or no totals yet since the start; Used, Requested, RetryAfter and Headers are not
+	// set.
 	Unavailable bool
 }
 
 // Headers are the x-ratelimit-* values for requests and tokens, each from the
-// applicable limit with the least remaining; nil when no such limit applies. Cost
+// applicable limit with the least remaining; nil when no such limit applies (a count
+// without a limit has no headers). Cost
 // limits have no headers.
 type Headers struct {
 	Requests, Tokens *HeaderValues
@@ -54,6 +55,9 @@ type HeaderValues struct {
 func headersFor(counters []*counter, now time.Time, running []*counter) Headers {
 	var h Headers
 	for _, c := range counters {
+		if !c.limited {
+			continue
+		}
 		var slot **HeaderValues
 		switch c.measure {
 		case MeasureRequests:

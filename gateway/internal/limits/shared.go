@@ -17,22 +17,26 @@ import (
 //
 // Totals apply whatever config the gateway runs: windows are counted per scope and
 // type whatever the config, so a window means the same under every config, and each
-// one is matched to the counter of its group (or global) and type.
+// one is matched to the count of its group (or global) and type. The first totals of
+// each stream connection are complete; the others list only the windows that changed,
+// and a window not listed keeps its base.
 
 // Totals are the control plane's totals as the limiter takes them.
 type Totals struct {
 	// LiveGateways is the live-gateway count per-minute shares divide by; 0 counts
 	// as 1.
 	LiveGateways int64
-	// Windows is complete: a counter with no window has used nothing in the control
-	// plane's current window.
-	Windows []PushedWindow
+	// Complete: Windows lists every scope and type with usage — a count with no window
+	// has used nothing in the control plane's current window. Otherwise Windows lists
+	// only the ones that changed, and every other count keeps its base.
+	Complete bool
+	Windows  []PushedWindow
 }
 
-// PushedWindow is one limit's current window as the control plane counts it,
-// identified as a config reload identifies a counter.
+// PushedWindow is one scope's current window of one type as the control plane counts
+// it, identified as a reload identifies a count.
 type PushedWindow struct {
-	// Group is the group the limit belongs to; "" for a global limit.
+	// Group is the group the count belongs to; "" for global.
 	Group string
 	Type  config.LimitType
 	Start time.Time
@@ -42,10 +46,12 @@ type PushedWindow struct {
 
 // TakeTotals takes one totals message, in one step under the limiter's lock: its
 // live-gateway count applies at once (per-minute shares keep what they counted), and
-// its windows become the bases — each hour and month counter's base its pushed window,
-// 0 without one, a window matching no counter ignored. counted, when not 0, is the
-// newest usage generation the message shows counted: it leaves the counters' own
-// usage now, as the totals that include it are applied.
+// its windows become the bases of the hour and month counts of their scope and type —
+// complete totals replace every base (0 without a window), others only those they
+// list. Windows of scopes the config does not have are kept for a reload that adds
+// them. counted, when not 0, is the newest usage generation the message shows
+// counted: it leaves the counters' own usage now, as the totals that include it are
+// applied.
 func (l *Limiter) TakeTotals(t Totals, counted uint64) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -70,13 +76,30 @@ func (l *Limiter) TakeTotals(t Totals, counted uint64) {
 			}
 		}
 	}
-	l.pushed = make(map[counterKey]PushedWindow, len(t.Windows))
+	if t.Complete {
+		l.pushed = make(map[counterKey]PushedWindow, len(t.Windows))
+	}
 	for _, w := range t.Windows {
-		l.pushed[keyOf(w.Group, config.Limit{Type: w.Type})] = w
+		l.pushed[keyOf(w.Group, w.Type)] = w
 		l.warnAheadLocked(w, now)
 	}
-	for _, c := range l.counters {
-		l.applyLimit(c)
+	if t.Complete {
+		for _, c := range l.counters {
+			l.applyLimit(c)
+		}
+	} else {
+		// Per-minute shares follow the live count; the hour and month counts only the
+		// windows listed.
+		for _, c := range l.counters {
+			if c.w.kind == SlidingMinute {
+				l.applyLimit(c)
+			}
+		}
+		for _, w := range t.Windows {
+			if c, ok := l.counters[keyOf(w.Group, w.Type)]; ok {
+				l.applyLimit(c)
+			}
+		}
 	}
 	l.retireCountedLocked(counted)
 	l.warnSmallSharesLocked()

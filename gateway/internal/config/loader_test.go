@@ -56,10 +56,10 @@ func TestApplierReportsEveryLoadToTheObserver(t *testing.T) {
 	}
 
 	before := time.Now()
-	if _, err := applier.Apply("control", valid, "kaiak.config.version", 3); err != nil {
+	if _, err := applier.Apply("control", valid, "kaiak.config.hash", strings.Repeat("a", 64)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := applier.Apply("control", []byte(`{`), "kaiak.config.version", 4); err == nil {
+	if _, err := applier.Apply("control", []byte(`{`), "kaiak.config.hash", strings.Repeat("b", 64)); err == nil {
 		t.Fatal("a broken document was applied")
 	}
 	_ = applier.Reject("sighup", os.ErrNotExist, "file", "x.json")
@@ -87,8 +87,8 @@ func TestApplierReportsEveryLoadToTheObserver(t *testing.T) {
 	}
 	out := logs.String()
 	for _, line := range []string{
-		fmt.Sprintf(`msg="config applied" kaiak.trigger=control kaiak.config.version=3 kaiak.config.backends=1 kaiak.config.models=1 kaiak.config.keys=1 kaiak.config.size=%d kaiak.duration=`, len(valid)),
-		`msg="config rejected" kaiak.trigger=control kaiak.config.version=4`,
+		fmt.Sprintf(`msg="config applied" kaiak.trigger=control kaiak.config.hash=`+strings.Repeat("a", 64)+` kaiak.config.backends=1 kaiak.config.models=1 kaiak.config.keys=1 kaiak.config.size=%d kaiak.duration=`, len(valid)),
+		`msg="config rejected" kaiak.trigger=control kaiak.config.hash=` + strings.Repeat("b", 64),
 		"kaiak.config.issue_codes=[syntax] kaiak.config.running=kept kaiak.config.size=1 kaiak.duration=",
 	} {
 		if !strings.Contains(out, line) {

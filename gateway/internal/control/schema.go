@@ -115,7 +115,7 @@ func (w *walker) configEvent(v any, path string) {
 func (w *walker) totals(v any, path string) {
 	w.Object(v, path, map[string]schemacheck.Field{
 		"live_gateways": {Required: true, Check: w.count()},
-		"counted_through": {Required: true, Check: schemacheck.Nullable(func(v any, path string) {
+		"counted_through": {Required: true, Check: w.ArrayOf(0, 0, false, func(v any, path string) {
 			w.Object(v, path, map[string]schemacheck.Field{
 				"epoch":    {Required: true, Check: w.hex32()},
 				"sequence": {Required: true, Check: w.positive()},

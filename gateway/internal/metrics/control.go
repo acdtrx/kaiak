@@ -14,6 +14,9 @@ type ControlState interface {
 	// TotalsAppliedAt is when the control plane's totals were last applied; false
 	// before any.
 	TotalsAppliedAt() (time.Time, bool)
+	// ConfigRejected reports whether the latest config received from the control
+	// plane was rejected, so the gateway runs another.
+	ConfigRejected() bool
 }
 
 // RegisterControlState registers the control-plane connection gauges on reg, read
@@ -26,7 +29,7 @@ func RegisterControlState(reg *Registry, s ControlState) {
 			emit(boolValue(connected))
 		})
 	reg.GaugeFunc("kaiak_control_last_contact_timestamp_seconds",
-		"Unix time of the last contact with the control plane: stream bytes (heartbeats included) or an ack; the process start before any.", nil,
+		"Unix time of the last contact with the control plane: stream bytes, heartbeats included; the process start before any.", nil,
 		func(emit func(float64, ...string)) {
 			_, last := s.Contact()
 			emit(float64(last.UnixMilli()) / 1000)
@@ -41,6 +44,9 @@ func RegisterControlState(reg *Registry, s ControlState) {
 	reg.GaugeFunc("kaiak_control_outage",
 		"1 while the control plane has been out of reach past the outage grace (money-limited models refused), else 0.", nil,
 		func(emit func(float64, ...string)) { emit(boolValue(s.Outage())) })
+	reg.GaugeFunc("kaiak_control_config_rejected",
+		"1 while the latest config received from the control plane was rejected (the status report's last_rejection is set) and an earlier config stays in force, else 0.", nil,
+		func(emit func(float64, ...string)) { emit(boolValue(s.ConfigRejected())) })
 }
 
 func boolValue(b bool) float64 {

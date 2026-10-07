@@ -96,7 +96,7 @@ type settings struct {
 }
 
 // controlSettings are control-plane mode's: where the control plane is, the token
-// the gateway presents, and how long boot waits for the snapshot.
+// the gateway presents, and how long boot waits for the stream's first config.
 type controlSettings struct {
 	url      *url.URL
 	token    string
@@ -208,9 +208,9 @@ func readSettings(lookupEnv func(string) (string, bool)) (settings, error) {
 	return s, nil
 }
 
-// defaultBootWait bounds the boot's snapshot fetches — retried while the control
-// plane is unavailable — before the last-known-good or seed config is used; what is
-// left of it bounds the wait for the first totals.
+// defaultBootWait bounds the boot's wait for the stream's first config — the stream
+// opened again while the control plane is unavailable — before the last-known-good or
+// seed config is used; what is left of it bounds the wait for the first totals.
 const defaultBootWait = control.DefaultBootWait
 
 // readControlSettings reads control-plane mode's variables: nil when none is set. The
@@ -431,7 +431,7 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 			},
 			Observer: metrics.NewUsageDelivery(registry), UsageMemoryBytes: s.usageMemory,
 			OnTotals: func(u control.TotalsUpdate) {
-				limiter.TakeTotals(limitsTotals(u.Totals), u.Counted)
+				limiter.TakeTotals(limitsTotals(u.Totals, u.Complete), u.Counted)
 				// Backend caps are split among the live gateways the totals count.
 				router.SetLiveGateways(limiter.LiveGateways())
 				saveShared(limiter, dir, logger, "totals")
@@ -772,6 +772,10 @@ type controlState struct {
 
 func (s controlState) Contact() (bool, time.Time) { return s.client.Contact() }
 func (s controlState) Outage() bool               { return s.limiter.Outage() }
+func (s controlState) ConfigRejected() bool {
+	_, rejected := s.client.LastRejection()
+	return rejected
+}
 func (s controlState) TotalsAppliedAt() (time.Time, bool) {
 	return s.limiter.TotalsAppliedAt()
 }
@@ -818,8 +822,8 @@ func servingStatus(inFlight, queued map[string]int, circuits map[routing.Deploym
 }
 
 // limitsTotals converts the control plane's totals for the limiter.
-func limitsTotals(t control.Totals) limits.Totals {
-	out := limits.Totals{LiveGateways: t.LiveGateways, Windows: make([]limits.PushedWindow, len(t.Windows))}
+func limitsTotals(t control.Totals, complete bool) limits.Totals {
+	out := limits.Totals{LiveGateways: t.LiveGateways, Complete: complete, Windows: make([]limits.PushedWindow, len(t.Windows))}
 	for i, w := range t.Windows {
 		out.Windows[i] = limits.PushedWindow{Group: w.Group, Type: w.Type,
 			Start: w.WindowStart, Used: w.Used}
@@ -861,8 +865,8 @@ func saveLimits(limiter *limits.Limiter, dir *state.Dir, logger *slog.Logger, tr
 
 // restoreShared loads the control-plane-mode limits state before traffic starts, when
 // there is a data directory
-// (limits.LoadShared). It is a cache: one that cannot be read, or belongs to another
-// config than the one booted, is logged and the gateway counts from the next totals.
+// (limits.LoadShared). It is a cache: one that cannot be read is logged and the
+// gateway counts from the next totals.
 func restoreShared(limiter *limits.Limiter, dir *state.Dir, logger *slog.Logger, restoredGeneration uint64) {
 	if dir == nil {
 		return

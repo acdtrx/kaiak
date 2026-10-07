@@ -3,8 +3,8 @@ package control
 // Runs the shared message fixtures in protocol/fixtures/messages/<kind>/.
 // kaiak-control's suite runs the same files: a valid fixture passes both, an invalid
 // one fails both, and a semantic fixture fails with the rule code its cases.json
-// entry names. For a config snapshot, the config inside is part of the message: it
-// must pass config.Parse too, and its rejection codes count as the message's.
+// entry names. For a config event, the config inside is part of the message: it must
+// pass config.Parse too, and its rejection codes count as the message's.
 
 import (
 	"encoding/json"

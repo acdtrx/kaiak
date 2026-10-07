@@ -66,6 +66,9 @@ func (c *Client) followStream(ctx context.Context, firstOnly bool) streamResult 
 	defer idle.Stop()
 
 	events := sse.NewReader(resp.Body, maxMessageBytes)
+	// The first totals of each connection are complete; later ones list the windows
+	// that changed (CONTROL-PROTOCOL.md, Config stream → Totals).
+	firstTotals := true
 	for {
 		block, err := events.Next()
 		if err != nil {
@@ -115,7 +118,8 @@ func (c *Client) followStream(ctx context.Context, firstOnly bool) streamResult 
 				c.logger.Error("totals event ignored: malformed", "exception.message", err)
 				continue
 			}
-			c.takeTotals(totals)
+			c.takeTotals(totals, firstTotals)
+			firstTotals = false
 		default:
 			c.logger.Debug("stream event ignored: unknown event", "kaiak.control.event", block.Event)
 		}

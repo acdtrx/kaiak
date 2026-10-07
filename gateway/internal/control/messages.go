@@ -24,19 +24,22 @@ type ConfigEvent struct {
 }
 
 // Totals is the data of a totals event: the control plane's usage in its current
-// window of every hour and month limit with usage, as one gateway gets it. A limit it
-// does not list has used nothing in the control plane's current window. Each message
-// is a consistent snapshot: its windows hold every batch the control plane had counted
-// when it read them, CountedThrough among them, and no other.
+// window, for every scope and type with usage, whatever the config, as one gateway
+// gets it. The first totals on a stream list every such window (a scope not listed has
+// used nothing in the control plane's current window); each later one lists only the
+// windows that changed since the stream's last totals (a scope not listed keeps its
+// value). Each message is a consistent snapshot: its windows hold every batch the
+// control plane had counted when it read them, the CountedThrough batches among them,
+// and no other.
 type Totals struct {
 	// LiveGateways is the live-gateway count; per-minute shares divide by it (at
 	// least 1).
 	LiveGateways int64 `json:"live_gateways"`
-	// CountedThrough is the last batch the control plane has counted for the
-	// recipient's instance (the stream's, or the acknowledged batch's); nil before
-	// its first.
-	CountedThrough *BatchPosition `json:"counted_through"`
-	Windows        []TotalsWindow `json:"windows"`
+	// CountedThrough is, for the stream's instance, the last batch the control plane
+	// has counted in each epoch it still keeps a cursor for, one per epoch; empty
+	// before its first.
+	CountedThrough []BatchPosition `json:"counted_through"`
+	Windows        []TotalsWindow  `json:"windows"`
 }
 
 // BatchPosition is a batch within its instance's epochs.
@@ -45,8 +48,8 @@ type BatchPosition struct {
 	Sequence int64  `json:"sequence"`
 }
 
-// TotalsWindow is one limit's current window. The limit is identified as a config
-// reload identifies it: its group (or global) and type.
+// TotalsWindow is one scope's current window for one type: its group (or global) and
+// type, whether or not the scope has a limit of that type.
 type TotalsWindow struct {
 	// Group is the group the limit belongs to; "" for a global limit.
 	Group string           `json:"group,omitempty"`
@@ -65,9 +68,13 @@ type TotalsWindow struct {
 // in one step.
 type TotalsUpdate struct {
 	Totals Totals
-	// Counted is the newest usage generation (Client.Record) of the queued batches at
-	// or below counted_through in its epoch: the totals include them, since every
-	// message is a consistent snapshot. 0 when the message counts none.
+	// Complete: the stream's first totals since it connected, listing every window
+	// with usage; the others list only the windows that changed.
+	Complete bool
+	// Counted is the newest usage generation (Client.Record) of the batches held that
+	// the message's counted_through covers — each at or below its epoch's entry: the
+	// totals include them, since every message is a consistent snapshot. 0 when the
+	// message covers none.
 	Counted uint64
 }
 
@@ -118,7 +125,8 @@ type Status struct {
 	// the seed config is in force.
 	AppliedConfigHash *string `json:"applied_config_hash"`
 	// LastRejection is the latest config received from the control plane when the
-	// gateway rejected it; nil once a later one is applied, and before any rejection.
+	// gateway rejected it; nil once a later one is applied or the running one is
+	// received again, and before any rejection.
 	LastRejection *Rejection `json:"last_rejection"`
 	// Backends by backend ID: every backend of the applied config, and any backend a
 	// reload dropped while requests on it still run.

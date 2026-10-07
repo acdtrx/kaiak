@@ -117,8 +117,7 @@ type usageSender struct {
 	// acked are the batches acknowledged but not yet shown counted by stream totals, in
 	// send order: an ack only lets a batch leave the store, and its usage leaves the
 	// limiter once a totals event's counted_through covers it (countedGeneration).
-	acked         []BatchPosition
-	ackedGens     []uint64
+	acked         []ackedBatch
 	queuedRecords int
 	// sealedBytes and queuedBytes are the encoded sizes of the checked sealed
 	// batches and of the queued ones sealed by this process (memoryBytesLocked).
@@ -300,26 +299,34 @@ func (c *Client) UsageWaitingSince() time.Time {
 
 // countedGeneration is the newest usage generation among the batches a totals event
 // shows counted: in send order — acknowledged ones first, then the queue — every
-// batch up to the last one at or before pos in pos's epoch. Batches go out one at a
-// time, so the control plane counts them in that order, and counted_through names the
-// last. Acknowledged batches it covers are forgotten: their usage leaves the limiter
-// now. 0 when it covers none.
-func (u *usageSender) countedGeneration(pos BatchPosition) uint64 {
+// batch at or before its own epoch's entry in counted (one per epoch). Batches go out
+// one at a time, so the control plane counts them in that order, and each entry names
+// the last of its epoch. Acknowledged batches it covers are forgotten: their usage
+// leaves the limiter now. 0 when it covers none.
+func (u *usageSender) countedGeneration(counted []BatchPosition) uint64 {
+	through := make(map[string]int64, len(counted))
+	for _, pos := range counted {
+		through[pos.Epoch] = pos.Sequence
+	}
+	covers := func(epoch string, sequence int64) bool {
+		last, ok := through[epoch]
+		return ok && sequence <= last
+	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	var generation uint64
 	covered := -1 // the last acknowledged batch covered
-	for i, id := range u.acked {
-		if id.Epoch == pos.Epoch && id.Sequence <= pos.Sequence {
-			covered, generation = i, u.ackedGens[i]
+	for i, a := range u.acked {
+		if covers(a.id.Epoch, a.id.Sequence) {
+			covered, generation = i, max(generation, a.generation)
 		}
 	}
 	for _, e := range u.queue {
-		if e.id.Epoch == pos.Epoch && e.id.Sequence <= pos.Sequence {
+		if covers(e.id.Epoch, e.id.Sequence) {
 			covered, generation = len(u.acked)-1, max(generation, e.generation)
 		}
 	}
-	u.acked, u.ackedGens = u.acked[covered+1:], u.ackedGens[covered+1:]
+	u.acked = u.acked[covered+1:]
 	return generation
 }
 
@@ -341,11 +348,38 @@ func (u *usageSender) head() (spoolEntry, bool) {
 	return u.queue[0], true
 }
 
-// dropHead removes e, the outstanding batch, from the queue.
-func (u *usageSender) dropHead(e spoolEntry) {
+// ackedBatch is a batch acknowledged but not yet shown counted: its ID, its usage
+// generation, and when the limiter no longer holds any of its usage anyway — the end
+// of the window its last record was settled in (the hour, or the month when it cost
+// anything), where the gateway's own uncounted usage stays behind.
+type ackedBatch struct {
+	id         BatchID
+	generation uint64
+	clearedAt  time.Time
+}
+
+// clearedAt is when the limiter's windows no longer hold any of batch's usage: the end
+// of the UTC hour of its last record, or of the month when a record cost anything
+// (docs/specs/GATEWAY.md, Limits → Uncounted usage stays in its own window).
+func clearedAt(batch UsageBatch) time.Time {
+	var last time.Time
+	priced := false
+	for _, r := range batch.Records {
+		if r.GatewayTime.After(last) {
+			last = r.GatewayTime
+		}
+		priced = priced || r.CostNanoUSD > 0
+	}
+	last = last.UTC()
+	if priced {
+		return time.Date(last.Year(), last.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, 1, 0)
+	}
+	return last.Truncate(time.Hour).Add(time.Hour)
+}
+
+// dropHeadLocked removes e, the outstanding batch, from the queue. Callers hold u.mu.
+func (u *usageSender) dropHeadLocked(e spoolEntry) {
 	u.outstanding = nil
-	u.mu.Lock()
-	defer u.mu.Unlock()
 	if len(u.queue) == 0 || u.queue[0].id != e.id {
 		return
 	}
@@ -357,12 +391,30 @@ func (u *usageSender) dropHead(e spoolEntry) {
 	u.changed = make(chan struct{})
 }
 
-// noteAcked keeps e among the acknowledged batches until a totals event covers it.
-func (u *usageSender) noteAcked(e spoolEntry) {
+// dropHead removes e, the outstanding batch, from the queue.
+func (u *usageSender) dropHead(e spoolEntry) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	u.acked = append(u.acked, BatchPosition{Epoch: e.id.Epoch, Sequence: e.id.Sequence})
-	u.ackedGens = append(u.ackedGens, e.generation)
+	u.dropHeadLocked(e)
+}
+
+// acknowledged moves e, the outstanding batch, from the queue to the acknowledged
+// batches, under one hold of the lock: a totals event handled meanwhile finds it in
+// one or the other, never in neither. Acknowledged batches whose usage the limiter's
+// windows have already left behind are forgotten: covering them would retire
+// nothing, and while the stream is down and acks still come they would pile up.
+func (u *usageSender) acknowledged(e spoolEntry, batch UsageBatch) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.dropHeadLocked(e)
+	now := time.Now()
+	kept := u.acked[:0]
+	for _, a := range u.acked {
+		if a.clearedAt.After(now) {
+			kept = append(kept, a)
+		}
+	}
+	u.acked = append(kept, ackedBatch{id: e.id, generation: e.generation, clearedAt: clearedAt(batch)})
 }
 
 // runSender sends the outstanding batch until the control plane acknowledges or
@@ -427,8 +479,7 @@ func (u *usageSender) sendOutstanding(ctx context.Context, e spoolEntry, batch U
 			u.logger.Warn("acknowledged usage batch not removed from the spool; a restart resends it and the control plane acknowledges it again without counting",
 				append(attrs, "exception.message", err)...)
 		}
-		u.dropHead(e)
-		u.noteAcked(e)
+		u.acknowledged(e, batch)
 		u.backoff.reset()
 		u.observe(BatchAcked)
 		u.logger.Debug("usage batch acknowledged", attrs...)
@@ -490,7 +541,6 @@ func (u *usageSender) post(ctx context.Context, batch UsageBatch) (UsageAck, err
 	if err != nil {
 		return UsageAck{}, err
 	}
-	u.c.touch()
 	if ack.Batch != batch.Batch {
 		return UsageAck{}, fmt.Errorf("usage ack names batch %s/%d, sent %s/%d", ack.Batch.Epoch, ack.Batch.Sequence,
 			batch.Batch.Epoch, batch.Batch.Sequence)

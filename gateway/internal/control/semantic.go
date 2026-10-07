@@ -32,8 +32,19 @@ func (r *ruleCheck) usageRecord(tree any, path string) {
 }
 
 func (r *ruleCheck) totals(tree any, path string) {
+	m := tree.(map[string]any)
+	epochs := map[string]int{}
+	for i, item := range m["counted_through"].([]any) {
+		epoch := item.(map[string]any)["epoch"].(string)
+		entryPath := schemacheck.Pointer(path, "counted_through", i)
+		if first, dup := epochs[epoch]; dup {
+			r.report(CodeCountedThroughEpochDuplicate, entryPath, "same epoch as "+schemacheck.Pointer(path, "counted_through", first))
+			continue
+		}
+		epochs[epoch] = i
+	}
 	seen := map[string]int{}
-	for i, item := range tree.(map[string]any)["windows"].([]any) {
+	for i, item := range m["windows"].([]any) {
 		window := item.(map[string]any)
 		windowPath := schemacheck.Pointer(path, "windows", i)
 		r.timestamp(window["window_start"], schemacheck.Pointer(windowPath, "window_start"))
@@ -46,7 +57,8 @@ func (r *ruleCheck) totals(tree any, path string) {
 	}
 }
 
-// windowIdentity: a window belongs to one limit — its group (absent: global) and type.
+// windowIdentity: a window belongs to one scope and type — its group (absent: global)
+// and type.
 func windowIdentity(window map[string]any) string {
 	group, _ := window["group"].(string)
 	return group + "\n" + window["type"].(string)

@@ -110,8 +110,8 @@ func errLimited(r *limits.Rejection) *apiError {
 
 // errBudgetUnavailable answers a request covered by a USD limit whose spend is unknown
 // — the control plane, which keeps the budget totals, out of reach past the outage
-// grace, its totals for another config past the grace, or no totals yet since the
-// start: the budget cannot be checked, so the model fails closed
+// grace, or no totals yet since the start: the budget cannot be checked, so the model
+// fails closed
 // (docs/specs/CONTROL-PROTOCOL.md, Control-plane outage). A platform condition, not the
 // caller's: 503, no Retry-After — nobody knows when the totals come.
 func errBudgetUnavailable(r *limits.Rejection) *apiError {

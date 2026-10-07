@@ -1,7 +1,9 @@
-// Package limits enforces the configured limits locally: one window counter per
-// limit of the global scope and of each group, checked and reserved before a request
-// is routed, settled with the request's actual usage once it is over
-// (docs/specs/GATEWAY.md, Limits). In file mode the counters enforce every window at
+// Package limits enforces the configured limits locally: window counters checked and
+// reserved before a request is routed, settled with the request's actual usage once it
+// is over (docs/specs/GATEWAY.md, Limits). Every scope — global and each group — has an
+// hour and a month count whether or not it has a limit of that type, and a limit is a
+// check over its scope's count; per-minute windows exist only for the limits that
+// have them. In file mode the counters enforce every window at
 // the full limit, and the hour and month windows survive restarts through a snapshot
 // in the data directory. In control-plane mode (NewShared) the hour and month windows
 // enforce the control plane's pushed totals plus this gateway's own usage not yet
@@ -75,31 +77,38 @@ func effectiveLimit(l config.Limit) int64 {
 	return int64(v)
 }
 
-// counterKey identifies a limit across config versions: its group (or global) and
-// type, the one limit of that type in its scope. A reload keeps the counter of every
-// limit whose key is unchanged, its value edited or not. Group IDs are unique across
-// the tree, so the group alone names the scope.
+// counterKey identifies a count across reloads: its group (or global) and type. A
+// scope has at most one limit of a type, so the key also names that limit. A reload
+// keeps the counter of every key that still exists, its limit added, edited or removed.
+// Group IDs are unique across the tree, so the group alone names the scope.
 type counterKey struct {
 	// group is the group the limit belongs to; "" = global (IDs are never empty).
 	group string
 	typ   config.LimitType
 }
 
-func keyOf(group string, l config.Limit) counterKey {
-	return counterKey{group: group, typ: l.Type}
+func keyOf(group string, typ config.LimitType) counterKey {
+	return counterKey{group: group, typ: typ}
 }
+
+// countedTypes are the types every scope is counted in, limited or not: the hour and
+// month windows. Per-minute windows are local shares, kept only for their limits.
+var countedTypes = []config.LimitType{config.LimitTokensPerHour, config.LimitUSDPerMonth}
 
 func (k counterKey) scope() Scope { return scopeOf(k.group) }
 
-// counter is one limit's window.
+// counter is one scope's window of one type. limited: the scope has a limit of the
+// type, limit; a counter without one only counts, and never refuses.
 type counter struct {
 	key     counterKey
+	limited bool
 	limit   config.Limit
 	measure Measure
 	w       *window
 }
 
-// Limiter holds every limit's counter for the live config. Its lock guards all
+// Limiter holds every counter of the live config: each scope's hour and month counts
+// and each per-minute limit's window. Its lock guards all
 // counters, so checking and reserving across a request's scopes is all-or-nothing:
 // two concurrent requests can never both take the last unit.
 type Limiter struct {
@@ -121,7 +130,9 @@ type Limiter struct {
 	byGroup  map[string][]*counter
 
 	// Control-plane mode (shared.go). live is the live-gateway count per-minute shares
-	// divide by (at least 1); pushed is the applied totals' windows by limit.
+	// divide by (at least 1); pushed is every window the stream's totals have listed
+	// since its last complete totals, by scope and type, those of scopes the config
+	// does not have included — a reload that adds the scope finds its base.
 	live   int64
 	pushed map[counterKey]PushedWindow
 	// totalsAt is when totals were last applied; zero before any.
@@ -202,10 +213,12 @@ func (l *Limiter) ObserveSyncs(f func(time.Duration)) {
 	l.observeSync = f
 }
 
-// sync matches the counters to the live snapshot when it changed: limits that still
-// exist — matched by group (or global) and type — keep their counters (a changed value
-// applies to the count so far), new ones start empty, removed ones are dropped.
-// Callers hold l.mu.
+// sync matches the counters to the live snapshot when it changed: every scope gets
+// its hour and month counts, limited or not, and each per-minute limit its window.
+// Counts whose scope and type still exist keep their counter (a limit added, changed or
+// removed applies to the count so far); new ones start empty (in control-plane mode,
+// from their pushed base); those of a deleted scope, and removed per-minute limits, are
+// dropped. Callers hold l.mu.
 func (l *Limiter) sync() {
 	snap := l.holder.Current()
 	if snap == nil || snap == l.applied {
@@ -217,25 +230,34 @@ func (l *Limiter) sync() {
 	}
 	next := make(map[counterKey]*counter, len(l.counters))
 	build := func(group string, limits []config.Limit) []*counter {
-		out := make([]*counter, len(limits))
-		for i, lim := range limits {
-			k := keyOf(group, lim)
+		out := make([]*counter, 0, len(countedTypes)+len(limits))
+		take := func(typ config.LimitType) *counter {
+			k := keyOf(group, typ)
 			c, ok := l.counters[k]
 			if !ok {
 				c = l.newCounter(k)
 			}
-			c.limit = lim
+			c.limited, c.limit = false, config.Limit{Type: typ}
 			next[k] = c
-			out[i] = c
+			out = append(out, c)
+			return c
+		}
+		for _, typ := range countedTypes {
+			take(typ)
+		}
+		for _, lim := range limits {
+			c, ok := next[keyOf(group, lim.Type)]
+			if !ok {
+				c = take(lim.Type)
+			}
+			c.limited, c.limit = true, lim
 		}
 		return out
 	}
 	l.global = build("", snap.GlobalLimits)
 	l.byGroup = make(map[string][]*counter, len(snap.Groups))
 	for id, g := range snap.Groups {
-		if len(g.Limits) > 0 {
-			l.byGroup[id] = build(id, g.Limits)
-		}
+		l.byGroup[id] = build(id, g.Limits)
 	}
 	for _, c := range next {
 		l.applyLimit(c)
@@ -247,7 +269,7 @@ func (l *Limiter) sync() {
 	}
 }
 
-// newCounter is the counter of a limit identity no existing counter has: it starts
+// newCounter is the counter of a scope and type no existing counter has: it starts
 // empty (docs/specs/GATEWAY.md, Limits → Config reload). Callers hold l.mu.
 func (l *Limiter) newCounter(k counterKey) *counter {
 	kind, measure := shape(k.typ)
@@ -275,10 +297,13 @@ func LogValue(m Measure, v int64) any {
 }
 
 // applyLimit sets c's effective limit — the configured value, or in control-plane
-// mode a per-minute window's share — and a shared window's pushed base. Callers hold
-// l.mu.
+// mode a per-minute window's share; 0 for a count without a limit, which is never
+// checked — and a shared window's pushed base. Callers hold l.mu.
 func (l *Limiter) applyLimit(c *counter) {
-	limit := effectiveLimit(c.limit)
+	limit := int64(0)
+	if c.limited {
+		limit = effectiveLimit(c.limit)
+	}
 	if !l.shared() {
 		c.w.limit = limit
 		return
@@ -291,7 +316,7 @@ func (l *Limiter) applyLimit(c *counter) {
 	if p, ok := l.pushed[c.key]; ok {
 		c.w.setBase(l.now(), p.Start, p.Used)
 	} else {
-		c.w.base = 0 // the totals are complete: no window, nothing used there
+		c.w.base = 0 // not listed since the last complete totals: nothing used there
 	}
 }
 
@@ -356,7 +381,8 @@ type Subject struct {
 }
 
 // applicable lists the counters of every scope the subject belongs to: global and
-// each group on its path. USD counters apply
+// each group on its path, limited or not — a request counts on every one, and only the
+// limited ones are checked. USD counters apply
 // only to a priced request (Subject.Priced): an unpriced model costs nothing, so no
 // budget refuses it or is spent by it (docs/specs/GATEWAY.md, Limits → Unpriced
 // models); a request that generates nothing (Subject.RequestsOnly) meets only request
@@ -420,7 +446,7 @@ func (l *Limiter) Reserve(s Subject, tokens int64) (*Reservation, *Rejection) {
 	// The outage first: deciding it on every request is what logs its start and end.
 	if l.outageLocked(now) || l.noTotalsLocked() {
 		for _, c := range counters {
-			if c.measure == MeasureCost {
+			if c.limited && c.measure == MeasureCost {
 				return nil, &Rejection{Scope: c.key.scope(), Group: c.key.group, Type: c.limit.Type, Measure: c.measure,
 					Limit: c.w.limit, Max: effectiveLimit(c.limit), Unavailable: true}
 			}
@@ -432,7 +458,7 @@ func (l *Limiter) Reserve(s Subject, tokens int64) (*Reservation, *Rejection) {
 	var running []*counter
 	for _, c := range counters {
 		n := need(c, tokens)
-		if c.admits(now, n) {
+		if !c.limited || c.admits(now, n) {
 			continue
 		}
 		var wait time.Duration
@@ -529,17 +555,19 @@ func amountOf(m Measure, rec accounting.UsageRecord) int64 {
 
 // CounterUsage is one counter's state, for reading (metrics, tests).
 type CounterUsage struct {
-	// Group is the group the limit belongs to; "" for a global limit.
+	// Group is the group the count belongs to; "" for global.
 	Group string
 	Type  config.LimitType
-	// Limit and Used are in the counter's unit: requests, tokens or nano-USD. Used
-	// includes unsettled reservations.
-	Limit int64
-	Used  int64
+	// Limited: the scope has a limit of the type. Limit and Used are in the counter's
+	// unit: requests, tokens or nano-USD; Limit is 0 without a limit. Used includes
+	// unsettled reservations.
+	Limited bool
+	Limit   int64
+	Used    int64
 }
 
-// Usage returns every counter's current state, sorted by group (global first) and
-// type.
+// Usage returns every counter's current state, limited or not, sorted by group
+// (global first) and type.
 func (l *Limiter) Usage() []CounterUsage {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -548,7 +576,7 @@ func (l *Limiter) Usage() []CounterUsage {
 	out := make([]CounterUsage, 0, len(l.counters))
 	for _, c := range l.counters {
 		out = append(out, CounterUsage{Group: c.key.group, Type: c.limit.Type,
-			Limit: c.w.limit, Used: c.w.usedAt(now)})
+			Limited: c.limited, Limit: c.w.limit, Used: c.w.usedAt(now)})
 	}
 	slices.SortFunc(out, func(a, b CounterUsage) int {
 		if c := strings.Compare(a.Group, b.Group); c != 0 {

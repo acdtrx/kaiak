@@ -6,8 +6,11 @@
 // down, restart, answer with another protocol version, or fail usage batches (an error
 // answer, an ack dropped after counting, or an ack naming another batch). Its totals
 // are scripted: the test sets the windows and the live-gateway count, and the server
-// keeps each instance's counted_through, as kaiak-control does; it does not aggregate
-// usage itself. Test tooling only: nothing in the gateway binary imports it. It speaks
+// keeps each instance's counted_through, one entry per epoch, as kaiak-control does; it
+// does not aggregate
+// usage itself; each stream's first totals list every scripted window, later ones only
+// the windows that changed for that stream (one it got that the script dropped is
+// listed at "0"), as kaiak-control sends them. Test tooling only: nothing in the gateway binary imports it. It speaks
 // raw JSON and imports nothing from the gateway, so the control package's own tests
 // can use it.
 package fakecontrol
@@ -19,9 +22,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"slices"
 	"sync"
 )
 
@@ -42,9 +47,9 @@ type Server struct {
 	requests  []Request
 	connected chan *Stream
 
-	// Usage intake: the last counted batch per instance, the counted batches, the
-	// scripted faults (queued, then the persistent one).
-	lastBatch   map[string]BatchID
+	// Usage intake: the last counted batch's sequence per instance and epoch, the
+	// counted batches, the scripted faults (queued, then the persistent one).
+	lastBatch   map[string]map[string]int64
 	counted     []UsageBatch
 	usageFaults []UsageFault
 	usageFault  *UsageFault
@@ -137,11 +142,14 @@ type Stream struct {
 	// gotConfig: the stream has been sent a config, so totals may follow (kaiak-control
 	// sends none before). Guarded by the server's mu.
 	gotConfig bool
-	server    *Server
-	frames    chan []byte
-	close     chan struct{}
-	once      sync.Once
-	done      chan struct{}
+	// sent is each window this stream was last sent, by scope and type; nil before
+	// its first totals (which are complete). Guarded by the server's mu.
+	sent   map[string]totalsWindow
+	server *Server
+	frames chan []byte
+	close  chan struct{}
+	once   sync.Once
+	done   chan struct{}
 }
 
 // protocolVersion is the Kaiak-Protocol value the fake speaks
@@ -155,7 +163,7 @@ const connectedBuffer = 64
 // New starts a server that accepts token.
 func New(token string) *Server {
 	s := &Server{token: token, protocol: protocolVersion, streams: map[*Stream]struct{}{},
-		connected: make(chan *Stream, connectedBuffer), lastBatch: map[string]BatchID{},
+		connected: make(chan *Stream, connectedBuffer), lastBatch: map[string]map[string]int64{},
 		windows: []byte("[]"), live: 1,
 		usageEvents: make(chan UsageEvent, eventsBuffer), statusEvents: make(chan []byte, eventsBuffer)}
 	mux := http.NewServeMux()
@@ -188,7 +196,7 @@ func (s *Server) Publish(config []byte) string {
 		if !st.gotConfig {
 			st.gotConfig = true
 			if !s.holdConnectTotals && !s.pushTotals {
-				st.enqueue(eventFrame("totals", s.totalsLocked(st.Instance)))
+				st.enqueue(eventFrame("totals", s.streamTotalsLocked(st)))
 			}
 		}
 	}
@@ -203,7 +211,7 @@ func (s *Server) Publish(config []byte) string {
 func (s *Server) Restart() {
 	s.mu.Lock()
 	s.config = nil
-	s.lastBatch = map[string]BatchID{}
+	s.lastBatch = map[string]map[string]int64{}
 	s.windows = []byte("[]")
 	s.mu.Unlock()
 	s.closeStreams()
@@ -247,11 +255,12 @@ func (s *Server) SetLiveGateways(n int64) {
 	s.totalsChangedLocked()
 }
 
-// Totals returns the current totals as instance gets them (its counted_through).
+// Totals returns the current complete totals as instance gets them (its
+// counted_through).
 func (s *Server) Totals(instance string) []byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.totalsLocked(instance)
+	return s.totalsLocked(instance, s.windows)
 }
 
 // PushCurrentTotals sends the current totals to every open stream, each with its
@@ -274,22 +283,74 @@ func (s *Server) totalsChangedLocked() {
 func (s *Server) pushCurrentLocked() {
 	for st := range s.streams {
 		if st.gotConfig {
-			st.enqueue(eventFrame("totals", s.totalsLocked(st.Instance)))
+			st.enqueue(eventFrame("totals", s.streamTotalsLocked(st)))
 		}
 	}
 }
 
-// totalsLocked is the totals message instance gets: the live-gateway count, the
-// instance's last counted batch and the windows.
-func (s *Server) totalsLocked(instance string) []byte {
-	counted := []byte("null")
-	if last, ok := s.lastBatch[instance]; ok {
-		counted = fmt.Appendf(nil, `{"epoch":%q,"sequence":%d}`, last.Epoch, last.Sequence)
+// totalsLocked is the totals message instance gets with windows: the live-gateway
+// count, the instance's last counted batch of each epoch, and the windows.
+func (s *Server) totalsLocked(instance string, windows []byte) []byte {
+	counted := []byte("[")
+	for _, epoch := range slices.Sorted(maps.Keys(s.lastBatch[instance])) {
+		if len(counted) > 1 {
+			counted = append(counted, ',')
+		}
+		counted = fmt.Appendf(counted, `{"epoch":%q,"sequence":%d}`, epoch, s.lastBatch[instance][epoch])
 	}
-	return fmt.Appendf(nil, `{"live_gateways":%d,"counted_through":%s,"windows":%s}`, s.live, counted, s.windows)
+	counted = append(counted, ']')
+	return fmt.Appendf(nil, `{"live_gateways":%d,"counted_through":%s,"windows":%s}`, s.live, counted, windows)
 }
 
-// PushTotals sends a totals event with data to every open stream.
+// totalsWindow is one scripted window: its scope and type, start and amount.
+type totalsWindow struct {
+	Group       string `json:"group,omitempty"`
+	Type        string `json:"type"`
+	WindowStart string `json:"window_start"`
+	Used        string `json:"used"`
+}
+
+func (w totalsWindow) key() string { return w.Group + "\n" + w.Type }
+
+// streamTotalsLocked is the next totals message for st: complete for its first, then
+// the windows that changed since its last — a window it was sent that the script no
+// longer has, in the same window, listed at "0" — and it remembers what it sent.
+func (s *Server) streamTotalsLocked(st *Stream) []byte {
+	var scripted []totalsWindow
+	if err := json.Unmarshal(s.windows, &scripted); err != nil {
+		panic(fmt.Sprintf("fakecontrol: windows are not a totals window list: %v", err))
+	}
+	now := make(map[string]totalsWindow, len(scripted))
+	for _, w := range scripted {
+		now[w.key()] = w
+	}
+	listed := scripted
+	if st.sent != nil {
+		listed = nil
+		for _, w := range scripted {
+			if st.sent[w.key()] != w {
+				listed = append(listed, w)
+			}
+		}
+		for _, key := range slices.Sorted(maps.Keys(st.sent)) {
+			if _, ok := now[key]; !ok {
+				gone := st.sent[key]
+				gone.Used = "0"
+				listed = append(listed, gone)
+				now[key] = gone
+			}
+		}
+	}
+	st.sent = now
+	windows, err := json.Marshal(append([]totalsWindow{}, listed...))
+	if err != nil {
+		panic(err)
+	}
+	return s.totalsLocked(st.Instance, windows)
+}
+
+// PushTotals sends a totals event with data to every open stream, as it is: the
+// streams' own changes-only bookkeeping does not see it.
 func (s *Server) PushTotals(data []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -533,7 +594,7 @@ func (s *Server) serveStream(w http.ResponseWriter, r *http.Request) {
 		st.gotConfig = true
 		st.frames <- eventFrame("config", ConfigEvent(s.config))
 		if !s.holdConnectTotals {
-			st.frames <- eventFrame("totals", s.totalsLocked(st.Instance))
+			st.frames <- eventFrame("totals", s.streamTotalsLocked(st))
 		}
 	}
 	s.streams[st] = struct{}{}
@@ -579,7 +640,7 @@ const (
 // serveUsage takes a usage batch as kaiak-control's intake does, in its order: the
 // batch message (a light check: shape, 1 to 500 records, the records' instance and
 // unique record IDs), the instance against the header; then the scripted fault, if
-// any; then de-duplication by the instance's last counted batch. A batch is counted
+// any; then de-duplication by the last counted batch of the batch's epoch. A batch is counted
 // whether or not a config is published.
 func (s *Server) serveUsage(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxUsageBody))
@@ -632,10 +693,14 @@ func (s *Server) serveUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	event.Outcome = OutcomeDuplicate
-	last, seen := s.lastBatch[batch.Batch.Instance]
-	if !seen || last.Epoch != batch.Batch.Epoch || batch.Batch.Sequence > last.Sequence {
+	epochs := s.lastBatch[batch.Batch.Instance]
+	if last, seen := epochs[batch.Batch.Epoch]; !seen || batch.Batch.Sequence > last {
 		event.Outcome = OutcomeCounted
-		s.lastBatch[batch.Batch.Instance] = batch.Batch
+		if epochs == nil {
+			epochs = map[string]int64{}
+			s.lastBatch[batch.Batch.Instance] = epochs
+		}
+		epochs[batch.Batch.Epoch] = batch.Batch.Sequence
 		s.counted = append(s.counted, batch)
 		s.totalsChangedLocked()
 	}

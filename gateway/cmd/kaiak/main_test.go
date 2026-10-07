@@ -573,14 +573,15 @@ func TestServingStatusCoversTheAppliedConfig(t *testing.T) {
 	}
 }
 
-// The conversion carries the live-gateway count and every window by group and type.
+// The conversion carries the live-gateway count, whether the totals are complete, and
+// every window by group and type.
 func TestLimitsTotalsCarryWindowsByGroupAndType(t *testing.T) {
 	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	got := limitsTotals(control.Totals{LiveGateways: 3, Windows: []control.TotalsWindow{
-		{Group: "team", Type: config.LimitUSDPerMonth, WindowStart: start, Used: 42}}})
+		{Group: "team", Type: config.LimitUSDPerMonth, WindowStart: start, Used: 42}}}, true)
 	want := limits.PushedWindow{Group: "team", Type: config.LimitUSDPerMonth, Start: start, Used: 42}
-	if got.LiveGateways != 3 || len(got.Windows) != 1 || got.Windows[0] != want {
-		t.Errorf("limitsTotals = %+v, want 3 live gateways and %+v", got, want)
+	if got.LiveGateways != 3 || !got.Complete || len(got.Windows) != 1 || got.Windows[0] != want {
+		t.Errorf("limitsTotals = %+v, want 3 live gateways, complete, and %+v", got, want)
 	}
 }
 

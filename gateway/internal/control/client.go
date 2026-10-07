@@ -142,7 +142,8 @@ type Options struct {
 	statusAfter func(time.Duration) <-chan time.Time
 }
 
-// Client fetches and follows the config from a control plane.
+// Client follows the config and totals from a control plane's stream, and sends it
+// usage and status.
 type Client struct {
 	opts    Options
 	base    string
@@ -152,10 +153,11 @@ type Client struct {
 	usage   *usageSender
 	status  *statusReporter
 	// lastContact is when the control plane was last in contact (unix nanoseconds):
-	// bytes on the config stream, an ack. It starts when the
+	// bytes on the config stream — the only channel that brings totals, so an ack is
+	// not contact (docs/specs/GATEWAY.md, Limits → Outage refusal). It starts when the
 	// client is created, so a gateway that boots without reaching the control plane
-	// (last-known-good or seed config) counts its outage from its start. streamOpen is set
-	// while a config stream is open.
+	// (last-known-good or seed config) counts its outage from its start. streamOpen is
+	// set while a config stream is open.
 	lastContact atomic.Int64
 	streamOpen  atomic.Bool
 
@@ -165,9 +167,9 @@ type Client struct {
 	// none, is.
 	appliedHash string
 	// rejection is the latest config received from the control plane when it was
-	// rejected; nil before any, and once a later one is applied. A config event with
-	// its hash is skipped, so the same rejected config is not checked again on every
-	// reconnect.
+	// rejected; nil before any, once a later one is applied, and once the config
+	// received is the one running. A config event with its hash is skipped, so the
+	// same rejected config is not checked again on every reconnect.
 	rejection *Rejection
 }
 
@@ -240,8 +242,8 @@ func New(opts Options) *Client {
 
 // Contact reports whether a config stream is open — contact for as long as it stays
 // open, since a silent one is closed after IdleTimeout — and when the control plane
-// was last in contact: bytes on the stream (heartbeats included), an ack. Before any,
-// last is when the client was created.
+// was last in contact: bytes on the stream, heartbeats included. Before any, last is
+// when the client was created.
 func (c *Client) Contact() (connected bool, last time.Time) {
 	return c.streamOpen.Load(), time.Unix(0, c.lastContact.Load())
 }
@@ -258,7 +260,8 @@ func (c *Client) AppliedConfigHash() (string, bool) {
 
 // LastRejection is the status report's last_rejection: the latest config received
 // from the control plane, when the gateway rejected it. A config applied from the
-// control plane afterwards clears it. False when there is none.
+// control plane afterwards clears it, as does receiving the running config again.
+// False when there is none.
 func (c *Client) LastRejection() (Rejection, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -390,11 +393,9 @@ func (c *Client) Run(ctx context.Context) {
 // takeTotals hands one totals event to the consumer with the usage it shows counted:
 // every totals event is applied, in the order the stream delivered it — the control
 // plane keeps its stream in order (CONTROL-PROTOCOL.md, Config stream → Order).
-func (c *Client) takeTotals(t Totals) {
-	update := TotalsUpdate{Totals: t}
-	if t.CountedThrough != nil {
-		update.Counted = c.usage.countedGeneration(*t.CountedThrough)
-	}
+// complete: the stream's first totals since it connected.
+func (c *Client) takeTotals(t Totals, complete bool) {
+	update := TotalsUpdate{Totals: t, Complete: complete, Counted: c.usage.countedGeneration(t.CountedThrough)}
 	if c.opts.OnTotals != nil {
 		c.opts.OnTotals(update)
 	}
@@ -425,12 +426,23 @@ func (c *Client) pause(ctx context.Context) {
 
 // takeConfig applies a config event — whatever config it replaces: the control plane
 // is the authority on which config is current (CONTROL-PROTOCOL.md, Current config) —
-// unless its hash is the config the gateway runs or the one it last rejected.
+// unless its hash is the config the gateway runs or the one it last rejected. The
+// running config received again is the latest config received, and it is not
+// rejected: a rejection still reported is cleared, and the status says so.
 func (c *Client) takeConfig(e ConfigEvent) {
 	c.mu.Lock()
-	same := e.ConfigHash == c.appliedHash || (c.rejection != nil && e.ConfigHash == c.rejection.ConfigHash)
+	running := e.ConfigHash == c.appliedHash
+	cleared := running && c.rejection != nil
+	if cleared {
+		c.rejection = nil
+	}
+	rejected := c.rejection != nil && e.ConfigHash == c.rejection.ConfigHash
 	c.mu.Unlock()
-	if same {
+	if cleared {
+		c.logger.Info("config rejection cleared: the control plane sent the running config", "kaiak.config.hash", e.ConfigHash)
+		c.status.requestReport(statusTriggerChange)
+	}
+	if running || rejected {
 		c.logger.Debug("config event skipped: the config already applied or rejected", "kaiak.config.hash", e.ConfigHash)
 		return
 	}

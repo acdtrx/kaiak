@@ -8,8 +8,9 @@ import (
 )
 
 // The control-plane-mode limits state (docs/specs/GATEWAY.md, Limits → Control-plane
-// mode: Restart): each hour and month counter's pushed base and the usage the control
-// plane had not counted yet, by group (or global) and type, so a restart —
+// mode: Restart): each scope's hour and month pushed base and the usage the control
+// plane had not counted yet, by group (or global) and type, limited or not, so a
+// restart —
 // above all one with the control plane down — keeps enforcing what was spent instead
 // of counting from zero until totals arrive again. Written when totals are applied and
 // at shutdown, never per request; restored at boot, before traffic. A cache: the
@@ -25,7 +26,7 @@ type sharedData struct {
 	Windows      []savedShared `json:"windows"`
 }
 
-// savedShared is one hour or month counter: its limit identity, the control plane's
+// savedShared is one hour or month count: its scope and type, the control plane's
 // used amount for the window starting at BaseStart (zero time: none), and the usage
 // not yet counted there, settled in the window starting at Start.
 type savedShared struct {
@@ -80,8 +81,8 @@ type SharedRestore struct {
 	// Discarded names why the whole file was not used ("" when it was): not in
 	// control-plane mode, or no config in force.
 	Discarded string
-	// Restored and Dropped count the counters restored and those whose limit no
-	// longer exists.
+	// Restored and Dropped count the windows restored and those whose scope the
+	// booted config no longer has.
 	Restored, Dropped int
 }
 
@@ -114,7 +115,7 @@ func (l *Limiter) LoadShared(dir *state.Dir, restoredGeneration uint64) (SharedR
 	now := l.now()
 	l.live = max(data.LiveGateways, 1)
 	for _, saved := range data.Windows {
-		key := keyOf(saved.Group, config.Limit{Type: saved.Type})
+		key := keyOf(saved.Group, saved.Type)
 		c, ok := l.counters[key]
 		if !ok || !c.w.shared {
 			out.Dropped++

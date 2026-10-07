@@ -461,6 +461,31 @@ func TestRejectedConfigIsKeptOutAndReported(t *testing.T) {
 	}
 }
 
+// The running config published again — the usual undo of a bad publish — is the
+// latest config received, and it runs: the rejection is cleared and a status report
+// says so, with nothing reloaded (AUDIT-2 2M10).
+func TestRunningConfigReceivedAgainClearsTheRejection(t *testing.T) {
+	h := newHarness(t)
+	applied := h.cp.Publish(configA(t))
+	c := h.client(nil)
+	h.boot(c)
+	h.wantLoad(load{TriggerControl, true})
+	h.run(c)
+	h.nextStream()
+	h.cp.Publish(configRejected(t))
+	h.wantLoad(load{TriggerControl, false})
+	h.statusUntil("the rejection reported", func(s Status) bool { return s.LastRejection != nil })
+
+	h.cp.Publish(configA(t))
+	h.statusUntil("the rejection cleared", func(s Status) bool {
+		return s.LastRejection == nil && s.AppliedConfigHash != nil && *s.AppliedConfigHash == applied
+	})
+	if r, ok := c.LastRejection(); ok {
+		t.Errorf("rejection %+v still reported with the running config received again", r)
+	}
+	h.noLoadPending()
+}
+
 func TestRejectedConfigAtBootFallsBackToLastKnownGood(t *testing.T) {
 	h := newHarness(t)
 	applied := h.cp.Publish(configA(t))

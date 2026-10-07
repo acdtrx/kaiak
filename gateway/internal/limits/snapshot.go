@@ -8,7 +8,8 @@ import (
 )
 
 // The file-mode usage snapshot (docs/specs/GATEWAY.md, Limits): the settled usage of
-// every hour and month window, so a restart does not reset them. Per-minute windows
+// every scope's hour and month window, limited or not, so a restart does not reset
+// them. Per-minute windows
 // are not kept: a restart costs at most one minute of their history. File mode only:
 // in control-plane mode the control plane holds these totals.
 const (
@@ -24,8 +25,8 @@ type snapshotData struct {
 	Windows []savedWindow `json:"windows"`
 }
 
-// savedWindow is one counter's window: which limit it belongs to (the same identity
-// a config reload matches on), when the window started and what was settled in it.
+// savedWindow is one count's window: its scope and type (the identity a config reload
+// matches on), when the window started and what was settled in it.
 type savedWindow struct {
 	// Group is the group the limit belongs to; "" (omitted) for a global limit.
 	Group string           `json:"group,omitempty"`
@@ -59,7 +60,7 @@ func (l *Limiter) SaveSnapshot(dir *state.Dir) (int, error) {
 }
 
 // LoadSnapshot restores hour and month windows from dir, before traffic starts. A
-// saved window is restored when its limit still exists in the live config and its
+// saved window is restored when its scope still exists in the live config and its
 // window is the current one; the others are dropped. A missing file, or one with
 // another format version (discarded by state and logged), restores nothing.
 func (l *Limiter) LoadSnapshot(dir *state.Dir) (restored, dropped int, err error) {
@@ -73,7 +74,7 @@ func (l *Limiter) LoadSnapshot(dir *state.Dir) (restored, dropped int, err error
 	l.sync()
 	now := l.now()
 	for _, saved := range data.Windows {
-		c, ok := l.counters[keyOf(saved.Group, config.Limit{Type: saved.Type})]
+		c, ok := l.counters[keyOf(saved.Group, saved.Type)]
 		if !ok || c.w.kind == SlidingMinute || !saved.Start.Equal(windowStart(c.w.kind, now)) {
 			dropped++
 			continue

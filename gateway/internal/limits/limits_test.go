@@ -33,6 +33,8 @@ type limitsDoc struct {
 	grace                                    string
 	// teamModels, when set, is group t's allowed_models list (JSON).
 	teamModels string
+	// extraGroup, when set, adds a top-level group of that ID with no limits.
+	extraGroup string
 }
 
 func list(s string) string {
@@ -64,7 +66,7 @@ func snapshot(t *testing.T, l limitsDoc) *config.Snapshot {
     "w": { "parent": "t", "limits": ` + list(l.workload) + ` },
     "users": { "child_defaults": { "limits": ` + list(l.defaultUser) + ` } },
     "ann": { "parent": "users", "limits": ` + list(l.ann) + ` },
-    "bob": { "parent": "users" }
+    "bob": { "parent": "users" }` + extraGroup(l.extraGroup) + `
   },
   "keys": { "k": { "hash": "sha256:` + strings.Repeat("0", 64) + `", "group": "w" } }
 }`
@@ -73,6 +75,13 @@ func snapshot(t *testing.T, l limitsDoc) *config.Snapshot {
 		t.Fatal(err)
 	}
 	return s
+}
+
+func extraGroup(id string) string {
+	if id == "" {
+		return ""
+	}
+	return `, "` + id + `": {}`
 }
 
 func allowedModels(list string) string {
@@ -637,16 +646,18 @@ func TestSnapshotRoundTrip(t *testing.T) {
 	l.Settle(res[1], record(10, 0, 0, 5, 0, 500))
 	l.Settle(admitN(t, l, ann, 1, 1000)[0], record(42, 0, 0, 0, 0, 0))
 	admitN(t, l, workload, 1, 999) // in flight at save time: not saved
+	// Every scope with usage is saved, limited or not: hours of global, t, w, users
+	// and ann; months of global, t and w (ann's usage cost nothing).
 	n, err := l.SaveSnapshot(dir)
-	if err != nil || n != 3 {
-		t.Fatalf("saved %d windows (%v), want 3: global month, team hour, ann hour", n, err)
+	if err != nil || n != 8 {
+		t.Fatalf("saved %d windows (%v), want 8: five hours and three months", n, err)
 	}
 
 	c.advance(20 * time.Minute) // restart within the same hour
 	restarted := c.limiter(holderOf(snapshot(t, persisted)))
 	restored, dropped, err := restarted.LoadSnapshot(dir)
-	if err != nil || restored != 3 || dropped != 0 {
-		t.Fatalf("restored %d, dropped %d, err %v; want 3, 0", restored, dropped, err)
+	if err != nil || restored != 8 || dropped != 0 {
+		t.Fatalf("restored %d, dropped %d, err %v; want 8, 0", restored, dropped, err)
 	}
 	for _, w := range []struct {
 		group string
@@ -654,7 +665,11 @@ func TestSnapshotRoundTrip(t *testing.T) {
 		want  int64
 	}{
 		{"", config.LimitUSDPerMonth, 7500},
+		{"", config.LimitTokensPerHour, 177},
 		{"t", config.LimitTokensPerHour, 135},
+		{"t", config.LimitUSDPerMonth, 7500},
+		{"w", config.LimitTokensPerHour, 135},
+		{"users", config.LimitTokensPerHour, 42},
 		{"ann", config.LimitTokensPerHour, 42},
 		{"w", config.LimitTokensPerMinute, 0}, // minute windows are not kept
 		{"w", config.LimitRequestsPerMinute, 0},
@@ -665,7 +680,9 @@ func TestSnapshotRoundTrip(t *testing.T) {
 	}
 }
 
-func TestSnapshotDropsPassedWindowsAndRemovedLimits(t *testing.T) {
+// A scope whose limit a reload removed keeps its count: the snapshot restores it.
+// A window that has passed is dropped.
+func TestSnapshotKeepsUnlimitedScopesAndDropsPassedWindows(t *testing.T) {
 	dir, _ := openDir(t)
 	c := newClock("2026-09-24T10:59:00Z")
 	l := c.limiter(holderOf(snapshot(t, persisted)))
@@ -674,16 +691,26 @@ func TestSnapshotDropsPassedWindowsAndRemovedLimits(t *testing.T) {
 	if _, err := l.SaveSnapshot(dir); err != nil {
 		t.Fatal(err)
 	}
-
-	// Next hour, with ann's limit removed: the team hour has passed, ann's limit is
-	// gone, the global month is still current.
-	c.set("2026-09-24T11:00:30Z")
 	next := persisted
 	next.ann = ""
+
+	// The same hour, with ann's limit removed: ann's hour is still counted.
+	c.set("2026-09-24T10:59:30Z")
 	restarted := c.limiter(holderOf(snapshot(t, next)))
 	restored, dropped, err := restarted.LoadSnapshot(dir)
-	if err != nil || restored != 1 || dropped != 2 {
-		t.Fatalf("restored %d, dropped %d, err %v; want 1, 2", restored, dropped, err)
+	if err != nil || restored != 8 || dropped != 0 {
+		t.Fatalf("same hour: restored %d, dropped %d, err %v; want 8, 0", restored, dropped, err)
+	}
+	if got := used(t, restarted, "ann", config.LimitTokensPerHour); got != 100 {
+		t.Errorf("ann's hour restored as %d without its limit, want 100", got)
+	}
+
+	// The next hour: the five hours have passed, the three months are current.
+	c.set("2026-09-24T11:00:30Z")
+	restarted = c.limiter(holderOf(snapshot(t, next)))
+	restored, dropped, err = restarted.LoadSnapshot(dir)
+	if err != nil || restored != 3 || dropped != 5 {
+		t.Fatalf("next hour: restored %d, dropped %d, err %v; want 3, 5", restored, dropped, err)
 	}
 	if got := used(t, restarted, "t", config.LimitTokensPerHour); got != 0 {
 		t.Errorf("passed hour restored as %d", got)

@@ -31,10 +31,11 @@ const (
 // Message rule codes: what the schemas cannot express. They are part of the contract;
 // kaiak-control reports the same code for the same message.
 const (
-	CodeTimestampInvalid       = "timestamp-invalid"
-	CodeTotalsWindowDuplicate  = "totals-window-duplicate"
-	CodeRecordInstanceMismatch = "record-instance-mismatch"
-	CodeRecordIDDuplicate      = "record-id-duplicate"
+	CodeTimestampInvalid             = "timestamp-invalid"
+	CodeTotalsWindowDuplicate        = "totals-window-duplicate"
+	CodeCountedThroughEpochDuplicate = "counted-through-epoch-duplicate"
+	CodeRecordInstanceMismatch       = "record-instance-mismatch"
+	CodeRecordIDDuplicate            = "record-id-duplicate"
 )
 
 // Issue is one reason a message was rejected.

@@ -244,27 +244,56 @@ func TestUncountedUsageStaysInItsOwnWindow(t *testing.T) {
 	}
 }
 
-// Totals are complete: a counter they do not list has a base of 0; a window naming
-// no counter is ignored; a limit added by a reload takes its base from the totals
-// already applied.
+// Every scope is counted, limited or not: complete totals set every base (0 for a
+// scope not listed); later totals replace only the bases they list, a window at "0"
+// included; a scope the config does not have keeps its pushed window for a reload
+// that adds it; a limit added by a reload checks the count so far.
 func TestTotalsMatching(t *testing.T) {
 	c := newClock("2026-09-24T10:30:00Z")
 	h := holderOf(snapshot(t, limitsDoc{workload: hourLimit}))
 	l, _ := c.shared(h)
 	hourW := pushedWindow("w", config.LimitTokensPerHour, "2026-09-24T10:00:00Z", 400)
 	hourT := pushedWindow("t", config.LimitTokensPerHour, "2026-09-24T10:00:00Z", 250)
-	stray := pushedWindow("t", config.LimitUSDPerMonth, "2026-09-01T00:00:00Z", 1)
-	l.TakeTotals(Totals{Windows: []PushedWindow{hourW, hourT, stray}}, 0)
+	monthT := pushedWindow("t", config.LimitUSDPerMonth, "2026-09-01T00:00:00Z", 1)
+	elsewhere := pushedWindow("gone", config.LimitTokensPerHour, "2026-09-24T10:00:00Z", 70)
+	l.TakeTotals(Totals{Complete: true, Windows: []PushedWindow{hourW, hourT, monthT, elsewhere}}, 0)
+	for _, w := range []PushedWindow{hourW, hourT, monthT} {
+		if got := used(t, l, w.Group, w.Type); got != w.Used {
+			t.Errorf("%s %s %d, want %d whether or not it has a limit", w.Group, w.Type, got, w.Used)
+		}
+	}
+
+	// Changes only: what is not listed keeps its base.
+	l.TakeTotals(Totals{Windows: []PushedWindow{pushedWindow("t", config.LimitTokensPerHour, "2026-09-24T10:00:00Z", 300)}}, 0)
 	if got := used(t, l, "w", config.LimitTokensPerHour); got != 400 {
-		t.Errorf("workload hour %d, want 400", got)
+		t.Errorf("workload hour %d after a change elsewhere, want 400 kept", got)
 	}
-	h.Swap(snapshot(t, limitsDoc{workload: hourLimit, team: hourLimit}))
-	if got := used(t, l, "t", config.LimitTokensPerHour); got != 250 {
-		t.Errorf("team hour %d after the reload, want the applied totals' 250", got)
+	if got := used(t, l, "t", config.LimitTokensPerHour); got != 300 {
+		t.Errorf("team hour %d, want the listed 300", got)
 	}
-	l.TakeTotals(Totals{Windows: []PushedWindow{hourT}}, 0)
+	// A window listed at "0" (the control plane's store restored to less) is 0.
+	l.TakeTotals(Totals{Windows: []PushedWindow{pushedWindow("w", config.LimitTokensPerHour, "2026-09-24T10:00:00Z", 0)}}, 0)
 	if got := used(t, l, "w", config.LimitTokensPerHour); got != 0 {
-		t.Errorf("workload hour %d, want 0: not listed", got)
+		t.Errorf("workload hour %d, want the listed 0", got)
+	}
+
+	// A reload adding the group whose window was pushed while the config lacked it,
+	// and a limit on t: both count from the pushed bases.
+	h.Swap(snapshot(t, limitsDoc{workload: hourLimit, team: hourLimit, extraGroup: "gone"}))
+	if got := used(t, l, "t", config.LimitTokensPerHour); got != 300 {
+		t.Errorf("team hour %d after the reload, want 300", got)
+	}
+	if got := used(t, l, "gone", config.LimitTokensPerHour); got != 70 {
+		t.Errorf("added group's hour %d after the reload, want the 70 pushed before it", got)
+	}
+
+	// Complete totals again: a scope they do not list is back to 0.
+	l.TakeTotals(Totals{Complete: true, Windows: []PushedWindow{hourT}}, 0)
+	if got := used(t, l, "t", config.LimitUSDPerMonth); got != 0 {
+		t.Errorf("team month %d, want 0: not listed in complete totals", got)
+	}
+	if got := used(t, l, "t", config.LimitTokensPerHour); got != 250 {
+		t.Errorf("team hour %d, want 250", got)
 	}
 }
 
@@ -358,16 +387,17 @@ func TestZeroGrace(t *testing.T) {
 	}
 }
 
-// A record settled after its batch's ack — a retried attempt's record published mid-
-// request, or an ack faster than the request's end — is already inside the applied
-// base: it is not counted again as the gateway's own.
+// A record settled after totals showed its batch counted — a retried attempt's record
+// published mid-request, or a push faster than the request's end — is already inside
+// the applied base: it is not counted again as the gateway's own.
 func TestUsageSettledAfterItsBatchIsCountedIsNotCountedTwice(t *testing.T) {
 	c := newClock("2026-09-24T10:30:00Z")
 	l, _ := c.shared(holderOf(snapshot(t, limitsDoc{workload: hourLimit})))
 	hour := func() int64 { return used(t, l, "w", config.LimitTokensPerHour) }
 
 	res := admitN(t, l, workload, 1, 10)[0]
-	// Batch 1 holds the request's record; its ack arrives before the request settles.
+	// Batch 1 holds the request's record; totals counting it arrive before the request
+	// settles.
 	l.TakeTotals(Totals{Windows: []PushedWindow{
 		pushedWindow("w", config.LimitTokensPerHour, "2026-09-24T10:00:00Z", 600)}}, 1)
 	if got := hour(); got != 610 {
@@ -663,16 +693,18 @@ func TestSharedStateSurvivesARestart(t *testing.T) {
 		pushedWindow("t", config.LimitUSDPerMonth, "2026-09-01T00:00:00Z", 1_000_000_000),
 	}}, 0)
 	l.Settle(admitN(t, l, workload.on("m2"), 1, 10)[0], inGeneration(1, record(50, 0, 0, 0, 0, 0)))
-	if n, err := l.SaveShared(dir); err != nil || n != 2 {
-		t.Fatalf("saved %d windows (%v), want 2", n, err)
+	// The workload's hour and the team's month pushed, and the uncounted 50 in the
+	// hours of global and t besides w's.
+	if n, err := l.SaveShared(dir); err != nil || n != 4 {
+		t.Fatalf("saved %d windows (%v), want 4", n, err)
 	}
 
 	restart := func(restoredGeneration uint64) *Limiter {
 		t.Helper()
 		l, _ := c.shared(holderOf(snapshot(t, doc)))
 		r, err := l.LoadShared(dir, restoredGeneration)
-		if err != nil || !r.Found || r.Discarded != "" || r.Restored != 2 {
-			t.Fatalf("restore %+v (%v), want both windows", r, err)
+		if err != nil || !r.Found || r.Discarded != "" || r.Restored != 4 {
+			t.Fatalf("restore %+v (%v), want every window", r, err)
 		}
 		return l
 	}
@@ -711,11 +743,14 @@ func TestSharedStateSurvivesARestart(t *testing.T) {
 		t.Errorf("hour used %d at 11:05, want 0", got)
 	}
 
-	// Booted on a config without the team's budget: the workload's window is restored
-	// by group and type, the team's dropped.
+	// Booted on a config without the team's budget: its scope is still counted, so
+	// every window is restored by group and type, the team's month among them.
 	l2, _ := c.shared(holderOf(snapshot(t, limitsDoc{workload: hourLimit})))
-	if r, err := l2.LoadShared(dir, 2); err != nil || r.Discarded != "" || r.Restored != 1 || r.Dropped != 1 {
-		t.Errorf("restore on another config %+v (%v), want the workload's window restored, the team's dropped", r, err)
+	if r, err := l2.LoadShared(dir, 2); err != nil || r.Discarded != "" || r.Restored != 4 || r.Dropped != 0 {
+		t.Errorf("restore on another config %+v (%v), want every window restored", r, err)
+	}
+	if got := used(t, l2, "t", config.LimitUSDPerMonth); got != 1_000_000_000 {
+		t.Errorf("team month %d without its budget, want the restored 1 USD", got)
 	}
 }
 
@@ -853,5 +888,24 @@ func TestSharedStateOfAnotherVersionIsDiscarded(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "kaiak.data_file.found_version=3") || !strings.Contains(logs.String(), "kaiak.data_file.want_version=4") {
 		t.Errorf("discard not logged:\n%s", logs)
+	}
+}
+
+// A gateway still enforcing a limit the control plane's current config dropped (it
+// rejected that config) keeps the limit's spend: the totals list every scope with
+// usage whatever the config, and a later push that does not list the scope — it did
+// not change — leaves its base as it is, after the gateway's own usage was retired
+// into it (AUDIT-2 2H3).
+func TestALimitKeepsItsSpendWhateverTheControlPlanesConfig(t *testing.T) {
+	c := newClock("2026-10-07T12:30:00Z")
+	l, _ := c.shared(holderOf(snapshot(t, limitsDoc{workload: hourLimit})))
+	l.TakeTotals(Totals{Complete: true}, 0)
+	l.Settle(admitN(t, l, workload, 1, 100)[0], inGeneration(1, record(100, 0, 0, 0, 0, 0)))
+	l.TakeTotals(Totals{Windows: []PushedWindow{
+		pushedWindow("w", config.LimitTokensPerHour, "2026-10-07T12:00:00Z", 100)}}, 1)
+	l.TakeTotals(Totals{Windows: []PushedWindow{
+		pushedWindow("t", config.LimitTokensPerHour, "2026-10-07T12:00:00Z", 140)}}, 1)
+	if got := used(t, l, "w", config.LimitTokensPerHour); got != 100 {
+		t.Fatalf("the running limit counts %d tokens after its usage was retired, want 100", got)
 	}
 }
