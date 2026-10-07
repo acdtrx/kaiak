@@ -55,7 +55,7 @@ func TestRecordedResponsesAnswersRelayWhole(t *testing.T) {
 		typ := config.BackendType(server)
 		for _, name := range []string{"responses-stream.sse", "responses-stream-tool.sse", "responses-stream-incomplete.sse"} {
 			t.Run(server+"/"+name, func(t *testing.T) {
-				data := captured(t, server, name)
+				data := fakebackend.Captured(server, name)
 				out, err := relayResponses(t, typ, "text/event-stream", data, true)
 				if !errors.Is(err, io.EOF) {
 					t.Fatalf("ended with %v, want complete", err)
@@ -76,7 +76,7 @@ func TestRecordedResponsesAnswersRelayWhole(t *testing.T) {
 			})
 		}
 		t.Run(server+"/responses.json", func(t *testing.T) {
-			out, err := relayResponses(t, typ, "application/json", captured(t, server, "responses.json"), false)
+			out, err := relayResponses(t, typ, "application/json", fakebackend.Captured(server, "responses.json"), false)
 			if !errors.Is(err, io.EOF) || !strings.Contains(out, `"model":"pub"`) || strings.Contains(out, "Qwen3.8") {
 				t.Errorf("ended with %v:\n%s", err, out)
 			}

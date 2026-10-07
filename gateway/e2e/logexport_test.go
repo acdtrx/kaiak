@@ -18,57 +18,18 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
 	"kaiak/internal/fakebackend"
+	"kaiak/internal/fakeotlp"
 )
 
-// otlpExport is an ExportLogsServiceRequest as OTLP/HTTP JSON writes it.
-type otlpExport struct {
-	ResourceLogs []struct {
-		Resource struct {
-			Attributes []otlpKeyValue `json:"attributes"`
-		} `json:"resource"`
-		ScopeLogs []struct {
-			Scope struct {
-				Name string `json:"name"`
-			} `json:"scope"`
-			LogRecords []otlpRecord `json:"logRecords"`
-		} `json:"scopeLogs"`
-	} `json:"resourceLogs"`
-}
-
-type otlpRecord struct {
-	TimeUnixNano         string         `json:"timeUnixNano"`
-	ObservedTimeUnixNano string         `json:"observedTimeUnixNano"`
-	SeverityNumber       int            `json:"severityNumber"`
-	SeverityText         string         `json:"severityText"`
-	Body                 otlpValue      `json:"body"`
-	Attributes           []otlpKeyValue `json:"attributes"`
-}
-
-type otlpKeyValue struct {
-	Key   string    `json:"key"`
-	Value otlpValue `json:"value"`
-}
-
-type otlpValue struct {
-	StringValue *string  `json:"stringValue"`
-	IntValue    *string  `json:"intValue"`
-	DoubleValue *float64 `json:"doubleValue"`
-	BoolValue   *bool    `json:"boolValue"`
-	ArrayValue  *struct {
-		Values []otlpValue `json:"values"`
-	} `json:"arrayValue"`
-}
-
-// plain is the value as the JSON log line holds it once decoded: numbers are
+// plainValue is the value as the JSON log line holds it once decoded: numbers are
 // float64, arrays []any.
-func (v otlpValue) plain(t *testing.T) any {
+func plainValue(t *testing.T, v fakeotlp.Value) any {
 	t.Helper()
 	switch {
 	case v.StringValue != nil:
@@ -86,7 +47,7 @@ func (v otlpValue) plain(t *testing.T) any {
 	case v.ArrayValue != nil:
 		out := []any{}
 		for _, e := range v.ArrayValue.Values {
-			out = append(out, e.plain(t))
+			out = append(out, plainValue(t, e))
 		}
 		return out
 	}
@@ -97,9 +58,9 @@ func (v otlpValue) plain(t *testing.T) any {
 // severities are the OTLP severity numbers of the levels the gateway writes.
 var severities = map[string]int{"DEBUG": 5, "INFO": 9, "WARN": 13, "ERROR": 17}
 
-// line is the record in the shape of a decoded JSON log line, its time in Unix
+// recordLine is the record in the shape of a decoded JSON log line, its time in Unix
 // nanoseconds.
-func (r otlpRecord) line(t *testing.T) map[string]any {
+func recordLine(t *testing.T, r fakeotlp.Record) map[string]any {
 	t.Helper()
 	nanos, err := strconv.ParseInt(r.TimeUnixNano, 10, 64)
 	if err != nil {
@@ -111,12 +72,12 @@ func (r otlpRecord) line(t *testing.T) map[string]any {
 	if severities[r.SeverityText] != r.SeverityNumber {
 		t.Errorf("severity %s with number %d", r.SeverityText, r.SeverityNumber)
 	}
-	out := map[string]any{"time": nanos, "level": r.SeverityText, "msg": r.Body.plain(t)}
+	out := map[string]any{"time": nanos, "level": r.SeverityText, "msg": plainValue(t, r.Body)}
 	for _, kv := range r.Attributes {
 		if _, dup := out[kv.Key]; dup {
 			t.Errorf("attribute %s twice", kv.Key)
 		}
-		out[kv.Key] = kv.Value.plain(t)
+		out[kv.Key] = plainValue(t, kv.Value)
 	}
 	return out
 }
@@ -144,82 +105,22 @@ func canonical(t *testing.T, line map[string]any) string {
 	return string(data)
 }
 
-// otlpCollector is a fake OpenTelemetry collector: it answers each export with the
-// status answer gives (200 when nil) and keeps what it received.
-type otlpCollector struct {
-	*httptest.Server
-	// answer gives the status for the nth export (from 0); it may block, until the
-	// request's context ends.
-	answer func(n int, r *http.Request) int
-
-	mu       sync.Mutex
-	exports  int
-	accepted []otlpExport
-	refused  []otlpExport
-	requests []*http.Request
-	arrived  chan struct{} // gets a value on every export, without waiting
-}
-
-func newOTLPCollector(t *testing.T, answer func(n int, r *http.Request) int) *otlpCollector {
+// otlpRecords returns the records of the exports the collector accepted (or
+// refused), in order, and checks each export's resource and scope.
+func otlpRecords(t *testing.T, c *fakeotlp.Collector, accepted bool, resource map[string]any) []fakeotlp.Record {
 	t.Helper()
-	c := &otlpCollector{answer: answer, arrived: make(chan struct{}, 1)}
-	c.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var export otlpExport
-		if err := json.NewDecoder(r.Body).Decode(&export); err != nil {
-			t.Errorf("collector: export not decoded: %v", err)
-			w.WriteHeader(http.StatusBadRequest)
-			return
+	var out []fakeotlp.Record
+	for _, r := range c.Received() {
+		if r.Status == 0 || (r.Status == http.StatusOK) != accepted {
+			continue
 		}
-		c.mu.Lock()
-		n := c.exports
-		c.exports++
-		c.requests = append(c.requests, r)
-		c.mu.Unlock()
-		select {
-		case c.arrived <- struct{}{}:
-		default:
-		}
-		status := http.StatusOK
-		if c.answer != nil {
-			status = c.answer(n, r)
-		}
-		c.mu.Lock()
-		if status == http.StatusOK {
-			c.accepted = append(c.accepted, export)
-		} else {
-			c.refused = append(c.refused, export)
-		}
-		c.mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		if status == http.StatusOK {
-			_, _ = w.Write([]byte(`{}`))
-			return
-		}
-		_, _ = w.Write([]byte(`{"code": 3, "message": "export refused by the test"}`))
-	}))
-	t.Cleanup(c.Close)
-	return c
-}
-
-// records returns the records of the accepted (or refused) exports, in order, and
-// checks each export's resource and scope.
-func (c *otlpCollector) records(t *testing.T, accepted bool, resource map[string]any) []otlpRecord {
-	t.Helper()
-	c.mu.Lock()
-	exports := slices.Clone(c.refused)
-	if accepted {
-		exports = slices.Clone(c.accepted)
-	}
-	c.mu.Unlock()
-	var out []otlpRecord
-	for _, e := range exports {
+		e := r.Export
 		if len(e.ResourceLogs) != 1 || len(e.ResourceLogs[0].ScopeLogs) != 1 {
 			t.Fatalf("export with %d resources, want one resource and one scope", len(e.ResourceLogs))
 		}
 		got := map[string]any{}
 		for _, kv := range e.ResourceLogs[0].Resource.Attributes {
-			got[kv.Key] = kv.Value.plain(t)
+			got[kv.Key] = plainValue(t, kv.Value)
 		}
 		if !maps.Equal(got, resource) {
 			t.Errorf("resource %v, want %v", got, resource)
@@ -232,23 +133,19 @@ func (c *otlpCollector) records(t *testing.T, accepted bool, resource map[string
 	return out
 }
 
-// count is the number of records accepted so far.
-func (c *otlpCollector) count() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+// acceptedRecords is the number of records the collector accepted so far.
+func acceptedRecords(c *fakeotlp.Collector) int {
 	n := 0
-	for _, e := range c.accepted {
-		for _, rl := range e.ResourceLogs {
-			for _, sl := range rl.ScopeLogs {
-				n += len(sl.LogRecords)
-			}
+	for _, r := range c.Received() {
+		if r.Status == http.StatusOK {
+			n += len(r.Records())
 		}
 	}
 	return n
 }
 
 // collectorHost is the collector's host:port as kaiak.log_export.endpoint names it.
-func collectorHost(t *testing.T, c *otlpCollector) string {
+func collectorHost(t *testing.T, c *fakeotlp.Collector) string {
 	t.Helper()
 	u, err := url.Parse(c.URL)
 	if err != nil {
@@ -293,11 +190,11 @@ func sameLines(t *testing.T, what string, want, got []map[string]any) {
 }
 
 // otlpLines are the records as decoded log lines.
-func otlpLines(t *testing.T, records []otlpRecord) []map[string]any {
+func otlpLines(t *testing.T, records []fakeotlp.Record) []map[string]any {
 	t.Helper()
 	out := make([]map[string]any, len(records))
 	for i, r := range records {
-		out[i] = r.line(t)
+		out[i] = recordLine(t, r)
 	}
 	return out
 }
@@ -335,14 +232,14 @@ func TestLogExport(t *testing.T) {
 	_, annHash := newKey()
 	writeJSON(t, configFile, testConfig(backend.URL(), evalHash, annHash, ""))
 	const secret = "s3cret-otlp-header"
-	collector := newOTLPCollector(t, func(_ int, r *http.Request) int {
+	collector := fakeotlp.New(t, fakeotlp.AnswerStatus(func(_ int, r *http.Request) int {
 		if r.URL.Path != "/base/v1/logs" || r.Header.Get("Authorization") != "Bearer "+secret ||
 			r.Header.Get("Content-Type") != "application/json" {
 			t.Errorf("export to %s with Authorization %q, Content-Type %q", r.URL.Path,
 				r.Header.Get("Authorization"), r.Header.Get("Content-Type"))
 		}
 		return http.StatusOK
-	})
+	}))
 	g := startGatewayEnv(t, append(gatewayEnv(configFile),
 		"OTEL_EXPORTER_OTLP_ENDPOINT="+collector.URL+"/base",
 		"OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20"+secret,
@@ -376,15 +273,15 @@ func TestLogExport(t *testing.T) {
 	// The metric moves with the exports: once the request lines are out, it counts
 	// every record the collector accepted.
 	exported := g.waitMetric(t, "exports counted", logExportSeries("exported"), func(v float64) bool {
-		return v > 0 && v == float64(collector.count())
+		return v > 0 && v == float64(acceptedRecords(collector))
 	})
 	version := buildVersion(t, g)
 	g.stop(t)
 
 	resource := map[string]any{"service.name": "kaiak", "service.version": version, "service.instance.id": "e2e",
 		"deployment.environment.name": "e2e"}
-	records := otlpLines(t, collector.records(t, true, resource))
-	if n := len(collector.records(t, false, resource)); n != 0 {
+	records := otlpLines(t, otlpRecords(t, collector, true, resource))
+	if n := len(otlpRecords(t, collector, false, resource)); n != 0 {
 		t.Errorf("%d records refused, want none", n)
 	}
 	if len(records) <= int(exported) {
@@ -444,7 +341,7 @@ func TestLogExportOff(t *testing.T) {
 	evalKey, evalHash := newKey()
 	_, annHash := newKey()
 	writeJSON(t, configFile, testConfig(backend.URL(), evalHash, annHash, ""))
-	collector := newOTLPCollector(t, nil)
+	collector := fakeotlp.New(t, nil)
 	for name, env := range map[string][]string{
 		"no endpoint": {"OTEL_SERVICE_NAME=kaiak-e2e", "OTEL_EXPORTER_OTLP_PROTOCOL=grpc"},
 		"opted out":   {"OTEL_EXPORTER_OTLP_ENDPOINT=" + collector.URL, "OTEL_LOGS_EXPORTER=none"},
@@ -462,10 +359,7 @@ func TestLogExportOff(t *testing.T) {
 				t.Errorf("kaiak starting names an endpoint with export off: %v", line)
 			}
 			g.stop(t)
-			collector.mu.Lock()
-			n := collector.exports
-			collector.mu.Unlock()
-			if n != 0 {
+			if n := collector.Requests(); n != 0 {
 				t.Errorf("collector received %d exports with export off", n)
 			}
 		})
@@ -483,12 +377,12 @@ func TestLogExportRefusedBatch(t *testing.T) {
 	evalKey, evalHash := newKey()
 	_, annHash := newKey()
 	writeJSON(t, configFile, testConfig(backend.URL(), evalHash, annHash, ""))
-	collector := newOTLPCollector(t, func(n int, _ *http.Request) int {
+	collector := fakeotlp.New(t, fakeotlp.AnswerStatus(func(n int, _ *http.Request) int {
 		if n == 0 {
 			return http.StatusBadRequest
 		}
 		return http.StatusOK
-	})
+	}))
 	g := startGatewayEnv(t, append(gatewayEnv(configFile), "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT="+collector.URL+"/v1/logs"))
 
 	report := g.logs.wait(t, "the failure report", msg("log export failing"))
@@ -506,30 +400,28 @@ func TestLogExportRefusedBatch(t *testing.T) {
 	}
 	g.settled(t, "refused-ok")
 	g.waitMetric(t, "exports counted", logExportSeries("exported"), func(v float64) bool {
-		return v > 0 && v == float64(collector.count())
+		return v > 0 && v == float64(acceptedRecords(collector))
 	})
 	g.stop(t)
 
 	resource := map[string]any{"service.name": "kaiak", "service.version": buildVersionOf(t, collector),
 		"service.instance.id": "e2e"}
-	refused := collector.records(t, false, resource)
+	refused := otlpRecords(t, collector, false, resource)
 	if len(refused) != int(failed) {
 		t.Errorf("collector refused %d records, the report says %v", len(refused), failed)
 	}
-	all := append(otlpLines(t, refused), otlpLines(t, collector.records(t, true, resource))...)
+	all := append(otlpLines(t, refused), otlpLines(t, otlpRecords(t, collector, true, resource))...)
 	sameLines(t, "refused and accepted", stderrLines(t, g, "log export failing"), all)
 }
 
 // buildVersionOf is the service.version of the collector's first export.
-func buildVersionOf(t *testing.T, c *otlpCollector) string {
+func buildVersionOf(t *testing.T, c *fakeotlp.Collector) string {
 	t.Helper()
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	exports := append(slices.Clone(c.refused), c.accepted...)
-	if len(exports) == 0 || len(exports[0].ResourceLogs) == 0 {
+	exports := c.Received()
+	if len(exports) == 0 || len(exports[0].Export.ResourceLogs) == 0 {
 		t.Fatal("no export")
 	}
-	for _, kv := range exports[0].ResourceLogs[0].Resource.Attributes {
+	for _, kv := range exports[0].Export.ResourceLogs[0].Resource.Attributes {
 		if kv.Key == "service.version" && kv.Value.StringValue != nil {
 			return *kv.Value.StringValue
 		}
@@ -550,19 +442,15 @@ func TestLogExportStalledCollectorAtExit(t *testing.T) {
 	evalKey, evalHash := newKey()
 	_, annHash := newKey()
 	writeJSON(t, configFile, testConfig(backend.URL(), evalHash, annHash, ""))
-	collector := newOTLPCollector(t, func(_ int, r *http.Request) int {
+	collector := fakeotlp.New(t, fakeotlp.AnswerStatus(func(_ int, r *http.Request) int {
 		<-r.Context().Done()
 		return http.StatusServiceUnavailable
-	})
+	}))
 	g := startGatewayEnv(t, append(gatewayEnv(configFile),
 		"OTEL_EXPORTER_OTLP_ENDPOINT="+collector.URL,
 		"OTEL_EXPORTER_OTLP_TIMEOUT=600000",
 		"KAIAK_DRAIN_TIMEOUT_MS=500"))
-	select { // the first batch is held from here on
-	case <-collector.arrived:
-	case <-time.After(waitLimit):
-		t.Fatalf("no export within %s", waitLimit)
-	}
+	collector.Next(t) // the first batch is held from here on
 	if r := g.post(t, "/v1/chat/completions", evalKey, "stalled-ok", chatBody("chat", false, nil)); r.StatusCode != http.StatusOK {
 		t.Fatalf("chat: %d %s", r.StatusCode, r.body)
 	}
@@ -581,7 +469,7 @@ func TestLogExportStalledCollectorAtExit(t *testing.T) {
 	if report["kaiak.log_export.failed"].(float64) == 0 || !strings.Contains(fmt.Sprint(report["exception.message"]), "cut short") {
 		t.Errorf("failure report %v: want the held batch failed, cut short", report)
 	}
-	if n := collector.count(); n != 0 {
+	if n := acceptedRecords(collector); n != 0 {
 		t.Errorf("collector accepted %d records", n)
 	}
 }
@@ -607,19 +495,15 @@ func TestLogExportRedirectIsNotFollowed(t *testing.T) {
 	t.Cleanup(elsewhere.Close)
 	const secret = "s3cret-redirected-header"
 	const remoteText = "moved-by-the-collector-remote-text"
-	var redirects atomic.Int64
-	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
+	collector := fakeotlp.New(t, func(w http.ResponseWriter, r *http.Request, _ int) {
 		if r.Header.Get("X-Api-Key") != secret {
 			t.Errorf("export with x-api-key %q, want the configured header", r.Header.Get("X-Api-Key"))
 		}
-		redirects.Add(1)
 		w.Header().Set("Location", elsewhere.URL+"/v1/logs")
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusTemporaryRedirect)
 		_, _ = io.WriteString(w, remoteText+": x-api-key "+secret)
-	}))
-	t.Cleanup(collector.Close)
+	})
 
 	g := startGatewayEnv(t, append(gatewayEnv(configFile),
 		"OTEL_EXPORTER_OTLP_ENDPOINT="+collector.URL,
@@ -641,7 +525,7 @@ func TestLogExportRedirectIsNotFollowed(t *testing.T) {
 	}
 	g.stop(t)
 
-	if n := redirects.Load(); n == 0 {
+	if n := collector.Requests(); n == 0 {
 		t.Error("the collector received no export")
 	}
 	if n := elsewhereHits.Load(); n != 0 {

@@ -65,7 +65,7 @@ func startStreams(t *testing.T, g *testGateway, url, key, model string, n int) c
 func TestPerKeyConcurrencyLimit(t *testing.T) {
 	g := newTestGateway(t)
 	withKeyLimit(t, g, 2, nil)
-	g.backend.SetReply(fakebackend.Reply{StallBeforeFirstByte: true})
+	g.backend.SetReply(fakebackend.Reply{Before: fakebackend.StallFirstByte})
 	url := serveGateway(t, g)
 	cancel := startStreams(t, g, url, workloadKey, "open", 2)
 	if n := keysInFlight(g, "k-eval"); n != 2 {
@@ -152,17 +152,17 @@ func TestPerKeySlotIsReleasedOnEveryPath(t *testing.T) {
 			}},
 		{name: "queue full", want: 429, edit: cappedDoc, run: func(t *testing.T, g *testGateway) int {
 			// Another key holds local's one slot; Org/open-7b has no queue.
-			g.backend.SetReply(fakebackend.Reply{StallBeforeFirstByte: true})
+			g.backend.SetReply(fakebackend.Reply{Before: fakebackend.StallFirstByte})
 			defer startStreams(t, g, serveGateway(t, g), userKey, "open", 1)()
 			return post(g, `{"model":"Org/open-7b","messages":[]}`)
 		}},
 		{name: "client disconnect", want: 0, run: func(t *testing.T, g *testGateway) int {
-			g.backend.SetReply(fakebackend.Reply{StallBeforeFirstByte: true})
+			g.backend.SetReply(fakebackend.Reply{Before: fakebackend.StallFirstByte})
 			startStreams(t, g, serveGateway(t, g), workloadKey, "open", 1)()
 			return 0
 		}},
 		{name: "broken-off stream (handler panic)", want: 200, run: func(t *testing.T, g *testGateway) int {
-			g.backend.SetReply(fakebackend.Reply{CutAfter: 1})
+			g.backend.SetReply(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 1, Kind: fakebackend.Cut}})
 			resp := workloadStream(t, serveGateway(t, g), `{"model":"open","stream":true,"messages":[]}`)
 			defer resp.Body.Close()
 			if _, err := io.Copy(io.Discard, resp.Body); err == nil {
@@ -171,7 +171,7 @@ func TestPerKeySlotIsReleasedOnEveryPath(t *testing.T) {
 			return resp.StatusCode
 		}},
 		{name: "drain cut", want: 0, run: func(t *testing.T, g *testGateway) int {
-			g.backend.SetReply(fakebackend.Reply{StallBeforeFirstByte: true})
+			g.backend.SetReply(fakebackend.Reply{Before: fakebackend.StallFirstByte})
 			d := newDrainable(t, g)
 			startStreams(t, g, d.url, workloadKey, "open", 1)
 			g.drain.begin(DrainTimes{}, d.logger)

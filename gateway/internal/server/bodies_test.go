@@ -44,7 +44,7 @@ func waitIdle(t *testing.T, g *testGateway) {
 // Retry-After: 1, its body never read — and the budget comes back when they end.
 func TestBodyBudgetRefusesARequestWhenSpent(t *testing.T) {
 	g := buildTestGateway(t, testOptions{bodyMemory: 1000})
-	g.backend.SetReply(fakebackend.Reply{StallBeforeFirstByte: true})
+	g.backend.SetReply(fakebackend.Reply{Before: fakebackend.StallFirstByte})
 	url := serveGateway(t, g)
 	body := paddedChat(t, "open", true, 600)
 

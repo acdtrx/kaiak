@@ -240,7 +240,7 @@ func TestDrainReserveDeliversTheCutRequestsUsage(t *testing.T) {
 	g.logs.waitCount(t, "the stream", 2, waitLimit, msg("config stream connected"))
 
 	pace := make(chan struct{})
-	backend.QueueReplies(fakebackend.Reply{Pace: pace, Chunks: []string{"a", "b"}}, fakebackend.Reply{HangAfter: 1})
+	backend.QueueReplies(fakebackend.Reply{Pace: pace, Chunks: []string{"a", "b"}}, fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 1, Kind: fakebackend.Hang}})
 	finishing := streamInBackground(g, evalKey, "e2e-drain-finishing", "chat")
 	<-backend.Arrivals()
 	cut := streamInBackground(g, evalKey, "e2e-drain-cut", "chat")

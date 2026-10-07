@@ -81,12 +81,11 @@ func responsesError(code string) []byte {
 // writeResponsesStream streams a Responses answer: response.created and
 // response.in_progress, one message item with one output_text part and a delta per
 // chunk, then response.completed — response.incomplete when the output limit cut it
-// short — carrying the whole response and its usage. The reply's faults apply as in an
-// OpenAI stream; ErrorEvent sends an error event after ErrorEventAfter text events and
-// ends the stream there.
+// short — carrying the whole response and its usage. The reply's stream fault
+// applies with responsesError as the error event.
 func (b *Backend) writeResponsesStream(w http.ResponseWriter, r *http.Request, req *Request, reply Reply,
 	top map[string]json.RawMessage, model string, chunks []string, cut bool, usage Usage) {
-	s, ok := b.startStream(w, r, req, reply)
+	s, ok := b.startStream(w, r, req, reply, responsesError)
 	if !ok {
 		return
 	}
@@ -94,8 +93,7 @@ func (b *Backend) writeResponsesStream(w http.ResponseWriter, r *http.Request, r
 		payload, _ := json.Marshal(v) // test values always encode
 		return s.send(v["type"].(string), payload)
 	}
-	if reply.ErrorEvent && reply.ErrorEventAfter == 0 {
-		s.send("error", responsesError(reply.ErrorEventCode))
+	if !s.interrupt(0) {
 		return
 	}
 	response := responseObject(model, "in_progress", top)
@@ -110,10 +108,6 @@ func (b *Backend) writeResponsesStream(w http.ResponseWriter, r *http.Request, r
 	}
 	text := ""
 	for i, chunk := range chunks {
-		if reply.ErrorEvent && i == reply.ErrorEventAfter {
-			s.send("error", responsesError(reply.ErrorEventCode))
-			return
-		}
 		if !s.interrupt(i) {
 			return
 		}

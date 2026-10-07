@@ -41,7 +41,7 @@ func TestUpstreamAttemptMetrics(t *testing.T) {
 	expectError(t, post(t, g, "down", `{"model":"down"}`), http.StatusBadGateway, "upstream_unavailable")
 	// A stream cut after its first event: broke off.
 	// The relay cuts the client connection: net/http's abort sentinel, recovered here.
-	g.backend.SetReply(fakebackend.Reply{CutAfter: 1})
+	g.backend.SetReply(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 1, Kind: fakebackend.Cut}})
 	func() {
 		defer func() {
 			if r := recover(); r != http.ErrAbortHandler {

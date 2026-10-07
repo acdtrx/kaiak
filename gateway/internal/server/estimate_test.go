@@ -126,7 +126,7 @@ func TestCancelledImageRequestEstimatesOneMediaItem(t *testing.T) {
 	g.holder.Swap(testSnapshotWith(t, g.backend.URL(), withLargeBodies(t, 256, 32768, func(doc string) string {
 		return replaceOnce(t, doc, `"allowed_models": ["open", "Org/open-7b"]`, `"allowed_models": ["open", "pair"]`)
 	})))
-	g.backend.SetReply(fakebackend.Reply{StallBeforeFirstByte: true})
+	g.backend.SetReply(fakebackend.Reply{Before: fakebackend.StallFirstByte})
 	url := serveGateway(t, g)
 	image := base64Image(1_399_000)
 	body := imageChat("pair", "describe", image)

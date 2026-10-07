@@ -191,8 +191,8 @@ func TestDrainTimeoutCutsOffHungRequests(t *testing.T) {
 		name  string
 		reply fakebackend.Reply
 	}{
-		{"mid-stream", fakebackend.Reply{HangAfter: 1}},
-		{"before the first byte", fakebackend.Reply{StallBeforeFirstByte: true}},
+		{"mid-stream", fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 1, Kind: fakebackend.Hang}}},
+		{"before the first byte", fakebackend.Reply{Before: fakebackend.StallFirstByte}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			g := newTestGateway(t)
@@ -244,7 +244,7 @@ func TestDrainTimeoutCutsOffHungRequests(t *testing.T) {
 				t.Fatalf("records %+v, want one partial", records)
 			}
 			r := records[0]
-			if c.reply.StallBeforeFirstByte {
+			if c.reply.Before == fakebackend.StallFirstByte {
 				// D1: the backend had the prompt when the drain cut it: the input,
 				// estimated from the body, no output.
 				expectUnits(t, r, units(int64(len(body)+3)/4, 0, 0, 0, 0), true, true)
@@ -261,7 +261,7 @@ func TestDrainTimeoutCutsOffHungRequests(t *testing.T) {
 				}
 			}
 			wantEnd := `"kaiak.relay_end":"shutdown"`
-			if c.reply.StallBeforeFirstByte {
+			if c.reply.Before == fakebackend.StallFirstByte {
 				wantEnd = `"error.type":"server_shutting_down"`
 			}
 			if !strings.Contains(logs, wantEnd) {
@@ -276,7 +276,7 @@ func TestDrainTimeoutCutsOffHungRequests(t *testing.T) {
 
 func TestHurriedDrainSkipsTheWaitsAndCutsOff(t *testing.T) {
 	g := newTestGateway(t)
-	g.backend.SetReply(fakebackend.Reply{HangAfter: 1})
+	g.backend.SetReply(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 1, Kind: fakebackend.Hang}})
 	d := newDrainable(t, g)
 	resp, _, err := d.post(t, newClient(t), userKey, `{"model":"open","stream":true}`)
 	if err != nil {
@@ -309,7 +309,7 @@ func TestHurriedDrainSkipsTheWaitsAndCutsOff(t *testing.T) {
 // in-flight requests are cut — the reserve before the timeout.
 func TestDrainCutsTheReserveBeforeTheTimeout(t *testing.T) {
 	g := newTestGateway(t)
-	g.backend.SetReply(fakebackend.Reply{HangAfter: 1})
+	g.backend.SetReply(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 1, Kind: fakebackend.Hang}})
 	d := newDrainable(t, g)
 	resp, _, err := d.post(t, newClient(t), userKey, `{"model":"open","stream":true}`)
 	if err != nil {

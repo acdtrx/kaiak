@@ -16,7 +16,7 @@ import (
 // (D1). The "slow" backend's response timeout is 150 ms.
 func TestResponseTimeoutIsNotRetried(t *testing.T) {
 	g := newTestGateway(t)
-	g.backend.SetReply(fakebackend.Reply{StallBeforeFirstByte: true})
+	g.backend.SetReply(fakebackend.Reply{Before: fakebackend.StallFirstByte})
 	body := `{"model":"slow","messages":[{"role":"user","content":"write a long essay"}]}`
 	w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey, body: body})
 	expectError(t, w, http.StatusGatewayTimeout, "upstream_timeout")
@@ -38,7 +38,7 @@ func TestResponseTimeoutIsNotRetried(t *testing.T) {
 // client). The "slow" backend's stall timeout is 150 ms.
 func TestStalledStreamEndsAsUpstreamFailure(t *testing.T) {
 	g := newTestGateway(t)
-	g.backend.SetReply(fakebackend.Reply{HangAfter: 2})
+	g.backend.SetReply(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 2, Kind: fakebackend.Hang}})
 	url := serveGateway(t, g)
 	body := `{"model":"slow","stream":true}`
 	start := time.Now()
@@ -108,7 +108,7 @@ func workloadStream(t *testing.T, url, body string) *http.Response {
 // connection is cut, usage settled partial, not retried.
 func TestStreamEndingBeforeItsTerminalChunkIsIncomplete(t *testing.T) {
 	g := newTestGateway(t)
-	g.backend.SetReply(fakebackend.Reply{EndAfter: 1})
+	g.backend.SetReply(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 1, Kind: fakebackend.End}})
 	url := serveGateway(t, g)
 	body := `{"model":"open","stream":true}`
 	resp := streamRequest(t, context.Background(), url, body)
@@ -170,7 +170,7 @@ func TestJSONBodyEndingEarlyIsAnUpstreamFailure(t *testing.T) {
 // comments still reach the client. The "slow" backend's stall timeout is 150 ms.
 func TestKeepAliveCommentsDoNotHoldOffTheStallTimer(t *testing.T) {
 	g := newTestGateway(t)
-	g.backend.SetReply(fakebackend.Reply{HangAfter: 2, PingEvery: 40 * time.Millisecond})
+	g.backend.SetReply(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 2, Kind: fakebackend.Hang, PingEvery: 40 * time.Millisecond}})
 	url := serveGateway(t, g)
 	// Bounded: a stall timer the pings keep resetting would never end the stream.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

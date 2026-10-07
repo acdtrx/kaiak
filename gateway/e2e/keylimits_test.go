@@ -76,7 +76,7 @@ func TestPerKeyConcurrencyLimit(t *testing.T) {
 	const limit = 16
 	held := make([]*heldStream, limit)
 	for i := range held {
-		backend.QueueReplies(fakebackend.Reply{HangAfter: 1})
+		backend.QueueReplies(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 1, Kind: fakebackend.Hang}})
 		held[i] = holdStream(t, g, evalKey, fmt.Sprintf("e2e-held-%d", i))
 		<-backend.Arrivals()
 	}

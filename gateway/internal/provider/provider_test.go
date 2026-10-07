@@ -286,7 +286,7 @@ func TestPathStyleBackendModelNames(t *testing.T) {
 func TestSentReportsTheRequestWrittenInFull(t *testing.T) {
 	fb := fakebackend.New()
 	defer fb.Close()
-	fb.SetReply(fakebackend.Reply{StallBeforeFirstByte: true})
+	fb.SetReply(fakebackend.Reply{Before: fakebackend.StallFirstByte})
 	r := NewRegistry(func(string) (string, bool) { return "", false })
 	send := func(ctx context.Context, b *config.Backend, sent func()) error {
 		resp, err := r.For(b).Send(ctx, &Request{Endpoint: ChatCompletions, Deployment: config.Deployment{Backend: b, Model: "m"},

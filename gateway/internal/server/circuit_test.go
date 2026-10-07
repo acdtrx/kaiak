@@ -92,19 +92,19 @@ func TestOutcomeClassification(t *testing.T) {
 			reply: fakebackend.Reply{RequireHeader: "X-Never-Sent", RequireValue: "x"}, class: failure},
 		{name: "credential refused (403)", model: "open", reply: fakebackend.Reply{Status: 403}, class: failure},
 		{name: "connect refused", model: "down", class: failure},
-		{name: "first-event timeout", model: "slow", stream: true, reply: fakebackend.Reply{StallBeforeFirstByte: true},
+		{name: "first-event timeout", model: "slow", stream: true, reply: fakebackend.Reply{Before: fakebackend.StallFirstByte},
 			class: failure},
 		// A long non-stream generation: the backend was working.
-		{name: "response timeout", model: "slow", reply: fakebackend.Reply{StallBeforeFirstByte: true}, class: neutral},
-		{name: "cut mid-stream", model: "open", stream: true, reply: fakebackend.Reply{CutAfter: 2}, class: failure},
-		{name: "stalled mid-stream", model: "slow", stream: true, reply: fakebackend.Reply{HangAfter: 2}, class: failure},
-		{name: "stream ended incomplete", model: "open", stream: true, reply: fakebackend.Reply{EndAfter: 2}, class: failure},
+		{name: "response timeout", model: "slow", reply: fakebackend.Reply{Before: fakebackend.StallFirstByte}, class: neutral},
+		{name: "cut mid-stream", model: "open", stream: true, reply: fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 2, Kind: fakebackend.Cut}}, class: failure},
+		{name: "stalled mid-stream", model: "slow", stream: true, reply: fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 2, Kind: fakebackend.Hang}}, class: failure},
+		{name: "stream ended incomplete", model: "open", stream: true, reply: fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 2, Kind: fakebackend.End}}, class: failure},
 		{name: "JSON body ended incomplete", model: "open", reply: fakebackend.Reply{Body: `{"id":"x","choices":[`},
 			class: failure},
-		{name: "client gone before the answer", model: "open", reply: fakebackend.Reply{StallBeforeFirstByte: true},
+		{name: "client gone before the answer", model: "open", reply: fakebackend.Reply{Before: fakebackend.StallFirstByte},
 			leave: true, class: neutral},
 		// The backend answered and was serving: it proved itself.
-		{name: "client gone mid-stream", model: "open", stream: true, reply: fakebackend.Reply{HangAfter: 2},
+		{name: "client gone mid-stream", model: "open", stream: true, reply: fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 2, Kind: fakebackend.Hang}},
 			leave: true, events: 2, class: success},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -443,7 +443,7 @@ func TestTrialIsDecidedAtItsFirstDataEvent(t *testing.T) {
 // timeout is 150 ms.
 func TestResponseTimeoutsOfAHungBackendOpenItsCircuit(t *testing.T) {
 	g := newCircuitGateway(t, 1, nil)
-	g.backend.SetReply(fakebackend.Reply{StallBeforeFirstByte: true})
+	g.backend.SetReply(fakebackend.Reply{Before: fakebackend.StallFirstByte})
 	slow := func() {
 		t.Helper()
 		w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey, body: `{"model":"slow"}`})

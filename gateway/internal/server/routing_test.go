@@ -50,7 +50,7 @@ func inFlight(g *testGateway) map[string]int { return g.router.InFlightByBackend
 
 func TestLoadGoesToTheLeastBusyDeployment(t *testing.T) {
 	g := newTestGateway(t)
-	g.backend.SetReply(fakebackend.Reply{HangAfter: 1})
+	g.backend.SetReply(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 1, Kind: fakebackend.Hang}})
 	srv := httptest.NewServer(g.h)
 	t.Cleanup(srv.Close)
 
@@ -108,7 +108,7 @@ func TestInFlightIsReleasedWhateverTheOutcome(t *testing.T) {
 
 func TestInFlightSurvivesAConfigSwap(t *testing.T) {
 	g := newTestGateway(t)
-	g.backend.SetReply(fakebackend.Reply{HangAfter: 1})
+	g.backend.SetReply(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 1, Kind: fakebackend.Hang}})
 	srv := httptest.NewServer(g.h)
 	t.Cleanup(srv.Close)
 

@@ -2,11 +2,9 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -15,6 +13,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"kaiak/internal/fakeotlp"
 )
 
 func TestLogExportSettings(t *testing.T) {
@@ -48,54 +48,10 @@ func TestLogExportSettings(t *testing.T) {
 	}
 }
 
-// fakeCollector takes OTLP/HTTP JSON exports and keeps every record's body.
-type fakeCollector struct {
-	*httptest.Server
-	mu     sync.Mutex
-	bodies []string
-}
-
-func newFakeCollector(t *testing.T) *fakeCollector {
-	c := &fakeCollector{}
-	c.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var export struct {
-			ResourceLogs []struct {
-				ScopeLogs []struct {
-					LogRecords []struct {
-						Body struct{ StringValue string }
-					}
-				}
-			}
-		}
-		if err := json.NewDecoder(r.Body).Decode(&export); err != nil {
-			t.Errorf("collector: %v", err)
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		for _, rl := range export.ResourceLogs {
-			for _, sl := range rl.ScopeLogs {
-				for _, rec := range sl.LogRecords {
-					c.bodies = append(c.bodies, rec.Body.StringValue)
-				}
-			}
-		}
-	}))
-	t.Cleanup(c.Close)
-	return c
-}
-
-func (c *fakeCollector) received() []string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return slices.Clone(c.bodies)
-}
-
 // A start that fails once the exporter runs still sends its lines — the cause
 // included — before run returns; the error is logged once.
 func TestRunStartFailureReachesTheCollector(t *testing.T) {
-	collector := newFakeCollector(t)
+	collector := fakeotlp.New(t, nil)
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(`{"format_version": 5}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -108,7 +64,7 @@ func TestRunStartFailureReachesTheCollector(t *testing.T) {
 		t.Fatalf("want a config rejection, got %v", err)
 	}
 	want := []string{"kaiak starting", "config rejected", "kaiak stopped with an error"}
-	if got := collector.received(); !slices.Equal(got, want) {
+	if got := collector.Bodies(); !slices.Equal(got, want) {
 		t.Errorf("collector received %q, want %q", got, want)
 	}
 	if n := strings.Count(logs.String(), `"msg":"kaiak stopped with an error"`); n != 1 {
@@ -137,9 +93,9 @@ func TestSecondSignalCutsTheFinalLogFlush(t *testing.T) {
 	release := make(chan struct{})
 	var seen, released sync.Once
 	unblock := func() { released.Do(func() { close(release) }) }
-	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		if strings.Contains(string(body), "kaiak stopped") {
+	var collector *fakeotlp.Collector
+	collector = fakeotlp.New(t, func(w http.ResponseWriter, r *http.Request, n int) {
+		if slices.Contains(collector.Received()[n].Messages(), "kaiak stopped") {
 			seen.Do(func() { close(flushing) })
 			select {
 			case <-release:
@@ -147,8 +103,7 @@ func TestSecondSignalCutsTheFinalLogFlush(t *testing.T) {
 			}
 		}
 		io.WriteString(w, "{}")
-	}))
-	defer collector.Close()
+	})
 	defer unblock()
 	var logs syncBuffer
 	stop := make(chan os.Signal, 2)

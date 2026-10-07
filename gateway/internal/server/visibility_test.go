@@ -185,7 +185,7 @@ func TestTimeToFirstTokenIsTheAnsweringAttempts(t *testing.T) {
 	s.Backends["local"].FirstEventTimeout = firstEventTimeout
 	s.Backends["local-b"].FirstEventTimeout = firstEventTimeout
 	g.holder.Swap(s)
-	g.backend.QueueReplies(fakebackend.Reply{StallBeforeFirstByte: true})
+	g.backend.QueueReplies(fakebackend.Reply{Before: fakebackend.StallFirstByte})
 	if w := post(t, g, "ttft", `{"model":"pair","stream":true,"messages":[]}`); w.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", w.Code, w.Body.String())
 	}

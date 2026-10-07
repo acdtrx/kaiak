@@ -256,7 +256,7 @@ func TestUpstreamFailuresBeforeTheFirstByte(t *testing.T) {
 
 	// The only deployment times out: retries are failover only, so its one attempt
 	// answers.
-	g.backend.SetReply(fakebackend.Reply{StallBeforeFirstByte: true})
+	g.backend.SetReply(fakebackend.Reply{Before: fakebackend.StallFirstByte})
 	start := time.Now()
 	w = do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey, body: `{"model":"slow","stream":true}`})
 	expectError(t, w, http.StatusGatewayTimeout, "upstream_timeout")
@@ -402,8 +402,8 @@ func TestClientDisconnectCancelsTheUpstreamRequest(t *testing.T) {
 		name  string
 		reply fakebackend.Reply
 	}{
-		{"mid-stream", fakebackend.Reply{HangAfter: 2}},
-		{"before the first byte", fakebackend.Reply{StallBeforeFirstByte: true}},
+		{"mid-stream", fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 2, Kind: fakebackend.Hang}}},
+		{"before the first byte", fakebackend.Reply{Before: fakebackend.StallFirstByte}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			g := newTestGateway(t)
@@ -413,7 +413,7 @@ func TestClientDisconnectCancelsTheUpstreamRequest(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			var resp *http.Response
-			if c.reply.StallBeforeFirstByte {
+			if c.reply.Before == fakebackend.StallFirstByte {
 				go func() {
 					select {
 					case <-g.backend.Arrivals():
@@ -447,7 +447,7 @@ func TestClientDisconnectCancelsTheUpstreamRequest(t *testing.T) {
 
 func TestBackendCutMidStreamCutsTheClient(t *testing.T) {
 	g := newTestGateway(t)
-	g.backend.SetReply(fakebackend.Reply{CutAfter: 2})
+	g.backend.SetReply(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 2, Kind: fakebackend.Cut}})
 	url := serveGateway(t, g)
 
 	resp := streamRequest(t, context.Background(), url, `{"model":"open","stream":true}`)

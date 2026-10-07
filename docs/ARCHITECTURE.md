@@ -221,6 +221,9 @@ enforce the boundaries.
   `counted_through`, optionally pushed on every change; records every
   request. Tests only; it imports nothing from the gateway, so `control`'s own tests
   use it.
+- `fakeotlp` — an OpenTelemetry collector for tests: takes OTLP/HTTP JSON log
+  exports, answers each as the test scripts, and keeps every export decoded with its
+  own types — not `otlplog`'s — so reading them checks the encoder. Tests only.
 
 Test tooling outside the binary:
 

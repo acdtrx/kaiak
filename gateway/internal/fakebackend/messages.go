@@ -56,11 +56,10 @@ func messagesErrorEvent(errorType string) []byte {
 
 // writeMessagesStream streams a Messages answer: message_start, one text block with a
 // delta per chunk, message_delta with the stop reason and output usage, message_stop.
-// The reply's faults apply as in an OpenAI stream; ErrorEvent sends an error event
-// after ErrorEventAfter text events and ends the stream there.
+// The reply's stream fault applies with messagesErrorEvent as the error event.
 func (b *Backend) writeMessagesStream(w http.ResponseWriter, r *http.Request, req *Request, reply Reply,
 	model string, chunks []string, cut bool, usage Usage) {
-	s, ok := b.startStream(w, r, req, reply)
+	s, ok := b.startStream(w, r, req, reply, messagesErrorEvent)
 	if !ok {
 		return
 	}
@@ -68,8 +67,7 @@ func (b *Backend) writeMessagesStream(w http.ResponseWriter, r *http.Request, re
 		payload, _ := json.Marshal(v) // test values always encode
 		return s.send(name, payload)
 	}
-	if reply.ErrorEvent && reply.ErrorEventAfter == 0 {
-		s.send("error", messagesErrorEvent(reply.ErrorEventCode))
+	if !s.interrupt(0) {
 		return
 	}
 	message := map[string]any{"id": "msg_fake_1", "type": "message", "role": "assistant", "content": []any{},
@@ -83,10 +81,6 @@ func (b *Backend) writeMessagesStream(w http.ResponseWriter, r *http.Request, re
 		return
 	}
 	for i, text := range chunks {
-		if reply.ErrorEvent && i == reply.ErrorEventAfter {
-			s.send("error", messagesErrorEvent(reply.ErrorEventCode))
-			return
-		}
 		if !s.interrupt(i) {
 			return
 		}

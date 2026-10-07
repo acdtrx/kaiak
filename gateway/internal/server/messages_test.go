@@ -296,7 +296,7 @@ func TestMessagesErrorEvents(t *testing.T) {
 	srv := httptest.NewServer(g.h)
 	defer srv.Close()
 
-	g.backend.SetReply(fakebackend.Reply{ErrorEvent: true, ErrorEventAfter: 2})
+	g.backend.SetReply(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 2, Kind: fakebackend.ErrorEvent}})
 	resp := postStream(t, srv.URL+"/v1/messages", `{"model":"msg","max_tokens":32,"stream":true,"messages":[]}`)
 	data, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -312,12 +312,12 @@ func TestMessagesErrorEvents(t *testing.T) {
 	}
 	waitLog(t, g, `"kaiak.relay_end":"upstream_incomplete"`)
 
-	g.backend.SetReply(fakebackend.Reply{ErrorEvent: true})
+	g.backend.SetReply(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 0, Kind: fakebackend.ErrorEvent}})
 	w := do(t, g.h, call{method: "POST", path: "/v1/messages", key: workloadKey,
 		body: `{"model":"msg","max_tokens":32,"stream":true,"messages":[]}`})
 	expectAnthropicError(t, w, http.StatusServiceUnavailable, "overloaded_error", "upstream_overloaded")
 
-	g.backend.SetReply(fakebackend.Reply{ErrorEvent: true, ErrorEventCode: "api_error"})
+	g.backend.SetReply(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 0, Kind: fakebackend.ErrorEvent, Code: "api_error"}})
 	w = do(t, g.h, call{method: "POST", path: "/v1/messages", key: workloadKey,
 		body: `{"model":"msg","max_tokens":32,"stream":true,"messages":[]}`})
 	expectAnthropicError(t, w, http.StatusBadGateway, "api_error", "upstream_error")

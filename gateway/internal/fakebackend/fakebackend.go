@@ -48,42 +48,17 @@ type Reply struct {
 	// usage chunk in a stream even when the request asks for one.
 	OmitUsage bool
 
-	// StallBeforeFirstByte: send nothing and wait until the request is cancelled.
-	StallBeforeFirstByte bool
-	// CutBeforeBody: answer Status (default 200) with its headers and a JSON
-	// Content-Length whose body never comes — the connection drops before the first
-	// body byte. StallBeforeBody: answer the status and headers, then wait until the
-	// request is cancelled.
-	CutBeforeBody   bool
-	StallBeforeBody bool
+	// Before, when set, is a fault before the answer's body (see BeforeFault).
+	Before BeforeFault
 	// Pace, when set, makes a stream wait for a value from it before each event
 	// after the first, so a test controls when each event is sent.
 	Pace <-chan struct{}
-	// HangAfter > 0: a stream sends that many text events, then waits until the
-	// request is cancelled.
-	HangAfter int
-	// PingEvery, with HangAfter, makes the hanging stream send a ": ping" comment
-	// block that often while it waits (a keep-alive with no data).
-	PingEvery time.Duration
 	// PingFirst makes a stream open with a ": ping" comment block before its first
 	// data event (a backend keeping the connection alive before its first token);
 	// with Pace, the first data event then waits for a Pace value too.
 	PingFirst bool
-	// CutAfter > 0: a stream sends that many text events, then drops the connection.
-	CutAfter int
-	// EndAfter > 0: a stream sends that many text events, then ends the response
-	// cleanly — no finish_reason, no usage, no [DONE] (a generator that died); a
-	// Messages stream ends without message_delta and message_stop, a Responses stream
-	// without response.completed.
-	EndAfter int
-	// ErrorEvent makes a Messages or Responses stream send an error event (Anthropic's
-	// overloaded_error, a Responses error) after ErrorEventAfter text events — 0: as
-	// its first event — and end there.
-	ErrorEvent      bool
-	ErrorEventAfter int
-	// ErrorEventCode, when set, is the error event's Anthropic error type (Messages)
-	// or code (Responses) in place of overloaded_error and server_error.
-	ErrorEventCode string
+	// Fault, when set, breaks a stream (see StreamFault).
+	Fault *StreamFault
 	// EventDelay, when set, makes a stream wait that long before each event after
 	// the first (a slow model).
 	EventDelay time.Duration
@@ -94,6 +69,52 @@ type Reply struct {
 	// does.
 	HonorMaxTokens bool
 }
+
+// BeforeFault is a fault before the answer's body; the zero value is none.
+type BeforeFault int
+
+const (
+	// StallFirstByte: send nothing and wait until the request is cancelled.
+	StallFirstByte BeforeFault = iota + 1
+	// CutBody: answer Status (default 200) with its headers and a JSON
+	// Content-Length whose body never comes — the connection drops before the first
+	// body byte.
+	CutBody
+	// StallBody: answer Status (default 200) and its headers, then wait until the
+	// request is cancelled.
+	StallBody
+)
+
+// StreamFault breaks a stream after At text events. At 0 the fault comes before the
+// stream's first event — before a Messages or Responses stream's opening events too.
+// A stream with fewer than At text events is not broken.
+type StreamFault struct {
+	At   int
+	Kind StreamFaultKind
+	// Code, with ErrorEvent, is the error event's Anthropic error type (Messages) or
+	// code (Responses) in place of overloaded_error and server_error.
+	Code string
+	// PingEvery, with Hang, makes the hanging stream send a ": ping" comment block
+	// that often while it waits (a keep-alive with no data).
+	PingEvery time.Duration
+}
+
+// StreamFaultKind is what a StreamFault does.
+type StreamFaultKind int
+
+const (
+	// Hang: wait until the request is cancelled.
+	Hang StreamFaultKind = iota + 1
+	// Cut: drop the connection.
+	Cut
+	// End: end the response cleanly — no finish_reason, no usage, no [DONE] (a
+	// generator that died); a Messages stream ends without message_delta and
+	// message_stop, a Responses stream without response.completed.
+	End
+	// ErrorEvent: send the API's error event (Anthropic's overloaded_error, a
+	// Responses error) and end there. Messages and Responses streams only.
+	ErrorEvent
+)
 
 // Usage is a token report. CachedTokens, CacheWriteTokens and ReasoningTokens, when
 // set, are reported in prompt_tokens_details and completion_tokens_details, as OpenAI
@@ -329,23 +350,23 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 	for name, value := range reply.Header {
 		w.Header().Set(name, value)
 	}
-	if reply.StallBeforeFirstByte {
+	if reply.Before == StallFirstByte {
 		b.waitForCancel(r, req)
 		return
 	}
-	if reply.CutBeforeBody || reply.StallBeforeBody {
+	if reply.Before == CutBody || reply.Before == StallBody {
 		status := reply.Status
 		if status == 0 {
 			status = http.StatusOK
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if reply.CutBeforeBody {
+		if reply.Before == CutBody {
 			// Nothing of it is written, so net/http drops the connection.
 			w.Header().Set("Content-Length", "100")
 		}
 		w.WriteHeader(status)
 		_ = http.NewResponseController(w).Flush()
-		if reply.StallBeforeBody {
+		if reply.Before == StallBody {
 			b.waitForCancel(r, req)
 		}
 		return
@@ -466,14 +487,20 @@ type streamWriter struct {
 	reply   Reply
 	flusher *http.ResponseController
 	sent    int
+	// errorEvent is the API's error event carrying code ("": the API's default); nil
+	// for an API whose streams have none.
+	errorEvent func(code string) []byte
 }
 
 // startStream answers 200 with an event stream, opening with a ": ping" comment
-// block when the reply asks; ok is false when the client is gone.
-func (b *Backend) startStream(w http.ResponseWriter, r *http.Request, req *Request, reply Reply) (*streamWriter, bool) {
+// block when the reply asks; ok is false when the client is gone. errorEvent is the
+// API's error event (nil: none).
+func (b *Backend) startStream(w http.ResponseWriter, r *http.Request, req *Request, reply Reply,
+	errorEvent func(code string) []byte) (*streamWriter, bool) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
-	s := &streamWriter{b: b, w: w, r: r, req: req, reply: reply, flusher: http.NewResponseController(w)}
+	s := &streamWriter{b: b, w: w, r: r, req: req, reply: reply, flusher: http.NewResponseController(w),
+		errorEvent: errorEvent}
 	if reply.PingFirst {
 		if _, err := io.WriteString(w, ": ping\n\n"); err != nil || s.flusher.Flush() != nil {
 			return nil, false
@@ -521,30 +548,40 @@ func (s *streamWriter) send(name string, payload []byte) bool {
 	return s.flusher.Flush() == nil
 }
 
-// interrupt applies the reply's text-event faults before text event i: it hangs, cuts
-// the connection or ends the stream cleanly where the reply says. It returns false
-// when the stream ends here.
+// interrupt applies the reply's stream fault when i text events have been sent: it
+// hangs, cuts the connection, ends the stream cleanly or sends the error event. It
+// returns false when the stream ends here. A writer calls it with 0 before its first
+// event and with i before text event i; every kind ends the stream, so a fault fires
+// once.
 func (s *streamWriter) interrupt(i int) bool {
-	reply := s.reply
-	switch {
-	case reply.HangAfter > 0 && i == reply.HangAfter:
-		if reply.PingEvery > 0 {
-			s.b.pingUntilCancel(s.w, s.r, s.req, reply.PingEvery)
+	fault := s.reply.Fault
+	if fault == nil || i != fault.At {
+		return true
+	}
+	switch fault.Kind {
+	case Hang:
+		if fault.PingEvery > 0 {
+			s.b.pingUntilCancel(s.w, s.r, s.req, fault.PingEvery)
 			return false
 		}
 		s.b.waitForCancel(s.r, s.req)
-		return false
-	case reply.CutAfter > 0 && i == reply.CutAfter:
+	case Cut:
 		panic(http.ErrAbortHandler)
-	case reply.EndAfter > 0 && i == reply.EndAfter:
-		return false
+	case End:
+	case ErrorEvent:
+		if s.errorEvent == nil {
+			panic("fakebackend: an ErrorEvent fault on a stream with no error event")
+		}
+		s.send("error", s.errorEvent(fault.Code))
+	default:
+		panic(fmt.Sprintf("fakebackend: StreamFault with unknown Kind %d", fault.Kind))
 	}
-	return true
+	return false
 }
 
 func (b *Backend) writeStream(w http.ResponseWriter, r *http.Request, req *Request, reply Reply,
 	endpoint, model string, chunks []string, finish string, usage Usage, includeUsage bool) {
-	s, ok := b.startStream(w, r, req, reply)
+	s, ok := b.startStream(w, r, req, reply, nil)
 	if !ok {
 		return
 	}

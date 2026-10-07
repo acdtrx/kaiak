@@ -2,11 +2,10 @@ package accounting
 
 import (
 	"bytes"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
+	"kaiak/internal/fakebackend"
 	"kaiak/internal/provider"
 	"kaiak/internal/sse"
 )
@@ -15,10 +14,7 @@ import (
 // event by event.
 func recordedStreamMeter(t *testing.T, ep provider.Endpoint, server, name string) *Meter {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("..", "fakebackend", "captures", server, name))
-	if err != nil {
-		t.Fatal(err)
-	}
+	data := fakebackend.Captured(server, name)
 	m := NewMeter(ep, 99)
 	m.Answered(200, true)
 	events := sse.NewReader(bytes.NewReader(data), 1<<20)

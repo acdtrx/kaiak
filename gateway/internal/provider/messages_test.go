@@ -7,24 +7,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"kaiak/internal/config"
+	"kaiak/internal/fakebackend"
 )
-
-// captured reads a recorded backend answer (fakebackend/captures).
-func captured(t *testing.T, server, name string) []byte {
-	t.Helper()
-	data, err := os.ReadFile(filepath.Join("..", "fakebackend", "captures", server, name))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return data
-}
 
 // relayMessages sends a Messages request through a backend of type typ answering
 // with body under contentType, and reads the whole response: what reached the client
@@ -64,7 +53,7 @@ func TestRecordedMessagesAnswersRelayWhole(t *testing.T) {
 		typ := config.BackendType(server)
 		for _, name := range []string{"messages-stream.sse", "messages-stream-tool.sse", "messages-stream-max-tokens.sse"} {
 			t.Run(server+"/"+name, func(t *testing.T) {
-				data := captured(t, server, name)
+				data := fakebackend.Captured(server, name)
 				out, err := relayMessages(t, typ, "text/event-stream", data, true)
 				if !errors.Is(err, io.EOF) {
 					t.Fatalf("ended with %v, want complete", err)
@@ -83,7 +72,7 @@ func TestRecordedMessagesAnswersRelayWhole(t *testing.T) {
 			})
 		}
 		t.Run(server+"/messages.json", func(t *testing.T) {
-			out, err := relayMessages(t, typ, "application/json", captured(t, server, "messages.json"), false)
+			out, err := relayMessages(t, typ, "application/json", fakebackend.Captured(server, "messages.json"), false)
 			if !errors.Is(err, io.EOF) || !strings.Contains(out, `"model":"pub"`) || strings.Contains(out, "Qwen3.8") {
 				t.Errorf("ended with %v:\n%s", err, out)
 			}

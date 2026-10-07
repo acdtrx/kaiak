@@ -171,7 +171,7 @@ func TestMissingUsageIsEstimated(t *testing.T) {
 
 func TestClientDisconnectRecordsPartialUsage(t *testing.T) {
 	g := newTestGateway(t)
-	g.backend.SetReply(fakebackend.Reply{HangAfter: 2})
+	g.backend.SetReply(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 2, Kind: fakebackend.Hang}})
 	url := serveGateway(t, g)
 	body := `{"model":"open","stream":true}`
 	ctx, cancel := context.WithCancel(context.Background())
@@ -192,7 +192,7 @@ func TestClientDisconnectRecordsPartialUsage(t *testing.T) {
 // no output, flagged estimated and partial.
 func TestClientGoneBeforeTheFirstEventBillsTheSentPrompt(t *testing.T) {
 	g := newTestGateway(t)
-	g.backend.SetReply(fakebackend.Reply{StallBeforeFirstByte: true})
+	g.backend.SetReply(fakebackend.Reply{Before: fakebackend.StallFirstByte})
 	url := serveGateway(t, g)
 	body := `{"model":"open","stream":true,"messages":[{"role":"user","content":"a prompt the backend received"}]}`
 	ctx, cancel := context.WithCancel(context.Background())
@@ -216,7 +216,7 @@ func TestClientGoneBeforeTheFirstEventBillsTheSentPrompt(t *testing.T) {
 
 func TestBackendCutMidStreamRecordsPartialUsage(t *testing.T) {
 	g := newTestGateway(t)
-	g.backend.SetReply(fakebackend.Reply{CutAfter: 2})
+	g.backend.SetReply(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 2, Kind: fakebackend.Cut}})
 	url := serveGateway(t, g)
 	body := `{"model":"open","stream":true}`
 	resp := streamRequest(t, context.Background(), url, body)

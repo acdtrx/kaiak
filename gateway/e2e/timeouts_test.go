@@ -165,7 +165,7 @@ func TestStalledStreamEndsAndCountsTowardTheCircuit(t *testing.T) {
 		cfg["backends"].(map[string]any)["a"].(map[string]any)["stall_timeout_ms"] = int(stall.Milliseconds())
 	})
 
-	a.SetReply(fakebackend.Reply{HangAfter: 1})
+	a.SetReply(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 1, Kind: fakebackend.Hang}})
 	stream := openStream(t, g, key, "stalled", chatBody("chat", true, nil))
 	firstEvent := time.Now()
 	// Bounded: a stall timeout not taking effect leaves the stream open.

@@ -85,10 +85,10 @@ func TestErrorAnswerBrokenBeforeItsBodyIsAnsweredByItsStatus(t *testing.T) {
 		model   string
 		outcome string
 	}{
-		{"400 cut", fakebackend.Reply{Status: http.StatusBadRequest, CutBeforeBody: true}, "pair", "client_error"},
-		{"429 cut", fakebackend.Reply{Status: http.StatusTooManyRequests, CutBeforeBody: true}, "pair", "rate_limited"},
-		{"500 cut", fakebackend.Reply{Status: http.StatusInternalServerError, CutBeforeBody: true}, "pair", "server_error"},
-		{"429 timed out after its headers", fakebackend.Reply{Status: http.StatusTooManyRequests, StallBeforeBody: true}, "slow", "rate_limited"},
+		{"400 cut", fakebackend.Reply{Status: http.StatusBadRequest, Before: fakebackend.CutBody}, "pair", "client_error"},
+		{"429 cut", fakebackend.Reply{Status: http.StatusTooManyRequests, Before: fakebackend.CutBody}, "pair", "rate_limited"},
+		{"500 cut", fakebackend.Reply{Status: http.StatusInternalServerError, Before: fakebackend.CutBody}, "pair", "server_error"},
+		{"429 timed out after its headers", fakebackend.Reply{Status: http.StatusTooManyRequests, Before: fakebackend.StallBody}, "slow", "rate_limited"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			g := newTestGateway(t)

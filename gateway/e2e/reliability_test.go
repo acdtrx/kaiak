@@ -298,7 +298,7 @@ func TestFirstEventTimeoutRetried(t *testing.T) {
 		cfg["backends"].(map[string]any)["a"].(map[string]any)["first_event_timeout_ms"] = 300
 	})
 
-	a.QueueReplies(fakebackend.Reply{StallBeforeFirstByte: true})
+	a.QueueReplies(fakebackend.Reply{Before: fakebackend.StallFirstByte})
 	finishStream(t, openStream(t, g, key, "stalled", chatBody("chat", true, nil)))
 	line := g.settled(t, "stalled")
 	if line["kaiak.attempts"] != 2.0 || line["kaiak.backend.id"] != "b" || line["kaiak.tried"] != tried("a", "upstream_timeout", "b", "200") {
@@ -352,8 +352,8 @@ func TestResponseTimeoutNotRetried(t *testing.T) {
 		}
 	})
 
-	a.SetReply(fakebackend.Reply{StallBeforeFirstByte: true})
-	b.SetReply(fakebackend.Reply{StallBeforeFirstByte: true})
+	a.SetReply(fakebackend.Reply{Before: fakebackend.StallFirstByte})
+	b.SetReply(fakebackend.Reply{Before: fakebackend.StallFirstByte})
 	r := g.post(t, "/v1/chat/completions", key, "long", chatBody("chat", false, nil))
 	if r.StatusCode != http.StatusGatewayTimeout || !strings.Contains(string(r.body), `"upstream_timeout"`) {
 		t.Fatalf("answer %d %s, want 504 upstream_timeout", r.StatusCode, r.body)

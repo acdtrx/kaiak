@@ -14,80 +14,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
+
+	"kaiak/internal/fakeotlp"
 )
-
-// received is one export request as the fake collector saw it.
-type received struct {
-	header   http.Header
-	request  exportRequest
-	messages []string
-}
-
-// collector is a fake OTLP/HTTP collector. respond answers request n (from 0);
-// nil answers 200 with an empty ExportLogsServiceResponse.
-type collector struct {
-	srv      *httptest.Server
-	got      chan received
-	requests atomic.Int64
-}
-
-func newCollector(t *testing.T, respond func(w http.ResponseWriter, r *http.Request, n int)) *collector {
-	t.Helper()
-	c := &collector{got: make(chan received, 1000)}
-	c.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		n := int(c.requests.Add(1) - 1)
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("collector: read body: %v", err)
-			return
-		}
-		rec := received{header: r.Header.Clone()}
-		if err := json.Unmarshal(body, &rec.request); err != nil {
-			t.Errorf("collector: decode %s: %v", body, err)
-		}
-		for _, rl := range rec.request.ResourceLogs {
-			for _, sl := range rl.ScopeLogs {
-				for _, lr := range sl.LogRecords {
-					rec.messages = append(rec.messages, *lr.Body.StringValue)
-				}
-			}
-		}
-		c.got <- rec
-		if respond == nil {
-			w.Header().Set("Content-Type", "application/json")
-			io.WriteString(w, "{}")
-			return
-		}
-		respond(w, r, n)
-	}))
-	t.Cleanup(c.srv.Close)
-	return c
-}
-
-// next waits for the collector's next request.
-func (c *collector) next(t *testing.T) received {
-	t.Helper()
-	select {
-	case r := <-c.got:
-		return r
-	case <-time.After(10 * time.Second):
-		t.Fatal("no export request reached the collector")
-		return received{}
-	}
-}
-
-// none checks that no request is waiting.
-func (c *collector) none(t *testing.T) {
-	t.Helper()
-	select {
-	case r := <-c.got:
-		t.Fatalf("unexpected export request with %q", r.messages)
-	default:
-	}
-}
 
 // syncBuffer collects the problem reports, written from the sender goroutine.
 type syncBuffer struct {
@@ -145,7 +76,7 @@ func (c *fakeClock) Advance(d time.Duration) {
 // waits that end at once (each recorded), and its reports in a buffer.
 type harness struct {
 	e       *Exporter
-	col     *collector
+	col     *fakeotlp.Collector
 	tick    chan time.Time
 	log     *slog.Logger
 	reports *syncBuffer
@@ -155,12 +86,12 @@ type harness struct {
 	waits []time.Duration
 }
 
-func newHarness(t *testing.T, col *collector, vars map[string]string, opts options) *harness {
+func newHarness(t *testing.T, col *fakeotlp.Collector, vars map[string]string, opts options) *harness {
 	t.Helper()
 	if vars == nil {
 		vars = map[string]string{}
 	}
-	vars["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] = col.srv.URL + "/v1/logs"
+	vars["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] = col.URL + "/v1/logs"
 	h := &harness{col: col, tick: make(chan time.Time), reports: &syncBuffer{},
 		clock: &fakeClock{now: time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)}}
 	opts.tick = h.tick
@@ -219,24 +150,24 @@ func messages(prefix string, from, to int) []string {
 }
 
 func TestExportRequestShape(t *testing.T) {
-	col := newCollector(t, nil)
+	col := fakeotlp.New(t, nil)
 	h := newHarness(t, col, map[string]string{
 		"OTEL_EXPORTER_OTLP_HEADERS": "authorization=Bearer%20abc,x-scope-orgid=tenant-1",
 	}, options{})
 	h.log.Info("one", "kaiak.key.id", "k1")
 	h.tick <- time.Now()
-	r := col.next(t)
+	r := col.Next(t)
 	for name, want := range map[string]string{
 		"Content-Type":  "application/json",
 		"User-Agent":    "kaiak/1.2.3",
 		"Authorization": "Bearer abc",
 		"X-Scope-Orgid": "tenant-1",
 	} {
-		if got := r.header.Get(name); got != want {
+		if got := r.Header.Get(name); got != want {
 			t.Errorf("header %s = %q, want %q", name, got, want)
 		}
 	}
-	rl := r.request.ResourceLogs[0]
+	rl := r.Export.ResourceLogs[0]
 	var res []string
 	for _, kv := range rl.Resource.Attributes {
 		res = append(res, kv.Key+"="+*kv.Value.StringValue)
@@ -247,41 +178,41 @@ func TestExportRequestShape(t *testing.T) {
 	if rl.ScopeLogs[0].Scope.Name != "kaiak" {
 		t.Errorf("scope %q, want kaiak", rl.ScopeLogs[0].Scope.Name)
 	}
-	if !reflect.DeepEqual(r.messages, []string{"one"}) {
-		t.Errorf("messages %q, want [one]", r.messages)
+	if !reflect.DeepEqual(r.Messages(), []string{"one"}) {
+		t.Errorf("messages %q, want [one]", r.Messages())
 	}
 }
 
 func TestBatchBySize(t *testing.T) {
-	col := newCollector(t, nil)
+	col := fakeotlp.New(t, nil)
 	done := make(chan struct{}, 10)
 	h := newHarness(t, col, nil, options{batchDone: func() { done <- struct{}{} }})
 	h.logN(batchSize+1, "m")
 
-	first := col.next(t)
-	if !reflect.DeepEqual(first.messages, messages("m", 0, batchSize)) {
-		t.Fatalf("first batch: %d records, want the oldest %d", len(first.messages), batchSize)
+	first := col.Next(t)
+	if !reflect.DeepEqual(first.Messages(), messages("m", 0, batchSize)) {
+		t.Fatalf("first batch: %d records, want the oldest %d", len(first.Messages()), batchSize)
 	}
 	<-done
-	col.none(t)
+	col.None(t)
 	if n := len(queued(h.e)); n != 1 {
 		t.Fatalf("%d records queued after the full batch, want 1 waiting for the interval", n)
 	}
 	h.tick <- time.Now()
-	if second := col.next(t); !reflect.DeepEqual(second.messages, []string{fmt.Sprintf("m%d", batchSize)}) {
-		t.Fatalf("second batch %q, want the one left", second.messages)
+	if second := col.Next(t); !reflect.DeepEqual(second.Messages(), []string{fmt.Sprintf("m%d", batchSize)}) {
+		t.Fatalf("second batch %q, want the one left", second.Messages())
 	}
 	<-done
 	wantCounts(t, h.e, Counts{Exported: batchSize + 1})
 }
 
 func TestBatchByInterval(t *testing.T) {
-	col := newCollector(t, nil)
+	col := fakeotlp.New(t, nil)
 	h := newHarness(t, col, nil, options{})
 	h.logN(3, "m")
 	h.tick <- time.Now()
-	if r := col.next(t); !reflect.DeepEqual(r.messages, messages("m", 0, 3)) {
-		t.Fatalf("batch %q, want m0..m2", r.messages)
+	if r := col.Next(t); !reflect.DeepEqual(r.Messages(), messages("m", 0, 3)) {
+		t.Fatalf("batch %q, want m0..m2", r.Messages())
 	}
 	h.flush(t)
 	wantCounts(t, h.e, Counts{Exported: 3})
@@ -290,7 +221,7 @@ func TestBatchByInterval(t *testing.T) {
 func TestRetryOnEachRetryableStatus(t *testing.T) {
 	for _, status := range []int{429, 502, 503, 504} {
 		t.Run(strconv.Itoa(status), func(t *testing.T) {
-			col := newCollector(t, func(w http.ResponseWriter, _ *http.Request, n int) {
+			col := fakeotlp.New(t, func(w http.ResponseWriter, _ *http.Request, n int) {
 				if n < 2 {
 					w.WriteHeader(status)
 					return
@@ -300,7 +231,7 @@ func TestRetryOnEachRetryableStatus(t *testing.T) {
 			h := newHarness(t, col, nil, options{})
 			h.logN(2, "m")
 			h.flush(t)
-			if n := col.requests.Load(); n != 3 {
+			if n := col.Requests(); n != 3 {
 				t.Fatalf("%d requests, want 3 (two retries)", n)
 			}
 			wantCounts(t, h.e, Counts{Exported: 2})
@@ -335,7 +266,7 @@ func TestBackoffDoublesToFiveSeconds(t *testing.T) {
 }
 
 func TestRetryOnNetworkError(t *testing.T) {
-	col := newCollector(t, func(w http.ResponseWriter, _ *http.Request, n int) {
+	col := fakeotlp.New(t, func(w http.ResponseWriter, _ *http.Request, n int) {
 		if n == 0 {
 			conn, _, err := w.(http.Hijacker).Hijack()
 			if err != nil {
@@ -350,7 +281,7 @@ func TestRetryOnNetworkError(t *testing.T) {
 	h := newHarness(t, col, nil, options{})
 	h.logN(3, "m")
 	h.flush(t)
-	if n := col.requests.Load(); n != 2 {
+	if n := col.Requests(); n != 2 {
 		t.Fatalf("%d requests, want 2 (one retry)", n)
 	}
 	wantCounts(t, h.e, Counts{Exported: 3})
@@ -369,7 +300,7 @@ func TestRetryAfterIsHonoured(t *testing.T) {
 		{"unreadable: backoff", func() string { return "soon" }, 250 * time.Millisecond, 500 * time.Millisecond},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			col := newCollector(t, func(w http.ResponseWriter, _ *http.Request, n int) {
+			col := fakeotlp.New(t, func(w http.ResponseWriter, _ *http.Request, n int) {
 				if n == 0 {
 					w.Header().Set("Retry-After", tc.header())
 					w.WriteHeader(http.StatusTooManyRequests)
@@ -390,14 +321,14 @@ func TestRetryAfterIsHonoured(t *testing.T) {
 }
 
 func TestRetryAfterBeyondTheTimeLeftFailsAtOnce(t *testing.T) {
-	col := newCollector(t, func(w http.ResponseWriter, _ *http.Request, _ int) {
+	col := fakeotlp.New(t, func(w http.ResponseWriter, _ *http.Request, _ int) {
 		w.Header().Set("Retry-After", "30")
 		w.WriteHeader(http.StatusServiceUnavailable)
 	})
 	h := newHarness(t, col, map[string]string{"OTEL_EXPORTER_OTLP_LOGS_TIMEOUT": "10000"}, options{})
 	h.logN(4, "m")
 	h.flush(t)
-	if n := col.requests.Load(); n != 1 {
+	if n := col.Requests(); n != 1 {
 		t.Fatalf("%d requests, want 1", n)
 	}
 	if w := h.recordedWaits(); len(w) != 0 {
@@ -407,14 +338,14 @@ func TestRetryAfterBeyondTheTimeLeftFailsAtOnce(t *testing.T) {
 }
 
 func TestRetriesEndWithTheTimeout(t *testing.T) {
-	col := newCollector(t, func(w http.ResponseWriter, _ *http.Request, _ int) {
+	col := fakeotlp.New(t, func(w http.ResponseWriter, _ *http.Request, _ int) {
 		w.WriteHeader(http.StatusBadGateway)
 	})
 	// The first backoff (at least 0.25 s) is beyond a 100 ms timeout.
 	h := newHarness(t, col, map[string]string{"OTEL_EXPORTER_OTLP_TIMEOUT": "100"}, options{})
 	h.logN(2, "m")
 	h.flush(t)
-	if n := col.requests.Load(); n != 1 {
+	if n := col.Requests(); n != 1 {
 		t.Fatalf("%d requests, want 1", n)
 	}
 	wantCounts(t, h.e, Counts{Failed: 2})
@@ -423,7 +354,7 @@ func TestRetriesEndWithTheTimeout(t *testing.T) {
 func TestNoRetryOnOtherStatuses(t *testing.T) {
 	for _, status := range []int{400, 401, 404, 413, 500} {
 		t.Run(strconv.Itoa(status), func(t *testing.T) {
-			col := newCollector(t, func(w http.ResponseWriter, _ *http.Request, _ int) {
+			col := fakeotlp.New(t, func(w http.ResponseWriter, _ *http.Request, _ int) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(status)
 				io.WriteString(w, `{"code":3,"message":"bad data in record 2"}`)
@@ -431,7 +362,7 @@ func TestNoRetryOnOtherStatuses(t *testing.T) {
 			h := newHarness(t, col, nil, options{})
 			h.logN(3, "m")
 			h.flush(t)
-			if n := col.requests.Load(); n != 1 {
+			if n := col.Requests(); n != 1 {
 				t.Fatalf("%d requests, want 1", n)
 			}
 			wantCounts(t, h.e, Counts{Failed: 3})
@@ -462,13 +393,13 @@ func TestPartialSuccessCountsRejectedAsFailed(t *testing.T) {
 		{"not JSON: unreadable", `ok`, 0, 5},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			col := newCollector(t, func(w http.ResponseWriter, _ *http.Request, _ int) {
+			col := fakeotlp.New(t, func(w http.ResponseWriter, _ *http.Request, _ int) {
 				io.WriteString(w, tc.body)
 			})
 			h := newHarness(t, col, nil, options{})
 			h.logN(5, "m")
 			h.flush(t)
-			if n := col.requests.Load(); n != 1 {
+			if n := col.Requests(); n != 1 {
 				t.Fatalf("%d requests, want 1: a partial success is not retried", n)
 			}
 			wantCounts(t, h.e, Counts{Exported: tc.exported, Failed: tc.failed})
@@ -477,7 +408,7 @@ func TestPartialSuccessCountsRejectedAsFailed(t *testing.T) {
 }
 
 func TestPartialSuccessIsReported(t *testing.T) {
-	col := newCollector(t, func(w http.ResponseWriter, _ *http.Request, _ int) {
+	col := fakeotlp.New(t, func(w http.ResponseWriter, _ *http.Request, _ int) {
 		io.WriteString(w, `{"partialSuccess":{"rejectedLogRecords":"2","errorMessage":"too large"}}`)
 	})
 	h := newHarness(t, col, nil, options{})
@@ -493,14 +424,14 @@ func TestPartialSuccessIsReported(t *testing.T) {
 func TestOversizedResponseFailsUnretried(t *testing.T) {
 	for _, status := range []int{200, 503} {
 		t.Run(strconv.Itoa(status), func(t *testing.T) {
-			col := newCollector(t, func(w http.ResponseWriter, _ *http.Request, _ int) {
+			col := fakeotlp.New(t, func(w http.ResponseWriter, _ *http.Request, _ int) {
 				w.WriteHeader(status)
 				w.Write(bytes.Repeat([]byte(" "), maxResponseSize+1))
 			})
 			h := newHarness(t, col, nil, options{})
 			h.logN(2, "m")
 			h.flush(t)
-			if n := col.requests.Load(); n != 1 {
+			if n := col.Requests(); n != 1 {
 				t.Fatalf("%d requests, want 1", n)
 			}
 			wantCounts(t, h.e, Counts{Failed: 2})
@@ -509,13 +440,13 @@ func TestOversizedResponseFailsUnretried(t *testing.T) {
 }
 
 func TestFullQueueDropsTheNewest(t *testing.T) {
-	col := newCollector(t, nil)
+	col := fakeotlp.New(t, nil)
 	h := newHarness(t, col, nil, options{capacity: 4})
 	h.logN(10, "m")
 	wantCounts(t, h.e, Counts{Dropped: 6})
 	h.flush(t)
-	if r := col.next(t); !reflect.DeepEqual(r.messages, messages("m", 0, 4)) {
-		t.Fatalf("sent %q, want the oldest four", r.messages)
+	if r := col.Next(t); !reflect.DeepEqual(r.Messages(), messages("m", 0, 4)) {
+		t.Fatalf("sent %q, want the oldest four", r.Messages())
 	}
 	wantCounts(t, h.e, Counts{Exported: 4, Dropped: 6})
 	reports := h.reports.reports(t)
@@ -528,10 +459,10 @@ func TestFullQueueDropsTheNewest(t *testing.T) {
 }
 
 // stalledCollector answers no request until released or the request is cut.
-func stalledCollector(t *testing.T) (*collector, func()) {
+func stalledCollector(t *testing.T) (*fakeotlp.Collector, func()) {
 	release := make(chan struct{})
 	var once sync.Once
-	col := newCollector(t, func(w http.ResponseWriter, r *http.Request, _ int) {
+	col := fakeotlp.New(t, func(w http.ResponseWriter, r *http.Request, _ int) {
 		select {
 		case <-release:
 		case <-r.Context().Done():
@@ -547,7 +478,7 @@ func TestStalledCollectorNeverBlocksHandle(t *testing.T) {
 	h := newHarness(t, col, nil, options{capacity: 4})
 	h.logN(4, "a")
 	h.tick <- time.Now()
-	col.next(t) // the sender is now stuck in the export
+	col.Next(t) // the sender is now stuck in the export
 
 	logged := make(chan struct{})
 	go func() {
@@ -565,14 +496,14 @@ func TestStalledCollectorNeverBlocksHandle(t *testing.T) {
 }
 
 func TestFlushDeliversWhatIsQueued(t *testing.T) {
-	col := newCollector(t, nil)
+	col := fakeotlp.New(t, nil)
 	h := newHarness(t, col, nil, options{})
 	h.logN(600, "m")
 	h.flush(t)
 	wantCounts(t, h.e, Counts{Exported: 600})
 	var got []string
 	for len(got) < 600 {
-		got = append(got, col.next(t).messages...)
+		got = append(got, col.Next(t).Messages()...)
 	}
 	if !reflect.DeepEqual(got, messages("m", 0, 600)) {
 		t.Fatal("records arrived out of order or not all")
@@ -584,7 +515,7 @@ func TestFlushEndsWithItsDeadlineAndCloseDrops(t *testing.T) {
 	h := newHarness(t, col, nil, options{})
 	h.logN(3, "a")
 	h.tick <- time.Now()
-	col.next(t) // three records in an export that never ends
+	col.Next(t) // three records in an export that never ends
 	h.logN(5, "b")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
@@ -604,7 +535,7 @@ func TestFlushEndsWithItsDeadlineAndCloseDrops(t *testing.T) {
 }
 
 func TestAfterClose(t *testing.T) {
-	col := newCollector(t, nil)
+	col := fakeotlp.New(t, nil)
 	var next bytes.Buffer
 	h := newHarness(t, col, nil, options{})
 	l := slog.New(h.e.Handler(slog.NewJSONHandler(&next, nil)))
@@ -618,11 +549,11 @@ func TestAfterClose(t *testing.T) {
 	if err := h.e.Flush(context.Background()); !errors.Is(err, errClosed) {
 		t.Fatalf("Flush after Close = %v, want errClosed", err)
 	}
-	col.none(t)
+	col.None(t)
 }
 
 func TestProblemReportsAreRateLimited(t *testing.T) {
-	col := newCollector(t, func(w http.ResponseWriter, _ *http.Request, n int) {
+	col := fakeotlp.New(t, func(w http.ResponseWriter, _ *http.Request, n int) {
 		if n == 3 {
 			w.Header().Set("Retry-After", "60")
 			w.WriteHeader(http.StatusServiceUnavailable)
@@ -661,9 +592,9 @@ func TestProblemReportsAreRateLimited(t *testing.T) {
 	}
 
 	h.clock.Advance(2 * time.Minute)
-	col2 := col.requests.Load()
+	col2 := col.Requests()
 	h.flush(t)
-	if r := h.reports.reports(t); len(r) != 2 || col.requests.Load() != col2 {
+	if r := h.reports.reports(t); len(r) != 2 || col.Requests() != col2 {
 		t.Fatalf("reports %v, want no line without new problems", r)
 	}
 }
@@ -681,7 +612,7 @@ func TestRedirectIsNotFollowed(t *testing.T) {
 	destination := strings.Replace(target.URL, "127.0.0.1", "localhost", 1)
 	for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
 		t.Run(strconv.Itoa(status), func(t *testing.T) {
-			col := newCollector(t, func(w http.ResponseWriter, r *http.Request, _ int) {
+			col := fakeotlp.New(t, func(w http.ResponseWriter, r *http.Request, _ int) {
 				http.Redirect(w, r, destination, status)
 			})
 			h := newHarness(t, col, map[string]string{"OTEL_EXPORTER_OTLP_HEADERS": "x-api-key=test-secret"}, options{})
@@ -692,7 +623,7 @@ func TestRedirectIsNotFollowed(t *testing.T) {
 				t.Fatalf("the redirect's target was reached (x-api-key %q)", key)
 			default:
 			}
-			if n := col.requests.Load(); n != 1 {
+			if n := col.Requests(); n != 1 {
 				t.Fatalf("%d requests, want 1: a redirect is not retried", n)
 			}
 			wantCounts(t, h.e, Counts{Failed: 2})
@@ -712,7 +643,7 @@ func TestRedirectToAPageAnsweringOKIsNotExported(t *testing.T) {
 		io.WriteString(w, "<html><body>Sign in</body></html>")
 	}))
 	defer login.Close()
-	col := newCollector(t, func(w http.ResponseWriter, r *http.Request, _ int) {
+	col := fakeotlp.New(t, func(w http.ResponseWriter, r *http.Request, _ int) {
 		http.Redirect(w, r, login.URL+"/login", http.StatusFound)
 	})
 	h := newHarness(t, col, nil, options{})
@@ -737,7 +668,7 @@ func TestCollectorTextIsNeverReported(t *testing.T) {
 		{"partial success", true, "collector rejected 1 records"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			col := newCollector(t, func(w http.ResponseWriter, r *http.Request, _ int) {
+			col := fakeotlp.New(t, func(w http.ResponseWriter, r *http.Request, _ int) {
 				message := "invalid credential: " + r.Header.Get("Authorization")
 				if tc.partial {
 					json.NewEncoder(w).Encode(map[string]any{"partialSuccess": map[string]any{
@@ -766,7 +697,7 @@ func TestCollectorTextIsNeverReported(t *testing.T) {
 // A transport failure is reported in the gateway's own words: Go's error quotes
 // the bytes it could not parse — here a header line carrying a credential.
 func TestTransportErrorTextIsNeverReported(t *testing.T) {
-	col := newCollector(t, func(w http.ResponseWriter, _ *http.Request, _ int) {
+	col := fakeotlp.New(t, func(w http.ResponseWriter, _ *http.Request, _ int) {
 		conn, buf, err := w.(http.Hijacker).Hijack()
 		if err != nil {
 			t.Errorf("hijack: %v", err)
@@ -825,11 +756,11 @@ func TestUnreadableAnswerFailsUnretried(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			col := newCollector(t, func(w http.ResponseWriter, _ *http.Request, _ int) { tc.respond(w) })
+			col := fakeotlp.New(t, func(w http.ResponseWriter, _ *http.Request, _ int) { tc.respond(w) })
 			h := newHarness(t, col, nil, options{})
 			h.logN(3, "m")
 			h.flush(t)
-			if n := col.requests.Load(); n != 1 {
+			if n := col.Requests(); n != 1 {
 				t.Fatalf("%d requests, want 1: an unreadable answer is not retried", n)
 			}
 			wantCounts(t, h.e, Counts{Failed: 3})
@@ -848,7 +779,7 @@ func TestAnswersThatDeliver(t *testing.T) {
 		`{"partialSuccess":{"rejectedLogRecords":null,"errorMessage":null}}`, `{"extra":[1,{"x":2}]}`,
 		`{"partialSuccess":{"rejectedLogRecords":"0","errorMessage":"","extra":true}}`} {
 		t.Run(body, func(t *testing.T) {
-			col := newCollector(t, func(w http.ResponseWriter, _ *http.Request, _ int) { io.WriteString(w, body) })
+			col := fakeotlp.New(t, func(w http.ResponseWriter, _ *http.Request, _ int) { io.WriteString(w, body) })
 			h := newHarness(t, col, nil, options{})
 			h.logN(2, "m")
 			h.flush(t)
@@ -865,7 +796,7 @@ func TestAnswersThatDeliver(t *testing.T) {
 func TestLongRetryAfterFailsTheBatch(t *testing.T) {
 	for _, header := range []string{"172800", "99999999999999999999"} {
 		t.Run(header, func(t *testing.T) {
-			col := newCollector(t, func(w http.ResponseWriter, _ *http.Request, n int) {
+			col := fakeotlp.New(t, func(w http.ResponseWriter, _ *http.Request, n int) {
 				if n == 0 {
 					w.Header().Set("Retry-After", header)
 					w.WriteHeader(http.StatusServiceUnavailable)
@@ -876,7 +807,7 @@ func TestLongRetryAfterFailsTheBatch(t *testing.T) {
 			h := newHarness(t, col, nil, options{})
 			h.logN(1, "m")
 			h.flush(t)
-			if n := col.requests.Load(); n != 1 {
+			if n := col.Requests(); n != 1 {
 				t.Fatalf("%d requests (waits %v), want 1: the batch fails without a retry", n, h.recordedWaits())
 			}
 			wantCounts(t, h.e, Counts{Failed: 1})
@@ -895,7 +826,7 @@ func TestRetryAfterBelowTheBackoffWaitsTheBackoff(t *testing.T) {
 		"a past date": func() string { return time.Now().Add(-time.Hour).UTC().Format(http.TimeFormat) },
 	} {
 		t.Run(name, func(t *testing.T) {
-			col := newCollector(t, func(w http.ResponseWriter, _ *http.Request, n int) {
+			col := fakeotlp.New(t, func(w http.ResponseWriter, _ *http.Request, n int) {
 				if n < 3 {
 					w.Header().Set("Retry-After", header())
 					w.WriteHeader(http.StatusTooManyRequests)

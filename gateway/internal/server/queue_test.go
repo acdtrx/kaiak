@@ -156,7 +156,7 @@ func settledTokens(g *testGateway) int64 {
 
 func TestCappedBackendQueuesInOrderAndRefusesWhenFull(t *testing.T) {
 	g := newCappedGateway(t)
-	g.backend.SetReply(fakebackend.Reply{HangAfter: 1})
+	g.backend.SetReply(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 1, Kind: fakebackend.Hang}})
 	srv := httptest.NewServer(g.h)
 	t.Cleanup(srv.Close)
 
@@ -229,7 +229,7 @@ func TestCappedBackendQueuesInOrderAndRefusesWhenFull(t *testing.T) {
 
 func TestQueueTimeoutAndNoQueue(t *testing.T) {
 	g := newCappedGateway(t)
-	g.backend.SetReply(fakebackend.Reply{HangAfter: 1})
+	g.backend.SetReply(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 1, Kind: fakebackend.Hang}})
 	srv := httptest.NewServer(g.h)
 	t.Cleanup(srv.Close)
 	_, cancelHolder := holdStream(t, srv.URL, "open") // local's one slot
@@ -282,7 +282,7 @@ func TestQueueTimeoutAndNoQueue(t *testing.T) {
 
 func TestLeavingTheQueueReleasesTheReservation(t *testing.T) {
 	g := newCappedGateway(t)
-	g.backend.SetReply(fakebackend.Reply{HangAfter: 1})
+	g.backend.SetReply(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 1, Kind: fakebackend.Hang}})
 	srv := httptest.NewServer(g.h)
 	t.Cleanup(srv.Close)
 	_, cancelHolder := holdStream(t, srv.URL, "open")
@@ -327,13 +327,13 @@ func TestSlotIsHandedOnEveryRelayEnd(t *testing.T) {
 		end func(cancel func())
 	}{
 		{"success", "open", fakebackend.Reply{Pace: pace}, func(func()) { close(pace) }},
-		{"client disconnect", "open", fakebackend.Reply{HangAfter: 1}, func(cancel func()) { cancel() }},
+		{"client disconnect", "open", fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 1, Kind: fakebackend.Hang}}, func(cancel func()) { cancel() }},
 		// One more event, then the backend drops the connection.
-		{"upstream cut mid-stream", "open", fakebackend.Reply{Pace: cutPace, CutAfter: 2},
+		{"upstream cut mid-stream", "open", fakebackend.Reply{Pace: cutPace, Fault: &fakebackend.StreamFault{At: 2, Kind: fakebackend.Cut}},
 			func(func()) { cutPace <- struct{}{} }},
 		// The slow backend's first-event timeout ends the holder's only attempt (its
 		// model has one deployment: no retry); the waiting request gets its slot.
-		{"backend error", "slow", fakebackend.Reply{StallBeforeFirstByte: true}, nil},
+		{"backend error", "slow", fakebackend.Reply{Before: fakebackend.StallFirstByte}, nil},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			g := newCappedGateway(t)
@@ -342,7 +342,7 @@ func TestSlotIsHandedOnEveryRelayEnd(t *testing.T) {
 			t.Cleanup(srv.Close)
 			var holder <-chan answer
 			var cancel func()
-			if c.hold.StallBeforeFirstByte {
+			if c.hold.Before == fakebackend.StallFirstByte {
 				holder = send(context.Background(), srv.URL, "holder", `{"model":"`+c.model+`","stream":true}`)
 				<-g.backend.Arrivals()
 			} else {
@@ -384,7 +384,7 @@ func TestSlotIsHandedOnEveryRelayEnd(t *testing.T) {
 func TestDrainServesTheQueueOrCutsIt(t *testing.T) {
 	t.Run("served within the timeout", func(t *testing.T) {
 		g := newCappedGateway(t)
-		g.backend.SetReply(fakebackend.Reply{HangAfter: 1})
+		g.backend.SetReply(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 1, Kind: fakebackend.Hang}})
 		d := newDrainable(t, g)
 		_, cancelHolder := holdStream(t, d.url, "open")
 		g.backend.SetReply(fakebackend.Reply{})
@@ -411,7 +411,7 @@ func TestDrainServesTheQueueOrCutsIt(t *testing.T) {
 
 	t.Run("cut at the timeout", func(t *testing.T) {
 		g := newCappedGateway(t)
-		g.backend.SetReply(fakebackend.Reply{HangAfter: 1})
+		g.backend.SetReply(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 1, Kind: fakebackend.Hang}})
 		d := newDrainable(t, g)
 		_, cancelHolder := holdStream(t, d.url, "open")
 		defer cancelHolder()

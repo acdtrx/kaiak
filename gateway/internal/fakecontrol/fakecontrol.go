@@ -191,7 +191,7 @@ func (s *Server) Publish(config []byte) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.config = compact(config)
-	frame := eventFrame("config", ConfigEvent(s.config))
+	frame := eventFrame("config", configEvent(s.config))
 	for st := range s.streams {
 		st.enqueue(frame)
 		if !st.gotConfig {
@@ -202,12 +202,12 @@ func (s *Server) Publish(config []byte) string {
 		}
 	}
 	s.totalsChangedLocked()
-	return Hash(config)
+	return configHash(config)
 }
 
 // Restart forgets the current config, the last counted batch of each instance and the
 // totals, and ends the open streams, as a control plane with an in-memory store does
-// when it restarts: nothing is published until the next Publish. Counted keeps what
+// when it restarts: nothing is published until the next Publish. CountedRecords keeps what
 // was counted before, for the test.
 func (s *Server) Restart() {
 	s.mu.Lock()
@@ -254,14 +254,6 @@ func (s *Server) SetLiveGateways(n int64) {
 	defer s.mu.Unlock()
 	s.live = n
 	s.totalsChangedLocked()
-}
-
-// Totals returns the current complete totals as instance gets them (its
-// counted_through).
-func (s *Server) Totals(instance string) []byte {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.totalsLocked(instance, s.windows)
 }
 
 // PushCurrentTotals sends the current totals to every open stream, each with its
@@ -431,17 +423,12 @@ func (s *Server) SetUsageFault(f *UsageFault) {
 	s.mu.Unlock()
 }
 
-// Counted returns the batches counted so far, in the order counted.
-func (s *Server) Counted() []UsageBatch {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]UsageBatch(nil), s.counted...)
-}
-
 // CountedRecords returns the records of every counted batch, in order.
 func (s *Server) CountedRecords() []json.RawMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	var out []json.RawMessage
-	for _, b := range s.Counted() {
+	for _, b := range s.counted {
 		out = append(out, b.Records...)
 	}
 	return out
@@ -476,7 +463,7 @@ func (st *Stream) Send(event string, data []byte) { st.enqueue(eventFrame(event,
 
 // SendConfig adds a config event carrying config and its hash.
 func (st *Stream) SendConfig(config []byte) {
-	st.enqueue(eventFrame("config", ConfigEvent(config)))
+	st.enqueue(eventFrame("config", configEvent(config)))
 }
 
 // Comment adds a comment line (a heartbeat).
@@ -503,16 +490,16 @@ func (st *Stream) enqueue(frame []byte) {
 	}
 }
 
-// Hash is a config's config_hash: the lowercase hex SHA-256 of the config as sent, on
-// one line.
-func Hash(config []byte) string {
+// configHash is a config's config_hash: the lowercase hex SHA-256 of the config as
+// sent, on one line.
+func configHash(config []byte) string {
 	sum := sha256.Sum256(compact(config))
 	return hex.EncodeToString(sum[:])
 }
 
-// ConfigEvent is the data of a config event carrying config.
-func ConfigEvent(config []byte) []byte {
-	return fmt.Appendf(nil, `{"config_hash":%q,"config":%s}`, Hash(config), compact(config))
+// configEvent is the data of a config event carrying config.
+func configEvent(config []byte) []byte {
+	return fmt.Appendf(nil, `{"config_hash":%q,"config":%s}`, configHash(config), compact(config))
 }
 
 func eventFrame(event string, data []byte) []byte {
@@ -609,7 +596,7 @@ func (s *Server) serveStream(w http.ResponseWriter, r *http.Request) {
 	st.Seq = s.opened
 	if s.config != nil {
 		st.gotConfig = true
-		st.frames <- eventFrame("config", ConfigEvent(s.config))
+		st.frames <- eventFrame("config", configEvent(s.config))
 		if !s.holdConnectTotals {
 			st.frames <- eventFrame("totals", s.streamTotalsLocked(st))
 		}

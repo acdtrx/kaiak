@@ -90,13 +90,13 @@ func TestRetrySucceedsOnTheOtherDeployment(t *testing.T) {
 		{name: "backend 429", first: "local", fail: fakebackend.Reply{Status: 429}, outcome: "429", reason: "rate_limited", records: 1},
 		// The independent audit's finding 3: an error answer broken before its body
 		// is retried by its status — no record of its own (it was answered).
-		{name: "backend 429 cut before its body", first: "local", fail: fakebackend.Reply{Status: 429, CutBeforeBody: true},
+		{name: "backend 429 cut before its body", first: "local", fail: fakebackend.Reply{Status: 429, Before: fakebackend.CutBody},
 			outcome: "429", reason: "rate_limited", records: 1},
-		{name: "backend 500 cut before its body", first: "local", fail: fakebackend.Reply{Status: 500, CutBeforeBody: true},
+		{name: "backend 500 cut before its body", first: "local", fail: fakebackend.Reply{Status: 500, Before: fakebackend.CutBody},
 			outcome: "500", reason: "server_error", records: 1},
-		{name: "backend 503 timed out after its headers", first: "slow", fail: fakebackend.Reply{Status: 503, StallBeforeBody: true},
+		{name: "backend 503 timed out after its headers", first: "slow", fail: fakebackend.Reply{Status: 503, Before: fakebackend.StallBody},
 			outcome: "503", reason: "server_error", records: 1},
-		{name: "first-event timeout", first: "slow", fail: fakebackend.Reply{StallBeforeFirstByte: true},
+		{name: "first-event timeout", first: "slow", fail: fakebackend.Reply{Before: fakebackend.StallFirstByte},
 			outcome: "upstream_timeout", reason: "timeout", records: 2, stream: true},
 		{name: "credential refused", first: "local", fail: fakebackend.Reply{Status: 401}, outcome: "upstream_auth_failed",
 			reason: "auth_failed", records: 1},
@@ -144,7 +144,7 @@ func TestRetrySucceedsOnTheOtherDeployment(t *testing.T) {
 
 func TestTimedOutAttemptIsRecordedAndLimitsSettleTheSum(t *testing.T) {
 	g, other := newRetryGateway(t, "slow", "local-b", nil)
-	g.backend.QueueReplies(fakebackend.Reply{StallBeforeFirstByte: true})
+	g.backend.QueueReplies(fakebackend.Reply{Before: fakebackend.StallFirstByte})
 	other.SetReply(fakebackend.Reply{Usage: &fakebackend.Usage{PromptTokens: 30, CompletionTokens: 12}})
 	body := `{"model":"retry","stream":true,"messages":[{"role":"user","content":"hello there, how are you"}]}`
 	if w := post(t, g, "r", body); w.Code != http.StatusOK {
@@ -300,7 +300,7 @@ func TestNotRetried(t *testing.T) {
 	})
 	t.Run("after the first event", func(t *testing.T) {
 		g := newTestGateway(t)
-		g.backend.QueueReplies(fakebackend.Reply{CutAfter: 2})
+		g.backend.QueueReplies(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 2, Kind: fakebackend.Cut}})
 		url := serveGateway(t, g)
 		resp := streamRequest(t, context.Background(), url, `{"model":"open","stream":true}`)
 		defer resp.Body.Close()
@@ -418,7 +418,7 @@ func TestRetryQueuesForACappedBackend(t *testing.T) {
 			return doc
 		})
 		other.SetReply(fakebackend.Reply{Status: 500})
-		g.backend.SetReply(fakebackend.Reply{HangAfter: 1})
+		g.backend.SetReply(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 1, Kind: fakebackend.Hang}})
 		srv := httptest.NewServer(g.h)
 		t.Cleanup(srv.Close)
 		_, cancelHolder := holdStream(t, srv.URL, "open")
@@ -507,7 +507,7 @@ func capLocal(t *testing.T, doc string) string {
 func TestDrainCutsARetryWaitingInTheQueue(t *testing.T) {
 	g, other := newRetryGateway(t, "local-b", "local", func(doc string) string { return capLocal(t, doc) })
 	other.SetReply(fakebackend.Reply{Status: 500})
-	g.backend.SetReply(fakebackend.Reply{HangAfter: 1})
+	g.backend.SetReply(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 1, Kind: fakebackend.Hang}})
 	d := newDrainable(t, g)
 	_, cancelHolder := holdStream(t, d.url, "open")
 	defer cancelHolder()

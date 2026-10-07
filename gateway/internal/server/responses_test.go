@@ -266,7 +266,7 @@ func TestResponsesErrorEvents(t *testing.T) {
 	srv := httptest.NewServer(g.h)
 	defer srv.Close()
 
-	for _, reply := range []fakebackend.Reply{{ErrorEvent: true, ErrorEventAfter: 2}, {EndAfter: 2}} {
+	for _, reply := range []fakebackend.Reply{{Fault: &fakebackend.StreamFault{At: 2, Kind: fakebackend.ErrorEvent}}, {Fault: &fakebackend.StreamFault{At: 2, Kind: fakebackend.End}}} {
 		g.backend.SetReply(reply)
 		resp := postStream(t, srv.URL+"/v1/responses", `{"model":"resp","stream":true,"input":"hi"}`)
 		data, err := io.ReadAll(resp.Body)
@@ -274,7 +274,7 @@ func TestResponsesErrorEvents(t *testing.T) {
 		if err == nil {
 			t.Errorf("the stream ended cleanly; want the connection cut:\n%s", data)
 		}
-		if strings.Contains(string(data), "response.completed") || (reply.ErrorEvent && !strings.Contains(string(data), "server_error")) {
+		if strings.Contains(string(data), "response.completed") || (reply.Fault.Kind == fakebackend.ErrorEvent && !strings.Contains(string(data), "server_error")) {
 			t.Errorf("relayed:\n%s", data)
 		}
 		if rec := settledRecord(t, g); !rec.Partial {
@@ -283,7 +283,7 @@ func TestResponsesErrorEvents(t *testing.T) {
 	}
 	waitLog(t, g, `"kaiak.relay_end":"upstream_incomplete"`)
 
-	g.backend.SetReply(fakebackend.Reply{ErrorEvent: true})
+	g.backend.SetReply(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 0, Kind: fakebackend.ErrorEvent}})
 	w := do(t, g.h, call{method: "POST", path: "/v1/responses", key: workloadKey,
 		body: `{"model":"resp","stream":true,"input":"hi"}`})
 	expectError(t, w, http.StatusBadGateway, "upstream_error")
