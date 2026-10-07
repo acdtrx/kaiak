@@ -998,11 +998,15 @@ directory's owner must be the gateway's user:
   window's spend; a limit added mid-window starts with the window's usage so far in
   control-plane mode (the control plane counts every scope whatever its limits), and
   empty in file mode (the gateway counts only the limits it runs).
-  The data-directory files `limits.json` (format 3), `totals.json` (format 4) and
-  `last-known-good.json` (format 7: the config and its hash) change format: their
-  old copies are discarded at the first start (file mode's windows start empty;
-  control-plane mode takes the totals from the next push and the config from the
-  stream). **The control plane broadcasts its current config**: no config versions —
+  The data-directory files `limits.json` (format 3), `totals.json` (format 5: the
+  bases and the `counted_through` they include) and `last-known-good.json` (format
+  7: the config and its hash) change format: their old copies are discarded at the
+  first start (file mode's windows start empty; control-plane mode takes the totals
+  from the next push and the config from the stream). **The usage spool changes
+  format too** (format 4: the index records acknowledged batches, which stay spooled
+  until a `totals.json` write covers them): flush it — a graceful shutdown that logs
+  `usage flushed` — before starting this version, or its unsent batches are
+  discarded. **The control plane broadcasts its current config**: no config versions —
   a gateway applies the config the control plane sends, and reports configs by
   their `config_hash`.
 - **Host apps on `kaiak-control`** (this release):

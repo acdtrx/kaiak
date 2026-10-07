@@ -1651,7 +1651,7 @@ own, and a client sending repeats is broken either way.
   - **Outage log lines** (settled 2026-10-01; the 2026-09-30 review's O6): the
     outage's start and end are logged once each, never per request:
     `control plane outage: priced USD-limited models refused` (warn: `kaiak.reason` — `no
-    contact`, or `usage not acknowledged` (below) with
+    contact`, or `usage not acknowledged` or `usage not shown counted` (below) with
     `kaiak.control.usage_waiting` — `kaiak.control.since_contact`,
     `kaiak.control.outage_grace`) and `control plane outage over: contact is
     back` (info: `kaiak.lasted`, from the grace running out). Nothing signals the grace running
@@ -2675,8 +2675,8 @@ own, and a client sending repeats is broken either way.
     | Attribute | Was | Lines and meaning |
     |---|---|---|
     | `exception.message` | `error` | Any line reporting a failure: the failure in the gateway's own words — a Go error's text when the gateway built it, never text a remote party sent (Logs: no remote text). Not `error.type`, which is a low-cardinality class — this is free text naming files, hosts and causes. `exception.message` is what OpenTelemetry's Go API records an error's text as (`RecordError`); `error.message` is deprecated |
-    | `kaiak.reason` | `reason` | Why: the stop (`kaiak stopping`, `kaiak stopped`), the drain's cut (`timeout`, `hurried`), an outage (`no contact`, `usage not acknowledged`), a new usage epoch, discarded limits totals |
-    | `kaiak.trigger` | `trigger` | What asked for it: a config load (`startup`, `sighup`, `control`, `seed`, `last-known-good`), a probe, a status report, a usage seal or flush, a snapshot write (`interval`, `totals`, `shutdown`), a circuit change (`trial`, the probe's trigger) |
+    | `kaiak.reason` | `reason` | Why: the stop (`kaiak stopping`, `kaiak stopped`), the drain's cut (`timeout`, `hurried`), an outage (`no contact`, `usage not acknowledged`, `usage not shown counted`), a new usage epoch, discarded limits totals |
+    | `kaiak.trigger` | `trigger` | What asked for it: a config load (`startup`, `sighup`, `control`, `seed`, `last-known-good`), a probe, a status report, a usage seal or flush, a snapshot or totals write (`interval`, `shutdown`), a circuit change (`trial`, the probe's trigger) |
     | `file.name` | `file`, for a data-directory file | The file's name in the data directory (`last-known-good.json`, `usage-spool.json`, `usage-batch-…`, `usage-rejected-…`, `limits.json`, `totals.json`) |
     | `file.path` | `file`, for a path | A file named by its path: the config file and the seed on their load lines, a data file discarded for its format version |
     | `kaiak.backend.id` | `backend`; `deployment` on `usage out of the protocol's range` | A backend's config ID |
@@ -2701,9 +2701,10 @@ own, and a client sending repeats is broken either way.
     | `kaiak.control.attempt`, `kaiak.control.boot_wait` | `attempt`, `boot_wait_ms` | `config not received at startup…`: the attempt, the boot wait (seconds) |
     | `kaiak.control.delay` | `delay_ms` | `control plane reconnect scheduled`: the delay, in seconds |
     | `kaiak.control.event` | `event` | `stream event ignored: unknown event`: the event's name |
-    | `kaiak.control.since_contact`, `kaiak.control.outage_grace`, `kaiak.control.usage_waiting` | `since_contact`, `grace`, `usage_waiting` (duration strings) | `control plane outage: …` (Limits → Control-plane mode: Outage log lines): time since the last contact, the outage grace, how long usage has waited for an ack — in seconds |
+    | `kaiak.control.since_contact`, `kaiak.control.outage_grace`, `kaiak.control.usage_waiting` | `since_contact`, `grace`, `usage_waiting` (duration strings) | `control plane outage: …` (Limits → Control-plane mode: Outage log lines): time since the last contact, the outage grace, how long usage has waited for an ack, or to be shown counted — in seconds |
     | `kaiak.status.state` | `state` | Status report lines: the state reported |
-    | `kaiak.usage.batches`, `kaiak.usage.records` | `batches`, `records` | Usage batches and records a line is about (sealed, sent, spooled, flushed, dropped) |
+    | `kaiak.usage.batches`, `kaiak.usage.records` | `batches`, `records` | Usage batches and records a line is about (sealed, sent, spooled, flushed, dropped, restored to the limits) |
+    | `kaiak.usage.acknowledged_batches` | `acknowledged_batches` | `usage spool restored`: the acknowledged batches the spool kept, waiting for a `totals.json` write to cover them |
     | `kaiak.usage.epoch`, `kaiak.usage.sequence`, `kaiak.usage.next_sequence` | `epoch`, `sequence`, `next_sequence` | A usage batch's ID; the spool's next one |
     | `kaiak.usage.batch_instance` | `batch_instance` | A batch spooled under another instance ID |
     | `kaiak.usage.kept_records`, `kaiak.usage.kept_size`, `kaiak.usage.max_size` | `kept_records`, `kept_bytes`, `bound_bytes` | Usage dropped to bound memory: the records that stay and their encoded size, and the bound (`KAIAK_USAGE_MEMORY_BYTES`) — sizes in bytes |
