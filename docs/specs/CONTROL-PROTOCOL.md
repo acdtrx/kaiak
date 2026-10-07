@@ -307,7 +307,10 @@ the `{ error, detail }` body, `error` being the stable code:
     window. Each later one lists **only the windows that changed** since the stream's
     last totals: a window not listed keeps the value it last had. Within a window usage
     only grows, so a listed window carries its full `used`, which replaces the old
-    value — a repeated or coalesced push is harmless. Per-minute limits are never
+    value — a repeated or coalesced push is harmless. A window the last totals listed
+    that a later read lacks within the same window (a store restored to less) is
+    listed with `used` `"0"`; one that ended with its hour or month is not listed —
+    the gateway starts the next window itself. Per-minute limits are never
     listed. Rejected: listing only the windows of the current config's limits — a
     gateway still running a config it was moved off (it rejected the new one) enforces
     limits the new config dropped, and read them as unspent.

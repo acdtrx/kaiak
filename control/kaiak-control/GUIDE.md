@@ -11,7 +11,9 @@
 > control-plane processes over one store and limits without model sets (same formats)
 > on 2026-10-06; to a broadcast-only control plane — the current config by hash, no
 > config versions — and the pre-merge review's store contract (batch cursors per
-> epoch, revisions that never repeat, the catch-up) on 2026-10-07.
+> epoch, revisions that never repeat, the catch-up) on 2026-10-07; to the second
+> review's (no store sequence, totals of every scope sent complete then as changes,
+> `counted_through` per epoch, the config kept as text) on 2026-10-07.
 >
 > Background, in this order: `docs/architecture/control-plane.html` (how gateways and a
 > control plane work together, with diagrams), `docs/specs/CONTROL-PROTOCOL.md` (the
@@ -33,7 +35,7 @@ side**; your app supplies the rest.
 | --- | --- |
 | The three gateway endpoints (`controlProtocolPlugin`) and their checks (token, protocol version, instance) | Everything a human touches: UI, login, roles, audit log |
 | Config validation (the same schema and semantic rules the gateway runs), the current config and its `config_hash`, broadcasting it on the stream | Composing config documents (from forms, a DB model, an import), their history and audit, concurrent editing, and deciding when to publish |
-| Usage intake: de-duplication, exactly-once counting, hour/month totals per limit, totals pushes | Long-term usage storage, reports, invoices (fed from the store — §6) |
+| Usage intake: de-duplication, exactly-once counting, hour/month totals per scope, totals pushes | Long-term usage storage, reports, invoices (fed from the store — §6) |
 | Gateway status, the live set, expiry, conflict flags | Showing them; alerting on them |
 | Key generation and hashing (`createKey`) | Showing the plaintext key once; mapping keys to people |
 | Checking a backend and reading its model metadata (`verifyBackend`, §8) | Calling it when a backend or model is added, admins only; deciding what goes into config |
@@ -139,11 +141,12 @@ await app.listen({ host: "0.0.0.0", port: 8090 });
   `deliveryRetryDelaysMs` (100, 200, 400, 800, 1600: retries of a failed read of the
   current config). Defaults match the gateway's timings; change them only with a
   reason.
-- The core reports what the host should see through listeners: `onRollback` (the
-  store's sequence went back) and `onDeliveryFailed` (the current config could not be
-  read after a change, retries included). The Fastify plugin logs both and ends its
-  streams, so gateways reconnect and read the current state; a host serving streams
-  some other way does the same. `stop()` releases the core's store subscription;
+- The core reports what the host should see through `onDeliveryFailed`: the current
+  config could not be read after a change, retries included. The Fastify plugin logs
+  it and ends its streams, so gateways reconnect and read the current state; a host
+  serving streams some other way does the same, ordering what it sends on each stream
+  by when the read was issued (`readConfig` / `onConfigRead` carry that place, and the
+  plugin's totals are one `readTotals` per push for every stream). `stop()` releases the core's store subscription;
   `start()` takes it again and catches up on what changed meanwhile.
 - Several cores over one store are several `createControlPlane({ store })` calls —
   one per process in a real deployment (§2, rule 1). The sample shows the shape inside
@@ -381,8 +384,8 @@ edit which group or mint keys in it is your app's business, never config.
 - **Effective limits are bounded**: global's limits plus every group's effective
   limits (its own merged with its parent's `child_defaults.limits`) add up to at
   most **50 000** (`effective-limits-exceeded`, reported once at path `""`). Each is
-  a counter on every gateway (about 1.4 KB, so about 70 MB at the bound) and a
-  window in your totals, and defaults multiply: D default limits on a group with N
+  a counter on every gateway (about 1.4 KB, so about 70 MB at the bound), and
+  defaults multiply: D default limits on a group with N
   children are D × N. Before offering "a default limit for everyone" in a UI, check
   what it costs across the children.
 - A group's **parent never changes**. To move a group, delete it and create a new
@@ -473,7 +476,7 @@ Typical flow for a UI edit:
    `message` and a JSON Pointer `path`. Stable codes (`key-group-unknown`,
    `group-cycle`, `limit-duplicate`, `output-limit-above-context`, …) are listed in
    the spec.
-3. Call `controlPlane.publishConfig(doc)`: `{ ok: true, published: { config, hash, publishedAt, sequence } }`
+3. Call `controlPlane.publishConfig(doc)`: `{ ok: true, published: { config, text, hash, publishedAt } }`
    or `{ ok: false, issues }` (nothing published, the current config stays). Validation
    runs again inside; step 2 is for UX only. Publishing also compares with the current
    config: a group given another `parent` than it has there is refused
@@ -550,7 +553,7 @@ The sample's `verify` command wraps it for a config file:
 
 | Need | Call |
 | --- | --- |
-| The current config | `currentConfig()` → `{ config, hash, publishedAt, sequence }` (`sequence` is the store's, for ordering only) |
+| The current config | `currentConfig()` → `{ config, text, hash, publishedAt }` (`text` is what the store keeps and the stream sends; `config` is it parsed) |
 | Gateways, health, what they run | `gateways()` → `{ instance, status, receivedAt, live, conflict? }[]`; `liveGateways()` |
 | Spend vs limits (current windows) | `totals("")` + `resolveScopes(config)`, matched by scope and type — below |
 | A group's path, effective limits and models | `resolveScopes(config)` → `{ group?, path, limits, allowed_models? }[]` — global first (no `group`, `path` `[]`), then every group in config order; `allowed_models` absent = every model |
@@ -562,7 +565,7 @@ Totals vs limits (as the sample's status page does, `control/sample/src/page/sec
 ```ts
 const current = await controlPlane.currentConfig();
 const totals = await controlPlane.totals(""); // "" = read under no gateway's name
-if (current && totals) {
+if (current) {
   const used = new Map(totals.windows.map((w) => [JSON.stringify([w.group ?? null, w.type]), BigInt(w.used)]));
   for (const { group, limits } of resolveScopes(current.config)) { // group undefined = global
     for (const limit of limits) {
@@ -580,9 +583,12 @@ if (current && totals) {
   push rather than queueing values.
 - A listener that throws goes to `onListenerError`; by default that rethrows and
   crashes the process — keep listeners total, or log in `onListenerError`. The
-  event says which: `config-published`, `totals-changed` or `gateways-changed`; the
-  publish, count or status it came from has succeeded either way. Listeners hear the
-  changes of every process over the store, not only this one's.
+  event says which: `config-published`, `totals-changed`, `gateways-changed` or
+  `delivery-failed`; the publish, count or status it came from has succeeded either
+  way, and the next config delivery goes ahead. Listeners hear the changes of every
+  process over the store, not only this one's. `onConfigPublished` may hear one config
+  more than once (a publish here is heard for its own read and for the store's
+  announcement; a catch-up rereads it): compare hashes if that matters.
 
 ## 10. Operating it
 
@@ -665,10 +671,11 @@ if (current && totals) {
   "team") — there is none; use `labels` and keep the meaning in your app.
 - Adding children's windows to their parent's — a record counts toward every group
   on its path, so a parent's window already holds its descendants' spend. Totals
-  exist only for hour and month limits; for reports, group your ledger (§6) by any
-  prefix of the records' `groups`.
+  exist only for the hour and month windows; for reports, group your ledger (§6) by
+  any prefix of the records' `groups`.
 - Restoring the store from a backup and expecting gateways to keep the newer config —
-  they get the restored one: the control plane is the authority, and every core that
-  sees the store go back ends its streams so gateways take its current state.
+  they get the restored one: the control plane is the authority, and every core sends
+  the store's current config once its change channel catches up. Publish your app's
+  current config again after a restore if the backup is older than it.
 - Editing `kaiak-control` inside your app. Protocol or library changes land in the
   kaiak repo, on both halves and the spec at once, then you move your pin.
