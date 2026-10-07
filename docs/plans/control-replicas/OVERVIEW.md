@@ -452,6 +452,6 @@ Expected reds inside phase 1:
   times in a row.
 - [x] **Phase 6** (`STEP-17-docs-and-green.md`, done 2026-10-07): every round-3
   reproduction ported and passing; `scripts/check-all.sh` green three times in a row.
-- [ ] **Phase 7** (`STEP-20-green.md`): the data-directory removal checklist greps
-  clean; D-H3's reproductions ported and passing; `scripts/check-all.sh` green three
+- [x] **Phase 7** (`STEP-20-green.md`, done 2026-10-07): the data-directory removal
+  checklist greps clean; D-H3's reproductions ported and passing; `scripts/check-all.sh` green three
   times in a row.
