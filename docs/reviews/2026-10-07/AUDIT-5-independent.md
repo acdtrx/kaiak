@@ -149,3 +149,13 @@ attempts could not access the default Go cache/network or bind test listeners; t
 successful baseline checks used the required permissions. Full verification output
 is in `/tmp/kaiak-audit-e-all.log`; reproduction output is in
 `/tmp/kaiak-audit-e-repros.log`.
+
+## Outcome (2026-10-07)
+
+All three findings are fixed in step 21 (`docs/plans/control-replicas/STEP-21-round-5.md`):
+
+| ID | Outcome |
+|---|---|
+| E-M1 | **Fixed** in `4dc87df`. `dropFirst` clears the removed slot of the sealed batches and of the queue's head. Regression tests: `TestRecordsDroppedAtTheBoundLeaveMemory`, `TestARemovedHeadBatchLeavesMemory` |
+| E-L1 | **Fixed** in `4dc87df`. The retained counts are pruned once an hour on ordinary limiter use (`expireRetainedLocked`). Regression test: `TestADeletedGroupsCountersEndWithTheirWindowsWithoutAReload` |
+| E-L2 | **Fixed** in `4dc87df`. The file-mode snapshot is gone from `CONTROL-PROTOCOL.md` |

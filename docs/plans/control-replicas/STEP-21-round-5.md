@@ -1,6 +1,6 @@
 # Step 21 — round-5 fixes
 
-**Status:** not started
+**Status:** done (2026-10-07)
 
 ## Intent
 
@@ -36,3 +36,52 @@ step is **phase 8** and ends green.
   here.**
 
 ## Result
+
+**Commits:**
+- `4dc87df`: the fixes and their tests;
+- `cd669f7`: a spec reflow;
+- this Result, with AUDIT-5's Outcome.
+
+**What changed**
+
+- **E-M1** (`gateway/internal/control/queue.go`, `usage.go`):
+  - `dropFirst` clears the removed slot before advancing the slice, and gives back a
+    nil slice when it empties, so the backing array lets go of the batch.
+  - It is used for the sealed batches (`queueSealed`) and the queue's head
+    (`dropHeadLocked`, on an ack or a refusal).
+  - `boundQueued` already used `slices.Delete`, which clears the tail. What kept a
+    dropped record alive was its original slice in the sealed array.
+  - The acknowledged list holds IDs only, no records.
+- **E-L1** (`gateway/internal/limits/limits.go`):
+  - `expireRetainedLocked` prunes the retained counts once an hour, from `sync`,
+    which every entry point calls (`Reserve`, `Usage`, `Outage`, `TakeTotals`).
+  - A retained count's window ends on an hour boundary, so it goes within the hour
+    after, with no reload and no totals.
+  - Decision 36's conditions are unchanged: no reference, and nothing in the current
+    window.
+  - `GATEWAY.md` (A count outlives its scope's config) says "at the latest within the
+    hour after, on whatever next uses the limits".
+- **E-L2:** `CONTROL-PROTOCOL.md`'s limit identity paragraph no longer names a
+  file-mode snapshot. A repo-wide grep finds no other live mention; the one left is
+  the dated Rejected line in `GATEWAY.md`.
+
+**Regression tests** (each fails with its fix reverted, and passes with it):
+
+| Test | Finding | With the fix reverted |
+|---|---|---|
+| `TestRecordsDroppedAtTheBoundLeaveMemory` (`control/memory_test.go`; [E] `TestAuditEMemoryBoundReleasesDroppedPayloads`) | E-M1, sealed batches | "a record dropped at the bound is still held after a collection" |
+| `TestARemovedHeadBatchLeavesMemory` (new) | E-M1, the queue's head | "an acknowledged batch's record is still held by the queue after a collection" |
+| `TestADeletedGroupsCountersEndWithTheirWindowsWithoutAReload` (`limits/limits_test.go`; [E] `TestAuditEFileModePrunesExpiredRemovedCounters`) | E-L1 | "2 counters of the deleted group kept after their windows passed" |
+
+**Suite** (2026-10-07): `scripts/check-all.sh` three times in a row, all green.
+
+| Run | Ended (UTC) | Total | Gateway e2e | Control `npm test` | Lint | Cross-half |
+|---|---|---|---|---|---|---|
+| 1 | 14:58:19 | 191 s | 107.6 s | 614: 613 pass, 1 skipped | ok | 65.4 s |
+| 2 | 15:01:24 | 185 s | 103.6 s | 614: 613 pass, 1 skipped | ok | 65.3 s |
+| 3 | 15:04:35 | 191 s | 109.4 s | 614: 613 pass, 1 skipped | ok | 65.8 s |
+
+- The skipped test is the memory store's catch-up contract test (the lossy channel runs
+  it).
+- No test, sample or `kaiak` process is left, and the run logs are deleted.
+- **Phase 8 and the plan end here.**

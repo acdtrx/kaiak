@@ -457,3 +457,6 @@ Expected reds inside phase 1:
 - [x] **Phase 7** (`STEP-20-green.md`, done 2026-10-07): the data-directory removal
   checklist greps clean; D-H3's reproductions ported and passing; `scripts/check-all.sh` green three
   times in a row.
+- [x] **Phase 8** (`STEP-21-round-5.md`, done 2026-10-07): the fifth review's three
+  findings fixed with regression tests; `scripts/check-all.sh` green three times in a
+  row.
