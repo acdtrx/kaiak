@@ -350,12 +350,29 @@ Group entries under headings as themes emerge.
   - *Metrics* — wanted (user, 2026-10-07): OTLP metrics export alongside
     `/metrics`, the way the logs layer was added, with metric names and units
     renamed to the OpenTelemetry semantic conventions where one exists (`kaiak.*`
-    for the rest). It takes in the metrics-facing findings of the structure review
-    (`docs/reviews/2026-10-07-structure/STRUCTURE.md`: observability F3, F4, F5, F8
-    and T12 — label lists read from the code that produces the values, routing
-    observation built once), so each metric changes once. Trigger: structure-review
-    packages 2 (attempt classification) and 4 (limit-type table and unit sets) are
-    merged — they create the label lists the metrics read.
+    for the rest). It takes in the metrics-side findings of the structure review, so
+    each metric changes once (details in `docs/reviews/2026-10-07-structure/`:
+    `modules/gateway-observability.md` for F3–F8, `STRUCTURE.md` for T12):
+    - *F3, label lists* — each closed label vocabulary (batch results, drop reasons,
+      load triggers, limit scopes, …) is owned and exported by the code that produces
+      it; `metrics` pre-creates series from those lists and takes typed values, so the
+      six run-time `slices.Contains … panic` guards and the HELP-string copies go. The
+      limit-type list is done in the structure plan (package 4); the rest here.
+    - *F4, key labels* — one helper derives `key_group`, `root_group`, `key_id` for
+      both the usage metrics and `kaiak_request_errors_total`, which today copy it.
+    - *F5, per-config gauges* — one helper for the per-deployment gauges (circuit
+      open, half-open, cooling) and one for zero-filled router counts; `NewOps` takes
+      the `Circuits` and prepares both per applied config, so `main` drops its call.
+    - *F8, build version* — `main` owns the version (`-X main.version`) and passes it
+      to `kaiak_build_info` and the OTLP resource; it leaves `metrics/ops.go`.
+    - *T12, routing observation* — routing produces one picture of configured and
+      still-active backends, models and deployments (caps, shares, circuit and
+      cooldown state) against a config snapshot; `main` formats it as the status
+      message and `metrics` as gauges, instead of each rebuilding it from router
+      getters.
+    Trigger: the structure plan (`docs/plans/structure/`) is merged — its attempt
+    classification and limit-type/unit packages create the label lists the metrics
+    read.
   - *Traces* — new work. Confined test first: forward the W3C `traceparent` header
     to backends (vLLM can continue the trace) and log `trace_id` on the request line,
     linking client traces to gateway lines. Span export (per request, per attempt,
