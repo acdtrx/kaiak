@@ -16,8 +16,6 @@ package limits
 import (
 	"log/slog"
 	"math"
-	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -142,9 +140,9 @@ type Limiter struct {
 	// requests running settle on them (docs/specs/GATEWAY.md, Limits → A count outlives
 	// its scope's config).
 	retained map[counterKey]*counter
-	// retainedPrunedAt is the start of the hour the retained counts were last pruned
-	// in (expireRetainedLocked).
-	retainedPrunedAt time.Time
+	// housekeptAt is the start of the hour the retained counts and the pushed windows
+	// were last pruned in (housekeepLocked).
+	housekeptAt time.Time
 	// owning are the shared counters holding settled own usage by generation, the ones
 	// retiring a generation visits; a counter that rolled its window may stay listed
 	// with nothing left.
@@ -156,20 +154,15 @@ type Limiter struct {
 	// does not have included — a reload that adds the scope finds its base.
 	live   int64
 	pushed map[counterKey]PushedWindow
-	// totalsAt is when totals were last applied; zero before any.
+	// totalsAt is when totals were last applied; zero before any: the hour and month
+	// spend is unknown then, not zero (noTotalsLocked).
 	totalsAt time.Time
-	// firstTotals is closed, and firstClosed set, when the first totals are taken
-	// (FirstTotals): before that, the hour and month spend is unknown, not zero
-	// (noTotalsLocked).
+	// firstTotals is closed when the first totals are taken (FirstTotals).
 	firstTotals chan struct{}
-	firstClosed bool
 	// counted is the newest usage generation dropped from the counters' own usage — a
 	// record of that generation or an older one settled later is already inside the
 	// applied bases.
 	counted uint64
-	// prunedAt is the hour start the pushed windows were last pruned at: windows that
-	// ended are dropped once an hour.
-	prunedAt time.Time
 	// outageSince is when the outage the log announced began (its grace ran out);
 	// zero while none is announced (outageLocked).
 	outageSince time.Time
@@ -248,7 +241,7 @@ func (l *Limiter) ObserveSyncs(f func(time.Duration)) {
 // usage or a running request holds them; removed per-minute limits are dropped.
 // Callers hold l.mu.
 func (l *Limiter) sync() {
-	l.expireRetainedLocked(l.now())
+	l.housekeepLocked(l.now())
 	snap := l.holder.Current()
 	if snap == nil || snap == l.applied {
 		return
@@ -309,7 +302,9 @@ func (l *Limiter) sync() {
 	l.applied = snap
 	l.pruneRetainedLocked(l.now())
 	if l.shared() {
-		l.configChangedLocked()
+		// The counters were rebuilt from the pushed windows already (by group or global
+		// and type): only the small-share warning runs again.
+		l.warnSmallSharesLocked()
 	}
 }
 
@@ -329,17 +324,18 @@ func (l *Limiter) pruneRetainedLocked(now time.Time) {
 	}
 }
 
-// expireRetainedLocked prunes the retained counts once an hour, on whatever brings the
-// limiter into use: a retained count's window ends on an hour boundary, and neither a
-// reload nor a totals event (file mode has none) need come after it. Callers hold
-// l.mu.
-func (l *Limiter) expireRetainedLocked(now time.Time) {
+// housekeepLocked prunes, once an hour, on whatever brings the limiter into use, what
+// outlives its window: the retained counts (pruneRetainedLocked) and the pushed
+// windows (prunePushedLocked). Both end on an hour boundary, and neither a reload nor
+// a totals event (file mode has none) need come after it. Callers hold l.mu.
+func (l *Limiter) housekeepLocked(now time.Time) {
 	hour := windowStart(UTCHour, now)
-	if !hour.After(l.retainedPrunedAt) {
+	if !hour.After(l.housekeptAt) {
 		return
 	}
-	l.retainedPrunedAt = hour
+	l.housekeptAt = hour
 	l.pruneRetainedLocked(now)
+	l.prunePushedLocked(now)
 }
 
 // newCounter is the counter of a scope and type no existing counter has: it starts
@@ -438,11 +434,10 @@ func share(limit, live int64) int64 {
 	return max(limit/max(live, 1), 1)
 }
 
-// Subject is who a request's usage counts toward and the model it uses.
+// Subject is who a request's usage counts toward.
 type Subject struct {
 	// Groups is the key's group path, top-level first: the request's group scopes.
 	Groups []string
-	Model  string
 	// Priced: the model has a price in force for this request, by the request's own
 	// config snapshot and arrival — the entry its usage is priced from
 	// (accounting.Cost), whatever a reload changed since.
@@ -638,36 +633,17 @@ func amountOf(m Measure, rec accounting.UsageRecord) int64 {
 	return tokens
 }
 
-// CounterUsage is one counter's state, for reading (metrics, tests).
-type CounterUsage struct {
-	// Group is the group the count belongs to; "" for global.
-	Group string
-	Type  config.LimitType
-	// Limited: the scope has a limit of the type. Limit and Used are in the counter's
-	// unit: requests, tokens or nano-USD; Limit is 0 without a limit. Used includes
-	// unsettled reservations.
-	Limited bool
-	Limit   int64
-	Used    int64
-}
-
-// Usage returns every counter's current state, limited or not, sorted by group
-// (global first) and type.
-func (l *Limiter) Usage() []CounterUsage {
+// Used is the count of group's ("" = global) counter of type typ, unsettled
+// reservations included, in the counter's unit — requests, tokens or nano-USD; false
+// when the live config gives the scope no counter of the type. Only tests read it:
+// the gateway reports no count.
+func (l *Limiter) Used(group string, typ config.LimitType) (int64, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.sync()
-	now := l.now()
-	out := make([]CounterUsage, 0, len(l.counters))
-	for _, c := range l.counters {
-		out = append(out, CounterUsage{Group: c.key.group, Type: c.limit.Type,
-			Limited: c.limited, Limit: c.w.limit, Used: c.w.usedAt(now)})
+	c, ok := l.counters[keyOf(group, typ)]
+	if !ok {
+		return 0, false
 	}
-	slices.SortFunc(out, func(a, b CounterUsage) int {
-		if c := strings.Compare(a.Group, b.Group); c != 0 {
-			return c
-		}
-		return strings.Compare(string(a.Type), string(b.Type))
-	})
-	return out
+	return c.w.usedAt(l.now()), true
 }

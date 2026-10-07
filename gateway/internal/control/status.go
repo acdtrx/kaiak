@@ -213,7 +213,7 @@ func (r *statusReporter) post(ctx context.Context, s Status) error {
 	}
 	reqCtx, cancel := context.WithTimeout(ctx, statusTimeout)
 	defer cancel()
-	resp, err := r.c.post(reqCtx, "/status", r.c.opts.Instance, body, http.StatusNoContent)
+	resp, err := r.c.post(reqCtx, "/status", body, http.StatusNoContent)
 	if err != nil {
 		return fmt.Errorf("send status: %w", err)
 	}

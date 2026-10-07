@@ -46,7 +46,7 @@ afterwards it is one table row.
 
 - `git grep -nE 'func retryReason|retryUnavailable|retryTimeout|retryServerError|retryRateLimited|retryAuthFailed|retryModelMissing|retryPathMissing|retryEndpointMissing|retryReasons' gateway/`
   → none.
-- `git grep -nE 'rq\.(upstreamErr|upstreamStatus|upstreamErrorCode|upstreamErrorType|deployment|meter)\b' gateway/internal/server`
+- `git grep -nP 'rq\.(upstreamErr|upstreamStatus|upstreamErrorCode|upstreamErrorType|deployment|meter)\b' gateway/internal/server`
   → none.
 
 ## Acceptance criteria

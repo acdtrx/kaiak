@@ -102,15 +102,15 @@ func holderOf(s *config.Snapshot) *config.Holder {
 	return h
 }
 
-// The subjects use m1, priced in the test config (on changes the model, and whether
-// it is priced with it).
+// The subjects use m1, priced in the test config (on moves them to another model,
+// priced only when it is m1: the limiter sees a request's model as its pricing).
 var (
-	workload = Subject{Groups: []string{"t", "w"}, Model: "m1", Priced: true}
-	ann      = Subject{Groups: []string{"users", "ann"}, Model: "m1", Priced: true}
-	bob      = Subject{Groups: []string{"users", "bob"}, Model: "m1", Priced: true}
+	workload = Subject{Groups: []string{"t", "w"}, Priced: true}
+	ann      = Subject{Groups: []string{"users", "ann"}, Priced: true}
+	bob      = Subject{Groups: []string{"users", "bob"}, Priced: true}
 )
 
-func (s Subject) on(model string) Subject { s.Model, s.Priced = model, model == "m1"; return s }
+func (s Subject) on(model string) Subject { s.Priced = model == "m1"; return s }
 
 // admitN reserves n requests of tokens each and fails if any is refused.
 func admitN(t *testing.T, l *Limiter, s Subject, n int, tokens int64) []*Reservation {
@@ -138,13 +138,22 @@ func refused(t *testing.T, l *Limiter, s Subject, tokens int64) *Rejection {
 // used is the count of group's (""= global) counter of type typ.
 func used(t *testing.T, l *Limiter, group string, typ config.LimitType) int64 {
 	t.Helper()
-	for _, u := range l.Usage() {
-		if u.Group == group && u.Type == typ {
-			return u.Used
-		}
+	n, ok := l.Used(group, typ)
+	if !ok {
+		t.Fatalf("no %s counter for group %q", typ, group)
 	}
-	t.Fatalf("no %s counter for group %q", typ, group)
-	return 0
+	return n
+}
+
+// readAll brings every count to the clock: the counters matched to the live config,
+// as at every entry point, and each window rolled to now, as reading it does.
+func readAll(l *Limiter) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.sync()
+	for _, c := range l.counters {
+		c.w.usedAt(l.now())
+	}
 }
 
 const rpm2 = `[{ "type": "requests_per_minute", "value": 2 }]`
@@ -579,10 +588,8 @@ func TestReloadKeepsMatchingCounters(t *testing.T) {
 	if got := used(t, l, "w", config.LimitTokensPerMinute); got != 0 {
 		t.Errorf("new workload limit starts at %d, want 0", got)
 	}
-	for _, u := range l.Usage() {
-		if u.Group == "w" && u.Type == config.LimitRequestsPerMinute {
-			t.Errorf("removed limit still counted: %+v", u)
-		}
+	if n, counted := l.Used("w", config.LimitRequestsPerMinute); counted {
+		t.Errorf("removed limit still counted: %d", n)
 	}
 
 	// An edited value keeps the count: group and type identify the limit.
@@ -606,11 +613,11 @@ func TestARecreatedGroupKeepsItsSpend(t *testing.T) {
 				l, _ = c.shared(h)
 				l.TakeTotals(Totals{Complete: true}, 0)
 			}
-			subject := Subject{Groups: []string{"temporary"}, Model: "m1", Priced: true}
+			subject := Subject{Groups: []string{"temporary"}, Priced: true}
 			l.Settle(admitN(t, l, subject, 1, 10)[0], inGeneration(1, record(100, 0, 0, 0, 0, 1_000_000_000)))
 			running := admitN(t, l, subject, 1, 10)[0]
 			h.Swap(snapshot(t, limitsDoc{}))
-			_ = l.Usage() // the deletion applied
+			readAll(l) // the deletion applied
 			l.Settle(running, inGeneration(1, record(5, 0, 0, 0, 0, 0)))
 			recreated := snapshot(t, limitsDoc{extraGroup: "temporary"})
 			recreated.Groups["temporary"].Limits = []config.Limit{{Type: config.LimitUSDPerMonth, Value: 1}}
@@ -626,9 +633,9 @@ func TestARecreatedGroupKeepsItsSpend(t *testing.T) {
 			}
 
 			h.Swap(snapshot(t, limitsDoc{}))
-			_ = l.Usage()
+			readAll(l)
 			c.set("2026-11-01T00:30:00Z")
-			_ = l.Usage()
+			readAll(l)
 			l.mu.Lock()
 			l.pruneRetainedLocked(c.t)
 			left := len(l.retained)
@@ -654,10 +661,10 @@ func TestARunningRequestHoldsTheCountsOfADeletedGroup(t *testing.T) {
 				l, _ = c.shared(h)
 				l.TakeTotals(Totals{Complete: true}, 0)
 			}
-			subject := Subject{Groups: []string{"temporary"}, Model: "m1", Priced: true}
+			subject := Subject{Groups: []string{"temporary"}, Priced: true}
 			running := admitN(t, l, subject, 1, 10)[0]
 			h.Swap(snapshot(t, limitsDoc{}))
-			_ = l.Usage() // the deletion applied, its counts' windows holding nothing settled
+			readAll(l) // the deletion applied, its counts' windows holding nothing settled
 			l.Settle(running, inGeneration(1, record(10, 0, 0, 0, 0, 1_000_000_000)))
 			recreated := snapshot(t, limitsDoc{extraGroup: "temporary"})
 			recreated.Groups["temporary"].Limits = []config.Limit{{Type: config.LimitUSDPerMonth, Value: 1}}
@@ -680,13 +687,13 @@ func TestARunningRequestHoldsADeletedGroupsCountsAcrossTheHour(t *testing.T) {
 	c := newClock("2026-10-07T12:59:59Z")
 	h := holderOf(snapshot(t, limitsDoc{extraGroup: "temporary"}))
 	l := c.limiter(h)
-	subject := Subject{Groups: []string{"temporary"}, Model: "m1", Priced: true}
+	subject := Subject{Groups: []string{"temporary"}, Priced: true}
 	running := admitN(t, l, subject, 1, 10)[0]
 	h.Swap(snapshot(t, limitsDoc{}))
-	_ = l.Usage()
+	readAll(l)
 	c.advance(2 * time.Second)
 	h.Swap(snapshot(t, limitsDoc{team: hourLimit})) // another reload, in the new hour
-	_ = l.Usage()
+	readAll(l)
 	l.Settle(running, record(100, 0, 0, 0, 0, 0))
 	h.Swap(snapshot(t, limitsDoc{extraGroup: "temporary"}))
 	if got := used(t, l, "temporary", config.LimitTokensPerHour); got != 100 {
@@ -702,13 +709,13 @@ func TestSyncIsObservedOncePerNewConfig(t *testing.T) {
 	l.ObserveSyncs(func(d time.Duration) { syncs = append(syncs, d) })
 
 	admitN(t, l, workload, 2, 100) // the first request matches the counters to the config
-	_ = l.Usage()
+	readAll(l)
 	if len(syncs) != 1 {
 		t.Fatalf("%d syncs observed for one config, want 1", len(syncs))
 	}
 	holder.Swap(snapshot(t, limitsDoc{team: `[{ "type": "requests_per_minute", "value": 3 }]`}))
 	admitN(t, l, workload, 1, 100)
-	_ = l.Usage()
+	readAll(l)
 	if len(syncs) != 2 {
 		t.Fatalf("%d syncs observed for two configs, want 2", len(syncs))
 	}
@@ -792,8 +799,8 @@ func treeSnapshot(t *testing.T) *config.Snapshot {
 // project still has room, and two envs share their project's limit.
 func TestEveryGroupOnThePathIsEnforced(t *testing.T) {
 	s := treeSnapshot(t)
-	prod := Subject{Groups: s.Groups["prod-chat"].PathIDs, Model: "m1"}
-	dev := Subject{Groups: s.Groups["dev-chat"].PathIDs, Model: "m1"}
+	prod := Subject{Groups: s.Groups["prod-chat"].PathIDs}
+	dev := Subject{Groups: s.Groups["dev-chat"].PathIDs}
 
 	l := newClock("2026-09-24T10:00:00Z").limiter(holderOf(s))
 	admitN(t, l, prod, 2, 100)
@@ -862,7 +869,7 @@ func TestSettlementReachesAncestorsOfADeletedGroup(t *testing.T) {
 				l, _ = c.shared(holder)
 				l.TakeTotals(Totals{}, 0)
 			}
-			subject := Subject{Groups: []string{"team", "env", "workload"}, Model: "m1"}
+			subject := Subject{Groups: []string{"team", "env", "workload"}}
 			res := admitN(t, l, subject, 1, 5000)[0]
 
 			// The limiter follows the reload before the request settles (the next
@@ -910,15 +917,15 @@ func TestADeletedGroupsCountersEndWithTheirWindowsWithoutAReload(t *testing.T) {
 	c := newClock("2026-10-07T12:30:00Z")
 	h := holderOf(snapshot(t, limitsDoc{extraGroup: "temporary"}))
 	l := c.limiter(h)
-	subject := Subject{Groups: []string{"temporary"}, Model: "m1", Priced: true}
+	subject := Subject{Groups: []string{"temporary"}, Priced: true}
 	r := admitN(t, l, subject, 1, 0)[0]
 	h.Swap(snapshot(t, limitsDoc{}))
-	_ = l.Usage()
+	readAll(l)
 	l.Settle(r, record(10, 0, 0, 0, 0, 1_000_000_000))
 	l.Settle(r) // a repeated settle releases nothing more
 	c.set("2026-11-01T00:30:00Z")
 	l.Settle(admitN(t, l, workload, 1, 0)[0])
-	_ = l.Usage()
+	readAll(l)
 	_ = l.Outage()
 	l.mu.Lock()
 	defer l.mu.Unlock()

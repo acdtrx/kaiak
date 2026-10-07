@@ -41,7 +41,7 @@ boot deadline and `limits.FirstTotals`.
 
 ## Removal checklist (clean at phase end)
 
-- `git grep -nE 'firstOnly|streamResult\)?\.first\b|waitFirstTotals|bootDeadline|FirstTotals\(' gateway/` → none.
+- `git grep -nP 'firstOnly|streamResult\)?\.first\b|waitFirstTotals|bootDeadline|FirstTotals\(' gateway/` → none.
 
 ## Acceptance criteria
 

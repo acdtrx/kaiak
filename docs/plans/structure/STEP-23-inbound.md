@@ -40,7 +40,7 @@ that have drifted.
 
 ## Removal checklist (clean at phase end)
 
-- `git grep -nE 'MaxCompletionTokens|MaxOutputTokens|MaxTokens\b' gateway/internal/server` → none.
+- `git grep -nP 'MaxCompletionTokens|MaxOutputTokens|MaxTokens\b' gateway/internal/server` → none.
 - `git grep -n 'decodeMembersRepeats' gateway/internal/server` → only inside the two helpers.
 
 ## Acceptance criteria

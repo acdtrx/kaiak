@@ -39,7 +39,7 @@ refusal's log attributes are written by `limits`, which owns them.
 
 ## Removal checklist (clean at phase end)
 
-- `git grep -nE 'func \(r \*Router\) (anyWarm|anyUsable|canServe|choose)\b|func LogValue' gateway/` → none.
+- `git grep -nP 'func \(r \*Router\) (anyWarm|anyUsable|canServe|choose)\b|func LogValue' gateway/` → none.
 
 ## Acceptance criteria
 

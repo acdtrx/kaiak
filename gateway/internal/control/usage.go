@@ -93,9 +93,8 @@ func batchRefused(e *statusError) bool {
 
 // usageSender owns the filling batch, the queue of sealed batches and their sending.
 type usageSender struct {
-	c        *Client
-	logger   *slog.Logger
-	instance string
+	c      *Client
+	logger *slog.Logger
 	// epoch is the process's batch epoch: new with every process, so no batch ID is
 	// ever reused.
 	epoch    string
@@ -152,7 +151,6 @@ func newUsageSender(c *Client) *usageSender {
 	u := &usageSender{
 		c:            c,
 		logger:       c.logger,
-		instance:     c.opts.Instance,
 		epoch:        newEpoch(),
 		max:          c.opts.BatchMaxRecords,
 		interval:     c.opts.BatchInterval,
@@ -240,15 +238,14 @@ func (u *usageSender) depthChangedLocked() {
 }
 
 // runSealer seals the filling batch every interval, and queues sealed batches when
-// Record sealed a full one. When ctx ends it seals and queues what is left, so the
-// drain's flush finds every settled record queued.
+// Record sealed a full one, until ctx ends. Sealing at stop would serve nothing: the
+// sender stops on the same ctx, and FlushUsage seals before it.
 func (u *usageSender) runSealer(ctx context.Context) {
 	ticker := time.NewTicker(u.interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			u.seal("stop")
 			return
 		case <-ticker.C:
 			u.seal("interval")
@@ -430,7 +427,7 @@ func (u *usageSender) runSender(ctx context.Context) {
 // the backoff delay, then the same batch again.
 func (u *usageSender) sendOutstanding(ctx context.Context, b queuedBatch) {
 	attrs := []any{"kaiak.usage.epoch", b.id.Epoch, "kaiak.usage.sequence", b.id.Sequence, "kaiak.usage.records", len(b.records)}
-	_, err := u.post(ctx, UsageBatch{Batch: b.id, Records: b.records})
+	err := u.post(ctx, UsageBatch{Batch: b.id, Records: b.records})
 	if err != nil && ctx.Err() != nil {
 		return // stopping: the batch stays queued
 	}
@@ -476,35 +473,35 @@ func (u *usageSender) observe(result string) {
 	}
 }
 
-// post sends the batch and returns the control plane's acknowledgement of it.
-func (u *usageSender) post(ctx context.Context, batch UsageBatch) (UsageAck, error) {
+// post sends the batch and checks the control plane's acknowledgement names it.
+func (u *usageSender) post(ctx context.Context, batch UsageBatch) error {
 	body, err := json.Marshal(batch)
 	if err != nil {
-		return UsageAck{}, fmt.Errorf("encode usage batch: %w", err)
+		return fmt.Errorf("encode usage batch: %w", err)
 	}
 	reqCtx, cancel := context.WithTimeout(ctx, usageTimeout)
 	defer cancel()
-	resp, err := u.c.post(reqCtx, "/usage", batch.Batch.Instance, body, http.StatusOK)
+	resp, err := u.c.post(reqCtx, "/usage", body, http.StatusOK)
 	if err != nil {
-		return UsageAck{}, fmt.Errorf("send usage batch: %w", err)
+		return fmt.Errorf("send usage batch: %w", err)
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxMessageBytes+1))
 	if err != nil {
-		return UsageAck{}, fmt.Errorf("read usage ack: %s", netfail.Class(err))
+		return fmt.Errorf("read usage ack: %s", netfail.Class(err))
 	}
 	if len(data) > maxMessageBytes {
-		return UsageAck{}, fmt.Errorf("usage ack exceeds %d bytes", maxMessageBytes)
+		return fmt.Errorf("usage ack exceeds %d bytes", maxMessageBytes)
 	}
 	ack, err := DecodeUsageAck(data)
 	if err != nil {
-		return UsageAck{}, err
+		return err
 	}
 	if ack.Batch != batch.Batch {
-		return UsageAck{}, fmt.Errorf("usage ack names batch %s/%d, sent %s/%d", ack.Batch.Epoch, ack.Batch.Sequence,
+		return fmt.Errorf("usage ack names batch %s/%d, sent %s/%d", ack.Batch.Epoch, ack.Batch.Sequence,
 			batch.Batch.Epoch, batch.Batch.Sequence)
 	}
-	return ack, nil
+	return nil
 }
 
 // FlushUsage seals the filling batch, queues it, and waits until every queued batch is

@@ -55,9 +55,6 @@ type circuit struct {
 	// unlisted: a probe found the backend not listing the deployment's model since
 	// the circuit opened (logged once).
 	unlisted bool
-	// backend is the deployment's backend as the last report carried it, probed
-	// when the applied config does not name it.
-	backend *config.Backend
 }
 
 // noObserver is the Observer of a router given none.
@@ -77,7 +74,7 @@ func (noObserver) Probed(string, bool)                       {}
 func (r *Router) report(d config.Deployment, trial uint64, o Outcome, reason string) {
 	key := keyOf(d)
 	r.mu.Lock()
-	if r.deployments != nil && !r.deployments[key] {
+	if !r.deployments[key] {
 		r.mu.Unlock()
 		return
 	}
@@ -101,7 +98,6 @@ func (r *Router) report(d config.Deployment, trial uint64, o Outcome, reason str
 		c = &circuit{}
 		r.circuits[key] = c
 	}
-	c.backend = d.Backend
 	if !c.openedAt.IsZero() {
 		r.mu.Unlock()
 		return
@@ -336,7 +332,7 @@ var errUnknownBackend = errors.New("routing: unknown backend")
 // probe's error; a probe cut short by ctx is neither counted nor logged.
 func (r *Router) ProbeNow(ctx context.Context, backend, trigger string) error {
 	r.mu.Lock()
-	b := r.probeTarget(backend)
+	b := r.backends[backend]
 	r.mu.Unlock()
 	if b == nil {
 		return errUnknownBackend
@@ -426,19 +422,5 @@ func (r *Router) ProbeNow(ctx context.Context, backend, trigger string) error {
 		r.observer.CircuitChanged(key, CircuitHalfOpen)
 	}
 	r.notify(changed)
-	return nil
-}
-
-// probeTarget is the backend to probe: the applied config's, else the one its open
-// circuits' requests carried; nil when neither knows it.
-func (r *Router) probeTarget(backend string) *config.Backend {
-	if b, ok := r.backends[backend]; ok {
-		return b
-	}
-	for key, c := range r.circuits {
-		if key.Backend == backend {
-			return c.backend
-		}
-	}
 	return nil
 }

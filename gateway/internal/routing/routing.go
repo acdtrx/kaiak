@@ -71,9 +71,6 @@ type Router struct {
 	inFlight map[DeploymentID]int
 	// backendLoad is inFlight summed per backend ID, with the same removal rule.
 	backendLoad map[string]int
-	// caps are the backend caps of the config last passed to Configure (0 = no cap).
-	// A backend it does not name keeps the cap of the snapshot a request runs under.
-	caps map[string]int64
 	// live is the live-gateway count a cap is split among (SetLiveGateways): each
 	// gateway enforces ceil(cap ÷ live). 1 in file mode.
 	live int
@@ -88,10 +85,11 @@ type Router struct {
 	// non-empty or empty, or a circuit opens or closes.
 	onServingChange func()
 
-	// deployments are the deployments of the config last passed to Configure; nil
-	// before the first, when every deployment counts as configured.
+	// deployments are the deployments of the config last passed to Configure.
 	deployments map[DeploymentID]bool
-	// backends are the backends of the config last passed to Configure.
+	// backends are the backends of the config last passed to Configure: their caps
+	// are the ones in force (0 = no cap). A backend it does not name keeps the cap of
+	// the snapshot a request runs under.
 	backends map[string]*config.Backend
 	// circuit is the circuit-breaker setting in force.
 	circuit config.Circuit
@@ -182,13 +180,13 @@ type Options struct {
 	Logger   *slog.Logger
 }
 
-// New returns a router with no requests in flight or waiting, every circuit closed,
-// and the default circuit-breaker setting until Configure applies a config's.
+// New returns a router with no requests in flight or waiting and every circuit
+// closed. Configure applies a config before the router serves a request: until then
+// it knows no deployment, and tracks no outcome.
 func New(opts Options) *Router {
 	r := &Router{probe: opts.Probe, observer: opts.Observer, logger: opts.Logger,
 		inFlight: make(map[DeploymentID]int), backendLoad: make(map[string]int), live: 1,
 		next: make(map[string]int), queues: make(map[string]*list.List),
-		circuit:  config.Circuit{FailureThreshold: config.DefaultFailureThreshold, ProbeInterval: config.DefaultProbeInterval},
 		circuits: make(map[DeploymentID]*circuit), cooldowns: make(map[DeploymentID]*cooldown),
 		probeFailures: make(map[string]int),
 		probers:       make(map[string]context.CancelFunc)}
@@ -217,10 +215,6 @@ func (r *Router) OnServingChange(f func()) {
 // stopped, and the turns of models it no longer has forgotten.
 func (r *Router) Configure(s *config.Snapshot) {
 	r.mu.Lock()
-	r.caps = make(map[string]int64, len(s.Backends))
-	for id, b := range s.Backends {
-		r.caps[id] = b.MaxInFlight
-	}
 	r.backends = s.Backends
 	r.circuit = s.Circuit
 	for name := range r.next {
@@ -436,11 +430,10 @@ func (r *Router) anyUsable(m *config.Model, avoid Avoid) bool {
 // hasFreeSlot reports whether b may take one more request: its cap (the configured
 // one, else the one b carries) is 0 or its share above its requests in flight.
 func (r *Router) hasFreeSlot(b *config.Backend) bool {
-	limit, ok := r.caps[b.ID]
-	if !ok {
-		limit = b.MaxInFlight
+	if applied, ok := r.backends[b.ID]; ok {
+		b = applied
 	}
-	return limit == 0 || int64(r.backendLoad[b.ID]) < r.share(limit)
+	return b.MaxInFlight == 0 || int64(r.backendLoad[b.ID]) < r.share(b.MaxInFlight)
 }
 
 // share is this gateway's part of a backend cap: ceil(limit ÷ live), at least 1
@@ -473,13 +466,13 @@ func (r *Router) SetLiveGateways(n int64) {
 func (r *Router) MaxInFlightByBackend() map[string]int64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	caps := make(map[string]int64, len(r.caps))
-	for id, limit := range r.caps {
-		if limit > 0 {
-			caps[id] = r.share(limit)
+	shares := make(map[string]int64, len(r.backends))
+	for id, b := range r.backends {
+		if b.MaxInFlight > 0 {
+			shares[id] = r.share(b.MaxInFlight)
 		}
 	}
-	return caps
+	return shares
 }
 
 // take counts one request in flight on d; on a half-open circuit it is the trial.
@@ -661,7 +654,7 @@ func (r *Router) throttle(key DeploymentID, d time.Duration) {
 		return
 	}
 	r.mu.Lock()
-	if r.deployments != nil && !r.deployments[key] {
+	if !r.deployments[key] {
 		r.mu.Unlock()
 		return
 	}

@@ -50,7 +50,7 @@ comment.
 
 ## Removal checklist (clean at phase end)
 
-- `git grep -nE 'startExpirySweep|stopExpirySweep|batchCursorRetentionMs|libraryName|StatusError|UsageBatchError|\blatest\b.*BatchCursors|BatchCursors.*\blatest\b' control/` → none.
+- `git grep -nP 'startExpirySweep|stopExpirySweep|batchCursorRetentionMs|libraryName|StatusError|UsageBatchError|\blatest\b.*BatchCursors|BatchCursors.*\blatest\b' control/` → none.
 - `git grep -n 'so the same function subscribed twice' control/` → one hit (the helper).
 
 ## Acceptance criteria

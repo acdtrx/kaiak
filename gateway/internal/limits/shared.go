@@ -59,8 +59,7 @@ func (l *Limiter) TakeTotals(t Totals, counted uint64) {
 	defer l.mu.Unlock()
 	l.sync()
 	now := l.now()
-	if !l.firstClosed {
-		l.firstClosed = true
+	if l.totalsAt.IsZero() {
 		close(l.firstTotals)
 	}
 	live := max(t.LiveGateways, 1)
@@ -74,7 +73,6 @@ func (l *Limiter) TakeTotals(t Totals, counted uint64) {
 		l.pushed[keyOf(w.Group, w.Type)] = w
 		l.warnAheadLocked(w, now)
 	}
-	l.prunePushedLocked(now)
 	if t.Complete {
 		for _, c := range l.counters {
 			l.applyLimit(c)
@@ -96,16 +94,10 @@ func (l *Limiter) TakeTotals(t Totals, counted uint64) {
 	l.warnSmallSharesLocked()
 }
 
-// prunePushedLocked drops, once an hour, the pushed windows that have ended: a
-// changes-only message never lists a window again once its hour or month is over, so
-// without this a long-lived stream would keep every scope it ever saw. Callers hold
-// l.mu.
+// prunePushedLocked drops the pushed windows that have ended: a changes-only message
+// never lists a window again once its hour or month is over, so without this a
+// long-lived stream would keep every scope it ever saw. Callers hold l.mu.
 func (l *Limiter) prunePushedLocked(now time.Time) {
-	hour := windowStart(UTCHour, now)
-	if !hour.After(l.prunedAt) {
-		return
-	}
-	l.prunedAt = hour
 	for k, w := range l.pushed {
 		kind, _ := shape(k.typ)
 		if w.Start.Before(windowStart(kind, now)) {
@@ -186,27 +178,11 @@ func (l *Limiter) countedLocked(generation uint64) bool {
 	return l.counted != 0 && generation <= l.counted
 }
 
-// configChangedLocked follows a newly applied config: the counters were rebuilt from
-// the pushed windows already (by group or global and type), so only the small-share
-// warning runs again. Callers hold l.mu, have rebuilt the counters, and have l.applied
-// set.
-func (l *Limiter) configChangedLocked() {
-	l.warnSmallSharesLocked()
-}
-
 // TotalsAppliedAt is when totals were last applied; false before any.
 func (l *Limiter) TotalsAppliedAt() (time.Time, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.totalsAt, !l.totalsAt.IsZero()
-}
-
-// LiveGateways is the live-gateway count of the latest totals taken; 1
-// before any, and in file mode.
-func (l *Limiter) LiveGateways() int64 {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.live
 }
 
 // Outage reports whether the control plane has been out of reach for longer than
@@ -269,5 +245,5 @@ func (l *Limiter) FirstTotals() <-chan struct{} { return l.firstTotals }
 // usage" — a counter with no pushed window then counts from zero because the control
 // plane said so. Callers hold l.mu.
 func (l *Limiter) noTotalsLocked() bool {
-	return l.shared() && !l.firstClosed
+	return l.shared() && l.totalsAt.IsZero()
 }

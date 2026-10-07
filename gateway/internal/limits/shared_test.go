@@ -768,7 +768,7 @@ func TestHoldOfAClearedWindowIsNeverReleasedAfterAClockCorrection(t *testing.T) 
 	push("2026-09-24T10:00:00Z")
 	res := admitN(t, l, workload, 1, 900)[0]
 	push("2026-09-24T12:00:00Z") // a control-plane clock ahead
-	_ = l.Usage()                // the window rolls into the pushed one, the hold cleared
+	readAll(l)                   // the window rolls into the pushed one, the hold cleared
 	push("2026-09-24T10:00:00Z") // corrected: back to the gateway's window
 	l.Settle(res, record(10, 0, 0, 0, 0, 0))
 	if got := used(t, l, "w", config.LimitTokensPerHour); got != 10 {

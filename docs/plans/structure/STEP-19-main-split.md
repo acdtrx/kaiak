@@ -42,7 +42,7 @@ lines and checks the mode at six points.
 
 ## Removal checklist (clean at phase end)
 
-- `git grep -nE 'type controlSettings|func finishWithControlPlane|\bFlushUsage\b|\bReportStatus\b' gateway/` → none (lower-case forms inside `control` are fine).
+- `git grep -nP 'type controlSettings|func finishWithControlPlane|\bFlushUsage\b|\bReportStatus\b' gateway/` → none (lower-case forms inside `control` are fine).
 
 ## Acceptance criteria
 

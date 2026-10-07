@@ -367,7 +367,7 @@ func (c *Client) bootFromSeed() bool {
 
 // Run works with the control plane until ctx is cancelled, and returns once all of
 // its goroutines have: it follows the config, sends usage batches and reports status.
-// When ctx ends the filling usage batch is sealed and queued.
+// Usage not delivered when ctx ends is not sent: FlushUsage, called before, delivers it.
 func (c *Client) Run(ctx context.Context) {
 	var work sync.WaitGroup
 	work.Go(func() { c.usage.runSealer(ctx) })

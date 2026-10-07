@@ -46,7 +46,7 @@ validators for messages the gateway only sends.
 
 ## Removal checklist (clean at phase end)
 
-- `git grep -nE '\.Parent\b|\.Root\(\)|ModelSet\)\s*All|\.Keys\[|AllowedModels\(\)|\.allowed\b' gateway/internal/{config,auth}`
+- `git grep -nP '\.Parent\b|\.Root\(\)|ModelSet\)\s*All|\.Keys\[|AllowedModels\(\)|\.allowed\b' gateway/internal/{config,auth}`
   → none.
 - `git grep -nE 'Fanout|OutOfRange' gateway/ docs/specs docs/ARCHITECTURE.md` → none
   (a test helper excepted, if kept).

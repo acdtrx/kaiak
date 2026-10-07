@@ -245,6 +245,7 @@ func buildTestGateway(t *testing.T, opts testOptions) *testGateway {
 	usage := &usageSink{settled: make(chan accounting.UsageRecord, 64)}
 	reg := metrics.NewRegistry()
 	router := routing.New(routing.Options{Probe: providers.Probe, Observer: metrics.NewCircuits(reg), Logger: logger})
+	router.Configure(holder.Current())
 	usageMetrics := metrics.NewUsageSink(reg, holder)
 	recorder := accounting.NewRecorder(accounting.RecorderOptions{Instance: "gw-test",
 		Sink: accounting.Fanout{usage, usageMetrics}, Batcher: batcher, Logger: logger,

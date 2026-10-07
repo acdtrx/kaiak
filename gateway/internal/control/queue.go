@@ -83,7 +83,7 @@ func (u *usageSender) queueSealed() {
 			u.mu.Unlock()
 			continue
 		}
-		id := BatchID{Instance: u.instance, Epoch: u.epoch, Sequence: u.nextSequence}
+		id := BatchID{Instance: u.c.opts.Instance, Epoch: u.epoch, Sequence: u.nextSequence}
 		u.nextSequence++
 		u.queue = append(u.queue, queuedBatch{id: id, records: records, bytes: size, generation: sealed.generation})
 		u.queuedRecords += len(records)

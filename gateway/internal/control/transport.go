@@ -56,7 +56,7 @@ func (c *Client) get(ctx context.Context, path string) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.send(req, c.opts.Instance)
+	resp, err := c.send(req)
 	if err != nil {
 		return nil, err
 	}
@@ -67,16 +67,16 @@ func (c *Client) get(ctx context.Context, path string) (*http.Response, error) {
 	return resp, nil
 }
 
-// post sends one JSON body to the control plane as instance, with the headers every
-// request carries, and checks the answer's protocol version before anything else is
+// post sends one JSON body to the control plane with the headers every request
+// carries, and checks the answer's protocol version before anything else is
 // read. An answer other than want is a *statusError.
-func (c *Client) post(ctx context.Context, path, instance string, body []byte, want int) (*http.Response, error) {
+func (c *Client) post(ctx context.Context, path string, body []byte, want int) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.send(req, instance)
+	resp, err := c.send(req)
 	if err != nil {
 		return nil, err
 	}
@@ -93,10 +93,10 @@ func (c *Client) post(ctx context.Context, path, instance string, body []byte, w
 // carry nothing the answer sent (docs/specs/GATEWAY.md, Logs: no remote text): a
 // transport failure is named by its class — Go quotes a header line it cannot parse
 // whole — and a mismatched version by protocolSeen.
-func (c *Client) send(req *http.Request, instance string) (*http.Response, error) {
+func (c *Client) send(req *http.Request) (*http.Response, error) {
 	req.Header.Set("Authorization", "Bearer "+c.opts.Token)
 	req.Header.Set(headerProtocol, protocolHeaderValue)
-	req.Header.Set(headerInstance, instance)
+	req.Header.Set(headerInstance, c.opts.Instance)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, errors.New(netfail.Class(err))

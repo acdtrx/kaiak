@@ -11,6 +11,7 @@ import (
 func TestCoolingDeploymentIsSkipped(t *testing.T) {
 	r := New(Options{})
 	m := queuedModel("m", 10, time.Hour, backend("a", 0), backend("b", 0))
+	r.Configure(circuitSnapshot(5, time.Hour, m))
 	a, b := keyOf(m.Deployments[0]), keyOf(m.Deployments[1])
 	slot, _, err := r.Acquire(context.Background(), m, Avoid{Refused: []DeploymentID{b}})
 	if err != nil {
@@ -38,6 +39,7 @@ func TestCoolingDeploymentIsUsedWhenNoOtherIsEligible(t *testing.T) {
 	t.Run("all cooling", func(t *testing.T) {
 		r := New(Options{})
 		m := queuedModel("m", 10, time.Hour, backend("a", 0), backend("b", 0))
+		r.Configure(circuitSnapshot(5, time.Hour, m))
 		r.throttle(keyOf(m.Deployments[0]), time.Hour)
 		r.throttle(keyOf(m.Deployments[1]), time.Hour)
 		seen := map[DeploymentID]bool{}
@@ -65,6 +67,7 @@ func TestCoolingDeploymentIsUsedWhenNoOtherIsEligible(t *testing.T) {
 	t.Run("a single deployment", func(t *testing.T) {
 		r := New(Options{})
 		m := queuedModel("m", 10, time.Hour, backend("a", 0))
+		r.Configure(circuitSnapshot(5, time.Hour, m))
 		r.throttle(keyOf(m.Deployments[0]), time.Hour)
 		_, release := acquire(r, m)
 		release()
@@ -76,6 +79,7 @@ func TestCoolingDeploymentIsUsedWhenNoOtherIsEligible(t *testing.T) {
 func TestQueuedRequestGetsTheDeploymentWhoseCooldownEnds(t *testing.T) {
 	r := New(Options{})
 	m := queuedModel("m", 10, time.Hour, backend("a", 0), backend("b", 1))
+	r.Configure(circuitSnapshot(5, time.Hour, m))
 	a := keyOf(m.Deployments[0])
 	held, _, err := r.Acquire(context.Background(), m, Avoid{Refused: []DeploymentID{a}})
 	if err != nil {
@@ -99,6 +103,7 @@ func TestQueuedRequestGetsTheDeploymentWhoseCooldownEnds(t *testing.T) {
 func TestWaitersGetACoolingDeploymentWhenTheLastOtherCoolsDown(t *testing.T) {
 	r := New(Options{})
 	m := queuedModel("m", 10, time.Hour, backend("a", 0), backend("b", 1))
+	r.Configure(circuitSnapshot(5, time.Hour, m))
 	a := keyOf(m.Deployments[0])
 	held, _, err := r.Acquire(context.Background(), m, Avoid{Refused: []DeploymentID{a}})
 	if err != nil {
@@ -138,6 +143,7 @@ func TestCooldownsFollowTheConfig(t *testing.T) {
 func TestLaterThrottleNeverShortensTheCooldown(t *testing.T) {
 	r := New(Options{})
 	m := queuedModel("m", 10, time.Hour, backend("a", 0), backend("b", 0))
+	r.Configure(circuitSnapshot(5, time.Hour, m))
 	a := keyOf(m.Deployments[0])
 	r.throttle(a, time.Hour)
 	long := r.CoolingDown()[a]

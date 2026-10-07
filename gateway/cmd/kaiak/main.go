@@ -411,7 +411,7 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 			OnTotals: func(u control.TotalsUpdate) {
 				limiter.TakeTotals(limitsTotals(u.Totals, u.Complete), u.Counted)
 				// Backend caps are split among the live gateways the totals count.
-				router.SetLiveGateways(limiter.LiveGateways())
+				router.SetLiveGateways(u.Totals.LiveGateways)
 			}})
 		metrics.RegisterControlState(registry, controlState{client, limiter})
 		// A model's queue starting or ending and a circuit opening or closing are

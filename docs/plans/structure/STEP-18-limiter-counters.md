@@ -36,7 +36,7 @@ limit each time it is needed.
 
 ## Removal checklist (clean at phase end)
 
-- `git grep -nE '\.pushed\b|prunedAt|prunePushedLocked|effectiveLimit' gateway/internal/limits` → none.
+- `git grep -nP '\.pushed\b|prunedAt|prunePushedLocked|effectiveLimit' gateway/internal/limits` → none.
 
 ## Acceptance criteria
 

@@ -31,13 +31,11 @@ func withLimits(t *testing.T, g *testGateway, team, workload string) {
 // counterUsed is the count of group's ("" = global) counter of type typ.
 func counterUsed(t *testing.T, g *testGateway, group string, typ config.LimitType) int64 {
 	t.Helper()
-	for _, u := range g.limiter.Usage() {
-		if u.Group == group && u.Type == typ {
-			return u.Used
-		}
+	n, ok := g.limiter.Used(group, typ)
+	if !ok {
+		t.Fatalf("no %s counter for group %q", typ, group)
 	}
-	t.Fatalf("no %s counter for group %q", typ, group)
-	return 0
+	return n
 }
 
 func TestLimitRefusalIs429WithRateLimitHeaders(t *testing.T) {

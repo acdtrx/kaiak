@@ -146,11 +146,7 @@ func (w *window) previousWindow(now, t time.Time) bool {
 	if t.IsZero() {
 		return false
 	}
-	current := time.Unix(w.start, 0).UTC()
-	previous := current.Add(-time.Hour)
-	if w.kind == UTCMonth {
-		previous = current.AddDate(0, -1, 0)
-	}
+	previous := windowStart(w.kind, time.Unix(w.start, 0).Add(-time.Nanosecond))
 	return windowStart(w.kind, t).Equal(previous)
 }
 

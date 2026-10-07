@@ -200,15 +200,14 @@ func TestEachEpochIsCoveredByItsOwnEntry(t *testing.T) {
 }
 
 // An acknowledged batch moves from the queue to the acknowledged batches in one step:
-// totals handled at the same moment find it in one or the other, and retire it
-// (AUDIT-2 2M3).
+// totals handled at the same moment find it in one or the other, and retire it.
 func TestAckHandOffNeverHidesABatchFromTotals(t *testing.T) {
 	const epoch = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	batch := UsageBatch{Batch: BatchID{Instance: "gw", Epoch: epoch, Sequence: 1}, Records: []accounting.UsageRecord{testRecord(1)}}
 	batch.Records[0].GatewayTime = time.Now()
 	for range 2000 {
 		e := queuedBatch{id: batch.Batch, generation: 1, records: batch.Records}
-		u := &usageSender{instance: "gw", queue: []queuedBatch{e}, queuedRecords: 1, changed: make(chan struct{})}
+		u := &usageSender{queue: []queuedBatch{e}, queuedRecords: 1, changed: make(chan struct{})}
 		var counted atomic.Uint64
 		c := &Client{usage: u, opts: Options{OnTotals: func(update TotalsUpdate) { counted.Store(update.Counted) }}}
 		start := make(chan struct{})
@@ -238,10 +237,10 @@ func TestAckHandOffNeverHidesABatchFromTotals(t *testing.T) {
 
 // At most ackedRemembered acknowledged batches are remembered: past that the oldest is
 // forgotten — a later batch shown counted retires every earlier generation — and the
-// wait to be shown counted keeps its time (AUDIT-3 3L4).
+// wait to be shown counted keeps its time.
 func TestAcknowledgedBatchesAreBounded(t *testing.T) {
 	const epoch = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	u := &usageSender{instance: "gw", changed: make(chan struct{})}
+	u := &usageSender{changed: make(chan struct{})}
 	start := time.Now().Add(-time.Hour)
 	for i := range ackedRemembered {
 		u.acked = append(u.acked, ackedBatch{id: BatchID{Instance: "gw", Epoch: epoch, Sequence: int64(i + 1)},
