@@ -65,7 +65,8 @@ Settled with the user (2026-10-06):
 
 Made while planning (confirm in review):
 
-4. **One totals sequence in the store**, an integer that grows by one with every
+4. *Superseded by decision 21 (2026-10-07): the store has no sequence.*
+   **One totals sequence in the store**, an integer that grows by one with every
    change to the totals:
    - a counted batch
    - a publish
@@ -80,7 +81,9 @@ Made while planning (confirm in review):
      publish's sequence condition existed only for the model-set carry-over, which
      step 3 removes.
    - A live-set change is saved only if the gateway record it read is unchanged.
-6. **A consistent totals read is a store operation.** It returns the sequence, the
+6. *Changed by decision 26 (2026-10-07): the snapshot is the windows and the
+   cursors only.*
+   **A consistent totals read is a store operation.** It returns the sequence, the
    recipient's last batch, the latest config version and the current windows from one
    snapshot. This replaces the core's in-process lock.
 7. **Change notification is part of the store contract.**
@@ -142,7 +145,8 @@ Settled with the user after step 2 (2026-10-06):
       longer depend on each other (step 3).
     - Rejected: limit IDs (one limit per type per scope needs none). Rejected: keeping
       model sets with an unconditioned carry-over.
-16. **Usage counts toward every scope on a record's path, whatever the config's
+16. *Changed by decision 22 (2026-10-07): totals list every window with usage.*
+    **Usage counts toward every scope on a record's path, whatever the config's
     limits.** The totals read lists only the windows the latest config limits. A limit
     added mid-window starts with that window's usage so far.
 17. **Provider budgets** (money limits on a set of backends, such as one provider
@@ -168,9 +172,10 @@ Settled with the user after the pre-merge review (2026-10-07):
       plane no longer has after a restore.
 19. **Totals travel only on the stream, without a revision.**
     - Acks only acknowledge batches; own usage is retired by stream totals.
-    - Each core orders what it sends per stream using the store's sequence
-      internally, and closes its streams when the store's sequence goes back
-      (rollback).
+    - *Changed by decision 21 (2026-10-07): ordering by read issue, no rollback
+      detection.* Each core orders what it sends per stream using the store's
+      sequence internally, and closes its streams when the store's sequence goes
+      back (rollback).
     - The gateway applies totals windows to its own limits by (scope, type), whatever
       config it runs. There is no config-mismatch state.
     - Accepted cost: after an ack the gateway keeps counting that batch locally until
@@ -180,6 +185,60 @@ Settled with the user after the pre-merge review (2026-10-07):
       compatibility path.
     - Tests asserting removed behaviour are deleted, not adapted.
     - Step 7's checklist must grep clean at the phase end (step 9).
+
+Settled with the user after the second pre-merge review (2026-10-07,
+`docs/reviews/2026-10-07/AUDIT-2.md`):
+
+21. **No store sequence, no rollback detection.**
+    - Each stream sends what its core read last, ordered by when each read was
+      issued, never by a value the store returns.
+    - A store restored from a backup is simply the current state: its config and
+      totals are sent like any other.
+    - Removed: the store's sequence (in writes, snapshots, notifications and
+      `CurrentConfig`), `observeSequence`, `onRollback` and the Rollback rule in the
+      spec.
+    - Why: every source of the sequence (notifications, concurrent reads, a config's
+      publish sequence) arrives out of order under a database store, so the detection
+      fired on ordinary traffic (2H1). Order by issue needs nothing from the store.
+    - Rejected: a causal check (compare against what the core knew when the read
+      started). It needs special cases for notifications and catch-up, and still
+      protects nothing the app cannot see itself.
+22. **Count everything; limits apply on top.**
+    - Control plane: usage already counts toward global and every group on a record's
+      path, for `tokens_per_hour` and `usd_per_month`, with or without a limit. Every
+      record is priced whatever the limits.
+    - Totals carry **every (scope, type) window with usage**, whatever the config.
+    - Gateway: counts its own usage for every scope and type in the same way. A
+      limit is a check over those counts, so a config change never changes a count.
+    - **Changes only:** each stream's first totals are complete. Later totals on that
+      stream list only the windows that changed since its last push; a window not
+      listed keeps its value. Usage only grows within a window, so merging is safe.
+    - **One snapshot read per core per push** serves every stream on that core: the
+      core diffs it against its previous read and merges the changes into each
+      stream's pending totals. A new stream starts from the full read.
+    - Per-minute limits stay local shares, unchanged.
+    - Why: a gateway that rejected a config still enforces limits the current config
+      dropped (2H3), and a limit added mid-window is never briefly zero. Rejected:
+      keeping the last base for a missing window, which misses other gateways' new
+      spend.
+    - Resolves the backlog's "Totals size bound" (removed in step 14).
+23. **`counted_through` per epoch.** Totals list, for the recipient instance, the last
+    counted batch of each epoch still kept (an array; empty before the first). The
+    gateway retires its own usage by each epoch it holds. Why: one "latest" cursor
+    names an old epoch after its late write, and the new process can never retire
+    its usage (2M2).
+24. **Each stream skips a config by its own last-sent hash.** The core-wide
+    `delivered` hash is removed (2M1).
+25. **Contact for the outage rule is stream bytes only.** Acks no longer bring totals,
+    so they prove nothing about the bases (2M6).
+26. **The totals snapshot is the windows and the cursors**, read consistently. The
+    config and the live count are read separately: nothing needs them in the same
+    snapshot once totals no longer depend on the config (2M9 dissolved).
+27. **The store keeps the config's JSON text**, and the core sends that text
+    verbatim. The hash is over that text, so a store whose JSON type reorders keys
+    cannot break it (2L1).
+28. **Replica clocks within a second** (step 10's deviation, accepted). No gateway-side
+    window-coverage rule.
 
 ## Constraints
 
@@ -234,6 +293,14 @@ merge.
   9. `STEP-9-broadcast-gateway.md`: the gateway; the checklist greps clean.
 - **Phase 4 — review fixes** (step 10). Green at the end.
   10. `STEP-10-review-fixes.md`: the pre-merge review's surviving findings.
+- **Phase 5 — round-2 fixes** (steps 11–14). A removal and a protocol change; green
+  only at the end.
+  11. `STEP-11-contract.md`: specs, schemas, fixtures, the store interface and its
+      contract tests, the GUIDE sketch, the removal checklist.
+  12. `STEP-12-control.md`: `kaiak-control` and the sample.
+  13. `STEP-13-gateway.md`: the gateway.
+  14. `STEP-14-docs-and-green.md`: leftovers, migration note, the checklist greps
+      clean, the full suite three times.
 
 Expected reds inside phase 1:
 - After step 1, both halves fail the totals fixtures. Step 4 clears `kaiak-control`'s
@@ -269,3 +336,6 @@ Expected reds inside phase 1:
   totals both cores serve; a config published through one core reaches both; a gateway
   moved to the other core resumes without a resync while the first is undisturbed.
 - [x] **`scripts/check-all.sh` green at each phase end** (steps 5 and 6).
+- [ ] **Phase 5** (`STEP-14-docs-and-green.md`): every round-2 reproduction ported and
+  passing; the removal checklist greps clean; `scripts/check-all.sh` green three
+  times in a row.
