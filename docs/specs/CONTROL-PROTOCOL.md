@@ -275,8 +275,8 @@ the `{ error, detail }` body, `error` being the stable code:
   semantic rules. The gateway reads the envelope first and hands the config to its
   config loader: a config it rejects is a *config rejection* — kept out of force and
   reported in status with its hash and codes — not a malformed message.
-- **Usage batch**: `epoch` is 32 lowercase hex digits (128 random bits, new with each
-  fresh spool); `sequence` starts at 1 and increases by one per batch within the
+- **Usage batch**: `epoch` is 32 lowercase hex digits (128 random bits, new at every
+  gateway process start); `sequence` starts at 1 and increases by one per batch within the
   epoch. A batch holds **1 to 500 records**: a gateway with nothing to report sends
   nothing, and a gateway with more queues further batches behind the outstanding one.
   Every record's `gateway_instance` is the batch's instance, and record IDs are unique
@@ -284,8 +284,7 @@ the `{ error, detail }` body, `error` being the stable code:
 - **Usage ack** (settled 2026-10-07): the batch ID it acknowledges — counted now or
   before, the answer is the same — and nothing else. The gateway never sends the
   batch again; its own usage leaves its counters only through stream totals (Totals:
-  `counted_through`), and with a data directory the batch stays in the spool until
-  totals covering it are saved (`GATEWAY.md`, Usage spool). Rejected: fresh totals in every ack (settled 2026-09-24) — acks
+  `counted_through`). Rejected: fresh totals in every ack (settled 2026-09-24) — acks
   and stream pushes travel on different connections and cross, so the gateway has to
   order totals by a revision, which a store restored from a backup sets back.
 - **Totals** — the `totals` event's data, made for the stream's gateway:
@@ -372,16 +371,15 @@ the `{ error, detail }` body, `error` being the stable code:
   new spend for that limit.
 - **Status**: `state` is `starting`, `ready` or `draining`; `started_at` is when the
   gateway process started; `applied_config_hash` is the `config_hash` of the applied
-  config, `null` until a config from the control plane (or its last-known-good copy)
-  is applied — a gateway serving its seed config reports `ready` with `null` (settled
+  config, `null` until a config from the control plane is applied — a gateway serving its seed config reports `ready` with `null` (settled
   2026-09-25: `ready` means a config is in force); `last_rejection` is
   `{ config_hash, codes }` when **the latest config the gateway received from the
   control plane was rejected**, else `null` (`codes`: the rejection's issue codes, as
   the gateway logs them) — set on a rejection, cleared when a later config is applied
   or when the config received is the one the gateway runs (settled 2026-09-24; the
   running config, 2026-10-07: republishing the running config is how an operator
-  backs out a bad publish, and the latest config received is then the one in force). A last-known-good boot does not clear it (that copy is not a
-  config the control plane sent). Routing state (settled 2026-09-24), both
+  backs out a bad publish, and the latest config received is then the one in force).
+  Routing state (settled 2026-09-24), both
   collections empty before the first config is applied:
   - `backends` — backend ID → `{ in_flight, max_in_flight?, deployments }`: every
     backend of the applied config (idle ones with `in_flight` 0, so the control plane
@@ -480,8 +478,7 @@ the `{ error, detail }` body, `error` being the stable code:
   error, which the control plane sees like any rejection; no protocol message
   changes. A bump would not catch an OpenAI backend left as `openai-compatible`
   either: the operator edits the number, not the type. Rejected: a config format and
-  protocol bump for the types — churn across every fixture and the last-known-good
-  format for no check that helps.
+  protocol bump for the types — churn across every fixture for no check that helps.
 - **`api_key_env`** names an environment variable (`^[A-Za-z_][A-Za-z0-9_]*$`) that
   does not start with `KAIAK_` (settled 2026-09-25, N-S2): the gateway's own tokens
   live there, and a config author could otherwise have them sent to any backend URL.
@@ -695,7 +692,7 @@ the `{ error, detail }` body, `error` being the stable code:
   (its `config_hash` and codes) in its status.
 - Provider credentials appear only as environment-variable names. A backend's
   `base_url` carries no userinfo (`user:password@`; settled 2026-09-25): a URL
-  credential would travel in config events, last-known-good copies and host pages.
+  credential would travel in config events and host pages.
 - The same document format is used by file mode and by the sample control plane's
   config file.
 
@@ -749,9 +746,9 @@ the `{ error, detail }` body, `error` being the stable code:
 
 - Each gateway fills one batch of usage records and sends it; it has **at most one
   batch outstanding**. Records settled meanwhile go into the next batch.
-- A batch carries an ID: the gateway's instance ID, an **epoch** (random, created with
-  a fresh spool, so a replaced pod reusing an instance name is never mistaken for the
-  old one) and a **sequence number** increasing per batch within the epoch.
+- A batch carries an ID: the gateway's instance ID, an **epoch** (random, created at
+  every gateway process start, so a replaced pod reusing an instance name is never
+  mistaken for the old one) and a **sequence number** increasing per batch within the epoch.
 - The control plane remembers the last batch ID it counted per instance and epoch. A
   batch it has already counted (a resend after a lost ack) is acked again without
   counting — delivery is at-least-once, counting exactly-once, with state bounded by
@@ -760,40 +757,29 @@ the `{ error, detail }` body, `error` being the stable code:
 - **The ack names the batch and nothing else** (settled 2026-10-07): on ack the
   gateway stops sending the batch. It keeps counting the batch as its own until
   stream totals show it counted (Messages → Totals: `counted_through`), so its own
-  usage is never counted twice or missed in between, and with a data directory keeps
-  it in the spool until totals covering it are saved, so a crash in between loses
-  none of it from its budgets (`GATEWAY.md`, Usage spool).
-- Batches are sealed every 5 s or at 500 records, whichever comes first. With a data
-  directory they are written to it (the spool) before they are sent, so a restart
-  resends them with their IDs, and a crash loses only the records settled since the
-  last seal; without one (the default) they wait in memory, bounded, under an epoch
-  new with every process, and a killed gateway loses what was not acknowledged.
-  Graceful shutdown seals the last records and flushes them either way, within a
-  reserve kept at the end of the drain (`GATEWAY.md`, Usage batches, Usage spool,
-  Lifecycle).
+  usage is never counted twice or missed in between.
+- Batches are sealed every 5 s or at 500 records, whichever comes first. They wait
+  in memory, bounded, under an epoch new with every process, and a killed gateway
+  loses what was not acknowledged. Graceful shutdown seals the last records and
+  flushes them within a reserve kept at the end of the drain (`GATEWAY.md`, Usage
+  batches, Usage batches in memory, Lifecycle).
 - **Sending** (settled 2026-09-24, the gateway's side):
-  - A batch ID is bound to one set of records: it is written with them before its
-    first send, and a restart never seals other records under a sequence already
-    used.
+  - A batch ID is bound to one set of records: it is given when the batch is sealed
+    and never reused within its epoch, and every process start takes a new epoch.
   - The outstanding batch is retried with the **same ID** after a network error, a
     `5xx`, a malformed ack or an ack naming another batch, on the reconnect backoff
     (Config stream).
   - A refusal that means the batch itself can never be accepted — `400`/`413` with
     `usage-batch-invalid`, `record-instance-mismatch`, `record-id-duplicate`,
-    `timestamp-invalid`, `instance-mismatch` or `request-invalid` — **sets the batch
-    aside** (kept on the gateway for inspection, logged at error level with the code)
-    and the next batch is sent: retrying it would block every batch behind it.
+    `timestamp-invalid`, `instance-mismatch` or `request-invalid` — **drops the batch**
+    (logged at error level with the code) and the next batch is sent: retrying it
+    would block every batch behind it.
   - Any other refusal — `401 unauthorized`, `protocol-version-mismatch`,
     `instance-invalid`, a missing protocol header, an unknown answer — is a
     configuration or version problem, not the batch's: retried on the backoff and
-    logged at error level, so no usage is dropped over it. Rejected: setting aside on
-    any `4xx`, which would discard billing data behind a misconfigured proxy.
-  - Batches go in the order they were sealed; each epoch's batches are all sent before
-    another epoch's, so a resend never follows a batch of a newer epoch.
-  - A spooled batch goes out under **its own instance ID** (body and
-    `Kaiak-Instance` header), even when the gateway now runs under another one — a
-    container whose hostname changed keeps delivering the usage its previous name
-    recorded; new batches carry the new name and a fresh epoch.
+    logged at error level, so no usage is dropped over it. Rejected: dropping the batch
+    on any `4xx`, which would discard billing data behind a misconfigured proxy.
+  - Batches go in the order they were sealed.
 
 ## Usage intake (settled 2026-09-24)
 
@@ -816,7 +802,8 @@ How the control plane takes `POST /v1/usage`, as `kaiak-control` implements it.
   lost on the gateway side are its loss, and the control plane must not stall on
   them); a sequence at or below the last of its epoch → acked again, not counted (a
   resend, or a straggler behind a later batch); nothing counted yet in its epoch
-  after batches of another → counted and logged as a new epoch (a fresh spool).
+  after batches of another → counted and logged as a new epoch (a gateway process
+  started).
   Batches from one instance are taken one at a time within a control-plane process;
   across processes the store's conditional write (below) decides, so two copies racing
   (a retry beside the original) are counted once either way — also when the gateway
@@ -824,7 +811,7 @@ How the control plane takes `POST /v1/usage`, as `kaiak-control` implements it.
   lists the instance's last counted batch of each epoch kept (Messages → Totals).
   Rejected: one last batch per
   instance (settled 2026-09-24) — a write of an earlier epoch's batch, stalled while
-  its resend was counted elsewhere and the gateway started a new spool, read the new
+  its resend was counted elsewhere and the gateway restarted under a new epoch, read the new
   epoch's batch as "a different epoch" and counted the batch again.
 - **Counted atomically**: the batch ID becomes the instance's last of its epoch, its
   amounts join the totals and its records join the recent records in one store write — a batch is counted and
@@ -1099,8 +1086,7 @@ How the control plane takes `POST /v1/status`, as `kaiak-control` implements it.
 ## Control-plane outage
 
 - Gateways keep serving on their current config and last pushed totals, hold usage
-  (in the spool, or in memory without a data directory),
-  and reconnect with backoff; per-minute limits keep being enforced locally.
+  in memory, and reconnect with backoff; per-minute limits keep being enforced locally.
 - **Priced models with a money limit fail closed** once the outage exceeds a configured grace
   period — `global.control_outage_grace_ms` in the config, whole milliseconds, 0 or
   more, default `900000` (15 minutes; a policy decision, so it lives with the policy;
@@ -1112,7 +1098,7 @@ How the control plane takes `POST /v1/status`, as `kaiak-control` implements it.
   is bytes on the config stream (heartbeats included), and an open
   stream is contact while it stays open; the outage is no open stream and no
   contact for longer than the grace, counted from the gateway's start when it never
-  reached the control plane (a last-known-good or seed boot). A request is refused when its
+  reached the control plane (a seed boot). A request is refused when its
   model has a price in force and any limit that applies to it — any scope on its
   path — is a `usd_per_month` limit: `503 budget_unavailable` (`GATEWAY.md`, Client API). The
   first contact ends it; status reports and usage acks are not counted as contact
@@ -1132,8 +1118,8 @@ How the control plane takes `POST /v1/status`, as `kaiak-control` implements it.
   streams when its totals reads keep failing — one rule on the gateway covers every
   cause, a dead change channel included, which the control plane cannot see.
 - **Not an outage, same refusal: no totals yet** (settled 2026-09-25, D8): a gateway
-  that has not yet applied totals since it started (nor restored them from its data
-  directory) does not know the spend, and refuses the same
+  that has not yet applied totals since it started does not know the spend, and
+  refuses the same
   models the same way until they arrive. Its readiness waits for them within the
   boot wait (`GATEWAY.md`, Control-plane mode → Readiness waits for the first
   totals), so this shows only when they are late; the totals that follow the

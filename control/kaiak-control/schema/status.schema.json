@@ -35,7 +35,7 @@
       "$ref": "config.schema.json#/$defs/timestamp"
     },
     "applied_config_hash": {
-      "description": "The config_hash of the config in force; null before the first config from the control plane (or its last-known-good copy) is applied, and while the seed config is in force.",
+      "description": "The config_hash of the config in force; null before the first config from the control plane is applied, and while the seed config is in force.",
       "anyOf": [
         {
           "type": "null"

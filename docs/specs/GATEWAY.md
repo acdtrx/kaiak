@@ -1208,9 +1208,9 @@ own, and a client sending repeats is broken either way.
     its scope and type (`CONTROL-PROTOCOL.md`, Messages → Matching totals to limits).
     Drift: in-flight requests plus the other gateways' unreported usage, about one
     batch interval each.
-- **File mode** (single instance only): the same local window counter enforces every
-  window, at the full limit; windows longer than a minute are kept in the file-mode
-  usage snapshot so a restart does not reset them. The gateway only enforces limits —
+- **File mode** (single instance, local and development use): the same local window
+  counter enforces every window, at the full limit; a restart starts every window
+  empty (File mode keeps nothing across a restart, below). The gateway only enforces limits —
   authoritative totals are the control plane's job, never computed twice.
 - **Tokens before the request runs**: input tokens are estimated from the request body
   (about 4 bytes of text per token — no tokenizer, zero dependencies); the check
@@ -1470,10 +1470,12 @@ own, and a client sending repeats is broken either way.
   enforced by a gateway still running a config the control plane moved off, started
   from nothing until totals listed it.
   **A count outlives its scope's config** (settled 2026-10-07): the hour and month
-  counts of a scope a reload removes are kept until their window ends — in-flight
-  reservations stay on them — and a group created again under its ID within the
-  window takes them back, in both modes. Pushed windows are dropped once their window
-  has passed. Rejected: rebuilding the counts from the config alone — a deleted
+  counts of a scope a reload removes are kept while their current window holds own
+  usage or a running request holds a reservation on them — of any amount, zero
+  included, and across a window roll-over — and a group created again under its ID
+  meanwhile takes them back, in both modes; they are dropped once neither holds. They
+  are outside the `counters-exceeded` bound: each ends with its window. Pushed windows
+  are dropped once their window has passed. Rejected: rebuilding the counts from the config alone — a deleted
   group's own usage not yet in the totals (in file mode, all of it) was lost, and a
   group created again under its ID started a fresh budget, which the config contract
   says it does not (`CONTROL-PROTOCOL.md`, Config → The group tree: Parents never
@@ -1487,17 +1489,9 @@ own, and a client sending repeats is broken either way.
   `CONTROL-PROTOCOL.md`, Usage intake → Totals). A
   per-minute limit that still exists — same group (or global) and type — keeps its
   window; a new one starts empty; a removed one is dropped.
-- **File-mode usage snapshot** (settled 2026-09-24; only with a data directory —
-  without one, a restart starts with empty windows): `limits.json` in the data
-  directory, format version 3 (settled 2026-10-06: counts are named by group and
-  type, no model set), holding
-  each scope's hour and month window with settled usage (`group` — absent for
-  global —, `type`, `window_start`, `used`), limited or not, the counts of scopes a
-  reload removed within their window included — unsettled reservations are left
-  out. Written every 30 s and on shutdown; restored at startup, where a
-  window is kept only if it is the current one.
-  Per-minute windows are not kept. A snapshot that cannot be read is logged and the
-  gateway starts with empty windows (it is a cache).
+- **File mode keeps nothing across a restart** (settled 2026-10-07): every window
+  starts empty at each start. File mode is for local and development use
+  (Configuration sources).
 - **Control-plane mode** (settled 2026-09-24; the protocol side in
   `CONTROL-PROTOCOL.md`, Budgets and Messages → Totals):
   - **Hour and month counts** are `base + own`: `base` is the pushed `used` of the
@@ -1509,13 +1503,11 @@ own, and a client sending repeats is broken either way.
     lock that seals batches, so it is exactly the batch the record is sealed in; the
     record goes to the batch as it settles, and local limits settle from it after
     (settled 2026-09-25, H4). A totals message that shows a batch counted (the
-    `counted_through` entry of the batch's epoch at or past it — the gateway holds the
-    batches of its current epoch and any restored from the spool, and matches each by
-    its epoch) drops every generation up to the batch's from `own`, in the same step, under the limiter's lock, as it applies the totals that
+    `counted_through` entry of the gateway's epoch at or past it) drops every generation up to the batch's from `own`, in the same step, under the limiter's lock, as it applies the totals that
     include it; a record that settles after its batch was shown counted (a retried
     attempt's record, published mid-request; a push faster than the request's end) is
     not added to `own` — it is in the base. An ack drops nothing from `own`: it only
-    tells the client the batch can leave the spool (settled 2026-10-07). Nothing is
+    ends the batch's delivery (settled 2026-10-07). Nothing is
     counted twice or missed in between. Rejected: closing a generation when a batch
     seals and tagging usage with the generation open at settlement — the record that
     fills a batch (or one racing an interval seal) was tagged with the next
@@ -1593,46 +1585,11 @@ own, and a client sending repeats is broken either way.
     model its scope may use (output default × live gateways > limit). Rejected: refusing
     such requests as too large — every ordinary request failed while each
     gateway's share sat idle.
-  - **Restart keeps the last totals** (settled 2026-09-25, M5; only with a data
-    directory — without one, a restart counts from the next totals: a boot with the
-    control plane down serves only the seed's free models, which spend no budget):
-    `limits.json` is neither read nor written; instead `totals.json` (format version
-    5, settled 2026-10-07) holds the last applied totals — each scope's hour and month
-    pushed base (`group`, absent for global, `type`, `window_start`, `used`) for the
-    windows still current when it is written, the `counted_through` entries those
-    bases include, and the live-gateway count. The gateway's **own usage is rebuilt
-    from the usage spool** (settled 2026-10-07): at boot, after the config boot and
-    before traffic, the bases are restored by group (or global) and type, as totals
-    are (Totals apply whatever the config), and every spooled batch of this
-    instance that the saved `counted_through` does not cover — acknowledged or not —
-    adds its records to `own`, in their own windows when still current, under the
-    batch's generation, as if just settled. The spool keeps a batch until a
-    `totals.json` save covering it has completed (Usage spool), so the saved bases
-    and the spool together hold every settled amount once: in a base, or in a
-    spooled batch the saved totals do not cover. Batches restored from another
-    instance's spool (the instance ID changed, the data directory kept) are never
-    named by the totals, which cover the recipient instance's own batches only:
-    their records are rebuilt into `own` too, and leave once this instance's first
-    batch is shown counted — they are sent before it, and the control plane counts a
-    batch before it acknowledges it — so until then they may be counted twice, an
-    over-count only (settled 2026-10-07, AUDIT-2 2L5). **Written in the background**
-    every 30 s while totals were applied since the last write, and at shutdown — never
-    on the stream's goroutine, never per request (settled 2026-10-07). So a gateway
-    restarted with the control plane down — crashed or not — keeps enforcing a spent
-    budget, and hour limits for as long as the outage lasts, instead of counting from
-    zero; what a crash loses is only what the spool loses (Usage spool → What a crash
-    can lose). Restored totals do not end the outage rule: with no contact since the
-    start, priced USD-limited requests are refused once the grace has passed (Outage
-    refusal), restored or not. Per-minute windows are never kept. The file is a
-    cache: the control plane's next totals replace it, and the control plane stays the
-    record. Rejected: counting from the next pushed totals — every restart forgot the
-    month until the control plane answered; saving own usage beside the bases on each
-    write — usage settled after the last write and spooled was in neither after a
-    crash, so a gateway restarted during an outage could spend the budget again;
-    writing the file on every push — at thousands of groups it is megabytes with two
-    fsyncs a second, on the goroutine config events wait behind; treating money totals
-    as unknown after an unclean restart — priced models then failed closed until the
-    control plane was back.
+  - **A restart counts from the next totals** (settled 2026-10-07): nothing is kept
+    across a restart (Configuration sources). Until the first totals since the start,
+    priced USD-limited requests are refused (Control-plane mode → No totals yet); a
+    boot with the control plane down serves only the seed's free models, which spend
+    no budget.
   - **Outage refusal**: *contact* is bytes on the config stream (heartbeats
     included), and nothing else (settled 2026-10-07: a usage ack brings no totals
     back, so it proves nothing about the bases — `CONTROL-PROTOCOL.md`, Control-plane
@@ -1640,7 +1597,7 @@ own, and a client sending repeats is broken either way.
     long as it stays open (a silent one is closed after 45 s). The gateway is in
     **outage** when no stream is open and there has been no contact for longer
     than `global.control_outage_grace_ms` of the config in force; the clock starts
-    at process start, so a gateway booting from its last-known-good or seed config with the
+    at process start, so a gateway booting from its seed config with the
     control plane down is in outage once the grace has passed since it started. In
     outage, a request is refused `503 budget_unavailable` (no `Retry-After`: nobody
     knows when the control plane returns) when its model has a price in force and
@@ -1665,19 +1622,18 @@ own, and a client sending repeats is broken either way.
     2026-10-07): while usage waits, an open stream is not enough — the gateway is also
     in outage once it has waited longer than the grace. Usage waits two ways:
     - **for an answer** — batches sealed or queued, not yet acknowledged or refused:
-      since the first of them was sealed (or restored at boot), or since the control
+      since the first of them was sealed, or since the control
       plane's last answer to one, whichever is later. A control plane that serves
       config but keeps failing `/v1/usage` cannot count this gateway's spend, and
       each replica would enforce only its own view. This clock restarts on the
       answer.
     - **to be shown counted** — batches of this instance acknowledged but not yet
       covered by the `counted_through` of applied totals: since the oldest of them was
-      acknowledged (or restored at boot). Totals that stop coming while the stream
+      acknowledged. Totals that stop coming while the stream
       stays open — a control-plane process whose change channel died, or whose totals
       reads keep failing — leave the bases frozen while acks still flow, and each
       replica would again enforce only its own view. An ack does not restart this
-      clock; only totals covering the batch end its wait. Batches of another instance
-      restored from the spool wait only for an answer: no totals name them.
+      clock; only totals covering the batch end its wait.
 
     With nothing waiting, the stream alone decides. A gateway that spends nothing has
     nothing waiting, and is never refused for frozen totals it does not use.
@@ -1687,7 +1643,7 @@ own, and a client sending repeats is broken either way.
   - **Drift in control-plane mode**: the other gateways' usage not yet reported
     (about one batch interval each) and the push delay; knowledge that a batch was
     counted lags the ack by up to a push (about a second), which only over-counts
-    until it arrives. After an outage, the backlog of spooled batches lands in the windows it
+    until it arrives. After an outage, the backlog of queued batches lands in the windows it
     was settled in when those are the current or previous ones, else in the current
     ones.
 - **Drift in file mode** (principle 6; settled 2026-09-24):
@@ -1699,9 +1655,7 @@ own, and a client sending repeats is broken either way.
     no output limit;
   - USD per month: the cost of the requests in flight when the budget is reached
     (cost is known only after);
-  - restarts: per-minute windows start empty (at most one minute of allowance
-    regained); hour and month windows lose at most 30 s of settled usage after a
-    crash, nothing after a clean shutdown.
+  - restarts: every window starts empty (File mode keeps nothing across a restart).
 - Control-plane outage handling: see `CONTROL-PROTOCOL.md`.
 
 ## Accounting
@@ -1833,24 +1787,25 @@ own, and a client sending repeats is broken either way.
 
 - **The minimal gateway** (settled 2026-09-25; the follow-up audit's E1/E2): in
   control-plane mode `KAIAK_CONTROL_URL` and `KAIAK_CONTROL_TOKEN` — plus the
-  backends' API-key variables the config names — are a complete gateway: no data
-  directory, no seed, a read-only filesystem. It boots from the control plane,
+  backends' API-key variables the config names — are a complete gateway: no seed, a
+  read-only filesystem. It boots from the control plane,
   serves, reports usage and status, drains, and **writes nothing anywhere**; with
   the control plane unavailable through the boot wait it exits non-zero at its end
   (Control-plane mode → Boot), and its supervisor restarts it. Every other variable
-  below is optional. The gateway is stateless by default: the data directory (a
-  disk cache and spool) and the seed config (the backup for a boot during an
-  outage) are opt-ins (`docs/kaiak.md`, principles 1–2).
+  below is optional. The gateway is stateless — it writes nothing, ever (Nothing is
+  written to disk, below) — and the seed config (the backup for a boot during an
+  outage) is an opt-in (`docs/kaiak.md`, principles 1–2).
 - `KAIAK_CONFIG_FILE` — file mode: config from a local file, usage totals kept locally
-  (snapshotted to the data directory when one is set), no control plane.
+  in memory, no control plane. File mode is for local and development use (settled
+  2026-10-07): every count starts from zero at each start.
 - `KAIAK_CONTROL_URL` + `KAIAK_CONTROL_TOKEN` — control-plane mode (see
   `CONTROL-PROTOCOL.md`; Control-plane mode below). The URL is the control plane's
   base (`http://` or `https://`, no query); the endpoints are under `<URL>/v1/`. The
   two come together, and never beside `KAIAK_CONFIG_FILE`: any other combination is
   a startup error (settled 2026-09-24).
 - `KAIAK_CONTROL_BOOT_WAIT_MS` (default `60000`, above 0) — how long boot keeps
-  waiting for the control plane's config on the stream before using the
-  last-known-good or seed config, or exiting; what is left of it after the boot
+  waiting for the control plane's config on the stream before using the seed
+  config, or exiting; what is left of it after the boot
   bounds the wait for the first totals (Control-plane mode → Boot, Readiness waits
   for the first totals).
 - `KAIAK_SEED_CONFIG_FILE` — control-plane mode only (beside `KAIAK_CONFIG_FILE` it
@@ -1870,31 +1825,18 @@ own, and a client sending repeats is broken either way.
   control-plane mode it must have the instance ID shape (`CONTROL-PROTOCOL.md`,
   Messages) — a startup error otherwise, naming the value: a control plane refuses
   every request and batch from an instance ID of another shape.
-- `KAIAK_DATA_DIR` — the data directory, **optional, no default** (settled
-  2026-09-25, E1). Unset, the gateway writes nothing anywhere: usage batches wait
-  in memory until acknowledged (Control-plane mode → Usage batches in memory), a
-  fresh usage epoch starts with every process, there is no last-known-good copy,
-  totals live in memory only, file mode keeps no limits snapshot, and no lock is
-  taken. A pod that dies loses only what it had not delivered. Rejected: a default
-  directory — a read-only root filesystem (the target Kubernetes setup) would fail
-  the start, and a writable scratch directory only moves the loss to the pod's
-  deletion. Set, the persistence below is kept exactly: the directory (relative to
-  the working directory, or absolute) is created at startup if missing. Every file
-  in it is written atomically
-  (temporary file + rename) inside a `{ format_version, data }` envelope; a file with
-  another format version is deleted and the deletion logged. File mode keeps the
-  usage snapshot there (`limits.json`, Limits); control-plane mode the last-known-good
-  config (`last-known-good.json`), the last applied totals (`totals.json`, Limits →
-  Control-plane mode) and the usage spool (`usage-spool.json`, `usage-batch-*.json`,
-  `usage-rejected-*.json`; Control-plane mode → Usage spool).
-  **One gateway per data directory** (settled 2026-09-25; the audit's M11): the
-  gateway holds an exclusive advisory lock (`flock`) on `kaiak.lock` in the
-  directory for its whole life; a second gateway on the same directory refuses to
-  start, naming the lock file. The kernel drops the lock when the process ends, however
-  it ends, so a crash leaves nothing to clean up; the file itself stays and means
-  nothing without the lock. On platforms without `flock` (non-Unix) the lock is not
-  taken — supported deployments are Unix. `flock` over some network filesystems is
-  not enforced across hosts: give each replica its own volume.
+- **Nothing is written to disk** (settled 2026-09-25, E1; with no opt-in either,
+  2026-10-07): usage batches wait in memory until acknowledged (Control-plane mode →
+  Usage batches in memory), a fresh usage epoch starts with every process, totals
+  live in memory, and file mode keeps nothing across a restart. A pod that dies loses
+  only what it had not delivered. Rejected: a default directory — a read-only root
+  filesystem (the target Kubernetes setup) would fail the start, and a writable
+  scratch directory only moves the loss to the pod's deletion; an opt-in data
+  directory (`KAIAK_DATA_DIR`: a last-known-good config, the usage spool on disk, a
+  totals cache, a file-mode snapshot) — deployments run on ephemeral disks, where
+  none of it survives a restart, and its restart path mis-counted budgets in every
+  review that looked at it (a crash forgot spooled spend, a lost index retired unsent
+  usage, a restored batch whose cursor had expired was waited on for ever).
 - `KAIAK_LISTEN_ADDR` — the API listener (default `:8080`); `KAIAK_ADMIN_ADDR` — the
   admin listener (default `:9090`). Both bind once a config is in force: after the
   startup load (file mode) or the boot and the first totals (control-plane mode,
@@ -1962,20 +1904,20 @@ own, and a client sending repeats is broken either way.
 - `KAIAK_USAGE_MEMORY_BYTES` (default `67108864`, 64 MiB; whole bytes above 0) —
   control-plane mode: the bound on the usage records held in memory waiting for
   delivery, counted as their encoded size (Control-plane mode → Usage batches in
-  memory; Usage spool → Sustained write failure). File mode ignores it.
+  memory). File mode ignores it.
 - `KAIAK_MAX_CONNECTIONS` (default `0`: no cap; whole number, 0 or more) — the most
   connections the API listener keeps open (Lifecycle → Client timeouts).
 - Starting with no config source is a startup error. A config file that fails to
   load at startup exits the process with the rejection logged; so does a
   control-plane boot that ends with no config (Control-plane mode → Boot).
 - **One apply path** (settled 2026-09-24): every config, whatever its source (file,
-  control plane, last-known-good copy), is validated completely, then swapped in
+  control plane, seed), is validated completely, then swapped in
   atomically, then logged and counted by the same code; invalid config is rejected and
   reported, the running config stays.
 - **File-mode reload on SIGHUP**: the gateway re-reads `KAIAK_CONFIG_FILE`. No file
   watcher — watching needs per-OS syscalls or a dependency, and the operator's tooling can
   send the signal (e.g. on a Kubernetes ConfigMap update). Every load logs its trigger
-  (`startup`, `sighup`; in control-plane mode `control`, `last-known-good` and `seed`) and
+  (`startup`, `sighup`; in control-plane mode `control` and `seed`) and
   result: `config applied`, or `config rejected` with the issue codes and
   `kaiak.config.running=kept` when an older config stays in force. Control-plane
   loads also log `kaiak.config.hash`. Both lines carry `kaiak.config.size` (the
@@ -1993,15 +1935,13 @@ own, and a client sending repeats is broken either way.
   cover it.
 - **Duplicate members in documents from outside** (settled 2026-09-25; the
   independent audit's finding 1): every JSON document the gateway parses from
-  outside — the config file, the seed, `config` stream events (and so the
-  last-known-good copy's config), totals, usage acks — is refused
+  outside — the config file, the seed, `config` stream events, totals, usage acks — is refused
   when an object in it names a member twice, at any depth, before either the schema
   walker or the typed decode runs (`duplicate-member`; for a message it is the
   message's decode error, `CONTROL-PROTOCOL.md` → Messages). Go's two decoders read a
   repeat differently — the generic tree keeps the last, a typed decode into a map
   merges both — so a second `backends` member held a backend the schema never saw
-  (one naming `KAIAK_CONTROL_TOKEN` as its credential). Data-directory files are
-  refused the same way when read (a repeat means the file was edited). One shared
+  (one naming `KAIAK_CONTROL_TOKEN` as its credential). One shared
   detector, a token scan with the standard library's JSON decoder: its memory is
   the names of the objects open at the current position, bounded by the document.
 - **Control-plane mode** (settled 2026-09-24). Only the `control` package talks to the
@@ -2013,12 +1953,12 @@ own, and a client sending repeats is broken either way.
     retry, drawn uniformly up to a step of 250 ms doubling to at most 2 s — then the
     first source that gives a config:
 
-    | The stream's first config | Data directory with a last-known-good copy | Otherwise, seed set | Otherwise |
-    | --- | --- | --- | --- |
-    | applied | — (serves it) | — | — |
-    | the config rejected (semantic, credentials) — at once, no retry | last-known-good | exit | exit |
-    | refused token (`401`) or another `4xx`; a config event the message rules refuse — at once, no retry | last-known-good | exit | exit |
-    | unavailable through the whole wait: connection failed or timed out, the stream cut off, no or another `Kaiak-Protocol`, any `5xx`, or a stream with no config published | last-known-good | seed | exit |
+    | The stream's first config | Seed set | Otherwise |
+    | --- | --- | --- |
+    | applied | — (serves it) | — |
+    | the config rejected (semantic, credentials) — at once, no retry | exit | exit |
+    | refused token (`401`) or another `4xx`; a config event the message rules refuse — at once, no retry | exit | exit |
+    | unavailable through the whole wait: connection failed or timed out, the stream cut off, no or another `Kaiak-Protocol`, any `5xx`, or a stream with no config published | seed | exit |
 
     - **Retrying within the wait** (D7): a control plane restarting beside its
       gateways (a rollout, a node drain, a crash) is back within seconds; one
@@ -2030,9 +1970,9 @@ own, and a client sending repeats is broken either way.
       shorter than the reconnect backoff's (nothing serves yet), and jittered so
       gateways starting together do not ask together. What waiting cannot fix — a
       refused token, a config the gateway rejects — ends the boot at once. Rejected
-      (2026-09-25, reversing E2's "one attempt"): serving the last-known-good or
-      seed config at once and catching up — a stateless gateway has neither, and
-      the seed serves only free models, so a control-plane restart took every
+      (2026-09-25, reversing E2's "one attempt"): serving the seed config at once
+      and catching up — a gateway without a seed has nothing to serve, and the seed
+      serves only free models, so a control-plane restart took every
       priced model away from each gateway started meanwhile; the cost is a start
       delayed by up to the wait when the control plane is really down.
     - **Exit** is non-zero with one error line naming the cause — `no config:
@@ -2050,17 +1990,13 @@ own, and a client sending repeats is broken either way.
       unavailable (a proxy answering for a control plane that is down, or a version
       skew that an upgrade ends), and so does any `5xx` and a control plane with
       nothing published yet: it cannot give a config now (settled 2026-09-25).
-    - The **last-known-good copy** keeps its place before the seed (with a data
-      directory): it is a config the control plane sent, and it also covers a
-      rejected config, as before.
-    - The seed is applied with trigger `seed`, never saved as last-known-good (only
-      configs the control plane sent are) and has no `config_hash`: status reports
+    - The seed is applied with trigger `seed` and has no `config_hash`: status reports
       `ready` with no applied config hash (the follow-up audit's N-P11), and the
       client keeps opening the stream in the background (reconnect backoff), whose
       config replaces the seed.
   - **Readiness waits for the first totals** (settled 2026-09-25, D8; the
     independent daily-operations review's finding 4): after a boot from the control
-    plane or the last-known-good copy, the client follows the control plane and the
+    plane, the client follows the control plane and the
     **listeners bind only once the first totals arrive** — they follow the config on
     the stream (`CONTROL-PROTOCOL.md`, Config stream), so the wait is normally
     milliseconds — or once what is left of the boot wait runs out. Logged: `waiting
@@ -2073,8 +2009,7 @@ own, and a client sending repeats is broken either way.
     reproduction: `200`, then `429` once the totals arrived) — and each new replica of
     a rollout did so again.
   - **No totals yet** (settled 2026-09-25, D8): until totals have been applied since
-    the start — or restored from `totals.json` (Limits → Control-plane mode:
-    Restart) — the hour and month spend is *unknown*, which is not "totals with no
+    the start, the hour and month spend is *unknown*, which is not "totals with no
     usage" (a scope the first totals on a stream do not list has used nothing). While it is
     unknown, a priced request under a `usd_per_month` limit is refused `503
     budget_unavailable` as in an outage (Limits → Outage refusal), before anything is
@@ -2118,27 +2053,18 @@ own, and a client sending repeats is broken either way.
     on every attempt; the gateway keeps retrying on the same backoff and keeps
     serving what it has — an upgrade of either side ends it, and exiting would turn a
     version skew into an outage.
-  - **Rejections**: a config the gateway rejects is never applied nor saved; its
+  - **Rejections**: a config the gateway rejects is never applied; its
     `config_hash` and codes are kept for the status report until a later config from
     the control plane is applied (`CONTROL-PROTOCOL.md`, Messages → Status).
-  - **Last-known-good** (with a data directory only; `last-known-good.json`, format
-    version 7 — settled 2026-10-07, the config and its `config_hash`): the config
-    document exactly as the control plane sent it and its hash, written after each
-    successful apply from the control plane (never a rejected one, never on a boot
-    from the copy itself). At boot it is loaded through the apply path, so a copy that
-    no longer passes (an API-key variable now unset) is rejected like any config.
   - The client follows the control plane until the drain is over (Lifecycle): requests
     admitted during the grace period run on the newest config and totals.
   - **Usage batches** (settled 2026-09-24; the protocol side in `CONTROL-PROTOCOL.md`,
     Usage batches): the client is a sink on accounting's fan-out; `Record` appends
     the record to the filling batch in memory and never waits. The batch is sealed
-    every 5 s, or at once when it reaches 500 records; sealed batches go to the batch
-    store — the spool with a data directory, memory without — each under the next
-    sequence of the epoch, and queue behind the one outstanding. A separate goroutine
-    sends the queue's head and nothing else until it is acknowledged or set aside;
-    the store is written by another, so neither the network nor the disk ever waits
-    on the other. One sealer, queue and sender serve both stores: only where a
-    queued batch is kept differs. An ack removes its batch from the queue and nothing
+    every 5 s, or at once when it reaches 500 records; sealed batches queue in memory,
+    each under the next sequence of the epoch, behind the one outstanding. A separate
+    goroutine sends the queue's head and nothing else until it is acknowledged or
+    refused. An ack removes its batch from the queue and nothing
     else: the batch's usage stays in the limiter's own usage until stream totals show
     it counted (settled 2026-10-07). Acknowledged batches of this instance are
     remembered (batch ID, usage generation and acknowledgement time; no records)
@@ -2146,9 +2072,9 @@ own, and a client sending repeats is broken either way.
     forgotten, which only over-counts until a later batch is shown counted (that
     retires every earlier generation), and the wait to be shown counted (Limits →
     Usage acks count for money limits) keeps its time.
-  - **Usage batches in memory** (no data directory; settled 2026-09-25, E1): queued
-    batches are held in memory until acknowledged, under an epoch new with every
-    process. They are bounded like the spool's unwritable case: past
+  - **Usage batches in memory** (settled 2026-09-25, E1): queued batches are held in
+    memory until acknowledged, under an epoch new with every process (32 random hex
+    digits). They are bounded: past
     **`KAIAK_USAGE_MEMORY_BYTES`** held (default 64 MiB, queued and sealed records
     by their encoded size), the oldest queued batches are dropped —
     except the outstanding one, which may be on the wire and whose ack must still
@@ -2158,7 +2084,7 @@ own, and a client sending repeats is broken either way.
     refuses likewise. What a pod loses when it ends: the records not yet
     acknowledged if it is killed, only what the drain's flush could not deliver if
     it drains (Lifecycle), and whatever passed the bound during a long outage.
-    Rejected: a scratch directory for the spool (a read-only root filesystem, and
+    Rejected: a scratch directory for the queue (a read-only root filesystem, and
     the pod's deletion takes it anyway).
     - **The bound is bytes** (settled 2026-09-25; the independent audit's
       deployment notes): each record counts its encoded size, taken from the
@@ -2170,66 +2096,15 @@ own, and a client sending repeats is broken either way.
       records — about 145 records/s through the 15-minute outage grace. Rejected: a
       record count (the fixed 10 000 records covered about 100 s at 100 records/s,
       far short of the grace, and records differ in size by their IDs and names).
-  - **Usage spool** (with a data directory; settled 2026-09-24; format version 4
-    because the index records acknowledged batches, settled 2026-10-07): one file per
-    sealed batch, `usage-batch-<epoch>-<sequence>.json` (the batch message exactly as
-    sent), and an index, `usage-spool.json` (instance, epoch, next sequence, and each
-    epoch's last acknowledged sequence). The
-    files are the queue: memory holds only their IDs and record counts, and the batch
-    being sent, so a long outage costs disk, not memory, and each seal writes one
-    batch — never the whole queue.
-    - **Write policy**: a seal writes the batch file, then the index past it; only
-      then is the batch queued, so no batch is ever sent before it and its sequence
-      are durable, and a restart never reuses a sequence for other records. An ack
-      writes the index with the batch's epoch acknowledged through its sequence, so a
-      restart never sends it again; the batch's file stays until a `totals.json` save
-      whose `counted_through` covers it has completed, and is deleted then (settled
-      2026-10-07; Limits → Control-plane mode: Restart keeps the last totals). Another
-      instance's batch is deleted on its ack: no totals name it. A failed write leaves the batch sealed in memory,
-      unchanged, and is retried at the next seal tick (logged at error level); usage
-      waits rather than risking a sequence bound to two record sets. The filling
-      batch is not written: it is sealed every 5 s and at the drain, so a separate
-      copy would buy nothing.
-    - **Sustained write failure** (settled 2026-09-25, L16): sealed batches waiting
-      for the spool are kept in memory up to **`KAIAK_USAGE_MEMORY_BYTES`** (the
-      same bound and setting as without a data directory: one knob for the usage
-      memory a pod may hold); past that the oldest sealed batches are dropped,
-      logged at error level and counted in
-      `kaiak_usage_dropped_records_total{reason="spool_unwritable"}`.
-      A disk that stays full or read-only would otherwise grow the process until it
-      is killed, losing every record in memory anyway. Rejected: refusing new
-      requests while usage cannot be spooled (serving never depends on the control
-      plane or its bookkeeping), and an unbounded buffer.
     - **Record checks at seal time** (settled 2026-09-25, H5): before a batch is
-      written, each record is checked against the usage record's schema and rules,
+      sealed, each record is checked against the usage record's schema and rules,
       as the control plane will check it. A record that fails would make the control
-      plane refuse the whole batch — up to 500 records set aside — so it is set
-      aside alone: written to `usage-rejected-record-<record ID>.json` (kept with the
-      refused batches, the newest 10), logged at error level with its request ID, and
-      counted in `kaiak_usage_dropped_records_total{reason="invalid"}`; the rest of the
-      batch goes on (a batch left empty is dropped, taking no sequence). Settlement
+      plane refuse the whole batch — up to 500 records — so it is dropped alone:
+      logged at error level with its request ID, and counted in
+      `kaiak_usage_dropped_records_total{reason="invalid"}`; the rest of the batch
+      goes on (a batch left empty is dropped, taking no sequence). Settlement
       already clamps every unit and the cost to 2^53 − 1 (Accounting), so this
       guards against what clamping does not cover.
-    - **What a crash can lose**: the records settled since the last seal — at most
-      5 s of usage, or fewer than 500 records. Everything sealed is resent after the
-      restart with its ID; a batch the control plane counted before the crash is
-      acknowledged again without counting.
-    - **Epoch**: 32 random hex digits, new whenever a fresh spool starts — no index,
-      an index of another format version (discarded, logged), an unreadable one, or
-      another instance's. The sequence continues across restarts otherwise.
-      Batches already queued are delivered whatever the index said, each under its
-      own ID (another instance's under that instance): other epochs first, one epoch
-      at a time — in epoch-ID order, which is random, not by age (known limit:
-      `docs/BACKLOG.md`, Old-epoch spool order) — then the current epoch's.
-    - **Queue bound**: none — usage is billing data. A warning is logged each time
-      the queue passes another 1000 batches (about 300 MB of full batches), and the
-      depth is a metric; disk space is the operator's to watch. (In memory, with no
-      data directory, the queue is bounded: Usage batches in memory.)
-    - **Refused batches** are moved to `usage-rejected-<epoch>-<sequence>.json` for
-      inspection; the newest 10 are kept, older ones deleted as new ones arrive. A
-      queued file that cannot be read is set aside the same way.
-    - The spool is the one data file whose loss drops data: flush it (graceful
-      shutdown) before an upgrade that changes its format version.
   - **Status reports** (`CONTROL-PROTOCOL.md`, Gateway status): when the client starts,
     when a config stream connects, when the state, the applied config or the
     last rejection changes, when routing changes (a model's queue starting or ending,
@@ -2242,8 +2117,8 @@ own, and a client sending repeats is broken either way.
     telling each change within a second. The other triggers are not held (the drain's
     report must go at once), and any report sent inside the gap covers the pending
     change. Rejected: no gap — a queue flickering empty↔non-empty turns into a report
-    per request. State: `ready` while a config is in force — from the control plane,
-    the last-known-good copy or the seed (settled 2026-09-25, N-P11: derived from the
+    per request. State: `ready` while a config is in force — from the control plane
+    or the seed (settled 2026-09-25, N-P11: derived from the
     config in force, not from the control plane's, so a seed boot reports ready
     with no applied config hash) — `draining` from the drain's start; `starting` (no
     config in force) is never reported by the binary, which reports only after a
@@ -2304,7 +2179,7 @@ own, and a client sending repeats is broken either way.
   | `kaiak_deployment_cooling_down` | gauge | `backend`, `deployment_model` | 1 while the deployment cools down after a `429` (Routing and reliability: 429 cooldown), else 0; one sample per configured deployment, as `kaiak_circuit_open` |
   | `kaiak_circuit_transitions_total` | counter | `backend`, `deployment_model`, `to` | Circuit transitions per deployment: `to` is `open`, `half_open` or `closed` |
   | `kaiak_probes_total` | counter | `backend`, `result` | Probes of backends with open circuits: `success`, `failure` |
-  | `kaiak_config_loads_total` | counter | `trigger`, `result` | Config loads: `startup`/`sighup`/`control`/`seed`/`last-known-good`, `applied`/`rejected` |
+  | `kaiak_config_loads_total` | counter | `trigger`, `result` | Config loads: `startup`/`sighup`/`control`/`seed`, `applied`/`rejected` |
   | `kaiak_config_last_applied_timestamp_seconds` | gauge | — | Unix time the running config was applied |
   | `kaiak_config_size_bytes` | gauge | — | Size of the running config document in bytes, as applied (a file's bytes, a config event's `config`); absent before the first config (Config load cost, below) |
   | `kaiak_config_apply_duration_seconds` | histogram | `trigger`, `result` | Every config load that had a document, from the start of its validation (syntax, schema, semantic rules, credentials, snapshot build) to the swap or the rejection; labels as `kaiak_config_loads_total`. A file that could not be read is counted there, not here |
@@ -2312,11 +2187,11 @@ own, and a client sending repeats is broken either way.
   | `kaiak_connections_refused_total` | counter | — | API connections closed at accept because `KAIAK_MAX_CONNECTIONS` were open (0 with no cap) |
   | `kaiak_log_export_records_total` | counter | `outcome` | With OTLP log export on (settled 2026-10-05): log records by what became of them — `exported` (accepted by the collector), `failed` (in a batch given up), `dropped` (never sent: a full queue, or still queued at exit; Observability → OTLP log export). All three at 0 from startup; absent when export is off |
   | `kaiak_build_info` | gauge | `version`, `go_version` | Always 1; `version` is the release the binary was built as — the image build links its `git describe` version in (`docs/TECH-STACK.md`, Container images), else the module version Go stamped, else `(devel)` |
-  | `kaiak_usage_batch_sends_total` | counter | `result` | Control-plane mode: usage batch sends — `acked`, `rejected` (set aside), `failed` (retried) |
-  | `kaiak_usage_spool_batches` | gauge | — | Control-plane mode: sealed usage batches not yet acknowledged (in the spool or in memory) |
+  | `kaiak_usage_batch_sends_total` | counter | `result` | Control-plane mode: usage batch sends — `acked`, `rejected` (dropped), `failed` (retried) |
+  | `kaiak_usage_spool_batches` | gauge | — | Control-plane mode: sealed usage batches not yet acknowledged (in memory) |
   | `kaiak_usage_spool_records` | gauge | — | Control-plane mode: records in those batches |
-  | `kaiak_usage_queued_bytes` | gauge | — | Control-plane mode: encoded bytes of the unacknowledged records held in memory, what `KAIAK_USAGE_MEMORY_BYTES` bounds — every queued record with no data directory; with one, the sealed records the spool could not write |
-  | `kaiak_usage_dropped_records_total` | counter | `reason` | Control-plane mode: usage records dropped before reaching the control plane — `invalid` (failed the record checks, set aside alone), `spool_unwritable` (over the in-memory bound while the spool cannot be written), `memory_bound` (over the in-memory bound with no data directory) |
+  | `kaiak_usage_queued_bytes` | gauge | — | Control-plane mode: encoded bytes of the unacknowledged records held in memory, what `KAIAK_USAGE_MEMORY_BYTES` bounds — every queued record |
+  | `kaiak_usage_dropped_records_total` | counter | `reason` | Control-plane mode: usage records dropped before reaching the control plane — `invalid` (failed the record checks, dropped alone), `memory_bound` (over the in-memory bound) |
   | `kaiak_usage_last_ack_timestamp_seconds` | gauge | — | Control-plane mode: Unix time of the last acknowledged batch; absent before one. An ack is not contact for the outage rule (only stream bytes are) |
   | `kaiak_control_connected` | gauge | — | Control-plane mode: 1 while a config stream is open, else 0 |
   | `kaiak_control_last_contact_timestamp_seconds` | gauge | — | Control-plane mode: Unix time of the last contact (stream bytes); the process start before any |
@@ -2332,7 +2207,7 @@ own, and a client sending repeats is broken either way.
     control plane can keep the config stream open while it no longer takes usage.
     Alert when `kaiak_usage_spool_batches > 0` and `time() -
     kaiak_usage_last_ack_timestamp_seconds` stays above the outage grace (before any
-    ack the metric is absent: alert on a spool that stays non-empty), and on
+    ack the metric is absent: alert on a queue that stays non-empty), and on
     `kaiak_control_outage == 1`. A config the gateway rejected shows in its
     status report's `last_rejection`, in `kaiak_config_loads_total{result="rejected"}`,
     and in `kaiak_control_config_rejected`, which stays 1 for as long as the gateway
@@ -2670,24 +2545,22 @@ own, and a client sending repeats is broken either way.
     the last attempt's. Token counts and cost are summed over the request's records,
     zeros included.
   - **Operational events** — every other line: startup and stop, config loads,
-    control-plane contact, usage delivery, limits, circuits and probes, the drain,
-    the listeners and the data directory. Their messages are sentences
+    control-plane contact, usage delivery, limits, circuits and probes, the drain
+    and the listeners. Their messages are sentences
     (`config applied`, `circuit opened`); their attributes, grouped by subject:
 
     | Attribute | Was | Lines and meaning |
     |---|---|---|
     | `exception.message` | `error` | Any line reporting a failure: the failure in the gateway's own words — a Go error's text when the gateway built it, never text a remote party sent (Logs: no remote text). Not `error.type`, which is a low-cardinality class — this is free text naming files, hosts and causes. `exception.message` is what OpenTelemetry's Go API records an error's text as (`RecordError`); `error.message` is deprecated |
-    | `kaiak.reason` | `reason` | Why: the stop (`kaiak stopping`, `kaiak stopped`), the drain's cut (`timeout`, `hurried`), an outage (`no contact`, `usage not acknowledged`, `usage not shown counted`), a new usage epoch, discarded limits totals |
-    | `kaiak.trigger` | `trigger` | What asked for it: a config load (`startup`, `sighup`, `control`, `seed`, `last-known-good`), a probe, a status report, a usage seal or flush, a snapshot or totals write (`interval`, `shutdown`), a circuit change (`trial`, the probe's trigger) |
-    | `file.name` | `file`, for a data-directory file | The file's name in the data directory (`last-known-good.json`, `usage-spool.json`, `usage-batch-…`, `usage-rejected-…`, `limits.json`, `totals.json`) |
-    | `file.path` | `file`, for a path | A file named by its path: the config file and the seed on their load lines, a data file discarded for its format version |
+    | `kaiak.reason` | `reason` | Why: the stop (`kaiak stopping`, `kaiak stopped`), the drain's cut (`timeout`, `hurried`), an outage (`no contact`, `usage not acknowledged`, `usage not shown counted`) |
+    | `kaiak.trigger` | `trigger` | What asked for it: a config load (`startup`, `sighup`, `control`, `seed`), a probe, a status report, a usage seal or flush, a circuit change (`trial`, the probe's trigger) |
+    | `file.path` | `file`, for a path | A file named by its path: the config file and the seed on their load lines |
     | `kaiak.backend.id` | `backend`; `deployment` on `usage out of the protocol's range` | A backend's config ID |
     | `kaiak.deployment.model` | `deployment_model` | A deployment's model name on its backend |
     | `kaiak.duration` | `duration_ms` | How long the line's operation took, in seconds: a config load (its validation and snapshot build, to the swap or the rejection; to the microsecond), a probe |
     | `kaiak.lasted` | `lasted_ms`; `lasted` (a duration string) | How long what ended lasted, in seconds: a config stream, a control-plane outage (from the grace running out) |
     | `process.pid` | `pid` | `kaiak starting`: the process ID |
     | `service.instance.id` | `instance_id` | `kaiak starting`: the instance ID (`KAIAK_INSTANCE_ID`); with OTLP export on, also every record's resource |
-    | `kaiak.data_dir` | `data_dir` | `kaiak starting`: the data directory, empty without one |
     | `kaiak.config.file` | `config_file` | `kaiak starting` in file mode: `KAIAK_CONFIG_FILE` |
     | `kaiak.control.url` | `control_url` | `kaiak starting` in control-plane mode, and every line of the control-plane client: the control plane's URL, credentials redacted |
     | `kaiak.log_export.endpoint` | — (added) | `kaiak starting` with OTLP log export on: the endpoint's `host:port`; absent when export is off. Never a header |
@@ -2695,7 +2568,7 @@ own, and a client sending repeats is broken either way.
     | `kaiak.config.max_request_body_size`, `kaiak.body_budget.size` | `max_request_body_bytes`, `body_memory_bytes` | The warning that the config's body cap (`max_request_body_bytes`) exceeds the body budget (`KAIAK_BODY_MEMORY_BYTES`) — both in bytes |
     | `kaiak.control.totals_wait` | `wait_ms` | `waiting for the first totals`: the wait's bound, in seconds |
     | `kaiak.control.totals_waited` | `waited_ms` | `first totals received`, `first totals not received within the boot wait…`: the time waited, in seconds |
-    | `kaiak.config.hash` | — (added 2026-10-07) | A control-plane config's `config_hash`: control-plane loads, the last-known-good copy, skipped `config` events |
+    | `kaiak.config.hash` | — (added 2026-10-07) | A control-plane config's `config_hash`: control-plane loads, skipped `config` events |
     | `kaiak.config.backends`, `kaiak.config.models`, `kaiak.config.keys` | `backends`, `models`, `keys` | `config applied`: what the config holds |
     | `kaiak.config.size` | `bytes` | `config applied`, `config rejected` with a document: its size, in bytes |
     | `kaiak.config.issue_codes` | `codes` | `config rejected`: the issue codes (an array) |
@@ -2705,10 +2578,8 @@ own, and a client sending repeats is broken either way.
     | `kaiak.control.event` | `event` | `stream event ignored: unknown event`: the event's name |
     | `kaiak.control.since_contact`, `kaiak.control.outage_grace`, `kaiak.control.usage_waiting` | `since_contact`, `grace`, `usage_waiting` (duration strings) | `control plane outage: …` (Limits → Control-plane mode: Outage log lines): time since the last contact, the outage grace, how long usage has waited for an ack, or to be shown counted — in seconds |
     | `kaiak.status.state` | `state` | Status report lines: the state reported |
-    | `kaiak.usage.batches`, `kaiak.usage.records` | `batches`, `records` | Usage batches and records a line is about (sealed, sent, spooled, flushed, dropped, restored to the limits) |
-    | `kaiak.usage.acknowledged_batches` | `acknowledged_batches` | `usage spool restored`: the acknowledged batches the spool kept, waiting for a `totals.json` write to cover them |
-    | `kaiak.usage.epoch`, `kaiak.usage.sequence`, `kaiak.usage.next_sequence` | `epoch`, `sequence`, `next_sequence` | A usage batch's ID; the spool's next one |
-    | `kaiak.usage.batch_instance` | `batch_instance` | A batch spooled under another instance ID |
+    | `kaiak.usage.batches`, `kaiak.usage.records` | `batches`, `records` | Usage batches and records a line is about (sealed, sent, flushed, dropped) |
+    | `kaiak.usage.epoch`, `kaiak.usage.sequence` | `epoch`, `sequence` | A usage batch's ID |
     | `kaiak.usage.kept_records`, `kaiak.usage.kept_size`, `kaiak.usage.max_size` | `kept_records`, `kept_bytes`, `bound_bytes` | Usage dropped to bound memory: the records that stay and their encoded size, and the bound (`KAIAK_USAGE_MEMORY_BYTES`) — sizes in bytes |
     | `kaiak.usage.record_id`, `kaiak.request.id` | `record_id`, `request_id` | A usage record refused by the checks or clamped, and its request |
     | `kaiak.usage.issues` | `issues` | `usage record refused by the protocol's checks…`: what failed |
@@ -2718,7 +2589,6 @@ own, and a client sending repeats is broken either way.
     | `kaiak.limit.configured`, `kaiak.limit.enforced`, `kaiak.limit.live_gateways` | `tokens_per_minute`, `share`, `live_gateways` | `per-minute share below the model's default output…`: the configured limit, this gateway's share, the live gateways |
     | `kaiak.model.name`, `kaiak.model.output_default` | `model`, `output_default` | The same line: the model and its default output |
     | `kaiak.limit.window_start`, `kaiak.gateway_time` | `window_start`, `gateway_time` | `pushed window ahead of the gateway's clock` |
-    | `kaiak.limit.windows`, `kaiak.limit.windows_dropped` | `windows`, `dropped` | The limits snapshot or totals cache restored or written: windows kept, windows dropped |
     | `kaiak.circuit.failures`, `kaiak.circuit.last_error`, `kaiak.circuit.trial` | `failures`, `last_error`, `trial` | `circuit opened`: the failures in a row, the failure that opened it, `true` when a half-open trial failed |
     | `kaiak.circuit.open_duration` | `open_ms` | `circuit half-open`, `circuit closed`: how long it was open, in seconds |
     | `kaiak.circuit.half_opened` | `circuits_half_open` | `probe succeeded`: circuits it made half-open |
@@ -2731,7 +2601,6 @@ own, and a client sending repeats is broken either way.
     | `kaiak.listener.name` | `listener` | `api` or `admin` |
     | `server.address`, `server.port` | `addr` (`host:port`) | `listening`: the bound address and port, split |
     | `kaiak.listener.shutdown_timeout` | `timeout` (a duration string) | `shutdown timed out; closing open connections`: the timeout, in seconds |
-    | `kaiak.data_file.found_version`, `kaiak.data_file.want_version` | `found_version`, `want_version` | `discarded data file with a different format version` |
     | `kaiak.log_export.failed`, `kaiak.log_export.dropped` | — (added) | `log export failing` (stderr only; OTLP log export, below): records failed and dropped since the previous such line; with `http.response.status_code` (the collector's last answer, when it answered) and `exception.message` (the last error, in the gateway's own words — never the collector's text) |
 
     The HTTP server's own messages (`http: …`, at warn level) carry no attributes.
@@ -2850,8 +2719,7 @@ own, and a client sending repeats is broken either way.
 
 ## Lifecycle
 
-- **Readiness** only once a config is loaded (file, control plane, last-known-good, or
-  seed) and, in control-plane mode, the first totals have arrived or the boot wait
+- **Readiness** only once a config is loaded (file, control plane or seed) and, in control-plane mode, the first totals have arrived or the boot wait
   has run out (Control-plane mode → Readiness waits for the first totals) — which is
   from the first probe: the listeners bind only then. Until they bind, probes find
   the admin port closed (connection refused), liveness included: size the probes'
@@ -2935,24 +2803,21 @@ own, and a client sending repeats is broken either way.
      the cut they leave the queue with the same `503` (no record: never routed).
      Limits settle from those records as usual;
   5. in control-plane mode, the **usage flush** (settled 2026-09-24): the filling batch
-     is sealed and written, and the queued batches are sent until all are
-     acknowledged or set aside — within what remains of grace + drain timeout, counted
-     from the drain's start (at least the reserve) — then a final `draining` status
-     goes out (bounded to 2 s). What is not delivered stays in the spool for the next
-     start, or, with no data directory, is lost with the process (logged at error
-     level, as other lost usage is: `usage not flushed: lost at exit`, with the
+     is sealed, and the queued batches are sent until all are acknowledged or
+     refused — within what remains of grace + drain timeout, counted from the
+     drain's start (at least the reserve) — then a final `draining` status goes out
+     (bounded to 2 s). What is not delivered is lost with the process (logged at
+     error level, as other lost usage is: `usage not flushed: lost at exit`, with the
      batches and records; settled 2026-10-01, the 2026-09-30 review's O7). Then the
-     control-plane client stops, the file-mode usage snapshot (or the totals cache)
-     is written when there is a data directory, the admin
-     listener stops, `kaiak stopped` is logged and, with OTLP log export on, the
+     control-plane client stops, the admin listener stops, `kaiak stopped` is logged and, with OTLP log export on, the
      export's final flush runs (Observability → OTLP log export: at exit; settled
      2026-10-05: after usage — usage is the record, logs are not); the process
      exits 0. The admin listener serves throughout:
      `/healthz` stays 200, `/metrics` answers.
   - A **second** SIGTERM/SIGINT during the drain skips whatever waiting remains:
     in-flight requests are cut off at once, then step 5 runs (the usage flush seals
-    the last batch without waiting for acks — kept in the spool with a data
-    directory, lost without — and the final status is skipped) and the
+    the last batch without waiting for acks — what is not delivered is lost — and
+    the final status is skipped) and the
     process exits 0 — like a timed-out drain, the shutdown completed; the cut requests are in the
     log and in their partial records. A second signal arriving later, during the
     final log flush, cuts that flush to its 1 s (Observability → OTLP log export:
@@ -2961,8 +2826,8 @@ own, and a client sending repeats is broken either way.
     with the error.
   - Kubernetes: `terminationGracePeriodSeconds` must exceed grace + drain timeout +
     about 10 s — after the drain, the final status report (≤ 2 s), the admin
-    listener's shutdown (≤ 5 s with a scrape open), with a data directory the
-    snapshot and totals writes, and with OTLP log export on its final flush — 1 s
+    listener's shutdown (≤ 5 s with a scrape open), and with OTLP log export on its
+    final flush — 1 s
     when the drain used its whole time. Default 5 + 60 + 10 s → at least 75 s; the
     Kubernetes default of 30 s would SIGKILL long streams mid-drain.
   - No draining metric: `/readyz` already says it, and a scrape during a
