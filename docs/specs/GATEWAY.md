@@ -1591,7 +1591,11 @@ own, and a client sending repeats is broken either way.
     whatever the config). Restored uncounted usage counts only when its window is still current
     and is tagged with the newest generation of the batches restored from the usage
     spool, so it leaves once they are counted; with none restored it leaves with the
-    first totals applied. So a gateway restarted with the control plane down keeps
+    first totals applied. Batches restored from another instance's spool (the
+    instance ID changed, the data directory kept) are never named by the totals,
+    which cover the recipient instance's own batches only: their usage leaves once
+    this instance's first batch is counted, and until then it is counted twice — an
+    over-count only, the safe side (settled 2026-10-07, AUDIT-2 2L5). So a gateway restarted with the control plane down keeps
     enforcing a spent budget — and hour limits for as long as the outage lasts —
     instead of counting from zero. Restored totals do not end the outage rule: with
     no contact since the start, priced USD-limited requests are refused once the
@@ -2242,7 +2246,7 @@ own, and a client sending repeats is broken either way.
   | `kaiak_probes_total` | counter | `backend`, `result` | Probes of backends with open circuits: `success`, `failure` |
   | `kaiak_config_loads_total` | counter | `trigger`, `result` | Config loads: `startup`/`sighup`/`control`/`seed`/`last-known-good`, `applied`/`rejected` |
   | `kaiak_config_last_applied_timestamp_seconds` | gauge | — | Unix time the running config was applied |
-  | `kaiak_config_size_bytes` | gauge | — | Size of the running config document in bytes, as applied (a file's bytes, a control-plane snapshot's `config`); absent before the first config (Config load cost, below) |
+  | `kaiak_config_size_bytes` | gauge | — | Size of the running config document in bytes, as applied (a file's bytes, a config event's `config`); absent before the first config (Config load cost, below) |
   | `kaiak_config_apply_duration_seconds` | histogram | `trigger`, `result` | Every config load that had a document, from the start of its validation (syntax, schema, semantic rules, credentials, snapshot build) to the swap or the rejection; labels as `kaiak_config_loads_total`. A file that could not be read is counted there, not here |
   | `kaiak_limits_sync_duration_seconds` | histogram | — | The limiter matching its counters to a newly applied config — done inside the first limiter call after the swap (normally a request's admission), under the limiter's lock, so that request waits for it and every other request waits behind it. Calls that find no new config are not observed |
   | `kaiak_connections_refused_total` | counter | — | API connections closed at accept because `KAIAK_MAX_CONNECTIONS` were open (0 with no cap) |
@@ -2258,6 +2262,7 @@ own, and a client sending repeats is broken either way.
   | `kaiak_control_last_contact_timestamp_seconds` | gauge | — | Control-plane mode: Unix time of the last contact (stream bytes); the process start before any |
   | `kaiak_control_totals_applied_timestamp_seconds` | gauge | — | Control-plane mode: Unix time stream totals were last applied; absent before any |
   | `kaiak_control_outage` | gauge | — | Control-plane mode: 1 while in outage past the grace (priced money-limited models refused) — the stream down, or usage batches unanswered — else 0 |
+  | `kaiak_control_config_rejected` | gauge | — | Control-plane mode: 1 while the latest config received from the control plane was rejected (status `last_rejection` set) and another config stays in force, else 0 (settled 2026-10-07) |
   | `kaiak_usage_records_total` | counter | usage labels | Usage records settled: one per routed request, plus one per retried attempt sent in full and unanswered. Records, not requests — count client requests with `kaiak_request_duration_seconds_count` |
   | `kaiak_usage_clamped_records_total` | counter | — | Usage records whose units or cost passed 2^53 − 1 and were clamped to it (Accounting) |
   | `kaiak_usage_tokens_total` | counter | usage labels, `unit` | Tokens per usage unit (all five token units, zeros included) |
@@ -2269,7 +2274,9 @@ own, and a client sending repeats is broken either way.
     kaiak_usage_last_ack_timestamp_seconds` stays above the outage grace (before any
     ack the metric is absent: alert on a spool that stays non-empty), on
     and on `kaiak_control_outage == 1`. A config the gateway rejected shows in its
-    status report's `last_rejection` and in `kaiak_config_loads_total{result="rejected"}`.
+    status report's `last_rejection`, in `kaiak_config_loads_total{result="rejected"}`,
+    and in `kaiak_control_config_rejected`, which stays 1 for as long as the gateway
+    runs another config than the control plane's current one.
   - Usage labels (settled 2026-09-27): `key_group` (the key's group ID),
     `root_group` (its top-level group's ID — the key's group itself when that is
     top-level), `key_id`, `model` (public name), `status` — `complete`, or

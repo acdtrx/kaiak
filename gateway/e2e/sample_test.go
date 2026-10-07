@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -371,6 +372,8 @@ func TestAcrossHalves(t *testing.T) {
 	})
 
 	restarted := float64(time.Now().UnixNano()) / 1e9
+	controlApplied := msg("config applied", "kaiak.trigger", "control")
+	appliedBefore := map[*gateway]int{a: a.logs.count(controlApplied), b: b.logs.count(controlApplied)}
 	sample = startSample(t, node, root, configFile, token)
 	proxy.setUpstream(t, sample.url)
 
@@ -387,6 +390,11 @@ func TestAcrossHalves(t *testing.T) {
 		}
 		served(t, "priced on gw-a, the new store's budget unspent", chat(t, a, "priced"))
 		allCounted(t, recoverLimit)
+		for name, g := range map[string]*gateway{"gw-a": a, "gw-b": b} {
+			if n := g.logs.count(controlApplied); n != appliedBefore[g] {
+				t.Errorf("%s: %d control configs applied after the reconnect, want %d: the config it runs is skipped", name, n, appliedBefore[g])
+			}
+		}
 	})
 
 	t.Run("SIGTERM flushes the last records before exit", func(t *testing.T) {
@@ -692,6 +700,10 @@ func (w *totalsWatch) read(events *sse.Reader) {
 			break
 		}
 		w.mu.Lock()
+		if w.latest != nil {
+			// Later totals list only the windows that changed: the others keep theirs.
+			totals.Windows = mergeWindows(w.latest.Windows, totals.Windows)
+		}
 		w.latest = &totals
 		close(w.changed)
 		w.changed = make(chan struct{})
@@ -792,6 +804,27 @@ func (s *servedTokens) counted(totals control.Totals) bool {
 
 // used is the window's used amount of group's limit (global: "") of type typ; 0 when
 // the totals list no such window.
+// mergeWindows is the windows of earlier totals with those of a later changes-only
+// message replacing theirs by scope and type (CONTROL-PROTOCOL.md, Config stream →
+// Totals).
+func mergeWindows(earlier, changed []control.TotalsWindow) []control.TotalsWindow {
+	type key struct {
+		group string
+		typ   config.LimitType
+	}
+	listed := map[key]bool{}
+	for _, w := range changed {
+		listed[key{w.Group, w.Type}] = true
+	}
+	out := slices.Clone(changed)
+	for _, w := range earlier {
+		if !listed[key{w.Group, w.Type}] {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
 func used(totals control.Totals, group string, typ config.LimitType) int64 {
 	for _, w := range totals.Windows {
 		if w.Group == group && w.Type == typ {

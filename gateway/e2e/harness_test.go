@@ -149,6 +149,19 @@ func (l *logLines) waitCount(t *testing.T, what string, n int, limit time.Durati
 	}
 }
 
+// count is how many lines so far match match.
+func (l *logLines) count(match func(map[string]any) bool) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n := 0
+	for _, entry := range l.lines {
+		if match(entry) {
+			n++
+		}
+	}
+	return n
+}
+
 func (l *logLines) text() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
