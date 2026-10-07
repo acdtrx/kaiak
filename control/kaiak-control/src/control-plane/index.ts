@@ -128,6 +128,8 @@ export function createControlPlane(options: ControlPlaneOptions): ControlPlane {
     batchCursorRetentionMs,
     sweepIntervalMs: expirySweepIntervalMs,
     onExpirySweep,
+    // The usage module is made below; the sweep runs only once both exist.
+    dropPastWindows: () => usage.dropPastWindows(),
     onListenerError: (error, change) => onListenerError(error, { type: "gateways-changed", change }),
   });
   const usage = createUsage({

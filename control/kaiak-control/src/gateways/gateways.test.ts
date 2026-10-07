@@ -31,6 +31,7 @@ function setup(options: Partial<GatewaysOptions> = {}) {
     batchCursorRetentionMs: 3_600_000,
     sweepIntervalMs: 5_000,
     onExpirySweep: (run) => runs.push(run),
+    dropPastWindows: async () => {},
     onListenerError: (error) => assert.fail(`listener failed: ${String(error)}`),
     ...options,
   });

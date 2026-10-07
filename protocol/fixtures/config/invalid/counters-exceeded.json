@@ -2,8 +2,6 @@
   "format_version": 5,
   "global": {
     "limits": [
-      { "type": "requests_per_minute", "value": 1000 },
-      { "type": "tokens_per_minute", "value": 1000 },
       { "type": "tokens_per_hour", "value": 1000 },
       { "type": "usd_per_month", "value": 1000 }
     ]
@@ -12616,7 +12614,7 @@
     "u12496": { "parent": "users" },
     "u12497": { "parent": "users" },
     "u12498": { "parent": "users" },
-    "extra": { "limits": [{ "type": "usd_per_month", "value": 1 }] }
+    "spare": { "limits": [{ "type": "requests_per_minute", "value": 1 }] }
   },
   "keys": {}
 }

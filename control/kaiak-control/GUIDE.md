@@ -13,7 +13,10 @@
 > config versions — and the pre-merge review's store contract (batch cursors per
 > epoch, revisions that never repeat, the catch-up) on 2026-10-07; to the second
 > review's (no store sequence, totals of every scope sent complete then as changes,
-> `counted_through` per epoch, the config kept as text) on 2026-10-07.
+> `counted_through` per epoch, the config kept as text) on 2026-10-07; to the third
+> review's (a stream's first totals read after it connects, reads after a notification
+> on the primary, the restore procedure, counters bounded by what a config allocates)
+> on 2026-10-07.
 >
 > Background, in this order: `docs/architecture/control-plane.html` (how gateways and a
 > control plane work together, with diagrams), `docs/specs/CONTROL-PROTOCOL.md` (the
@@ -146,7 +149,10 @@ await app.listen({ host: "0.0.0.0", port: 8090 });
   it and ends its streams, so gateways reconnect and read the current state; a host
   serving streams some other way does the same, ordering what it sends on each stream
   by when the read was issued (`readConfig` / `onConfigRead` carry that place, and the
-  plugin's totals are one `readTotals` per push for every stream). `stop()` releases the core's store subscription;
+  plugin's totals are one `readTotals` per push for every stream), and starting each
+  stream's totals from a `readTotals` issued after the stream connected — never an
+  earlier read, which can be older than what another process already sent that
+  gateway. `stop()` releases the core's store subscription;
   `start()` takes it again and catches up on what changed meanwhile.
 - Several cores over one store are several `createControlPlane({ store })` calls —
   one per process in a real deployment (§2, rule 1). The sample shows the shape inside
@@ -170,7 +176,16 @@ read in **one snapshot**. Every change, by any process, reaches every process th
 `subscribe()` — with a **catch-up** whenever the store's change channel comes back from
 a disconnect. The store keeps **no order of its own**: each core orders what it sends
 on a stream by when it issued each read, so nothing the store returns needs to arrive
-in order.
+in order. Two things it must hold that are easy to miss with a database:
+
+- **A read after a notification sees the change.** A core that hears of a publish
+  reads the current config, of a gateway change the gateway records, of a counted
+  batch the totals — make every one of those reads on the **primary**. A read replica
+  can lag the commit the notification announced, and a config read that misses a
+  publish keeps that core's gateways on the old config (a revoked key still works)
+  until the next publish.
+- **Every call settles.** Set a statement timeout: a call that never returns holds
+  that core's config deliveries, which run one at a time, with nothing reported.
 
 Several processes need their clocks kept in step: NTP-synchronized, within a second.
 Each core picks the current hour and month from its own clock, and the expiry sweep
@@ -180,10 +195,10 @@ compares its clock with receipt times other processes wrote.
 | --- | --- |
 | `currentConfig()`, `publishConfig(entry, expectedHash)` | One current config: `{ text, hash, publishedAt }` — `text` is the config's JSON exactly as the core wrote it, and is returned **unchanged**, byte for byte (the hash is over it). A publish **replaces** it **only while the current config's hash is still `expectedHash`** (`undefined` = none published yet) — the config the core checked the parents rule against. Otherwise write nothing and return `{ saved: false, current }`. The store keeps no earlier configs; config history is your app's. A publish never depends on usage. |
 | `lastBatch(instance, epoch)`, `saveCountedBatch(counted, expectedLast, keepRecords)` | The exactly-once guarantee. A cursor per **(instance, epoch)**: `lastBatch` returns `{ inEpoch, latest }` — the instance's last counted batch in that epoch, and the one counted last in any epoch (greatest `countedAt`). `saveCountedBatch` writes the batch as its epoch's last, adds every `additions` entry to the window totals and appends `records` — **all in one transaction, and only if the instance's last batch in the batch's epoch still equals `expectedLast`** (`undefined` = none yet in that epoch). Otherwise write nothing and return `{ saved: false, cursors }`. One cursor per instance is not enough: a write stalled on an earlier epoch would read a newer epoch's batch as "a fresh spool" and count again. |
-| `totalsSnapshot(current)` | The current windows (`tokens_per_hour` at `hourStart`, `usd_per_month` at `monthStart`) and **every** instance's cursors, one per (instance, epoch), **read in one snapshot** (`REPEATABLE READ`, or one statement). The windows then hold exactly the batches the cursors name. Reading the cursors in a statement of its own is the classic mistake: the contract tests catch it. |
+| `totalsSnapshot(current)` | The current windows (`tokens_per_hour` at `hourStart`, `usd_per_month` at `monthStart`) and **every** instance's cursors, one per (instance, epoch), **read in one snapshot** (`REPEATABLE READ`, or one statement). The windows then hold exactly the batches the cursors name. Reading the cursors in a statement of its own is the classic mistake: the contract tests are likely to catch it, not certain — against a real database it shows only when a batch commits between the two statements. |
 | `dropPastWindowTotals(oldest)` | Past windows *may* be dropped; keeping them for reporting is allowed — the core only reads current windows. Not announced. |
-| `recentRecords(limit)` | Newest first. |
-| `gateway`, `gateways`, `saveGateway(record, expectedRevision)`, `forgetGateways([{ instance, revision }])` | Latest status per instance with a `revision` that **never repeats for the instance**, a forgotten and recreated one included — take it from a store-wide counter or sequence (gaps are fine), never from the record itself. Each write and each forget only if the stored record is still at the revision the core read. Every write notifies `gateways-changed` (with `liveChanged` false when the live set stays as it was). Forgetting a gateway keeps its batch cursors. |
+| `recentRecords(limit)` | Newest first: the reverse of the order they were saved, a batch's records saved in batch order — so records with equal receipt times still come back in a defined order (keep an insertion-order column). |
+| `gateway`, `gateways`, `saveGateway(record, expectedRevision)`, `forgetGateways([{ instance, revision }])` | Latest status per instance with a `revision` that **never repeats for the instance**, a forgotten and recreated one included, and across a restore (below) — take it from a store-wide counter or sequence (gaps are fine), never from the record itself. Each write and each forget only if the stored record is still at the revision the core read. Every write notifies `gateways-changed` (with `liveChanged` false when the live set stays as it was). Forgetting a gateway keeps its batch cursors. |
 | `dropBatchCursorsCountedBefore(cutoff)` | Drop each (instance, epoch) cursor counted before `cutoff`, return the instances that lost one. |
 | `subscribe(listener)` | Every change **any process** makes — `config-published` (with the new hash), `batch-counted`, `gateways-changed` — after its write, in the store's order, to every subscriber of every process. For a database: a notification channel (Postgres `LISTEN`/`NOTIFY` sent in the writing transaction, Redis pub/sub). A channel drops what is sent while it is down, so **every time it reconnects, announce `{ type: "catch-up" }`** to every subscriber, once the channel listens again: the core rereads the current config, the totals and the live set. The core does not poll. |
 
@@ -200,6 +215,10 @@ Representation notes:
   group **ID**: those of a deleted group age out with their hour or month — and a group
   created again under that ID within the window carries on with them (§7).
 - Times are milliseconds since the epoch, by the control plane's clock.
+- **Return numbers as numbers.** Batch sequences, `countedAt`, `publishedAt` and
+  revisions are JavaScript numbers; window totals are `bigint`. node-postgres returns
+  `int8` and `numeric` columns as strings by default — convert them (or set a type
+  parser), or the contract tests' equality checks fail on `"1"` against `1`.
 - **Store the config as text** (`text`), never as `jsonb`: `jsonb` does not keep member
   order, and the text sent must stay the text hashed. The core has already validated
   it. Gateway records returned must not share mutable state with what callers hold
@@ -215,7 +234,8 @@ create table batch_cursor (instance text, epoch text, sequence bigint not null,
 create table window_total (group_id text not null,       -- '' for global: a key column is never null
                            type text, window_start bigint,
                            used numeric(20,0) not null, primary key (group_id, type, window_start));
-create table usage_record (record_id text primary key, received_at bigint not null, record jsonb not null);
+create table usage_record (record_id text primary key, received_at bigint not null, record jsonb not null,
+                           saved bigint generated always as identity);   -- recentRecords: order by saved desc
 create table gateway      (instance text primary key, revision bigint not null, live boolean not null,
                            state jsonb not null);
 create sequence gateway_revision;   -- never hands out a value twice, so revisions never repeat
@@ -268,11 +288,13 @@ begin;
                                   -- inserting) differs from $live
 commit;
 -- forgetGateways: delete … where instance = $instance and revision = $revision
--- returning live; one notification for the call, liveChanged when a live one went.
+-- returning live, one instance after another in the order given (the core sorts them
+-- by instance, so two sweeps never lock the same rows in opposite orders); one
+-- notification for the call, liveChanged when a live one went.
 ```
 
-Run `totalsSnapshot` in one `REPEATABLE READ` transaction, on the primary: a read
-replica can lag the commit a notification announced.
+Run `totalsSnapshot` in one `REPEATABLE READ` transaction. Like every read the core
+makes after a notification, it goes to the primary.
 
 ```sql
 begin isolation level repeatable read;
@@ -292,7 +314,19 @@ while the channel was down.
 
 A store restored from a backup, or failed over to a standby that was behind, is simply
 the current state: the cores read it and send its config and totals like any other.
-Nothing needs to be done to the store itself.
+**Restore it this way:**
+
+1. Stop every control-plane process.
+2. Restore.
+3. Move the gateway revisions past every value handed out before the restore
+   (`select setval('gateway_revision', <a value above any issued>)`). A restored
+   sequence would hand out revisions that writes computed before the restore still
+   hold, and such a write could then expire or overwrite a gateway that reported after
+   it.
+4. Start the processes. Each start reads the current config, totals and gateways.
+
+A restore under running processes, with the change channel up, is announced to
+nobody: their streams keep the old state until the next change.
 
 ## 6. Usage records: your ledger
 
@@ -381,13 +415,15 @@ edit which group or mint keys in it is your app's business, never config.
   `limits`, which bind every group below it. For a `users` group: the models and
   budget no person may exceed are `users`' own; its `child_defaults` are what each
   person gets unless their own group says otherwise.
-- **Effective limits are bounded**: global's limits plus every group's effective
-  limits (its own merged with its parent's `child_defaults.limits`) add up to at
-  most **50 000** (`effective-limits-exceeded`, reported once at path `""`). Each is
-  a counter on every gateway (about 1.4 KB, so about 70 MB at the bound), and
-  defaults multiply: D default limits on a group with N
-  children are D × N. Before offering "a default limit for everyone" in a UI, check
-  what it costs across the children.
+- **Counters are bounded**: every gateway keeps an hour and a month counter for
+  global and every group, limited or not, plus one counter per effective per-minute
+  limit (its own merged with its parent's `child_defaults.limits`); a config may
+  allocate at most **50 000** (`counters-exceeded`, reported once at path `""`) —
+  so at most about 25 000 groups, fewer with per-minute limits. A per-minute counter
+  is about 1.4 KB and an hour or month one a few hundred bytes, so the bound keeps
+  counter memory under about 70 MB per gateway. Defaults multiply: D default
+  per-minute limits on a group with N children are D × N. Before offering "a default
+  limit for everyone" in a UI, check what it costs across the children.
 - A group's **parent never changes**. To move a group, delete it and create a new
   one (a new ID, or the same ID in a later publish).
 - **A group ID used again resumes its window's spend**: windows are keyed by the ID,
@@ -633,8 +669,9 @@ if (current) {
   in-memory store) may leave it out. The suite runs in this repo against the memory
   store behind a lossy channel (`src/store-contract/lossy-channel.ts`), and against
   deliberately broken stores — a cursor read outside the snapshot, a channel that
-  comes back without a catch-up, a catch-up told to one subscriber only
-  (`src/store-contract/negative-control.test.ts`): it must fail each, and does. Then drive the core with your store — the kaiak-control tests
+  comes back without a catch-up, a catch-up told to one subscriber only, a publish
+  announced before its write is visible (`src/store-contract/negative-control.test.ts`):
+  it must fail each, exactly at the tests naming the broken guarantee, and does. Then drive the core with your store — the kaiak-control tests
   (`src/**/**.test.ts`) show how to call `acceptUsageBatch`, `acceptStatus` and
   `publishConfig` directly without HTTP, two cores over one store included.
 - Validate against the shared fixtures in the kaiak repo's `protocol/fixtures/` (valid

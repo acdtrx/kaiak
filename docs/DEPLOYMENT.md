@@ -226,8 +226,8 @@ Nothing else is lost: config and totals come back from the control plane.
   live heap); memory, not CPU, is what runs out first under many streams. Outside
   both, each non-stream answer in flight keeps its `choices` (up to 4 MiB, usually
   KiB) to estimate output when a backend reports no usage. Headroom covers idle
-  connections, metrics series, limit counters (about 1.4 KB per effective limit, at
-  most about 70 MB: Config for many hosts), the usage queue (up to `KAIAK_USAGE_MEMORY_BYTES`,
+  connections, metrics series, limit counters (at most 50 000 a config allocates,
+  under about 70 MB: Config for many hosts), the usage queue (up to `KAIAK_USAGE_MEMORY_BYTES`,
   64 MiB; its heap is about its encoded size), with log export on its queue (at most
 10 000 records, about 10 MB) and the runtime. Starting point:
   **limit = 2 × budget + 512 MiB** (1.5 GiB at the default budget) with
@@ -497,12 +497,13 @@ the document (a script, or the control plane) rather than editing it by hand.
   the default, so it can loosen it. Put a hard restriction for a
   subtree — the models and budget no person under `users` may exceed — on the
   parent's **own** `allowed_models` and `limits`, which bind every group below it.
-- **Effective limits are bounded at 50 000** (`effective-limits-exceeded`): global's
-  limits plus every group's own limits merged with its parent's
-  `child_defaults.limits`. Each is a counter on every gateway, about 1.4 KB, so
-  the bound is about 70 MB of heap per pod (part of the headroom in Resources).
-  Defaults multiply: 4 default limits on a `users` group with 5 000 people are
-  20 000 counters.
+- **Counters are bounded at 50 000** (`counters-exceeded`): every gateway keeps an
+  hour and a month counter for global and for every group, limited or not, plus one
+  counter per effective per-minute limit (a group's own merged with its parent's
+  `child_defaults.limits`). A per-minute counter is about 1.4 KB and an hour or month
+  one a few hundred bytes, so the bound keeps counters under about 70 MB of heap per
+  pod (part of the headroom in Resources). Groups and defaults multiply: 5 000 people
+  under a `users` group with 2 default per-minute limits are 20 000 counters.
 - **A group ID used again resumes its spend**: a group deleted and created again with
   the same ID (a move included) within the hour or month gets that window's spend
   back. Use a new ID for a fresh budget.

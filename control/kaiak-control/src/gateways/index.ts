@@ -101,6 +101,9 @@ export interface GatewaysOptions {
   sweepIntervalMs: number;
   // Hears of every sweep run, whatever triggered it.
   onExpirySweep: (run: ExpirySweepRun) => void;
+  // Lets the store drop past window totals (Usage.dropPastWindows): store housekeeping
+  // the sweep runs last, so a store failing it fails the run, never a batch.
+  dropPastWindows: () => Promise<void>;
   // Called for each listener that throws; the status or the sweep stands either way.
   onListenerError: (error: unknown, change: GatewaysChange) => void;
 }
@@ -108,7 +111,7 @@ export interface GatewaysOptions {
 const CONFLICT_REASON = "started-at-alternating";
 
 export function createGateways(options: GatewaysOptions): Gateways {
-  const { store, clock, onExpirySweep, onListenerError } = options;
+  const { store, clock, onExpirySweep, dropPastWindows, onListenerError } = options;
   const { liveTimeoutMs, forgetAfterMs, batchCursorRetentionMs, sweepIntervalMs } = options;
   for (const [name, value] of Object.entries({ liveTimeoutMs, forgetAfterMs, batchCursorRetentionMs, sweepIntervalMs })) {
     if (!Number.isSafeInteger(value) || value <= 0) {
@@ -206,9 +209,13 @@ export function createGateways(options: GatewaysOptions): Gateways {
           if (written.saved) expired.push(gateway.instance);
         }
       }
+      // In instance order, so two sweeps never take a database's records in opposite
+      // orders.
+      toForget.sort((a, b) => (a.instance < b.instance ? -1 : a.instance > b.instance ? 1 : 0));
       const forgotten = toForget.length > 0 ? await store.forgetGateways(toForget) : [];
       for (const instance of forgotten) if (liveForgotten.has(instance)) expired.push(instance);
       const batchCursorsDropped = await store.dropBatchCursorsCountedBefore(at - batchCursorRetentionMs);
+      await dropPastWindows();
       const run = {
         trigger,
         at,

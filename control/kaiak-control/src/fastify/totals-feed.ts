@@ -1,9 +1,11 @@
 // The totals every stream of one core sends (docs/specs/CONTROL-PROTOCOL.md, Config
 // stream → Totals; Messages → Totals): one store snapshot per push for all of them.
 // Each read is compared with the one before it, and the windows that changed go to
-// every stream; a stream that joins starts from the whole of the latest read. Reads
-// run one at a time, at most one per push interval, so what a stream sends is always
-// from a read issued after the one it sent before.
+// every stream. A stream that joins starts from the whole of the first read issued
+// after it joined — never an earlier one, which could be older than what another
+// process already sent its gateway, or the last good read of a feed whose reads now
+// fail. Reads run one at a time, at most one per push interval, so what a stream sends
+// is always from a read issued after the one it sent before.
 
 import { performance } from "node:perf_hooks";
 
@@ -13,11 +15,21 @@ import type { ControlPlane } from "../control-plane/index.ts";
 import type { BatchId, TotalsWindow } from "../messages/index.ts";
 
 // The latest read: every window with usage by scope and type, every instance's cursors
-// and the live count.
+// and the live count, with the read's place in the order the feed issued its reads.
 export interface TotalsState {
   windows: ReadonlyMap<string, TotalsWindow>;
   cursors: readonly BatchId[];
   liveGateways: number;
+  read: number;
+}
+
+// A stream's place in the feed: how to leave, and the first read it may start from.
+export interface TotalsMembership {
+  // Stops following; safe to call more than once.
+  leave(): void;
+  // The number of the first read issued after the join: complete totals come from a
+  // read at or past it.
+  firstRead: number;
 }
 
 // A stream following the totals: told of every read with the windows it changed (none,
@@ -29,9 +41,8 @@ export interface TotalsSubscriber {
 export interface TotalsFeed {
   // The latest read, undefined before the first.
   readonly state: TotalsState | undefined;
-  // Follows the totals from now on; returns the leave, which is safe to call more than
-  // once.
-  join(subscriber: TotalsSubscriber): () => void;
+  // Follows the totals from now on, and issues a read for the stream to start from.
+  join(subscriber: TotalsSubscriber): TotalsMembership;
   // Stops reading; nothing is read or told after it.
   close(): void;
 }
@@ -54,6 +65,8 @@ export function createTotalsFeed({ core, intervalMs, log }: TotalsFeedOptions): 
   let closed = false;
   let reading = false;
   let readAgain = false;
+  // Every read takes the next number when it is issued.
+  let nextRead = 0;
   let lastReadAt = Number.NEGATIVE_INFINITY;
   let trailingRead: ReturnType<typeof setTimeout> | undefined;
   // A failed read is retried after the interval until one succeeds; the first failure
@@ -81,6 +94,8 @@ export function createTotalsFeed({ core, intervalMs, log }: TotalsFeedOptions): 
 
   const read = async (): Promise<void> => {
     reading = true;
+    const number = nextRead;
+    nextRead += 1;
     lastReadAt = performance.now();
     let next: Awaited<ReturnType<typeof core.readTotals>> | undefined;
     try {
@@ -99,7 +114,7 @@ export function createTotalsFeed({ core, intervalMs, log }: TotalsFeedOptions): 
     failing = false;
     const windows = new Map(next.windows.map((window) => [windowIdentity(window), window]));
     const changed = state ? changedWindows(state.windows, windows, next.windowStarts) : [...windows.values()];
-    state = { windows, cursors: next.cursors, liveGateways: next.liveGateways };
+    state = { windows, cursors: next.cursors, liveGateways: next.liveGateways, read: number };
     for (const subscriber of [...subscribers]) subscriber.take(changed);
     if (readAgain) {
       readAgain = false;
@@ -118,9 +133,16 @@ export function createTotalsFeed({ core, intervalMs, log }: TotalsFeedOptions): 
     },
     join(subscriber) {
       subscribers.add(subscriber);
-      if (!state) requestRead();
-      return () => {
-        subscribers.delete(subscriber);
+      // The number the next read issued takes: a read already running took its number
+      // before the join and does not count. requestRead issues one (after the running
+      // one, if any).
+      const firstRead = nextRead;
+      requestRead();
+      return {
+        leave() {
+          subscribers.delete(subscriber);
+        },
+        firstRead,
       };
     },
     close() {

@@ -127,6 +127,11 @@
     "kind": "schema",
     "reason": "control_outage_grace_ms is a number of milliseconds, not a duration string"
   },
+  "counters-exceeded.json": {
+    "kind": "semantic",
+    "code": "counters-exceeded",
+    "reason": "50 001 counters, one over the 50 000 bound: global's hour and month counters (no per-minute limits), the users group's 2 plus its 2 per-minute limits, 4 on each of its 12 498 children (2 plus users' 2 per-minute child_defaults; one child overrides a default, still 4), and the top-level group spare's 2 plus its one per-minute limit"
+  },
   "deployment-backend-unknown.json": {
     "kind": "semantic",
     "code": "deployment-backend-unknown",
@@ -151,11 +156,6 @@
   "deployments-empty.json": {
     "kind": "schema",
     "reason": "a model needs at least one deployment"
-  },
-  "effective-limits-exceeded.json": {
-    "kind": "semantic",
-    "code": "effective-limits-exceeded",
-    "reason": "50 001 effective limits, one over the 50 000 bound: 4 global, 4 of the users group's own, 4 child_defaults limits on each of its 12 498 children (one child overrides a default, still 4), and one top-level group with one limit"
   },
   "expires-at-date-only.json": {
     "kind": "schema",

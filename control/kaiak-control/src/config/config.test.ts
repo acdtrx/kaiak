@@ -140,28 +140,49 @@ describe("group tree rules", () => {
     ]);
   });
 
-  test("the effective-limits bound counts each group from its direct parent, reported once at the root", () => {
-    // Exactly 50 000: global's, users' own, and 499 children with users' 100 defaults.
+  test("the counter bound counts two per scope and each group's per-minute limits from its direct parent, reported once at the root", () => {
+    // Exactly 50 000: global's 2, users' 4 (2 and its own 2 per-minute limits), 12 498
+    // children with 4 each (2 and users' 2 per-minute defaults), and spare's 2.
     const atBound = (): { groups: Record<string, unknown> } =>
-      readJson(path.join(VALID_DIR, "effective-limits-at-bound.json")) as { groups: Record<string, unknown> };
-    const exceeded = { code: "effective-limits-exceeded", path: "" };
+      readJson(path.join(VALID_DIR, "counters-at-bound.json")) as { groups: Record<string, unknown> };
+    const exceeded = { code: "counters-exceeded", path: "" };
+    assert.deepEqual(issuesOf(atBound()), []);
 
-    // A new child of users takes its 100 defaults.
+    // A new child of users: 2, and users' 2 per-minute defaults.
     const child = atBound();
     child.groups["u-new"] = { parent: "users" };
     assert.deepEqual(issuesOf(child), [exceeded]);
 
-    // A group whose parent has no entry counts its own limits alone.
+    // A group with no limits still takes its two counters.
+    const empty = atBound();
+    empty.groups["also-empty"] = {};
+    assert.deepEqual(issuesOf(empty), [exceeded]);
+
+    // A group whose parent has no entry counts its own per-minute limits alone.
     const stray = atBound();
+    delete stray.groups["spare"];
     stray.groups["stray"] = { parent: "ghost" };
     assert.deepEqual(issuesOf(stray), [{ code: "group-parent-unknown", path: "/groups/stray/parent" }]);
     (stray.groups["stray"] as { limits?: unknown[] }).limits = [{ type: "requests_per_minute", value: 1 }];
     assert.deepEqual(issuesOf(stray), [{ code: "group-parent-unknown", path: "/groups/stray/parent" }, exceeded]);
 
+    // Hour and month limits add no counter: they check the two every scope has.
+    const hourly = atBound();
+    hourly.groups["spare"] = { limits: [{ type: "tokens_per_hour", value: 1 }, { type: "usd_per_month", value: 1 }] };
+    assert.deepEqual(issuesOf(hourly), []);
+
     // A group on a cycle still takes its direct parent's defaults.
     const cycle = atBound();
-    cycle.groups["loop"] = { parent: "loop", child_defaults: { limits: [{ type: "requests_per_minute", value: 1 }] } };
-    assert.deepEqual(issuesOf(cycle), [{ code: "group-cycle", path: "/groups/loop/parent" }, exceeded]);
+    cycle.groups["spare"] = { parent: "spare", child_defaults: { limits: [{ type: "requests_per_minute", value: 1 }] } };
+    assert.deepEqual(issuesOf(cycle), [{ code: "group-cycle", path: "/groups/spare/parent" }, exceeded]);
+  });
+
+  // 3M2 ([C] C6): groups without limits are counters all the same.
+  test("a config of groups without limits past the bound is refused", () => {
+    const config = readJson(path.join(VALID_DIR, "minimal.json")) as { groups?: Record<string, unknown> };
+    config.groups ??= {};
+    for (let i = 0; i < 25_000; i += 1) config.groups[`g${i}`] = {};
+    assert.deepEqual(issuesOf(config), [{ code: "counters-exceeded", path: "" }]);
   });
 });
 

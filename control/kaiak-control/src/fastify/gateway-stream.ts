@@ -85,9 +85,10 @@ export async function streamToGateway(reply: FastifyReply, options: GatewayStrea
     sendTotals();
   };
 
-  // Totals follow the first config. The first totals are complete; each later one
-  // lists the windows changed since the last one sent, with the instance's cursors and
-  // the live count of the latest read. While the socket waits to drain, changes gather
+  // Totals follow the first config. The first totals are complete, from a read issued
+  // after the stream joined the feed; each later one lists the windows changed since
+  // the last one sent, with the instance's cursors and the live count of the latest
+  // read. While the socket waits to drain, changes gather
   // here and go out at once on drain, at their newest.
   let complete = true;
   const changed = new Map<string, TotalsWindow>();
@@ -97,6 +98,7 @@ export async function streamToGateway(reply: FastifyReply, options: GatewayStrea
   const sendTotals = (): void => {
     const state = totals.state;
     if (closed || !state || lastHash === undefined || raw.writableNeedDrain) return;
+    if (complete && state.read < membership.firstRead) return;
     const counted_through = state.cursors
       .filter((cursor) => cursor.instance === instance)
       .map(({ epoch, sequence }) => ({ epoch, sequence }));
@@ -123,7 +125,7 @@ export async function streamToGateway(reply: FastifyReply, options: GatewayStrea
   // Subscribe before reading the current config, so one published in between is not
   // lost.
   const unsubscribeConfigs = core.onConfigRead(sendConfig);
-  const leaveTotals = totals.join({
+  const membership = totals.join({
     take(windows) {
       if (!complete) for (const window of windows) changed.set(windowIdentity(window), window);
       sendTotals();
@@ -139,7 +141,7 @@ export async function streamToGateway(reply: FastifyReply, options: GatewayStrea
     if (closed) return;
     closed = true;
     unsubscribeConfigs();
-    leaveTotals();
+    membership.leave();
     clearInterval(heartbeat);
     clearTimeout(stallTimer);
     openStreams.delete(end);

@@ -69,8 +69,9 @@ export interface Usage {
   // Takes one change the store announced (the core passes every one on).
   takeChange(change: StoreChange): void;
   // Lets the store drop totals of windows before the previous ones (a late record can
-  // still count in the previous window). Intake runs it on the first batch of every
-  // hour.
+  // still count in the previous window), once per hour in this process: a call within
+  // the hour this process last dropped in does nothing. The expiry sweep runs it, so a
+  // store that fails it fails the sweep run, reported to the host, never a batch.
   dropPastWindows(): Promise<void>;
 }
 
@@ -102,8 +103,8 @@ export function createUsage({ store, clock, recentRecordsSize, liveGateways, onL
   // its original here is decided without a refused write; across processes the
   // store's conditional write decides.
   const queues = new Map<string, Promise<unknown>>();
-  // The hour this process last pruned past windows in: pruning is idempotent, so
-  // every process prunes on its own first batch of an hour.
+  // The hour this process last dropped past windows in: dropping is idempotent, so
+  // every process drops on its own, once an hour.
   let prunedHourStart: number | undefined;
 
   const serialized = <T>(instance: string, run: () => Promise<T>): Promise<T> => {
@@ -158,7 +159,9 @@ export function createUsage({ store, clock, recentRecordsSize, liveGateways, onL
 
   // The previous windows stay: a late record still counts in its own window when that
   // is the previous one.
-  const dropPastWindowsAt = async (windows: CurrentWindows): Promise<void> => {
+  const dropPastWindows = async (): Promise<void> => {
+    const windows = currentWindows(clock());
+    if (prunedHourStart === windows.hourStart) return;
     await store.dropPastWindowTotals(previousWindows(windows));
     prunedHourStart = windows.hourStart;
   };
@@ -184,10 +187,7 @@ export function createUsage({ store, clock, recentRecordsSize, liveGateways, onL
         cursors.inEpoch,
         recentRecordsSize,
       );
-      if (written.saved) {
-        if (prunedHourStart !== windows.hourStart) await dropPastWindowsAt(windows);
-        break;
-      }
+      if (written.saved) break;
       cursors = written.cursors;
       outcome = outcomeOf(batch, cursors);
     }
@@ -227,7 +227,7 @@ export function createUsage({ store, clock, recentRecordsSize, liveGateways, onL
         listeners.delete(subscription);
       };
     },
-    dropPastWindows: () => dropPastWindowsAt(currentWindows(clock())),
+    dropPastWindows,
     takeChange,
   };
 }

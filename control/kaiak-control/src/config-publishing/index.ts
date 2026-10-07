@@ -151,13 +151,17 @@ export function createConfigPublishing({
   const publishOne = async (doc: unknown): Promise<PublishResult> => {
     const result = validateConfig(doc);
     if (!result.ok) return { ok: false, issues: result.issues };
+    // The text is taken once, before the first wait; the document the rest of the
+    // publish checks and returns is that text's, so a caller changing its object while
+    // the publish waits on the store changes nothing of it.
     const text = JSON.stringify(result.config);
     const hash = hashOf(text);
+    const config = JSON.parse(text) as Config;
     // A publish that lost to another process's publish is checked again against the
     // config that won, so the parents rule holds against what is really current.
     for (;;) {
       const current = await store.currentConfig();
-      const moved = current ? parentChanges(JSON.parse(current.text) as Config, result.config) : [];
+      const moved = current ? parentChanges(JSON.parse(current.text) as Config, config) : [];
       if (moved.length > 0) return { ok: false, issues: moved };
       const entry: ConfigEntry = { text, hash, publishedAt: clock() };
       const written = await store.publishConfig(entry, current?.hash);
@@ -165,7 +169,7 @@ export function createConfigPublishing({
       // The config is current: the publish succeeded whether or not this process's
       // listeners could be given it (a failed read is announced).
       await deliverCurrent();
-      return { ok: true, published: { ...entry, config: result.config } };
+      return { ok: true, published: { ...entry, config } };
     }
   };
 

@@ -654,19 +654,29 @@ export function storeContractTests(subject: StoreContractSubject): void {
       );
 
       test(
-        "a change is heard after its write: a read in the listener sees it",
+        "a change is heard after its write: a read in the listener sees what it announced",
         withStore(async (a, b) => {
-          const seen: Promise<number>[] = [];
+          // Each kind of change read back by a listener on the other handle, as a core
+          // does: the current config after a publish, the totals after a counted batch,
+          // the gateway after a gateway change. A read that misses the change keeps a
+          // core's streams on what was there before.
+          const reads: Promise<string>[] = [];
           const unsubscribe = b.subscribe((change) => {
-            if (change.type === "batch-counted") seen.push(b.totalsSnapshot(CURRENT).then((snapshot) => countedIn(snapshot, "gw-1")));
+            if (change.type === "config-published") {
+              reads.push(b.currentConfig().then((config) => `config ${config?.hash === change.hash ? "seen" : "missed"}`));
+            } else if (change.type === "batch-counted") {
+              reads.push(b.totalsSnapshot(CURRENT).then((snapshot) => `batch ${countedIn(snapshot, "gw-1")}`));
+            } else if (change.type === "gateways-changed") {
+              reads.push(b.gateway("gw-1").then((gateway) => `gateway ${gateway?.receivedAt}`));
+            }
           });
           try {
-            await publishConfigs(a, 1);
+            await publishConfigs(a, 2);
             await a.saveCountedBatch(counted("gw-1", 1), undefined, 10);
+            await a.saveGateway(gatewayRecord("gw-1", true, 7), undefined);
             const deadline = Date.now() + notifyTimeoutMs;
-            while (seen.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
-            assert.equal(seen.length, 1, "the batch was heard");
-            assert.equal(await seen[0]!, 1);
+            while (reads.length < 4 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+            assert.deepEqual(await Promise.all(reads), ["config seen", "config seen", "batch 1", "gateway 7"]);
           } finally {
             unsubscribe();
           }

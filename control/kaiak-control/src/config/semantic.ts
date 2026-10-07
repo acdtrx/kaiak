@@ -8,7 +8,7 @@ import type { ValidationIssue } from "../schemas/index.ts";
 
 import { MAX_GROUP_DEPTH, ancestries } from "./tree.ts";
 import type { Ancestry } from "./tree.ts";
-import type { Config, Group, Limit, Model } from "./types.ts";
+import type { Config, Group, Limit, LimitType, Model } from "./types.ts";
 
 export type SemanticRuleCode =
   | "key-group-unknown"
@@ -16,7 +16,7 @@ export type SemanticRuleCode =
   | "group-parent-unknown"
   | "group-cycle"
   | "group-depth-exceeded"
-  | "effective-limits-exceeded"
+  | "counters-exceeded"
   | "deployment-backend-unknown"
   | "allowed-model-unknown"
   | "allowed-models-wildcard-mixed"
@@ -32,10 +32,10 @@ export type SemanticRuleCode =
 
 const ALL_MODELS = "*";
 
-// The most effective limits a config may hold, global's and every group's together:
-// each is a counter on every gateway (docs/specs/CONTROL-PROTOCOL.md, Config → The
-// group tree).
-const MAX_EFFECTIVE_LIMITS = 50_000;
+// The most counters a config may allocate on every gateway: an hour and a month counter
+// for global and every group, limited or not, and one per effective per-minute limit
+// (docs/specs/CONTROL-PROTOCOL.md, Config → The group tree: Counters are bounded).
+const MAX_COUNTERS = 50_000;
 
 export function checkSemantics(config: Config): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
@@ -88,12 +88,12 @@ export function checkSemantics(config: Config): ValidationIssue[] {
     checkLimits(defaults?.limits, pointer(path, "child_defaults", "limits"));
   }
 
-  const effective = countEffectiveLimits(config);
-  if (effective > MAX_EFFECTIVE_LIMITS) {
+  const counters = countCounters(config);
+  if (counters > MAX_COUNTERS) {
     report(
-      "effective-limits-exceeded",
+      "counters-exceeded",
       "",
-      `${effective} effective limits (global and every group): a config holds at most ${MAX_EFFECTIVE_LIMITS}`,
+      `${counters} counters (two for global and for every group, one per per-minute limit): a config allocates at most ${MAX_COUNTERS}`,
     );
   }
 
@@ -141,29 +141,34 @@ function checkAncestry(ancestry: Ancestry, path: string, report: Report): void {
   }
 }
 
-// How many effective limits global and every group hold, counted without merging
-// each group's list: a group's own limits plus its parent's child_defaults.limits
-// whose type none of its own limits has. Only the direct parent matters, so the
-// count stands whatever the tree rules find; a parent with no entry adds no defaults.
-function countEffectiveLimits(config: Config): number {
+// The per-minute limit types: each limit of one is a counter of its own; the hour and
+// month types count on the two counters every scope has.
+const PER_MINUTE_TYPES: ReadonlySet<string> = new Set<LimitType>(["requests_per_minute", "tokens_per_minute"]);
+
+// How many counters a config allocates, counted without merging each group's list: two
+// for global and two for every group, plus each scope's effective per-minute limits — a
+// group's own plus its parent's child_defaults.limits of a per-minute type none of its
+// own limits has. Only the direct parent matters, so the count stands whatever the tree
+// rules find; a parent with no entry adds no defaults.
+function countCounters(config: Config): number {
   const groups: Readonly<Record<string, Group>> = config.groups ?? {};
+  const perMinute = (limits: readonly Limit[] | undefined): Set<string> =>
+    new Set((limits ?? []).map((limit) => limit.type).filter((type) => PER_MINUTE_TYPES.has(type)));
   const defaultTypes = new Map<string, Set<string>>();
   const defaultsOf = (parentId: string): Set<string> => {
     let types = defaultTypes.get(parentId);
     if (types === undefined) {
-      types = new Set((groups[parentId]?.child_defaults?.limits ?? []).map((limit) => limit.type));
+      types = perMinute(groups[parentId]?.child_defaults?.limits);
       defaultTypes.set(parentId, types);
     }
     return types;
   };
-  let count = config.global.limits?.length ?? 0;
+  let count = 2 + perMinute(config.global.limits).size;
   for (const group of Object.values(groups)) {
-    const own = group.limits ?? [];
-    count += own.length;
+    const own = perMinute(group.limits);
+    count += 2 + own.size;
     if (group.parent === undefined || !Object.hasOwn(groups, group.parent)) continue;
-    const defaults = defaultsOf(group.parent);
-    const overridden = new Set(own.map((limit) => limit.type).filter((type) => defaults.has(type)));
-    count += defaults.size - overridden.size;
+    for (const type of defaultsOf(group.parent)) if (!own.has(type)) count += 1;
   }
   return count;
 }

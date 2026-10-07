@@ -1,6 +1,8 @@
 // The storage interface: a database implements it in the real control plane; the
 // in-memory store is the reference implementation. Every method is async so a
-// database fits without change.
+// database fits without change, and every call settles — resolves or rejects; a
+// database store bounds every statement (a statement timeout), since a core's config
+// deliveries run one at a time and one call that never returns holds the rest.
 //
 // The store is where control-plane processes agree (docs/specs/CONTROL-PROTOCOL.md,
 // Control-plane processes): any number of cores may run over one store, and what they
@@ -136,9 +138,11 @@ export interface GatewayRecord {
 // write names to say which record it was computed from.
 export interface StoredGateway extends GatewayRecord {
   // Changes with every write of the instance and never repeats for it, a gateway
-  // forgotten and recreated included: a conditional write naming a revision can only
-  // match the record it was computed from (the in-memory store numbers every gateway
-  // write of the store).
+  // forgotten and recreated included, and across a restore of the store (the
+  // allocator moved past every value issued before it — CONTROL-PROTOCOL.md,
+  // Control-plane processes → Restoring the store): a conditional write naming a
+  // revision can only match the record it was computed from (the in-memory store
+  // numbers every gateway write of the store).
   revision: number;
 }
 
@@ -209,7 +213,9 @@ export interface ControlPlaneStore {
   // there. Dropping changes no current window and is not announced.
   dropPastWindowTotals(oldest: CurrentWindows): Promise<void>;
 
-  // The newest received records, newest first, at most `limit`.
+  // The newest received records, newest first, at most `limit`: the reverse of the
+  // order they were saved, a batch's records saved in batch order, so records with the
+  // same receipt time keep a defined order.
   recentRecords(limit: number): Promise<ReceivedRecord[]>;
 
   // One gateway's record, or undefined before its first status or once forgotten.
@@ -235,6 +241,10 @@ export interface ControlPlaneStore {
   // change channel can drop changes (a database's listening connection) announces a
   // `catch-up` to every listener each time the channel is back, so nothing it missed
   // stays missed — after the reconnect, so a read the listener makes then sees every
-  // change made while the channel was down; the in-memory store never drops one.
+  // change made while the channel was down; the in-memory store never drops one. A read
+  // a listener makes after hearing of a change sees that change: the current config
+  // after config-published, the gateway records after gateways-changed, the totals
+  // after batch-counted (a database store reads them from its primary, never from a
+  // replica the notification may be ahead of).
   subscribe(listener: StoreChangeListener): () => void;
 }

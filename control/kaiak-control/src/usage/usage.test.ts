@@ -385,15 +385,20 @@ describe("windows by the control plane's clock", () => {
     );
 
     // The 10:00 window is the previous one now: it stays (late records still count
-    // there) until the next hour's first batch lets the store drop it.
+    // there) until a drop of past windows in a later hour (the expiry sweep's).
     const at10 = { hourStart: Date.UTC(2026, 8, 24, 10), monthStart: Date.UTC(2026, 8, 1) };
     // global, users and carol: each counted in its hour and its month.
     assert.deepEqual(
       (await storedWindows(store, at10)).map((total) => total.type).sort(),
       ["tokens_per_hour", "tokens_per_hour", "tokens_per_hour", "usd_per_month", "usd_per_month", "usd_per_month"],
     );
+    await usage.dropPastWindows();
+    assert.equal((await storedWindows(store, at10)).length, 6);
     setTime(Date.UTC(2026, 8, 24, 12));
     acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 3, [record(["users", "carol"], "gpt-4.1-mini", [1, 0, 0, 0, 0], 1, "2026-09-24T12:00:00Z")])));
+    // Counting drops nothing.
+    assert.equal((await storedWindows(store, at10)).length, 6);
+    await usage.dropPastWindows();
     // Left: September's windows for global, users and carol (still current).
     assert.deepEqual(
       (await storedWindows(store, at10)).map((total) => total.type),
