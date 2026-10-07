@@ -61,17 +61,10 @@
   the protobuf runtime or a hand-written protobuf encoder; gRPC — a dependency, and
   the target collectors take OTLP/HTTP. Revisit if traces need span export
   (`docs/BACKLOG.md` → OpenTelemetry export).
-- **Persistence: plain files, no SQLite** (settled 2026-09-24; an opt-in: the
-  gateway is stateless by default, settled 2026-09-25 — with no `KAIAK_DATA_DIR` it
-  writes nothing). The gateway's state is small, in its data directory, every file
-  one JSON document in a format-versioned envelope written atomically (temporary
-  file + rename): the last-known-good config (`last-known-good.json`); the unsent usage spool — one file per sealed batch
-  (`usage-batch-<epoch>-<seq>.json`, `usage-rejected-…` once refused) plus its index
-  (`usage-spool.json`); the file-mode limits snapshot (`limits.json`, periodic);
-  control-plane mode's totals cache (`totals.json`, the last applied totals); and the
-  lock file (`kaiak.lock`, one gateway per directory). Details in
-  `docs/specs/GATEWAY.md` (Configuration sources: `KAIAK_DATA_DIR`). SQLite would
-  cost the only dependency; revisit if something needs real queries.
+- **Persistence: none in the gateway** (settled 2026-10-07, `docs/specs/GATEWAY.md` →
+  Configuration sources): it writes nothing to disk. Config, usage totals and usage
+  records live in the control plane, whose host app owns the store
+  (`control/kaiak-control/GUIDE.md`).
 - **Metrics**: Prometheus text exposition written by hand on the admin port.
 - **Build & image**: `CGO_ENABLED=0` static build; multi-stage container build ending on
   a static distroless non-root base holding only the binary. Kubernetes manifests are
@@ -81,9 +74,9 @@
     version>` (the build script passes go.mod's `go` line), `go build -trimpath
     -ldflags "-s -w -X kaiak/internal/metrics.version=<version>"`; final
     `gcr.io/distroless/static-debian13:nonroot` holding only `/kaiak`, `USER
-    65532:65532`, ports 8080 and 9090, no config, no data directory and no volume:
-    the gateway writes nothing by default, so it runs on a read-only root filesystem
-    (the smoke test runs it `--read-only`). About 19 MB unpacked.
+    65532:65532`, ports 8080 and 9090, no config and no volume: the gateway writes
+    nothing, so it runs on a read-only root filesystem (the smoke test runs it
+    `--read-only`). About 19 MB unpacked.
   - **Numeric users** (settled 2026-09-25, the follow-up audit's N-O2): `USER
     65532:65532` (gateway, the base image's `nonroot`) and `USER 1000:1000` (sample,
     `node:26-slim`'s `node`). Kubernetes checks `runAsNonRoot` against the image's

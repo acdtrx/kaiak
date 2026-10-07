@@ -63,7 +63,7 @@ english.
     control-plane mode once booted, or from the seed config at boot) — the control
     plane is never in the request path.
   - The control plane owns config, usage totals and budgets; the gateway holds no state
-    by default, and its opt-in data directory is cache and spool, never the record.
+    and writes nothing to disk.
   - Subsystem boundaries: Go `internal/` packages (compiler-enforced visibility, no import
     cycles); `control/` entry-point-only imports with an acyclic graph (lint-enforced).
 - Do not add new dependencies without asking first. Every dependency enters at its latest
@@ -233,20 +233,16 @@ history-narrating comment you meet up to this rule.
   sample control plane is one `npm` command away.
 - Fixes for build or run issues land in the codebase or `scripts/`, never as notes
   about manual steps.
-- **The gateway is stateless by default** (settled 2026-09-25): with only
-  `KAIAK_CONTROL_URL` and `KAIAK_CONTROL_TOKEN` (plus backend API-key variables) it
-  runs on a read-only filesystem with no volume and writes nothing; usage not yet
-  acknowledged waits in memory, and the drain reserves its last seconds
-  (`KAIAK_DRAIN_FLUSH_RESERVE_MS`) to deliver it. A pod that dies undrained loses only
+- **The gateway is stateless** (settled 2026-09-25; nothing on disk at all, settled
+  2026-10-07): with only `KAIAK_CONTROL_URL` and `KAIAK_CONTROL_TOKEN` (plus backend
+  API-key variables) it runs on a read-only filesystem with no volume and writes
+  nothing, ever. Usage not yet delivered waits in memory, and the drain reserves its
+  last seconds (`KAIAK_DRAIN_FLUSH_RESERVE_MS`) to deliver it; the `usage flushed` /
+  `usage not flushed` log line says whether it did. A pod that dies undrained loses only
   that undelivered usage. The seed config (`KAIAK_SEED_CONFIG_FILE`, free models only)
   is the backup for a boot while the control plane is unavailable; with neither, the
-  gateway exits and is restarted.
-- Persistent state is an **opt-in** and lives only in the data directory
-  (`KAIAK_DATA_DIR`, no default): last-known-good config, unsent usage spool,
-  file-mode usage snapshot, control-plane-mode totals cache. Losing it loses nothing
-  authoritative — only the unsent spool, which graceful shutdown flushes first
-  (batches left unsent stay spooled for the next start; the `usage flushed` / `usage
-  not flushed` log line says which).
+  gateway exits and is restarted. File mode (a config file, no control plane) is for
+  local and development use: its counts start from zero at every start.
 
 ## Feature-Building Mode (No Backwards Compatibility) `[PROJECT]`
 
@@ -258,10 +254,8 @@ Until this project ships to real users:
   approach leaves stale state behind, state the manual cleanup clearly (one `rm`, one
   restart) instead of encoding it.
 - Fixing state produced by past bugs is normal engineering, not "migrations."
-- There is no database. Every file in the (opt-in) data directory carries a format version; a
-  gateway that finds a different version discards that file and says so in the log.
-  The usage spool is the one file whose loss drops data: flush it (graceful shutdown)
-  before upgrading across a spool-format change.
+- There is no database, and the gateway writes no files: no stored state survives a
+  version change, so there is nothing to migrate.
 - The gateway ↔ control plane protocol carries a version; mismatched versions refuse to
   talk. Both halves move together — no support for older protocol versions.
 

@@ -98,7 +98,7 @@ svg .band { stroke: none; }
   <li><strong>One static Go binary, standard library only.</strong> No third-party code, no external services. <code>gateway/cmd/kaiak</code> builds the dependency graph and owns shutdown; every subsystem is a package under <code>gateway/internal/</code>, and Go's <code>internal/</code> visibility plus its ban on import cycles keep the boundaries.</li>
   <li><strong>Two listeners.</strong> API on <code>:8080</code> (three client APIs: OpenAI's chat completions, completions, embeddings and models; Anthropic Messages; OpenAI Responses, stateless — each passed through only to backends that speak it) and admin on <code>:9090</code> (<code>/healthz</code>, <code>/readyz</code>, <code>/metrics</code>). Only the API port faces clients.</li>
   <li><strong>Two config modes.</strong> <em>File mode</em> (<code>KAIAK_CONFIG_FILE</code>, reload on SIGHUP, limits kept locally) or <em>control-plane mode</em> (<code>KAIAK_CONTROL_URL</code> + <code>KAIAK_CONTROL_TOKEN</code>, config pushed live, usage and status reported back). The second is covered in <a href="control-plane.html">the integration page</a>.</li>
-  <li><strong>Stateless by default.</strong> It writes nothing to disk unless <code>KAIAK_DATA_DIR</code> is set. Usage not yet delivered waits in memory; the drain delivers it.</li>
+  <li><strong>Stateless.</strong> It writes nothing to disk. Usage not yet delivered waits in memory; the drain delivers it. File mode is for local and development use: its counts start from zero at every start.</li>
   <li><strong>Two hard fences.</strong> Only <code>provider</code> opens connections to model backends; only <code>control</code> talks to the control plane.</li>
 </ul>
 </section>
@@ -112,7 +112,6 @@ svg .band { stroke: none; }
   <defs>
     <marker id="g-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker>
     <marker id="g-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-hot"/></marker>
-    <marker id="g-am" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-muted"/></marker>
   </defs>
 
   <!-- external actors -->
@@ -171,10 +170,6 @@ svg .band { stroke: none; }
   <text x="705" y="185" text-anchor="middle" class="t">control</text>
   <text x="705" y="201" text-anchor="middle" class="s">config · usage · status</text>
 
-  <rect x="640" y="275" width="150" height="40" rx="8" class="ext"/>
-  <text x="715" y="293" text-anchor="middle" class="t">state</text>
-  <text x="715" y="308" text-anchor="middle" class="s">opt-in data directory</text>
-
   <rect x="620" y="440" width="170" height="50" rx="8" class="box"/>
   <text x="705" y="462" text-anchor="middle" class="t">metrics</text>
   <text x="705" y="478" text-anchor="middle" class="s">registry · text exposition</text>
@@ -209,9 +204,6 @@ svg .band { stroke: none; }
   <path d="M550,308 L640,212" class="edge" marker-end="url(#g-a)"/>
   <text x="610" y="262" class="l">records</text>
 
-  <line x1="740" y1="210" x2="740" y2="273" class="edge-dash" marker-end="url(#g-am)"/>
-  <text x="746" y="248" class="s">spool, LKG</text>
-
   <path d="M230,380 L230,465 L618,465" class="edge" marker-end="url(#g-a)"/>
   <text x="420" y="457" text-anchor="middle" class="l">ops + usage metrics</text>
   <line x1="828" y1="465" x2="792" y2="465" class="edge" marker-end="url(#g-a)"/>
@@ -226,15 +218,14 @@ svg .band { stroke: none; }
   <tbody>
     <tr><td><code>server</code></td><td>Both listeners, admission and the drain, the pipeline (a fixed ordered list of stages over one per-request struct), the attempt loop, request finishers, the <code>/v1/models</code> answers.</td></tr>
     <tr><td><code>auth</code></td><td>Key hash lookup (key → key ID, its group and that group's path) and the one model-access check.</td></tr>
-    <tr><td><code>limits</code></td><td>A sliding-minute counter per per-minute limit, and an hour token count and a month cost count for global and every group, limited or not, kept until its window ends whatever the config — each limit a check over its scope's count; a request is checked against global and every group on its key's path; check-and-reserve before routing, settle from usage records after. In control-plane mode: pushed totals (complete after each connect, then the changed windows) + own uncounted usage, per-minute shares, the outage refusal (no stream bytes past the grace, usage unanswered, or acknowledged usage no totals have shown counted), <code>totals.json</code> written in the background every 30 s.</td></tr>
+    <tr><td><code>limits</code></td><td>A sliding-minute counter per per-minute limit, and an hour token count and a month cost count for global and every group, limited or not, kept until its window ends whatever the config — each limit a check over its scope's count; a request is checked against global and every group on its key's path; check-and-reserve before routing, settle from usage records after. In control-plane mode: pushed totals (complete after each connect, then the changed windows) + own uncounted usage, per-minute shares, the outage refusal (no stream bytes past the grace, usage unanswered, or acknowledged usage no totals have shown counted). Nothing outlives the process.</td></tr>
     <tr><td><code>routing</code></td><td>Model → deployment choice, in-flight counts, per-backend caps, one FIFO queue per model with a single dispatcher, per-deployment circuit breakers and their probers. State outlives config reloads that keep the deployment.</td></tr>
     <tr><td><code>accounting</code></td><td>Meters each attempt's response as it is relayed; settles usage and cost into records, each naming the key's group path; hands them to the control client's batcher and the usage-metrics sink.</td></tr>
     <tr><td><code>provider</code></td><td>A module per backend type (OpenAI, Azure OpenAI, vLLM, llama-server, Anthropic, Claude in Foundry, and the generic OpenAI-compatible) over a shared wire core, the table of which endpoints each type serves, passthrough body edits per client API, per-backend connection pools, the circuit probe (<code>GET …/models</code>; none for Foundry, which has no models list).</td></tr>
     <tr><td><code>config</code></td><td>Strict decoding, validation, resolution into an immutable snapshot (each group's path, allowed models and effective limits), the holder that swaps it atomically, the one apply path, the file loader.</td></tr>
-    <tr><td><code>control</code></td><td>Boot (the stream's first config → last-known-good → seed), the config stream with reconnect (every config the control plane sends is applied, unless its hash is the running or last rejected one), totals from the stream only (a malformed totals event ends the stream), the usage batch sender (a batch stays spooled until a saved <code>totals.json</code> covers it, and the spool rebuilds own usage after a crash), the status reporter, contact tracking (stream bytes only).</td></tr>
+    <tr><td><code>control</code></td><td>Boot (the stream's first config → seed), the config stream with reconnect (every config the control plane sends is applied, unless its hash is the running or last rejected one), totals from the stream only (a malformed totals event ends the stream), the usage batch sender (batches queued in memory, the drain delivering them), the status reporter, contact tracking (stream bytes only).</td></tr>
     <tr><td><code>metrics</code></td><td>Small registry (counters, gauges, fixed-bucket histograms) and Prometheus text exposition.</td></tr>
     <tr><td><code>otlplog</code></td><td>Optional OTLP log export (<code>OTEL_*</code> variables): an <code>slog</code> handler beside the stderr one queues a copy of every line; one sender posts OTLP/HTTP JSON batches with retries, drops the newest when its queue is full, and flushes at exit after usage. Its own problems go to stderr only. Not drawn: <code>cmd/kaiak</code> wraps the logger with it.</td></tr>
-    <tr><td><code>state</code></td><td>The optional data directory: versioned files, atomic writes, a <code>flock</code> so one gateway owns it.</td></tr>
     <tr><td><code>sse</code>, <code>clip</code>, <code>logattr</code>, <code>schemacheck</code></td><td>Shared parts: SSE reader (backend streams and the config stream), bounding client strings before they are logged, log durations in seconds, strict JSON and schema-mirroring checks.</td></tr>
     <tr><td><code>fakebackend</code>, <code>fakecontrol</code></td><td>Test doubles only; used by unit tests and the e2e suite in <code>gateway/e2e</code>.</td></tr>
   </tbody>
@@ -427,24 +418,21 @@ svg .band { stroke: none; }
 <section id="config">
 <h2>Config: one apply path</h2>
 <figure>
-<svg viewBox="0 0 960 250" role="img" aria-label="Every config source — file with SIGHUP, control-plane snapshot or stream, last-known-good copy, seed file — goes through one apply path: strict validation, then an atomic swap of an immutable snapshot, then log and count. A rejected config leaves the running one in force.">
+<svg viewBox="0 0 960 250" role="img" aria-label="Every config source — file with SIGHUP, control-plane stream, seed file — goes through one apply path: strict validation, then an atomic swap of an immutable snapshot, then log and count. A rejected config leaves the running one in force.">
   <defs>
     <marker id="f-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker>
     <marker id="f-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-hot"/></marker>
   </defs>
-  <rect x="20" y="20" width="200" height="40" rx="8" class="ext"/>
-  <text x="120" y="45" text-anchor="middle" class="l">file · startup, SIGHUP</text>
-  <rect x="20" y="75" width="200" height="40" rx="8" class="ext"/>
-  <text x="120" y="100" text-anchor="middle" class="l">control plane · stream</text>
-  <rect x="20" y="130" width="200" height="40" rx="8" class="ext"/>
-  <text x="120" y="155" text-anchor="middle" class="l">last-known-good (data dir)</text>
-  <rect x="20" y="185" width="200" height="40" rx="8" class="ext"/>
-  <text x="120" y="210" text-anchor="middle" class="l">seed file · free models only</text>
+  <rect x="20" y="30" width="200" height="40" rx="8" class="ext"/>
+  <text x="120" y="55" text-anchor="middle" class="l">file · startup, SIGHUP</text>
+  <rect x="20" y="102" width="200" height="40" rx="8" class="ext"/>
+  <text x="120" y="127" text-anchor="middle" class="l">control plane · stream</text>
+  <rect x="20" y="174" width="200" height="40" rx="8" class="ext"/>
+  <text x="120" y="199" text-anchor="middle" class="l">seed file · free models only</text>
 
-  <path d="M220,40 C260,40 260,122 298,122" class="edge" marker-end="url(#f-a)"/>
-  <path d="M220,95 C260,95 260,122 298,122" class="edge" marker-end="url(#f-a)"/>
-  <path d="M220,150 C260,150 260,122 298,122" class="edge" marker-end="url(#f-a)"/>
-  <path d="M220,205 C260,205 260,122 298,122" class="edge" marker-end="url(#f-a)"/>
+  <path d="M220,50 C260,50 260,122 298,122" class="edge" marker-end="url(#f-a)"/>
+  <path d="M220,122 L298,122" class="edge" marker-end="url(#f-a)"/>
+  <path d="M220,194 C260,194 260,122 298,122" class="edge" marker-end="url(#f-a)"/>
 
   <rect x="300" y="92" width="170" height="60" rx="8" class="box"/>
   <text x="385" y="117" text-anchor="middle" class="t">validate</text>
@@ -475,7 +463,7 @@ svg .band { stroke: none; }
 <h3>Boot</h3>
 <ul>
   <li><strong>File mode</strong>: load the file; failure exits. Listeners bind once the config is in force.</li>
-  <li><strong>Control-plane mode</strong>: take the first config from the control plane's stream, retrying for up to <code>KAIAK_CONTROL_BOOT_WAIT_MS</code> (60 s); if the control plane stays unavailable, use the last-known-good copy (with a data dir), then the seed config, else exit so the supervisor restarts it. Readiness also waits for the first totals (normally milliseconds — they follow the config on the stream). Details on <a href="control-plane.html#boot">the integration page</a>.</li>
+  <li><strong>Control-plane mode</strong>: take the first config from the control plane's stream, retrying for up to <code>KAIAK_CONTROL_BOOT_WAIT_MS</code> (60 s); if the control plane stays unavailable, use the seed config, else exit so the supervisor restarts it. Readiness also waits for the first totals (normally milliseconds — they follow the config on the stream). Details on <a href="control-plane.html#boot">the integration page</a>.</li>
   <li>Listeners bind only when ready, so probes see a closed port during boot — size the startup probe for the boot wait.</li>
 </ul>
 
@@ -499,7 +487,7 @@ svg .band { stroke: none; }
   <text x="920" y="156" text-anchor="end" class="s">last batch sealed, sent</text>
   <text x="920" y="172" text-anchor="end" class="s">final status · exit 0</text>
 </svg>
-<figcaption>The reserve comes out of the timeout, not after it, so the whole shutdown fits in grace + timeout; set <code>terminationGracePeriodSeconds</code> above that plus about 10 s (75 s with the defaults). A second signal skips the waiting. Undelivered usage stays in the spool with a data directory, or is lost (and logged) without one.</figcaption>
+<figcaption>The reserve comes out of the timeout, not after it, so the whole shutdown fits in grace + timeout; set <code>terminationGracePeriodSeconds</code> above that plus about 10 s (75 s with the defaults). A second signal skips the waiting. Undelivered usage is lost, and logged.</figcaption>
 </figure>
 
 <ul>
@@ -761,7 +749,7 @@ svg .band { stroke: none; }
     <tr><td>Limits</td><td>Live count leaves out draining gateways</td><td>Rollout-time queueing or per-minute refusals</td></tr>
     <tr><td>Limits</td><td>Interim usage records for long streams; output limit from remaining budget</td><td>Budget overshoot from long streams or single long requests</td></tr>
     <tr><td>Limits</td><td>Per-key limit split across gateways; temporary key suspension</td><td>A key reaches N × its limit; the per-key limit and body deadline prove insufficient against a misbehaving client</td></tr>
-    <tr><td>Edge cases</td><td>Body budget per model; slow readers holding slots; live count during outages; spool order by age; removed backends' pools</td><td>Each one's symptom seen in practice (listed per entry in the backlog)</td></tr>
+    <tr><td>Edge cases</td><td>Body budget per model; slow readers holding slots; live count during outages; removed backends' pools</td><td>Each one's symptom seen in practice (listed per entry in the backlog)</td></tr>
     <tr><td>Control plane</td><td>Per-instance gateway tokens</td><td>Gateways run where their token cannot be held as tightly as the control plane's secrets</td></tr>
     <tr><td>Providers</td><td>Model metadata discovery from backends</td><td>Keeping declared metadata in step with backends becomes a chore</td></tr>
   </tbody>

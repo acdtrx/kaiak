@@ -13,7 +13,8 @@ You build that control plane with **`kaiak-control`**, the Node library in this 
 a small sample control plane shows how.
 
 - **Gateway** (`gateway/`): Go, standard library only, zero third-party dependencies.
-  Stateless by default, and it keeps serving when the control plane is down.
+  Stateless — it writes nothing to disk — and it keeps serving when the control plane
+  is down.
 - **`kaiak-control`** (`control/kaiak-control/`): the control-plane side of the
   protocol, for Node. It serves config, takes in usage exactly once, keeps totals,
   pushes budgets and tracks gateways. Storage is pluggable.
@@ -127,7 +128,7 @@ stable).
 
    `kill -HUP` reloads the config file (a bad one is rejected and the running one
    kept); SIGTERM or Ctrl-C drains in-flight requests and exits. Nothing is written to
-   disk unless `KAIAK_DATA_DIR` is set. All environment variables:
+   disk. All environment variables:
    GATEWAY.md → Configuration sources.
 
 ## Quick start: with the sample control plane
@@ -214,8 +215,8 @@ a workspace or `file:` dependency (GUIDE.md §3 explains why).
 Two images, for `linux/amd64` and `linux/arm64`, published with every release:
 
 - `ghcr.io/acdtrx/kaiak`: the gateway, the static binary on a distroless base (about
-  19 MB). It writes nothing by default, so it runs with a read-only root filesystem
-  and no volume.
+  19 MB). It writes nothing, so it runs with a read-only root filesystem and no
+  volume.
 - `ghcr.io/acdtrx/kaiak-sample`: the sample control plane.
 
 Tags are the release version (`0.10.0`) and `latest` for the newest stable release.

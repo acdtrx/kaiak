@@ -46,8 +46,8 @@ flowchart LR
 
 A gateway needs **only** `KAIAK_CONTROL_URL`, `KAIAK_CONTROL_TOKEN` and the API-key
 variables its config names (`GATEWAY.md` → Configuration sources: the minimal
-gateway). No volume, no seed, no data directory: it writes nothing anywhere, so the
-root filesystem is read-only. The fields a manifest needs:
+gateway). No volume, no seed: it writes nothing anywhere, so the root filesystem is
+read-only. The fields a manifest needs:
 
 | Field | Setting | Why |
 |---|---|---|
@@ -81,8 +81,8 @@ root filesystem is read-only. The fields a manifest needs:
   ready from its first successful probe — and until then **every probe, liveness
   included, finds the port closed**. Startup normally takes well under a second,
   but while the control plane is unavailable it takes up to
-  `KAIAK_CONTROL_BOOT_WAIT_MS` (60 s) before the gateway binds on its seed or
-  last-known-good config, or exits. Give it a **startup probe** on `/healthz` that
+  `KAIAK_CONTROL_BOOT_WAIT_MS` (60 s) before the gateway binds on its seed
+  config, or exits. Give it a **startup probe** on `/healthz` that
   allows the boot wait plus margin — `periodSeconds: 2`, `failureThreshold: 35`
   (70 s) at the default — so the liveness probe never restarts a pod that is still
   waiting; with a shorter or longer boot wait, scale `failureThreshold` with it
@@ -165,8 +165,7 @@ outage):
   records for as long as the outage lasts. **To hold an outage of T seconds at R
   records/s**, set `KAIAK_USAGE_MEMORY_BYTES` to about R × T × 520 — 1 000
   records/s through 15 min is about 470 MB, `536870912` (512 MiB) — and add it to
-  the memory limit (Resources). Longer outages than that lose billing data unless
-  the pods keep a data directory (Optional: the data directory).
+  the memory limit (Resources). Longer outages than that lose billing data.
 
 ## Draining and what a pod loses
 
@@ -202,12 +201,12 @@ whole timeout in file mode).
 - A second SIGTERM skips the rest of the drain (requests cut at once, the last batch
   sealed but not waited for, no final status).
 
-**What a pod loses** (no data directory):
+**What a pod loses**:
 
 | How it ends | Lost usage |
 |---|---|
 | Drained, control plane answering | nothing |
-| Drained, control plane unreachable or slow | what the flush could not deliver — logged at error level, `usage not flushed: lost at exit (no data directory)`, with the batches and records |
+| Drained, control plane unreachable or slow | what the flush could not deliver — logged at error level, `usage not flushed: lost at exit`, with the batches and records |
 | Killed without a drain (OOM kill, node loss, SIGKILL after the grace period) | every record not yet acknowledged: normally the last ≤ 5 s; during an outage, everything queued (up to `KAIAK_USAGE_MEMORY_BYTES`, about 130 000 records at the default) |
 
 Nothing else is lost: config and totals come back from the control plane.
@@ -307,10 +306,9 @@ sources):
 | `KAIAK_CONFIG_FILE` | — | File mode: the config file. Not with `KAIAK_CONTROL_URL`. |
 | `KAIAK_CONTROL_URL` | — | Control-plane mode: the control plane's base URL (`http(s)://host[:port][/path]`, no query); `https://` outside local runs. Requires `KAIAK_CONTROL_TOKEN`. |
 | `KAIAK_CONTROL_TOKEN` | — | The bearer token presented to the control plane (a Secret; shared by all gateways). |
-| `KAIAK_CONTROL_BOOT_WAIT_MS` | `60000` | How long boot keeps asking an unavailable control plane for the config before using the last-known-good or seed config, or exiting; what is left of it bounds the wait for the first totals (above 0). Size the startup probe with it (Probes). |
+| `KAIAK_CONTROL_BOOT_WAIT_MS` | `60000` | How long boot keeps asking an unavailable control plane for the config before using the seed config, or exiting; what is left of it bounds the wait for the first totals (above 0). Size the startup probe with it (Probes). |
 | `KAIAK_SEED_CONFIG_FILE` | — | Control-plane mode only: config for a boot while the control plane is unavailable; free models only, checked completely at startup. |
 | `KAIAK_INSTANCE_ID` | the hostname | The gateway's name to the control plane; in control-plane mode a letter or digit, then up to 252 of letters, digits, `.`, `_`, `-`. |
-| `KAIAK_DATA_DIR` | — (nothing written) | Opt-in data directory (spool, last-known-good, totals cache, limits snapshot); created if missing; one gateway per directory. |
 | `KAIAK_LISTEN_ADDR` | `:8080` | The API listener. |
 | `KAIAK_ADMIN_ADDR` | `:9090` | The admin listener (`/metrics`, `/healthz`, `/readyz`). |
 | `KAIAK_METRICS_TOKEN` | — (open) | When non-empty, `/metrics` requires `Authorization: Bearer <token>`; probes stay open. |
@@ -849,9 +847,9 @@ before priced models are refused. Scale the 300 with the grace if you change it.
 | Budget refusals | page | `sum(increase(kaiak_errors_total{class="budget_unavailable"}[5m])) > 0` | — | Clients refused because spend is unknown. Two causes: a control-plane outage (`kaiak_control_outage == 1`); or **no totals yet** — a pod started and its first totals were late (`first totals not received within the boot wait` in its log; `kaiak_control_totals_applied_timestamp_seconds` absent). |
 | No healthy deployment | page | `sum(increase(kaiak_errors_total{class="no_healthy_deployment"}[5m])) > 0` | — | Every deployment of a model has its circuit open: its requests are refused `503`. `kaiak_circuit_open` names them. |
 | Pods crash-looping | page | `kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff", container="kaiak"} == 1` (kube-state-metrics) | — | A gateway cannot boot: the control plane stayed unavailable through the boot wait and there is no seed, or the token or config is refused. The pod's last log line names the cause. |
-| Usage near the memory bound | ticket | `kaiak_usage_queued_bytes > 33554432` | — | Per pod: half the default 64 MiB bound (scale with `KAIAK_USAGE_MEMORY_BYTES`); records start dropping when it is reached — during a long outage the page above already fired. With a data directory it counts only records the spool could not write — watch `kaiak_usage_spool_batches` and the volume's free space as well. |
-| Usage batches refused | ticket | `sum(increase(kaiak_usage_batch_sends_total{result="rejected"}[15m])) > 0` | — | The control plane refused a batch (dropped, or with a data directory set aside as `usage-rejected-*.json`). |
-| Usage records dropped | ticket | `sum by (reason) (increase(kaiak_usage_dropped_records_total[15m])) > 0` | — | Lost billing data: `reason="memory_bound"` (the in-memory bound, a long outage), `invalid` (failed the record checks) or `spool_unwritable` (with a data directory: the disk is full or read-only). |
+| Usage near the memory bound | ticket | `kaiak_usage_queued_bytes > 33554432` | — | Per pod: half the default 64 MiB bound (scale with `KAIAK_USAGE_MEMORY_BYTES`); records start dropping when it is reached — during a long outage the page above already fired. |
+| Usage batches refused | ticket | `sum(increase(kaiak_usage_batch_sends_total{result="rejected"}[15m])) > 0` | — | The control plane refused a batch, which is dropped. |
+| Usage records dropped | ticket | `sum by (reason) (increase(kaiak_usage_dropped_records_total[15m])) > 0` | — | Lost billing data: `reason="memory_bound"` (the in-memory bound, a long outage), or `invalid` (failed the record checks). |
 | Config rejected | ticket | `sum(increase(kaiak_config_loads_total{result="rejected"}[15m])) > 0` | — | The gateways kept their running config; the log line has the issue codes (an unset `api_key_env` is the usual one). |
 | Running a config the control plane moved off | ticket | `max(kaiak_control_config_rejected) == 1` | 15m | A gateway rejected the control plane's current config and runs an earlier one — its status `last_rejection` says which and why. It still enforces its own limits on the control plane's totals; it clears when the gateway applies a later config or receives the one it runs again. |
 | Circuit open | ticket | `max by (backend, deployment_model) (kaiak_circuit_open) == 1` | 5m | A deployment is out of rotation, its backend failing the probe; the model's other deployments carry its load (none left: No healthy deployment pages). A half-open circuit (the backend answers its probe; the next request is the trial) reads 0 here and 1 on `kaiak_circuit_half_open`: a recovered deployment with no traffic stays half-open indefinitely and must not alert. |
@@ -894,9 +892,8 @@ before priced models are refused. Scale the 300 with the grace if you change it.
 - **The sample's page has no authentication**: anyone who reaches port 8090 sees
   every gateway, group (with its labels), key ID and spend. Keep its Service
   cluster-internal and out of any ingress.
-- **Client keys** reach the gateway as SHA-256 hashes only. A seed ConfigMap and a
-  data directory hold config copies (key hashes, no secrets); a data directory also
-  holds usage records (key IDs and group paths, no content).
+- **Client keys** reach the gateway as SHA-256 hashes only. A seed ConfigMap holds a
+  config copy (key hashes, no secrets).
 
 ## Optional: the seed config
 
@@ -923,42 +920,6 @@ Boot).
   plane answers. Regenerate it from the control plane's config (its free models)
   when keys change.
 
-## Optional: the data directory
-
-`KAIAK_DATA_DIR` turns on the disk features (`GATEWAY.md` → Configuration sources:
-`KAIAK_DATA_DIR`): the usage spool on disk instead of in memory, the last-known-good
-config, the totals cache and, in file mode, the limits snapshot. Want it when:
-
-- control-plane outages at your record rate would pass the usage memory bound
-  (`KAIAK_USAGE_MEMORY_BYTES`, Control-plane outages) and raising it does not fit
-  the pod — the spool on disk has no bound;
-- a pod restarted during an outage should serve its last config from the control
-  plane (priced models included) rather than the free-only seed, and remember spent
-  budgets;
-- killed pods (OOM, node loss) must not lose their unacknowledged usage — only with
-  a volume that outlives the pod.
-
-It needs a **writable volume** (the root filesystem stays read-only), and the
-directory's owner must be the gateway's user:
-
-- **A PVC per pod**: a StatefulSet with `volumeClaimTemplates` (`ReadWriteOnce`,
-  ~1 GiB — about 300 MB per 1000 full batches), mounted at the directory,
-  `fsGroup: 65532` so the pod's user can write it, `podManagementPolicy: Parallel`
-  (with `OrderedReady` a pod that cannot boot holds back every higher ordinal), and
-  the StatefulSet's `serviceName` set to a headless Service. The pod name is then a
-  stable instance ID: the spool's epoch and sequence continue across restarts. On
-  scale-down, a pod that logged `usage not flushed: left in the spool for the next
-  start` keeps its batches on its PVC until that ordinal returns — keep the default
-  PVC retention and scale back up to deliver them. A StatefulSet rolls one pod at a
-  time, so long drains make long rollouts.
-- **`emptyDir`** survives container restarts (an OOM kill) but not the pod's
-  deletion or rescheduling: it keeps usage across a crash, nothing more.
-- **Never share one volume between replicas**: the gateway holds an exclusive lock
-  on `kaiak.lock` in the directory and a second gateway refuses to start; `flock`
-  over some network filesystems is not enforced across hosts, so give each pod its
-  own volume.
-- Add alerts on the volume's free space and on `kaiak_usage_spool_batches > 100`.
-
 ## Upgrades
 
 - **Feature-building mode, no compatibility** (`AGENTS.md`): gateway and control plane
@@ -973,21 +934,6 @@ directory's owner must be the gateway's user:
 - **Usage is flushed by the drain**: confirm each old pod logged `usage flushed` (not
   `usage not flushed`) during a rollout; give it a drain that ends before its
   timeout.
-- **With a data directory**, the spool is the one file whose loss drops data: flush
-  it (a graceful shutdown) before starting a version with another spool format.
-  Other data files with another format version are deleted at startup and the
-  deletion logged:
-
-  | File | Losing it costs |
-  |---|---|
-  | `usage-spool.json`, `usage-batch-*.json` | unsent usage — billing data |
-  | `last-known-good.json` | a boot during a control-plane outage falls back to the seed, or exits |
-  | `totals.json` | a restart during an outage forgets spent budgets until the control plane answers |
-  | `limits.json` (file mode) | hour and month windows start empty |
-
-  Each file's current format version is in `docs/specs/GATEWAY.md`, beside the file;
-  the startup log names a discarded file's version and the one wanted.
-  `kaiak.lock` has no content; `usage-rejected-*.json` are kept for inspection only.
 - **Config format 5** (this release, protocol 5): models carry no `defaults` — a
   config with them is refused. Bump `format_version` to 5 and delete every model's
   `defaults` before publishing (the parameters move to the backends' own settings:
@@ -1000,15 +946,14 @@ directory's owner must be the gateway's user:
   budget needs a new group ID. **The bound is on counters** (`counters-exceeded`
   replaces `effective-limits-exceeded`): at most 50 000, two per scope (global and
   every group) plus one per effective per-minute limit.
-  The data-directory files `limits.json` (format 3), `totals.json` (format 5: the
-  bases and the `counted_through` they include) and `last-known-good.json` (format
-  7: the config and its hash) change format: their old copies are discarded at the
-  first start (file mode's windows start empty; control-plane mode takes the totals
-  from the next push and the config from the stream). **The usage spool changes
-  format too** (format 4: the index records acknowledged batches, which stay spooled
-  until a `totals.json` write covers them): flush it — a graceful shutdown that logs
-  `usage flushed` — before starting this version, or its unsent batches are
-  discarded. **The control plane broadcasts its current config**: no config versions —
+  **The gateway writes nothing to disk** — `KAIAK_DATA_DIR` is gone (settled
+  2026-10-07): flush the old version's usage spool — a graceful shutdown that logs
+  `usage flushed` — before starting this version, which never reads it; then delete
+  the directory (`usage-spool.json`, `usage-batch-*.json`, `usage-rejected-*.json`,
+  `last-known-good.json`, `totals.json`, `limits.json`, `kaiak.lock`) and remove its
+  volume, and unset `KAIAK_DATA_DIR`. A restart now counts from the control plane's
+  next totals, and a boot with the control plane down uses the seed. **The control
+  plane broadcasts its current config**: no config versions —
   a gateway applies the config the control plane sends, and reports configs by
   their `config_hash`.
 - **Host apps on `kaiak-control`** (this release):
@@ -1076,7 +1021,7 @@ directory's owner must be the gateway's user:
   volume — and pushes only if it passes; tags from `git describe --tags` plus
   `latest`.
 - **Gateway image**: distroless static, `USER 65532:65532`, `/kaiak`, ports 8080 and
-  9090, no config inside, no shell, no volume, no data directory set; the version
+  9090, no config inside, no shell, no volume; the version
   linked in (`kaiak_build_info`) and in the `org.opencontainers.image.version`
   label.
 - **Sample image**: Node slim, `USER 1000:1000`, listens on `0.0.0.0:8090`, JSON

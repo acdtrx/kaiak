@@ -18,7 +18,7 @@ One command per backend kind. The runner:
    processes, one model; one more with `-embeddings-base-url`: see Embeddings on a
    server of their own), four public models on it (below), one group holding the
    key;
-3. starts `kaiak` on free loopback ports with a temporary data directory and JSON logs;
+3. starts `kaiak` on free loopback ports with JSON logs;
 4. runs the checks — through each client API the backend type serves (the table in
    `docs/specs/GATEWAY.md`, Providers → Endpoint support) — printing
    `PASS`/`FAIL`/`SKIP` per check and a summary;

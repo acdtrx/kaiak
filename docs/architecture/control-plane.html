@@ -220,7 +220,6 @@ svg .band { stroke: none; }
 <h3>When the control plane is unavailable at boot</h3>
 <ol>
   <li>Keep opening the stream until its first config arrives or the boot wait runs out (<code>KAIAK_CONTROL_BOOT_WAIT_MS</code>, 60 s). Before the first publish the stream is open but carries no config.</li>
-  <li>With a data directory: boot from the <strong>last-known-good</strong> copy.</li>
   <li>With a seed file (<code>KAIAK_SEED_CONFIG_FILE</code>): boot from the <strong>seed</strong> — free models only, so nothing is served without its budget. Status reports <code>ready</code> with <code>applied_config_hash: null</code>.</li>
   <li>Otherwise exit non-zero; the supervisor (Kubernetes) restarts it with backoff.</li>
 </ol>
@@ -285,7 +284,7 @@ svg .band { stroke: none; }
 <section id="usage">
 <h2>Usage delivery: at least once, counted exactly once</h2>
 <figure>
-<svg viewBox="0 0 960 330" role="img" aria-label="Usage records flow from request finishers into a filling batch, are sealed every 5 seconds or at 500 records into a queue held in memory or in the spool, and are sent one batch at a time. The control plane checks the batch, de-duplicates it by the instance's last counted batch of its epoch, writes it conditionally in one atomic store write, and answers with an ack naming the batch; the gateway stops sending the batch, stops counting it as its own once totals on its stream show it counted, and deletes it from the spool once a saved copy of those totals covers it.">
+<svg viewBox="0 0 960 330" role="img" aria-label="Usage records flow from request finishers into a filling batch, are sealed every 5 seconds or at 500 records into a queue held in memory, and are sent one batch at a time. The control plane checks the batch, de-duplicates it by the instance's last counted batch of its epoch, writes it conditionally in one atomic store write, and answers with an ack naming the batch; the gateway stops sending the batch, and stops counting it as its own once totals on its stream show it counted.">
   <defs>
     <marker id="u-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker>
     <marker id="u-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-hot"/></marker>
@@ -304,7 +303,7 @@ svg .band { stroke: none; }
 
   <rect x="300" y="44" width="110" height="56" rx="8" class="box"/>
   <text x="355" y="68" text-anchor="middle" class="t">sealed queue</text>
-  <text x="355" y="86" text-anchor="middle" class="s">memory or spool</text>
+  <text x="355" y="86" text-anchor="middle" class="s">in memory</text>
 
   <rect x="430" y="44" width="100" height="56" rx="8" class="hot"/>
   <text x="480" y="68" text-anchor="middle" class="t">sender</text>
@@ -341,7 +340,6 @@ svg .band { stroke: none; }
   <text x="20" y="218" class="l">• never sends the batch again; it waits to be shown counted</text>
   <text x="20" y="246" class="t">On the next totals on its stream:</text>
   <text x="20" y="268" class="l">• stops counting batches ≤ counted_through as its own</text>
-  <text x="20" y="290" class="s">The spool keeps a batch until a totals.json save covers it.</text>
 
   <text x="580" y="196" class="t">One atomic store write:</text>
   <text x="580" y="218" class="l">• the batch ID becomes its epoch's last</text>
@@ -355,9 +353,9 @@ svg .band { stroke: none; }
 
 <ul>
   <li><strong>Retried with the same ID</strong> on network errors, 5xx, malformed acks, and an ack naming another batch. A batch is counted whether or not a config is published.</li>
-  <li><strong>Set aside</strong> (kept, logged at error) only when the batch itself can never be accepted: <code>usage-batch-invalid</code>, a message-rule code, <code>instance-mismatch</code>, <code>request-invalid</code>. Retrying it would block every batch behind it.</li>
-  <li><strong>Retried, not set aside</strong>, on <code>401</code>, protocol mismatch, unknown answers — a misconfigured proxy must never discard billing data.</li>
-  <li><strong>Memory bound</strong>: without a data dir, at most <code>KAIAK_USAGE_MEMORY_BYTES</code> (64 MiB) of encoded records wait; the drain spends its last 10 s delivering them.</li>
+  <li><strong>Dropped</strong> (logged at error) only when the batch itself can never be accepted: <code>usage-batch-invalid</code>, a message-rule code, <code>instance-mismatch</code>, <code>request-invalid</code>. Retrying it would block every batch behind it.</li>
+  <li><strong>Retried, not dropped</strong>, on <code>401</code>, protocol mismatch, unknown answers — a misconfigured proxy must never discard billing data.</li>
+  <li><strong>Memory bound</strong>: at most <code>KAIAK_USAGE_MEMORY_BYTES</code> (64 MiB) of encoded records wait; the drain spends its last 10 s delivering them.</li>
 </ul>
 </section>
 
@@ -474,7 +472,7 @@ svg .band { stroke: none; }
   <tbody>
     <tr><td>Serving</td><td>Continues on the current config and the last pushed totals. The control plane is never in the request path.</td></tr>
     <tr><td>Per-minute limits</td><td>Enforced locally as before, on the last known share.</td></tr>
-    <tr><td>Usage</td><td>Held in memory (or the spool) and sent in order on reconnect, each record into the window it was used in.</td></tr>
+    <tr><td>Usage</td><td>Held in memory and sent in order on reconnect, each record into the window it was used in.</td></tr>
     <tr><td>Priced models under a USD limit</td><td>Served until the outage passes <code>global.control_outage_grace_ms</code> (15 min), then <code>503 budget_unavailable</code> until contact returns. Free models keep serving.</td></tr>
     <tr><td>What counts as contact</td><td>Bytes on the stream (heartbeats included). Usage acks and status reports do not count: neither brings totals. Usage batches unanswered past the grace also count as an outage, even with the stream open, and so do acknowledged batches no totals have shown counted past the grace.</td></tr>
     <tr><td>Reconnect</td><td>Reopen the stream — it sends the current config, then the totals — and send the held batches in order.</td></tr>

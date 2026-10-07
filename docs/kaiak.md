@@ -39,16 +39,15 @@ The name reads the same both ways (the gateway carries traffic in both direction
 
 1. **The gateway serves; the control plane decides and keeps records.** The control
    plane is the source of truth for config, usage totals and budgets. The gateway holds
-   **no state by default** (settled 2026-09-25): usage not yet acknowledged waits in
-   memory, and nothing is written to disk — pods run read-only, with no volume. A data
-   directory (last-known-good config cache, usage spool, totals cache) is an opt-in.
-   Losing a pod loses nothing authoritative — only usage it had not delivered, which a
-   drain delivers first.
+   **no state** (settled 2026-09-25; nothing on disk, settled 2026-10-07): usage not
+   yet delivered waits in memory, and nothing is written to disk — pods run read-only,
+   with no volume. Losing a pod loses nothing authoritative — only usage it had not
+   delivered, which a drain delivers first.
 2. **The gateway never depends on the control plane to serve traffic.** Once running
    it keeps serving through a control-plane outage. At boot it takes its config from
    a file, or from the control plane — and when the control plane is unavailable,
    from its **seed config**, the backup of a stateless gateway: free local models only
-   (settled 2026-09-25; with a data directory, the last-known-good copy comes first).
+   (settled 2026-09-25).
    With no config from any of them it refuses to start, so its supervisor retries.
    What it cannot know during an outage (live budget totals) is handled by an
    explicit, configured policy — never by blocking requests on the control plane.
@@ -131,8 +130,7 @@ The name reads the same both ways (the gateway carries traffic in both direction
   per model; output limit reserved against the allowance while a request runs.
 - Accounting: token usage from the backend (estimated and flagged when missing), cost
   from the price table, billing of partial output on client disconnect.
-- Control-plane protocol; file mode; seed config; opt-in data directory
-  (last-known-good config, usage spool).
+- Control-plane protocol; file mode (local and development use); seed config.
 - Ops and usage metrics; readiness, liveness, draining.
 - `kaiak-control` and the sample control plane with its read-only page.
 

@@ -79,7 +79,7 @@ Group entries under headings as themes emerge.
   keys, rotation by config push instead of a gateway rollout, gateways need only the
   control URL and token. Costs: every copy of the config becomes a secret —
   the host app's config history (old keys after rotation), the gateway's
-  last-known-good cache and seed file, the control stream (TLS mandatory), and every
+  seed file, the control stream (TLS mandatory), and every
   place config is shown, diffed, echoed in errors or used as a fixture needs masking;
   it reverses the settled "secrets never in config" (`docs/DEPLOYMENT.md` → Secrets
   and trust). Revisit trigger: the user decides (under consideration 2026-09-29), or
@@ -264,12 +264,6 @@ Group entries under headings as themes emerge.
   over-share (N-C6). Revisit trigger: capacity refused (`queue_full`, per-minute
   limits) during an outage at a fleet size below the last count, or a cap overshoot
   seen right after a control-plane restart.
-- **Old-epoch spool order** — with the opt-in data directory, queued batches of
-  earlier epochs are sent in epoch-ID order (random), not by age; an index lost twice
-  in a row can let a batch of an older epoch arrive after a newer epoch was counted,
-  which the control plane counts again (N-M3, the earlier audit's L8). Order by age
-  (file time, or a counter in the index). Revisit trigger: the data directory is used
-  in production, or a double count is traced to it.
 - **Slow readers hold slots** — there is no bound on a whole response: a client
   reading slowly holds its backend slot for response size ÷ read rate (the stall
   timer pauses while writing to the client, by design — the time is not the

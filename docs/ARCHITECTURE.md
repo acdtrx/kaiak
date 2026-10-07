@@ -61,10 +61,8 @@ flowchart LR
   Kubernetes): read-only filesystem, no volume, only the control plane's URL and
   token required. Usage not yet acknowledged waits in memory; the drain delivers it.
   A seed config (free local models) covers a boot while the control plane is
-  unavailable; with no config at all a gateway exits and is restarted. Opt-in: a
-  data directory per replica (cache and spool — last-known-good config, totals
-  cache, unsent usage — locked to one process), which needs a volume per pod and a
-  stable instance ID (settled 2026-09-25; `docs/specs/GATEWAY.md`, Configuration
+  unavailable; with no config at all a gateway exits and is restarted. A gateway
+  writes nothing to disk (settled 2026-10-07; `docs/specs/GATEWAY.md`, Configuration
   sources).
 - **Control plane**: any number of processes over one store whose implementation holds
   the store contract (conditional writes, consistent reads, change notification with a
@@ -151,24 +149,19 @@ enforce the boundaries.
   until its window ends whatever the config, each limit a check over its scope's
   count; a request is checked against global and every group
   on its key's path, following the live config; check-and-reserve before routing,
-  settlement from the request's usage records in a finisher; the file-mode usage snapshot through
-  `state`. In control-plane mode: hour and month windows over the pushed totals plus
+  settlement from the request's usage records in a finisher. In control-plane mode: hour and month windows over the pushed totals plus
   the gateway's own usage not yet counted (tagged by the usage generation each
   record carries), totals applied by scope and type whatever the config runs (the
   first after each connect complete, later ones the changed windows only), per-minute
   shares from the live-gateway count, the outage refusal for priced
   money-limited models (no stream contact, usage batches unanswered, or acknowledged
-  batches no totals have shown counted, past the grace), and
-  the last applied totals saved to `state` in the background every 30 s, with own
-  usage rebuilt from the spool after a restart. It knows nothing of the
+  batches no totals have shown counted, past the grace). Nothing outlives the
+  process. It knows nothing of the
   protocol: `cmd/kaiak` converts the client's totals updates and contact.
 - `metrics` — a small registry (counters, gauges, fixed-bucket histograms, gauges and
   counters read at scrape time) and its Prometheus text exposition, served on the admin port; the
   ops metrics the `server` pipeline feeds when a request is over; the usage-metrics
   sink on accounting's fan-out. The registry is built in `cmd/kaiak` and passed in.
-- `state` — the optional data directory and its files, each carrying a format
-  version, written atomically; its lock keeps a second gateway off the directory.
-  Without a data directory nothing opens it: `cmd/kaiak` passes none.
 - `clip` — bounds a client-controlled string (path, method, model name) before it is
   logged or echoed in an error message; `server` and `auth` use it.
 - `logattr` — log attribute values in the units the log vocabulary fixes (a duration
@@ -197,23 +190,18 @@ enforce the boundaries.
   `provider` is for backends: no other package opens a connection to it). The
   control-protocol messages: Go types, strict decoding and validation against
   `protocol/schema/`, fixture parity with `kaiak-control` (the usage record is
-  `accounting`'s type). The client: boot from the stream's first config, the
-  last-known-good copy (through `state`, with a data directory) or, with the control
-  plane unavailable, the seed config — else an error `cmd/kaiak` exits on; the
+  `accounting`'s type). The client: boot from the stream's first config or, with the
+  control plane unavailable, the seed config — else an error `cmd/kaiak` exits on; the
   config stream (read with `sse`) with reconnect backoff, every config handed to
   `config`'s apply path unless its hash is the running or last rejected config; the
   usage batch sender — accounting's batcher, which only appends in memory and
-  returns the filling batch's usage generation, a goroutine sealing batches into the
-  batch store — the spool (one file per batch, through `state`) with a data
-  directory, memory without (at most `KAIAK_USAGE_MEMORY_BYTES` of encoded records,
-  default 64 MiB, held in memory either way:
-  sealed ones while the spool cannot be written, queued ones without a spool) —
-  another sending them one outstanding at a time; the status reporter (on start,
+  returns the filling batch's usage generation, a goroutine sealing batches into a
+  queue in memory (at most `KAIAK_USAGE_MEMORY_BYTES` of encoded records, default
+  64 MiB) — another sending them one outstanding at a time; the status reporter (on start,
   on change, on a stream connecting, every 10 s; routing changes at most one a
   second). Totals come from stream events only and go to one consumer (the
   limiter), in stream order, with the usage generations they show counted (an ack
-  only stops a batch being sent; it leaves the store once a saved copy of totals
-  covering it is written, and a malformed totals event ends the stream); the client also tracks contact with the control
+  only stops a batch being sent, and a malformed totals event ends the stream); the client also tracks contact with the control
   plane (read by the limiter's outage check and the metrics). `cmd/kaiak` wires the
   usage flush and the final status into the drain; `metrics` gets the delivery
   metrics through an observer interface `control` defines, and the connection state
@@ -239,8 +227,7 @@ Test tooling outside the binary:
 - `gateway/e2e` — the end-to-end test: builds `kaiak`, runs it as a subprocess with a
   generated config against the fake backend, drives it over HTTP and signals (reload,
   restart, drain); in control-plane mode against `fakecontrol` (boot, pushed config,
-  usage batches delivered, a killed gateway resending its spooled batch with the
-  same ID, the drain flushing the last records, last-known-good restart), two
+  usage batches delivered, the drain flushing the last records), two
   gateways sharing one `fakecontrol` (per-minute shares, a budget spent through one
   enforced on the other, the outage refusal and recovery), and routing reliability
   with one model on two fake backends (`reliability_test.go`: retry on the other

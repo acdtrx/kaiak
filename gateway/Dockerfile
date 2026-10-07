@@ -7,8 +7,7 @@
 #
 # No config is baked in: set KAIAK_CONTROL_URL + KAIAK_CONTROL_TOKEN (control-plane
 # mode), or mount one read-only and name it with KAIAK_CONFIG_FILE (file mode). The
-# gateway writes nothing by default, so it runs on a read-only root filesystem with no
-# volume; the opt-in data directory (KAIAK_DATA_DIR) needs a writable volume.
+# gateway writes nothing, so it runs on a read-only root filesystem with no volume.
 #
 # VERSION (git describe, from scripts/build-images.sh) is linked into the binary and
 # reported by kaiak_build_info.
