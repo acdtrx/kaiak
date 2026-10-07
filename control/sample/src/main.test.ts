@@ -8,6 +8,8 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import { afterEach, test } from "node:test";
 
+import { INSTANCE_HEADER, PROTOCOL_HEADER, PROTOCOL_VERSION } from "kaiak-control";
+
 const MAIN = path.resolve(import.meta.dirname, "main.ts");
 const MINIMAL = path.resolve(import.meta.dirname, "../../../protocol/fixtures/config/valid/minimal.json");
 const TOKEN = "main-token";
@@ -50,7 +52,7 @@ async function firstConfigHash(url: string): Promise<string> {
   const abort = new AbortController();
   try {
     const response = await fetch(`${url}/v1/stream`, {
-      headers: { authorization: `Bearer ${TOKEN}`, "kaiak-protocol": "5", "kaiak-instance": "gw-1" },
+      headers: { authorization: `Bearer ${TOKEN}`, [PROTOCOL_HEADER]: String(PROTOCOL_VERSION), [INSTANCE_HEADER]: "gw-1" },
       signal: abort.signal,
     });
     assert.equal(response.status, 200);

@@ -7,6 +7,7 @@ import path from "node:path";
 import { afterEach, test } from "node:test";
 
 import Fastify from "fastify";
+import { PROTOCOL_VERSION } from "kaiak-control";
 import type { Config, GatewayView, PublishedConfig, ReceivedRecord, Totals, UsageRecord } from "kaiak-control";
 
 import type { ConfigFileState } from "../config-file/index.ts";
@@ -59,7 +60,7 @@ const GATEWAYS: GatewayView[] = [
     instance: "gw-1",
     status: {
       instance: "gw-1",
-      protocol_version: 5,
+      protocol_version: PROTOCOL_VERSION,
       state: "ready",
       started_at: "2026-09-24T09:58:12.5Z",
       applied_config_hash: CURRENT_HASH,
@@ -80,7 +81,7 @@ const GATEWAYS: GatewayView[] = [
     instance: "gw-2",
     status: {
       instance: "gw-2",
-      protocol_version: 5,
+      protocol_version: PROTOCOL_VERSION,
       state: "draining",
       started_at: "2026-09-24T08:00:00Z",
       applied_config_hash: EARLIER_HASH,
@@ -97,7 +98,7 @@ const GATEWAYS: GatewayView[] = [
     instance: "gw-3",
     status: {
       instance: "gw-3",
-      protocol_version: 5,
+      protocol_version: PROTOCOL_VERSION,
       state: "ready",
       started_at: "2026-09-24T07:00:00Z",
       applied_config_hash: OTHER_HASH,

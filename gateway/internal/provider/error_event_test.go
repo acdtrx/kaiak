@@ -2,9 +2,11 @@ package provider
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
+	"kaiak/internal/config"
 	"kaiak/internal/sse"
 )
 
@@ -41,7 +43,7 @@ func TestErrorEventKinds(t *testing.T) {
 
 // A relayed error event keeps its type and code but carries the gateway's message,
 // never the backend's text (it can name hosts or the backend-side model); its model
-// name is rewritten as in any event (the pre-merge review's L4 of [S]).
+// name is rewritten as in any event.
 func TestRelayedErrorEventCarriesTheGatewaysMessage(t *testing.T) {
 	publicModel, _ := json.Marshal("public")
 	for _, c := range []struct {
@@ -75,5 +77,16 @@ func TestRelayedErrorEventCarriesTheGatewaysMessage(t *testing.T) {
 				t.Errorf("relayed %q still carries %s", out, gone)
 			}
 		}
+	}
+}
+
+// A comment before the first data event leaves the first-event window open: an error
+// event after it is still the stream's first event, retriable.
+func TestCommentBeforeAFirstErrorEventIsRetriable(t *testing.T) {
+	stream := ": keepalive\n\nevent: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n"
+	out, err := relayMessages(t, config.BackendAnthropic, "text/event-stream", []byte(stream), true)
+	var perr *Error
+	if !errors.As(err, &perr) || perr.Code != CodeErrorEvent {
+		t.Errorf("first data event is error but cannot retry: err=%v, relayed=%q", err, out)
 	}
 }

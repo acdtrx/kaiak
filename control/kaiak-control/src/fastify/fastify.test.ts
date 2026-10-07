@@ -1,48 +1,42 @@
 import assert from "node:assert/strict";
-import { EventEmitter, once } from "node:events";
-import { readFileSync } from "node:fs";
-import path from "node:path";
+import { createHash } from "node:crypto";
 import { afterEach, describe, test } from "node:test";
 
-import Fastify from "fastify";
-
-import type { Config } from "../config/index.ts";
-import { createControlPlane } from "../control-plane/index.ts";
 import type { ControlPlane } from "../control-plane/index.ts";
 import { configHash } from "../config-publishing/index.ts";
-import { validateConfigEvent } from "../messages/index.ts";
+import { PROTOCOL_VERSION } from "../protocol/index.ts";
 import { createMemoryStore } from "../storage/index.ts";
 import type { ControlPlaneStore, StoreChangeListener } from "../storage/index.ts";
+import {
+  TEST_INSTANCE,
+  closeAfterTest,
+  closeOpened,
+  configNumberOf,
+  configNumbered,
+  countingSubscriptions,
+  failOnListenerError,
+  gatewayHeaders,
+  nextConfig,
+  nextConfigOrEnd,
+  openSseStream,
+  openStream,
+  restorable,
+  startApp,
+  testCore,
+  usageBatch,
+} from "../test-support/index.ts";
+import type { SseItem, SseStream } from "../test-support/index.ts";
 
-import { controlProtocolPlugin } from "./index.ts";
-import type { ControlProtocolPluginOptions } from "./index.ts";
-import { openSseStream } from "./sse-client.ts";
-import type { SseItem, SseStream } from "./sse-client.ts";
-
-const TOKEN = "test-token";
-const MINIMAL = path.resolve(import.meta.dirname, "../../../../protocol/fixtures/config/valid/minimal.json");
-
-const GATEWAY_HEADERS = {
-  authorization: `Bearer ${TOKEN}`,
-  "kaiak-protocol": "5",
-  "kaiak-instance": "gw-1",
-};
-
-// A valid config distinguishable by its context length.
-function configNumbered(n: number): Config {
-  const config = JSON.parse(readFileSync(MINIMAL, "utf8")) as Config;
-  const model = config.models["llama"];
-  assert.ok(model, "the minimal fixture has model llama");
-  model.metadata.context_length = 1000 + n;
-  return config;
-}
+const GATEWAY_HEADERS = gatewayHeaders();
+const NOW = Date.UTC(2026, 9, 7, 12, 30);
 
 function newControlPlane(store: ControlPlaneStore = createMemoryStore()): ControlPlane {
-  return createControlPlane({
-    store,
-    token: TOKEN,
-    onListenerError: (error) => assert.fail(`listener failed: ${String(error)}`),
-  });
+  return testCore({ store, onListenerError: failOnListenerError });
+}
+
+// A core over store whose clock reads NOW.
+function coreAtNow(store: ControlPlaneStore, options: Parameters<typeof testCore>[0] = {}): ControlPlane {
+  return testCore({ store, clock: () => NOW, ...options });
 }
 
 async function publish(controlPlane: ControlPlane, ...numbers: number[]): Promise<void> {
@@ -52,56 +46,7 @@ async function publish(controlPlane: ControlPlane, ...numbers: number[]): Promis
   }
 }
 
-interface RunningApp {
-  base: string;
-  close(): Promise<void>;
-}
-
-const running: RunningApp[] = [];
-const openStreams: SseStream[] = [];
-
-afterEach(async () => {
-  for (const stream of openStreams.splice(0)) stream.close();
-  for (const app of running.splice(0)) await app.close();
-});
-
-async function startApp(
-  controlPlane: ControlPlane,
-  options: Omit<ControlProtocolPluginOptions, "controlPlane"> = {},
-): Promise<RunningApp> {
-  const app = Fastify();
-  await app.register(controlProtocolPlugin, { controlPlane, ...options });
-  await app.listen({ host: "127.0.0.1", port: 0 });
-  const address = app.server.address();
-  assert.ok(address && typeof address === "object", "listening on a TCP port");
-  const started = {
-    base: `http://127.0.0.1:${address.port}`,
-    close: () => app.close(),
-  };
-  running.push(started);
-  return started;
-}
-
-async function openStream(app: RunningApp): Promise<SseStream> {
-  const stream = await openSseStream(`${app.base}/v1/stream`, GATEWAY_HEADERS);
-  openStreams.push(stream);
-  assert.equal(stream.response.status, 200);
-  return stream;
-}
-
-// Which configNumbered a config event carries, after checking the event is a valid
-// config event whose hash is its config's.
-function configNumberOf(item: SseItem): number {
-  assert.equal(item.kind, "event");
-  assert.ok(item.kind === "event");
-  assert.equal(item.event, "config");
-  assert.equal(item.id, undefined, "config events carry no id: there is nothing to resume from");
-  const validation = validateConfigEvent(JSON.parse(item.data));
-  assert.ok(validation.ok, "the data is a valid config event");
-  const { config, config_hash } = validation.message;
-  assert.equal(config_hash, configHash(config));
-  return (config.models["llama"]?.metadata.context_length ?? 0) - 1000;
-}
+afterEach(closeOpened);
 
 // The next event or comment other than totals, which the stream also pushes on connect
 // (status-totals.test.ts covers them).
@@ -112,43 +57,10 @@ async function nextWithoutTotals(stream: SseStream): Promise<SseItem> {
   }
 }
 
-async function nextConfigOrEnd(stream: SseStream): Promise<SseItem> {
-  for (;;) {
-    const item = await nextWithoutTotals(stream);
-    if (item.kind !== "comment") return item;
-  }
-}
-
 async function nextConfigs(stream: SseStream, count: number): Promise<number[]> {
   const numbers: number[] = [];
-  for (let n = 0; n < count; n++) numbers.push(configNumberOf(await nextConfigOrEnd(stream)));
+  for (let n = 0; n < count; n++) numbers.push(await nextConfig(stream));
   return numbers;
-}
-
-// Wraps a core so a test sees how many config subscriptions are active.
-function countingSubscriptions(controlPlane: ControlPlane) {
-  let active = 0;
-  const changes = new EventEmitter();
-  const counted: ControlPlane = {
-    ...controlPlane,
-    onConfigRead(listener) {
-      const unsubscribe = controlPlane.onConfigRead(listener);
-      active++;
-      changes.emit("change");
-      let subscribed = true;
-      return () => {
-        unsubscribe();
-        if (!subscribed) return;
-        subscribed = false;
-        active--;
-        changes.emit("change");
-      };
-    },
-  };
-  const activeReaches = async (count: number): Promise<void> => {
-    while (active !== count) await once(changes, "change");
-  };
-  return { controlPlane: counted, activeReaches };
 }
 
 describe("request checks", { timeout: 10_000 }, () => {
@@ -182,7 +94,7 @@ describe("request checks", { timeout: 10_000 }, () => {
         const app = await startApp(controlPlane);
         const response = await fetch(`${app.base}${endpoint}`, { headers: failure.headers });
         assert.equal(response.status, failure.status);
-        assert.equal(response.headers.get("kaiak-protocol"), "5");
+        assert.equal(response.headers.get("kaiak-protocol"), String(PROTOCOL_VERSION));
         const text = await response.text();
         assert.ok(!text.includes("not-the-token"), "the presented token is not echoed");
         const body = JSON.parse(text) as { error: string; detail: unknown };
@@ -205,7 +117,7 @@ describe("answers outside the routes", { timeout: 10_000 }, () => {
       const app = await startApp(newControlPlane());
       const response = await fetch(`${app.base}${requestPath}`, { method, headers: GATEWAY_HEADERS });
       assert.equal(response.status, 404);
-      assert.equal(response.headers.get("kaiak-protocol"), "5");
+      assert.equal(response.headers.get("kaiak-protocol"), String(PROTOCOL_VERSION));
       if (method !== "HEAD") assert.equal(((await response.json()) as { error: string }).error, "not-found");
     });
   }
@@ -214,7 +126,7 @@ describe("answers outside the routes", { timeout: 10_000 }, () => {
     const app = await startApp(newControlPlane());
     const response = await fetch(`${app.base}/v1/nothing-here`, { headers: { ...GATEWAY_HEADERS, authorization: "" } });
     assert.equal(response.status, 401);
-    assert.equal(response.headers.get("kaiak-protocol"), "5");
+    assert.equal(response.headers.get("kaiak-protocol"), String(PROTOCOL_VERSION));
   });
 
   test("a status body over 64 KiB answers 413 request-invalid with the protocol header", async () => {
@@ -225,7 +137,7 @@ describe("answers outside the routes", { timeout: 10_000 }, () => {
       body: JSON.stringify({ padding: "x".repeat(64 * 1024) }),
     });
     assert.equal(response.status, 413);
-    assert.equal(response.headers.get("kaiak-protocol"), "5");
+    assert.equal(response.headers.get("kaiak-protocol"), String(PROTOCOL_VERSION));
     assert.equal(((await response.json()) as { error: string }).error, "request-invalid");
   });
 
@@ -248,19 +160,19 @@ describe("GET /v1/stream", { timeout: 10_000 }, () => {
   test("is an uncached event stream carrying the protocol header", async () => {
     const controlPlane = newControlPlane();
     await publish(controlPlane, 1);
-    const stream = await openStream(await startApp(controlPlane));
+    const stream = await openStream((await startApp(controlPlane)).base);
     const headers = stream.response.headers;
     assert.equal(headers.get("content-type"), "text/event-stream; charset=utf-8");
     assert.equal(headers.get("cache-control"), "no-cache");
     assert.equal(headers.get("x-accel-buffering"), "no");
-    assert.equal(headers.get("kaiak-protocol"), "5");
+    assert.equal(headers.get("kaiak-protocol"), String(PROTOCOL_VERSION));
     assert.equal(headers.get("content-encoding"), null);
   });
 
   test("on connect it sends the current config, then the totals", async () => {
     const controlPlane = newControlPlane();
     await publish(controlPlane, 1, 2, 3);
-    const stream = await openStream(await startApp(controlPlane));
+    const stream = await openStream((await startApp(controlPlane)).base);
     const first = await stream.nextEvent();
     assert.equal(configNumberOf(first), 3);
     assert.ok(first.kind === "event");
@@ -274,7 +186,7 @@ describe("GET /v1/stream", { timeout: 10_000 }, () => {
     await publish(controlPlane, 1);
     const app = await startApp(controlPlane, { prefix: "/control/v1" });
     const stream = await openSseStream(`${app.base}/control/v1/stream`, GATEWAY_HEADERS);
-    openStreams.push(stream);
+    closeAfterTest(() => stream.close());
     assert.equal(stream.response.status, 200);
     assert.deepEqual(await nextConfigs(stream, 1), [1]);
     assert.equal((await fetch(`${app.base}/v1/stream`, { headers: GATEWAY_HEADERS })).status, 404);
@@ -282,7 +194,7 @@ describe("GET /v1/stream", { timeout: 10_000 }, () => {
 
   test("before anything is published the stream stays open, then gets the first config and totals", async () => {
     const controlPlane = newControlPlane();
-    const stream = await openStream(await startApp(controlPlane, { heartbeatIntervalMs: 20 }));
+    const stream = await openStream((await startApp(controlPlane, { heartbeatIntervalMs: 20 })).base);
     assert.deepEqual(await stream.next(), { kind: "comment", text: "heartbeat" });
     await publish(controlPlane, 1);
     assert.deepEqual(await nextConfigs(stream, 1), [1]);
@@ -293,7 +205,7 @@ describe("GET /v1/stream", { timeout: 10_000 }, () => {
   test("delivers every config published while connected", async () => {
     const controlPlane = newControlPlane();
     await publish(controlPlane, 1);
-    const stream = await openStream(await startApp(controlPlane));
+    const stream = await openStream((await startApp(controlPlane)).base);
     assert.deepEqual(await nextConfigs(stream, 1), [1]);
     await publish(controlPlane, 2);
     await publish(controlPlane, 3);
@@ -304,16 +216,16 @@ describe("GET /v1/stream", { timeout: 10_000 }, () => {
     const controlPlane = newControlPlane();
     await publish(controlPlane, 1, 2);
     const app = await startApp(controlPlane);
-    assert.deepEqual(await nextConfigs(await openStream(app), 1), [2]);
+    assert.deepEqual(await nextConfigs(await openStream(app.base), 1), [2]);
     // The current config is config 1 again: a new stream gets it, nothing refuses it.
     await publish(controlPlane, 1);
-    assert.deepEqual(await nextConfigs(await openStream(app), 1), [1]);
+    assert.deepEqual(await nextConfigs(await openStream(app.base), 1), [1]);
   });
 
   test("an idle stream carries heartbeat comments", async () => {
     const controlPlane = newControlPlane();
     await publish(controlPlane, 1);
-    const stream = await openStream(await startApp(controlPlane, { heartbeatIntervalMs: 20 }));
+    const stream = await openStream((await startApp(controlPlane, { heartbeatIntervalMs: 20 })).base);
     assert.deepEqual(await nextConfigs(stream, 1), [1]);
     assert.deepEqual(await nextWithoutTotals(stream), { kind: "comment", text: "heartbeat" });
     assert.deepEqual(await nextWithoutTotals(stream), { kind: "comment", text: "heartbeat" });
@@ -324,7 +236,7 @@ describe("GET /v1/stream", { timeout: 10_000 }, () => {
     await publish(core, 1);
     const { controlPlane, activeReaches } = countingSubscriptions(core);
     const app = await startApp(controlPlane, { heartbeatIntervalMs: 20 });
-    const stream = await openStream(app);
+    const stream = await openStream(app.base);
     await activeReaches(1);
     stream.close();
     await activeReaches(0);
@@ -337,7 +249,7 @@ describe("GET /v1/stream", { timeout: 10_000 }, () => {
     await publish(core, 1);
     const { controlPlane, activeReaches } = countingSubscriptions(core);
     const app = await startApp(controlPlane);
-    const streams = await Promise.all(Array.from({ length: 50 }, () => openStream(app)));
+    const streams = await Promise.all(Array.from({ length: 50 }, () => openStream(app.base)));
     await activeReaches(50);
     for (const stream of streams) assert.deepEqual(await nextConfigs(stream, 1), [1]);
     await publish(core, 2);
@@ -360,7 +272,7 @@ describe("GET /v1/stream", { timeout: 10_000 }, () => {
         return read;
       },
     };
-    const stream = await openStream(await startApp(controlPlane, { heartbeatIntervalMs: 20 }));
+    const stream = await openStream((await startApp(controlPlane, { heartbeatIntervalMs: 20 })).base);
     assert.deepEqual(await nextConfigs(stream, 1), [1]);
     await publish(core, 3);
     assert.deepEqual(await nextConfigs(stream, 1), [3]);
@@ -382,7 +294,7 @@ describe("GET /v1/stream", { timeout: 10_000 }, () => {
       },
     };
     const app = await startApp(controlPlane);
-    const opened = openStream(app);
+    const opened = openStream(app.base);
     await publish(core, 2);
     releaseRead();
     const stream = await opened;
@@ -393,36 +305,18 @@ describe("GET /v1/stream", { timeout: 10_000 }, () => {
 
   test("a store restored to an older config sends it to the open streams once its channel catches up", async () => {
     // Two memory stores as one store and its backup: the backup holds config 1 only.
-    const live = createMemoryStore();
     const backup = createMemoryStore();
-    let active = live;
-    const listeners: StoreChangeListener[] = [];
-    const store = new Proxy({} as ControlPlaneStore, {
-      get(_, name: keyof ControlPlaneStore) {
-        if (name === "subscribe") {
-          return (listener: StoreChangeListener) => {
-            listeners.push(listener);
-            const fromLive = live.subscribe((change) => active === live && listener(change));
-            const fromBackup = backup.subscribe((change) => active === backup && listener(change));
-            return () => {
-              fromLive();
-              fromBackup();
-            };
-          };
-        }
-        return (...args: unknown[]) => (active[name] as (...a: unknown[]) => unknown).apply(active, args);
-      },
-    });
+    const { store, restore, listeners } = restorable(createMemoryStore(), backup);
     await publish(newControlPlane(backup), 1);
     const controlPlane = newControlPlane(store);
     await publish(controlPlane, 1, 2);
     const app = await startApp(controlPlane);
-    const streams = [await openStream(app), await openStream(app)];
+    const streams = [await openStream(app.base), await openStream(app.base)];
     for (const stream of streams) assert.deepEqual(await nextConfigs(stream, 1), [2]);
 
     // Restored: the store's channel comes back and announces a catch-up. Every stream
     // gets the restored config, and stays open.
-    active = backup;
+    restore();
     for (const listener of listeners) listener({ type: "catch-up" });
     for (const stream of streams) assert.deepEqual(await nextConfigs(stream, 1), [1]);
     // The app publishes its own current config again: it reaches the streams.
@@ -435,11 +329,163 @@ describe("GET /v1/stream", { timeout: 10_000 }, () => {
     await publish(core, 1);
     const { controlPlane, activeReaches } = countingSubscriptions(core);
     const app = await startApp(controlPlane);
-    const stream = await openStream(app);
+    const stream = await openStream(app.base);
     await activeReaches(1);
     await app.close();
     assert.deepEqual(await nextConfigs(stream, 1), [1]);
     assert.deepEqual(await nextConfigOrEnd(stream), { kind: "end" });
     await activeReaches(0);
+  });
+
+  // A stream ended while this core delivers configs writes nothing more — here the
+  // plugin ends every stream when one read fails, and the next delivery runs in the
+  // same turn, before the socket's close event.
+  test("a stream ended during config delivery writes nothing into the ended response", { timeout: 10_000 }, async () => {
+    const base = createMemoryStore();
+    let failNext = false;
+    const flaky: ControlPlaneStore = {
+      ...base,
+      async currentConfig() {
+        if (failNext) {
+          failNext = false;
+          throw new Error("database read failure");
+        }
+        return base.currentConfig();
+      },
+    };
+    const reader = coreAtNow(flaky, { deliveryRetryDelaysMs: [] });
+    const writer = coreAtNow(base);
+    assert.ok((await writer.publishConfig(configNumbered(1))).ok);
+    const errors: string[] = [];
+    const app = await startApp(reader, {}, (raw) => {
+      raw.on("error", (error: Error & { code?: string }) => errors.push(error.code ?? error.message));
+    });
+    const stream = await openStream(app.base);
+    assert.equal(await nextConfig(stream), 1);
+
+    // Two publishes at once: the first delivery read fails and ends the stream, the
+    // second reads config 3 straight after.
+    failNext = true;
+    const results = await Promise.all([writer.publishConfig(configNumbered(2)), writer.publishConfig(configNumbered(3))]);
+    assert.ok(results.every((result) => result.ok));
+    let item = await stream.next();
+    while (item.kind !== "end") item = await stream.next();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(errors, [], "nothing was written after the end");
+  });
+
+  // After a restore the core heard nothing of, a stream that connected meanwhile runs
+  // the restored config; the app publishing its current config again reaches it, since
+  // each stream skips only what it sent itself.
+  test("republishing after a restore reaches a stream that connected to the restored config", { timeout: 10_000 }, async () => {
+    const backup = createMemoryStore();
+    assert.ok((await coreAtNow(backup).publishConfig(configNumbered(1))).ok);
+    const { store, restore } = restorable(createMemoryStore(), backup);
+    const cp = coreAtNow(store);
+    assert.ok((await cp.publishConfig(configNumbered(1))).ok);
+    assert.ok((await cp.publishConfig(configNumbered(2))).ok);
+    const app = await startApp(cp);
+    const before = await openStream(app.base);
+    assert.equal(await nextConfig(before), 2);
+
+    restore();
+    const after = await openStream(app.base);
+    assert.equal(await nextConfig(after), 1);
+    assert.ok((await cp.publishConfig(configNumbered(2))).ok);
+    assert.equal(await nextConfig(after), 2);
+  });
+
+  // The order rule: a delivery read issued before a stream's connect read, completing
+  // after the connect read was sent, is not sent on that stream — it would put the
+  // gateway back on an older config. A stream open before both gets each in order.
+  test("a delivery read issued before a stream's connect read is not sent after it", { timeout: 10_000 }, async () => {
+    const base = createMemoryStore();
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let holdNext = false;
+    const holding: ControlPlaneStore = {
+      ...base,
+      async currentConfig() {
+        const entry = await base.currentConfig();
+        if (holdNext) {
+          holdNext = false;
+          entered.resolve();
+          await release.promise;
+        }
+        return entry;
+      },
+    };
+    const reader = coreAtNow(holding);
+    const writer = coreAtNow(base);
+    assert.ok((await writer.publishConfig(configNumbered(1))).ok);
+    const app = await startApp(reader);
+    const early = await openStream(app.base);
+    assert.equal(await nextConfig(early), 1);
+
+    // The reader's delivery read for config 2 reads it, then waits; config 3 follows.
+    holdNext = true;
+    assert.ok((await writer.publishConfig(configNumbered(2))).ok);
+    await entered.promise;
+    assert.ok((await writer.publishConfig(configNumbered(3))).ok);
+    const late = await openStream(app.base);
+    assert.equal(await nextConfig(late), 3);
+    release.resolve();
+
+    assert.deepEqual([await nextConfig(early), await nextConfig(early)], [2, 3]);
+    assert.ok((await writer.publishConfig(configNumbered(4))).ok);
+    assert.equal(await nextConfig(late), 4, "config 2 never followed config 3");
+  });
+
+  // A catch-up re-reads the current config: a stream already running it gets nothing,
+  // and stays open.
+  test("a catch-up sends a stream nothing it already runs, and the stream stays open", { timeout: 10_000 }, async () => {
+    const base = createMemoryStore();
+    const listeners: StoreChangeListener[] = [];
+    const store: ControlPlaneStore = {
+      ...base,
+      subscribe(listener) {
+        listeners.push(listener);
+        return base.subscribe(listener);
+      },
+    };
+    const cp = coreAtNow(store);
+    assert.ok((await cp.publishConfig(configNumbered(1))).ok);
+    const batch = usageBatch({ instance: TEST_INSTANCE, epoch: "a".repeat(32), sequence: 1 }, [
+      {
+        record_id: "a1".padEnd(32, "0"),
+        request_id: "req-a1",
+        gateway_instance: TEST_INSTANCE,
+        key_id: "key",
+        groups: ["g"],
+        model: "m",
+        deployment: { backend: "b", model: "m" },
+        units: { tokens_in: 100 },
+        cost_nano_usd: 100,
+        gateway_time: new Date(NOW).toISOString(),
+      },
+    ]);
+    assert.ok((await cp.acceptUsageBatch(TEST_INSTANCE, batch)).ok);
+    const app = await startApp(cp, { heartbeatIntervalMs: 20 });
+    const stream = await openStream(app.base);
+    assert.equal(await nextConfig(stream), 1);
+    for (const listener of listeners) listener({ type: "catch-up" });
+    assert.ok((await cp.publishConfig(configNumbered(2))).ok);
+    assert.equal(await nextConfig(stream), 2, "the next config is the next published one");
+  });
+
+  // The stream sends the stored config text as it is, so config_hash is the hash of what
+  // goes out whatever the text's spacing or member order.
+  test("a config event carries the stored text as it is, its hash the hash of that text", { timeout: 10_000 }, async () => {
+    const store = createMemoryStore();
+    const config = configNumbered(1);
+    const reordered = Object.fromEntries(Object.entries(config).reverse());
+    const text = JSON.stringify(reordered, null, 1).replaceAll("\n", " ");
+    const hash = createHash("sha256").update(text).digest("hex");
+    assert.ok((await store.publishConfig({ text, hash, publishedAt: NOW }, undefined)).saved);
+    const app = await startApp(coreAtNow(store));
+    const stream = await openStream(app.base);
+    const item = await stream.nextEvent();
+    assert.ok(item.kind === "event" && item.event === "config");
+    assert.equal(item.data, `{"config_hash":"${hash}","config":${text}}`);
   });
 });

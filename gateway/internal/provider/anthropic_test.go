@@ -223,9 +223,8 @@ func TestAnthropicTypesRefusePriceOptions(t *testing.T) {
 // A 1-hour cache write is refused wherever a Messages request can carry a
 // cache_control — inside a tool result's content, a document's content source, a
 // search result's content, at any depth — and a cache_control or ttl named twice in
-// one object is refused, since the gateway and the backend could read different ones
-// (the pre-merge review's M2): here the 1-hour one comes second, past the one a
-// first-wins reader would stop at.
+// one object is refused, since the gateway and the backend could read different ones:
+// here the 1-hour one comes second, past the one a first-wins reader would stop at.
 func TestAnthropicTypesRefuseNestedOneHourCacheWrites(t *testing.T) {
 	const oneHour = `"cache_control":{"type":"ephemeral","ttl":"1h"}`
 	refused := []struct{ body, code, param string }{
@@ -261,6 +260,20 @@ func TestAnthropicTypesRefuseNestedOneHourCacheWrites(t *testing.T) {
 				t.Errorf("%d requests reached the backend, want none", n)
 			}
 		})
+	}
+}
+
+// A ttl or a cache_control named twice is refused, whichever order the 1-hour one
+// comes in.
+func TestAnthropicTypesRefuseRepeatedCachePolicy(t *testing.T) {
+	for _, policy := range []string{
+		`"cache_control":{"type":"ephemeral","ttl":"1h","ttl":"5m"}`,
+		`"cache_control":{"type":"ephemeral","ttl":"1h"},"cache_control":{"type":"ephemeral","ttl":"5m"}`,
+	} {
+		body := `{"model":"pub","max_tokens":10,"messages":[{"role":"user","content":[{"type":"text","text":"hi",` + policy + `}]}]}`
+		if err := refusePriceOptions([]byte(body)); err == nil {
+			t.Errorf("ambiguous owned price field admitted: %s", policy)
+		}
 	}
 }
 
@@ -384,8 +397,8 @@ func TestAnthropicTypesProbe(t *testing.T) {
 // only — OpenAI's and Azure's error code, Anthropic's not_found_error whose message
 // begins "model:" — never from a message that merely names the model: a request can
 // make these backends echo an ID it chose (a Responses item_reference, a file_id),
-// and a client naming the backend model there must not open the deployment's circuit
-// (the pre-merge review's M1). Such a 404 is the caller's, relayed.
+// and a client naming the backend model there must not open the deployment's circuit.
+// Such a 404 is the caller's, relayed.
 func TestCloudTypesReadAMissingModelByItsFieldsOnly(t *testing.T) {
 	openAIEcho := `{"error":{"message":"Item with id 'backend-model' not found.","type":"invalid_request_error","param":"input","code":null}}`
 	anthropicEcho := `{"type":"error","error":{"type":"not_found_error","message":"File not found: backend-model"}}`

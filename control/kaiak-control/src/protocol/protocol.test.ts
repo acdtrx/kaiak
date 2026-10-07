@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
 import {
+  INSTANCE_HEADER,
+  PROTOCOL_HEADER,
   PROTOCOL_VERSION,
   checkBearerToken,
   checkGatewayRequest,
@@ -15,8 +17,8 @@ const TOKEN = "s3cret-token";
 
 const goodHeaders: RequestHeaders = {
   authorization: `Bearer ${TOKEN}`,
-  "kaiak-protocol": "5",
-  "kaiak-instance": "gw-1",
+  [PROTOCOL_HEADER]: String(PROTOCOL_VERSION),
+  [INSTANCE_HEADER]: "gw-1",
 };
 
 describe("bearer token", () => {

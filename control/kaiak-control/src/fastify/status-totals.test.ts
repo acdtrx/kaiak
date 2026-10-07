@@ -2,106 +2,58 @@
 
 import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
-import { readFileSync } from "node:fs";
 import net from "node:net";
-import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { afterEach, describe, test } from "node:test";
 
-import Fastify from "fastify";
-
 import type { Config } from "../config/index.ts";
 import { configHash } from "../config-publishing/index.ts";
-import { createControlPlane } from "../control-plane/index.ts";
 import type { ControlPlane, ControlPlaneOptions } from "../control-plane/index.ts";
 import type { ExpirySweepRun } from "../gateways/index.ts";
-import { validateTotals } from "../messages/index.ts";
-import type { GatewayStatus, Totals } from "../messages/index.ts";
+import type { GatewayStatus, Totals, UsageBatch } from "../messages/index.ts";
+import { PROTOCOL_VERSION } from "../protocol/index.ts";
 import { createMemoryStore } from "../storage/index.ts";
+import type { ControlPlaneStore } from "../storage/index.ts";
+import {
+  TEST_INSTANCE,
+  closeAfterTest,
+  closeOpened,
+  configNumbered,
+  countingSubscriptions,
+  failOnListenerError,
+  fixture,
+  gatewayHeaders,
+  gatewayStatus,
+  nextTotals,
+  openStream,
+  restorable,
+  startApp,
+  testCore,
+  totalsOf,
+  usageBatch,
+} from "../test-support/index.ts";
+import type { RunningApp, SseStream } from "../test-support/index.ts";
 
-import { controlProtocolPlugin } from "./index.ts";
-import type { ControlProtocolPluginOptions } from "./index.ts";
-import { openSseStream } from "./sse-client.ts";
-import type { SseItem, SseStream } from "./sse-client.ts";
-
-const TOKEN = "test-token";
-const FIXTURES = path.resolve(import.meta.dirname, "../../../../protocol/fixtures");
-
-function readFixture(relative: string): unknown {
-  return JSON.parse(readFileSync(path.join(FIXTURES, relative), "utf8"));
-}
-
-const READY = readFixture("messages/status/valid/ready.json") as GatewayStatus;
-
-function headersFor(instance: string): Record<string, string> {
-  return { authorization: `Bearer ${TOKEN}`, "kaiak-protocol": "5", "kaiak-instance": instance };
-}
+const READY = fixture("messages/status/valid/ready.json") as GatewayStatus;
+const NOW = Date.UTC(2026, 9, 7, 12, 30);
+const EPOCH = "a".repeat(32);
 
 function newControlPlane(options: Partial<ControlPlaneOptions> = {}): ControlPlane {
-  return createControlPlane({
-    store: createMemoryStore(),
-    token: TOKEN,
-    onListenerError: (error) => assert.fail(`listener failed: ${String(error)}`),
-    ...options,
-  });
+  return testCore({ onListenerError: failOnListenerError, ...options });
 }
 
 async function publishFixture(controlPlane: ControlPlane, file: string): Promise<void> {
-  assert.ok((await controlPlane.publishConfig(readFixture(`config/valid/${file}`))).ok);
+  assert.ok((await controlPlane.publishConfig(fixture(`config/valid/${file}`))).ok);
 }
 
-interface RunningApp {
-  base: string;
-  port: number;
-  close(): Promise<void>;
-}
-
-const closers: (() => Promise<void> | void)[] = [];
-
-afterEach(async () => {
-  for (const close of closers.splice(0).reverse()) await close();
-});
-
-async function startApp(
-  controlPlane: ControlPlane,
-  options: Omit<ControlProtocolPluginOptions, "controlPlane"> = {},
-): Promise<RunningApp> {
-  const app = Fastify();
-  await app.register(controlProtocolPlugin, { controlPlane, ...options });
-  await app.listen({ host: "127.0.0.1", port: 0 });
-  const address = app.server.address();
-  assert.ok(address && typeof address === "object", "listening on a TCP port");
-  let closed = false;
-  const close = async (): Promise<void> => {
-    if (closed) return;
-    closed = true;
-    await app.close();
-  };
-  closers.push(close);
-  return { base: `http://127.0.0.1:${address.port}`, port: address.port, close };
-}
-
-async function openStream(app: RunningApp): Promise<SseStream> {
-  const stream = await openSseStream(`${app.base}/v1/stream`, headersFor("gw-1"));
-  closers.push(() => stream.close());
-  assert.equal(stream.response.status, 200);
-  return stream;
-}
+afterEach(closeOpened);
 
 async function postStatus(app: RunningApp, instance: string, body: unknown = { ...READY, instance }): Promise<Response> {
   return fetch(`${app.base}/v1/status`, {
     method: "POST",
-    headers: { ...headersFor(instance), "content-type": "application/json" },
+    headers: { ...gatewayHeaders(instance), "content-type": "application/json" },
     body: JSON.stringify(body),
   });
-}
-
-// The next totals event's message, after checking it is valid and carries no id.
-// A config event before it (the stream's first, or a publish's) is skipped.
-async function nextTotals(stream: SseStream): Promise<Totals> {
-  let item = await stream.nextEvent();
-  while (item.kind === "event" && item.event === "config") item = await stream.nextEvent();
-  return totalsOf(item);
 }
 
 // The config_hash of the next event, which must be a config event.
@@ -111,38 +63,28 @@ async function nextConfigHash(stream: SseStream): Promise<string> {
   return (JSON.parse(item.data) as { config_hash: string }).config_hash;
 }
 
-function totalsOf(item: SseItem): Totals {
-  assert.ok(item.kind === "event", `an event, got ${item.kind}`);
-  assert.equal(item.event, "totals");
-  assert.equal(item.id, undefined, "totals events carry no id");
-  const validation = validateTotals(JSON.parse(item.data));
-  assert.ok(validation.ok, "the data is valid totals");
-  return validation.message;
+// A batch from TEST_INSTANCE in epoch EPOCH: one record of group g at NOW, counting
+// tokens input tokens and cost nano-USD.
+function batchOf(sequence: number, tokens = 100, cost = 0): UsageBatch {
+  return usageBatch({ instance: TEST_INSTANCE, epoch: EPOCH, sequence }, [
+    {
+      record_id: sequence.toString(16).padStart(32, "0"),
+      request_id: `req-${sequence}`,
+      gateway_instance: TEST_INSTANCE,
+      key_id: "key",
+      groups: ["g"],
+      model: "m",
+      deployment: { backend: "b", model: "m" },
+      units: { tokens_in: tokens },
+      cost_nano_usd: cost,
+      gateway_time: new Date(NOW).toISOString(),
+    },
+  ]);
 }
 
-// Wraps a core so a test sees how many streams are open: each holds a config
-// subscription while it is.
-function countingStreams(controlPlane: ControlPlane) {
-  let active = 0;
-  const changes = new EventEmitter();
-  const counted: ControlPlane = {
-    ...controlPlane,
-    onConfigRead(listener) {
-      const unsubscribe = controlPlane.onConfigRead(listener);
-      active++;
-      changes.emit("change");
-      return () => {
-        unsubscribe();
-        active--;
-        changes.emit("change");
-      };
-    },
-  };
-  const activeReaches = async (count: number): Promise<void> => {
-    while (active !== count) await once(changes, "change");
-  };
-  return { controlPlane: counted, activeReaches };
-}
+// The tokens a tokens_per_hour window of group (global when undefined) has used.
+const used = (totals: Totals, group?: string): string | undefined =>
+  totals.windows.find((window) => window.group === group && window.type === "tokens_per_hour")?.used;
 
 describe("POST /v1/status", { timeout: 10_000 }, () => {
   test("a valid status answers 204 and is readable from the core", async () => {
@@ -151,7 +93,7 @@ describe("POST /v1/status", { timeout: 10_000 }, () => {
     const app = await startApp(controlPlane);
     const response = await postStatus(app, "gw-1");
     assert.equal(response.status, 204);
-    assert.equal(response.headers.get("kaiak-protocol"), "5");
+    assert.equal(response.headers.get("kaiak-protocol"), String(PROTOCOL_VERSION));
     assert.equal(await response.text(), "");
     assert.deepEqual(await controlPlane.gateways(), [
       { instance: "gw-1", status: { ...READY, instance: "gw-1" }, receivedAt: 1_000, live: true },
@@ -168,10 +110,10 @@ describe("POST /v1/status", { timeout: 10_000 }, () => {
   });
 
   const failures = [
-    { name: "a schema violation", body: readFixture("messages/status/invalid/state-unknown.json"), error: "status-invalid" },
+    { name: "a schema violation", body: fixture("messages/status/invalid/state-unknown.json"), error: "status-invalid" },
     {
       name: "a message rule violation",
-      body: readFixture("messages/status/invalid/started-at-not-a-day.json"),
+      body: fixture("messages/status/invalid/started-at-not-a-day.json"),
       error: "timestamp-invalid",
     },
     { name: "another instance than the header", body: { ...READY, instance: "gw-2" }, error: "instance-mismatch" },
@@ -194,7 +136,7 @@ describe("POST /v1/status", { timeout: 10_000 }, () => {
     const app = await startApp(controlPlane);
     const response = await fetch(`${app.base}/v1/status`, {
       method: "POST",
-      headers: { ...headersFor("gw-1"), authorization: "Bearer wrong", "content-type": "application/json" },
+      headers: { ...gatewayHeaders("gw-1"), authorization: "Bearer wrong", "content-type": "application/json" },
       body: JSON.stringify({ ...READY, instance: "gw-1" }),
     });
     assert.equal(response.status, 401);
@@ -235,19 +177,19 @@ describe("POST /v1/status", { timeout: 10_000 }, () => {
       await startApp(coreA, { totalsPushIntervalMs: 10 }),
       await startApp(coreB, { totalsPushIntervalMs: 10 }),
     ];
-    const stream = await openStream(appA);
-    assert.equal(await nextConfigHash(stream), configHash(readFixture("config/valid/minimal.json") as Config));
+    const stream = await openStream(appA.base);
+    assert.equal(await nextConfigHash(stream), configHash(fixture("config/valid/minimal.json") as Config));
     await nextTotals(stream);
 
     // A publish through B: A's stream gets the config (a publish changes no totals).
     await publishFixture(coreB, "full.json");
-    assert.equal(await nextConfigHash(stream), configHash(readFixture("config/valid/full.json") as Config));
+    assert.equal(await nextConfigHash(stream), configHash(fixture("config/valid/full.json") as Config));
 
     // A batch posted to B: A's stream pushes the totals it produced.
     const response = await fetch(`${appB.base}/v1/usage`, {
       method: "POST",
-      headers: { ...headersFor("gw-1"), "content-type": "application/json" },
-      body: JSON.stringify(readFixture("messages/usage-batch/valid/mixed-groups.json")),
+      headers: { ...gatewayHeaders("gw-1"), "content-type": "application/json" },
+      body: JSON.stringify(fixture("messages/usage-batch/valid/mixed-groups.json")),
     });
     assert.equal(response.status, 200);
     const pushed = await nextTotals(stream);
@@ -266,8 +208,8 @@ describe("totals on the stream", { timeout: 20_000 }, () => {
     const controlPlane = newControlPlane();
     await publishFixture(controlPlane, "minimal.json");
     await publishFixture(controlPlane, "full.json");
-    const stream = await openStream(await startApp(controlPlane));
-    assert.equal(await nextConfigHash(stream), configHash(readFixture("config/valid/full.json") as Config));
+    const stream = await openStream((await startApp(controlPlane)).base);
+    assert.equal(await nextConfigHash(stream), configHash(fixture("config/valid/full.json") as Config));
     assert.deepEqual(await nextTotals(stream), { live_gateways: 0, counted_through: [], windows: [] });
   });
 
@@ -275,12 +217,12 @@ describe("totals on the stream", { timeout: 20_000 }, () => {
     const controlPlane = newControlPlane({ clock: () => Date.UTC(2026, 8, 24, 10, 30) });
     await publishFixture(controlPlane, "full.json");
     const app = await startApp(controlPlane, { totalsPushIntervalMs: 10 });
-    const stream = await openStream(app);
+    const stream = await openStream(app.base);
     assert.deepEqual((await nextTotals(stream)).windows, []);
     const response = await fetch(`${app.base}/v1/usage`, {
       method: "POST",
-      headers: { ...headersFor("gw-1"), "content-type": "application/json" },
-      body: JSON.stringify(readFixture("messages/usage-batch/valid/mixed-groups.json")),
+      headers: { ...gatewayHeaders("gw-1"), "content-type": "application/json" },
+      body: JSON.stringify(fixture("messages/usage-batch/valid/mixed-groups.json")),
     });
     assert.equal(response.status, 200);
     // The ack names the batch only: the totals come on the stream.
@@ -296,7 +238,7 @@ describe("totals on the stream", { timeout: 20_000 }, () => {
     const controlPlane = newControlPlane({ clock: () => Date.UTC(2026, 8, 24, 10, 30) });
     const app = await startApp(controlPlane, { totalsPushIntervalMs: 10 });
     const batchOf = (sequence: number, groups: string[]): unknown => {
-      const batch = readFixture("messages/usage-batch/valid/mixed-groups.json") as {
+      const batch = fixture("messages/usage-batch/valid/mixed-groups.json") as {
         batch: { sequence: number };
         records: { record_id: string; groups: string[] }[];
       };
@@ -307,14 +249,14 @@ describe("totals on the stream", { timeout: 20_000 }, () => {
     const post = async (doc: unknown): Promise<void> => {
       const response = await fetch(`${app.base}/v1/usage`, {
         method: "POST",
-        headers: { ...headersFor("gw-1"), "content-type": "application/json" },
+        headers: { ...gatewayHeaders("gw-1"), "content-type": "application/json" },
         body: JSON.stringify(doc),
       });
       assert.equal(response.status, 200);
     };
     await publishFixture(controlPlane, "minimal.json");
     await post(batchOf(100, ["users", "carol"]));
-    const stream = await openStream(app);
+    const stream = await openStream(app.base);
     const first = await nextTotals(stream);
     assert.deepEqual(first, await controlPlane.totals("gw-1"), "the first totals are complete");
     assert.ok(first.windows.some((window) => window.group === "carol"));
@@ -331,19 +273,19 @@ describe("totals on the stream", { timeout: 20_000 }, () => {
     const controlPlane = newControlPlane({ clock: () => Date.UTC(2026, 8, 24, 10, 30) });
     await publishFixture(controlPlane, "full.json");
     const app = await startApp(controlPlane, { totalsPushIntervalMs: 10 });
-    const stream = await openStream(app);
+    const stream = await openStream(app.base);
     await nextTotals(stream);
     const response = await fetch(`${app.base}/v1/usage`, {
       method: "POST",
-      headers: { ...headersFor("gw-1"), "content-type": "application/json" },
-      body: JSON.stringify(readFixture("messages/usage-batch/valid/mixed-groups.json")),
+      headers: { ...gatewayHeaders("gw-1"), "content-type": "application/json" },
+      body: JSON.stringify(fixture("messages/usage-batch/valid/mixed-groups.json")),
     });
     assert.equal(response.status, 200);
     assert.ok((await nextTotals(stream)).windows.length > 0);
     // A config without limits: the config goes out, and no totals with it. The next
     // totals (a gateway joining) list no window: none changed.
     await publishFixture(controlPlane, "minimal.json");
-    assert.equal(await nextConfigHash(stream), configHash(readFixture("config/valid/minimal.json") as Config));
+    assert.equal(await nextConfigHash(stream), configHash(fixture("config/valid/minimal.json") as Config));
     assert.equal((await postStatus(app, "gw-2")).status, 204);
     const next = totalsOf(await stream.nextEvent());
     assert.equal(next.live_gateways, 1);
@@ -356,7 +298,7 @@ describe("totals on the stream", { timeout: 20_000 }, () => {
     const controlPlane = newControlPlane({ clock: () => now });
     await publishFixture(controlPlane, "minimal.json");
     const app = await startApp(controlPlane, { totalsPushIntervalMs: 10 });
-    const stream = await openStream(app);
+    const stream = await openStream(app.base);
     assert.equal((await nextTotals(stream)).live_gateways, 0);
 
     assert.equal((await postStatus(app, "gw-1")).status, 204);
@@ -373,7 +315,7 @@ describe("totals on the stream", { timeout: 20_000 }, () => {
     const controlPlane = newControlPlane();
     await publishFixture(controlPlane, "minimal.json");
     const app = await startApp(controlPlane, { totalsPushIntervalMs: interval });
-    const stream = await openStream(app);
+    const stream = await openStream(app.base);
     assert.equal((await nextTotals(stream)).live_gateways, 0);
     const leadingAt = performance.now();
 
@@ -387,13 +329,166 @@ describe("totals on the stream", { timeout: 20_000 }, () => {
     assert.equal((await postStatus(app, "gw-4")).status, 204);
     assert.equal((await nextTotals(stream)).live_gateways, 4);
   });
+
+  // The order rule for totals: reads run one at a time, so a read that completes late
+  // never lands after a later one.
+  test("a slow totals read is never applied after a later one", { timeout: 10_000 }, async () => {
+    const base = createMemoryStore();
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let holdNext = false;
+    const holding: ControlPlaneStore = {
+      ...base,
+      async totalsSnapshot(...args) {
+        const snapshot = await base.totalsSnapshot(...args);
+        if (holdNext) {
+          holdNext = false;
+          entered.resolve();
+          await release.promise;
+        }
+        return snapshot;
+      },
+    };
+    const cp = testCore({ store: holding, clock: () => NOW });
+    assert.ok((await cp.publishConfig(configNumbered(1))).ok);
+    const app = await startApp(cp, { totalsPushIntervalMs: 1 });
+    const stream = await openStream(app.base);
+    await nextTotals(stream);
+
+    holdNext = true;
+    assert.ok((await cp.acceptUsageBatch(TEST_INSTANCE, batchOf(1, 100, 100))).ok);
+    await entered.promise;
+    assert.ok((await cp.acceptUsageBatch(TEST_INSTANCE, batchOf(2, 100, 100))).ok);
+    // Time for a read issued after the held one to complete first, if one could.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    release.resolve();
+    let usedTokens = 0;
+    while (usedTokens < 200) {
+      const next = used(await nextTotals(stream));
+      if (next === undefined) continue;
+      assert.ok(Number(next) >= usedTokens, `never older: ${next} after ${usedTokens}`);
+      usedTokens = Number(next);
+    }
+    // Nothing older follows the newest.
+    assert.ok((await cp.acceptStatus(TEST_INSTANCE, gatewayStatus(TEST_INSTANCE, { started_at: "2026-10-07T12:00:00Z" }))).ok);
+    const last = await nextTotals(stream);
+    assert.equal(last.live_gateways, 1);
+    assert.equal(used(last), undefined, "no window changed after the newest");
+  });
+
+  // A gateway that moves to a core whose change channel lags gets that core's complete
+  // totals; they must include the batch counted just before, which the gateway may
+  // already have seen counted through another core.
+  test("a new stream's first totals include every batch counted before it connected", { timeout: 10_000 }, async () => {
+    const store = createMemoryStore();
+    // Core b hears of every change 300 ms late.
+    const lagging: ControlPlaneStore = {
+      ...store,
+      subscribe(listener) {
+        const timers = new Set<ReturnType<typeof setTimeout>>();
+        const unsubscribe = store.subscribe((change) => {
+          const timer = setTimeout(() => {
+            timers.delete(timer);
+            listener(change);
+          }, 300);
+          timers.add(timer);
+        });
+        return () => {
+          unsubscribe();
+          for (const timer of timers) clearTimeout(timer);
+        };
+      },
+    };
+    const a = testCore({ store, clock: () => NOW });
+    const b = testCore({ store: lagging, clock: () => NOW });
+    closeAfterTest(() => b.stop());
+    await publishFixture(a, "minimal.json");
+    const app = await startApp(b, { totalsPushIntervalMs: 1 });
+    const before = await openStream(app.base);
+    assert.deepEqual((await nextTotals(before)).counted_through, []);
+    assert.ok((await a.acceptUsageBatch(TEST_INSTANCE, batchOf(1))).ok);
+    const after = await openStream(app.base);
+    const first = await nextTotals(after);
+    assert.deepEqual(first.counted_through, [{ epoch: EPOCH, sequence: 1 }]);
+    assert.equal(used(first, "g"), "100");
+  });
+
+  // While a core's totals reads fail, a new stream must not get the last good read as
+  // complete totals; it gets none until a read works.
+  test("while totals reads fail a new stream gets no totals; the first read that works sends them complete", { timeout: 10_000 }, async () => {
+    const store = createMemoryStore();
+    let failing = false;
+    const flaky: ControlPlaneStore = {
+      ...store,
+      async totalsSnapshot(current) {
+        if (failing) throw new Error("totals query unavailable");
+        return store.totalsSnapshot(current);
+      },
+    };
+    const controlPlane = testCore({ store: flaky, clock: () => NOW });
+    await publishFixture(controlPlane, "minimal.json");
+    const app = await startApp(controlPlane, { totalsPushIntervalMs: 20 });
+    const before = await openStream(app.base);
+    assert.deepEqual((await nextTotals(before)).windows, []);
+    failing = true;
+    assert.ok((await controlPlane.acceptUsageBatch(TEST_INSTANCE, batchOf(1))).ok);
+    const after = await openStream(app.base);
+    const pending = nextTotals(after);
+    const early = await Promise.race([
+      pending.then((totals) => totals),
+      new Promise<"none">((resolve) => setTimeout(() => resolve("none"), 300)),
+    ]);
+    assert.equal(early, "none", `totals sent while every read fails: ${JSON.stringify(early)}`);
+    failing = false;
+    const first = await pending;
+    assert.equal(used(first, "g"), "100");
+    assert.deepEqual(first.counted_through, [{ epoch: EPOCH, sequence: 1 }]);
+  });
+
+  // A batch that counts nothing still moves its cursor, and the gateway needs that push
+  // to stop waiting for it.
+  test("a counted batch that changes no window is pushed for its cursor", { timeout: 10_000 }, async () => {
+    const controlPlane = testCore({ clock: () => NOW });
+    await publishFixture(controlPlane, "minimal.json");
+    const stream = await openStream((await startApp(controlPlane, { totalsPushIntervalMs: 1 })).base);
+    assert.deepEqual(await nextTotals(stream), { live_gateways: 0, counted_through: [], windows: [] });
+    assert.ok((await controlPlane.acceptUsageBatch(TEST_INSTANCE, batchOf(1, 0))).ok);
+    assert.deepEqual(await nextTotals(stream), {
+      live_gateways: 0,
+      counted_through: [{ epoch: EPOCH, sequence: 1 }],
+      windows: [],
+    });
+  });
+
+  // A window the store no longer holds within its own window (a store restored to less)
+  // is pushed at "0", not left at its old value on the gateway.
+  test("a window a restored store lacks within its window is pushed at 0", { timeout: 10_000 }, async () => {
+    const backup = createMemoryStore();
+    const { store, restore } = restorable(createMemoryStore(), backup);
+    const controlPlane = testCore({ store, clock: () => NOW });
+    await publishFixture(controlPlane, "minimal.json");
+    const backupCore = testCore({ store: backup, clock: () => NOW });
+    await publishFixture(backupCore, "minimal.json");
+    await backupCore.stop();
+    const stream = await openStream((await startApp(controlPlane, { totalsPushIntervalMs: 1 })).base);
+    await nextTotals(stream);
+    assert.ok((await controlPlane.acceptUsageBatch(TEST_INSTANCE, batchOf(1))).ok);
+    assert.equal(used(await nextTotals(stream), "g"), "100");
+    restore();
+    // A status changes the live set: the next read is of the restored store.
+    assert.ok((await controlPlane.acceptStatus(TEST_INSTANCE, gatewayStatus(TEST_INSTANCE))).ok);
+    const restored = await nextTotals(stream);
+    assert.equal(used(restored, "g"), "0");
+    assert.equal(used(restored), "0");
+    assert.deepEqual(restored.counted_through, []);
+  });
 });
 
 describe("slow readers", { timeout: 30_000 }, () => {
   // A config about 1 MiB large: a few of them fill the socket buffers of a client that
   // does not read.
   function largeConfig(n: number): Config {
-    const config = readFixture("config/valid/minimal.json") as Config;
+    const config = fixture("config/valid/minimal.json") as Config;
     const model = config.models["llama"];
     assert.ok(model, "the minimal fixture has model llama");
     model.metadata.context_length = 1000 + n;
@@ -414,11 +509,11 @@ describe("slow readers", { timeout: 30_000 }, () => {
   async function openPausedStream(app: RunningApp) {
     const socket = net.connect(app.port, "127.0.0.1");
     socket.pause();
-    closers.push(() => {
+    closeAfterTest(() => {
       socket.destroy();
     });
     await once(socket, "connect");
-    const headers = Object.entries(headersFor("gw-1"))
+    const headers = Object.entries(gatewayHeaders("gw-1"))
       .map(([name, value]) => `${name}: ${value}\r\n`)
       .join("");
     socket.write(`GET /v1/stream HTTP/1.0\r\nhost: 127.0.0.1\r\n${headers}\r\n`);
@@ -461,7 +556,7 @@ describe("slow readers", { timeout: 30_000 }, () => {
   test("a stream whose gateway stops reading is ended after the stall timeout", async () => {
     const core = newControlPlane();
     await publishFixture(core, "minimal.json");
-    const { controlPlane, activeReaches } = countingStreams(core);
+    const { controlPlane, activeReaches } = countingSubscriptions(core);
     const app = await startApp(controlPlane, { stalledStreamTimeoutMs: 200 });
     await openPausedStream(app);
     await activeReaches(1);
@@ -473,7 +568,7 @@ describe("slow readers", { timeout: 30_000 }, () => {
   test("totals held back by a slow reader are sent once, carrying the latest", async () => {
     const core = newControlPlane();
     await publishFixture(core, "minimal.json");
-    const { controlPlane, activeReaches } = countingStreams(core);
+    const { controlPlane, activeReaches } = countingSubscriptions(core);
     const app = await startApp(controlPlane, { totalsPushIntervalMs: 10 });
     const client = await openPausedStream(app);
     await activeReaches(1);

@@ -358,7 +358,10 @@ Test tooling outside the binary:
     the app are the host's.
   - `test-support` — what the suites share: the runner of the shared fixtures in
     `protocol/fixtures/` (where they are, the fixture listing, the `cases.json` rules,
-    the valid and invalid runs over a validator). Imported by tests only; not in the
+    the valid and invalid runs over a validator); the builders of what a gateway sends
+    (headers from the protocol constants, statuses and usage records from the
+    fixtures); the HTTP tests' harness (an app on a real port, a gateway's stream
+    through a small SSE client, the cleanups). Imported by tests only; not in the
     package's `exports` or `files`, nor in the sample's image.
 
 ```mermaid

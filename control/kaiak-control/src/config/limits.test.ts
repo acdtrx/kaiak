@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { describe, test } from "node:test";
 
-import { fixtureFiles, fixturePath, readJson } from "../test-support/index.ts";
+import { CONFIG_FORMAT_VERSION, fixtureFiles, fixturePath, readJson } from "../test-support/index.ts";
 
 import { validateConfig } from "./index.ts";
 import { mergeLimits, resolveScopes } from "./limits.ts";
@@ -74,7 +74,7 @@ test("a group's own limit replaces the default of its type in place; its other l
 
 test("resolving a config whose parents do not reach a top-level group fails loudly", () => {
   const config = {
-    format_version: 5,
+    format_version: CONFIG_FORMAT_VERSION,
     global: {},
     backends: {},
     models: {},

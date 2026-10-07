@@ -9,6 +9,7 @@ import { validateTotals } from "../messages/index.ts";
 import type { Totals, TotalsWindow, UsageBatch, UsageRecord } from "../messages/index.ts";
 import { createMemoryStore } from "../storage/index.ts";
 import type { ControlPlaneStore, CurrentWindows, WindowTotal } from "../storage/index.ts";
+import { usageRecord } from "../test-support/index.ts";
 
 import { createUsage } from "./index.ts";
 import type { Usage, UsageIntake, UsageOptions } from "./index.ts";
@@ -46,7 +47,7 @@ function record(
 ): UsageRecord {
   recordCount += 1;
   const [tokensIn, tokensCached, tokensCacheWrite, tokensOut, tokensReasoning] = units;
-  return {
+  return usageRecord({
     record_id: recordCount.toString(16).padStart(32, "0"),
     request_id: `req-${recordCount}`,
     gateway_instance: INSTANCE,
@@ -62,10 +63,8 @@ function record(
       tokens_reasoning: tokensReasoning,
     },
     cost_nano_usd: cost,
-    estimated: false,
-    partial: false,
     gateway_time: gatewayTime,
-  };
+  });
 }
 
 function batch(epoch: string, sequence: number, records: UsageRecord[]): UsageBatch {
@@ -293,9 +292,9 @@ describe("de-duplication", () => {
     assert.equal(await carolHourUsed(usage), "1");
   });
 
-  // The audit's reproduction (H12): two cores on one store, each serializing only its
-  // own intake, take the same batch at once. The store's conditional write makes the
-  // second one find the batch counted.
+  // Two cores on one store, each serializing only its own intake, take the same batch
+  // at once. The store's conditional write makes the second one find the batch
+  // counted.
   test("two cores sharing one store count a batch once", async () => {
     const store = createMemoryStore();
     const first = await harness({ store });

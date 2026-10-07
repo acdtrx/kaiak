@@ -158,6 +158,34 @@ func TestMessagesLimitRefusals(t *testing.T) {
 	}
 }
 
+// A Messages request thinking with a budget at or above the output limit the gateway
+// would set — the model's ceiling, or its default — is refused naming max_tokens and
+// that limit; one the client set itself goes to the backend. The test model's ceiling
+// is 128, its default 64, its context 8192.
+func TestThinkingBudgetAboveTheModelsOutputLimit(t *testing.T) {
+	g := newTestGateway(t)
+	withMessagesModels(t, g, nil)
+	for _, c := range []struct {
+		body   string
+		status int
+	}{
+		{`{"model":"msg","max_tokens":4000,"thinking":{"type":"enabled","budget_tokens":3999},"messages":[]}`, http.StatusBadRequest},
+		{`{"model":"msg","thinking":{"type":"enabled","budget_tokens":100},"messages":[]}`, http.StatusBadRequest},
+		{`{"model":"msg","max_tokens":4000,"thinking":{"type":"enabled","budget_tokens":100},"messages":[]}`, http.StatusOK},
+		{`{"model":"msg","max_tokens":100,"thinking":{"type":"enabled","budget_tokens":100},"messages":[]}`, http.StatusOK},
+		{`{"model":"msg","max_tokens":4000,"thinking":{"type":"adaptive"},"messages":[]}`, http.StatusOK},
+	} {
+		w := do(t, g.h, call{method: "POST", path: "/v1/messages", key: workloadKey, body: c.body})
+		if w.Code != c.status {
+			t.Errorf("%s: %d %s, want %d", c.body, w.Code, w.Body.String(), c.status)
+			continue
+		}
+		if c.status == http.StatusBadRequest && (errorCodeOf(t, w) != "invalid_value" || !strings.Contains(w.Body.String(), "max_tokens")) {
+			t.Errorf("%s: %s", c.body, w.Body.String())
+		}
+	}
+}
+
 // The tools the backend would run are refused before routing, on both Messages
 // endpoints; the tools the client runs pass (docs/specs/GATEWAY.md, Client API →
 // hosted tools are refused).
@@ -426,7 +454,7 @@ func waitLog(t *testing.T, g *testGateway, want string) {
 
 // A token-counting request generates and costs nothing: only requests-per-minute
 // limits apply to it, so a spent token window refuses the next Messages request but
-// not a count (the pre-merge review's L1).
+// not a count.
 func TestCountTokensMeetsOnlyRequestLimits(t *testing.T) {
 	g := newTestGateway(t)
 	withMessagesModels(t, g, func(doc string) string {

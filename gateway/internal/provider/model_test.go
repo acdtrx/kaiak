@@ -1,9 +1,12 @@
 package provider
 
 import (
+	"errors"
+	"io"
 	"strings"
 	"testing"
 
+	"kaiak/internal/config"
 	"kaiak/internal/sse"
 )
 
@@ -72,6 +75,29 @@ func TestNestedModelRewriter(t *testing.T) {
 				if string(out) != c.want {
 					t.Fatalf("cut at %d:\ngot  %s\nwant %s", cut, out, c.want)
 				}
+			}
+		})
+	}
+}
+
+// The model name nested in a format's envelope events is rewritten only there: an
+// unknown event passes untouched.
+func TestUnknownEventsKeepTheirNestedModel(t *testing.T) {
+	for _, format := range []string{"messages", "responses"} {
+		t.Run(format, func(t *testing.T) {
+			unknown := "event: vendor.extension\ndata: {\"type\":\"vendor.extension\",\"message\":{\"model\":\"payload-value\"},\"response\":{\"model\":\"payload-value\"}}\n\n"
+			var out string
+			var err error
+			if format == "messages" {
+				out, err = relayMessages(t, config.BackendVLLM, "text/event-stream", []byte(unknown+"data: {\"type\":\"message_stop\"}\n\n"), true)
+			} else {
+				out, err = relayResponses(t, config.BackendVLLM, "text/event-stream", []byte(unknown+"data: {\"type\":\"response.completed\"}\n\n"), true)
+			}
+			if !errors.Is(err, io.EOF) {
+				t.Fatal(err)
+			}
+			if !strings.HasPrefix(out, unknown) {
+				t.Errorf("unknown event's nested payload was rewritten: %s", out)
 			}
 		})
 	}

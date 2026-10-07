@@ -342,6 +342,30 @@ func expectError(t *testing.T, w *httptest.ResponseRecorder, status int, code st
 	}
 }
 
+// errorFields are an error answer's code and param, in either shape (both nest them
+// under "error"; Anthropic's carries no param).
+func errorFields(t *testing.T, w *httptest.ResponseRecorder) (code, param string) {
+	t.Helper()
+	var body struct {
+		Error struct {
+			Code  string  `json:"code"`
+			Param *string `json:"param"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("error body %s: %v", w.Body.String(), err)
+	}
+	if body.Error.Param != nil {
+		param = *body.Error.Param
+	}
+	return body.Error.Code, param
+}
+
+func errorCodeOf(t *testing.T, w *httptest.ResponseRecorder) string {
+	code, _ := errorFields(t, w)
+	return code
+}
+
 const chatBody = `{"model":"open","messages":[{"role":"user","content":"hello there"}]}`
 
 func TestAuthFailuresAre401(t *testing.T) {
@@ -694,9 +718,9 @@ func TestRequestsWithNoConfigAnswer503(t *testing.T) {
 	}
 }
 
-// The independent audit's finding 2: 10 000 repeated "model" members were each
-// rewritten to the deployment's name, far past the body budget. A repeated top-level
-// member is refused before any rewrite; the backend sees nothing.
+// A repeated top-level member is refused before any rewrite — rewriting each of 10 000
+// repeated "model" members to the deployment's name would grow the body far past its
+// budget; the backend sees nothing.
 func TestRepeatedTopLevelMemberIsRefusedBeforeAnyRewrite(t *testing.T) {
 	g := newTestGateway(t)
 	g.holder.Swap(testSnapshotWith(t, g.backend.URL(), func(doc string) string {

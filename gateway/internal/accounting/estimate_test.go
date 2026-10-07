@@ -101,10 +101,35 @@ func TestInlineMediaEstimateIgnoresTheEncodedSize(t *testing.T) {
 	}
 }
 
+// Tool data that looks like a content part — a tool argument named source, a
+// function schema holding a content list — is text: media count only at the
+// format's documented content paths.
+func TestEstimateToolDataIsNotMedia(t *testing.T) {
+	text := strings.Repeat("ordinary source text ", 10000)
+	for _, c := range []struct {
+		name string
+		ep   provider.Endpoint
+		body string
+	}{
+		{"messages tool input source", provider.Messages,
+			`{"model":"m","messages":[{"role":"assistant","content":[{"type":"tool_use","id":"t","name":"f","input":{"source":{"type":"url","text":"` + text + `"}}}]}]}`},
+		{"responses schema content", provider.Responses,
+			`{"model":"m","input":"hi","tools":[{"type":"function","name":"f","parameters":{"type":"object","properties":{"data":{"enum":[{"content":[{"type":"input_file","text":"` + text + `"}]}]}}}}]}`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := EstimateInput(c.ep, []byte(c.body)).Total
+			want := EstimateTokens(int64(len(c.body)))
+			if got != want {
+				t.Errorf("ordinary tool JSON counted as media: got %d input tokens, want %d", got, want)
+			}
+		})
+	}
+}
+
 // The estimate reads every byte of the body once, however deep its sources and
 // content parts nest: a body nesting them thousands deep estimates in about the time
-// of a flat one, never in time that grows with depth × size (the pre-merge review's
-// H2: a key holder could tie up a core per request for a minute).
+// of a flat one, never in time that grows with depth × size (a key holder could tie
+// up a core per request for a minute).
 func TestEstimateDeepNestingIsLinear(t *testing.T) {
 	const depth = 2000
 	padding := strings.Repeat("x", 1<<20)

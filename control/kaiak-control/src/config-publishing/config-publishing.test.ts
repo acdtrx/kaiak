@@ -7,6 +7,7 @@ import { describe, test } from "node:test";
 import type { Config } from "../config/index.ts";
 import { createMemoryStore } from "../storage/index.ts";
 import type { ControlPlaneStore } from "../storage/index.ts";
+import { configNumbered, numberOf } from "../test-support/index.ts";
 
 import { configHash, createConfigPublishing } from "./index.ts";
 import type { ConfigPublishing, PublishedConfig, PublishResult } from "./index.ts";
@@ -15,20 +16,6 @@ const MINIMAL = path.resolve(import.meta.dirname, "../../../../protocol/fixtures
 
 function minimalConfig(): Config {
   return JSON.parse(readFileSync(MINIMAL, "utf8")) as Config;
-}
-
-// A valid config distinguishable by its context length.
-function configNumbered(n: number): Config {
-  const config = minimalConfig();
-  const model = config.models["llama"];
-  assert.ok(model, "the minimal fixture has model llama");
-  model.metadata.context_length = 1000 + n;
-  return config;
-}
-
-// Which configNumbered a config is.
-function numberOf(config: Config): number {
-  return (config.models["llama"]?.metadata.context_length ?? 0) - 1000;
 }
 
 // A list with each run of repeats kept once: listeners may hear one config more than

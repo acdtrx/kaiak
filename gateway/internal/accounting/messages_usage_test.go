@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"kaiak/internal/config"
 	"kaiak/internal/fakebackend"
 	"kaiak/internal/provider"
 	"kaiak/internal/sse"
@@ -128,6 +129,21 @@ func TestMessagesProvisionalOutput(t *testing.T) {
 			`{"type":"message_delta","usage":{"output_tokens":3900}}`).Settle(false)
 		expect(t, units, flags, tokenUnits(50, 20, 7, 3900, 0), Flags{Partial: true})
 	})
+}
+
+// message_start's output count precedes the generated text. It cannot settle all
+// later output as exact when the stream ends before message_delta usage arrives.
+func TestMessagesPartialOutputAfterInitialUsage(t *testing.T) {
+	m := streamMeter(provider.Messages, 400,
+		`{"type":"message_start","message":{"usage":{"input_tokens":100,"cache_read_input_tokens":20,"cache_creation_input_tokens":10,"output_tokens":1}}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"`+strings.Repeat("word", 1000)+`"}}`)
+	units, flags := m.Settle(false)
+	if units[config.UnitTokensOut] < 1000 || !flags.Estimated || !flags.Partial {
+		t.Errorf("4000 output bytes after initial usage settled as %v, flags=%+v; want partial estimated output >=1000", units, flags)
+	}
+	if units[config.UnitTokensIn] != 100 || units[config.UnitTokensCached] != 20 || units[config.UnitTokensCacheWrite] != 10 {
+		t.Errorf("known input and cache counts must survive partial-output estimation: %v", units)
+	}
 }
 
 // A Messages image or document source counts as one media item when it is data, a

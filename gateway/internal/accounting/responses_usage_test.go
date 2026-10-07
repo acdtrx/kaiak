@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"kaiak/internal/config"
 	"kaiak/internal/provider"
 )
 
@@ -90,6 +91,19 @@ func TestResponsesEstimatedOutput(t *testing.T) {
 	})
 }
 
+// A streamed tool call's name counts toward the output estimate, from the event
+// adding its item.
+func TestResponsesStreamEstimateCountsToolNames(t *testing.T) {
+	name := strings.Repeat("f", 64)
+	m := streamMeter(provider.Responses, 40,
+		`{"type":"response.output_item.added","item":{"type":"function_call","name":"`+name+`","arguments":""}}`,
+		`{"type":"response.function_call_arguments.delta","delta":"{}"}`)
+	units, flags := m.Settle(false)
+	if want := EstimateTokens(int64(len(name) + 2)); units[config.UnitTokensOut] != want {
+		t.Errorf("tool name + arguments: output=%d, want %d; flags=%+v", units[config.UnitTokensOut], want, flags)
+	}
+}
+
 // A Responses input_image or input_file part counts as one media item, whatever it
 // carries; other parts are text.
 func TestEstimateResponsesMedia(t *testing.T) {
@@ -118,5 +132,19 @@ func TestEstimateResponsesMedia(t *testing.T) {
 				t.Errorf("estimate %+v, want %d", got, c.total)
 			}
 		})
+	}
+}
+
+// Media in a tool call's output list (a multimodal tool result) count as media.
+func TestEstimateResponsesToolOutputMedia(t *testing.T) {
+	for _, part := range []string{
+		`{"type":"input_image","file_id":"file_image"}`,
+		`{"type":"input_file","file_id":"file_document"}`,
+		`{"type":"input_file","file_url":"https://example.com/report.pdf"}`,
+	} {
+		body := `{"model":"m","input":[{"type":"function_call_output","call_id":"call_1","output":[` + part + `]}]}`
+		if got := EstimateInput(provider.Responses, []byte(body)).Total; got < InlineMediaTokens {
+			t.Errorf("tool output media estimated as %d tokens, want at least %d: %s", got, InlineMediaTokens, part)
+		}
 	}
 }

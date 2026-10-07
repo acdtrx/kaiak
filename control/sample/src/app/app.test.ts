@@ -6,13 +6,19 @@ import path from "node:path";
 import { Writable } from "node:stream";
 import { afterEach, test } from "node:test";
 
+import { INSTANCE_HEADER, PROTOCOL_HEADER, PROTOCOL_VERSION } from "kaiak-control";
+
 import { createSampleApp } from "./index.ts";
 import type { SampleApp } from "./index.ts";
 
 const MINIMAL = path.resolve(import.meta.dirname, "../../../../protocol/fixtures/config/valid/minimal.json");
 const USAGE_BATCH = path.resolve(import.meta.dirname, "../../../../protocol/fixtures/messages/usage-batch/valid/one-record.json");
 const TOKEN = "sample-token";
-const GATEWAY_HEADERS = { authorization: `Bearer ${TOKEN}`, "kaiak-protocol": "5", "kaiak-instance": "gw-1" };
+const GATEWAY_HEADERS = {
+  authorization: `Bearer ${TOKEN}`,
+  [PROTOCOL_HEADER]: String(PROTOCOL_VERSION),
+  [INSTANCE_HEADER]: "gw-1",
+};
 
 // A valid config document distinguishable by its context length.
 function configText(n: number): string {
@@ -41,7 +47,7 @@ async function firstConfigEvent(url: string, cleanups: (() => void)[]): Promise<
   cleanups.push(() => abort.abort());
   const response = await fetch(url, { headers: GATEWAY_HEADERS, signal: abort.signal });
   assert.equal(response.status, 200);
-  assert.equal(response.headers.get("kaiak-protocol"), "5");
+  assert.equal(response.headers.get("kaiak-protocol"), String(PROTOCOL_VERSION));
   assert.ok(response.body);
   const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
   let text = "";

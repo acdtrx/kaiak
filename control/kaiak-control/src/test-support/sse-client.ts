@@ -1,4 +1,4 @@
-// A small server-sent-events client for the plugin's tests: reads a real HTTP response
+// A small server-sent-events client for the stream tests: reads a real HTTP response
 // body line by line as the SSE format defines it (fields, comments, blank-line
 // dispatch) and hands out what arrives in order.
 

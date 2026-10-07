@@ -1,9 +1,7 @@
 package server
 
 import (
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -12,8 +10,7 @@ import (
 // top-level members: references to objects stored at the backend, tools that run
 // there brought in by any path, members named twice where the gateway enforces a
 // rule (docs/specs/GATEWAY.md, Client API → Responses is stateless, Hosted tools are
-// refused; the pre-merge review's H3, M5, L3, [B] H3 and [B] L1). Nothing reaches the
-// backend.
+// refused). Nothing reaches the backend.
 func TestInboundRefusalsPastTheTopLevel(t *testing.T) {
 	for _, c := range []struct {
 		name, path, model, body, code, param string
@@ -85,56 +82,4 @@ func TestInboundAdmitsClientShellsAndInlineItems(t *testing.T) {
 			t.Errorf("%s: %d %s", body, w.Code, w.Body.String())
 		}
 	}
-}
-
-// A Messages request thinking with a budget at or above the output limit the gateway
-// would set — the model's ceiling, or its default — is refused naming max_tokens and
-// that limit; one the client set itself goes to the backend (the pre-merge review's
-// M6). The test model's ceiling is 128, its default 64, its context 8192.
-func TestThinkingBudgetAboveTheModelsOutputLimit(t *testing.T) {
-	g := newTestGateway(t)
-	withMessagesModels(t, g, nil)
-	for _, c := range []struct {
-		body   string
-		status int
-	}{
-		{`{"model":"msg","max_tokens":4000,"thinking":{"type":"enabled","budget_tokens":3999},"messages":[]}`, http.StatusBadRequest},
-		{`{"model":"msg","thinking":{"type":"enabled","budget_tokens":100},"messages":[]}`, http.StatusBadRequest},
-		{`{"model":"msg","max_tokens":4000,"thinking":{"type":"enabled","budget_tokens":100},"messages":[]}`, http.StatusOK},
-		{`{"model":"msg","max_tokens":100,"thinking":{"type":"enabled","budget_tokens":100},"messages":[]}`, http.StatusOK},
-		{`{"model":"msg","max_tokens":4000,"thinking":{"type":"adaptive"},"messages":[]}`, http.StatusOK},
-	} {
-		w := do(t, g.h, call{method: "POST", path: "/v1/messages", key: workloadKey, body: c.body})
-		if w.Code != c.status {
-			t.Errorf("%s: %d %s, want %d", c.body, w.Code, w.Body.String(), c.status)
-			continue
-		}
-		if c.status == http.StatusBadRequest && (errorCodeOf(t, w) != "invalid_value" || !strings.Contains(w.Body.String(), "max_tokens")) {
-			t.Errorf("%s: %s", c.body, w.Body.String())
-		}
-	}
-}
-
-// errorFields are an error answer's code and param, in either shape (both nest them
-// under "error"; Anthropic's carries no param).
-func errorFields(t *testing.T, w *httptest.ResponseRecorder) (code, param string) {
-	t.Helper()
-	var body struct {
-		Error struct {
-			Code  string  `json:"code"`
-			Param *string `json:"param"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-		t.Fatalf("error body %s: %v", w.Body.String(), err)
-	}
-	if body.Error.Param != nil {
-		param = *body.Error.Param
-	}
-	return body.Error.Code, param
-}
-
-func errorCodeOf(t *testing.T, w *httptest.ResponseRecorder) string {
-	code, _ := errorFields(t, w)
-	return code
 }
