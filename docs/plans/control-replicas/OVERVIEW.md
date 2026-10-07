@@ -18,7 +18,8 @@ store contract, so the host app chooses:
 ## Scope
 
 - **The store contract carries what lives in the core's process memory today:**
-  - the totals sequence that orders totals messages
+  - the totals sequence that orders totals messages (*superseded by decision 21: no
+    store sequence*)
   - consistent totals reads
   - publishes and batch counting that cannot interleave wrongly
   - change notification across processes
@@ -29,8 +30,10 @@ store contract, so the host app chooses:
 - **Contract tests any store can run** (the memory store's, exported for host apps
   to port).
 - **The gateway orders totals by the store's sequence**: the restart detection and the
-  list of replaced control-plane processes go.
-- **Protocol:** the totals `revision` changes meaning and shape.
+  list of replaced control-plane processes go. *Superseded by decisions 18–21: the
+  sending core orders each stream; totals carry no revision.*
+- **Protocol:** the totals `revision` changes meaning and shape. *Superseded by
+  decision 19: totals carry no revision.*
 - **Broadcast only** (added 2026-10-07, steps 7–9): the app owns its config; the
   library validates the current document and broadcasts it with the totals. No config
   versions, history, epoch or totals revision on the wire; acks carry no totals;
@@ -303,8 +306,11 @@ Settled with the user after the third pre-merge review (2026-10-07,
   instance's batch, and publishes only with publishes (decision 15).
   - Step 4 measures a contended run in tests and records it.
 - **A notification gap:** a store that drops notifications leaves streams without
-  pushes until the next change. Acks still carry fresh totals.
-  - Mitigation: the contract tests check notification across two cores.
+  pushes until the next change. *Changed by decisions 19 and 29: acks carry no totals;
+  an acknowledged batch no totals have shown counted puts a spending gateway into
+  outage after the grace.*
+  - Mitigation: the contract tests check notification across two cores, and catch-up
+    after a channel reconnect through the lossy channel.
 
 ## Tag
 
@@ -365,20 +371,22 @@ Expected reds inside phase 1:
 - [x] **Store contract tests** against the memory store (`STEP-2-store-contract.md`,
   `STEP-3-simple-limits.md`):
   - conditional batch, publish and live-set writes refused on a stale read
-  - the sequence moving once per change
+  - the sequence moving once per change (*superseded by decision 21*)
   - the consistent read
   - notifications reaching every subscriber
   - publishes and batches racing without refusing each other
 - [x] **Two cores over one memory store** (`STEP-4-core.md`, five runs and the
   contended run):
   - concurrent batches from many instances counted exactly once
-  - totals from either core ordered by one sequence
+  - totals from either core ordered by one sequence (*superseded by decision 21: each
+    stream ordered by read issue*)
   - a publish on one core reaching streams on the other
   - a publish racing batches, neither refused
   - an edited limit value keeping its window
   - two sweeps and a sweep racing a status
   - a resend of one batch to both cores counted once
-- [x] **Gateway** (`STEP-5-gateway.md`):
+- [x] **Gateway** (`STEP-5-gateway.md`; *superseded by decisions 18–22: totals carry
+  no revision or epoch, and apply by scope and type in stream order*):
   - totals applied by sequence within an epoch
   - another epoch's totals not applied (decision 10 as changed in step 1)
   - an older sequence ignored whichever core it came from
@@ -386,6 +394,8 @@ Expected reds inside phase 1:
   two gateways on two sample cores over one store. Usage from both counts once in
   totals both cores serve; a config published through one core reaches both; a gateway
   moved to the other core resumes without a resync while the first is undisturbed.
+  *Phase 5 adds: a gateway that rejected a config dropping a budget still enforces its
+  spend.*
 - [x] **`scripts/check-all.sh` green at each phase end** (steps 5 and 6).
 - [x] **Phase 5** (`STEP-14-docs-and-green.md`, done 2026-10-07): every round-2 reproduction ported and
   passing; the removal checklist greps clean; `scripts/check-all.sh` green three

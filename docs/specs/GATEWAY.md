@@ -1535,7 +1535,9 @@ own, and a client sending repeats is broken either way.
     requests after the grace and a gauge of its own — windows are counted per scope
     and type whatever the config, so they mean the same under every config, and the
     gate left a gateway that rejected a config on stale bases; ordering totals by a
-    revision (settled 2026-10-06) — needed only while acks carried totals too.
+    revision (settled 2026-10-06) — totals travel on the stream only, where the
+    sending process keeps their order, and a revision makes a restored store's totals
+    look old to every gateway, which then ignores them.
   - **Windows**: a counter's current window is the later of the gateway's UTC hour
     or month and the `window_start` the control plane last pushed, and never goes
     back — a push naming a newer window starts it, even before the gateway's clock
@@ -2315,7 +2317,7 @@ own, and a client sending repeats is broken either way.
   | `kaiak_usage_spool_records` | gauge | — | Control-plane mode: records in those batches |
   | `kaiak_usage_queued_bytes` | gauge | — | Control-plane mode: encoded bytes of the unacknowledged records held in memory, what `KAIAK_USAGE_MEMORY_BYTES` bounds — every queued record with no data directory; with one, the sealed records the spool could not write |
   | `kaiak_usage_dropped_records_total` | counter | `reason` | Control-plane mode: usage records dropped before reaching the control plane — `invalid` (failed the record checks, set aside alone), `spool_unwritable` (over the in-memory bound while the spool cannot be written), `memory_bound` (over the in-memory bound with no data directory) |
-  | `kaiak_usage_last_ack_timestamp_seconds` | gauge | — | Control-plane mode: Unix time of the last acknowledged batch; absent before one |
+  | `kaiak_usage_last_ack_timestamp_seconds` | gauge | — | Control-plane mode: Unix time of the last acknowledged batch; absent before one. An ack is not contact for the outage rule (only stream bytes are) |
   | `kaiak_control_connected` | gauge | — | Control-plane mode: 1 while a config stream is open, else 0 |
   | `kaiak_control_last_contact_timestamp_seconds` | gauge | — | Control-plane mode: Unix time of the last contact (stream bytes); the process start before any |
   | `kaiak_control_totals_applied_timestamp_seconds` | gauge | — | Control-plane mode: Unix time stream totals were last applied; absent before any |
@@ -2330,8 +2332,8 @@ own, and a client sending repeats is broken either way.
     control plane can keep the config stream open while it no longer takes usage.
     Alert when `kaiak_usage_spool_batches > 0` and `time() -
     kaiak_usage_last_ack_timestamp_seconds` stays above the outage grace (before any
-    ack the metric is absent: alert on a spool that stays non-empty), on
-    and on `kaiak_control_outage == 1`. A config the gateway rejected shows in its
+    ack the metric is absent: alert on a spool that stays non-empty), and on
+    `kaiak_control_outage == 1`. A config the gateway rejected shows in its
     status report's `last_rejection`, in `kaiak_config_loads_total{result="rejected"}`,
     and in `kaiak_control_config_rejected`, which stays 1 for as long as the gateway
     runs another config than the control plane's current one.

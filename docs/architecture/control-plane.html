@@ -186,8 +186,10 @@ svg .band { stroke: none; }
   <rect x="90" y="166" width="240" height="30" rx="6" class="box"/>
   <text x="210" y="186" text-anchor="middle" class="l">apply h (validate, swap)</text>
 
+  <line x1="210" y1="222" x2="748" y2="222" class="edge" marker-end="url(#s-a)"/>
+  <text x="480" y="216" text-anchor="middle" class="l">GET /v1/stream — the running stream (the boot stream ended at its config)</text>
   <line x1="750" y1="244" x2="212" y2="244" class="edge-hot" marker-end="url(#s-ah)"/>
-  <text x="480" y="260" text-anchor="middle" class="la">event: totals  (windows, live_gateways, counted_through)</text>
+  <text x="480" y="260" text-anchor="middle" class="la">event: config h (skipped: running), then totals — complete, from a read after connect</text>
 
   <rect x="90" y="302" width="240" height="30" rx="6" class="hot"/>
   <text x="210" y="322" text-anchor="middle" class="l">bind :8080 / :9090 — ready</text>
@@ -212,7 +214,7 @@ svg .band { stroke: none; }
   <line x1="210" y1="600" x2="748" y2="600" class="edge" marker-end="url(#s-a)"/>
   <text x="480" y="594" text-anchor="middle" class="l">POST /v1/status  every 10 s · on change (≥ 1 s apart) · on every stream connect</text>
 </svg>
-<figcaption>The stream is the gateway's one way to get its config and its totals. Readiness waits for the first totals: without them the gateway would not know the month's spend. They follow the config on every stream connect, so the wait is normally milliseconds; if they do not come within what is left of the boot wait, the gateway starts anyway and refuses priced, USD-limited models until they arrive.</figcaption>
+<figcaption>The stream is the gateway's one way to get its config and its totals. The boot stream takes only the first config; the stream the running gateway then opens skips that config by its hash and brings the totals. Readiness waits for the first totals: without them the gateway would not know the month's spend. They follow the config on every stream connect, read after the stream connected, so the wait is normally milliseconds; if they do not come within what is left of the boot wait, the gateway starts anyway and refuses priced, USD-limited models until they arrive.</figcaption>
 </figure>
 
 <h3>When the control plane is unavailable at boot</h3>
@@ -283,7 +285,7 @@ svg .band { stroke: none; }
 <section id="usage">
 <h2>Usage delivery: at least once, counted exactly once</h2>
 <figure>
-<svg viewBox="0 0 960 330" role="img" aria-label="Usage records flow from request finishers into a filling batch, are sealed every 5 seconds or at 500 records into a queue held in memory or in the spool, and are sent one batch at a time. The control plane checks the batch, de-duplicates it by the instance's last counted batch of its epoch, writes it conditionally in one atomic store write, and answers with an ack naming the batch; the gateway drops the batch from its spool, and stops counting it as its own once totals on its stream show it counted.">
+<svg viewBox="0 0 960 330" role="img" aria-label="Usage records flow from request finishers into a filling batch, are sealed every 5 seconds or at 500 records into a queue held in memory or in the spool, and are sent one batch at a time. The control plane checks the batch, de-duplicates it by the instance's last counted batch of its epoch, writes it conditionally in one atomic store write, and answers with an ack naming the batch; the gateway stops sending the batch, stops counting it as its own once totals on its stream show it counted, and deletes it from the spool once a saved copy of those totals covers it.">
   <defs>
     <marker id="u-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker>
     <marker id="u-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-hot"/></marker>
@@ -336,9 +338,10 @@ svg .band { stroke: none; }
   <text x="770" y="172" text-anchor="middle" class="s">already counted: acked again, counted nothing</text>
 
   <text x="20" y="196" class="t">On the ack the gateway:</text>
-  <text x="20" y="218" class="l">• drops the batch from memory / spool</text>
+  <text x="20" y="218" class="l">• never sends the batch again; it waits to be shown counted</text>
   <text x="20" y="246" class="t">On the next totals on its stream:</text>
   <text x="20" y="268" class="l">• stops counting batches ≤ counted_through as its own</text>
+  <text x="20" y="290" class="s">The spool keeps a batch until a totals.json save covers it.</text>
 
   <text x="580" y="196" class="t">One atomic store write:</text>
   <text x="580" y="218" class="l">• the batch ID becomes its epoch's last</text>
@@ -351,7 +354,7 @@ svg .band { stroke: none; }
 </figure>
 
 <ul>
-  <li><strong>Retried with the same ID</strong> on network errors, 5xx, malformed acks. A batch is counted whether or not a config is published.</li>
+  <li><strong>Retried with the same ID</strong> on network errors, 5xx, malformed acks, and an ack naming another batch. A batch is counted whether or not a config is published.</li>
   <li><strong>Set aside</strong> (kept, logged at error) only when the batch itself can never be accepted: <code>usage-batch-invalid</code>, a message-rule code, <code>instance-mismatch</code>, <code>request-invalid</code>. Retrying it would block every batch behind it.</li>
   <li><strong>Retried, not set aside</strong>, on <code>401</code>, protocol mismatch, unknown answers — a misconfigured proxy must never discard billing data.</li>
   <li><strong>Memory bound</strong>: without a data dir, at most <code>KAIAK_USAGE_MEMORY_BYTES</code> (64 MiB) of encoded records wait; the drain spends its last 10 s delivering them.</li>
@@ -399,7 +402,7 @@ svg .band { stroke: none; }
 <ul>
   <li><strong>Count everything, limits on top</strong>: totals carry every scope and type with usage, whatever the config, and the gateway counts its own usage the same way; a limit is a check over its scope's count. So a gateway running a config it was moved off (it rejected the newest) still enforces the spend of a limit the newest dropped, and a limit added mid-window starts with the window's usage.</li>
   <li><strong>Complete, then changes</strong>: a stream's first totals are complete; later ones list only the windows that changed, and a window not listed keeps its value. One store read per push serves every stream of a core.</li>
-  <li><strong>On the stream only</strong>: totals travel only on the gateway's stream, never on acks. After an ack the gateway keeps counting that batch as its own until the next push (about a second); a push's <code>counted_through</code> — the instance's last counted batch of each epoch — retires it.</li>
+  <li><strong>On the stream only</strong>: totals travel only on the gateway's stream, never on acks. After an ack the gateway keeps counting that batch as its own until the next push (about a second); a push's <code>counted_through</code> — the instance's last counted batch of each epoch — retires it. An acknowledged batch no push has covered keeps the gateway waiting: past the outage grace that is an outage, so totals that stop coming are never mistaken for no spend.</li>
   <li><strong>Exact sums</strong>: <code>used</code> travels as a decimal string (nano-USD for money), summed as <code>BigInt</code> — a month of spend can exceed what a JavaScript number holds exactly.</li>
   <li><strong>Totals per scope</strong>: a scope (global or a group) holds at most one limit per type, and a limit's identity is (scope, type); a totals window names its <code>group</code>, or none for a global limit. A record adds to the windows of every scope on its <code>groups</code> path, whether or not a limit is there: an edited limit keeps its spend, a limit added mid-window starts with the window's usage, and publishing never waits on counting.</li>
 </ul>
@@ -473,7 +476,7 @@ svg .band { stroke: none; }
     <tr><td>Per-minute limits</td><td>Enforced locally as before, on the last known share.</td></tr>
     <tr><td>Usage</td><td>Held in memory (or the spool) and sent in order on reconnect, each record into the window it was used in.</td></tr>
     <tr><td>Priced models under a USD limit</td><td>Served until the outage passes <code>global.control_outage_grace_ms</code> (15 min), then <code>503 budget_unavailable</code> until contact returns. Free models keep serving.</td></tr>
-    <tr><td>What counts as contact</td><td>Bytes on the stream (heartbeats included). Usage acks and status reports do not count: neither brings totals. Usage batches unanswered past the grace also count as an outage, even with the stream open.</td></tr>
+    <tr><td>What counts as contact</td><td>Bytes on the stream (heartbeats included). Usage acks and status reports do not count: neither brings totals. Usage batches unanswered past the grace also count as an outage, even with the stream open, and so do acknowledged batches no totals have shown counted past the grace.</td></tr>
     <tr><td>Reconnect</td><td>Reopen the stream — it sends the current config, then the totals — and send the held batches in order.</td></tr>
   </tbody>
 </table>

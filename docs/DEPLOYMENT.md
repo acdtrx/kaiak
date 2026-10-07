@@ -995,9 +995,11 @@ directory's owner must be the gateway's user:
   `models`**: a scope (global or a group) holds at most one limit per type, counting
   every model (USD limits count priced models only, as before); delete `models` from
   every limit and merge limits of one type in one scope. An edited limit keeps its
-  window's spend; a limit added mid-window starts with the window's usage so far in
-  control-plane mode (the control plane counts every scope whatever its limits), and
-  empty in file mode (the gateway counts only the limits it runs).
+  window's spend, and in both modes a limit added mid-window checks its scope's usage
+  so far in that window: every scope is counted whatever its limits, so a fresh
+  budget needs a new group ID. **The bound is on counters** (`counters-exceeded`
+  replaces `effective-limits-exceeded`): at most 50 000, two per scope (global and
+  every group) plus one per effective per-minute limit.
   The data-directory files `limits.json` (format 3), `totals.json` (format 5: the
   bases and the `counted_through` they include) and `last-known-good.json` (format
   7: the config and its hash) change format: their old copies are discarded at the
@@ -1021,28 +1023,44 @@ directory's owner must be the gateway's user:
     - `subscribe()` with a `catch-up` change after the store's channel reconnects;
     - **no store sequence** anywhere: not in write results, snapshots, changes or the
       current config;
+    - every call settles (a database store sets a statement timeout);
+    - a read a listener makes after a change notification sees that change (a
+      database store reads from its primary);
+    - `recentRecords` is newest first in reverse save order, so records with one
+      receipt time keep a defined order;
+    - gateway revisions never repeat across a restore: a store is restored with every
+      control-plane process stopped and its revision allocator moved past every value
+      issued (GUIDE §5, Restoring the store);
     - the store lease is gone.
 
     Port the store with the contract tests (`kaiak-control/store-contract`, its
     `reconnect(handle, whileDown)` hook for a store with a change channel; GUIDE
     §11).
   - **Publishing:** a publish replaces the current config (history is the app's).
-    `publishConfig(doc)` answers `{ ok: true, published }`, where `published` is
-    `{ text, hash, publishedAt, config }` — no version. `currentConfig()` and
+    `publishConfig(doc)` answers `{ ok: true, published }`, where `published` is a
+    `PublishedConfig` `{ text, hash, publishedAt, config }` — no version; it replaces
+    `StoredConfig`, and the store holds a `ConfigEntry` `{ text, hash, publishedAt }`.
+    `publishConfig` takes no `beforeSave` argument. `currentConfig()` and
     `onConfigPublished` give the same shape. `onConfigPublished` may hear one config
     more than once (GUIDE §9).
   - **Totals** list every scope and type with usage, whatever the config.
-    `counted_through` is an array (one entry per epoch). On the stream, totals are
-    complete on connect, then list only the windows that changed.
+    `counted_through` is an array (one entry per epoch). On the stream, a stream's
+    first totals are complete and come from a read issued after it connected; later
+    ones list only the windows that changed. Past windows are dropped by the expiry
+    sweep, not by counting a batch.
   - **Gateway status:** `applied_config_hash` and `last_rejection.config_hash`
     replace the version and epoch fields — for host UIs.
   - **New core API:**
     - `onDeliveryFailed(listener)` and the `deliveryRetryDelaysMs` option;
+    - the `ListenerEvent` variant `delivery-failed` (a throwing `onDeliveryFailed`
+      listener, reported to `onListenerError`);
     - `readConfig()`, `onConfigRead()` and `readTotals()`, for a host serving
       streams outside the Fastify plugin (GUIDE §4).
   - **Removed:**
     - core options `storeLeaseTtlMs`, `onStoreLeaseLost`, `controlPlaneId`,
       `onLimitCarriedOver` and `configHistorySize`;
+    - core methods `configEpoch()` and `configsSince()`, and the `ListenerEvent`
+      variant `limit-carried-over`;
     - exports `limitIdentity`, `validateConfigSnapshot` (now `validateConfigEvent`),
       `validateResync`, and the config-version types.
 

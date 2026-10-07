@@ -147,8 +147,9 @@ enforce the boundaries.
   sender (the batcher, which tags it with its batch's usage generation), then to a
   fan-out of sinks (usage metrics).
 - `limits` — a sliding-minute counter per per-minute limit, and a UTC-hour token count
-  and a UTC-month cost count for global and every group whether limited or not, each
-  limit a check over its scope's count; a request is checked against global and every group
+  and a UTC-month cost count for global and every group whether limited or not, kept
+  until its window ends whatever the config, each limit a check over its scope's
+  count; a request is checked against global and every group
   on its key's path, following the live config; check-and-reserve before routing,
   settlement from the request's usage records in a finisher; the file-mode usage snapshot through
   `state`. In control-plane mode: hour and month windows over the pushed totals plus
@@ -156,9 +157,10 @@ enforce the boundaries.
   record carries), totals applied by scope and type whatever the config runs (the
   first after each connect complete, later ones the changed windows only), per-minute
   shares from the live-gateway count, the outage refusal for priced
-  money-limited models (no stream contact, or usage batches unanswered, past the
-  grace), and
-  the last applied totals kept in `state` across restarts. It knows nothing of the
+  money-limited models (no stream contact, usage batches unanswered, or acknowledged
+  batches no totals have shown counted, past the grace), and
+  the last applied totals saved to `state` in the background every 30 s, with own
+  usage rebuilt from the spool after a restart. It knows nothing of the
   protocol: `cmd/kaiak` converts the client's totals updates and contact.
 - `metrics` — a small registry (counters, gauges, fixed-bucket histograms, gauges and
   counters read at scrape time) and its Prometheus text exposition, served on the admin port; the
@@ -210,7 +212,8 @@ enforce the boundaries.
   on change, on a stream connecting, every 10 s; routing changes at most one a
   second). Totals come from stream events only and go to one consumer (the
   limiter), in stream order, with the usage generations they show counted (an ack
-  only lets a batch leave the store); the client also tracks contact with the control
+  only stops a batch being sent; it leaves the store once a saved copy of totals
+  covering it is written, and a malformed totals event ends the stream); the client also tracks contact with the control
   plane (read by the limiter's outage check and the metrics). `cmd/kaiak` wires the
   usage flush and the final status into the drain; `metrics` gets the delivery
   metrics through an observer interface `control` defines, and the connection state

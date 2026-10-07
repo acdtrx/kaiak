@@ -25,8 +25,9 @@ import (
 //     holds it and an index whose next sequence is past it, so no sequence is ever
 //     sealed with other records (across restarts too, with the disk store);
 //   - batches of one epoch are sent in sequence order, and every batch of an epoch is
-//     sent before any batch of the next (the control plane counts a different epoch as
-//     a fresh spool and never goes back to an older one).
+//     sent before any batch of the next, so usage generations follow send order: a
+//     totals event retires own usage up to the newest generation it shows counted
+//     (countedGeneration), and every batch sent before a covered one is covered too.
 const (
 	// spoolWarnBatches: each time the queue grows past another multiple of it, a
 	// warning is logged. The disk queue itself is not bounded: usage is billing data.

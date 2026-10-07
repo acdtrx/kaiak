@@ -32,6 +32,6 @@
   "usage-ack-batch-sequence-twice.json": {
     "kind": "usage-ack",
     "path": "/batch/sequence",
-    "reason": "a repeated member in the batch the ack retires"
+    "reason": "a repeated member in the batch the ack names"
   }
 }

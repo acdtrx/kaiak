@@ -135,14 +135,17 @@ the `{ error, detail }` body, `error` being the stable code:
   sending process's job (Config stream → Order), not the gateway's.
 - Rejected (2026-10-07):
   - config versions with a bounded history, a resume position (`since`) and `resync`
-    (settled 2026-09-24) — every config is a whole document, so only the current one
-    is ever needed, and the history existed only to replay versions nobody uses;
+    (settled 2026-09-24) — every config is a whole document, so a gateway only ever
+    needs the current one; replaying a history sends configs the app has already
+    replaced, and a restored store's history no longer matches the positions its
+    gateways resume from;
   - a gateway that only applies a config newer than the one it runs — it protects
     against nothing the sender cannot prevent on its own stream, and after a store
     restore (an older config current again) it kept gateways on a config the control
     plane no longer has;
-  - a config epoch naming the store a version counts in (settled 2026-09-25) — it
-    existed only to compare versions across stores.
+  - a config epoch naming the store a version counts in (settled 2026-09-25) — a
+    store restored without taking a new one had its configs and totals ignored by
+    every gateway, and with no versions there is nothing for it to name.
 
 ## Config stream (settled 2026-09-24; the current config only, 2026-10-07)
 
@@ -805,7 +808,8 @@ How the control plane takes `POST /v1/usage`, as `kaiak-control` implements it.
   not a config has been published (settled 2026-10-07): counting does not depend on
   the config (Counted whatever the config), and the ack carries nothing a config is
   needed for. Rejected: `503 config-unavailable` before the first publish (settled
-  2026-09-24) — it existed because counting and the ack's totals needed a config.
+  2026-09-24) — it holds every gateway's usage back on a control plane with nothing
+  published yet, although counting needs no config.
 - **De-duplication** by the last counted batch ID per instance **and epoch** (settled
   2026-10-07): nothing counted for the instance yet → counted; a sequence above the
   last of its epoch → counted (a skipped sequence is counted too and logged: records
@@ -830,8 +834,8 @@ How the control plane takes `POST /v1/usage`, as `kaiak-control` implements it.
   depend on the config — every record counts toward its scopes' windows (Counted
   toward) — so a publish never refuses a batch's write, and a batch never refuses a
   publish. Rejected: counting toward the limits of the config in force, with the
-  write conditional on that version — it made every publish race usage, and existed
-  only for model-set carry-over.
+  write conditional on that version — every publish races usage, and a limit's spend
+  depends on which config a batch's write happened to see.
 - **Exactly once in the store** (settled 2026-09-25, D7): the write is conditional on
   the last batch ID of the batch's epoch the decision was made against — the store
   compares and writes in one atomic operation, and when another writer counted a batch
