@@ -240,6 +240,50 @@ Settled with the user after the second pre-merge review (2026-10-07,
 28. **Replica clocks within a second** (step 10's deviation, accepted). No gateway-side
     window-coverage rule.
 
+Settled with the user after the third pre-merge review (2026-10-07,
+`docs/reviews/2026-10-07/AUDIT-3.md`):
+
+29. **One stale-totals signal, on the gateway.** An acknowledged own batch keeps the
+    usage-waiting clock (`UsageWaitingSince`) running until stream totals whose
+    `counted_through` covers it are applied. Totals that stop coming, for any cause
+    (a dead notification channel, failing or hung totals reads, a stuck feed), put a
+    gateway that spends into outage after the grace (3H1).
+    - The control plane pushes whenever a cursor moves, even when no window changed
+      (a zero-cost batch), so covering never depends on spend.
+    - Batches restored from another instance's spool, which no `counted_through`
+      names, do not hold the clock.
+    - Rejected: the control plane closing its streams when totals reads keep failing.
+      It is a second net for the same concern (AGENTS.md → Debugging), and misses a
+      dead channel.
+30. **A stream's first totals come from a read issued after it joined.** Complete
+    totals never go back across reconnects or replicas, and a failing feed never
+    serves its last good read as a new baseline (3H1).
+31. **A totals event that fails decoding ends the stream.** The reconnect brings
+    complete totals. Other unknown or malformed events are still logged and skipped
+    (3H1).
+32. **The spool keeps a batch until saved totals cover it.**
+    - A batch leaves the spool only when a `totals.json` save whose
+      `counted_through` covers it has completed. Until then it is kept, marked
+      acknowledged and never resent.
+    - On restart, own usage is rebuilt as the spooled batches beyond the saved
+      `counted_through`, so the saved totals plus the spool give the spend exactly
+      (3H2).
+    - `totals.json` is written in the background on an interval and at shutdown,
+      never on the stream goroutine (G3-M2). It holds only current windows.
+    - The acknowledged list becomes part of the spool and is bounded by the spool's
+      own limits (3L4).
+    - The spool format bumps.
+    - Without a data directory nothing changes: own usage is in memory, as today.
+    - Rejected: treating money totals as unknown after any unclean restart. It is
+      simpler, but priced models fail closed until the control plane is back.
+33. **Hour and month counters live by scope until their window ends, whatever the
+    config.** A deleted group's counters are kept, and reused if the ID comes back
+    within the window. In-flight reservations stay on the same counters. Pushed
+    windows are pruned once their window has passed (3M1).
+34. **The memory bound counts the counters a config allocates:** two per scope plus
+    its per-minute counters, 50 000 at most, on both halves. Minute buckets are
+    allocated only for per-minute counters (3M2).
+
 ## Constraints
 
 - Protocol changes land on both halves at once.
@@ -301,6 +345,13 @@ merge.
   13. `STEP-13-gateway.md`: the gateway.
   14. `STEP-14-docs-and-green.md`: leftovers, migration note, the checklist greps
       clean, the full suite three times.
+- **Phase 6 — round-3 fixes** (steps 15–17). Green only at the end.
+  15. `STEP-15-control.md`: the spec rules, the store contract, the GUIDE, and
+      `kaiak-control`.
+  16. `STEP-16-gateway.md`: the stale-totals signal, the spool, counters by scope, the
+      memory bound.
+  17. `STEP-17-docs-and-green.md`: wording, migration note, AUDIT-3 outcome, three
+      green runs.
 
 Expected reds inside phase 1:
 - After step 1, both halves fail the totals fixtures. Step 4 clears `kaiak-control`'s
@@ -339,3 +390,5 @@ Expected reds inside phase 1:
 - [x] **Phase 5** (`STEP-14-docs-and-green.md`, done 2026-10-07): every round-2 reproduction ported and
   passing; the removal checklist greps clean; `scripts/check-all.sh` green three
   times in a row.
+- [ ] **Phase 6** (`STEP-17-docs-and-green.md`): every round-3 reproduction ported and
+  passing; `scripts/check-all.sh` green three times in a row.
