@@ -69,7 +69,7 @@ type attempt struct {
 // Endpoint support).
 // model_access has checked the model exists in the snapshot.
 func sendAttempts(ctx context.Context, rq *request, router *routing.Router, recorder *accounting.Recorder,
-	providers *provider.Registry, budget *retryBudget, missing *missingEndpoints, logger *slog.Logger) *apiError {
+	providers *provider.Registry, budget *retryBudget, missing *MissingEndpoints, logger *slog.Logger) *apiError {
 	if !rq.endpoint.takesBody() {
 		return nil
 	}
@@ -205,7 +205,7 @@ func serves(d config.Deployment, ep endpoint) bool {
 // the first event. A failure before any response is returned as the answer it would
 // get. The attempt's meter hears when the request was written in full (it counts the
 // input of an attempt that then gets no answer), and how the backend answered.
-func sendAttempt(ctx context.Context, rq *request, providers *provider.Registry, missing *missingEndpoints,
+func sendAttempt(ctx context.Context, rq *request, providers *provider.Registry, missing *MissingEndpoints,
 	logger *slog.Logger) (provider.Response, *apiError) {
 	resp, err := providers.For(rq.deployment.Backend).Send(ctx, &provider.Request{
 		Endpoint:     providerEndpoint(rq.endpoint),

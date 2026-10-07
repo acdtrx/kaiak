@@ -939,8 +939,8 @@ own, and a client sending repeats is broken either way.
   client request's ID and its own attempt's deployment; a request's records are one
   per retried attempt that was sent in full and unanswered, plus the last attempt's
   — always exactly one, so every routed request still settles. Limits settle the
-  request's one reservation to the **sum** of its records; the usage-metrics sink
-  gets each record.
+  request's one reservation to the **sum** of its records; the usage metrics get
+  each record.
 - **Health**: one mechanism — failures on real traffic open a deployment's **circuit
   breaker**; while open, the gateway probes it on an interval and closes the circuit
   when a probe succeeds. No always-on active checks (deferred). Settled 2026-09-24:
@@ -1777,13 +1777,18 @@ own, and a client sending repeats is broken either way.
   integer): records add up exactly downstream, at most half a nano-dollar of rounding
   per record. Records carry the raw units alongside the cost so the control plane can
   re-price.
-- **Sinks** (settled 2026-09-24): settled records go to a fan-out of sinks — usage
-  metrics and the control-plane sender each register one. A sink is called on the
-  request's goroutine as the request finishes and must never block (update memory, or
-  enqueue for a background sender). The usage-metrics sink is registered in file mode
-  too. Local limits are not a sink: settling needs the
-  request's own reservation, so they settle in a request finisher that reads the
-  record (Limits).
+- **Where records go** (settled 2026-10-08): each settled record goes to the
+  control-plane sender, the **batcher** (control-plane mode), then to the **usage
+  metrics** (both modes). The batcher takes the record into the filling usage batch
+  and returns that batch's usage generation, which the record carries from then on:
+  the metrics see it, and the request's limits settlement tags its usage with it
+  (Limits). Both are called on the request's goroutine as the request finishes and
+  never block (they update memory; a background sender sends the batches). Local
+  limits are not handed the record this way: settling needs the request's own
+  reservation, so they settle in a request finisher that reads the record (Limits).
+  Rejected: a fan-out of interchangeable sinks — the batcher must return the
+  generation before the metrics see the record, so it is not one sink among others,
+  and the metrics are the only other consumer.
 
 ## Configuration sources
 
@@ -2061,8 +2066,9 @@ own, and a client sending repeats is broken either way.
   - The client follows the control plane until the drain is over (Lifecycle): requests
     admitted during the grace period run on the newest config and totals.
   - **Usage batches** (settled 2026-09-24; the protocol side in `CONTROL-PROTOCOL.md`,
-    Usage batches): the client is a sink on accounting's fan-out; `Record` appends
-    the record to the filling batch in memory and never waits. The batch is sealed
+    Usage batches): the client is accounting's batcher (Accounting → Where records
+    go); `Record` appends the record to the filling batch in memory, returns the
+    batch's usage generation and never waits. The batch is sealed
     every 5 s, or at once when it reaches 500 records; sealed batches queue in memory,
     each under the next sequence of the epoch, behind the one outstanding. A separate
     goroutine sends the queue's head and nothing else until it is acknowledged or
@@ -2131,6 +2137,16 @@ own, and a client sending repeats is broken either way.
     from routing and the applied config. A failed report is logged when failures start (then at debug level
     until one is delivered again) and is not retried on its own: the next report
     carries the newer state anyway.
+  - **Messages the gateway only sends** (settled 2026-10-08): the binary validates
+    what it receives — config events, totals, usage acks — and each usage record
+    before its batch is queued (a record the protocol refuses is dropped alone, Usage
+    batches). The usage batch and the status it builds are validated by the `control`
+    package's tests instead: their walkers, rules and decoders live there, held to
+    `protocol/schema/` by the shared fixtures, and the batches and statuses the tests
+    see the gateway send pass them. Rejected: keeping them in the binary — code no
+    running gateway calls, shipped and kept in step with the schemas; dropping them
+    for `kaiak-control`'s validation in the cross-half e2e — that loses the fast
+    per-fixture check of the Go side.
 - Omitted optional fields get their documented defaults at load time (backend
   timeouts, body cap, `key_id_label`, `group_label`, `control_outage_grace_ms` — 15 minutes, `max_n` — 8,
   `max_concurrent_requests_per_key` — 16; the
@@ -2368,8 +2384,8 @@ own, and a client sending repeats is broken either way.
   costs. No labels beyond `trigger` and `result` — nothing per key, group or
   backend. Rejected: a size or duration per stage (parse, checks, snapshot build,
   per config section) — kept out until a measurement says which part costs.
-- **Two paths, not derived** (principle 7; settled 2026-09-24): usage metrics come
-  from a sink on accounting's fan-out, fed each settled record as it is produced —
+- **Two paths, not derived** (principle 7; settled 2026-09-24): usage metrics are
+  handed each settled record by accounting as it is produced —
   the same settlement the usage record carries, so dashboards and billing never count
   tokens two ways, but each path keeps its own state: metrics are in-memory counters
   that reset on restart and are never read back into a record; records never come

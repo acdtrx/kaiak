@@ -218,6 +218,16 @@ func TestModelResolution(t *testing.T) {
 	}
 }
 
+// keyByHash is the snapshot's key with hash, failing the test when there is none.
+func keyByHash(t *testing.T, s *Snapshot, hash string) *Key {
+	t.Helper()
+	k, ok := s.KeyByHash(hash)
+	if !ok {
+		t.Fatalf("no key with hash %s", hash)
+	}
+	return k
+}
+
 func TestKeysResolveToTheirGroup(t *testing.T) {
 	s := parseFixture(t, "full.json")
 
@@ -225,24 +235,29 @@ func TestKeysResolveToTheirGroup(t *testing.T) {
 	if !ok || k.ID != "k-support-bot" {
 		t.Fatalf("KeyByHash = %+v, %v", k, ok)
 	}
-	if k.Group == nil || k.Group.ID != "support-bot" || k.Group.Parent != s.Groups["support"] || k.Group.Root() != s.Groups["support"] {
+	if k.Group == nil || k.Group.ID != "support-bot" || k.Group != s.Groups["support-bot"] {
 		t.Errorf("group = %+v", k.Group)
 	}
-	if !slices.Equal(k.Group.PathIDs, []string{"support", "support-bot"}) || k.Group.Path[1] != k.Group {
+	if !slices.Equal(k.Group.PathIDs, []string{"support", "support-bot"}) {
 		t.Errorf("path = %v", k.Group.PathIDs)
 	}
 	if want := time.Date(2027, 3, 31, 23, 59, 59, 0, time.UTC); !k.ExpiresAt.Equal(want) {
 		t.Errorf("ExpiresAt = %v", k.ExpiresAt)
 	}
 
-	bob := s.Keys["k-bob"]
-	if bob.Group != s.Groups["bob"] || s.Groups["users"].Parent != nil || s.Groups["users"].Root() != s.Groups["users"] {
+	bob := keyByHash(t, s, "sha256:caa32f96ff6009dfa680f8f85bfe87cf698ea2999e5676aaee65a2b5eb62cddd")
+	if bob.ID != "k-bob" || bob.Group != s.Groups["bob"] || !slices.Equal(s.Groups["users"].PathIDs, []string{"users"}) {
 		t.Errorf("k-bob group = %+v", bob.Group)
 	}
 	if want := time.Date(2026, 12, 31, 12, 0, 0, 5e8, time.UTC); !bob.ExpiresAt.Equal(want) {
 		t.Errorf("fractional ExpiresAt = %v", bob.ExpiresAt)
 	}
-	if !s.Keys["k-bob-old"].Disabled || !s.Keys["k-alice-laptop"].ExpiresAt.IsZero() {
+	bobOld := keyByHash(t, s, "sha256:63e40536c95622c5e768300e6a9030385f72f1ce4d5bf7a249cb2dd49d1615ef")
+	aliceLaptop := keyByHash(t, s, "sha256:59f8f6709d858b919a10541cd215a0de7b4299bbc6c11a2e0bf4ca03ec6df717")
+	if bobOld.ID != "k-bob-old" || aliceLaptop.ID != "k-alice-laptop" {
+		t.Fatalf("keys by hash: %s, %s", bobOld.ID, aliceLaptop.ID)
+	}
+	if !bobOld.Disabled || !aliceLaptop.ExpiresAt.IsZero() {
 		t.Error("disabled flag or zero expiry not resolved")
 	}
 	if _, ok := s.KeyByHash("sha256:" + strings.Repeat("0", 64)); ok {
@@ -253,12 +268,12 @@ func TestKeysResolveToTheirGroup(t *testing.T) {
 func TestWildcardExpandsToEveryModel(t *testing.T) {
 	s := parseFixture(t, "full.json")
 	eval := s.Groups["eval-pipeline"].AllowedModels
-	if !eval.All() || !slices.Equal(eval.Names(), s.ModelNames) || !eval.Allows("bge-m3") || eval.Allows("*") {
-		t.Errorf(`"*" resolved to all=%v names=%v`, eval.All(), eval.Names())
+	if !slices.Equal(eval.Names(), s.ModelNames) || !eval.Allows("bge-m3") || eval.Allows("*") {
+		t.Errorf(`"*" resolved to names=%v`, eval.Names())
 	}
-	support := s.Keys["k-support-bot"].AllowedModels()
-	if support.All() || !slices.Equal(support.Names(), []string{"bge-m3", "gpt-4.1-mini"}) || support.Allows("gpt-4.1") {
-		t.Errorf("explicit list resolved to all=%v names=%v", support.All(), support.Names())
+	support := s.Groups["support-bot"].AllowedModels
+	if !slices.Equal(support.Names(), []string{"bge-m3", "gpt-4.1-mini"}) || support.Allows("gpt-4.1") {
+		t.Errorf("explicit list resolved to names=%v", support.Names())
 	}
 }
 
@@ -272,7 +287,7 @@ func TestChildDefaultsMergeUnderEachChild(t *testing.T) {
 
 	// The users group itself gets nothing from its own child_defaults.
 	users := s.Groups["users"]
-	if !users.AllowedModels.All() || len(users.Limits) != 0 {
+	if !slices.Equal(users.AllowedModels.Names(), s.ModelNames) || len(users.Limits) != 0 {
 		t.Errorf("users: allowed %v, limits %+v", users.AllowedModels.Names(), users.Limits)
 	}
 
@@ -286,7 +301,7 @@ func TestChildDefaultsMergeUnderEachChild(t *testing.T) {
 	// alice: allowed_models ["*"] replaces the default list; her usd limit replaces
 	// the default one in place; the others still apply.
 	alice := s.Groups["alice"]
-	if !alice.AllowedModels.All() || !alice.AllowedModels.Allows("gpt-4.1") {
+	if !slices.Equal(alice.AllowedModels.Names(), s.ModelNames) || !alice.AllowedModels.Allows("gpt-4.1") {
 		t.Errorf("alice allowed = %v", alice.AllowedModels.Names())
 	}
 	assertLimits(t, "alice", alice.Limits, []Limit{defaults[0], defaults[1], {Type: LimitUSDPerMonth, Value: 200}})
@@ -315,7 +330,7 @@ func TestChildOverrideMatchesOnType(t *testing.T) {
 
 	// An empty allowed_models list replaces the default: the group may use nothing.
 	locked := s.Groups["locked-out"]
-	if len(locked.AllowedModels.Names()) != 0 || locked.AllowedModels.Allows("small") || locked.AllowedModels.All() {
+	if len(locked.AllowedModels.Names()) != 0 || locked.AllowedModels.Allows("small") {
 		t.Errorf("locked-out allowed = %v", locked.AllowedModels.Names())
 	}
 }

@@ -220,7 +220,7 @@ svg .band { stroke: none; }
     <tr><td><code>auth</code></td><td>Key hash lookup (key → key ID, its group and that group's path) and the one model-access check.</td></tr>
     <tr><td><code>limits</code></td><td>A sliding-minute counter per per-minute limit, and an hour token count and a month cost count for global and every group, limited or not, kept until its window ends whatever the config — each limit a check over its scope's count; a request is checked against global and every group on its key's path; check-and-reserve before routing, settle from usage records after. In control-plane mode: pushed totals (complete after each connect, then the changed windows) + own uncounted usage, per-minute shares, the outage refusal (no stream bytes past the grace, usage unanswered, or acknowledged usage no totals have shown counted). Nothing outlives the process.</td></tr>
     <tr><td><code>routing</code></td><td>Model → deployment choice, in-flight counts, per-backend caps, one FIFO queue per model with a single dispatcher, per-deployment circuit breakers and their probers. State outlives config reloads that keep the deployment.</td></tr>
-    <tr><td><code>accounting</code></td><td>Meters each attempt's response as it is relayed; settles usage and cost into records, each naming the key's group path; hands them to the control client's batcher and the usage-metrics sink.</td></tr>
+    <tr><td><code>accounting</code></td><td>Meters each attempt's response as it is relayed; settles usage and cost into records, each naming the key's group path; hands each to the control client's batcher, then the usage metrics.</td></tr>
     <tr><td><code>provider</code></td><td>A module per backend type (OpenAI, Azure OpenAI, vLLM, llama-server, Anthropic, Claude in Foundry, and the generic OpenAI-compatible) over a shared wire core, the table of which endpoints each type serves, passthrough body edits per client API, per-backend connection pools, the circuit probe (<code>GET …/models</code>; none for Foundry, which has no models list).</td></tr>
     <tr><td><code>config</code></td><td>Strict decoding, validation, resolution into an immutable snapshot (each group's path, allowed models and effective limits), the holder that swaps it atomically, the one apply path, the file loader.</td></tr>
     <tr><td><code>control</code></td><td>Boot (the stream's first config → seed), the config stream with reconnect (every config the control plane sends is applied, unless its hash is the running or last rejected one), totals from the stream only (a malformed totals event ends the stream), the usage batch sender (batches queued in memory, the drain delivering them), the status reporter, contact tracking (stream bytes only).</td></tr>
@@ -505,7 +505,7 @@ svg .band { stroke: none; }
 </ul>
 
 <figure>
-<svg viewBox="0 0 960 380" role="img" aria-label="Where future plugs attach on the request path: inbound formats at the entrance, new pipeline stages in slots before limits and before routing, new providers at the exit to backends, new usage units in the accounting meter, and new consumers on the record fan-out.">
+<svg viewBox="0 0 960 380" role="img" aria-label="Where future plugs attach on the request path: inbound formats at the entrance, new pipeline stages in slots before limits and before routing, new providers at the exit to backends, new usage units in the accounting meter, and new consumers of the records.">
   <defs>
     <marker id="x-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker>
     <marker id="x-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-hot"/></marker>
@@ -576,7 +576,7 @@ svg .band { stroke: none; }
   <line x1="875" y1="180" x2="875" y2="238" class="edge" marker-end="url(#x-a)"/>
   <text x="883" y="214" class="s">by type</text>
 
-  <!-- 4 meter, 5 sinks -->
+  <!-- 4 meter, 5 record consumers -->
   <rect x="560" y="240" width="200" height="60" rx="8" class="hot"/>
   <text x="660" y="263" text-anchor="middle" class="la">④ accounting meter</text>
   <text x="660" y="283" text-anchor="middle" class="s">usage units map · prices per unit and tier</text>
@@ -584,7 +584,7 @@ svg .band { stroke: none; }
   <text x="750" y="194" text-anchor="middle" class="s">events</text>
 
   <rect x="300" y="240" width="220" height="60" rx="8" class="hot"/>
-  <text x="410" y="263" text-anchor="middle" class="la">⑤ record fan-out · observers</text>
+  <text x="410" y="263" text-anchor="middle" class="la">⑤ record consumers · observers</text>
   <text x="410" y="283" text-anchor="middle" class="s">control batcher · usage metrics</text>
   <line x1="560" y1="270" x2="522" y2="270" class="edge" marker-end="url(#x-a)"/>
   <text x="541" y="232" text-anchor="middle" class="s">records</text>
@@ -640,10 +640,10 @@ svg .band { stroke: none; }
     </tr>
     <tr>
       <td>⑤ Record consumers</td>
-      <td><code>accounting.Sink</code> / <code>Fanout</code>; observer interfaces (<code>routing.Observer</code>, <code>control.UsageObserver</code>, <code>metrics.ControlState</code>)</td>
+      <td><code>accounting.RecorderOptions</code>: the <code>Batcher</code>, then the <code>Metrics</code>; observer interfaces (<code>routing.Observer</code>, <code>control.UsageObserver</code>, <code>metrics.ControlState</code>)</td>
       <td>control batcher, usage metrics, ops metrics</td>
       <td>Any new consumer of usage records or routing events, such as an external billing export</td>
-      <td>A <code>Sink</code> or an observer. It must not modify the record. It must stay out of the request path's blocking I/O.</td>
+      <td>A consumer the recorder hands each record, or an observer. It must not modify the record. It must stay out of the request path's blocking I/O.</td>
     </tr>
     <tr>
       <td>⑥ Routing policy</td>

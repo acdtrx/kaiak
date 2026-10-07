@@ -126,8 +126,7 @@ type Snapshot struct {
 	ModelNames []string
 	// Groups by group ID: the whole tree.
 	Groups map[string]*Group
-	// Keys by key ID; KeyByHash looks one up by hash.
-	Keys       map[string]*Key
+	// keysByHash: KeyByHash looks a key up by its hash.
 	keysByHash map[string]*Key
 }
 
@@ -236,12 +235,9 @@ type Limit struct {
 // gateway gives them no meaning.
 type Group struct {
 	ID string
-	// Parent is nil for a top-level group.
-	Parent *Group
-	// Path is the group and every ancestor, top-level first, the group itself last
-	// (1 to MaxGroupDepth groups). Shared: do not modify.
-	Path []*Group
-	// PathIDs are Path's IDs, as usage records carry them. Shared: do not modify.
+	// PathIDs are the IDs of the group and every ancestor, top-level first, the group
+	// itself last (1 to MaxGroupDepth groups), as usage records carry them. Shared: do
+	// not modify.
 	PathIDs []string
 	// AllowedModels: the models a key in this group may use, every level of the path
 	// intersected.
@@ -252,9 +248,6 @@ type Group struct {
 	Limits []Limit
 }
 
-// Root is the top-level group of g's path (g itself when g is top-level).
-func (g *Group) Root() *Group { return g.Path[0] }
-
 type Key struct {
 	ID    string
 	Hash  string
@@ -264,13 +257,8 @@ type Key struct {
 	Disabled  bool
 }
 
-// AllowedModels returns the models the key's group path allows.
-func (k *Key) AllowedModels() ModelSet { return k.Group.AllowedModels }
-
-// ModelSet is a set of public model names, concrete names only; All records that no
-// level restricted it, so it holds every model of the snapshot.
+// ModelSet is a set of public model names, concrete names only.
 type ModelSet struct {
-	all   bool
 	names []string
 	set   map[string]struct{}
 }
@@ -279,9 +267,6 @@ func (m ModelSet) Allows(model string) bool {
 	_, ok := m.set[model]
 	return ok
 }
-
-// All reports whether nothing restricted the set: it holds every model.
-func (m ModelSet) All() bool { return m.all }
 
 // Names lists the models in the set, sorted. The slice is shared: do not modify it.
 func (m ModelSet) Names() []string { return m.names }
@@ -314,8 +299,8 @@ func Parse(data []byte) (*Snapshot, error) {
 }
 
 // decodeDocument is the strict typed decode: unknown fields are errors, so a schema
-// field the Go types lack fails loudly instead of being dropped. decodeTree has
-// already checked that data holds exactly one JSON value.
+// field the Go types lack fails loudly instead of being dropped. schemacheck.Decode
+// has already checked that data holds exactly one JSON value.
 func decodeDocument(data []byte) (*document, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
@@ -343,7 +328,6 @@ func resolve(doc *document) *Snapshot {
 		Models:                      make(map[string]*Model, len(doc.Models)),
 		ModelNames:                  slices.Sorted(maps.Keys(doc.Models)),
 		Groups:                      make(map[string]*Group, len(doc.Groups)),
-		Keys:                        make(map[string]*Key, len(doc.Keys)),
 		keysByHash:                  make(map[string]*Key, len(doc.Keys)),
 	}
 	if doc.Global.MaxRequestBodyBytes != nil {
@@ -408,7 +392,6 @@ func resolve(doc *document) *Snapshot {
 			// The semantic rules have checked the timestamp names a real instant.
 			key.ExpiresAt, _ = time.Parse(time.RFC3339Nano, k.ExpiresAt)
 		}
-		s.Keys[id] = key
 		s.keysByHash[k.Hash] = key
 	}
 
@@ -470,19 +453,16 @@ func resolveGroup(id string, doc *document, s *Snapshot, every ModelSet) *Group 
 	g := &Group{ID: id}
 	var defaults childDefaultsDoc
 	allowed := every
+	var parentPath []string
 	if entry.Parent != "" {
-		g.Parent = resolveGroup(entry.Parent, doc, s, every)
+		parent := resolveGroup(entry.Parent, doc, s, every)
 		if d := doc.Groups[entry.Parent].ChildDefaults; d != nil {
 			defaults = *d
 		}
-		g.Path = slices.Clone(g.Parent.Path)
-		allowed = g.Parent.AllowedModels
+		parentPath = parent.PathIDs
+		allowed = parent.AllowedModels
 	}
-	g.Path = append(g.Path, g)
-	g.PathIDs = make([]string, len(g.Path))
-	for i, member := range g.Path {
-		g.PathIDs[i] = member.ID
-	}
+	g.PathIDs = append(slices.Clone(parentPath), id)
 
 	level := entry.AllowedModels
 	if level == nil {
@@ -532,7 +512,7 @@ func allModelSet(modelNames []string) ModelSet {
 	for _, name := range modelNames {
 		set[name] = struct{}{}
 	}
-	return ModelSet{all: true, names: modelNames, set: set}
+	return ModelSet{names: modelNames, set: set}
 }
 
 // restrict narrows m by one level's allowed_models list (validated; ["*"] restricts

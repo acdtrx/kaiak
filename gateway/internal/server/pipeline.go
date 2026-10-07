@@ -251,9 +251,8 @@ func (rq *request) finish() {
 // request, whatever the attempts; their finisher is registered before the attempt
 // loop's, so it runs after settlement.
 func newPipeline(drain *Drain, keys *keyInFlight, bodies *BodyBudget, providers *provider.Registry, limiter *limits.Limiter,
-	router *routing.Router, recorder *accounting.Recorder, logger *slog.Logger) []stage {
+	router *routing.Router, missing *MissingEndpoints, recorder *accounting.Recorder, logger *slog.Logger) []stage {
 	budget := newRetryBudget(time.Now)
-	missing := newMissingEndpoints()
 	return []stage{
 		{"admission", func(_ context.Context, rq *request) *apiError { return admit(drain, rq) }},
 		{"auth", authenticateKey},

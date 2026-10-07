@@ -159,22 +159,28 @@ type testGateway struct {
 	holder  *config.Holder
 	router  *routing.Router
 	limiter *limits.Limiter
-	usage   *usageSink
+	missing *MissingEndpoints
+	usage   *recordedUsage
 	metrics *metrics.Registry
 	drain   *Drain
 	bodies  *BodyBudget
 }
 
-// usageSink keeps every usage record the gateway settles. Handlers served by a real
-// test server settle on their own goroutines, after the client may have seen the end
-// of the response: such tests wait for the record on settled.
-type usageSink struct {
+// recordedUsage keeps every usage record the gateway settles, after handing it to the
+// usage metrics, as cmd/kaiak wires them. Handlers served by a real test server settle
+// on their own goroutines, after the client may have seen the end of the response:
+// such tests wait for the record on settled.
+type recordedUsage struct {
+	metrics *metrics.UsageMetrics
 	mu      sync.Mutex
 	records []accounting.UsageRecord
 	settled chan accounting.UsageRecord
 }
 
-func (s *usageSink) Record(r accounting.UsageRecord) {
+func (s *recordedUsage) RecordClamped() { s.metrics.RecordClamped() }
+
+func (s *recordedUsage) Record(r accounting.UsageRecord) {
+	s.metrics.Record(r)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.records = append(s.records, r)
@@ -184,7 +190,7 @@ func (s *usageSink) Record(r accounting.UsageRecord) {
 	}
 }
 
-func (s *usageSink) all() []accounting.UsageRecord {
+func (s *recordedUsage) all() []accounting.UsageRecord {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]accounting.UsageRecord(nil), s.records...)
@@ -242,27 +248,27 @@ func buildTestGateway(t *testing.T, opts testOptions) *testGateway {
 		bodies = NewBodyBudget(opts.bodyMemory)
 	}
 	providers := provider.NewRegistry(testLookupEnv)
-	usage := &usageSink{settled: make(chan accounting.UsageRecord, 64)}
 	reg := metrics.NewRegistry()
+	usage := &recordedUsage{metrics: metrics.NewUsageMetrics(reg, holder), settled: make(chan accounting.UsageRecord, 64)}
 	router := routing.New(routing.Options{Probe: providers.Probe, Observer: metrics.NewCircuits(reg), Logger: logger})
 	router.Configure(holder.Current())
-	usageMetrics := metrics.NewUsageSink(reg, holder)
-	recorder := accounting.NewRecorder(accounting.RecorderOptions{Instance: "gw-test",
-		Sink: accounting.Fanout{usage, usageMetrics}, Batcher: batcher, Logger: logger,
-		OutOfRange: usageMetrics.RecordClamped})
+	recorder := accounting.NewRecorder(accounting.RecorderOptions{Instance: "gw-test", Batcher: batcher, Metrics: usage,
+		Logger: logger})
 	drain := NewDrain()
-	h := NewAPI(holder, drain, bodies, providers, limiter, router, recorder, metrics.NewOps(reg, router, holder), logger)
+	missing := NewMissingEndpoints()
+	h := NewAPI(holder, drain, bodies, providers, limiter, router, missing, recorder, metrics.NewOps(reg, router, holder), logger)
 	return &testGateway{h: h, logs: &logs, log: log, backend: backend, holder: holder, router: router,
-		limiter: limiter, usage: usage, metrics: reg, drain: drain, bodies: bodies}
+		limiter: limiter, missing: missing, usage: usage, metrics: reg, drain: drain, bodies: bodies}
 }
 
 // apply swaps in the test config with edit applied (nil = none) and hands it to
-// routing, as cmd/kaiak applies a config.
+// routing and the missing-endpoint memory, as cmd/kaiak applies a config.
 func (g *testGateway) apply(t *testing.T, edit func(doc string) string) {
 	t.Helper()
 	s := testSnapshotWith(t, g.backend.URL(), edit)
 	g.holder.Swap(s)
 	g.router.Configure(s)
+	g.missing.Retain(s.Backends)
 }
 
 // testAPI returns the API handler over the test snapshot and a buffer of its log.

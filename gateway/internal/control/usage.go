@@ -20,7 +20,7 @@ import (
 // memory under the next sequence of the epoch (queue.go). One goroutine seals and
 // queues, another sends the head of the queue — at most one batch outstanding — and
 // retries it with the same ID until the control plane acknowledges or refuses it.
-// Record, the accounting sink, only appends in memory: nothing on the request path
+// Record, the accounting batcher, only appends in memory: nothing on the request path
 // waits for the network.
 
 // DefaultBatchInterval seals the filling batch when Options leave it zero; a batch

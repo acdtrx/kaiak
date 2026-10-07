@@ -239,7 +239,7 @@ func TestCostPicksTheTierByInputSize(t *testing.T) {
 // reserved.
 func TestEstimatedRecordPicksTheTierByItsEstimatedInput(t *testing.T) {
 	model := &config.Model{Name: "chat", Prices: []config.Price{brackets}}
-	r := NewRecorder(RecorderOptions{Instance: "gw-1", Sink: &recordingSink{}})
+	r := NewRecorder(RecorderOptions{Instance: "gw-1", Metrics: &recordingMetrics{}})
 	for _, c := range []struct {
 		input int64
 		want  int64
@@ -289,13 +289,31 @@ func TestCostsAddUpWithoutDrift(t *testing.T) {
 	}
 }
 
-type recordingSink struct{ records []UsageRecord }
+// recordingMetrics keeps the records and counts the clamps the recorder hands its
+// metrics.
+type recordingMetrics struct {
+	records []UsageRecord
+	clamped int
+}
 
-func (s *recordingSink) Record(r UsageRecord) { s.records = append(s.records, r) }
+func (m *recordingMetrics) Record(r UsageRecord) { m.records = append(m.records, r) }
+func (m *recordingMetrics) RecordClamped()       { m.clamped++ }
 
-func TestRecorderSettlesOneRecordToEverySink(t *testing.T) {
-	a, b := &recordingSink{}, &recordingSink{}
-	r := NewRecorder(RecorderOptions{Instance: "gw-1", Sink: Fanout{a, b}})
+// recordingBatcher keeps the records the recorder hands it and answers each with
+// generation.
+type recordingBatcher struct {
+	records    []UsageRecord
+	generation uint64
+}
+
+func (b *recordingBatcher) Record(r UsageRecord) uint64 {
+	b.records = append(b.records, r)
+	return b.generation
+}
+
+func TestRecorderSettlesOneRecordToTheBatcherThenTheMetrics(t *testing.T) {
+	batcher, usage := &recordingBatcher{generation: 7}, &recordingMetrics{}
+	r := NewRecorder(RecorderOptions{Instance: "gw-1", Batcher: batcher, Metrics: usage})
 	r.now = func() time.Time { return time.Date(2025, 7, 1, 12, 0, 0, 5, time.FixedZone("X", 3600)) }
 	model := &config.Model{Name: "chat", Prices: priceHistory}
 	meter := bodyMeter(0, 40, 200, `{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2}}`)
@@ -308,8 +326,15 @@ func TestRecorderSettlesOneRecordToEverySink(t *testing.T) {
 		Start:      day("2025-07-01"),
 	}, meter, true)
 
-	if len(a.records) != 1 || len(b.records) != 1 || a.records[0].RecordID != rec.RecordID {
-		t.Fatalf("sinks got %d and %d records", len(a.records), len(b.records))
+	if len(batcher.records) != 1 || len(usage.records) != 1 || batcher.records[0].RecordID != rec.RecordID ||
+		usage.records[0].RecordID != rec.RecordID {
+		t.Fatalf("batcher and metrics got %d and %d records", len(batcher.records), len(usage.records))
+	}
+	// The batcher comes first: the record the metrics and the caller see carries its
+	// generation.
+	if batcher.records[0].Generation != 0 || usage.records[0].Generation != 7 || rec.Generation != 7 {
+		t.Errorf("generations: batcher saw %d, metrics %d, caller %d; want 0, 7, 7",
+			batcher.records[0].Generation, usage.records[0].Generation, rec.Generation)
 	}
 	data, err := json.Marshal(rec)
 	if err != nil {
@@ -332,10 +357,9 @@ func TestRecorderSettlesOneRecordToEverySink(t *testing.T) {
 // the cost to the bound, logs it with the request ID and tells the metric.
 func TestSettlementClampsUsageToTheProtocolBound(t *testing.T) {
 	var logs bytes.Buffer
-	clamped := 0
-	sink := &recordingSink{}
-	r := NewRecorder(RecorderOptions{Instance: "gw-1", Sink: sink,
-		Logger: slog.New(slog.NewTextHandler(&logs, nil)), OutOfRange: func() { clamped++ }})
+	usage := &recordingMetrics{}
+	r := NewRecorder(RecorderOptions{Instance: "gw-1", Metrics: usage,
+		Logger: slog.New(slog.NewTextHandler(&logs, nil))})
 	model := &config.Model{Name: "chat", Prices: priceHistory}
 	meter := bodyMeter(0, 40, 200, `{"choices":[],"usage":{"prompt_tokens":9007199254740992,"completion_tokens":3}}`)
 	rec := r.Settle(Request{RequestID: "req-huge", Model: model,
@@ -344,11 +368,11 @@ func TestSettlementClampsUsageToTheProtocolBound(t *testing.T) {
 	if rec.Units[config.UnitTokensIn] != MaxAmount || rec.Units[config.UnitTokensOut] != 3 || rec.CostNanoUSD != MaxAmount {
 		t.Errorf("units %v, cost %d; want tokens_in and the cost clamped to %d", rec.Units, rec.CostNanoUSD, int64(MaxAmount))
 	}
-	if len(sink.records) != 1 || sink.records[0].Units[config.UnitTokensIn] != MaxAmount {
-		t.Errorf("the sink got %+v, want the clamped record", sink.records)
+	if len(usage.records) != 1 || usage.records[0].Units[config.UnitTokensIn] != MaxAmount {
+		t.Errorf("the metrics got %+v, want the clamped record", usage.records)
 	}
-	if clamped != 1 {
-		t.Errorf("OutOfRange told %d times, want 1", clamped)
+	if usage.clamped != 1 {
+		t.Errorf("RecordClamped told %d times, want 1", usage.clamped)
 	}
 	if out := logs.String(); !strings.Contains(out, "level=WARN") || !strings.Contains(out, "kaiak.request.id=req-huge") ||
 		!strings.Contains(out, "kaiak.usage.clamped=\"[tokens_in cost_nano_usd]\"") {
@@ -358,8 +382,8 @@ func TestSettlementClampsUsageToTheProtocolBound(t *testing.T) {
 	// Within the bound nothing changes and nothing is told.
 	r.Settle(Request{Model: model, Deployment: config.Deployment{Backend: &config.Backend{}}, Start: day("2025-07-01")},
 		bodyMeter(0, 40, 200, `{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":3}}`), true)
-	if clamped != 1 {
-		t.Errorf("OutOfRange told %d times, want still 1", clamped)
+	if usage.clamped != 1 {
+		t.Errorf("RecordClamped told %d times, want still 1", usage.clamped)
 	}
 }
 
@@ -379,14 +403,14 @@ func TestCostSaturatesAtTheInt64Edge(t *testing.T) {
 		}
 	}
 
-	clamped := 0
-	r := NewRecorder(RecorderOptions{Instance: "gw-1", Sink: &recordingSink{}, OutOfRange: func() { clamped++ }})
+	usage := &recordingMetrics{}
+	r := NewRecorder(RecorderOptions{Instance: "gw-1", Metrics: usage})
 	model := &config.Model{Name: "chat", Prices: expensive}
 	meter := bodyMeter(0, 40, 200, `{"choices":[],"usage":{"prompt_tokens":9223372036854775807,"completion_tokens":3}}`)
 	rec := r.Settle(Request{RequestID: "req-edge", Model: model,
 		Deployment: config.Deployment{Backend: &config.Backend{ID: "vllm"}}, Start: day("2025-07-01")}, meter, true)
-	if rec.CostNanoUSD != MaxAmount || rec.Units[config.UnitTokensIn] != MaxAmount || clamped != 1 {
+	if rec.CostNanoUSD != MaxAmount || rec.Units[config.UnitTokensIn] != MaxAmount || usage.clamped != 1 {
 		t.Errorf("cost %d, units %v, clamps told %d; want the cost and tokens_in clamped to %d, told once",
-			rec.CostNanoUSD, rec.Units, clamped, int64(MaxAmount))
+			rec.CostNanoUSD, rec.Units, usage.clamped, int64(MaxAmount))
 	}
 }

@@ -1,8 +1,8 @@
 // Package accounting settles every routed request into one usage record: units from
 // the backend's usage report (or estimated and flagged), cost from the model's price
-// table, flags for estimated and partial usage. Records go to a Sink; what consumes
-// them (usage metrics, the control-plane sender) registers there. Local limits read
-// the request's own record instead.
+// table, flags for estimated and partial usage. Each record goes to the control-plane
+// sender (Batcher, in control-plane mode), then to the usage metrics (Metrics). Local
+// limits read the request's own record instead.
 package accounting
 
 import (
@@ -55,47 +55,41 @@ type Deployment struct {
 	Model   string `json:"model"`
 }
 
-// Sink receives settled records. Record is called on the request's goroutine as the
-// request finishes, so it must never block: update memory, or hand the record to a
-// queue drained elsewhere. Sinks share the record's Units map and must not modify it.
-type Sink interface {
-	Record(UsageRecord)
-}
-
-// Fanout passes every record to each of its sinks, in order.
-type Fanout []Sink
-
-func (f Fanout) Record(r UsageRecord) {
-	for _, s := range f {
-		s.Record(r)
-	}
-}
-
 // Batcher takes a settled record into the control plane's filling usage batch and
 // returns that batch's usage generation. Taking the record and reading the generation
 // are one step under the batcher's lock, so the generation is exactly the batch the
-// record is sealed in. Like a Sink, it never blocks.
+// record is sealed in. Record is called on the request's goroutine as the request
+// finishes, so it never blocks.
 type Batcher interface {
 	Record(UsageRecord) (generation uint64)
+}
+
+// Metrics turns settled records into usage metrics. Its methods are called on the
+// request's goroutine as the request finishes, so they never block: they update
+// memory only. Record shares the record's Units map and must not modify it.
+type Metrics interface {
+	// Record counts one settled record.
+	Record(UsageRecord)
+	// RecordClamped counts one record whose units or cost were clamped to the
+	// protocol's bound.
+	RecordClamped()
 }
 
 // RecorderOptions configure a Recorder.
 type RecorderOptions struct {
 	// Instance is the gateway's instance ID, stamped on every record.
 	Instance string
-	// Sink receives every record.
-	Sink Sink
 	// Batcher, in control-plane mode, takes every record into a usage batch before
-	// the sink sees it; nil in file mode.
+	// the metrics see it, so the record they see carries its generation; nil in file
+	// mode.
 	Batcher Batcher
+	// Metrics counts every record, and every record clamped to the protocol's bound.
+	Metrics Metrics
 	Logger  *slog.Logger
-	// OutOfRange is told of every record whose units or cost were clamped to the
-	// protocol's bound (a metric); nil tells no one.
-	OutOfRange func()
 }
 
-// Recorder turns settled requests into usage records and hands them to its batcher
-// and sink.
+// Recorder turns settled requests into usage records and hands them to its batcher,
+// then its metrics.
 type Recorder struct {
 	opts RecorderOptions
 	now  func() time.Time
@@ -119,8 +113,8 @@ type Request struct {
 }
 
 // Settle settles a request that is over: its units from meter, its cost, and the
-// record, which it passes to the batcher (which tags it with its generation) and the
-// sink, and returns. complete reports whether the response ran to its end.
+// record, which it passes to the batcher (which tags it with its generation), then the
+// metrics, and returns. complete reports whether the response ran to its end.
 func (r *Recorder) Settle(rq Request, meter *Meter, complete bool) UsageRecord {
 	units, flags := meter.Settle(complete)
 	rec := UsageRecord{
@@ -142,14 +136,12 @@ func (r *Recorder) Settle(rq Request, meter *Meter, complete bool) UsageRecord {
 			r.opts.Logger.Warn("usage out of the protocol's range: clamped to 2^53-1", "kaiak.request.id", rec.RequestID,
 				"kaiak.usage.record_id", rec.RecordID, "kaiak.backend.id", rec.Deployment.Backend, "kaiak.usage.clamped", clamped)
 		}
-		if r.opts.OutOfRange != nil {
-			r.opts.OutOfRange()
-		}
+		r.opts.Metrics.RecordClamped()
 	}
 	if r.opts.Batcher != nil {
 		rec.Generation = r.opts.Batcher.Record(rec)
 	}
-	r.opts.Sink.Record(rec)
+	r.opts.Metrics.Record(rec)
 	return rec
 }
 

@@ -1,7 +1,7 @@
 // Package metrics is the gateway's Prometheus surface: a small registry of counters,
 // gauges and histograms, the text exposition writer the admin port serves, the ops
-// metrics the request pipeline feeds, and the usage-metrics sink on accounting's
-// fan-out.
+// metrics the request pipeline feeds, and the usage metrics accounting hands every
+// settled record.
 //
 // Metrics are for dashboards: cheap, approximate, reset on restart. They are never the
 // source of a usage record, and usage records are never rebuilt from them

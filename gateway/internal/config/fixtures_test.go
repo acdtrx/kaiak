@@ -109,9 +109,8 @@ type resolvedGroup struct {
 	// AllowedModels is "all" or a sorted list of names.
 	AllowedModels json.RawMessage `json:"allowed_models"`
 	Limits        []struct {
-		Type   string   `json:"type"`
-		Value  float64  `json:"value"`
-		Models []string `json:"models"`
+		Type  string  `json:"type"`
+		Value float64 `json:"value"`
 	} `json:"limits"`
 }
 
@@ -137,23 +136,18 @@ func TestResolvedFixtures(t *testing.T) {
 				if !slices.Equal(g.PathIDs, want.Path) {
 					t.Errorf("%s: path %v, want %v", id, g.PathIDs, want.Path)
 				}
-				for i, member := range g.Path {
-					if member.ID != g.PathIDs[i] || (i > 0 && member.Parent != g.Path[i-1]) {
-						t.Errorf("%s: Path and PathIDs disagree at %d", id, i)
-					}
-				}
 
-				gotAllowed := `"all"`
-				if !g.AllowedModels.All() {
-					encoded, _ := json.Marshal(g.AllowedModels.Names())
-					gotAllowed = string(encoded)
-				}
+				// "all" is every model of the snapshot.
 				var wantAllowed any
 				if err := json.Unmarshal(want.AllowedModels, &wantAllowed); err != nil {
 					t.Fatal(err)
 				}
+				if wantAllowed == "all" {
+					wantAllowed = s.ModelNames
+				}
+				gotAllowed, _ := json.Marshal(g.AllowedModels.Names())
 				encoded, _ := json.Marshal(wantAllowed)
-				if gotAllowed != string(encoded) {
+				if string(gotAllowed) != string(encoded) {
 					t.Errorf("%s: allowed models %s, want %s", id, gotAllowed, encoded)
 				}
 

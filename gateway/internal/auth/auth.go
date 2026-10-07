@@ -36,12 +36,11 @@ type Error struct {
 
 func (e *Error) Error() string { return string(e.Code) + ": " + e.Message }
 
-// Identity is an authenticated key: its ID and its group, whose Path gives the
+// Identity is an authenticated key: its ID and its group, whose PathIDs give the
 // request's group scopes.
 type Identity struct {
-	KeyID   string
-	Group   *config.Group
-	allowed config.ModelSet
+	KeyID string
+	Group *config.Group
 }
 
 // Authenticate resolves the client's key to an identity in snapshot: the
@@ -73,7 +72,7 @@ func Authenticate(snapshot *config.Snapshot, authorization, apiKey string, now t
 		return Identity{}, &Error{Code: CodeExpiredKey, Message: "This API key has expired.", KeyID: k.ID}
 	}
 
-	return Identity{KeyID: k.ID, Group: k.Group, allowed: k.AllowedModels()}, nil
+	return Identity{KeyID: k.ID, Group: k.Group}, nil
 }
 
 // KeyHash is a client key's hash as the config's keys carry it: "sha256:" and the
@@ -100,7 +99,7 @@ func bearerToken(authorization string) (string, bool) {
 // AllowedModels lists the models the identity's group path allows, sorted. The slice is
 // shared: do not modify it.
 func (id Identity) AllowedModels() []string {
-	return id.allowed.Names()
+	return id.Group.AllowedModels.Names()
 }
 
 // AuthorizeModel is the one check of model access: model must exist and be allowed
@@ -110,7 +109,7 @@ func (id Identity) AllowedModels() []string {
 func (id Identity) AuthorizeModel(model string) *Error {
 	// A group's allowed set holds only models of its snapshot, so one lookup answers
 	// both "exists" and "allowed".
-	if id.allowed.Allows(model) {
+	if id.Group.AllowedModels.Allows(model) {
 		return nil
 	}
 	return ModelNotFound(model)

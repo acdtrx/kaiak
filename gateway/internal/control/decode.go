@@ -44,19 +44,9 @@ func DecodeUsageRecord(data []byte) (accounting.UsageRecord, error) {
 		func(r *ruleCheck, tree any) { r.usageRecord(tree, "") }, decodeTyped[accounting.UsageRecord])
 }
 
-// DecodeUsageBatch reads the body of POST /v1/usage.
-func DecodeUsageBatch(data []byte) (UsageBatch, error) {
-	return decode("usage batch", data, (*walker).usageBatch, (*ruleCheck).usageBatch, decodeTyped[UsageBatch])
-}
-
 // DecodeUsageAck reads the answer to POST /v1/usage.
 func DecodeUsageAck(data []byte) (UsageAck, error) {
 	return decode("usage ack", data, (*walker).usageAck, func(*ruleCheck, any) {}, decodeTyped[UsageAck])
-}
-
-// DecodeStatus reads the body of POST /v1/status.
-func DecodeStatus(data []byte) (Status, error) {
-	return decode("status", data, (*walker).status, (*ruleCheck).status, decodeTyped[Status])
 }
 
 func decode[T any](

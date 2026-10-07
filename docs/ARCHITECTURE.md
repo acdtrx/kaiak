@@ -143,8 +143,8 @@ enforce the boundaries.
   request, plus one per retried attempt whose request reached the backend and got
   no answer — clamps them to the
   protocol's bound, hands each in control-plane mode to the control client's batch
-  sender (the batcher, which tags it with its batch's usage generation), then to a
-  fan-out of sinks (usage metrics).
+  sender (the batcher, which tags it with its batch's usage generation), then to the
+  usage metrics.
 - `limits` — a sliding-minute counter per per-minute limit, and a UTC-hour token count
   and a UTC-month cost count for global and every group whether limited or not, kept
   until its window ends whatever the config, each limit a check over its scope's
@@ -161,8 +161,9 @@ enforce the boundaries.
   protocol: `cmd/kaiak` converts the client's totals updates and contact.
 - `metrics` — a small registry (counters, gauges, fixed-bucket histograms, gauges and
   counters read at scrape time) and its Prometheus text exposition, served on the admin port; the
-  ops metrics the `server` pipeline feeds when a request is over; the usage-metrics
-  sink on accounting's fan-out. The registry is built in `cmd/kaiak` and passed in.
+  ops metrics the `server` pipeline feeds when a request is over; the usage metrics
+  accounting hands each settled record. The registry is built in `cmd/kaiak` and
+  passed in.
 - `clip` — bounds a client-controlled string (path, method, model name) before it is
   logged or echoed in an error message; `server` and `auth` use it.
 - `logattr` — log attribute values in the units the log vocabulary fixes (a duration
@@ -190,7 +191,8 @@ enforce the boundaries.
 - `control` — the only code that talks to the control plane (a capability fence, as
   `provider` is for backends: no other package opens a connection to it). The
   control-protocol messages: Go types, strict decoding and validation against
-  `protocol/schema/`, fixture parity with `kaiak-control` (the usage record is
+  `protocol/schema/` of what it receives (what it only sends, its tests validate),
+  fixture parity with `kaiak-control` (the usage record is
   `accounting`'s type). The client: boot from the stream's first config or, with the
   control plane unavailable, the seed config — else an error `cmd/kaiak` exits on; the
   config stream (read with `sse`) with reconnect backoff, every config handed to

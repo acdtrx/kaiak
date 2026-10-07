@@ -51,6 +51,9 @@ func TestBackendTypesAreTheSchemaEnum(t *testing.T) {
 // none of those fields. Each default is read where the snapshot holds it: the queue
 // and retry settings through minimal.json's one model, which inherits them from
 // global, the backend timeouts through its one backend, disabled through its one key.
+// minimalKeyHash is the hash of minimal.json's one key, k-me.
+const minimalKeyHash = "sha256:59f8f6709d858b919a10541cd215a0de7b4299bbc6c11a2e0bf4ca03ec6df717"
+
 func TestSchemaDefaultsAreResolved(t *testing.T) {
 	ms := func(d time.Duration) int64 { return d.Milliseconds() }
 	resolved := map[string]func(s *Snapshot) any{
@@ -71,7 +74,7 @@ func TestSchemaDefaultsAreResolved(t *testing.T) {
 		"/$defs/backend/properties/first_event_timeout_ms":              func(s *Snapshot) any { return ms(s.Backends["local"].FirstEventTimeout) },
 		"/$defs/backend/properties/response_timeout_ms":                 func(s *Snapshot) any { return ms(s.Backends["local"].ResponseTimeout) },
 		"/$defs/backend/properties/stall_timeout_ms":                    func(s *Snapshot) any { return ms(s.Backends["local"].StallTimeout) },
-		"/$defs/key/properties/disabled":                                func(s *Snapshot) any { return s.Keys["k-me"].Disabled },
+		"/$defs/key/properties/disabled":                                func(s *Snapshot) any { k, _ := s.KeyByHash(minimalKeyHash); return k.Disabled },
 	}
 
 	defaults := make(map[string]any)

@@ -369,14 +369,16 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 	router := routing.New(routing.Options{Probe: providers.Probe, Observer: circuits, Logger: logger})
 	ops := metrics.NewOps(registry, router, holder)
 	modelChecker := routing.NewModelChecker(providers.Probe, provider.ListsModels, logger)
+	missingEndpoints := server.NewMissingEndpoints()
 	// Every applied config sets the backend caps routing enforces and the backends
-	// whose connection pools are kept, and has its deployments' models checked in
-	// the background.
+	// whose connection pools and missing endpoints are kept, and has its deployments'
+	// models checked in the background.
 	applier := config.NewApplier(holder, logger, lookupEnv, func(load config.Load) {
 		if load.Applied {
 			router.Configure(holder.Current())
 			circuits.PrepareSeries(holder.Current())
 			providers.Retain(holder.Current().Backends)
+			missingEndpoints.Retain(holder.Current().Backends)
 			modelChecker.Check(holder.Current())
 			if bodyCap := holder.Current().MaxRequestBodyBytes; bodyCap > s.bodyMemory {
 				logger.Warn("max_request_body_bytes exceeds the body budget: bodies above the budget are refused as too large",
@@ -447,18 +449,16 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 
 	// Usage records go to the control client's batch sender (control-plane mode), which
 	// tags each with its batch's generation, then to the usage metrics. Local limits
-	// settle from the request's own records in a request finisher, so they are not a
-	// sink.
-	usageMetrics := metrics.NewUsageSink(registry, holder)
-	recorderOpts := accounting.RecorderOptions{Instance: s.instanceID, Sink: usageMetrics, Logger: logger,
-		OutOfRange: usageMetrics.RecordClamped}
+	// settle from the request's own records in a request finisher.
+	recorderOpts := accounting.RecorderOptions{Instance: s.instanceID, Metrics: metrics.NewUsageMetrics(registry, holder),
+		Logger: logger}
 	if client != nil {
 		recorderOpts.Batcher = client
 	}
 	recorder := accounting.NewRecorder(recorderOpts)
 	drain := server.NewDrain()
-	apiHandler := server.NewAPI(holder, drain, server.NewBodyBudget(s.bodyMemory), providers, limiter, router, recorder,
-		ops, logger)
+	apiHandler := server.NewAPI(holder, drain, server.NewBodyBudget(s.bodyMemory), providers, limiter, router,
+		missingEndpoints, recorder, ops, logger)
 	api, err := server.Listen("api", s.listenAddr, apiHandler, s.client, logger)
 	if err != nil {
 		return err

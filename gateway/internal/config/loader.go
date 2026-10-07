@@ -72,7 +72,7 @@ func (a *Applier) Apply(trigger string, data []byte, attrs ...any) (*Snapshot, e
 	load := Load{Trigger: trigger, Applied: true, Document: true, Bytes: len(data), Duration: time.Since(start)}
 	a.logger.Info("config applied", append(append([]any{"kaiak.trigger", trigger}, attrs...),
 		"kaiak.config.backends", len(snapshot.Backends), "kaiak.config.models", len(snapshot.Models),
-		"kaiak.config.keys", len(snapshot.Keys), "kaiak.config.size", load.Bytes,
+		"kaiak.config.keys", len(snapshot.keysByHash), "kaiak.config.size", load.Bytes,
 		logattr.SecondsMicro("kaiak.duration", load.Duration))...)
 	a.report(load)
 	return snapshot, nil

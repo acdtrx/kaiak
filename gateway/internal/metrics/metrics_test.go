@@ -156,22 +156,22 @@ func TestConcurrentUpdatesAndWrites(t *testing.T) {
 	}
 }
 
-func TestUsageSinkCountsRecords(t *testing.T) {
+func TestUsageMetricsCountsRecords(t *testing.T) {
 	holder := &config.Holder{}
 	holder.Swap(&config.Snapshot{KeyIDLabel: true, GroupLabel: true})
 	reg := NewRegistry()
-	sink := NewUsageSink(reg, holder)
+	usage := NewUsageMetrics(reg, holder)
 	units := accounting.Units{config.UnitTokensIn: 60, config.UnitTokensCached: 40,
 		config.UnitTokensCacheWrite: 30, config.UnitTokensOut: 10, config.UnitTokensReasoning: 4}
 	rec := accounting.UsageRecord{KeyID: "k-eval", Groups: []string{"research", "rag", "rag-prod", "eval"},
 		Model: "pair", Deployment: accounting.Deployment{Backend: "local", Model: "pair-a"},
 		Units: units, CostNanoUSD: 120_000}
-	sink.Record(rec)
-	sink.Record(rec)
+	usage.Record(rec)
+	usage.Record(rec)
 	// A key on a top-level group: that group is its own root_group.
 	topLevel := accounting.UsageRecord{KeyID: "k-ann", Groups: []string{"ann"}, Model: "open",
 		Deployment: accounting.Deployment{Backend: "local", Model: "open"}, Units: units, Partial: true}
-	sink.Record(topLevel)
+	usage.Record(topLevel)
 
 	out := text(reg)
 	wl := `key_group="eval",root_group="research",key_id="k-eval",model="pair",status="complete"`
@@ -197,7 +197,7 @@ func TestUsageSinkCountsRecords(t *testing.T) {
 
 	// Switched off: new records carry no key_id label.
 	holder.Swap(&config.Snapshot{KeyIDLabel: false, GroupLabel: true})
-	sink.Record(topLevel)
+	usage.Record(topLevel)
 	out = text(reg)
 	if want := `kaiak_usage_records_total{key_group="ann",root_group="ann",model="open",status="partial"} 1`; !strings.Contains(out, want+"\n") {
 		t.Errorf("missing %q in:\n%s", want, out)
@@ -206,7 +206,7 @@ func TestUsageSinkCountsRecords(t *testing.T) {
 	// group_label switched off: new records carry no key_group label; root_group
 	// stays; series written before stay.
 	holder.Swap(&config.Snapshot{KeyIDLabel: true, GroupLabel: false})
-	sink.Record(rec)
+	usage.Record(rec)
 	out = text(reg)
 	for _, want := range []string{
 		`kaiak_usage_records_total{root_group="research",key_id="k-eval",model="pair",status="complete"} 1`,

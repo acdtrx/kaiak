@@ -17,7 +17,6 @@ var (
 	configHashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	requestIDPattern  = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 	amountPattern     = regexp.MustCompile(`^(0|[1-9][0-9]{0,17})$`)
-	codePattern       = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 	hourStartPattern  = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:00:00Z$`)
 	monthStartPattern = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-01T00:00:00Z$`)
 )
@@ -28,8 +27,6 @@ const MaxBatchRecords = 500
 var (
 	// Limit types whose windows the control plane counts; per-minute limits stay local.
 	totalsLimitTypes = []string{string(config.LimitTokensPerHour), string(config.LimitUSDPerMonth)}
-	states           = []string{string(StateStarting), string(StateReady), string(StateDraining)}
-	circuits         = []string{string(CircuitClosed), string(CircuitOpen), string(CircuitHalfOpen)}
 	tokenUnits       = []config.Unit{
 		config.UnitTokensIn, config.UnitTokensCached, config.UnitTokensCacheWrite, config.UnitTokensOut, config.UnitTokensReasoning,
 	}
@@ -159,66 +156,8 @@ func (w *walker) batchID(v any, path string) {
 	})
 }
 
-func (w *walker) usageBatch(v any, path string) {
-	w.Object(v, path, map[string]schemacheck.Field{
-		"batch":   {Required: true, Check: w.batchID},
-		"records": {Required: true, Check: w.ArrayOf(1, MaxBatchRecords, false, w.usageRecord)},
-	})
-}
-
 func (w *walker) usageAck(v any, path string) {
 	w.Object(v, path, map[string]schemacheck.Field{
 		"batch": {Required: true, Check: w.batchID},
 	})
-}
-
-func (w *walker) status(v any, path string) {
-	w.Object(v, path, map[string]schemacheck.Field{
-		"instance":            {Required: true, Check: w.instance()},
-		"protocol_version":    {Required: true, Check: w.Const(ProtocolVersion)},
-		"state":               {Required: true, Check: w.Enum(states)},
-		"started_at":          {Required: true, Check: w.timestamp()},
-		"applied_config_hash": {Required: true, Check: schemacheck.Nullable(w.configHash())},
-		"last_rejection": {Required: true, Check: schemacheck.Nullable(func(v any, path string) {
-			w.Object(v, path, map[string]schemacheck.Field{
-				"config_hash": {Required: true, Check: w.configHash()},
-				"codes": {Required: true, Check: w.ArrayOf(1, 0, true,
-					w.StringMatching(codePattern, "a lowercase code, words joined by '-'"))},
-			})
-		})},
-		"backends": {Required: true, Check: w.CollectionOf(config.IsID, "a backend ID", w.backendStatus)},
-		"models": {Required: true, Check: w.CollectionOf(config.IsPublicModelName, publicModelNameWhat,
-			func(v any, path string) {
-				w.Object(v, path, map[string]schemacheck.Field{
-					"queued": {Required: true, Check: w.count()},
-				})
-			})},
-	})
-}
-
-func (w *walker) backendStatus(v any, path string) {
-	w.Object(v, path, map[string]schemacheck.Field{
-		"in_flight":     {Required: true, Check: w.count()},
-		"max_in_flight": {Check: w.IntegerBetween(1, schemacheck.MaxSafeInteger)},
-		"deployments":   {Required: true, Check: w.CollectionOf(config.IsBackendModelName, "a backend model name", w.deploymentStatus)},
-	})
-}
-
-func (w *walker) deploymentStatus(v any, path string) {
-	m := w.Object(v, path, map[string]schemacheck.Field{
-		"circuit":   {Required: true, Check: w.Enum(circuits)},
-		"opened_at": {Check: w.timestamp()},
-	})
-	if m == nil {
-		return
-	}
-	_, hasOpenedAt := m["opened_at"]
-	circuit, _ := m["circuit"].(string)
-	notClosed := circuit == string(CircuitOpen) || circuit == string(CircuitHalfOpen)
-	switch {
-	case notClosed && !hasOpenedAt:
-		w.Fail(path, "an open or half-open circuit needs opened_at")
-	case !notClosed && hasOpenedAt:
-		w.Fail(schemacheck.Pointer(path, "opened_at"), "is set only while the circuit is open or half-open")
-	}
 }
