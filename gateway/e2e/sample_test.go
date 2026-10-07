@@ -21,7 +21,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -518,11 +517,8 @@ func requireSample(t *testing.T, root string) string {
 
 // sampleProcess is one running sample control plane.
 type sampleProcess struct {
-	cmd    *exec.Cmd
-	logs   *logLines
+	process
 	url    string
-	exited chan struct{}
-	err    error
 	totals *totalsWatch
 	// replicas are the protocol replicas' base URLs: further cores over the sample's
 	// one store (KAIAK_SAMPLE_PROTOCOL_PORTS).
@@ -542,50 +538,13 @@ func startSampleReplicas(t *testing.T, node, root, configFile, token string, rep
 	t.Helper()
 	cmd := exec.Command(node, "src/main.ts")
 	cmd.Dir = filepath.Join(root, "control", "sample")
-	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "KAIAK_") && !strings.HasPrefix(kv, "INIT_CWD=") {
-			cmd.Env = append(cmd.Env, kv)
-		}
-	}
-	cmd.Env = append(cmd.Env, "KAIAK_SAMPLE_CONFIG="+configFile, "KAIAK_CONTROL_TOKEN="+token,
-		"KAIAK_SAMPLE_LISTEN=127.0.0.1:0", "KAIAK_LOG_FORMAT=json")
+	env := []string{"KAIAK_SAMPLE_CONFIG=" + configFile, "KAIAK_CONTROL_TOKEN=" + token,
+		"KAIAK_SAMPLE_LISTEN=127.0.0.1:0", "KAIAK_LOG_FORMAT=json"}
 	if replicas > 0 {
-		cmd.Env = append(cmd.Env, "KAIAK_SAMPLE_PROTOCOL_PORTS="+strings.Repeat("0,", replicas-1)+"0")
+		env = append(env, "KAIAK_SAMPLE_PROTOCOL_PORTS="+strings.Repeat("0,", replicas-1)+"0")
 	}
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmd.Stdout, cmd.Stderr = w, w // the log on stdout; a startup failure on stderr
-	s := &sampleProcess{cmd: cmd, logs: newLogLines(), exited: make(chan struct{})}
-	err = cmd.Start()
-	w.Close()
-	if err != nil {
-		r.Close()
-		t.Fatal(err)
-	}
-	readDone := make(chan struct{})
-	go func() {
-		s.logs.read(r)
-		r.Close()
-		close(readDone)
-	}()
-	go func() {
-		s.err = cmd.Wait()
-		<-readDone
-		close(s.exited)
-	}()
-	t.Cleanup(func() {
-		select {
-		case <-s.exited:
-		default:
-			_ = cmd.Process.Kill()
-			<-s.exited
-		}
-		if t.Failed() {
-			t.Logf("sample log:\n%s", s.logs.text())
-		}
-	})
+	s := &sampleProcess{}
+	s.start(t, "sample", cmd, env) // the log on stdout; a startup failure on stderr
 	s.url = fmt.Sprint(s.logs.wait(t, "the sample's address", func(entry map[string]any) bool {
 		m, _ := entry["msg"].(string)
 		return strings.HasPrefix(m, "sample control plane listening on ") && entry["url"] != nil
@@ -601,31 +560,13 @@ func startSampleReplicas(t *testing.T, node, root, configFile, token string, rep
 	return s
 }
 
-// stop sends SIGTERM and requires a clean exit.
-func (s *sampleProcess) stop(t *testing.T) {
-	t.Helper()
-	if err := s.cmd.Process.Signal(syscall.SIGTERM); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-s.exited:
-	case <-time.After(waitLimit):
-		t.Fatalf("the sample did not exit within %s", waitLimit)
-	}
-	if s.err != nil {
-		t.Fatalf("the sample exited with %v", s.err)
-	}
-}
-
 // totalsWatch follows the sample's totals the way a gateway does: a config stream
 // under an instance name of its own. A stream alone does not join the live set (only
 // status reports do), so the observer changes no share.
 type totalsWatch struct {
 	mu      sync.Mutex
 	latest  *control.Totals
-	changed chan struct{} // closed and replaced on every totals event and at the end
-	ended   bool
-	err     error // why the stream ended
+	changes *changes // notified on every totals event and at the top of each hour, ended with the stream
 }
 
 // observerInstance names the test's stream to the control plane.
@@ -657,16 +598,34 @@ func watchTotals(t *testing.T, baseURL, token string) *totalsWatch {
 		cancel()
 		t.Fatalf("totals stream: %d", resp.StatusCode)
 	}
-	w := &totalsWatch{changed: make(chan struct{})}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
+	w := &totalsWatch{changes: newChanges()}
+	var running sync.WaitGroup
+	running.Go(func() {
 		defer resp.Body.Close()
 		w.read(sse.NewReader(resp.Body, 1<<20))
-	}()
+	})
+	// A wait's match may read the clock (servedTokens.counted checks the current
+	// hour), and the top of the hour brings no push of its own: it wakes the waits.
+	running.Go(func() {
+		for {
+			nextHour := time.NewTimer(time.Until(time.Now().UTC().Truncate(time.Hour).Add(time.Hour)))
+			select {
+			case <-nextHour.C:
+				w.changes.notify()
+			case <-ctx.Done():
+				nextHour.Stop()
+				return
+			}
+		}
+	})
 	t.Cleanup(func() {
 		cancel()
-		<-done
+		running.Wait()
+		if t.Failed() {
+			w.mu.Lock()
+			t.Logf("latest totals: %+v", w.latest)
+			w.mu.Unlock()
+		}
 	})
 	return w
 }
@@ -691,43 +650,28 @@ func (w *totalsWatch) read(events *sse.Reader) {
 			totals.Windows = mergeWindows(w.latest.Windows, totals.Windows)
 		}
 		w.latest = &totals
-		close(w.changed)
-		w.changed = make(chan struct{})
 		w.mu.Unlock()
+		w.changes.notify()
 	}
-	w.mu.Lock()
-	w.ended, w.err = true, err
-	close(w.changed)
-	w.mu.Unlock()
+	w.changes.end(fmt.Sprintf("the totals stream ended (%v)", err))
 }
 
 // wait returns the latest totals once match accepts them, waiting for further totals
 // events up to limit.
 func (w *totalsWatch) wait(t *testing.T, what string, limit time.Duration, match func(control.Totals) bool) control.Totals {
 	t.Helper()
-	deadline := time.NewTimer(limit)
-	defer deadline.Stop()
-	for {
+	var latest control.Totals
+	w.changes.wait(t, "totals: "+what, limit, func() bool {
 		w.mu.Lock()
-		latest, changed, ended, err := w.latest, w.changed, w.ended, w.err
+		current := w.latest // replaced on every event, never changed in place
 		w.mu.Unlock()
-		switch {
-		case latest != nil && match(*latest):
-			return *latest
-		case ended:
-			t.Fatalf("totals stream ended (%v) before %s", err, what)
+		if current == nil {
+			return false
 		}
-		// A match may read the clock (servedTokens.counted checks the current hour),
-		// and the top of the hour brings no push of its own: look again then too.
-		nextHour := time.NewTimer(time.Until(time.Now().UTC().Truncate(time.Hour).Add(time.Hour)))
-		select {
-		case <-changed:
-			nextHour.Stop()
-		case <-nextHour.C:
-		case <-deadline.C:
-			t.Fatalf("totals: %s not seen within %s; latest %+v", what, limit, latest)
-		}
-	}
+		latest = *current
+		return match(latest)
+	})
+	return latest
 }
 
 // answerUsage is the part of an answer's usage a token limit reads.
@@ -799,8 +743,6 @@ func (s *servedTokens) counted(totals control.Totals) bool {
 	return used >= sure && used <= sure+edge
 }
 
-// used is the window's used amount of group's limit (global: "") of type typ; 0 when
-// the totals list no such window.
 // mergeWindows is the windows of earlier totals with those of a later changes-only
 // message replacing theirs by scope and type (CONTROL-PROTOCOL.md, Config stream →
 // Totals).
@@ -822,6 +764,8 @@ func mergeWindows(earlier, changed []control.TotalsWindow) []control.TotalsWindo
 	return out
 }
 
+// used is the window's used amount of group's limit (global: "") of type typ; 0 when
+// the totals list no such window.
 func used(totals control.Totals, group string, typ config.LimitType) int64 {
 	for _, w := range totals.Windows {
 		if w.Group == group && w.Type == typ {
@@ -829,24 +773,4 @@ func used(totals control.Totals, group string, typ config.LimitType) int64 {
 		}
 	}
 	return 0
-}
-
-// poll calls check until it returns true, up to limit: state inside another process
-// with no event to wait on.
-func poll(limit time.Duration, check func() bool) bool {
-	deadline := time.Now().Add(limit)
-	for !check() {
-		if time.Now().After(deadline) {
-			return false
-		}
-		time.Sleep(metricPoll)
-	}
-	return true
-}
-
-func pollUntil(t *testing.T, what string, limit time.Duration, check func() bool) {
-	t.Helper()
-	if !poll(limit, check) {
-		t.Fatalf("%s: not seen within %s", what, limit)
-	}
 }

@@ -16,18 +16,6 @@ import (
 	"kaiak/internal/fakecontrol"
 )
 
-// find returns the first line matching match logged so far, without waiting.
-func (l *logLines) find(match func(map[string]any) bool) (map[string]any, bool) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	for _, entry := range l.lines {
-		if match(entry) {
-			return entry, true
-		}
-	}
-	return nil, false
-}
-
 // spentBudgetControlPlane is a control plane serving testConfig whose group budgeted
 // has spent its budget (0.0001 USD) this month.
 func spentBudgetControlPlane(t *testing.T, backendURL, evalHash, annHash string) *fakecontrol.Server {
@@ -88,7 +76,7 @@ func TestReadinessWaitsForTheFirstTotals(t *testing.T) {
 	cp := spentBudgetControlPlane(t, backend.URL(), evalHash, annHash)
 	cp.HoldTotalsOnConnect(true)
 
-	g := startProcess(t, "", controlEnv(cp.URL(), startupToken))
+	g := startKaiak(t, "", controlEnv(cp.URL(), startupToken))
 	select {
 	case <-cp.Connected():
 	case <-time.After(waitLimit):

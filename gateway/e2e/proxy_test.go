@@ -36,11 +36,9 @@ type controlProxy struct {
 	dropFor  string   // instance whose next usage answer is dropped; empty for none
 	dropped  chan int // the status of each dropped answer
 
-	statuses       []forwardedStatus
-	statusesChange chan struct{} // closed and replaced on every forwarded status
-
-	records       map[string]accounting.UsageRecord // by request ID, from accepted batches
-	recordsChange chan struct{}                     // closed and replaced on every accepted batch
+	statuses []forwardedStatus
+	records  map[string]accounting.UsageRecord // by request ID, from accepted batches
+	changes  *changes                          // notified on every forwarded status and accepted batch
 }
 
 // forwardedStatus is one POST /v1/status the proxy forwarded, and the answer.
@@ -55,8 +53,8 @@ type upstreamKey struct{}
 // newControlProxy starts the proxy with no upstream; it is closed at test cleanup.
 func newControlProxy(t *testing.T) *controlProxy {
 	t.Helper()
-	p := &controlProxy{transport: &http.Transport{}, dropped: make(chan int, 1), statusesChange: make(chan struct{}),
-		records: make(map[string]accounting.UsageRecord), recordsChange: make(chan struct{})}
+	p := &controlProxy{transport: &http.Transport{}, dropped: make(chan int, 1),
+		records: make(map[string]accounting.UsageRecord), changes: newChanges()}
 	p.forward = &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(pr.In.Context().Value(upstreamKey{}).(*url.URL))
@@ -160,9 +158,8 @@ func (p *controlProxy) forwardStatus(w http.ResponseWriter, r *http.Request) {
 	p.forward.ServeHTTP(rec, r)
 	p.mu.Lock()
 	p.statuses = append(p.statuses, forwardedStatus{instance: r.Header.Get("Kaiak-Instance"), body: body, answer: rec.status})
-	close(p.statusesChange)
-	p.statusesChange = make(chan struct{})
 	p.mu.Unlock()
+	p.changes.notify()
 }
 
 // forwardUsage forwards a usage batch and, when the control plane accepted it (2xx),
@@ -184,9 +181,8 @@ func (p *controlProxy) forwardUsage(w http.ResponseWriter, r *http.Request) {
 	for _, record := range batch.Records {
 		p.records[record.RequestID] = record
 	}
-	close(p.recordsChange)
-	p.recordsChange = make(chan struct{})
 	p.mu.Unlock()
+	p.changes.notify()
 }
 
 // record is the usage record the control plane accepted for a request ID, if any.
@@ -201,22 +197,13 @@ func (p *controlProxy) record(requestID string) (accounting.UsageRecord, bool) {
 // accepted; it waits up to limit.
 func (p *controlProxy) waitRecord(t *testing.T, requestID string, limit time.Duration) accounting.UsageRecord {
 	t.Helper()
-	deadline := time.NewTimer(limit)
-	defer deadline.Stop()
-	for {
-		p.mu.Lock()
-		record, ok := p.records[requestID]
-		changed := p.recordsChange
-		p.mu.Unlock()
-		if ok {
-			return record
-		}
-		select {
-		case <-changed:
-		case <-deadline.C:
-			t.Fatalf("no accepted usage record for request %s within %s", requestID, limit)
-		}
-	}
+	var record accounting.UsageRecord
+	p.changes.wait(t, "an accepted usage record for request "+requestID, limit, func() bool {
+		var ok bool
+		record, ok = p.record(requestID)
+		return ok
+	})
+	return record
 }
 
 // statusMark is the number of status reports forwarded so far: waitStatus from it
@@ -231,12 +218,11 @@ func (p *controlProxy) statusMark() int {
 // accepted by the control plane (2xx) and accepted by match; it waits up to limit.
 func (p *controlProxy) waitStatus(t *testing.T, what, instance string, mark int, limit time.Duration, match func(control.Status) bool) control.Status {
 	t.Helper()
-	deadline := time.NewTimer(limit)
-	defer deadline.Stop()
+	var found control.Status
 	next := mark
-	for {
+	p.changes.wait(t, "an accepted status report from "+instance+" showing "+what, limit, func() bool {
 		p.mu.Lock()
-		seen, changed := p.statuses[next:], p.statusesChange
+		seen := p.statuses[next:]
 		next = len(p.statuses)
 		p.mu.Unlock()
 		for _, fs := range seen {
@@ -248,15 +234,13 @@ func (p *controlProxy) waitStatus(t *testing.T, what, instance string, mark int,
 				t.Fatalf("%s's status report is not a status: %v\n%s", instance, err, fs.body)
 			}
 			if match(st) {
-				return st
+				found = st
+				return true
 			}
 		}
-		select {
-		case <-changed:
-		case <-deadline.C:
-			t.Fatalf("no accepted status report from %s showing %s within %s", instance, what, limit)
-		}
-	}
+		return false
+	})
+	return found
 }
 
 // answerRecorder notes the status a handler answers with.

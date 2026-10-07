@@ -9,11 +9,9 @@ package e2e
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -53,31 +51,6 @@ func wantEmpty(t *testing.T, dir string) {
 	if len(entries) > 0 {
 		t.Errorf("%s holds %d entries, want none", dir, len(entries))
 	}
-}
-
-// exitCode waits for g to exit and returns its exit code (0 when it succeeded).
-func (g *gateway) exitCode(t *testing.T, within time.Duration) int {
-	t.Helper()
-	select {
-	case <-g.exited:
-	case <-time.After(within):
-		t.Fatalf("gateway did not exit within %s", within)
-	}
-	var exit *exec.ExitError
-	switch {
-	case g.err == nil:
-		return 0
-	case errors.As(g.err, &exit):
-		return exit.ExitCode()
-	}
-	t.Fatalf("gateway ended with %v", g.err)
-	return 0
-}
-
-// exitError returns the error the gateway logged as it stopped with an error.
-func (g *gateway) exitError(t *testing.T) string {
-	t.Helper()
-	return g.logs.wait(t, "the exit error", msg("kaiak stopped with an error"))["exception.message"].(string)
 }
 
 // freeConfig is testConfig without its priced models: what a seed may hold.
@@ -142,7 +115,7 @@ func TestNoConfigAtBootExits(t *testing.T) {
 	cp := fakecontrol.New("t")
 	cp.Close()
 	started := time.Now()
-	g := startProcess(t, readOnlyDir(t), append(minimalControlEnv(cp.URL(), "t"), "KAIAK_CONTROL_BOOT_WAIT_MS=2000"))
+	g := startKaiak(t, readOnlyDir(t), append(minimalControlEnv(cp.URL(), "t"), "KAIAK_CONTROL_BOOT_WAIT_MS=2000"))
 	if code := g.exitCode(t, waitLimit); code == 0 {
 		t.Fatal("exited 0 with no config")
 	}
@@ -185,7 +158,7 @@ func TestPricedSeedFailsTheStart(t *testing.T) {
 	_, annHash := newKey()
 	seed := filepath.Join(t.TempDir(), "seed.json")
 	writeJSON(t, seed, testConfig("http://127.0.0.1:1", evalHash, annHash, ""))
-	g := startProcess(t, readOnlyDir(t), append(minimalControlEnv(cp.URL(), "t"), "KAIAK_SEED_CONFIG_FILE="+seed))
+	g := startKaiak(t, readOnlyDir(t), append(minimalControlEnv(cp.URL(), "t"), "KAIAK_SEED_CONFIG_FILE="+seed))
 	if code := g.exitCode(t, waitLimit); code == 0 {
 		t.Fatal("exited 0 with a priced seed")
 	}

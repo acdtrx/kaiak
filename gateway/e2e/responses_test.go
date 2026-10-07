@@ -3,13 +3,12 @@ package e2e
 // OpenAI Responses end to end (docs/specs/GATEWAY.md, Client API → Client APIs): one
 // gateway passes Responses requests through to a vllm, a llama-server, an openai and
 // an azure-openai backend — all on one fake backend — each at its module's URL with
-// its credential (the keys backendtypes_test.go's variables name), streamed and not, always with store: false; the usage settles from
+// its credential, streamed and not, always with store: false; the usage settles from
 // the response's report; the stateful parts of the API, hosted tools and limits are
 // refused in OpenAI's shape; token counting reaches only the types that have it; and a
 // server lacking the endpoint is failed over without opening its circuit.
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -19,70 +18,52 @@ import (
 	"kaiak/internal/fakebackend"
 )
 
-// responsesBackends are the scenario's backends serving Responses: name, type, the
-// public model deployed on it alone, the backend-side model, and what its requests
-// carry.
-var responsesBackends = []struct {
-	name, typ, model, deployed, path, header, credential string
-	forcesTier, countsTokens                             bool
-}{
-	{name: "vl", typ: "vllm", model: "resp-vllm", deployed: "Qwen/Qwen3-8B", path: "/v1/responses"},
-	{name: "ls", typ: "llama-server", model: "resp-llama", deployed: "qwen3-8b.gguf", path: "/v1/responses", countsTokens: true},
-	{name: "oa", typ: "openai", model: "resp-openai", deployed: "gpt-5.5-mini", path: "/v1/responses",
-		header: "Authorization", credential: "Bearer sk-e2e", forcesTier: true, countsTokens: true},
-	{name: "az", typ: "azure-openai", model: "resp-azure", deployed: "gpt-5.5-mini-dep", path: "/openai/v1/responses",
-		header: "Api-Key", credential: "e2e-azure", forcesTier: true},
+// responsesBackend is a backend of the scenario serving Responses, whether the
+// standard tier is forced on it (openai, azure-openai), and whether its type counts
+// input tokens.
+type responsesBackend struct {
+	scenarioBackend
+	forcesTier, countsTokens bool
 }
 
-// responsesConfig is a config with the responsesBackends, an anthropic backend
-// "claude" serving "claude-only", a vllm backend "old" whose server lacks the endpoint
-// and a model on it and on "vl" ("pair"), and a token limit on the tight key's group.
-func responsesConfig(backendURL, oldURL, hash string) map[string]any {
-	backends := map[string]any{
-		"claude": map[string]any{"type": "anthropic", "base_url": backendURL + "/v1", "api_key_env": anthropicKeyEnv},
-		"old":    map[string]any{"type": "vllm", "base_url": oldURL + "/v1"},
-	}
-	meta := map[string]any{"context_length": 8192,
-		"capabilities": map[string]any{"streaming": true, "tools": true, "vision": false, "reasoning": true}}
-	model := func(deployments ...map[string]any) map[string]any {
-		ds := []any{}
-		for _, d := range deployments {
-			ds = append(ds, d)
+var responsesBackends = []responsesBackend{
+	{scenarioBackend{name: "vl", typ: "vllm", model: "resp-vllm", deployed: "Qwen/Qwen3-8B"}, false, false},
+	{scenarioBackend{name: "ls", typ: "llama-server", model: "resp-llama", deployed: "qwen3-8b.gguf"}, false, true},
+	{scenarioBackend{name: "oa", typ: "openai", model: "resp-openai", deployed: "gpt-5.5-mini"}, true, true},
+	{scenarioBackend{name: "az", typ: "azure-openai", model: "resp-azure", deployed: "gpt-5.5-mini-dep"}, true, false},
+}
+
+// claudeOnly is the scenario's backend whose type does not serve Responses.
+var claudeOnly = scenarioBackend{name: "claude", typ: "anthropic", model: "claude-only", deployed: "claude-haiku-4-5"}
+
+// responsesPassthrough is a Responses request, streamed and not, asking to be stored
+// and for the auto tier: the usage settles from the response's report; the backend
+// is always sent store: false, and the tier openai and azure-openai force or else
+// the client's.
+var responsesPassthrough = passthrough[responsesBackend]{
+	path:        "/v1/responses",
+	backendPath: "/responses",
+	send:        (*gateway).post,
+	body: func(model string, c passthroughCase) map[string]any {
+		return map[string]any{"model": model, "stream": c.stream, "store": true, "service_tier": c.tier, "input": "hi"}
+	},
+	cases:     streamCases,
+	streamEnd: "event: response.completed",
+	usage: map[string]any{"gen_ai.usage.input_tokens": 30.0, "gen_ai.usage.cache_read.input_tokens": 20.0,
+		"gen_ai.usage.output_tokens": 9.0, "kaiak.usage.estimated": false, "kaiak.usage.partial": false,
+		"gen_ai.operation.name": "chat"},
+	check: func(t *testing.T, b responsesBackend, c passthroughCase, sent map[string]any, _ *fakebackend.Request) {
+		if sent["store"] != false {
+			t.Errorf("store sent %v, want false", sent["store"])
 		}
-		return map[string]any{"deployments": ds, "metadata": meta, "output_limit": map[string]any{"default": 64, "ceiling": 128}}
-	}
-	models := map[string]any{
-		"claude-only": model(map[string]any{"backend": "claude", "model": "claude-haiku-4-5"}),
-		"pair": model(map[string]any{"backend": "old", "model": "Qwen/Qwen3-8B"},
-			map[string]any{"backend": "vl", "model": "Qwen/Qwen3-8B"}),
-		"rpm": model(map[string]any{"backend": "vl", "model": "Qwen/Qwen3-8B"}),
-	}
-	for _, b := range responsesBackends {
-		entry := map[string]any{"type": b.typ, "base_url": backendURL + "/v1"}
-		switch b.typ {
-		case "openai":
-			entry["api_key_env"] = openAIKeyEnv
-		case "azure-openai":
-			entry["base_url"] = backendURL // the resource endpoint: the module adds /openai/v1/
-			entry["api_key_env"] = azureKeyEnv
+		want := c.tier
+		if b.forcesTier {
+			want = "default"
 		}
-		backends[b.name] = entry
-		models[b.model] = model(map[string]any{"backend": b.name, "model": b.deployed})
-	}
-	return map[string]any{
-		"format_version": 5,
-		"global":         map[string]any{},
-		"backends":       backends,
-		"models":         models,
-		"groups": map[string]any{
-			"w":     map[string]any{"allowed_models": []any{"*"}},
-			"tight": map[string]any{"allowed_models": []any{"rpm"}, "limits": []any{map[string]any{"type": "tokens_per_minute", "value": 10}}},
-		},
-		"keys": map[string]any{
-			"k":       map[string]any{"hash": hash, "group": "w"},
-			"k-tight": map[string]any{"hash": tightHash, "group": "tight"},
-		},
-	}
+		if sent["service_tier"] != want {
+			t.Errorf("service_tier sent %v, want %v", sent["service_tier"], want)
+		}
+	},
 }
 
 // openAIErrorCode is an OpenAI-shaped error body's code.
@@ -105,59 +86,11 @@ func TestResponses(t *testing.T) {
 	dir := t.TempDir()
 	key, hash := newKey()
 	configFile := filepath.Join(dir, "config.json")
-	writeJSON(t, configFile, responsesConfig(backend.URL(), old.URL(), hash))
-	g := startGatewayEnv(t, append(gatewayEnv(configFile),
-		openAIKeyEnv+"=sk-e2e", azureKeyEnv+"=e2e-azure", anthropicKeyEnv+"=sk-ant-e2e"))
+	writeJSON(t, configFile, apiScenarioConfig(backend.URL(), old.URL(), hash,
+		append(scenarioBackends(responsesBackends), claudeOnly)))
+	g := startGatewayEnv(t, append(gatewayEnv(configFile), backendKeysEnv()...))
 
-	for _, b := range responsesBackends {
-		for _, stream := range []bool{false, true} {
-			name := fmt.Sprintf("%s/stream=%v", b.typ, stream)
-			t.Run(name, func(t *testing.T) {
-				id := fmt.Sprintf("%s-%v", b.name, stream)
-				before := len(backend.Requests())
-				r := g.post(t, "/v1/responses", key, id, map[string]any{"model": b.model, "stream": stream,
-					"store": true, "service_tier": "auto", "input": "hi"})
-				if r.StatusCode != http.StatusOK {
-					t.Fatalf("%d %s", r.StatusCode, r.body)
-				}
-				if !strings.Contains(string(r.body), `"model":"`+b.model+`"`) || strings.Contains(string(r.body), b.deployed) {
-					t.Errorf("answer does not carry the public model name:\n%s", r.body)
-				}
-				if stream && !strings.Contains(string(r.body), "event: response.completed") {
-					t.Errorf("stream:\n%s", r.body)
-				}
-				line := g.settled(t, id)
-				if line["gen_ai.usage.input_tokens"] != 30.0 || line["gen_ai.usage.cache_read.input_tokens"] != 20.0 ||
-					line["gen_ai.usage.output_tokens"] != 9.0 || line["kaiak.usage.estimated"] != false ||
-					line["kaiak.usage.partial"] != false || line["gen_ai.operation.name"] != "chat" ||
-					line["kaiak.backend.id"] != b.name {
-					t.Errorf("log line %v", line)
-				}
-				reqs := backend.Requests()
-				if len(reqs) != before+1 {
-					t.Fatalf("backend got %d requests, want 1", len(reqs)-before)
-				}
-				got := reqs[len(reqs)-1]
-				var sent map[string]any
-				if err := json.Unmarshal(got.Body, &sent); err != nil {
-					t.Fatal(err)
-				}
-				if got.Path != b.path || sent["model"] != b.deployed || sent["store"] != false {
-					t.Errorf("backend got %s for model %v, store %v; want %s for %s, store false",
-						got.Path, sent["model"], sent["store"], b.path, b.deployed)
-				}
-				if b.header != "" && got.Header.Get(b.header) != b.credential {
-					t.Errorf("%s header %q, want %q", b.header, got.Header.Get(b.header), b.credential)
-				}
-				if strings.Contains(got.Header.Get("Authorization"), key) {
-					t.Error("the client's key reached the backend")
-				}
-				if want := map[bool]any{true: "default", false: "auto"}[b.forcesTier]; sent["service_tier"] != want {
-					t.Errorf("service_tier sent %v, want %v", sent["service_tier"], want)
-				}
-			})
-		}
-	}
+	responsesPassthrough.run(t, g, backend, key, responsesBackends)
 
 	t.Run("input_tokens", func(t *testing.T) {
 		for _, b := range responsesBackends {
