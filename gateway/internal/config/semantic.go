@@ -45,7 +45,7 @@ func checkSemantics(doc *document) []Issue {
 		}
 	}
 	c.tree()
-	c.effectiveLimits()
+	c.counters()
 
 	keyByHash := make(map[string]string, len(doc.Keys))
 	for _, id := range slices.Sorted(maps.Keys(doc.Keys)) {
@@ -207,46 +207,50 @@ func (c *semanticCheck) tree() {
 	}
 }
 
-// effectiveLimits checks the effective limits of global and every group add up to at
-// most MaxEffectiveLimits.
-func (c *semanticCheck) effectiveLimits() {
-	if total := countEffectiveLimits(c.doc); total > MaxEffectiveLimits {
-		c.report(CodeEffectiveLimitsExceeded, "",
-			fmt.Sprintf("%d effective limits: global and the groups hold at most %d", total, MaxEffectiveLimits))
+// counters checks the counters the config allocates on every gateway come to at most
+// MaxCounters.
+func (c *semanticCheck) counters() {
+	if total := countCounters(c.doc); total > MaxCounters {
+		c.report(CodeCountersExceeded, "",
+			fmt.Sprintf("%d counters (two for global and for every group, one per per-minute limit): a config allocates at most %d",
+				total, MaxCounters))
 	}
 }
 
-// countEffectiveLimits counts the effective limits of global and every group without
-// building them: a group's count is what mergeLimits makes of its parent's
-// child_defaults limits and its own — every default, plus each own limit no default
-// takes (a default takes the first own limit of its identity). Only the direct parent
-// is read, so the count holds whatever tree() finds; a group whose parent has no entry
+// countCounters counts the counters a config allocates without building them: an hour
+// and a month counter for global and every group, limited or not, and one per
+// effective per-minute limit — a group's own per-minute types, plus each type its
+// parent's child_defaults give that it has no own limit of. Only the direct parent is
+// read, so the count holds whatever tree() finds; a group whose parent has no entry
 // counts its own limits alone.
-func countEffectiveLimits(doc *document) int {
-	total := len(doc.Global.Limits)
-	// defaultIdentities is each parent's child_defaults limit identities, built once.
-	defaultIdentities := map[string]map[string]bool{}
+func countCounters(doc *document) int {
+	perMinute := func(limits []limitDoc) map[string]bool {
+		types := map[string]bool{}
+		for _, l := range limits {
+			if l.Type == string(LimitRequestsPerMinute) || l.Type == string(LimitTokensPerMinute) {
+				types[l.Type] = true
+			}
+		}
+		return types
+	}
+	// defaults is each parent's child_defaults per-minute types, built once.
+	defaults := map[string]map[string]bool{}
+	total := 2 + len(perMinute(doc.Global.Limits))
 	for _, group := range doc.Groups {
-		total += len(group.Limits)
+		own := perMinute(group.Limits)
+		total += 2 + len(own)
 		parent, ok := doc.Groups[group.Parent]
-		if !ok || parent.ChildDefaults == nil || len(parent.ChildDefaults.Limits) == 0 {
+		if !ok || parent.ChildDefaults == nil {
 			continue
 		}
-		defaults := parent.ChildDefaults.Limits
-		identities, built := defaultIdentities[group.Parent]
+		types, built := defaults[group.Parent]
 		if !built {
-			identities = make(map[string]bool, len(defaults))
-			for _, d := range defaults {
-				identities[d.Type] = true
-			}
-			defaultIdentities[group.Parent] = identities
+			types = perMinute(parent.ChildDefaults.Limits)
+			defaults[group.Parent] = types
 		}
-		total += len(defaults)
-		taken := make(map[string]bool, len(group.Limits))
-		for _, own := range group.Limits {
-			if identity := own.Type; identities[identity] && !taken[identity] {
-				taken[identity] = true
-				total--
+		for typ := range types {
+			if !own[typ] {
+				total++
 			}
 		}
 	}

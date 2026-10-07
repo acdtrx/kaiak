@@ -128,11 +128,11 @@ func TestCountedThroughOfAnotherEpoch(t *testing.T) {
 // before the current one; acknowledged batches it covers are forgotten.
 func TestCountedThroughCoversBatchesInSendOrder(t *testing.T) {
 	const restored, current = "00000000000000000000000000000001", "00000000000000000000000000000002"
-	future := time.Now().Add(time.Hour)
 	u := &usageSender{
+		store: newMemoryStore(),
 		acked: []ackedBatch{
-			{id: BatchID{Epoch: restored, Sequence: 7}, generation: 1, clearedAt: future},
-			{id: BatchID{Epoch: current, Sequence: 1}, generation: 2, clearedAt: future},
+			{entry: spoolEntry{id: BatchID{Epoch: restored, Sequence: 7}, generation: 1}},
+			{entry: spoolEntry{id: BatchID{Epoch: current, Sequence: 1}, generation: 2}},
 		},
 		queue: []spoolEntry{
 			{id: BatchID{Epoch: current, Sequence: 2}, generation: 3},
@@ -191,8 +191,8 @@ func TestContact(t *testing.T) {
 // entry, whatever the other's (AUDIT-2 2M2).
 func TestEachEpochIsCoveredByItsOwnEntry(t *testing.T) {
 	const oldEpoch, newEpoch = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	u := &usageSender{acked: []ackedBatch{
-		{id: BatchID{Epoch: newEpoch, Sequence: 1}, generation: 1, clearedAt: time.Now().Add(time.Hour)}}}
+	u := &usageSender{store: newMemoryStore(), acked: []ackedBatch{
+		{entry: spoolEntry{id: BatchID{Epoch: newEpoch, Sequence: 1}, generation: 1}}}}
 	if got := u.countedGeneration([]BatchPosition{{Epoch: oldEpoch, Sequence: 1}, {Epoch: newEpoch, Sequence: 1}}); got != 1 {
 		t.Fatalf("totals counting both epochs retire generation %d, want 1", got)
 	}
@@ -207,7 +207,7 @@ func TestAckHandOffNeverHidesABatchFromTotals(t *testing.T) {
 	batch.Records[0].GatewayTime = time.Now()
 	for range 2000 {
 		e := spoolEntry{id: batch.Batch, generation: 1, records: 1}
-		u := &usageSender{queue: []spoolEntry{e}, queuedRecords: 1, changed: make(chan struct{})}
+		u := &usageSender{store: newMemoryStore(), instance: "gw", queue: []spoolEntry{e}, queuedRecords: 1, changed: make(chan struct{})}
 		var counted atomic.Uint64
 		c := &Client{usage: u, opts: Options{OnTotals: func(update TotalsUpdate) { counted.Store(update.Counted) }}}
 		start := make(chan struct{})
@@ -215,7 +215,7 @@ func TestAckHandOffNeverHidesABatchFromTotals(t *testing.T) {
 		var both sync.WaitGroup
 		both.Go(func() {
 			<-start
-			u.acknowledged(e, batch)
+			u.acknowledged(e)
 			acked.Store(true)
 		})
 		both.Go(func() {
@@ -235,42 +235,69 @@ func TestAckHandOffNeverHidesABatchFromTotals(t *testing.T) {
 	}
 }
 
-// The acknowledged batches whose usage the limiter's windows have already left behind
-// are forgotten at the next ack: covering them retires nothing, and while the stream is
-// down and acks still come they would pile up (AUDIT-2 2L6). A batch that cost nothing
-// is held only by the hour of its last record; one that cost something, by its month.
-func TestAcknowledgedBatchesAreForgottenOnceTheirWindowsPassed(t *testing.T) {
-	at := func(s string) time.Time {
-		t.Helper()
-		v, err := time.Parse(time.RFC3339Nano, s)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return v
-	}
-	free := testRecord(0)
-	free.GatewayTime = at("2026-09-24T10:59:59.5Z")
-	priced := testRecord(1)
-	priced.CostNanoUSD, priced.GatewayTime = 7, at("2026-09-24T10:00:00Z")
-	if got := clearedAt(UsageBatch{Records: []accounting.UsageRecord{free}}); !got.Equal(at("2026-09-24T11:00:00Z")) {
-		t.Errorf("free batch cleared at %v, want the end of its hour", got)
-	}
-	if got := clearedAt(UsageBatch{Records: []accounting.UsageRecord{free, priced}}); !got.Equal(at("2026-10-01T00:00:00Z")) {
-		t.Errorf("priced batch cleared at %v, want the end of its month", got)
-	}
-
+// With no data directory at most ackedRemembered acknowledged batches are remembered:
+// past that the oldest is forgotten — a later batch shown counted retires every earlier
+// generation — and the wait to be shown counted keeps its time (AUDIT-3 3L4).
+func TestAcknowledgedBatchesAreBoundedWithoutADataDirectory(t *testing.T) {
 	const epoch = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	recent := testRecord(2)
-	recent.GatewayTime = time.Now()
-	u := &usageSender{changed: make(chan struct{}), acked: []ackedBatch{
-		{id: BatchID{Epoch: epoch, Sequence: 1}, generation: 1, clearedAt: time.Now().Add(-time.Second)},
-		{id: BatchID{Epoch: epoch, Sequence: 2}, generation: 2, clearedAt: time.Now().Add(time.Hour)},
-	}}
-	e := spoolEntry{id: BatchID{Epoch: epoch, Sequence: 3}, generation: 3, records: 1}
+	u := &usageSender{store: newMemoryStore(), instance: "gw", changed: make(chan struct{})}
+	start := time.Now().Add(-time.Hour)
+	for i := range ackedRemembered {
+		u.acked = append(u.acked, ackedBatch{entry: spoolEntry{id: BatchID{Instance: "gw", Epoch: epoch, Sequence: int64(i + 1)},
+			generation: uint64(i + 1)}, ackedAt: start})
+	}
+	u.uncountedSince = start
+	e := spoolEntry{id: BatchID{Instance: "gw", Epoch: epoch, Sequence: ackedRemembered + 1}, generation: ackedRemembered + 1, records: 1}
 	u.queue = []spoolEntry{e}
-	u.acknowledged(e, UsageBatch{Batch: e.id, Records: []accounting.UsageRecord{recent}})
-	if len(u.acked) != 2 || u.acked[0].id.Sequence != 2 || u.acked[1].id.Sequence != 3 {
-		t.Errorf("acknowledged batches %+v, want 2 and 3: 1's windows have passed", u.acked)
+	u.acknowledged(e)
+	if len(u.acked) != ackedRemembered || u.acked[0].entry.id.Sequence != 2 {
+		t.Errorf("%d acknowledged from sequence %d, want %d from 2", len(u.acked), u.acked[0].entry.id.Sequence, ackedRemembered)
+	}
+	if !u.uncountedSince.Equal(start) {
+		t.Errorf("the wait restarted at %v, want it kept at %v", u.uncountedSince, start)
+	}
+	if got := u.countedGeneration([]BatchPosition{{Epoch: epoch, Sequence: 5}}); got != 5 || len(u.acked) != ackedRemembered-4 {
+		t.Errorf("covering 5 retired generation %d with %d left, want 5 with %d", got, len(u.acked), ackedRemembered-4)
+	}
+}
+
+// An acknowledged batch waits to be shown counted from its ack until totals cover it,
+// heartbeats and further acks notwithstanding: totals that stopped coming are an
+// outage once the grace passes (AUDIT-3 3H1, [G] G3-M1). A batch the totals applied
+// last already cover does not wait.
+func TestAnAcknowledgedBatchWaitsToBeShownCounted(t *testing.T) {
+	h := newHarness(t)
+	h.cp.Publish(configA(t))
+	c, obs, _ := h.usageClient(1, nil)
+	st := h.nextStream()
+	st.Send("totals", scriptedTotals(1))
+	h.nextTotals()
+	before := time.Now()
+	c.Record(testRecord(1))
+	first := h.wantUsage(fakecontrol.OutcomeCounted, 1, 1)
+	if r := obs.next(t); r != BatchAcked {
+		t.Fatalf("result %s, want %s", r, BatchAcked)
+	}
+	since := c.UsageUncountedSince()
+	if since.Before(before) {
+		t.Fatalf("waiting to be shown counted since %v after the ack, want from the ack", since)
+	}
+	if !c.UsageWaitingSince().IsZero() {
+		t.Error("an acknowledged batch still waits for an answer")
+	}
+	c.Record(testRecord(2))
+	h.wantUsage(fakecontrol.OutcomeCounted, 2, 1)
+	if r := obs.next(t); r != BatchAcked {
+		t.Fatalf("result %s, want %s", r, BatchAcked)
+	}
+	if got := c.UsageUncountedSince(); !got.Equal(since) {
+		t.Errorf("a later ack moved the wait to %v, want it kept at %v", got, since)
+	}
+	st.Send("totals", fmt.Appendf(nil, `{"live_gateways":1,"counted_through":[{"epoch":%q,"sequence":2}],"windows":[]}`,
+		first.Batch.Epoch))
+	h.nextTotals()
+	if got := c.UsageUncountedSince(); !got.IsZero() {
+		t.Errorf("still waiting since %v with every batch shown counted", got)
 	}
 }
 

@@ -3,6 +3,7 @@ package limits
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"math"
 	"os"
@@ -591,6 +592,54 @@ func TestReloadKeepsMatchingCounters(t *testing.T) {
 	holder.Swap(snapshot(t, limitsDoc{team: `[{ "type": "tokens_per_hour", "value": 9000 }]`}))
 	if got := used(t, l, "t", config.LimitTokensPerHour); got != 400 {
 		t.Errorf("limit with another value at %d, want the 400 kept", got)
+	}
+}
+
+// A group deleted and created again under its ID within the window keeps its spend,
+// in both modes: its hour and month counts outlive the config that had them, own usage
+// and in-flight reservations included (AUDIT-3 3M1, [C] C3). Once their window has
+// ended, the counts of a deleted group are dropped.
+func TestARecreatedGroupKeepsItsSpend(t *testing.T) {
+	for _, shared := range []bool{false, true} {
+		t.Run(fmt.Sprint("shared=", shared), func(t *testing.T) {
+			c := newClock("2026-10-07T12:30:00Z")
+			h := holderOf(snapshot(t, limitsDoc{extraGroup: "temporary"}))
+			l := c.limiter(h)
+			if shared {
+				l, _ = c.shared(h)
+				l.TakeTotals(Totals{Complete: true}, 0)
+			}
+			subject := Subject{Groups: []string{"temporary"}, Model: "m1", Priced: true}
+			l.Settle(admitN(t, l, subject, 1, 10)[0], inGeneration(1, record(100, 0, 0, 0, 0, 1_000_000_000)))
+			running := admitN(t, l, subject, 1, 10)[0]
+			h.Swap(snapshot(t, limitsDoc{}))
+			_ = l.Usage() // the deletion applied
+			l.Settle(running, inGeneration(1, record(5, 0, 0, 0, 0, 0)))
+			recreated := snapshot(t, limitsDoc{extraGroup: "temporary"})
+			recreated.Groups["temporary"].Limits = []config.Limit{{Type: config.LimitUSDPerMonth, Value: 1}}
+			h.Swap(recreated)
+			if got := used(t, l, "temporary", config.LimitUSDPerMonth); got != 1_000_000_000 {
+				t.Errorf("re-created group's month %d, want the 1 USD spent before", got)
+			}
+			if got := used(t, l, "temporary", config.LimitTokensPerHour); got != 105 {
+				t.Errorf("re-created group's hour %d, want 100 + the 5 settled while it was deleted", got)
+			}
+			if _, rejected := l.Reserve(subject, 1); rejected == nil {
+				t.Error("request admitted against the re-created group's spent budget")
+			}
+
+			h.Swap(snapshot(t, limitsDoc{}))
+			_ = l.Usage()
+			c.set("2026-11-01T00:30:00Z")
+			_ = l.Usage()
+			l.mu.Lock()
+			l.pruneRetainedLocked(c.t)
+			left := len(l.retained)
+			l.mu.Unlock()
+			if left != 0 {
+				t.Errorf("%d counts of the deleted group kept after their windows ended", left)
+			}
+		})
 	}
 }
 

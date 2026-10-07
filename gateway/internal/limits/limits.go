@@ -2,8 +2,9 @@
 // reserved before a request is routed, settled with the request's actual usage once it
 // is over (docs/specs/GATEWAY.md, Limits). Every scope — global and each group — has an
 // hour and a month count whether or not it has a limit of that type, and a limit is a
-// check over its scope's count; per-minute windows exist only for the limits that
-// have them. In file mode the counters enforce every window at
+// check over its scope's count; a scope's counts outlive the config that has it, until
+// their window ends. Per-minute windows exist only for the limits that have them. In
+// file mode the counters enforce every window at
 // the full limit, and the hour and month windows survive restarts through a snapshot
 // in the data directory. In control-plane mode (NewShared) the hour and month windows
 // enforce the control plane's pushed totals plus this gateway's own usage not yet
@@ -107,10 +108,11 @@ type counter struct {
 	w       *window
 }
 
-// Limiter holds every counter of the live config: each scope's hour and month counts
-// and each per-minute limit's window. Its lock guards all
-// counters, so checking and reserving across a request's scopes is all-or-nothing:
-// two concurrent requests can never both take the last unit.
+// Limiter holds every counter of the live config — each scope's hour and month counts
+// and each per-minute limit's window — and the hour and month counts of scopes a reload
+// removed, while their window still holds own usage. Its lock guards all counters, so
+// checking and reserving across a request's scopes is all-or-nothing: two concurrent
+// requests can never both take the last unit.
 type Limiter struct {
 	holder *config.Holder
 	now    func() time.Time
@@ -128,6 +130,18 @@ type Limiter struct {
 	counters map[counterKey]*counter
 	global   []*counter
 	byGroup  map[string][]*counter
+	// minute are the per-minute counters of counters: the ones a live-gateway count
+	// re-shares.
+	minute []*counter
+	// retained are the hour and month counts of scopes the live config does not have,
+	// kept while their current window holds own usage (settled or reserved): a group
+	// created again under its ID takes them back, and in-flight reservations stay on
+	// them (docs/specs/GATEWAY.md, Limits → A count outlives its scope's config).
+	retained map[counterKey]*counter
+	// owning are the shared counters holding settled own usage by generation, the ones
+	// retiring a generation visits; a counter that rolled its window may stay listed
+	// with nothing left.
+	owning map[*counter]struct{}
 
 	// Control-plane mode (shared.go). live is the live-gateway count per-minute shares
 	// divide by (at least 1); pushed is every window the stream's totals have listed
@@ -145,14 +159,16 @@ type Limiter struct {
 	firstClosed bool
 	// counted is the newest usage generation dropped from the counters' own usage — a
 	// record of that generation or an older one settled later is already inside the
-	// applied bases.
-	counted uint64
+	// applied bases. countedThrough is the counted_through of the totals applied last,
+	// which the bases include: totals.json saves it with them.
+	counted        uint64
+	countedThrough []CountedBatch
+	// prunedAt is the hour start the pushed windows were last pruned at: windows that
+	// ended are dropped once an hour.
+	prunedAt time.Time
 	// outageSince is when the outage the log announced began (its grace ran out);
 	// zero while none is announced (outageLocked).
 	outageSince time.Time
-	// restoredUntagged: uncounted usage restored at boot is tagged generation 0 (no
-	// spooled batch carried it), to leave with the first totals applied (LoadShared).
-	restoredUntagged bool
 	// aheadWarned is the pushed window start the ahead-of-the-clock warning last
 	// named, so a control plane running ahead is logged once per window, not per
 	// message.
@@ -169,7 +185,8 @@ type Limiter struct {
 // (time.Now outside tests); logger (nil: discard) hears of a counter that went
 // negative (a bug, clamped).
 func New(holder *config.Holder, now func() time.Time, logger *slog.Logger) *Limiter {
-	return &Limiter{holder: holder, now: now, logger: orDiscard(logger), counters: map[counterKey]*counter{}}
+	return &Limiter{holder: holder, now: now, logger: orDiscard(logger), counters: map[counterKey]*counter{},
+		retained: map[counterKey]*counter{}, owning: map[*counter]struct{}{}}
 }
 
 func orDiscard(logger *slog.Logger) *slog.Logger {
@@ -189,6 +206,10 @@ type Contact struct {
 	// UsageWaitingSince is when the usage batches not yet answered started waiting
 	// for the control plane's next answer; zero while none waits.
 	UsageWaitingSince time.Time
+	// UsageUncountedSince is when the oldest batch acknowledged but not yet shown
+	// counted by applied totals was acknowledged (or restored at boot); zero while
+	// none waits (docs/specs/GATEWAY.md, Limits → Usage acks count for money limits).
+	UsageUncountedSince time.Time
 }
 
 // NewShared returns a control-plane-mode limiter: its hour and month windows count
@@ -198,7 +219,8 @@ type Contact struct {
 // per-minute shares too small for a model's default output.
 func NewShared(holder *config.Holder, now func() time.Time, contact func() Contact, logger *slog.Logger) *Limiter {
 	return &Limiter{holder: holder, now: now, contact: contact, logger: orDiscard(logger),
-		counters: map[counterKey]*counter{}, live: 1, pushed: map[counterKey]PushedWindow{}, firstTotals: make(chan struct{})}
+		counters: map[counterKey]*counter{}, retained: map[counterKey]*counter{}, owning: map[*counter]struct{}{},
+		live: 1, pushed: map[counterKey]PushedWindow{}, firstTotals: make(chan struct{})}
 }
 
 func (l *Limiter) shared() bool { return l.contact != nil }
@@ -216,9 +238,10 @@ func (l *Limiter) ObserveSyncs(f func(time.Duration)) {
 // sync matches the counters to the live snapshot when it changed: every scope gets
 // its hour and month counts, limited or not, and each per-minute limit its window.
 // Counts whose scope and type still exist keep their counter (a limit added, changed or
-// removed applies to the count so far); new ones start empty (in control-plane mode,
-// from their pushed base); those of a deleted scope, and removed per-minute limits, are
-// dropped. Callers hold l.mu.
+// removed applies to the count so far), and so does a scope created again while its
+// counts are retained; new ones start empty (in control-plane mode, from their pushed
+// base). The hour and month counts of a deleted scope are retained while they hold own
+// usage; removed per-minute limits are dropped. Callers hold l.mu.
 func (l *Limiter) sync() {
 	snap := l.holder.Current()
 	if snap == nil || snap == l.applied {
@@ -234,6 +257,10 @@ func (l *Limiter) sync() {
 		take := func(typ config.LimitType) *counter {
 			k := keyOf(group, typ)
 			c, ok := l.counters[k]
+			if !ok {
+				c, ok = l.retained[k]
+				delete(l.retained, k)
+			}
 			if !ok {
 				c = l.newCounter(k)
 			}
@@ -259,14 +286,56 @@ func (l *Limiter) sync() {
 	for id, g := range snap.Groups {
 		l.byGroup[id] = build(id, g.Limits)
 	}
+	l.minute = l.minute[:0]
 	for _, c := range next {
 		l.applyLimit(c)
+		if c.w.kind == SlidingMinute {
+			l.minute = append(l.minute, c)
+		}
+	}
+	for k, c := range l.counters {
+		if _, kept := next[k]; !kept && c.w.kind != SlidingMinute {
+			c.limited, c.limit = false, config.Limit{Type: k.typ}
+			l.retained[k] = c
+		}
 	}
 	l.counters = next
 	l.applied = snap
+	l.pruneRetainedLocked(l.now())
 	if l.shared() {
 		l.configChangedLocked()
 	}
+}
+
+// pruneRetainedLocked drops the retained counts whose current window holds no own
+// usage: the window they kept usage for has ended, or it was all shown counted.
+// Callers hold l.mu.
+func (l *Limiter) pruneRetainedLocked(now time.Time) {
+	for k, c := range l.retained {
+		c.w.roll(now)
+		if c.w.used == 0 {
+			delete(l.retained, k)
+			delete(l.owning, c)
+		}
+	}
+}
+
+// countOf is the hour or month counter of group (or global) and type, the live
+// config's or a retained one; one is retained, empty, when neither has it — usage of a
+// scope the config no longer has still counts until its window ends. Callers hold l.mu.
+func (l *Limiter) countOf(group string, typ config.LimitType) *counter {
+	k := keyOf(group, typ)
+	if c, ok := l.counters[k]; ok {
+		return c
+	}
+	c, ok := l.retained[k]
+	if !ok {
+		c = l.newCounter(k)
+		c.limit = config.Limit{Type: typ}
+		l.applyLimit(c)
+		l.retained[k] = c
+	}
+	return c
 }
 
 // newCounter is the counter of a scope and type no existing counter has: it starts
@@ -524,8 +593,17 @@ func (l *Limiter) Settle(r *Reservation, recs ...accounting.UsageRecord) {
 			if hc.c.w.shared && (l.countedLocked(rec.Generation) || hc.c.w.previousWindow(now, rec.GatewayTime)) {
 				continue
 			}
-			hc.c.w.add(now, amountOf(hc.c.measure, rec), false, rec.Generation)
+			l.addOwnLocked(hc.c, now, amountOf(hc.c.measure, rec), rec.Generation)
 		}
+	}
+}
+
+// addOwnLocked counts settled usage of generation on c at now; a shared window keeps it
+// as own usage until the generation is shown counted. Callers hold l.mu.
+func (l *Limiter) addOwnLocked(c *counter, now time.Time, amount int64, generation uint64) {
+	c.w.add(now, amount, false, generation)
+	if c.w.shared && amount != 0 {
+		l.owning[c] = struct{}{}
 	}
 }
 

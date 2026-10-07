@@ -5,8 +5,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"kaiak/internal/accounting"
 )
@@ -38,18 +40,26 @@ const (
 // records of about 500 bytes.
 const DefaultUsageMemoryBytes = 64 << 20
 
-// batchStore keeps the queued batches until they are acknowledged or refused.
+// batchStore keeps the queued batches until they are acknowledged or refused, and —
+// with a data directory — this instance's acknowledged ones until a totals.json save
+// covering them has completed.
 type batchStore interface {
-	// open returns the epoch and next sequence to seal under and the batches still
-	// queued from an earlier run, in any order; reason is why a new epoch starts, ""
-	// when an earlier one continues.
-	open(instance string) (idx spoolIndex, queued []spoolEntry, reason string)
+	// open returns the epoch and next sequence to seal under and the batches kept from
+	// an earlier run, in any order, the acknowledged ones marked; reason is why a new
+	// epoch starts, "" when an earlier one continues.
+	open(instance string) (idx spoolIndex, kept []spoolEntry, reason string)
 	// save keeps batch b, then records next as the index; the batch may be sent once
 	// save returns nil. It returns where b is kept ("" in memory).
 	save(b UsageBatch, next spoolIndex) (file string, err error)
-	// load returns the queued batch e.
+	// load returns the kept batch e.
 	load(e spoolEntry) (UsageBatch, error)
-	// remove forgets e, acknowledged or dropped.
+	// acknowledge records this instance's batch e acknowledged, with idx — the index
+	// naming it acknowledged — so a restart never sends it again. The disk store keeps
+	// its file (remove deletes it once covered); the memory store forgets its records.
+	acknowledge(e spoolEntry, idx spoolIndex) error
+	// writeIndex records idx as the index.
+	writeIndex(idx spoolIndex) error
+	// remove forgets e: covered, another instance's acknowledged, or dropped.
 	remove(e spoolEntry) error
 	// setAside takes the refused (or unreadable) batch e out of the queue's keeping,
 	// for inspection where the store can keep it; it returns where ("": nowhere).
@@ -62,28 +72,43 @@ type batchStore interface {
 	inMemory() bool
 }
 
-// spoolIndex is the epoch the gateway seals batches in and the sequence of the next
-// one; the disk store keeps it as the spool's index file.
+// spoolIndex is the epoch the gateway seals batches in, the sequence of the next one,
+// and the last sequence acknowledged in each epoch of this instance that still has an
+// acknowledged batch kept; the disk store keeps it as the spool's index file.
 type spoolIndex struct {
-	Instance     string `json:"instance"`
-	Epoch        string `json:"epoch"`
-	NextSequence int64  `json:"next_sequence"`
+	Instance     string           `json:"instance"`
+	Epoch        string           `json:"epoch"`
+	NextSequence int64            `json:"next_sequence"`
+	Acknowledged map[string]int64 `json:"acknowledged"`
 }
 
 // freshIndex starts a new epoch for instance.
 func freshIndex(instance string) spoolIndex {
-	return spoolIndex{Instance: instance, Epoch: newEpoch(), NextSequence: 1}
+	return spoolIndex{Instance: instance, Epoch: newEpoch(), NextSequence: 1, Acknowledged: map[string]int64{}}
 }
 
-// spoolEntry is one queued batch: its ID, where the store keeps it ("" in memory),
-// how many records it holds, their encoded size (0 for a batch restored from the
-// spool: it is on disk, not in memory) and its usage generation.
+// withAcknowledged is idx with epoch acknowledged through sequence.
+func (idx spoolIndex) withAcknowledged(epoch string, sequence int64) spoolIndex {
+	acked := maps.Clone(idx.Acknowledged)
+	if acked == nil {
+		acked = map[string]int64{}
+	}
+	acked[epoch] = max(acked[epoch], sequence)
+	idx.Acknowledged = acked
+	return idx
+}
+
+// spoolEntry is one kept batch: its ID, where the store keeps it ("" in memory), how
+// many records it holds, their encoded size (0 for a batch restored from the spool: it
+// is on disk, not in memory), its usage generation, and — at open only — whether an
+// earlier run had it acknowledged.
 type spoolEntry struct {
-	id         BatchID
-	file       string
-	records    int
-	bytes      int64
-	generation uint64
+	id           BatchID
+	file         string
+	records      int
+	bytes        int64
+	generation   uint64
+	acknowledged bool
 }
 
 func newEpoch() string {
@@ -93,10 +118,12 @@ func newEpoch() string {
 }
 
 // restore takes what the store kept from an earlier run: the epoch and next sequence
-// to continue, and the batches still queued. Queued batches are delivered whatever
-// the index said: each carries its own ID, and another instance's batches are sent
-// under that instance (a container whose hostname changed). The queue sends batches
-// of other epochs first, one epoch at a time, then the current epoch's.
+// to continue, the batches still queued, and this instance's batches acknowledged but
+// not yet covered by a totals.json save — remembered, never sent again, waiting to be
+// shown counted since now. Queued batches are delivered whatever the index said: each
+// carries its own ID, and another instance's batches are sent under that instance (a
+// container whose hostname changed). The queue sends batches of other epochs first,
+// one epoch at a time, then the current epoch's.
 func (u *usageSender) restore() {
 	idx, entries, reason := u.store.open(u.instance)
 	u.index = idx
@@ -116,19 +143,29 @@ func (u *usageSender) restore() {
 	// showing one counted names it to the limiter like any other; the filling batch
 	// continues after them.
 	records := 0
+	var queue []spoolEntry
+	var acked []ackedBatch
+	now := time.Now()
 	for i := range entries {
-		records += entries[i].records
 		entries[i].generation = uint64(i + 1)
+		if entries[i].acknowledged {
+			acked = append(acked, ackedBatch{entry: entries[i], ackedAt: now})
+			continue
+		}
+		records += entries[i].records
+		queue = append(queue, entries[i])
 	}
 	u.mu.Lock()
 	u.generation = uint64(len(entries)) + 1
-	u.restoredGeneration = uint64(len(entries))
-	u.queue = entries
+	u.restored = entries
+	u.queue = queue
+	u.acked = acked
+	u.uncountedChangedLocked()
 	u.queuedRecords = records
 	u.depthChangedLocked()
 	u.mu.Unlock()
-	attrs := []any{"kaiak.usage.epoch", u.index.Epoch, "kaiak.usage.next_sequence", u.index.NextSequence, "kaiak.usage.batches", len(entries),
-		"kaiak.usage.records", records}
+	attrs := []any{"kaiak.usage.epoch", u.index.Epoch, "kaiak.usage.next_sequence", u.index.NextSequence, "kaiak.usage.batches", len(queue),
+		"kaiak.usage.records", records, "kaiak.usage.acknowledged_batches", len(acked)}
 	switch {
 	case u.store.inMemory():
 		u.logger.Info("usage batches kept in memory until acknowledged: no data directory", "kaiak.usage.epoch", u.index.Epoch)

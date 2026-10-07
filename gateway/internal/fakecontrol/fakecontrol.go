@@ -10,7 +10,7 @@
 // does not aggregate
 // usage itself; each stream's first totals list every scripted window, later ones only
 // the windows that changed for that stream (one it got that the script dropped is
-// listed at "0"), as kaiak-control sends them. Test tooling only: nothing in the gateway binary imports it. It speaks
+// listed at "0" while still in its window), as kaiak-control sends them. Test tooling only: nothing in the gateway binary imports it. It speaks
 // raw JSON and imports nothing from the gateway, so the control package's own tests
 // can use it.
 package fakecontrol
@@ -28,6 +28,7 @@ import (
 	"regexp"
 	"slices"
 	"sync"
+	"time"
 )
 
 // Server is one fake control plane on a local port.
@@ -312,9 +313,25 @@ type totalsWindow struct {
 
 func (w totalsWindow) key() string { return w.Group + "\n" + w.Type }
 
+// current reports whether the window is still the current one of its type at now: a
+// window that ended with its hour or month is never listed again (CONTROL-PROTOCOL.md,
+// Messages → Totals).
+func (w totalsWindow) current(now time.Time) bool {
+	start, err := time.Parse(time.RFC3339, w.WindowStart)
+	if err != nil {
+		return false
+	}
+	now = now.UTC()
+	if w.Type == "usd_per_month" {
+		return start.Equal(time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC))
+	}
+	return start.Equal(now.Truncate(time.Hour))
+}
+
 // streamTotalsLocked is the next totals message for st: complete for its first, then
 // the windows that changed since its last — a window it was sent that the script no
-// longer has, in the same window, listed at "0" — and it remembers what it sent.
+// longer has, still in its window, listed at "0"; one that ended, not listed — and it
+// remembers what it sent.
 func (s *Server) streamTotalsLocked(st *Stream) []byte {
 	var scripted []totalsWindow
 	if err := json.Unmarshal(s.windows, &scripted); err != nil {
@@ -333,7 +350,7 @@ func (s *Server) streamTotalsLocked(st *Stream) []byte {
 			}
 		}
 		for _, key := range slices.Sorted(maps.Keys(st.sent)) {
-			if _, ok := now[key]; !ok {
+			if _, ok := now[key]; !ok && st.sent[key].current(time.Now()) {
 				gone := st.sent[key]
 				gone.Used = "0"
 				listed = append(listed, gone)

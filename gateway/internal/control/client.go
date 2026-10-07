@@ -493,7 +493,7 @@ func (c *Client) logStreamEnd(r streamResult) {
 	switch {
 	case r.err == nil:
 		c.logger.Info("config stream ended by the control plane", attrs...)
-	case errors.Is(r.err, errProtocolMismatch):
+	case errors.Is(r.err, errProtocolMismatch), errors.Is(r.err, errMalformedTotals):
 		c.logger.Error("config stream failed", append(attrs, "exception.message", r.err)...)
 	default:
 		c.logger.Warn("config stream failed", append(attrs, "exception.message", r.err)...)

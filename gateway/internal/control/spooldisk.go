@@ -12,20 +12,22 @@ import (
 )
 
 // The usage spool (docs/specs/GATEWAY.md, Control-plane mode → Usage spool), the
-// batch store with a data directory: one file per sealed batch not yet acknowledged,
-// and an index naming the epoch and the next sequence. The files are the queue;
-// memory holds only their IDs and record counts, and the batch being sent. Every file
-// carries spoolFormat; a file with another version is discarded when read
-// (state.Dir.ReadVersioned).
+// batch store with a data directory: one file per sealed batch not yet covered by a
+// totals.json save (another instance's: not yet acknowledged), and an index naming the
+// epoch, the next sequence and each epoch's last acknowledged sequence. The files are
+// the queue and the acknowledged batches; memory holds only their IDs and record
+// counts, and the batch being sent. Every file carries spoolFormat; a file with another
+// version is discarded when read (state.Dir.ReadVersioned).
 const (
-	// SpoolFile is the spool's index: instance, epoch, next sequence.
+	// SpoolFile is the spool's index: instance, epoch, next sequence, acknowledged
+	// sequences.
 	SpoolFile = "usage-spool.json"
 	// spoolBatchPrefix and spoolRejectedPrefix start the names of queued batches and
 	// of batches the control plane refused: <prefix><epoch>-<sequence>.json.
 	spoolBatchPrefix    = "usage-batch-"
 	spoolRejectedPrefix = "usage-rejected-"
 	// spoolFormat is the format version of every spool file.
-	spoolFormat = 3
+	spoolFormat = 4
 	// rejectedKept is how many refused batches and records are kept for inspection;
 	// older ones are deleted as new ones are set aside.
 	rejectedKept = 10
@@ -62,10 +64,12 @@ func parseBatchFileName(prefix, name string) (epoch string, sequence int64, ok b
 	return epoch, sequence, true
 }
 
-// open reads the spool left in the data directory: its queued batches, and the epoch
-// and next sequence when the index belongs to this instance. Otherwise — no index,
-// one of another format version (discarded), an unreadable one, or another
-// instance's — a fresh epoch starts. The index is written back before open returns.
+// open reads the spool left in the data directory: its batches, and the epoch, next
+// sequence and acknowledged sequences when the index belongs to this instance — a
+// batch of this instance at or below its epoch's acknowledged sequence comes back
+// acknowledged. Otherwise — no index, one of another format version (discarded), an
+// unreadable one, or another instance's — a fresh epoch starts, and every batch is
+// queued. The index is written back before open returns.
 func (s diskStore) open(instance string) (spoolIndex, []spoolEntry, string) {
 	var idx spoolIndex
 	found, err := s.dir.ReadVersioned(SpoolFile, spoolFormat, &idx)
@@ -85,12 +89,17 @@ func (s diskStore) open(instance string) (spoolIndex, []spoolEntry, string) {
 		reason = "usage spool index invalid"
 	}
 	if reason == "" {
-		for _, e := range entries {
+		if idx.Acknowledged == nil {
+			idx.Acknowledged = map[string]int64{}
+		}
+		for i, e := range entries {
 			if e.id.Epoch == idx.Epoch && e.id.Instance == instance && e.id.Sequence >= idx.NextSequence {
 				// Written just before a crash, ahead of the index: the sequence
 				// continues after it.
 				idx.NextSequence = e.id.Sequence + 1
 			}
+			last, ok := idx.Acknowledged[e.id.Epoch]
+			entries[i].acknowledged = e.id.Instance == instance && ok && e.id.Sequence <= last
 		}
 	} else {
 		idx = freshIndex(instance)
@@ -154,6 +163,12 @@ func (s diskStore) load(e spoolEntry) (UsageBatch, error) {
 		return UsageBatch{}, fmt.Errorf("batch file %s is gone or of another format version", e.file)
 	}
 	return batch, nil
+}
+
+func (s diskStore) acknowledge(_ spoolEntry, idx spoolIndex) error { return s.writeIndex(idx) }
+
+func (s diskStore) writeIndex(idx spoolIndex) error {
+	return s.dir.WriteVersioned(SpoolFile, spoolFormat, idx)
 }
 
 func (s diskStore) remove(e spoolEntry) error { return s.dir.Remove(e.file) }

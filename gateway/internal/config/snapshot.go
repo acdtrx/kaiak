@@ -47,9 +47,11 @@ const (
 	// MaxGroupDepth is the most levels the group tree holds; a top-level group is
 	// level 1.
 	MaxGroupDepth = 8
-	// MaxEffectiveLimits is the most effective limits global and every group may add
-	// up to: each is a counter on every gateway, and child_defaults multiply them.
-	MaxEffectiveLimits = 50_000
+	// MaxCounters is the most counters a config may allocate on every gateway: an hour
+	// and a month counter for global and every group, limited or not, and one per
+	// effective per-minute limit (CONTROL-PROTOCOL.md, Config → The group tree:
+	// Counters are bounded).
+	MaxCounters = 50_000
 )
 
 type BackendType string

@@ -8,8 +8,9 @@ import (
 )
 
 // The file-mode usage snapshot (docs/specs/GATEWAY.md, Limits): the settled usage of
-// every scope's hour and month window, limited or not, so a restart does not reset
-// them. Per-minute windows
+// every scope's hour and month window, limited or not — those of scopes a reload
+// removed within their window included — so a restart does not reset them. Per-minute
+// windows
 // are not kept: a restart costs at most one minute of their history. File mode only:
 // in control-plane mode the control plane holds these totals.
 const (
@@ -43,26 +44,30 @@ func (l *Limiter) SaveSnapshot(dir *state.Dir) (int, error) {
 	l.mu.Lock()
 	l.sync()
 	now := l.now()
+	l.pruneRetainedLocked(now)
 	data := snapshotData{Windows: []savedWindow{}}
-	for _, c := range l.counters {
-		if c.w.kind == SlidingMinute {
-			continue
+	for _, counters := range []map[counterKey]*counter{l.counters, l.retained} {
+		for _, c := range counters {
+			if c.w.kind == SlidingMinute {
+				continue
+			}
+			used := c.w.settled(now)
+			if used == 0 {
+				continue
+			}
+			data.Windows = append(data.Windows, savedWindow{Group: c.key.group, Type: c.key.typ,
+				Start: time.Unix(c.w.start, 0).UTC(), Used: used})
 		}
-		used := c.w.settled(now)
-		if used == 0 {
-			continue
-		}
-		data.Windows = append(data.Windows, savedWindow{Group: c.key.group, Type: c.limit.Type,
-			Start: time.Unix(c.w.start, 0).UTC(), Used: used})
 	}
 	l.mu.Unlock()
 	return len(data.Windows), dir.WriteVersioned(SnapshotFile, snapshotVersion, data)
 }
 
 // LoadSnapshot restores hour and month windows from dir, before traffic starts. A
-// saved window is restored when its scope still exists in the live config and its
-// window is the current one; the others are dropped. A missing file, or one with
-// another format version (discarded by state and logged), restores nothing.
+// saved window is restored when its window is the current one — on a retained count
+// when the live config no longer has its scope — and dropped otherwise. A missing file,
+// or one with another format version (discarded by state and logged), restores
+// nothing.
 func (l *Limiter) LoadSnapshot(dir *state.Dir) (restored, dropped int, err error) {
 	var data snapshotData
 	ok, err := dir.ReadVersioned(SnapshotFile, snapshotVersion, &data)
@@ -74,11 +79,12 @@ func (l *Limiter) LoadSnapshot(dir *state.Dir) (restored, dropped int, err error
 	l.sync()
 	now := l.now()
 	for _, saved := range data.Windows {
-		c, ok := l.counters[keyOf(saved.Group, saved.Type)]
-		if !ok || c.w.kind == SlidingMinute || !saved.Start.Equal(windowStart(c.w.kind, now)) {
+		kind, _ := shape(saved.Type)
+		if kind == SlidingMinute || !saved.Start.Equal(windowStart(kind, now)) {
 			dropped++
 			continue
 		}
+		c := l.countOf(saved.Group, saved.Type)
 		c.w.roll(now)
 		c.w.used = c.w.held + saved.Used
 		restored++

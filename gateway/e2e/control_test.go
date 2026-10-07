@@ -3,7 +3,9 @@ package e2e
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -154,13 +156,48 @@ func TestControlModeEndToEnd(t *testing.T) {
 			t.Fatalf("chat from last-known-good: %d %s", r.StatusCode, r.body)
 		}
 		g.stop(t)
-		// The drain could not deliver: the batch stays spooled for the next start.
+		// The drain could not deliver: the batch stays spooled for the next start, beside
+		// any acknowledged batch no totals.json save has covered yet — the index names
+		// those acknowledged, so they are never sent again.
 		g.logs.wait(t, "the failed flush", msg("usage not flushed: left in the spool for the next start", "kaiak.usage.batches", "1"))
-		batches, err := filepath.Glob(filepath.Join(dataDir, "usage-batch-*.json"))
-		if err != nil || len(batches) != 1 {
-			t.Errorf("spooled batches %v (%v), want 1", batches, err)
+		if unsent := unacknowledgedSpool(t, dataDir); len(unsent) != 1 {
+			t.Errorf("unacknowledged spooled batches %v, want 1", unsent)
 		}
 	})
+}
+
+// unacknowledgedSpool lists the spooled batch files the spool's index does not name
+// acknowledged (docs/specs/GATEWAY.md, Usage spool).
+func unacknowledgedSpool(t *testing.T, dataDir string) []string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(dataDir, "usage-spool.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var index struct {
+		Data struct {
+			Acknowledged map[string]int64 `json:"acknowledged"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &index); err != nil {
+		t.Fatal(err)
+	}
+	batches, err := filepath.Glob(filepath.Join(dataDir, "usage-batch-*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var unsent []string
+	for _, b := range batches {
+		epoch, seq, ok := strings.Cut(strings.TrimSuffix(strings.TrimPrefix(filepath.Base(b), "usage-batch-"), ".json"), "-")
+		n, err := strconv.ParseInt(seq, 10, 64)
+		if !ok || err != nil {
+			t.Fatalf("spool file %s not understood", b)
+		}
+		if last, acked := index.Data.Acknowledged[epoch]; !acked || n > last {
+			unsent = append(unsent, b)
+		}
+	}
+	return unsent
 }
 
 // waitUsage reads the control plane's usage events until match accepts one.

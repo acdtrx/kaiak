@@ -434,7 +434,6 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 				limiter.TakeTotals(limitsTotals(u.Totals, u.Complete), u.Counted)
 				// Backend caps are split among the live gateways the totals count.
 				router.SetLiveGateways(limiter.LiveGateways())
-				saveShared(limiter, dir, logger, "totals")
 			}})
 		metrics.RegisterControlState(registry, controlState{client, limiter})
 		// A model's queue starting or ending and a circuit opening or closing are
@@ -449,7 +448,7 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 		bootCtx, endBoot := stopOnSignal(ctx, stop)
 		err := client.Boot(bootCtx)
 		if err == nil {
-			restoreShared(limiter, dir, logger, client.RestoredGeneration())
+			restoreShared(limiter, client, dir, logger)
 			router.SetLiveGateways(limiter.LiveGateways())
 			// The client follows the control plane until the drain is over, so
 			// requests admitted during the grace period run on the newest config. It
@@ -517,6 +516,9 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 		}
 	} else {
 		background.Go(func() { ignoreReloads(bgCtx, reload, logger) })
+		if dir != nil {
+			background.Go(func() { saveSharedPeriodically(bgCtx, limiter, client, dir, logger) })
+		}
 	}
 
 	var cause error
@@ -574,7 +576,7 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 	case loader != nil:
 		saveLimits(limiter, dir, logger, "shutdown")
 	default:
-		saveShared(limiter, dir, logger, "shutdown")
+		saveShared(limiter, client, dir, logger, "shutdown")
 	}
 	admin.Shutdown(adminShutdownTimeout)
 	listeners.Wait()
@@ -760,7 +762,8 @@ func ignoreReloads(ctx context.Context, reload <-chan os.Signal, logger *slog.Lo
 // on it.
 func controlContact(client *control.Client) limits.Contact {
 	connected, last := client.Contact()
-	return limits.Contact{Connected: connected, Last: last, UsageWaitingSince: client.UsageWaitingSince()}
+	return limits.Contact{Connected: connected, Last: last, UsageWaitingSince: client.UsageWaitingSince(),
+		UsageUncountedSince: client.UsageUncountedSince()}
 }
 
 // controlState is the control-plane connection for the metrics: the client's contact
@@ -823,10 +826,23 @@ func servingStatus(inFlight, queued map[string]int, circuits map[routing.Deploym
 
 // limitsTotals converts the control plane's totals for the limiter.
 func limitsTotals(t control.Totals, complete bool) limits.Totals {
-	out := limits.Totals{LiveGateways: t.LiveGateways, Complete: complete, Windows: make([]limits.PushedWindow, len(t.Windows))}
+	out := limits.Totals{LiveGateways: t.LiveGateways, Complete: complete, Windows: make([]limits.PushedWindow, len(t.Windows)),
+		CountedThrough: make([]limits.CountedBatch, len(t.CountedThrough))}
 	for i, w := range t.Windows {
 		out.Windows[i] = limits.PushedWindow{Group: w.Group, Type: w.Type,
 			Start: w.WindowStart, Used: w.Used}
+	}
+	for i, p := range t.CountedThrough {
+		out.CountedThrough[i] = limits.CountedBatch{Epoch: p.Epoch, Sequence: p.Sequence}
+	}
+	return out
+}
+
+// batchPositions converts a counted_through the limiter saved for the control client.
+func batchPositions(counted []limits.CountedBatch) []control.BatchPosition {
+	out := make([]control.BatchPosition, len(counted))
+	for i, c := range counted {
+		out[i] = control.BatchPosition{Epoch: c.Epoch, Sequence: c.Sequence}
 	}
 	return out
 }
@@ -864,14 +880,15 @@ func saveLimits(limiter *limits.Limiter, dir *state.Dir, logger *slog.Logger, tr
 }
 
 // restoreShared loads the control-plane-mode limits state before traffic starts, when
-// there is a data directory
-// (limits.LoadShared). It is a cache: one that cannot be read is logged and the
-// gateway counts from the next totals.
-func restoreShared(limiter *limits.Limiter, dir *state.Dir, logger *slog.Logger, restoredGeneration uint64) {
+// there is a data directory: the saved totals (limits.LoadShared), then the own usage
+// of the spooled batches those totals do not include (limits.RestoreOwn). The totals
+// file is a cache: one that cannot be read is logged, and every spooled batch counts
+// as own usage until totals show it counted.
+func restoreShared(limiter *limits.Limiter, client *control.Client, dir *state.Dir, logger *slog.Logger) {
 	if dir == nil {
 		return
 	}
-	r, err := limiter.LoadShared(dir, restoredGeneration)
+	r, err := limiter.LoadShared(dir)
 	switch {
 	case err != nil:
 		logger.Warn("limits totals not restored", "file.name", limits.SharedFile, "exception.message", err)
@@ -881,25 +898,59 @@ func restoreShared(limiter *limits.Limiter, dir *state.Dir, logger *slog.Logger,
 	default:
 		logger.Info("limits totals restored", "file.name", limits.SharedFile, "kaiak.limit.windows", r.Restored, "kaiak.limit.windows_dropped", r.Dropped)
 	}
+	spooled := client.RestoreSpooled(batchPositions(r.CountedThrough))
+	own := make([]limits.OwnBatch, len(spooled))
+	for i, b := range spooled {
+		own[i] = limits.OwnBatch{Generation: b.Generation, Records: b.Records}
+	}
+	if records := limiter.RestoreOwn(own); records > 0 {
+		logger.Info("own usage restored from the usage spool", "kaiak.usage.batches", len(own), "kaiak.usage.records", records)
+	}
 }
 
 // saveShared writes the control-plane-mode limits state, when there is a data
-// directory; trigger names what asked for it (totals, shutdown). The routine write on applied totals logs at debug level.
-func saveShared(limiter *limits.Limiter, dir *state.Dir, logger *slog.Logger, trigger string) {
+// directory, then lets the spooled batches the written bases include leave the spool;
+// trigger names what asked for it (interval, shutdown). The routine interval write logs
+// at debug level.
+func saveShared(limiter *limits.Limiter, client *control.Client, dir *state.Dir, logger *slog.Logger, trigger string) {
 	if dir == nil {
 		return
 	}
-	n, err := limiter.SaveShared(dir)
+	saved, err := limiter.SaveShared(dir)
 	if err != nil {
 		logger.Error("limits totals not written", "kaiak.trigger", trigger, "file.name", limits.SharedFile, "exception.message", err)
 		return
 	}
+	client.SpoolCovered(batchPositions(saved.CountedThrough))
 	level := slog.LevelInfo
-	if trigger == "totals" {
+	if trigger == "interval" {
 		level = slog.LevelDebug
 	}
 	logger.Log(context.Background(), level, "limits totals written", "kaiak.trigger", trigger,
-		"file.name", limits.SharedFile, "kaiak.limit.windows", n)
+		"file.name", limits.SharedFile, "kaiak.limit.windows", saved.Windows)
+}
+
+// saveSharedPeriodically writes the control-plane-mode limits state every
+// limits.SnapshotInterval while totals were applied since the last write — in the
+// background, never on the stream's goroutine (docs/specs/GATEWAY.md, Limits →
+// Control-plane mode: Restart keeps the last totals) — stopped by ctx; the shutdown
+// write is run's, once the drain is over.
+func saveSharedPeriodically(ctx context.Context, limiter *limits.Limiter, client *control.Client, dir *state.Dir, logger *slog.Logger) {
+	ticker := time.NewTicker(limits.SnapshotInterval)
+	defer ticker.Stop()
+	var written time.Time
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if applied, ok := limiter.TotalsAppliedAt(); !ok || !applied.After(written) {
+				continue
+			}
+			written = time.Now()
+			saveShared(limiter, client, dir, logger, "interval")
+		}
+	}
 }
 
 // saveLimitsPeriodically is the interval trigger for the usage snapshot, stopped by

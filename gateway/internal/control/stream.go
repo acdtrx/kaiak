@@ -18,6 +18,12 @@ const (
 	eventTotals = "totals"
 )
 
+// errMalformedTotals ends a stream whose totals event could not be decoded: each later
+// totals event lists only what changed since the one before, so the stream cannot go on
+// without it — the reconnect brings complete totals (docs/specs/GATEWAY.md,
+// Control-plane mode → Stream).
+var errMalformedTotals = errors.New("totals event malformed: the stream is ended, the reconnect brings complete totals")
+
 // streamResult is how one config stream ended.
 type streamResult struct {
 	// first is the stream's first config event, when the stream was opened to boot
@@ -30,8 +36,9 @@ type streamResult struct {
 }
 
 // followStream opens the config stream and handles its events until it ends: config
-// events go through the apply path, totals to the totals consumer, heartbeats only
-// prove the connection alive. With firstOnly — the boot — it ends at the first config
+// events go through the apply path, totals to the totals consumer — a totals event
+// that cannot be decoded ends the stream —, heartbeats only prove the connection
+// alive. With firstOnly — the boot — it ends at the first config
 // event and returns it unapplied, for the boot to apply. Opening — the connection and
 // the answer's headers — must complete within IdleTimeout, and a stream silent for
 // IdleTimeout once open is closed: a connection that died without a close, or an
@@ -115,8 +122,7 @@ func (c *Client) followStream(ctx context.Context, firstOnly bool) streamResult 
 			}
 			totals, err := DecodeTotals(block.Data)
 			if err != nil {
-				c.logger.Error("totals event ignored: malformed", "exception.message", err)
-				continue
+				return streamResult{lasted: time.Since(start), err: fmt.Errorf("%w: %w", errMalformedTotals, err)}
 			}
 			c.takeTotals(totals, firstTotals)
 			firstTotals = false

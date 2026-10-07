@@ -31,7 +31,7 @@ const (
 	CodeGroupParentUnknown               = "group-parent-unknown"
 	CodeGroupCycle                       = "group-cycle"
 	CodeGroupDepthExceeded               = "group-depth-exceeded"
-	CodeEffectiveLimitsExceeded          = "effective-limits-exceeded"
+	CodeCountersExceeded                 = "counters-exceeded"
 	CodeDeploymentBackendUnknown         = "deployment-backend-unknown"
 	CodeAllowedModelUnknown              = "allowed-model-unknown"
 	CodeAllowedModelsWildcardMixed       = "allowed-models-wildcard-mixed"

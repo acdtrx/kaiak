@@ -966,7 +966,7 @@ func TestTotalsEventsReachTheConsumer(t *testing.T) {
 	h.boot(c)
 	h.wantLoad(load{TriggerControl, true})
 	h.run(c)
-	st := h.nextStream()
+	h.nextStream()
 
 	raw, err := os.ReadFile(filepath.Join(fixturesDir, "totals", "valid", "windows.json"))
 	if err != nil {
@@ -977,7 +977,6 @@ func TestTotalsEventsReachTheConsumer(t *testing.T) {
 		t.Fatal(err)
 	}
 	data := compacted.Bytes()
-	st.Send("totals", []byte(`{"broken":`)) // malformed: logged, skipped
 	h.cp.PushTotals(data)
 	want, err := DecodeTotals(data)
 	if err != nil {
@@ -992,7 +991,38 @@ func TestTotalsEventsReachTheConsumer(t *testing.T) {
 	case <-time.After(testWaitLimit):
 		t.Fatal("no totals delivered")
 	}
-	if !strings.Contains(h.logs.String(), "totals event ignored: malformed") {
-		t.Errorf("malformed totals not logged:\n%s", h.logs.String())
+}
+
+// A totals event that cannot be decoded ends the stream: each later totals event lists
+// only what changed since the one before, so the stream cannot go on without it. The
+// reconnect's first totals are complete (AUDIT-3 3H1, [C] C5).
+func TestMalformedTotalsEndTheStream(t *testing.T) {
+	h := newHarness(t)
+	h.cp.Publish(configA(t))
+	c := h.client(nil)
+	if err := h.boot(c); err != nil {
+		t.Fatal(err)
+	}
+	h.run(c)
+	st := h.nextStream()
+	st.Send("totals", scriptedTotals(1))
+	if u := h.nextTotals(); !u.Complete {
+		t.Fatalf("first totals %+v, want complete", u)
+	}
+	st.Send("totals", []byte(`{"live_gateways":1,"counted_through":[],"windows":[{"type":"usd_per_month","window_start":"2026-10-01T00:00:00Z","used":"oops"}]}`))
+	st.Send("totals", scriptedTotals(2)) // a change after the lost one: never applied
+	again := h.nextStream()
+	select {
+	case u := <-h.totals:
+		t.Fatalf("totals %+v applied after a malformed one on the same stream", u)
+	default:
+	}
+	again.Send("totals", scriptedTotals(3))
+	if u := h.nextTotals(); !u.Complete || u.Totals.LiveGateways != 3 {
+		t.Errorf("totals %+v after the reconnect, want the complete ones of the new stream", u)
+	}
+	if !strings.Contains(h.logs.String(), `level=ERROR msg="config stream failed"`) ||
+		!strings.Contains(h.logs.String(), "totals event malformed") {
+		t.Errorf("the ended stream not logged as an error:\n%s", h.logs.String())
 	}
 }

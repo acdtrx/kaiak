@@ -441,38 +441,38 @@ func TestPriceTierIssues(t *testing.T) {
 	}
 }
 
-// The effective-limits count follows mergeLimits: a parent's defaults count once per
-// direct child, an own limit a default takes replaces it, other own limits add; a
-// group whose parent has no entry counts its own limits alone.
-func TestCountEffectiveLimits(t *testing.T) {
+// The counter count: two for global and for every group, limited or not, and one per
+// effective per-minute limit — a parent's per-minute defaults count once per direct
+// child that has no own limit of the type; hour and month limits add none; a group
+// whose parent has no entry counts its own limits alone.
+func TestCountCounters(t *testing.T) {
 	rpm := limitDoc{Type: string(LimitRequestsPerMinute), Value: 1}
+	tpm := limitDoc{Type: string(LimitTokensPerMinute), Value: 1}
 	tph := limitDoc{Type: string(LimitTokensPerHour), Value: 1}
 	usd := limitDoc{Type: string(LimitUSDPerMonth), Value: 2}
 	doc := &document{
-		Global: globalDoc{Limits: []limitDoc{rpm}},
+		Global: globalDoc{Limits: []limitDoc{rpm, usd}},
 		Groups: map[string]groupDoc{
 			"users":    {Limits: []limitDoc{rpm}, ChildDefaults: &childDefaultsDoc{Limits: []limitDoc{rpm, tph}}},
 			"plain":    {Parent: "users"},
-			"override": {Parent: "users", Limits: []limitDoc{{Type: string(LimitTokensPerHour), Value: 9}}},
-			"extra":    {Parent: "users", Limits: []limitDoc{usd}},
+			"override": {Parent: "users", Limits: []limitDoc{{Type: string(LimitRequestsPerMinute), Value: 9}}},
+			"extra":    {Parent: "users", Limits: []limitDoc{tpm, usd}},
 			"orphan":   {Parent: "nowhere", Limits: []limitDoc{rpm, tph}},
 			"below":    {Parent: "plain"},
+			"empty":    {},
 		},
 	}
-	// global 1 + users 1 + plain 2 + override 2 + extra 3 + orphan 2 + below 0.
-	if got := countEffectiveLimits(doc); got != 11 {
-		t.Errorf("count = %d, want 11", got)
+	// global 3 + users 3 + plain 3 + override 3 + extra 4 + orphan 3 + below 2 + empty 2.
+	if got := countCounters(doc); got != 23 {
+		t.Errorf("count = %d, want 23", got)
 	}
 }
 
-// The bound is reported once, at the document root.
-func TestEffectiveLimitsExceededAtRoot(t *testing.T) {
-	children := MaxEffectiveLimits / 2
-	groups := map[string]groupDoc{"users": {ChildDefaults: &childDefaultsDoc{Limits: []limitDoc{
-		{Type: string(LimitRequestsPerMinute), Value: 1}, {Type: string(LimitTokensPerHour), Value: 1},
-	}}}}
-	for i := range children {
-		groups[fmt.Sprintf("u%d", i)] = groupDoc{Parent: "users"}
+// The bound counts groups without limits, and is reported once, at the document root.
+func TestCountersExceededAtRoot(t *testing.T) {
+	groups := map[string]groupDoc{}
+	for i := range MaxCounters/2 - 1 {
+		groups[fmt.Sprintf("u%d", i)] = groupDoc{}
 	}
 	doc := &document{Groups: groups}
 	if issues := checkSemantics(doc); len(issues) != 0 {
@@ -480,7 +480,7 @@ func TestEffectiveLimitsExceededAtRoot(t *testing.T) {
 	}
 	doc.Global.Limits = []limitDoc{{Type: string(LimitRequestsPerMinute), Value: 1}}
 	issues := checkSemantics(doc)
-	if len(issues) != 1 || issues[0].Code != CodeEffectiveLimitsExceeded || issues[0].Path != "" {
-		t.Errorf("one over the bound: %v, want one %s at \"\"", issues, CodeEffectiveLimitsExceeded)
+	if len(issues) != 1 || issues[0].Code != CodeCountersExceeded || issues[0].Path != "" {
+		t.Errorf("one over the bound: %v, want one %s at \"\"", issues, CodeCountersExceeded)
 	}
 }

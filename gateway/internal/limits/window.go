@@ -41,11 +41,10 @@ type window struct {
 	// control-plane mode a per-minute window's share.
 	limit int64
 
-	// SlidingMinute: bucket i holds the amount counted during unix second sec[i], and
-	// nHeld[i] the part of that still held by unsettled reservations.
-	sec   [minuteBuckets]int64
-	n     [minuteBuckets]int64
-	nHeld [minuteBuckets]int64
+	// m holds a SlidingMinute window's buckets; nil for the fixed windows, which every
+	// scope has whether or not it has a limit (docs/specs/GATEWAY.md, Limits → Local
+	// counters).
+	m *buckets
 
 	// UTCHour, UTCMonth: the current window's start (unix seconds), everything counted
 	// in it, and the part of that still held by unsettled reservations. incarnation
@@ -67,6 +66,15 @@ type window struct {
 	local     []generationAmount
 }
 
+// buckets are a sliding minute's one-second buckets: bucket i holds the amount counted
+// during unix second sec[i], and nHeld[i] the part of that still held by unsettled
+// reservations.
+type buckets struct {
+	sec   [minuteBuckets]int64
+	n     [minuteBuckets]int64
+	nHeld [minuteBuckets]int64
+}
+
 // generationAmount is settled usage of one usage generation.
 type generationAmount struct {
 	generation uint64
@@ -82,7 +90,11 @@ type hold struct {
 }
 
 func newWindow(kind Kind, limit int64) *window {
-	return &window{kind: kind, limit: limit}
+	w := &window{kind: kind, limit: limit}
+	if kind == SlidingMinute {
+		w.m = &buckets{}
+	}
+	return w
 }
 
 // windowStart is the start of the fixed window holding t.
@@ -166,8 +178,8 @@ func (w *window) usedAt(now time.Time) int64 {
 	}
 	var sum int64
 	for i := range minuteBuckets {
-		if live(w.sec[i], now) {
-			sum = saturatingAdd(sum, w.n[i])
+		if live(w.m.sec[i], now) {
+			sum = saturatingAdd(sum, w.m.n[i])
 		}
 	}
 	return sum
@@ -211,13 +223,14 @@ func (w *window) add(now time.Time, amount int64, held bool, generation uint64) 
 	}
 	s := now.Unix()
 	i := s % minuteBuckets
-	if w.sec[i] != s {
-		w.sec[i], w.n[i], w.nHeld[i] = s, 0, 0
+	m := w.m
+	if m.sec[i] != s {
+		m.sec[i], m.n[i], m.nHeld[i] = s, 0, 0
 	}
-	amount = saturatingAdd(w.n[i], amount) - w.n[i]
-	w.n[i] += amount
+	amount = saturatingAdd(m.n[i], amount) - m.n[i]
+	m.n[i] += amount
 	if held {
-		w.nHeld[i] += amount
+		m.nHeld[i] += amount
 	}
 	return hold{at: s, n: amount}
 }
@@ -239,17 +252,17 @@ func (w *window) release(now time.Time, h hold) {
 		return
 	}
 	i := h.at % minuteBuckets
-	if w.sec[i] == h.at {
-		w.n[i] -= h.n
-		w.nHeld[i] -= h.n
+	if w.m.sec[i] == h.at {
+		w.m.n[i] -= h.n
+		w.m.nHeld[i] -= h.n
 	}
 }
 
 // keep turns a reservation into settled usage where it was counted.
 func (w *window) keep(now time.Time, h hold) {
 	if w.kind == SlidingMinute {
-		if i := h.at % minuteBuckets; w.sec[i] == h.at {
-			w.nHeld[i] -= h.n
+		if i := h.at % minuteBuckets; w.m.sec[i] == h.at {
+			w.m.nHeld[i] -= h.n
 		}
 		return
 	}
@@ -307,9 +320,11 @@ func (w *window) setBase(now, start time.Time, used int64) {
 func (w *window) clampNegative() bool {
 	negative := w.used < 0 || w.held < 0
 	w.used, w.held = max(w.used, 0), max(w.held, 0)
-	for i := range w.n {
-		negative = negative || w.n[i] < 0 || w.nHeld[i] < 0
-		w.n[i], w.nHeld[i] = max(w.n[i], 0), max(w.nHeld[i], 0)
+	if m := w.m; m != nil {
+		for i := range m.n {
+			negative = negative || m.n[i] < 0 || m.nHeld[i] < 0
+			m.n[i], m.nHeld[i] = max(m.n[i], 0), max(m.nHeld[i], 0)
+		}
 	}
 	return negative
 }
@@ -353,8 +368,8 @@ func (w *window) inFlight(now time.Time) int64 {
 	}
 	var sum int64
 	for i := range minuteBuckets {
-		if live(w.sec[i], now) {
-			sum = saturatingAdd(sum, w.nHeld[i])
+		if live(w.m.sec[i], now) {
+			sum = saturatingAdd(sum, w.m.nHeld[i])
 		}
 	}
 	return sum
@@ -380,8 +395,8 @@ func (w *window) resetIn(now time.Time) time.Duration {
 func (w *window) liveBuckets(now time.Time) []hold {
 	var out []hold
 	for i := range minuteBuckets {
-		if live(w.sec[i], now) && w.n[i] != 0 {
-			out = append(out, hold{at: w.sec[i], n: w.n[i]})
+		if live(w.m.sec[i], now) && w.m.n[i] != 0 {
+			out = append(out, hold{at: w.m.sec[i], n: w.m.n[i]})
 		}
 	}
 	slices.SortFunc(out, func(a, b hold) int { return cmp.Compare(a.at, b.at) })

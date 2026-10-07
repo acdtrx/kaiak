@@ -251,8 +251,22 @@ func TestUsageBatchesSealAtTheSizeLimit(t *testing.T) {
 	if got := len(h.cp.CountedRecords()); got != 7 {
 		t.Errorf("%d records counted, want 7", got)
 	}
+	// Acknowledged batches stay spooled until a totals.json save covering them has
+	// completed; the index names them acknowledged, so a restart never sends them.
+	if files := h.spoolFiles(spoolBatchPrefix); len(files) != 3 {
+		t.Errorf("spool %v, want the 3 acknowledged batches kept", files)
+	}
+	var idx spoolIndex
+	if found, err := h.dir.ReadVersioned(SpoolFile, spoolFormat, &idx); err != nil || !found || idx.Acknowledged[first.Batch.Epoch] != 3 {
+		t.Errorf("index %+v (%v), want the epoch acknowledged through 3", idx, err)
+	}
+	c.SpoolCovered([]BatchPosition{{Epoch: first.Batch.Epoch, Sequence: 2}})
+	if files := h.spoolFiles(spoolBatchPrefix); len(files) != 1 {
+		t.Errorf("spool %v after a save covering 2, want only batch 3", files)
+	}
+	c.SpoolCovered([]BatchPosition{{Epoch: first.Batch.Epoch, Sequence: 3}})
 	if files := h.spoolFiles(spoolBatchPrefix); len(files) != 0 {
-		t.Errorf("acknowledged batches still spooled: %v", files)
+		t.Errorf("spool %v after a save covering every batch, want none", files)
 	}
 }
 
@@ -494,14 +508,16 @@ func TestSpoolSurvivesARestart(t *testing.T) {
 	}
 }
 
-// A spool of the previous format (records named an owner, not groups) is discarded.
+// An index of another format is discarded: a new epoch starts. The acknowledged batch
+// it named is no longer known as acknowledged, so it is sent again, and the control
+// plane acknowledges it again without counting.
 func TestSpoolOfAnotherFormatStartsANewEpoch(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))
 	c, obs, stop := h.usageClient(1, nil)
 	c.Record(testRecord(1))
 	old := h.wantUsage(fakecontrol.OutcomeCounted, 1, 1)
-	if r := obs.next(t); r != BatchAcked { // the ack is taken: nothing left to resend
+	if r := obs.next(t); r != BatchAcked {
 		t.Fatalf("result %s, want %s", r, BatchAcked)
 	}
 	stop()
@@ -510,6 +526,9 @@ func TestSpoolOfAnotherFormatStartsANewEpoch(t *testing.T) {
 		t.Fatal(err)
 	}
 	c2, _, _ := h.usageClient(1, nil)
+	if again := h.wantUsage(fakecontrol.OutcomeDuplicate, 1, 1); again.Batch != old.Batch {
+		t.Errorf("resent %+v, want the acknowledged batch %+v", again.Batch, old.Batch)
+	}
 	c2.Record(testRecord(2))
 	fresh := h.wantUsage(fakecontrol.OutcomeCounted, 1, 1)
 	if fresh.Batch.Epoch == old.Batch.Epoch {

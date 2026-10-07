@@ -31,6 +31,16 @@ type Totals struct {
 	// only the ones that changed, and every other count keeps its base.
 	Complete bool
 	Windows  []PushedWindow
+	// CountedThrough is the message's counted_through: the last batch of each epoch the
+	// windows include. totals.json saves it with the bases, so the usage spool knows
+	// which batches the saved bases hold.
+	CountedThrough []CountedBatch
+}
+
+// CountedBatch is one counted_through entry: the last counted batch of an epoch.
+type CountedBatch struct {
+	Epoch    string `json:"epoch"`
+	Sequence int64  `json:"sequence"`
 }
 
 // PushedWindow is one scope's current window of one type as the control plane counts
@@ -49,9 +59,11 @@ type PushedWindow struct {
 // its windows become the bases of the hour and month counts of their scope and type —
 // complete totals replace every base (0 without a window), others only those they
 // list. Windows of scopes the config does not have are kept for a reload that adds
-// them. counted, when not 0, is the newest usage generation the message shows
-// counted: it leaves the counters' own usage now, as the totals that include it are
-// applied.
+// them, until their window has passed. counted, when not 0, is the newest usage
+// generation the message shows counted: it leaves the counters' own usage now, as the
+// totals that include it are applied. A changes-only message touches only the windows
+// it lists, the per-minute shares when the live count changed, and the counters
+// holding own usage.
 func (l *Limiter) TakeTotals(t Totals, counted uint64) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -61,21 +73,12 @@ func (l *Limiter) TakeTotals(t Totals, counted uint64) {
 		l.firstClosed = true
 		close(l.firstTotals)
 	}
-	l.live = max(t.LiveGateways, 1)
+	live := max(t.LiveGateways, 1)
+	reshare := live != l.live
+	l.live = live
 	l.totalsAt = now
 	l.totalsKnown = true
-	if l.restoredUntagged {
-		// Restored uncounted usage whose batches were no longer spooled at boot: the
-		// control plane counted them (or they were lost), so the first totals applied
-		// hold all of it that will ever be counted.
-		l.restoredUntagged = false
-		for _, c := range l.counters {
-			if c.w.shared {
-				c.w.counted(0)
-				l.checkCountLocked(c)
-			}
-		}
-	}
+	l.countedThrough = t.CountedThrough
 	if t.Complete {
 		l.pushed = make(map[counterKey]PushedWindow, len(t.Windows))
 	}
@@ -83,15 +86,14 @@ func (l *Limiter) TakeTotals(t Totals, counted uint64) {
 		l.pushed[keyOf(w.Group, w.Type)] = w
 		l.warnAheadLocked(w, now)
 	}
+	l.prunePushedLocked(now)
 	if t.Complete {
 		for _, c := range l.counters {
 			l.applyLimit(c)
 		}
 	} else {
-		// Per-minute shares follow the live count; the hour and month counts only the
-		// windows listed.
-		for _, c := range l.counters {
-			if c.w.kind == SlidingMinute {
+		if reshare {
+			for _, c := range l.minute {
 				l.applyLimit(c)
 			}
 		}
@@ -102,7 +104,26 @@ func (l *Limiter) TakeTotals(t Totals, counted uint64) {
 		}
 	}
 	l.retireCountedLocked(counted)
+	l.pruneRetainedLocked(now)
 	l.warnSmallSharesLocked()
+}
+
+// prunePushedLocked drops, once an hour, the pushed windows that have ended: a
+// changes-only message never lists a window again once its hour or month is over, so
+// without this a long-lived stream would keep every scope it ever saw. Callers hold
+// l.mu.
+func (l *Limiter) prunePushedLocked(now time.Time) {
+	hour := windowStart(UTCHour, now)
+	if !hour.After(l.prunedAt) {
+		return
+	}
+	l.prunedAt = hour
+	for k, w := range l.pushed {
+		kind, _ := shape(k.typ)
+		if w.Start.Before(windowStart(kind, now)) {
+			delete(l.pushed, k)
+		}
+	}
 }
 
 // warnSmallSharesLocked logs, once per applied config and live-gateway count, each
@@ -162,10 +183,11 @@ func (l *Limiter) retireCountedLocked(counted uint64) {
 		return
 	}
 	l.counted = counted
-	for _, c := range l.counters {
-		if c.w.shared {
-			c.w.counted(l.counted)
-			l.checkCountLocked(c)
+	for c := range l.owning {
+		c.w.counted(l.counted)
+		l.checkCountLocked(c)
+		if len(c.w.local) == 0 {
+			delete(l.owning, c)
 		}
 	}
 }
@@ -201,9 +223,11 @@ func (l *Limiter) LiveGateways() int64 {
 
 // Outage reports whether the control plane has been out of reach for longer than
 // the live config's outage grace (global.control_outage_grace_ms): no config stream
-// open and no contact since — or usage batches waiting that long for an answer, an
-// open stream notwithstanding (a control plane that serves config but no longer
-// takes usage cannot count this gateway's spend). Always false in file mode.
+// open and no contact since — or usage waiting that long, an open stream
+// notwithstanding: for an answer (a control plane that serves config but no longer
+// takes usage cannot count this gateway's spend), or acknowledged but not yet shown
+// counted by applied totals (totals that stopped coming leave the bases frozen).
+// Always false in file mode.
 func (l *Limiter) Outage() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -221,20 +245,22 @@ func (l *Limiter) outageLocked(now time.Time) bool {
 	}
 	c, grace := l.contact(), l.applied.ControlOutageGrace
 	var reason string
-	var began time.Time // when the grace ran out
+	var began, waiting time.Time // when the grace ran out; since when usage waited
 	switch {
 	case !c.Connected && now.Sub(c.Last) > grace:
 		reason, began = "no contact", c.Last.Add(grace)
 	case !c.UsageWaitingSince.IsZero() && now.Sub(c.UsageWaitingSince) > grace:
-		reason, began = "usage not acknowledged", c.UsageWaitingSince.Add(grace)
+		reason, began, waiting = "usage not acknowledged", c.UsageWaitingSince.Add(grace), c.UsageWaitingSince
+	case !c.UsageUncountedSince.IsZero() && now.Sub(c.UsageUncountedSince) > grace:
+		reason, began, waiting = "usage not shown counted", c.UsageUncountedSince.Add(grace), c.UsageUncountedSince
 	}
 	switch {
 	case reason != "" && l.outageSince.IsZero():
 		l.outageSince = began
 		attrs := []any{"kaiak.reason", reason, logattr.Seconds("kaiak.control.since_contact", now.Sub(c.Last)),
 			logattr.Seconds("kaiak.control.outage_grace", grace)}
-		if !c.UsageWaitingSince.IsZero() {
-			attrs = append(attrs, logattr.Seconds("kaiak.control.usage_waiting", now.Sub(c.UsageWaitingSince)))
+		if !waiting.IsZero() {
+			attrs = append(attrs, logattr.Seconds("kaiak.control.usage_waiting", now.Sub(waiting)))
 		}
 		l.logger.Warn("control plane outage: priced USD-limited models refused", attrs...)
 	case reason == "" && !l.outageSince.IsZero():

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"sync"
 	"time"
@@ -26,6 +27,11 @@ import (
 // DefaultBatchInterval seals the filling batch when Options leave it zero; a batch
 // also seals at MaxBatchRecords (the default BatchMaxRecords).
 const DefaultBatchInterval = 5 * time.Second
+
+// ackedRemembered bounds the acknowledged batches remembered with no data directory
+// (docs/specs/GATEWAY.md, Usage batches): past it the oldest is forgotten. With a data
+// directory the spool keeps them, and its own bounds apply.
+const ackedRemembered = 10_000
 
 // usageTimeout bounds one POST /v1/usage.
 const usageTimeout = 30 * time.Second
@@ -105,20 +111,32 @@ type usageSender struct {
 
 	mu sync.Mutex
 	// generation is the filling batch's usage generation: the batches restored from
-	// the spool at start take 1 to restoredGeneration, the process's first sealed
-	// batch the next, one more per sealed batch. A totals message showing a batch
-	// counted names its generation to the consumer (TotalsUpdate.Counted).
-	generation         uint64
-	restoredGeneration uint64
-	filling            []accounting.UsageRecord
-	sealed             []sealedBatch // sealed, not yet saved: no batch ID yet
-	sealedRecords      int
-	queue              []spoolEntry // saved, not acknowledged, in send order; queue[0] is outstanding
-	// acked are the batches acknowledged but not yet shown counted by stream totals, in
-	// send order: an ack only lets a batch leave the store, and its usage leaves the
-	// limiter once a totals event's counted_through covers it (countedGeneration).
-	acked         []ackedBatch
-	queuedRecords int
+	// the spool at start take the first ones, the process's first sealed batch the
+	// next, one more per sealed batch. A totals message showing a batch counted names
+	// its generation to the consumer (TotalsUpdate.Counted).
+	generation    uint64
+	filling       []accounting.UsageRecord
+	sealed        []sealedBatch // sealed, not yet saved: no batch ID yet
+	sealedRecords int
+	queue         []spoolEntry // saved, not acknowledged, in send order; queue[0] is outstanding
+	// restored are the batches the store kept from an earlier run, until RestoreSpooled
+	// hands their usage to the limits.
+	restored []spoolEntry
+	// acked are this instance's batches acknowledged and not yet done with, in send
+	// order: an ack only stops a batch being sent, its usage leaves the limiter once
+	// applied totals show it counted (countedGeneration, which marks it covered), and
+	// with a data directory its file stays until a totals.json save covering it has
+	// completed (SpoolCovered). With no data directory a covered batch is forgotten at
+	// once, and at most ackedRemembered are kept.
+	acked []ackedBatch
+	// lastCounted is the counted_through of the totals applied last, by epoch: a batch
+	// it covers is acknowledged already covered.
+	lastCounted map[string]int64
+	// uncountedSince is when the oldest acknowledged batch not yet covered was
+	// acknowledged (or restored at boot); zero while none waits. Forgetting the oldest
+	// past ackedRemembered keeps it.
+	uncountedSince time.Time
+	queuedRecords  int
 	// sealedBytes and queuedBytes are the encoded sizes of the checked sealed
 	// batches and of the queued ones sealed by this process (memoryBytesLocked).
 	sealedBytes int64
@@ -277,13 +295,135 @@ func (u *usageSender) runSealer(ctx context.Context) {
 	}
 }
 
-// RestoredGeneration is the newest usage generation of the batches restored from the
-// spool at start (0: none). Usage the previous run had not seen counted travels in
-// them, so it is counted once generations up to this one are.
-func (c *Client) RestoredGeneration() uint64 {
-	c.usage.mu.Lock()
-	defer c.usage.mu.Unlock()
-	return c.usage.restoredGeneration
+// RestoredBatch is a batch the spool kept from an earlier run that the restored totals
+// do not include: its usage generation and its records.
+type RestoredBatch struct {
+	Generation uint64
+	Records    []accounting.UsageRecord
+}
+
+// RestoreSpooled hands over, once, the batches the spool kept from an earlier run whose
+// usage is not inside the bases restored from totals.json: every batch except this
+// instance's that counted — the counted_through those bases include — covers
+// (docs/specs/GATEWAY.md, Limits → Control-plane mode: Restart keeps the last totals).
+// The acknowledged ones it covers leave the spool now: the saved file holds them. A
+// batch that can no longer be read is left out and logged (the sender sets it aside).
+func (c *Client) RestoreSpooled(counted []BatchPosition) []RestoredBatch {
+	u := c.usage
+	through := throughOf(counted)
+	u.mu.Lock()
+	entries := u.restored
+	u.restored = nil
+	u.lastCounted = through
+	u.mu.Unlock()
+	var out []RestoredBatch
+	held := map[BatchID]bool{}
+	for _, e := range entries {
+		if e.id.Instance == u.instance && covers(through, e.id) {
+			held[e.id] = e.acknowledged
+			continue
+		}
+		batch, err := u.store.load(e)
+		if err != nil {
+			u.logger.Warn("spooled usage batch not read: its usage is not restored to the limits",
+				"kaiak.usage.epoch", e.id.Epoch, "kaiak.usage.sequence", e.id.Sequence, "exception.message", err)
+			continue
+		}
+		out = append(out, RestoredBatch{Generation: e.generation, Records: batch.Records})
+	}
+	u.forgetAcked(func(id BatchID) bool { return held[id] })
+	return out
+}
+
+// SpoolCovered follows a completed totals.json save whose bases include counted: the
+// acknowledged batches it covers leave the spool (docs/specs/GATEWAY.md, Usage spool →
+// Write policy).
+func (c *Client) SpoolCovered(counted []BatchPosition) {
+	through := throughOf(counted)
+	c.usage.forgetAcked(func(id BatchID) bool { return covers(through, id) })
+}
+
+// forgetAcked removes the acknowledged batches gone says, from memory, the store and
+// the index's acknowledged sequences.
+func (u *usageSender) forgetAcked(gone func(BatchID) bool) {
+	u.mu.Lock()
+	var removed []spoolEntry
+	kept := u.acked[:0]
+	for _, a := range u.acked {
+		if gone(a.entry.id) {
+			removed = append(removed, a.entry)
+			continue
+		}
+		kept = append(kept, a)
+	}
+	u.acked = kept
+	u.uncountedChangedLocked()
+	u.mu.Unlock()
+	if len(removed) == 0 {
+		return
+	}
+	for _, e := range removed {
+		if err := u.store.remove(e); err != nil {
+			u.logger.Warn("covered usage batch not removed from the spool; a restart rebuilds its usage, counted until totals cover it",
+				"kaiak.usage.epoch", e.id.Epoch, "kaiak.usage.sequence", e.id.Sequence, "exception.message", err)
+		}
+	}
+	u.pruneAcknowledgedEpochs()
+}
+
+// pruneAcknowledgedEpochs drops from the index the acknowledged sequence of every
+// epoch other than the current one with no batch of this instance kept, queued or
+// acknowledged: nothing left needs it. The lock order is persistMu, then mu, as in
+// persist; an ack records the index before its batch leaves the queue, so an epoch
+// whose batch is being acknowledged is still seen.
+func (u *usageSender) pruneAcknowledgedEpochs() {
+	u.persistMu.Lock()
+	defer u.persistMu.Unlock()
+	u.mu.Lock()
+	kept := map[string]bool{}
+	for _, a := range u.acked {
+		kept[a.entry.id.Epoch] = true
+	}
+	for _, e := range u.queue {
+		if e.id.Instance == u.instance {
+			kept[e.id.Epoch] = true
+		}
+	}
+	u.mu.Unlock()
+	var stale []string
+	for epoch := range u.index.Acknowledged {
+		if epoch != u.index.Epoch && !kept[epoch] {
+			stale = append(stale, epoch)
+		}
+	}
+	if len(stale) == 0 {
+		return
+	}
+	next := u.index
+	next.Acknowledged = maps.Clone(u.index.Acknowledged)
+	for _, epoch := range stale {
+		delete(next.Acknowledged, epoch)
+	}
+	if err := u.store.writeIndex(next); err != nil {
+		u.logger.Warn("usage spool index not written; retried with the next batch", "file.name", SpoolFile, "exception.message", err)
+		return
+	}
+	u.index = next
+}
+
+// throughOf is counted_through by epoch.
+func throughOf(counted []BatchPosition) map[string]int64 {
+	through := make(map[string]int64, len(counted))
+	for _, pos := range counted {
+		through[pos.Epoch] = pos.Sequence
+	}
+	return through
+}
+
+// covers reports whether through — counted_through by epoch — covers batch id.
+func covers(through map[string]int64, id BatchID) bool {
+	last, ok := through[id.Epoch]
+	return ok && id.Sequence <= last
 }
 
 // UsageWaitingSince is when the usage batches not yet answered started waiting for
@@ -297,37 +437,67 @@ func (c *Client) UsageWaitingSince() time.Time {
 	return c.usage.waitingSince
 }
 
+// UsageUncountedSince is when the oldest batch of this instance acknowledged but not
+// yet shown counted by applied totals was acknowledged (or restored at boot); zero
+// while none waits. A config stream that stays open while this grows brings no totals
+// that count this gateway's usage: its bases are frozen (docs/specs/GATEWAY.md, Limits
+// → Usage acks count for money limits).
+func (c *Client) UsageUncountedSince() time.Time {
+	c.usage.mu.Lock()
+	defer c.usage.mu.Unlock()
+	return c.usage.uncountedSince
+}
+
 // countedGeneration is the newest usage generation among the batches a totals event
 // shows counted: in send order — acknowledged ones first, then the queue — every
 // batch at or before its own epoch's entry in counted (one per epoch). Batches go out
 // one at a time, so the control plane counts them in that order, and each entry names
-// the last of its epoch. Acknowledged batches it covers are forgotten: their usage
-// leaves the limiter now. 0 when it covers none.
+// the last of its epoch: every acknowledged batch sent before a covered one is covered
+// too. The acknowledged batches it newly covers are marked so — their usage leaves the
+// limiter now — and, with no data directory, forgotten. 0 when it covers none it had
+// not covered before.
 func (u *usageSender) countedGeneration(counted []BatchPosition) uint64 {
-	through := make(map[string]int64, len(counted))
-	for _, pos := range counted {
-		through[pos.Epoch] = pos.Sequence
-	}
-	covers := func(epoch string, sequence int64) bool {
-		last, ok := through[epoch]
-		return ok && sequence <= last
-	}
+	through := throughOf(counted)
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	u.lastCounted = through
 	var generation uint64
 	covered := -1 // the last acknowledged batch covered
 	for i, a := range u.acked {
-		if covers(a.id.Epoch, a.id.Sequence) {
-			covered, generation = i, max(generation, a.generation)
+		if covers(through, a.entry.id) {
+			covered = i
 		}
 	}
 	for _, e := range u.queue {
-		if covers(e.id.Epoch, e.id.Sequence) {
+		if covers(through, e.id) {
 			covered, generation = len(u.acked)-1, max(generation, e.generation)
 		}
 	}
-	u.acked = u.acked[covered+1:]
+	for i := range covered + 1 {
+		if !u.acked[i].covered {
+			u.acked[i].covered = true
+			generation = max(generation, u.acked[i].entry.generation)
+		}
+	}
+	if u.store.inMemory() {
+		u.acked = u.acked[covered+1:]
+	}
+	if covered >= 0 {
+		u.uncountedChangedLocked()
+	}
 	return generation
+}
+
+// uncountedChangedLocked sets uncountedSince to the acknowledgement of the oldest
+// acknowledged batch not yet covered; zero when every one is. Callers hold u.mu.
+func (u *usageSender) uncountedChangedLocked() {
+	u.uncountedSince = time.Time{}
+	for _, a := range u.acked {
+		if !a.covered {
+			u.uncountedSince = a.ackedAt
+			return
+		}
+	}
 }
 
 // answered restarts the ack clock: the control plane answered the outstanding batch
@@ -348,33 +518,13 @@ func (u *usageSender) head() (spoolEntry, bool) {
 	return u.queue[0], true
 }
 
-// ackedBatch is a batch acknowledged but not yet shown counted: its ID, its usage
-// generation, and when the limiter no longer holds any of its usage anyway — the end
-// of the window its last record was settled in (the hour, or the month when it cost
-// anything), where the gateway's own uncounted usage stays behind.
+// ackedBatch is a batch of this instance acknowledged and not yet done with: its
+// entry, when it was acknowledged (or restored at boot), and whether applied totals
+// have shown it counted.
 type ackedBatch struct {
-	id         BatchID
-	generation uint64
-	clearedAt  time.Time
-}
-
-// clearedAt is when the limiter's windows no longer hold any of batch's usage: the end
-// of the UTC hour of its last record, or of the month when a record cost anything
-// (docs/specs/GATEWAY.md, Limits → Uncounted usage stays in its own window).
-func clearedAt(batch UsageBatch) time.Time {
-	var last time.Time
-	priced := false
-	for _, r := range batch.Records {
-		if r.GatewayTime.After(last) {
-			last = r.GatewayTime
-		}
-		priced = priced || r.CostNanoUSD > 0
-	}
-	last = last.UTC()
-	if priced {
-		return time.Date(last.Year(), last.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, 1, 0)
-	}
-	return last.Truncate(time.Hour).Add(time.Hour)
+	entry   spoolEntry
+	ackedAt time.Time
+	covered bool
 }
 
 // dropHeadLocked removes e, the outstanding batch, from the queue. Callers hold u.mu.
@@ -400,21 +550,46 @@ func (u *usageSender) dropHead(e spoolEntry) {
 
 // acknowledged moves e, the outstanding batch, from the queue to the acknowledged
 // batches, under one hold of the lock: a totals event handled meanwhile finds it in
-// one or the other, never in neither. Acknowledged batches whose usage the limiter's
-// windows have already left behind are forgotten: covering them would retire
-// nothing, and while the stream is down and acks still come they would pile up.
-func (u *usageSender) acknowledged(e spoolEntry, batch UsageBatch) {
+// one or the other, never in neither. Another instance's batch is only dropped: no
+// totals name it. A batch the totals applied last already cover is acknowledged
+// covered. With no data directory a covered batch is not kept, and past
+// ackedRemembered the oldest is forgotten — which only over-counts until a later batch
+// is shown counted, since that retires every earlier generation — keeping the wait's
+// time.
+func (u *usageSender) acknowledged(e spoolEntry) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.dropHeadLocked(e)
-	now := time.Now()
-	kept := u.acked[:0]
-	for _, a := range u.acked {
-		if a.clearedAt.After(now) {
-			kept = append(kept, a)
+	if e.id.Instance != u.instance {
+		return
+	}
+	covered := covers(u.lastCounted, e.id)
+	if u.store.inMemory() {
+		if covered {
+			return
+		}
+		if len(u.acked) >= ackedRemembered {
+			u.acked = u.acked[1:]
 		}
 	}
-	u.acked = append(kept, ackedBatch{id: e.id, generation: e.generation, clearedAt: clearedAt(batch)})
+	now := time.Now()
+	u.acked = append(u.acked, ackedBatch{entry: e, ackedAt: now, covered: covered})
+	if !covered && u.uncountedSince.IsZero() {
+		u.uncountedSince = now
+	}
+}
+
+// recordAcknowledged records this instance's batch e acknowledged in the store: the
+// index names its epoch acknowledged through it, so a restart never sends it again.
+func (u *usageSender) recordAcknowledged(e spoolEntry) error {
+	u.persistMu.Lock()
+	defer u.persistMu.Unlock()
+	next := u.index.withAcknowledged(e.id.Epoch, e.id.Sequence)
+	if err := u.store.acknowledge(e, next); err != nil {
+		return err
+	}
+	u.index = next
+	return nil
 }
 
 // runSender sends the outstanding batch until the control plane acknowledges or
@@ -459,8 +634,8 @@ func (u *usageSender) load(e spoolEntry) (UsageBatch, bool) {
 }
 
 // sendOutstanding sends one attempt of the outstanding batch and acts on the answer:
-// acknowledged → the batch leaves the store, and waits among the acknowledged batches
-// until a totals event shows it counted;
+// acknowledged → the batch is not sent again, and waits among the acknowledged
+// batches until a totals event shows it counted (another instance's leaves the store);
 // refused → set aside; anything else → the backoff delay, then the same batch again.
 func (u *usageSender) sendOutstanding(ctx context.Context, e spoolEntry, batch UsageBatch) {
 	attrs := []any{"kaiak.usage.epoch", e.id.Epoch, "kaiak.usage.sequence", e.id.Sequence, "kaiak.usage.records", e.records}
@@ -475,11 +650,16 @@ func (u *usageSender) sendOutstanding(ctx context.Context, e spoolEntry, batch U
 	switch {
 	case err == nil:
 		u.answered()
-		if err := u.store.remove(e); err != nil {
-			u.logger.Warn("acknowledged usage batch not removed from the spool; a restart resends it and the control plane acknowledges it again without counting",
+		if e.id.Instance != u.instance {
+			err = u.store.remove(e)
+		} else {
+			err = u.recordAcknowledged(e)
+		}
+		if err != nil {
+			u.logger.Warn("acknowledged usage batch not recorded in the spool; a restart resends it and the control plane acknowledges it again without counting",
 				append(attrs, "exception.message", err)...)
 		}
-		u.acknowledged(e, batch)
+		u.acknowledged(e)
 		u.backoff.reset()
 		u.observe(BatchAcked)
 		u.logger.Debug("usage batch acknowledged", attrs...)

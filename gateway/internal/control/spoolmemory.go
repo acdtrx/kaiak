@@ -41,6 +41,12 @@ func (m *memoryStore) load(e spoolEntry) (UsageBatch, error) {
 	return UsageBatch{Batch: e.id, Records: records}, nil
 }
 
+// acknowledge forgets the batch's records: with no data directory nothing survives the
+// process, so the acknowledged batch is remembered by the sender alone.
+func (m *memoryStore) acknowledge(e spoolEntry, _ spoolIndex) error { return m.remove(e) }
+
+func (*memoryStore) writeIndex(spoolIndex) error { return nil }
+
 func (m *memoryStore) remove(e spoolEntry) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
