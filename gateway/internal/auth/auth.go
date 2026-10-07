@@ -62,8 +62,7 @@ func Authenticate(snapshot *config.Snapshot, authorization, apiKey string, now t
 		return Identity{}, &Error{Code: CodeMissingKey,
 			Message: "No API key provided. Send it in the Authorization header as \"Bearer <key>\", or in the x-api-key header."}
 	}
-	sum := sha256.Sum256([]byte(key))
-	k, found := snapshot.KeyByHash("sha256:" + hex.EncodeToString(sum[:]))
+	k, found := snapshot.KeyByHash(KeyHash(key))
 	if !found {
 		return Identity{}, &Error{Code: CodeUnknownKey, Message: "Invalid API key."}
 	}
@@ -75,6 +74,13 @@ func Authenticate(snapshot *config.Snapshot, authorization, apiKey string, now t
 	}
 
 	return Identity{KeyID: k.ID, Group: k.Group, allowed: k.AllowedModels()}, nil
+}
+
+// KeyHash is a client key's hash as the config's keys carry it: "sha256:" and the
+// lowercase hex SHA-256 of the key.
+func KeyHash(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 // bearerToken extracts the token from an RFC 6750 "Bearer <token>" value; the scheme

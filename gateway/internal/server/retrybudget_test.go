@@ -71,7 +71,7 @@ func TestRetryBudgetCountsSentRetries(t *testing.T) {
 // with its answer, and the log line says why (L1).
 func TestRetryBudgetStopsRetries(t *testing.T) {
 	g, other := newRetryGateway(t, "local", "local-b",
-		withGlobal(`"circuit": { "failure_threshold": 1000, "probe_interval_ms": 3600000 }`))
+		withGlobal(t, `"circuit": { "failure_threshold": 1000, "probe_interval_ms": 3600000 }`))
 	g.backend.SetReply(fakebackend.Reply{Status: http.StatusInternalServerError})
 	other.SetReply(fakebackend.Reply{Status: http.StatusInternalServerError})
 	sent := func() int { return len(g.backend.Requests()) + len(other.Requests()) }

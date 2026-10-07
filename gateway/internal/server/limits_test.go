@@ -19,10 +19,10 @@ func withLimits(t *testing.T, g *testGateway, team, workload string) {
 	t.Helper()
 	g.holder.Swap(testSnapshotWith(t, g.backend.URL(), func(doc string) string {
 		if team != "" {
-			doc = strings.Replace(doc, `"research": {}`, `"research": { "limits": `+team+` }`, 1)
+			doc = replaceOnce(t, doc, `"research": {}`, `"research": { "limits": `+team+` }`)
 		}
 		if workload != "" {
-			doc = strings.Replace(doc, `"allowed_models": ["*"] }`, `"allowed_models": ["*"], "limits": `+workload+` }`, 1)
+			doc = replaceOnce(t, doc, `"allowed_models": ["*"] }`, `"allowed_models": ["*"], "limits": `+workload+` }`)
 		}
 		return doc
 	}))
@@ -151,11 +151,11 @@ func TestExhaustedBudgetIs429BudgetExceeded(t *testing.T) {
 // priced model is refused; the free one keeps serving.
 func TestOutageRefusesOnlyPricedModels(t *testing.T) {
 	lost := time.Now().Add(-time.Hour)
-	g := newTestGatewayWith(t, func(h *config.Holder) *limits.Limiter {
+	g := buildTestGateway(t, testOptions{limiter: func(h *config.Holder) *limits.Limiter {
 		return limits.NewShared(h, time.Now, func() limits.Contact { return limits.Contact{Last: lost} }, nil)
-	})
+	}})
 	g.holder.Swap(testSnapshotWith(t, g.backend.URL(), func(doc string) string {
-		return strings.Replace(doc, `"global": { `, `"global": { "limits": [{ "type": "usd_per_month", "value": 100 }], `, 1)
+		return replaceOnce(t, doc, `"global": { `, `"global": { "limits": [{ "type": "usd_per_month", "value": 100 }], `)
 	}))
 	w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey, body: `{"model":"pair","messages":[]}`})
 	expectError(t, w, http.StatusServiceUnavailable, "budget_unavailable")
@@ -168,9 +168,9 @@ func TestOutageRefusesOnlyPricedModels(t *testing.T) {
 // closed with 503 budget_unavailable; other models keep serving.
 func TestOutageRefusesMoneyLimitedModels(t *testing.T) {
 	lost := time.Now().Add(-time.Hour)
-	g := newTestGatewayWith(t, func(h *config.Holder) *limits.Limiter {
+	g := buildTestGateway(t, testOptions{limiter: func(h *config.Holder) *limits.Limiter {
 		return limits.NewShared(h, time.Now, func() limits.Contact { return limits.Contact{Last: lost} }, nil)
-	})
+	}})
 	withLimits(t, g, `[{ "type": "usd_per_month", "value": 100 }]`, "")
 	w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey, body: `{"model":"pair","messages":[]}`})
 	expectError(t, w, http.StatusServiceUnavailable, "budget_unavailable")
@@ -230,10 +230,10 @@ func TestOutputMultiplicityMultipliesTheReservation(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			g := newTestGateway(t)
 			g.holder.Swap(testSnapshotWith(t, g.backend.URL(), func(doc string) string {
-				doc = strings.Replace(doc, `"research": {}`, `"research": { "limits": [{ "type": "tokens_per_minute", "value": 1000000 }] }`, 1)
+				doc = replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [{ "type": "tokens_per_minute", "value": 1000000 }] }`)
 				if c.maxN != "" {
-					doc = strings.Replace(doc, `"max_request_body_bytes": 1024 }`, `"max_request_body_bytes": 1024, "max_n": `+c.maxN+
-						`, "max_sequences_per_request": `+c.maxN+` }`, 1)
+					doc = replaceOnce(t, doc, `"max_request_body_bytes": 1024 }`, `"max_request_body_bytes": 1024, "max_n": `+c.maxN+
+						`, "max_sequences_per_request": `+c.maxN+` }`)
 				}
 				return doc
 			}))
@@ -273,8 +273,8 @@ func TestOutputMultiplicityMultipliesTheReservation(t *testing.T) {
 func TestOutputMultiplicityReservationSaturates(t *testing.T) {
 	g := newTestGateway(t)
 	g.holder.Swap(testSnapshotWith(t, g.backend.URL(), func(doc string) string {
-		doc = strings.Replace(doc, `"research": {}`, `"research": { "limits": [{ "type": "tokens_per_minute", "value": 1000000 }] }`, 1)
-		return strings.Replace(doc, `"max_request_body_bytes": 1024 }`, `"max_request_body_bytes": 1024, "max_n": 9007199254740991, "max_sequences_per_request": 9007199254740991 }`, 1)
+		doc = replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [{ "type": "tokens_per_minute", "value": 1000000 }] }`)
+		return replaceOnce(t, doc, `"max_request_body_bytes": 1024 }`, `"max_request_body_bytes": 1024, "max_n": 9007199254740991, "max_sequences_per_request": 9007199254740991 }`)
 	}))
 	w := do(t, g.h, call{method: "POST", path: "/v1/completions", key: workloadKey,
 		body: `{"model":"pair","prompt":"a","max_tokens":1024,"n":9007199254740991}`})
@@ -482,9 +482,9 @@ func TestRefusalsNameTheScopeKindOnly(t *testing.T) {
 			if groupLimits != "" {
 				research += `, "limits": ` + groupLimits
 			}
-			doc = strings.Replace(doc, `"research": {}`, research+` }`, 1)
+			doc = replaceOnce(t, doc, `"research": {}`, research+` }`)
 			if globalLimits != "" {
-				doc = strings.Replace(doc, `"global": { `, `"global": { "limits": `+globalLimits+`, `, 1)
+				doc = replaceOnce(t, doc, `"global": { `, `"global": { "limits": `+globalLimits+`, `)
 			}
 			return doc
 		}))
@@ -522,7 +522,7 @@ func TestRefusalsNameTheScopeKindOnly(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var g *testGateway
 			if tc.outage {
-				g = newTestGatewayWith(t, outage)
+				g = buildTestGateway(t, testOptions{limiter: outage})
 			} else {
 				g = newTestGateway(t)
 			}

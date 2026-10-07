@@ -27,9 +27,9 @@ var localEntry = regexp.MustCompile(`"local": \{ "type": "openai-compatible", "b
 
 // localAs makes backend "local" one of type typ, its base_url ending in suffix (it
 // keeps its api_key_env, which openai and azure-openai require).
-func localAs(typ, suffix string) func(string) string {
+func localAs(t *testing.T, typ, suffix string) func(string) string {
 	return func(doc string) string {
-		return localEntry.ReplaceAllString(doc, `"local": { "type": "`+typ+`", "base_url": "${1}`+suffix+`"`)
+		return replaceMatch(t, doc, localEntry, `"local": { "type": "`+typ+`", "base_url": "${1}`+suffix+`"`)
 	}
 }
 
@@ -40,9 +40,9 @@ func localAs(typ, suffix string) func(string) string {
 func TestUnknownPathIsTheDeploymentsFailure(t *testing.T) {
 	for _, m := range pathModules {
 		t.Run(m.typ+"/retried", func(t *testing.T) {
-			circuit := withGlobal(`"circuit": { "failure_threshold": 1, "probe_interval_ms": 3600000 }`)
+			circuit := withGlobal(t, `"circuit": { "failure_threshold": 1, "probe_interval_ms": 3600000 }`)
 			g, other := newRetryGateway(t, "local", "local-b", func(doc string) string {
-				return circuit(localAs(m.typ, m.suffix)(doc))
+				return circuit(localAs(t, m.typ, m.suffix)(doc))
 			})
 			if got := g.holder.Current().Backends["local"].Type; string(got) != m.typ {
 				t.Fatalf("backend local is %s, want %s", got, m.typ)
@@ -72,9 +72,7 @@ func TestUnknownPathIsTheDeploymentsFailure(t *testing.T) {
 		})
 		t.Run(m.typ+"/no deployment left", func(t *testing.T) {
 			g := newTestGateway(t)
-			s := testSnapshotWith(t, g.backend.URL(), localAs(m.typ, m.suffix))
-			g.holder.Swap(s)
-			g.router.Configure(s)
+			g.apply(t, localAs(t, m.typ, m.suffix))
 			g.backend.SetReply(fakebackend.Reply{Status: http.StatusNotFound, Body: m.answer})
 			w := post(t, g, "r", `{"model":"open"}`)
 			expectError(t, w, http.StatusBadGateway, "upstream_path_missing")
@@ -102,8 +100,8 @@ func TestUnknownPathIsTheDeploymentsFailure(t *testing.T) {
 // them all and goes to another backend — never to a sibling on the same one.
 func TestUnknownPathRefusesTheBackendForTheRequest(t *testing.T) {
 	g, other := newRetryGateway(t, "local", "local-b", func(doc string) string {
-		return strings.Replace(doc, `{ "backend": "local", "model": "first" }, `,
-			`{ "backend": "local", "model": "first" }, { "backend": "local", "model": "sibling" }, `, 1)
+		return replaceOnce(t, doc, `{ "backend": "local", "model": "first" }, `,
+			`{ "backend": "local", "model": "first" }, { "backend": "local", "model": "sibling" }, `)
 	})
 	if n := len(g.holder.Current().Models["retry"].Deployments); n != 3 {
 		t.Fatalf("model retry has %d deployments, want 3", n)

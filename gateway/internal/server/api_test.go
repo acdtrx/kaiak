@@ -30,7 +30,7 @@ func TestRequestLineKeysFollowTheFieldTable(t *testing.T) {
 
 	cases := []struct {
 		name  string
-		setup func(g *testGateway)
+		setup func(t *testing.T, g *testGateway)
 		c     call
 		want  []string
 		// values: fields whose value the case pins.
@@ -48,7 +48,7 @@ func TestRequestLineKeysFollowTheFieldTable(t *testing.T) {
 			want:   keys(always, routed, settled, []string{"gen_ai.provider.name"}),
 			values: map[string]any{"kaiak.backend.type": "azure-openai", "gen_ai.provider.name": "azure.ai.openai"}},
 		{name: "limit refusal",
-			setup: func(g *testGateway) {
+			setup: func(t *testing.T, g *testGateway) {
 				withLimits(t, g, "", `[{ "type": "requests_per_minute", "value": 0 }]`)
 			},
 			c: call{method: "POST", path: "/v1/chat/completions", key: workloadKey, body: `{"model":"open","messages":[]}`},
@@ -58,10 +58,10 @@ func TestRequestLineKeysFollowTheFieldTable(t *testing.T) {
 			values: map[string]any{"error.type": "rate_limit_exceeded", "http.response.status_code": float64(429),
 				"kaiak.limit.scope": "group", "kaiak.limit.group": "eval"}},
 		{name: "global limit refusal",
-			setup: func(g *testGateway) {
+			setup: func(t *testing.T, g *testGateway) {
 				g.holder.Swap(testSnapshotWith(t, g.backend.URL(), func(doc string) string {
-					return strings.Replace(doc, `"global": { `,
-						`"global": { "limits": [{ "type": "requests_per_minute", "value": 0 }], `, 1)
+					return replaceOnce(t, doc, `"global": { `,
+						`"global": { "limits": [{ "type": "requests_per_minute", "value": 0 }], `)
 				}))
 			},
 			c: call{method: "POST", path: "/v1/chat/completions", key: workloadKey, body: `{"model":"open","messages":[]}`},
@@ -74,7 +74,7 @@ func TestRequestLineKeysFollowTheFieldTable(t *testing.T) {
 			want:   keys(always, []string{"kaiak.key.id", "gen_ai.operation.name", "kaiak.auth.failure", "error.type"}),
 			values: map[string]any{"kaiak.auth.failure": "expired_key", "http.response.status_code": float64(401)}},
 		{name: "backend error status",
-			setup: func(g *testGateway) {
+			setup: func(t *testing.T, g *testGateway) {
 				g.backend.SetReply(fakebackend.Reply{Status: http.StatusInternalServerError,
 					Body: `{"error":{"message":"disk full","type":"server_error","code":"internal"}}`})
 			},
@@ -100,7 +100,7 @@ func TestRequestLineKeysFollowTheFieldTable(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			g := newTestGateway(t)
 			if c.setup != nil {
-				c.setup(g)
+				c.setup(t, g)
 			}
 			c.c.header = map[string]string{"X-Request-Id": "line"}
 			if c.gone {

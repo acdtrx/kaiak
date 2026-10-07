@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"kaiak/internal/accounting"
+	"kaiak/internal/auth"
 	"kaiak/internal/config"
 	"kaiak/internal/fakebackend"
 )
@@ -310,7 +311,7 @@ func TestUsageRecordCarriesNothingSensitive(t *testing.T) {
 	if got := slices.Sorted(maps.Keys(fields)); !slices.Equal(got, want) {
 		t.Errorf("record fields %v, want %v", got, want)
 	}
-	for _, secret := range []string{workloadKey, hashOf(workloadKey), localBackendKey, "private prompt", "secret answer"} {
+	for _, secret := range []string{workloadKey, auth.KeyHash(workloadKey), localBackendKey, "private prompt", "secret answer"} {
 		if strings.Contains(string(data), secret) {
 			t.Errorf("record carries %q: %s", secret, data)
 		}

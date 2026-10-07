@@ -17,11 +17,11 @@ import (
 // "vl" serving model "resp-vllm", which has no token counting.
 func withResponsesModels(t *testing.T, g *testGateway) {
 	t.Helper()
-	s := testSnapshotWith(t, g.backend.URL(), func(doc string) string {
-		doc = strings.Replace(doc, `"backends": {`, `"backends": {
+	g.apply(t, func(doc string) string {
+		doc = replaceOnce(t, doc, `"backends": {`, `"backends": {
     "ls": { "type": "llama-server", "base_url": "`+g.backend.URL()+`/v1" },
-    "vl": { "type": "vllm", "base_url": "`+g.backend.URL()+`/v1" },`, 1)
-		return strings.Replace(doc, `"models": { `, `"models": {
+    "vl": { "type": "vllm", "base_url": "`+g.backend.URL()+`/v1" },`)
+		return replaceOnce(t, doc, `"models": { `, `"models": {
     "resp": { "deployments": [{ "backend": "ls", "model": "resp-back" }],
       "metadata": { "context_length": 8192,
         "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": true } },
@@ -29,10 +29,8 @@ func withResponsesModels(t *testing.T, g *testGateway) {
     "resp-vllm": { "deployments": [{ "backend": "vl", "model": "resp-vllm-back" }],
       "metadata": { "context_length": 8192,
         "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": true } } },
-    `, 1)
+    `)
 	})
-	g.holder.Swap(s)
-	g.router.Configure(s)
 }
 
 const responsesBody = `{"model":"resp","input":"hello there"}`
@@ -322,19 +320,17 @@ func TestResponsesInputTokens(t *testing.T) {
 // token-counting endpoint reserves no tokens.
 func TestResponsesLimitRefusals(t *testing.T) {
 	g := newTestGateway(t)
-	s := testSnapshotWith(t, g.backend.URL(), func(doc string) string {
-		doc = strings.Replace(doc, `"backends": {`, `"backends": {
-    "ls": { "type": "llama-server", "base_url": "`+g.backend.URL()+`/v1" },`, 1)
-		doc = strings.Replace(doc, `"models": { `, `"models": {
+	g.apply(t, func(doc string) string {
+		doc = replaceOnce(t, doc, `"backends": {`, `"backends": {
+    "ls": { "type": "llama-server", "base_url": "`+g.backend.URL()+`/v1" },`)
+		doc = replaceOnce(t, doc, `"models": { `, `"models": {
     "resp": { "deployments": [{ "backend": "ls", "model": "resp-back" }],
       "metadata": { "context_length": 8192,
         "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": true } } },
-    `, 1)
-		return strings.Replace(doc, `"allowed_models": ["*"] }`,
-			`"allowed_models": ["*"], "limits": [{ "type": "requests_per_minute", "value": 2 }, { "type": "tokens_per_minute", "value": 1 }] }`, 1)
+    `)
+		return replaceOnce(t, doc, `"allowed_models": ["*"] }`,
+			`"allowed_models": ["*"], "limits": [{ "type": "requests_per_minute", "value": 2 }, { "type": "tokens_per_minute", "value": 1 }] }`)
 	})
-	g.holder.Swap(s)
-	g.router.Configure(s)
 	for range 2 {
 		w := do(t, g.h, call{method: "POST", path: "/v1/responses/input_tokens", key: workloadKey,
 			body: `{"model":"resp","input":"a long enough prompt"}`})

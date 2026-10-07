@@ -9,7 +9,6 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -26,6 +25,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"kaiak/internal/auth"
 )
 
 // kaiakBin is the binary TestMain built.
@@ -488,8 +489,7 @@ func newKey() (key, hash string) {
 	raw := make([]byte, 24)
 	_, _ = rand.Read(raw) // crypto/rand.Read never fails
 	key = "kaiak-" + hex.EncodeToString(raw)
-	sum := sha256.Sum256([]byte(key))
-	return key, "sha256:" + hex.EncodeToString(sum[:])
+	return key, auth.KeyHash(key)
 }
 
 // writeJSON writes v to path as JSON.

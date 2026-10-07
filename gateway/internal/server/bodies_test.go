@@ -43,7 +43,7 @@ func waitIdle(t *testing.T, g *testGateway) {
 // in what the requests in flight leave is refused at once — 503 server_busy with
 // Retry-After: 1, its body never read — and the budget comes back when they end.
 func TestBodyBudgetRefusesARequestWhenSpent(t *testing.T) {
-	g := newTestGatewayBodies(t, 1000)
+	g := buildTestGateway(t, testOptions{bodyMemory: 1000})
 	g.backend.SetReply(fakebackend.Reply{StallBeforeFirstByte: true})
 	url := serveGateway(t, g)
 	body := paddedChat(t, "open", true, 600)
@@ -96,7 +96,7 @@ func TestBodyBudgetRefusesARequestWhenSpent(t *testing.T) {
 // response starts relaying — no retry can use it any more — not when a long stream
 // ends.
 func TestBodyIsReleasedOnceTheResponseRelays(t *testing.T) {
-	g := newTestGatewayBodies(t, 1000)
+	g := buildTestGateway(t, testOptions{bodyMemory: 1000})
 	pace := make(chan struct{})
 	g.backend.SetReply(fakebackend.Reply{Pace: pace})
 	url := serveGateway(t, g)
@@ -125,7 +125,7 @@ func TestBodyIsReleasedOnceTheResponseRelays(t *testing.T) {
 // M2: a body larger than the whole budget could never be held: it is refused as too
 // large, with the budget as the limit, even under a larger max_request_body_bytes.
 func TestBodyOverTheWholeBudgetIsTooLarge(t *testing.T) {
-	g := newTestGatewayBodies(t, 500)
+	g := buildTestGateway(t, testOptions{bodyMemory: 500})
 	w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey,
 		body: paddedChat(t, "open", false, 800)})
 	expectError(t, w, http.StatusRequestEntityTooLarge, "request_too_large")
@@ -141,7 +141,7 @@ func TestBodyOverTheWholeBudgetIsTooLarge(t *testing.T) {
 // it is read while the budget has room, refused 503 once a step finds it spent, and
 // refused as too large past the limit. Every share comes back.
 func TestBodyOfUnknownLengthTakesTheBudgetAsItArrives(t *testing.T) {
-	g := newTestGatewayBodies(t, 1000)
+	g := buildTestGateway(t, testOptions{bodyMemory: 1000})
 	send := func(body string) *httptest.ResponseRecorder {
 		// A reader of unknown length: the request has no Content-Length.
 		r := httptest.NewRequest("POST", "/v1/chat/completions", io.MultiReader(strings.NewReader(body)))
@@ -188,9 +188,9 @@ func TestBodyOfUnknownLengthTakesTheBudgetAsItArrives(t *testing.T) {
 // step of the budget each: another key's request is served.
 func TestIdleDeclaredBodiesDoNotStarveOtherKeys(t *testing.T) {
 	const declared, attackers, perKey = 1 << 20, 20, 16
-	g := newTestGatewayBodies(t, 2*declared)
+	g := buildTestGateway(t, testOptions{bodyMemory: 2 * declared})
 	g.holder.Swap(testSnapshotWith(t, g.backend.URL(), func(doc string) string {
-		return strings.Replace(doc, `"max_request_body_bytes": 1024 }`, `"max_request_body_bytes": `+strconv.Itoa(declared)+` }`, 1)
+		return replaceOnce(t, doc, `"max_request_body_bytes": 1024 }`, `"max_request_body_bytes": `+strconv.Itoa(declared)+` }`)
 	}))
 	addr := listen(t, g, ClientTimeouts{Idle: time.Minute, BodyRead: time.Minute, Write: time.Minute})
 

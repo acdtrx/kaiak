@@ -1,8 +1,6 @@
 package auth
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"slices"
 	"strings"
 	"testing"
@@ -10,11 +8,6 @@ import (
 
 	"kaiak/internal/config"
 )
-
-func hashOf(key string) string {
-	sum := sha256.Sum256([]byte(key))
-	return "sha256:" + hex.EncodeToString(sum[:])
-}
 
 const (
 	workloadKey = "kaiak-test-workload"
@@ -45,10 +38,10 @@ func testSnapshot(t *testing.T) *config.Snapshot {
     "ann": { "parent": "users" }
   },
   "keys": {
-    "k-eval": { "hash": "` + hashOf(workloadKey) + `", "group": "eval" },
-    "k-ann": { "hash": "` + hashOf(userKey) + `", "group": "ann" },
-    "k-off": { "hash": "` + hashOf(disabledKey) + `", "group": "ann", "disabled": true },
-    "k-exp": { "hash": "` + hashOf(expiringKey) + `", "group": "ann", "expires_at": "2026-06-30T23:59:59Z" }
+    "k-eval": { "hash": "` + KeyHash(workloadKey) + `", "group": "eval" },
+    "k-ann": { "hash": "` + KeyHash(userKey) + `", "group": "ann" },
+    "k-off": { "hash": "` + KeyHash(disabledKey) + `", "group": "ann", "disabled": true },
+    "k-exp": { "hash": "` + KeyHash(expiringKey) + `", "group": "ann", "expires_at": "2026-06-30T23:59:59Z" }
   }
 }`
 	s, err := config.Parse([]byte(doc))

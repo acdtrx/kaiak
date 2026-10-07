@@ -300,9 +300,9 @@ func TestModelEntryAndProps(t *testing.T) {
 func TestInjectedOutputDefaultFitsTheContext(t *testing.T) {
 	g := newTestGateway(t)
 	s := testSnapshotWith(t, g.backend.URL(), func(doc string) string {
-		doc = strings.Replace(doc, `"context_length": 32768`, `"context_length": 400`, 1)
-		return strings.Replace(doc, `"output_limit": { "default": 256, "ceiling": 1024 }`,
-			`"output_limit": { "default": 300, "ceiling": 400 }`, 1)
+		doc = replaceOnce(t, doc, `"context_length": 32768`, `"context_length": 400`)
+		return replaceOnce(t, doc, `"output_limit": { "default": 256, "ceiling": 1024 }`,
+			`"output_limit": { "default": 300, "ceiling": 400 }`)
 	})
 	// padded is a chat body of n bytes.
 	padded := func(n int, extra string) string {

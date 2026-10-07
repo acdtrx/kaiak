@@ -28,12 +28,12 @@ func imageChat(model, text, imageURL string) string {
 
 // withLargeBodies raises the test config's body cap to 4 MiB and sets model pair's
 // output limit default (ceiling 16384) and context length.
-func withLargeBodies(def, context int, extra func(string) string) func(string) string {
+func withLargeBodies(t *testing.T, def, context int, extra func(string) string) func(string) string {
 	return func(doc string) string {
-		doc = strings.Replace(doc, `"max_request_body_bytes": 1024 }`, `"max_request_body_bytes": 4194304 }`, 1)
-		doc = strings.Replace(doc, `"context_length": 32768`, `"context_length": `+strconv.Itoa(context), 1)
-		doc = strings.Replace(doc, `"output_limit": { "default": 256, "ceiling": 1024 }`,
-			`"output_limit": { "default": `+strconv.Itoa(def)+`, "ceiling": 16384 }`, 1)
+		doc = replaceOnce(t, doc, `"max_request_body_bytes": 1024 }`, `"max_request_body_bytes": 4194304 }`)
+		doc = replaceOnce(t, doc, `"context_length": 32768`, `"context_length": `+strconv.Itoa(context))
+		doc = replaceOnce(t, doc, `"output_limit": { "default": 256, "ceiling": 1024 }`,
+			`"output_limit": { "default": `+strconv.Itoa(def)+`, "ceiling": 16384 }`)
 		if extra != nil {
 			doc = extra(doc)
 		}
@@ -65,8 +65,8 @@ func injectedLimit(t *testing.T, g *testGateway, key string) int64 {
 func TestInlineImageCountsAsOneMediaItem(t *testing.T) {
 	const tpm = 1_000_000
 	g := newTestGateway(t)
-	g.holder.Swap(testSnapshotWith(t, g.backend.URL(), withLargeBodies(4096, 32768, func(doc string) string {
-		return strings.Replace(doc, `"research": {}`, `"research": { "limits": [{ "type": "tokens_per_minute", "value": 1000000 }] }`, 1)
+	g.holder.Swap(testSnapshotWith(t, g.backend.URL(), withLargeBodies(t, 4096, 32768, func(doc string) string {
+		return replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [{ "type": "tokens_per_minute", "value": 1000000 }] }`)
 	})))
 	image := base64Image(450 << 10)
 	body := imageChat("pair", "what is in this photo?", image)
@@ -89,8 +89,8 @@ func TestInlineImageCountsAsOneMediaItem(t *testing.T) {
 // one image, not 350k tokens of base64.
 func TestLargeInlineImageFitsATokenLimit(t *testing.T) {
 	g := newTestGateway(t)
-	g.holder.Swap(testSnapshotWith(t, g.backend.URL(), withLargeBodies(16384, 32768, func(doc string) string {
-		return strings.Replace(doc, `"research": {}`, `"research": { "limits": [{ "type": "tokens_per_minute", "value": 100000 }] }`, 1)
+	g.holder.Swap(testSnapshotWith(t, g.backend.URL(), withLargeBodies(t, 16384, 32768, func(doc string) string {
+		return replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [{ "type": "tokens_per_minute", "value": 100000 }] }`)
 	})))
 	body := imageChat("pair", "describe", base64Image(1_399_000))
 	w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey, body: body})
@@ -104,7 +104,7 @@ func TestLargeInlineImageFitsATokenLimit(t *testing.T) {
 // default of 16384 in a 32k context.
 func TestBatchDefaultOutputFitsThePrompt(t *testing.T) {
 	g := newTestGateway(t)
-	g.holder.Swap(testSnapshotWith(t, g.backend.URL(), withLargeBodies(16384, 32768, nil)))
+	g.holder.Swap(testSnapshotWith(t, g.backend.URL(), withLargeBodies(t, 16384, 32768, nil)))
 	prompts := make([]string, 16)
 	for i := range prompts {
 		prompts[i] = `"` + strings.Repeat("word ", 12000/5) + `"`
@@ -123,8 +123,8 @@ func TestBatchDefaultOutputFitsThePrompt(t *testing.T) {
 // billed its estimated input — the text plus one image, not ~350k tokens of base64.
 func TestCancelledImageRequestEstimatesOneMediaItem(t *testing.T) {
 	g := newTestGateway(t)
-	g.holder.Swap(testSnapshotWith(t, g.backend.URL(), withLargeBodies(256, 32768, func(doc string) string {
-		return strings.Replace(doc, `"allowed_models": ["open", "Org/open-7b"]`, `"allowed_models": ["open", "pair"]`, 1)
+	g.holder.Swap(testSnapshotWith(t, g.backend.URL(), withLargeBodies(t, 256, 32768, func(doc string) string {
+		return replaceOnce(t, doc, `"allowed_models": ["open", "Org/open-7b"]`, `"allowed_models": ["open", "pair"]`)
 	})))
 	g.backend.SetReply(fakebackend.Reply{StallBeforeFirstByte: true})
 	url := serveGateway(t, g)

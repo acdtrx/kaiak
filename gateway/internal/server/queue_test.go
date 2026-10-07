@@ -22,15 +22,15 @@ import (
 // so reservations show.
 const secretQueueTimeout = 50 * time.Millisecond
 
-func cappedDoc(doc string) string {
-	doc = strings.Replace(doc, `"max_request_body_bytes": 1024 }`,
-		`"max_request_body_bytes": 1024, "queue": { "size": 2, "timeout_ms": 60000 } }`, 1)
-	doc = strings.Replace(doc, `"api_key_env": "LOCAL_KEY" }`, `"api_key_env": "LOCAL_KEY", "max_in_flight": 1 }`, 1)
-	doc = strings.Replace(doc, `"first_event_timeout_ms": 150, "response_timeout_ms": 150, "stall_timeout_ms": 150 }`,
-		`"first_event_timeout_ms": 500, "response_timeout_ms": 500, "stall_timeout_ms": 500, "max_in_flight": 1 }`, 1)
-	doc = strings.Replace(doc, `"secret": {`, `"secret": { "queue": { "timeout_ms": 50 },`, 1)
-	doc = strings.Replace(doc, `"Org/open-7b": {`, `"Org/open-7b": { "queue": { "size": 0 },`, 1)
-	return strings.Replace(doc, `"research": {}`, `"research": { "limits": [{ "type": "tokens_per_minute", "value": 100000 }] }`, 1)
+func cappedDoc(t *testing.T, doc string) string {
+	doc = replaceOnce(t, doc, `"max_request_body_bytes": 1024 }`,
+		`"max_request_body_bytes": 1024, "queue": { "size": 2, "timeout_ms": 60000 } }`)
+	doc = replaceOnce(t, doc, `"api_key_env": "LOCAL_KEY" }`, `"api_key_env": "LOCAL_KEY", "max_in_flight": 1 }`)
+	doc = replaceOnce(t, doc, `"first_event_timeout_ms": 150, "response_timeout_ms": 150, "stall_timeout_ms": 150 }`,
+		`"first_event_timeout_ms": 500, "response_timeout_ms": 500, "stall_timeout_ms": 500, "max_in_flight": 1 }`)
+	doc = replaceOnce(t, doc, `"secret": {`, `"secret": { "queue": { "timeout_ms": 50 },`)
+	doc = replaceOnce(t, doc, `"Org/open-7b": {`, `"Org/open-7b": { "queue": { "size": 0 },`)
+	return replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [{ "type": "tokens_per_minute", "value": 100000 }] }`)
 }
 
 // newCappedGateway is the test gateway under the capped config, applied as cmd/kaiak
@@ -38,9 +38,7 @@ func cappedDoc(doc string) string {
 func newCappedGateway(t *testing.T) *testGateway {
 	t.Helper()
 	g := newTestGateway(t)
-	s := testSnapshotWith(t, g.backend.URL(), cappedDoc)
-	g.holder.Swap(s)
-	g.router.Configure(s)
+	g.apply(t, func(doc string) string { return cappedDoc(t, doc) })
 	return g
 }
 

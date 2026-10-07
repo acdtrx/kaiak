@@ -57,9 +57,9 @@ func postAs(t *testing.T, g *testGateway, key, id, body string) *httptest.Respon
 func TestLimitRefusalsLogTheLimit(t *testing.T) {
 	g := newTestGateway(t)
 	g.holder.Swap(testSnapshotWith(t, g.backend.URL(), func(doc string) string {
-		doc = strings.Replace(doc, `"research": {}`, `"research": { "labels": { "cost_center": "label-value-never-logged" }, "limits": [{ "type": "usd_per_month", "value": 0 }] }`, 1)
-		doc = strings.Replace(doc, `"allowed_models": ["*"] }`, `"allowed_models": ["*"], "limits": [{ "type": "requests_per_minute", "value": 1 }] }`, 1)
-		return strings.Replace(doc, `"global": { `, `"global": { "limits": [{ "type": "tokens_per_minute", "value": 100 }], `, 1)
+		doc = replaceOnce(t, doc, `"research": {}`, `"research": { "labels": { "cost_center": "label-value-never-logged" }, "limits": [{ "type": "usd_per_month", "value": 0 }] }`)
+		doc = replaceOnce(t, doc, `"allowed_models": ["*"] }`, `"allowed_models": ["*"], "limits": [{ "type": "requests_per_minute", "value": 1 }] }`)
+		return replaceOnce(t, doc, `"global": { `, `"global": { "limits": [{ "type": "tokens_per_minute", "value": 100 }], `)
 	}))
 
 	// The budget first: a refused request counts toward no limit, so eval's request
@@ -126,9 +126,9 @@ func TestLimitRefusalsLogTheLimit(t *testing.T) {
 // among the limit rejections.
 func TestBudgetUnavailableLogsTheLimit(t *testing.T) {
 	lost := time.Now().Add(-time.Hour)
-	g := newTestGatewayWith(t, func(h *config.Holder) *limits.Limiter {
+	g := buildTestGateway(t, testOptions{limiter: func(h *config.Holder) *limits.Limiter {
 		return limits.NewShared(h, time.Now, func() limits.Contact { return limits.Contact{Last: lost} }, nil)
-	})
+	}})
 	withLimits(t, g, `[{ "type": "usd_per_month", "value": 100 }]`, "")
 	expectError(t, postAs(t, g, workloadKey, "unavailable", `{"model":"pair","messages":[]}`),
 		http.StatusServiceUnavailable, "budget_unavailable")

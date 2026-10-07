@@ -23,17 +23,15 @@ import (
 func newCircuitGateway(t *testing.T, threshold int, edit func(string) string) *testGateway {
 	t.Helper()
 	g := newTestGateway(t)
-	s := testSnapshotWith(t, g.backend.URL(), func(doc string) string {
-		doc = strings.Replace(doc, `"max_request_body_bytes": 1024 }`, `"max_request_body_bytes": 1024,
+	g.apply(t, func(doc string) string {
+		doc = replaceOnce(t, doc, `"max_request_body_bytes": 1024 }`, `"max_request_body_bytes": 1024,
     "retries": { "max_attempts": 1 },
-    "circuit": { "failure_threshold": `+strconv.Itoa(threshold)+`, "probe_interval_ms": 3600000 } }`, 1)
+    "circuit": { "failure_threshold": `+strconv.Itoa(threshold)+`, "probe_interval_ms": 3600000 } }`)
 		if edit != nil {
 			doc = edit(doc)
 		}
 		return doc
 	})
-	g.holder.Swap(s)
-	g.router.Configure(s)
 	return g
 }
 
@@ -220,7 +218,7 @@ func TestCircuitOpensAfterTheThresholdAndAllOpenIs503(t *testing.T) {
 // multiplied by the attempts within each.
 func TestClientRepeatsCountOneFailureEach(t *testing.T) {
 	g, _ := newRetryGateway(t, "local", "local-b",
-		withGlobal(`"circuit": { "failure_threshold": 3, "probe_interval_ms": 3600000 }`))
+		withGlobal(t, `"circuit": { "failure_threshold": 3, "probe_interval_ms": 3600000 }`))
 	for i := range 3 {
 		expectError(t, post(t, g, "r"+strconv.Itoa(i), `{"model":"down"}`), http.StatusBadGateway, "upstream_unavailable")
 		if open := circuitOpen(g, "down", "down"); open != (i == 2) {
@@ -234,7 +232,7 @@ func TestOpenDeploymentIsSkippedAndProbedBackIn(t *testing.T) {
 	other := fakebackend.New()
 	t.Cleanup(other.Close)
 	g := newCircuitGateway(t, 2, func(doc string) string {
-		return regexp.MustCompile(`"local-b": \{[^}]*\}`).ReplaceAllLiteralString(doc,
+		return replaceMatch(t, doc, regexp.MustCompile(`"local-b": \{[^}]*\}`),
 			`"local-b": { "type": "openai-compatible", "base_url": "`+other.URL()+`/v1" }`)
 	})
 	other.SetReply(fakebackend.Reply{Status: http.StatusInternalServerError})

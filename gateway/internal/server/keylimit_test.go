@@ -12,24 +12,17 @@ import (
 	"kaiak/internal/fakebackend"
 )
 
-// keyLimitDoc sets global.max_concurrent_requests_per_key to n, on top of edit (nil =
-// none).
-func keyLimitDoc(n int, edit func(string) string) func(string) string {
-	return func(doc string) string {
-		if edit != nil {
-			doc = edit(doc)
-		}
-		return strings.Replace(doc, `"global": { `, `"global": { "max_concurrent_requests_per_key": `+strconv.Itoa(n)+`, `, 1)
-	}
-}
-
-// withKeyLimit applies the test config with the per-key limit n (and edit), as
-// cmd/kaiak applies a config: swapped in, and its caps handed to routing.
-func withKeyLimit(t *testing.T, g *testGateway, n int, edit func(string) string) {
+// withKeyLimit applies the test config with global.max_concurrent_requests_per_key
+// n, on top of edit (nil = none), as cmd/kaiak applies a config: swapped in, and its
+// caps handed to routing.
+func withKeyLimit(t *testing.T, g *testGateway, n int, edit func(t *testing.T, doc string) string) {
 	t.Helper()
-	s := testSnapshotWith(t, g.backend.URL(), keyLimitDoc(n, edit))
-	g.holder.Swap(s)
-	g.router.Configure(s)
+	g.apply(t, func(doc string) string {
+		if edit != nil {
+			doc = edit(t, doc)
+		}
+		return replaceOnce(t, doc, `"global": { `, `"global": { "max_concurrent_requests_per_key": `+strconv.Itoa(n)+`, `)
+	})
 }
 
 // keysInFlight is keyID's requests in flight as the per-key limit counts them.
@@ -128,7 +121,8 @@ func TestPerKeySlotIsReleasedOnEveryPath(t *testing.T) {
 	}
 	for _, c := range []struct {
 		name string
-		edit func(string) string
+		// edit (nil = none) is applied to the config under the per-key limit.
+		edit func(t *testing.T, doc string) string
 		// run ends one request of k-eval (or more, the last one refused) a given way
 		// and reports its status (0 when the client saw no answer).
 		run  func(t *testing.T, g *testGateway) int
@@ -146,9 +140,9 @@ func TestPerKeySlotIsReleasedOnEveryPath(t *testing.T) {
 			return post(g, `{"model":"down","messages":[]}`)
 		}},
 		{name: "rate limited", want: 429,
-			edit: func(doc string) string {
-				return strings.Replace(doc, `"eval": { "parent": "research",`,
-					`"eval": { "parent": "research", "limits": [{ "type": "requests_per_minute", "value": 1 }],`, 1)
+			edit: func(t *testing.T, doc string) string {
+				return replaceOnce(t, doc, `"eval": { "parent": "research",`,
+					`"eval": { "parent": "research", "limits": [{ "type": "requests_per_minute", "value": 1 }],`)
 			},
 			run: func(t *testing.T, g *testGateway) int {
 				if code := post(g, chatBody); code != 200 {

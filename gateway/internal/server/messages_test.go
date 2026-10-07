@@ -19,22 +19,20 @@ import (
 // then applies edit (nil = none) to the document.
 func withMessagesModels(t *testing.T, g *testGateway, edit func(doc string) string) {
 	t.Helper()
-	s := testSnapshotWith(t, g.backend.URL(), func(doc string) string {
-		doc = strings.Replace(doc, `"backends": {`, `"backends": {
-    "vl": { "type": "vllm", "base_url": "`+g.backend.URL()+`/v1" },`, 1)
-		doc = strings.Replace(doc, `"models": { `, `"models": {
+	g.apply(t, func(doc string) string {
+		doc = replaceOnce(t, doc, `"backends": {`, `"backends": {
+    "vl": { "type": "vllm", "base_url": "`+g.backend.URL()+`/v1" },`)
+		doc = replaceOnce(t, doc, `"models": { `, `"models": {
     "msg": { "deployments": [{ "backend": "vl", "model": "msg-back" }],
       "metadata": { "context_length": 8192,
         "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": false } },
       "output_limit": { "default": 64, "ceiling": 128 } },
-    `, 1)
+    `)
 		if edit != nil {
 			doc = edit(doc)
 		}
 		return doc
 	})
-	g.holder.Swap(s)
-	g.router.Configure(s)
 }
 
 // anthropicError decodes an answer in Anthropic's error shape — failing on any other
@@ -138,8 +136,8 @@ func TestMessagesErrorsTakeAnthropicsShape(t *testing.T) {
 func TestMessagesLimitRefusals(t *testing.T) {
 	g := newTestGateway(t)
 	withMessagesModels(t, g, func(doc string) string {
-		return strings.Replace(doc, `"allowed_models": ["*"] }`,
-			`"allowed_models": ["*"], "limits": [{ "type": "requests_per_minute", "value": 2 }, { "type": "tokens_per_minute", "value": 1 }] }`, 1)
+		return replaceOnce(t, doc, `"allowed_models": ["*"] }`,
+			`"allowed_models": ["*"], "limits": [{ "type": "requests_per_minute", "value": 2 }, { "type": "tokens_per_minute", "value": 1 }] }`)
 	})
 	// A token-counting request reserves nothing, so a 1-token budget admits it; it
 	// still counts against the requests-per-minute limit.
@@ -432,8 +430,8 @@ func waitLog(t *testing.T, g *testGateway, want string) {
 func TestCountTokensMeetsOnlyRequestLimits(t *testing.T) {
 	g := newTestGateway(t)
 	withMessagesModels(t, g, func(doc string) string {
-		return strings.Replace(doc, `"allowed_models": ["*"] }`,
-			`"allowed_models": ["*"], "limits": [{ "type": "tokens_per_minute", "value": 100 }] }`, 1)
+		return replaceOnce(t, doc, `"allowed_models": ["*"] }`,
+			`"allowed_models": ["*"], "limits": [{ "type": "tokens_per_minute", "value": 100 }] }`)
 	})
 	g.backend.SetReply(fakebackend.Reply{Usage: &fakebackend.Usage{PromptTokens: 100, CompletionTokens: 20}})
 	body := `{"model":"msg","max_tokens":32,"messages":[{"role":"user","content":"hi"}]}`

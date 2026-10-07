@@ -165,8 +165,8 @@ func TestRequestErrorsByKeyAndCode(t *testing.T) {
 func TestRequestErrorsFollowTheLabelSwitches(t *testing.T) {
 	g := newTestGateway(t)
 	g.holder.Swap(testSnapshotWith(t, g.backend.URL(), func(doc string) string {
-		return strings.Replace(doc, `"max_request_body_bytes": 1024 }`,
-			`"max_request_body_bytes": 1024, "metrics": { "key_id_label": false, "group_label": false } }`, 1)
+		return replaceOnce(t, doc, `"max_request_body_bytes": 1024 }`,
+			`"max_request_body_bytes": 1024, "metrics": { "key_id_label": false, "group_label": false } }`)
 	}))
 	g.backend.SetReply(fakebackend.Reply{Status: http.StatusInternalServerError})
 	if w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: userKey, body: chatBody}); w.Code != http.StatusInternalServerError {
@@ -179,8 +179,8 @@ func TestRequestErrorsFollowTheLabelSwitches(t *testing.T) {
 func TestKeyIDLabelSwitchedOff(t *testing.T) {
 	g := newTestGateway(t)
 	g.holder.Swap(testSnapshotWith(t, g.backend.URL(), func(doc string) string {
-		return strings.Replace(doc, `"max_request_body_bytes": 1024 }`,
-			`"max_request_body_bytes": 1024, "metrics": { "key_id_label": false } }`, 1)
+		return replaceOnce(t, doc, `"max_request_body_bytes": 1024 }`,
+			`"max_request_body_bytes": 1024, "metrics": { "key_id_label": false } }`)
 	}))
 	if w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: userKey, body: chatBody}); w.Code != http.StatusOK {
 		t.Fatalf("status %d", w.Code)
@@ -200,8 +200,8 @@ func TestKeyIDLabelSwitchedOff(t *testing.T) {
 func TestGroupLabelSwitchedOff(t *testing.T) {
 	g := newTestGateway(t)
 	g.holder.Swap(testSnapshotWith(t, g.backend.URL(), func(doc string) string {
-		return strings.Replace(doc, `"max_request_body_bytes": 1024 }`,
-			`"max_request_body_bytes": 1024, "metrics": { "group_label": false } }`, 1)
+		return replaceOnce(t, doc, `"max_request_body_bytes": 1024 }`,
+			`"max_request_body_bytes": 1024, "metrics": { "group_label": false } }`)
 	}))
 	if w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: userKey, body: chatBody}); w.Code != http.StatusOK {
 		t.Fatalf("status %d", w.Code)

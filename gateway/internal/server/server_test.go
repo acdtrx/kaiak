@@ -2,19 +2,19 @@ package server
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"kaiak/internal/accounting"
+	"kaiak/internal/auth"
 	"kaiak/internal/config"
 	"kaiak/internal/fakebackend"
 	"kaiak/internal/limits"
@@ -32,16 +32,19 @@ const (
 	bodyCap     = 1024
 )
 
-func hashOf(key string) string {
-	sum := sha256.Sum256([]byte(key))
-	return "sha256:" + hex.EncodeToString(sum[:])
-}
-
 // Backend credentials the test gateway reads from its (fake) environment.
 const (
 	localBackendKey = "backend-secret-local"
 	azureBackendKey = "backend-secret-azure"
 )
+
+var testEnv = map[string]string{"LOCAL_KEY": localBackendKey, "AZURE_KEY": azureBackendKey}
+
+// testLookupEnv reads the test gateway's (fake) environment.
+func testLookupEnv(name string) (string, bool) {
+	v, ok := testEnv[name]
+	return v, ok
+}
 
 // testSnapshot is the test config. backendURL is the root URL of the fake backend
 // every reachable backend points at. Models:
@@ -72,6 +75,26 @@ func parseTestDoc(t *testing.T, doc string) *config.Snapshot {
 		t.Fatal(err)
 	}
 	return s
+}
+
+// replaceOnce replaces old in the test config document doc with repl, failing the
+// test unless old occurs exactly once: an edit whose anchor is gone would leave the
+// document as it was, and the test would quietly run on a config it did not mean.
+func replaceOnce(t *testing.T, doc, old, repl string) string {
+	t.Helper()
+	if n := strings.Count(doc, old); n != 1 {
+		t.Fatalf("config edit: anchor found %d times, want once: %s", n, old)
+	}
+	return strings.Replace(doc, old, repl, 1)
+}
+
+// replaceMatch is replaceOnce for the one match of re; repl may name re's groups ($1).
+func replaceMatch(t *testing.T, doc string, re *regexp.Regexp, repl string) string {
+	t.Helper()
+	if n := len(re.FindAllStringIndex(doc, -1)); n != 1 {
+		t.Fatalf("config edit: %s matches %d times, want once", re, n)
+	}
+	return re.ReplaceAllString(doc, repl)
 }
 
 // testDocWith is the test config document, with edit applied (nil = none).
@@ -113,11 +136,11 @@ func testDocWith(backendURL string, edit func(doc string) string) string {
     "ann": { "parent": "users" }
   },
   "keys": {
-    "k-eval": { "hash": "` + hashOf(workloadKey) + `", "group": "eval" },
-    "k-ann": { "hash": "` + hashOf(userKey) + `", "group": "ann" },
-    "k-off": { "hash": "` + hashOf(disabledKey) + `", "group": "ann", "disabled": true },
-    "k-old": { "hash": "` + hashOf(expiredKey) + `", "group": "ann", "expires_at": "2020-01-01T00:00:00Z" },
-    "k-new": { "hash": "` + hashOf(futureKey) + `", "group": "ann", "expires_at": "2999-01-01T00:00:00Z" }
+    "k-eval": { "hash": "` + auth.KeyHash(workloadKey) + `", "group": "eval" },
+    "k-ann": { "hash": "` + auth.KeyHash(userKey) + `", "group": "ann" },
+    "k-off": { "hash": "` + auth.KeyHash(disabledKey) + `", "group": "ann", "disabled": true },
+    "k-old": { "hash": "` + auth.KeyHash(expiredKey) + `", "group": "ann", "expires_at": "2020-01-01T00:00:00Z" },
+    "k-new": { "hash": "` + auth.KeyHash(futureKey) + `", "group": "ann", "expires_at": "2999-01-01T00:00:00Z" }
   }
 }`
 	if edit != nil {
@@ -174,48 +197,71 @@ func (g *testGateway) logText() string {
 	return g.logs.String()
 }
 
+// testOptions shape the gateway buildTestGateway wires; the zero value is the test
+// gateway in file mode.
+type testOptions struct {
+	// edit is applied to the test config document the gateway starts with (nil = none).
+	edit func(doc string) string
+	// limiter builds the limiter over the config holder (nil = a local limiter).
+	limiter func(*config.Holder) *limits.Limiter
+	// bodyMemory is the request-body budget in bytes (0 = DefaultBodyMemory).
+	bodyMemory int64
+	// attach puts the gateway in control-plane mode (nil = file mode): called with the
+	// config document, the gateway's logger and its limiter before the rest of the
+	// pipeline is wired, it returns the batcher the recorder hands every record.
+	attach func(doc string, logger *slog.Logger, limiter *limits.Limiter) accounting.Batcher
+}
+
 func newTestGateway(t *testing.T) *testGateway {
 	t.Helper()
-	return newTestGatewayWith(t, func(h *config.Holder) *limits.Limiter { return limits.New(h, time.Now, nil) })
+	return buildTestGateway(t, testOptions{})
 }
 
-// newTestGatewayWith is newTestGateway with the limiter newLimiter builds.
-func newTestGatewayWith(t *testing.T, newLimiter func(*config.Holder) *limits.Limiter) *testGateway {
-	t.Helper()
-	return buildTestGateway(t, newLimiter, NewBodyBudget(DefaultBodyMemory))
-}
-
-// newTestGatewayBodies is newTestGateway holding request bodies within a budget of
-// bodyMemory bytes.
-func newTestGatewayBodies(t *testing.T, bodyMemory int64) *testGateway {
-	t.Helper()
-	return buildTestGateway(t, func(h *config.Holder) *limits.Limiter { return limits.New(h, time.Now, nil) },
-		NewBodyBudget(bodyMemory))
-}
-
-func buildTestGateway(t *testing.T, newLimiter func(*config.Holder) *limits.Limiter, bodies *BodyBudget) *testGateway {
+// buildTestGateway wires the request pipeline over the test config and a fake
+// backend, as cmd/kaiak wires it.
+func buildTestGateway(t *testing.T, opts testOptions) *testGateway {
 	t.Helper()
 	backend := fakebackend.New()
 	t.Cleanup(backend.Close)
+	doc := testDocWith(backend.URL(), opts.edit)
 	holder := &config.Holder{}
-	holder.Swap(testSnapshot(t, backend.URL()))
-	env := map[string]string{"LOCAL_KEY": localBackendKey, "AZURE_KEY": azureBackendKey}
-	lookupEnv := func(name string) (string, bool) { v, ok := env[name]; return v, ok }
+	holder.Swap(parseTestDoc(t, doc))
 	var logs bytes.Buffer
 	log := &lockedWriter{w: &logs}
 	logger := slog.New(slog.NewJSONHandler(log, nil))
-	providers := provider.NewRegistry(lookupEnv)
+	limiter := limits.New(holder, time.Now, nil)
+	if opts.limiter != nil {
+		limiter = opts.limiter(holder)
+	}
+	var batcher accounting.Batcher
+	if opts.attach != nil {
+		batcher = opts.attach(doc, logger, limiter)
+	}
+	bodies := NewBodyBudget(DefaultBodyMemory)
+	if opts.bodyMemory != 0 {
+		bodies = NewBodyBudget(opts.bodyMemory)
+	}
+	providers := provider.NewRegistry(testLookupEnv)
 	usage := &usageSink{settled: make(chan accounting.UsageRecord, 64)}
 	reg := metrics.NewRegistry()
 	router := routing.New(routing.Options{Probe: providers.Probe, Observer: metrics.NewCircuits(reg), Logger: logger})
 	usageMetrics := metrics.NewUsageSink(reg, holder)
 	recorder := accounting.NewRecorder(accounting.RecorderOptions{Instance: "gw-test",
-		Sink: accounting.Fanout{usage, usageMetrics}, Logger: logger, OutOfRange: usageMetrics.RecordClamped})
-	limiter := newLimiter(holder)
+		Sink: accounting.Fanout{usage, usageMetrics}, Batcher: batcher, Logger: logger,
+		OutOfRange: usageMetrics.RecordClamped})
 	drain := NewDrain()
 	h := NewAPI(holder, drain, bodies, providers, limiter, router, recorder, metrics.NewOps(reg, router, holder), logger)
 	return &testGateway{h: h, logs: &logs, log: log, backend: backend, holder: holder, router: router,
 		limiter: limiter, usage: usage, metrics: reg, drain: drain, bodies: bodies}
+}
+
+// apply swaps in the test config with edit applied (nil = none) and hands it to
+// routing, as cmd/kaiak applies a config.
+func (g *testGateway) apply(t *testing.T, edit func(doc string) string) {
+	t.Helper()
+	s := testSnapshotWith(t, g.backend.URL(), edit)
+	g.holder.Swap(s)
+	g.router.Configure(s)
 }
 
 // testAPI returns the API handler over the test snapshot and a buffer of its log.
@@ -654,7 +700,7 @@ func TestRequestsWithNoConfigAnswer503(t *testing.T) {
 func TestRepeatedTopLevelMemberIsRefusedBeforeAnyRewrite(t *testing.T) {
 	g := newTestGateway(t)
 	g.holder.Swap(testSnapshotWith(t, g.backend.URL(), func(doc string) string {
-		return strings.Replace(doc, `"max_request_body_bytes": 1024`, `"max_request_body_bytes": 1048576`, 1)
+		return replaceOnce(t, doc, `"max_request_body_bytes": 1024`, `"max_request_body_bytes": 1048576`)
 	}))
 	body := `{` + strings.Repeat(`"model":"renamed",`, 10000) + `"messages":[]}`
 	w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey, body: body})
@@ -689,8 +735,8 @@ func TestNestedDuplicateMembersPassThrough(t *testing.T) {
 func TestModelAccessIntersectsDownThePath(t *testing.T) {
 	g := newTestGateway(t)
 	g.holder.Swap(testSnapshotWith(t, g.backend.URL(), func(doc string) string {
-		doc = strings.Replace(doc, `"research": {}`, `"research": { "allowed_models": ["open", "pair", "secret"] }`, 1)
-		return strings.Replace(doc, `"allowed_models": ["*"] }`, `"allowed_models": ["open", "Org/open-7b"] }`, 1)
+		doc = replaceOnce(t, doc, `"research": {}`, `"research": { "allowed_models": ["open", "pair", "secret"] }`)
+		return replaceOnce(t, doc, `"allowed_models": ["*"] }`, `"allowed_models": ["open", "Org/open-7b"] }`)
 	}))
 	w := do(t, g.h, call{method: "GET", path: "/v1/models", key: workloadKey})
 	var list struct {
@@ -711,7 +757,7 @@ func TestModelAccessIntersectsDownThePath(t *testing.T) {
 
 	// Neither research nor eval restricts: every model.
 	g.holder.Swap(testSnapshotWith(t, g.backend.URL(), func(doc string) string {
-		return strings.Replace(doc, `"eval": { "parent": "research", "allowed_models": ["*"] }`, `"eval": { "parent": "research" }`, 1)
+		return replaceOnce(t, doc, `"eval": { "parent": "research", "allowed_models": ["*"] }`, `"eval": { "parent": "research" }`)
 	}))
 	if w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey,
 		body: `{"model":"secret","messages":[]}`}); w.Code != http.StatusOK {

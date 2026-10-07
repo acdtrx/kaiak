@@ -28,30 +28,28 @@ func newRetryGateway(t *testing.T, first, second string, edit func(string) strin
 	other := fakebackend.New()
 	t.Cleanup(other.Close)
 	g := newTestGateway(t)
-	s := testSnapshotWith(t, g.backend.URL(), func(doc string) string {
-		doc = regexp.MustCompile(`"local-b": \{[^}]*\}`).ReplaceAllLiteralString(doc,
+	g.apply(t, func(doc string) string {
+		doc = replaceMatch(t, doc, regexp.MustCompile(`"local-b": \{[^}]*\}`),
 			`"local-b": { "type": "openai-compatible", "base_url": "`+other.URL()+`/v1" }`)
-		doc = strings.Replace(doc, `"pair": {`, `"retry": {
+		doc = replaceOnce(t, doc, `"pair": {`, `"retry": {
       "deployments": [{ "backend": "`+first+`", "model": "first" }, { "backend": "`+second+`", "model": "second" }],
       "metadata": { "context_length": 8192,
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } } },
-    "pair": {`, 1)
-		doc = strings.Replace(doc, `"research": {}`, `"research": { "limits": [
-      { "type": "requests_per_minute", "value": 1000 }, { "type": "tokens_per_minute", "value": 100000 } ] }`, 1)
+    "pair": {`)
+		doc = replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [
+      { "type": "requests_per_minute", "value": 1000 }, { "type": "tokens_per_minute", "value": 100000 } ] }`)
 		if edit != nil {
 			doc = edit(doc)
 		}
 		return doc
 	})
-	g.holder.Swap(s)
-	g.router.Configure(s)
 	return g, other
 }
 
 // withGlobal adds settings to the config document's global section.
-func withGlobal(settings string) func(string) string {
+func withGlobal(t *testing.T, settings string) func(string) string {
 	return func(doc string) string {
-		return strings.Replace(doc, `"max_request_body_bytes": 1024 }`, `"max_request_body_bytes": 1024, `+settings+` }`, 1)
+		return replaceOnce(t, doc, `"max_request_body_bytes": 1024 }`, `"max_request_body_bytes": 1024, `+settings+` }`)
 	}
 }
 
@@ -322,21 +320,24 @@ func TestNotRetried(t *testing.T) {
 func TestMaxAttempts(t *testing.T) {
 	for _, c := range []struct {
 		name string
-		edit func(string) string
-		want int
+		// global is the global max_attempts; down (0 = none) is model down's own.
+		global, down int
+		want         int
 	}{
-		{"global", withGlobal(`"retries": { "max_attempts": 2 }`), 2},
-		{"model override", func(doc string) string {
-			doc = withGlobal(`"retries": { "max_attempts": 2 }`)(doc)
-			return strings.Replace(doc, `"down": {
-      "deployments"`, `"down": { "retries": { "max_attempts": 4 },
-      "deployments"`, 1)
-		}, 4},
-		{"no retries", withGlobal(`"retries": { "max_attempts": 1 }`), 1},
+		{"global", 2, 0, 2},
+		{"model override", 2, 4, 4},
+		{"no retries", 1, 0, 1},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			g, _ := newRetryGateway(t, "local", "local-b", func(doc string) string {
-				return c.edit(fiveDownDeployments(doc))
+				doc = fiveDownDeployments(t, doc)
+				doc = withGlobal(t, `"retries": { "max_attempts": `+strconv.Itoa(c.global)+` }`)(doc)
+				if c.down == 0 {
+					return doc
+				}
+				return replaceOnce(t, doc, `"down": {
+      "deployments"`, `"down": { "retries": { "max_attempts": `+strconv.Itoa(c.down)+` },
+      "deployments"`)
 			})
 			expectError(t, post(t, g, "r", `{"model":"down"}`), http.StatusBadGateway, "upstream_unavailable")
 			if line := logLine(t, g, "r"); !strings.Contains(line, `"kaiak.attempts":`+strconv.Itoa(c.want)+`,`) {
@@ -348,15 +349,15 @@ func TestMaxAttempts(t *testing.T) {
 
 // fiveDownDeployments gives model "down" five deployments on backend down (models
 // d1…d5), so retries have deployments to fail over to.
-func fiveDownDeployments(doc string) string {
-	return strings.Replace(doc, `[{ "backend": "down", "model": "down" }]`,
+func fiveDownDeployments(t *testing.T, doc string) string {
+	return replaceOnce(t, doc, `[{ "backend": "down", "model": "down" }]`,
 		`[{ "backend": "down", "model": "d1" }, { "backend": "down", "model": "d2" }, { "backend": "down", "model": "d3" },
-        { "backend": "down", "model": "d4" }, { "backend": "down", "model": "d5" }]`, 1)
+        { "backend": "down", "model": "d4" }, { "backend": "down", "model": "d5" }]`)
 }
 
 func TestEachAttemptFeedsTheCircuitBreaker(t *testing.T) {
 	g, other := newRetryGateway(t, "local", "local-b",
-		withGlobal(`"circuit": { "failure_threshold": 2, "probe_interval_ms": 3600000 }`))
+		withGlobal(t, `"circuit": { "failure_threshold": 2, "probe_interval_ms": 3600000 }`))
 	g.backend.SetReply(fakebackend.Reply{Status: 500})
 	// Ties take turns: each request's first attempt fails on local, its retry
 	// succeeds on local-b; the second failure opens local's circuit.
@@ -380,7 +381,7 @@ func TestEachAttemptFeedsTheCircuitBreaker(t *testing.T) {
 // attempt's error answers.
 func TestNoRetryWhenTheOtherDeploymentIsOpen(t *testing.T) {
 	g, other := newRetryGateway(t, "local", "local-b",
-		withGlobal(`"circuit": { "failure_threshold": 2, "probe_interval_ms": 3600000 }`))
+		withGlobal(t, `"circuit": { "failure_threshold": 2, "probe_interval_ms": 3600000 }`))
 	m := g.holder.Current().Models["retry"]
 	for range 2 {
 		slot, _, err := g.router.Acquire(context.Background(), m,
@@ -410,7 +411,7 @@ func TestRetryQueuesForACappedBackend(t *testing.T) {
 	// edit (nil = none) is applied after the cap.
 	hold := func(t *testing.T, edit func(string) string) (*testGateway, *fakebackend.Backend, *httptest.Server, func()) {
 		g, other := newRetryGateway(t, "local-b", "local", func(doc string) string {
-			doc = capLocal(doc)
+			doc = capLocal(t, doc)
 			if edit != nil {
 				doc = edit(doc)
 			}
@@ -482,7 +483,7 @@ func TestRetryQueuesForACappedBackend(t *testing.T) {
 
 	t.Run("queue timeout answers the last attempt's error", func(t *testing.T) {
 		g, _, srv, cancelHolder := hold(t, func(doc string) string {
-			return strings.Replace(doc, `"retry": {`, `"retry": { "queue": { "timeout_ms": 30 },`, 1)
+			return replaceOnce(t, doc, `"retry": {`, `"retry": { "queue": { "timeout_ms": 30 },`)
 		})
 		defer cancelHolder()
 		a := await(t, send(context.Background(), srv.URL, "r", `{"model":"retry"}`))
@@ -499,12 +500,12 @@ func TestRetryQueuesForACappedBackend(t *testing.T) {
 }
 
 // capLocal caps backend "local" at one request in flight.
-func capLocal(doc string) string {
-	return strings.Replace(doc, `"api_key_env": "LOCAL_KEY" }`, `"api_key_env": "LOCAL_KEY", "max_in_flight": 1 }`, 1)
+func capLocal(t *testing.T, doc string) string {
+	return replaceOnce(t, doc, `"api_key_env": "LOCAL_KEY" }`, `"api_key_env": "LOCAL_KEY", "max_in_flight": 1 }`)
 }
 
 func TestDrainCutsARetryWaitingInTheQueue(t *testing.T) {
-	g, other := newRetryGateway(t, "local-b", "local", capLocal)
+	g, other := newRetryGateway(t, "local-b", "local", func(doc string) string { return capLocal(t, doc) })
 	other.SetReply(fakebackend.Reply{Status: 500})
 	g.backend.SetReply(fakebackend.Reply{HangAfter: 1})
 	d := newDrainable(t, g)

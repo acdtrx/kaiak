@@ -34,21 +34,19 @@ func errorMessage(t *testing.T, w *httptest.ResponseRecorder) string {
 // deployment there and one on "local" ("mixed").
 func withAnthropicModels(t *testing.T, g *testGateway, edits ...func(doc string) string) {
 	t.Helper()
-	s := testSnapshotWith(t, g.backend.URL(), func(doc string) string {
+	g.apply(t, func(doc string) string {
 		for _, edit := range edits {
 			doc = edit(doc)
 		}
-		doc = strings.Replace(doc, `"backends": {`, `"backends": {
-    "claude": { "type": "anthropic", "base_url": "`+g.backend.URL()+`/v1", "api_key_env": "ANTHROPIC_KEY" },`, 1)
+		doc = replaceOnce(t, doc, `"backends": {`, `"backends": {
+    "claude": { "type": "anthropic", "base_url": "`+g.backend.URL()+`/v1", "api_key_env": "ANTHROPIC_KEY" },`)
 		meta := `"metadata": { "context_length": 8192,
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } }`
-		return strings.Replace(doc, `"models": { `, `"models": {
+		return replaceOnce(t, doc, `"models": { `, `"models": {
     "claude-only": { "deployments": [{ "backend": "claude", "model": "claude-x" }], `+meta+` },
     "mixed": { "deployments": [{ "backend": "claude", "model": "claude-x" }, { "backend": "local", "model": "mixed-local" }], `+meta+` },
-    `, 1)
+    `)
 	})
-	g.holder.Swap(s)
-	g.router.Configure(s)
 }
 
 // A model none of whose deployments serves the endpoint is refused before routing,
@@ -249,8 +247,8 @@ func TestErrorEventsAndOverloadClassification(t *testing.T) {
 func TestEndpointNotServedComesBeforeLimits(t *testing.T) {
 	g := newTestGateway(t)
 	withAnthropicModels(t, g, func(doc string) string {
-		return strings.Replace(doc, `"allowed_models": ["*"] }`,
-			`"allowed_models": ["*"], "limits": [{ "type": "requests_per_minute", "value": 1 }] }`, 1)
+		return replaceOnce(t, doc, `"allowed_models": ["*"] }`,
+			`"allowed_models": ["*"], "limits": [{ "type": "requests_per_minute", "value": 1 }] }`)
 	})
 	if w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey, body: chatBody}); w.Code != http.StatusOK {
 		t.Fatalf("first request: %d %s", w.Code, w.Body.String())
