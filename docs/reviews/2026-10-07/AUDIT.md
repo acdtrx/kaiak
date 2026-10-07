@@ -340,3 +340,44 @@ Reviewers: [K] M3, [K] M4, [G] L2.
 - L1–L11.
 
 **Recorded for a decision:** L12 (`expectedVersion` on publish).
+
+## Outcome (2026-10-07)
+
+Phase 3 (`docs/plans/control-replicas/`, steps 7–9: the broadcast-only control plane)
+removed config versions, the config epoch, the totals revision and totals on acks,
+which dissolved some findings. Step 10 fixed the rest. Commits: `c2b1b87`
+(kaiak-control), `9791c7e` (gateway), `d943b88` (docs).
+
+| Finding | Outcome |
+|---|---|
+| H1 stalled old-epoch write counts twice | **Fixed** `c2b1b87`: one batch cursor per (instance, epoch); a batch is decided against its own epoch's last batch; `counted_through` is the latest of any epoch. Regression tests from [R] R1 and [B] B1 (and the crash variant). |
+| H2 other-epoch totals retire own usage, hide the mismatch | **Dissolved** by phase 3: there is no config epoch and no mismatch state; totals apply to the running limits by (scope, type) whatever the config, and own usage leaves only through stream totals whose `counted_through` covers it (`TestRejectedConfigKeepsBudgetsEnforcedFromStreamTotals`). [B] B2's test asserted the removed epoch path: not ported. |
+| H3 failed read after a notification loses the config | **Fixed** `c2b1b87`: the read is retried (100 ms doubling, five retries, `deliveryRetryDelaysMs`), then announced (`onDeliveryFailed`); the Fastify plugin logs it and ends its streams. A failed totals read is retried at the push interval. [B] B3 ported, adapted to `currentConfig`. |
+| M1 lost notifications after a reconnect | **Fixed** `c2b1b87`: a `catch-up` store change after a reconnect; the core rereads the config, the totals and the live set; contract test behind a `reconnect` hook; GUIDE: dedicated `LISTEN` session, reads on the primary. |
+| M2 boundary read omits the counted window | **Fixed** `c2b1b87` at its cause: the core takes the windows current once the read is over and reads again when they changed. [B] B4's control half ported; its gateway half (an ack with the same revision ignored) dissolved with acks carrying no totals and no revision. **Not built**: the gateway-side "retire only when the windows cover it" — it would need the totals to state the core's window starts on the wire, and what remains after the core fix is clock skew between processes (or between a process and a gateway), which predates this branch. The spec and GUIDE now require replica clocks within a second. |
+| M3 gateway revisions repeat after a forget | **Fixed** `c2b1b87`: revisions never repeat for an instance (a store-wide counter in the memory store; the contract test changed). [R] R2 and [B] B5 ported. |
+| M4 contract tests certify a torn snapshot | **Fixed** `c2b1b87`: concurrent snapshot consistency (cursor, windows, sequence), status and forget notifications, notification order, catch-up; a torn store (`store-contract/torn-store.ts`) as negative control, run in a child process and required to fail. [B] B6 ported as that control. |
+| M5 ledger insert blocks a resend after retention | **Fixed** `d943b88` (GUIDE §6 and the sketch: `on conflict (record_id) do nothing`; the retention boundary stated; the store interface says so). [B] B7 not ported: it modelled the GUIDE's SQL, which the fix changes; no library code path changes. |
+| M6 Postgres sketch flaws | **Fixed** `d943b88`: `group_id` not null with `''` for global, `store_meta` locked first, unique violations as `{ saved: false }`, per-epoch cursors, a store-wide gateway revision, the full gateway write and notify. The restore and epoch part **dissolved** (no epoch; a core that sees the sequence go back ends its streams). |
+| M7 docs describe the old core and model sets | **Fixed** `d943b88` (ARCHITECTURE's `storage`, `config-publishing` and `usage` bullets; GATEWAY.md Limits; CONTROL-PROTOCOL public model names; README). The broken sentence was already fixed in phase 3. |
+| L1 late status raises a false conflict | **Fixed** `c2b1b87`: the receipt time is read once; a record that won with a later receipt time drops the status. [R] R4 ported. |
+| L2 `configsSince` resync race | **Dissolved**: no `configsSince`. [R] R3 not ported. |
+| L3 epoch read outside the snapshot | **Dissolved**: no config epoch. |
+| L4 a core never unsubscribes | **Fixed** `c2b1b87`: one store subscription per core, released by `stop()`, retaken with a catch-up by `start()`. |
+| L5 pruned configs skipped without resync | **Dissolved**: no history. [B] B8 not ported. |
+| L6 share warning loops over every model | **Fixed** `9791c7e`: filtered by the scope's allowed models. |
+| L7 leftovers | **Fixed** `9791c7e`, `d943b88`: dead `copySettled` and its test, stale comments, the status fixture naming a removed code, docs wording (BACKLOG and the stale "lease" test name were already gone in phase 3). |
+| L8 three weakened e2e checks | **Fixed** `9791c7e`: each again shows a priced model outside every USD limit serving. |
+| L9 repeating "another epoch" log | **Dissolved**: the line went with the epoch filter. |
+| L10 DEPLOYMENT notes | **Fixed** `d943b88`: the mid-window note per mode; the host-app migration note. |
+| L11 history narration | **Fixed** `d943b88`: rephrased as dated rejected alternatives. |
+| L12 `expectedVersion` on publish | **Dissolved** by decision 18: a publish replaces the current config, and concurrent editing is the app's. |
+
+Found while verifying step 10: two tests still synchronized as if acks carried totals,
+and failed now and then — `TestUsageAcksFailingPastTheGraceRefusePricedBudgets` (a push
+showing the batch counted arrived before the ack was taken; about 1 in 60 runs) and the
+cross-half "control plane back" subtest (the new store's totals come on the stream;
+gw-a enforced the spend restored at its boot until they did). **Fixed** `238b6ee`: the
+tests wait for the ack and for the stream totals. No product change: the gateway ends
+the "usage waiting" outage at the ack and replaces restored totals with the first
+pushed ones, as specified.
