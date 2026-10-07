@@ -2,15 +2,16 @@
 // the gateway's suite holds its config snapshot to the same files.
 
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, test } from "node:test";
+
+import { fixtureFiles, fixturePath, readJson } from "../test-support/index.ts";
 
 import { validateConfig } from "./index.ts";
 import { mergeLimits, resolveScopes } from "./limits.ts";
 import type { Config, Limit } from "./types.ts";
 
-const RESOLVED = path.resolve(import.meta.dirname, "../../../../protocol/fixtures/config/resolved");
+const RESOLVED = fixturePath("config", "resolved");
 
 interface ResolvedGroup {
   path: string[];
@@ -25,15 +26,13 @@ interface ResolutionFixture {
 }
 
 function readFixture(file: string): ResolutionFixture {
-  const raw: unknown = JSON.parse(readFileSync(path.join(RESOLVED, file), "utf8"));
+  const raw = readJson(path.join(RESOLVED, file));
   assert.ok(typeof raw === "object" && raw !== null && "config" in raw && "expected" in raw && "reason" in raw);
   return raw as ResolutionFixture;
 }
 
 describe("resolution fixtures", () => {
-  const files = readdirSync(RESOLVED)
-    .filter((name) => name.endsWith(".json"))
-    .sort();
+  const files = fixtureFiles(RESOLVED);
 
   test("there are resolution fixtures", () => {
     assert.ok(files.length > 0);

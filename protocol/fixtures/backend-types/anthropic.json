@@ -1,0 +1,11 @@
+{
+  "base_url": "https://api.anthropic.com/v1",
+  "credential": "sk-fixture-credential",
+  "models_list": {
+    "url": "https://api.anthropic.com/v1/models?limit=1000",
+    "headers": {
+      "x-api-key": "sk-fixture-credential",
+      "anthropic-version": "2023-06-01"
+    }
+  }
+}

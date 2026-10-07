@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import path from "node:path";
 import { test } from "node:test";
 import type { TestContext } from "node:test";
 
 import { BACKEND_TYPES } from "../config/index.ts";
 import type { BackendType } from "../config/index.ts";
+import { fixtureFiles, fixturePath, readJson } from "../test-support/index.ts";
 import { verifyBackend } from "./index.ts";
 import type { BackendReport, VerifyBackendOptions } from "./index.ts";
 
@@ -529,6 +531,53 @@ test("each type reads its models list at its URL with its credential header", as
     }
     assert.equal(request?.headers["anthropic-version"], type === "anthropic" ? "2023-06-01" : undefined, type);
     assertNoCredential(report);
+  }
+});
+
+// A file of protocol/fixtures/backend-types/, named for its type: for a sample base_url
+// and credential, the models-list request a backend of that type gets — its URL, and
+// the headers it carries besides each half's own Accept and User-Agent — or null when
+// the type has no models list. The gateway's provider tests read the same files.
+interface BackendTypeFixture {
+  base_url: string;
+  credential: string;
+  models_list: { url: string; headers: Record<string, string> } | null;
+}
+
+test("each type's models-list request is the gateway's (protocol/fixtures/backend-types)", async (t) => {
+  const dir = fixturePath("backend-types");
+  const types = fixtureFiles(dir).map((file) => path.basename(file, ".json"));
+  assert.deepEqual([...types].sort(), [...BACKEND_TYPES].sort(), "one fixture per type");
+  for (const type of types) {
+    const fixture = readJson(path.join(dir, `${type}.json`)) as BackendTypeFixture;
+    const sent: { url: string; method: string | undefined; headers: Headers }[] = [];
+    const fetchMock = t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      sent.push({ url: String(input), method: init?.method, headers: new Headers(init?.headers) });
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    const report = await verifyBackend({
+      type: type as BackendType,
+      baseUrl: fixture.base_url,
+      credential: fixture.credential,
+    });
+    fetchMock.mock.restore();
+
+    assert.equal(report.ok, fixture.models_list !== null, `${type}: ok only with a models list`);
+    if (fixture.models_list === null) {
+      assert.deepEqual(sent, [], `${type}: no request`);
+      continue;
+    }
+    assert.equal(sent.length, 1, `${type}: one request`);
+    const [request] = sent;
+    assert.equal(request?.method, "GET", type);
+    assert.equal(request?.url, fixture.models_list.url, type);
+    const headers = Object.fromEntries(
+      [...(request?.headers ?? new Headers())].filter(([name]) => name !== "accept" && name !== "user-agent"),
+    );
+    const expected = Object.fromEntries(
+      Object.entries(fixture.models_list.headers).map(([name, value]) => [name.toLowerCase(), value]),
+    );
+    assert.deepEqual(headers, expected, `${type}: headers`);
   }
 });
 

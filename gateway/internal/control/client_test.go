@@ -24,6 +24,7 @@ import (
 
 	"kaiak/internal/config"
 	"kaiak/internal/fakecontrol"
+	"kaiak/internal/fixturetest"
 )
 
 const (
@@ -57,7 +58,7 @@ func configA(t *testing.T) []byte { return fixtureConfig(t, "valid", "minimal.js
 
 func configB(t *testing.T) []byte {
 	t.Helper()
-	data, err := os.ReadFile("../../../protocol/fixtures/config/valid/users-child-defaults.json")
+	data, err := os.ReadFile(fixturetest.Dir("config", "valid", "users-child-defaults.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -13,9 +13,10 @@ import (
 	"testing"
 
 	"kaiak/internal/config"
+	"kaiak/internal/fixturetest"
 )
 
-const keyFixturesDir = "../../../protocol/fixtures/keys"
+var keyFixturesDir = fixturetest.Dir("keys")
 
 // keyFormat is the settled key format (docs/specs/CONTROL-PROTOCOL.md, Config).
 var keyFormat = regexp.MustCompile(`^kaiak-[A-Za-z0-9]{43}$`)

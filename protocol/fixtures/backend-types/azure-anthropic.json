@@ -1,0 +1,5 @@
+{
+  "base_url": "https://my-resource.services.ai.azure.com",
+  "credential": "sk-fixture-credential",
+  "models_list": null
+}

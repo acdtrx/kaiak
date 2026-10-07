@@ -17,13 +17,14 @@ import (
 	"kaiak/internal/config"
 	"kaiak/internal/control"
 	"kaiak/internal/fakecontrol"
+	"kaiak/internal/fixturetest"
 	"kaiak/internal/limits"
 	"kaiak/internal/metrics"
 	"kaiak/internal/routing"
 	"kaiak/internal/server"
 )
 
-const minimalFixture = "../../../protocol/fixtures/config/valid/minimal.json"
+var minimalFixture = fixturetest.Dir("config", "valid", "minimal.json")
 
 // envOf returns a lookupEnv over a fixed map.
 func envOf(vars map[string]string) func(string) (string, bool) {
@@ -486,7 +487,7 @@ func TestRunInControlModeBootsFromTheControlPlane(t *testing.T) {
 }
 
 func TestServingStatusCoversTheAppliedConfig(t *testing.T) {
-	data, err := os.ReadFile("../../../protocol/fixtures/config/valid/full.json")
+	data, err := os.ReadFile(fixturetest.Dir("config", "valid", "full.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

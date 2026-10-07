@@ -7,16 +7,15 @@
 // is the only difference between the halves.
 
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 
 import { validateConfig } from "../config/index.ts";
+import { CASES_FILE, fixtureFiles, fixturePath, readJson } from "../test-support/index.ts";
 
 import { validateConfigEvent, validateTotals, validateUsageAck } from "./index.ts";
 
-const FIXTURES = path.resolve(import.meta.dirname, "../../../../protocol/fixtures/duplicate-members");
-const CASES_FILE = "cases.json";
+const FIXTURES = fixturePath("duplicate-members");
 
 const VALIDATORS: Record<string, (doc: unknown) => { ok: true } | { ok: false; issues: unknown[] }> = {
   config: validateConfig,
@@ -25,13 +24,8 @@ const VALIDATORS: Record<string, (doc: unknown) => { ok: true } | { ok: false; i
   "usage-ack": validateUsageAck,
 };
 
-const cases = JSON.parse(readFileSync(path.join(FIXTURES, CASES_FILE), "utf8")) as Record<
-  string,
-  { kind: string; path: string; reason: string }
->;
-const files = readdirSync(FIXTURES)
-  .filter((name) => name.endsWith(".json") && name !== CASES_FILE)
-  .sort();
+const cases = readJson(path.join(FIXTURES, CASES_FILE)) as Record<string, { kind: string; path: string; reason: string }>;
+const files = fixtureFiles(FIXTURES);
 
 test(`every duplicate-member fixture has a ${CASES_FILE} entry and every entry has a fixture`, () => {
   assert.deepEqual(Object.keys(cases).sort(), files);
@@ -43,8 +37,7 @@ for (const file of files) {
   test(`${file}: ${entry.reason} — JSON.parse keeps the last occurrence, which is valid`, () => {
     const validate = VALIDATORS[entry.kind];
     assert.ok(validate, `a validator for kind ${entry.kind}`);
-    const raw = readFileSync(path.join(FIXTURES, file), "utf8");
-    const result = validate(JSON.parse(raw));
+    const result = validate(readJson(path.join(FIXTURES, file)));
     assert.deepEqual(result.ok ? [] : result.issues, []);
   });
 }

@@ -3,50 +3,17 @@
 // fixture fails with the rule code its cases.json entry names.
 
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, test } from "node:test";
 
+import { fixturePath, readJson, testInvalidFixtures, testValidFixtures } from "../test-support/index.ts";
+
 import { BACKEND_TYPES, validateConfig } from "./index.ts";
 
-const FIXTURES = path.resolve(import.meta.dirname, "../../../../protocol/fixtures/config");
-const VALID_DIR = path.join(FIXTURES, "valid");
-const INVALID_DIR = path.join(FIXTURES, "invalid");
+const VALID_DIR = fixturePath("config", "valid");
+const INVALID_DIR = fixturePath("config", "invalid");
 const EXAMPLES_DIR = path.resolve(import.meta.dirname, "../../../../examples");
-const CASES_FILE = "cases.json";
 const CONFIG_SCHEMA = path.resolve(import.meta.dirname, "../../schema/config.schema.json");
-
-interface InvalidCase {
-  kind: "schema" | "semantic";
-  code?: string;
-  reason: string;
-}
-
-function readJson(file: string): unknown {
-  return JSON.parse(readFileSync(file, "utf8"));
-}
-
-function fixtureFiles(dir: string): string[] {
-  return readdirSync(dir)
-    .filter((name) => name.endsWith(".json") && name !== CASES_FILE)
-    .sort();
-}
-
-function readCases(): Map<string, InvalidCase> {
-  const raw = readJson(path.join(INVALID_DIR, CASES_FILE));
-  assert.ok(typeof raw === "object" && raw !== null && !Array.isArray(raw), `${CASES_FILE} is an object`);
-  const cases = new Map<string, InvalidCase>();
-  for (const [file, entry] of Object.entries(raw)) {
-    assert.ok(typeof entry === "object" && entry !== null, `${file}: entry is an object`);
-    const { kind, code, reason } = entry as Record<string, unknown>;
-    assert.ok(kind === "schema" || kind === "semantic", `${file}: kind is schema or semantic`);
-    assert.equal(typeof reason, "string", `${file}: reason is a string`);
-    if (kind === "semantic") assert.equal(typeof code, "string", `${file}: semantic case names its code`);
-    if (kind === "schema") assert.equal(code, undefined, `${file}: schema case names no code`);
-    cases.set(file, { kind, reason: String(reason), ...(typeof code === "string" ? { code } : {}) });
-  }
-  return cases;
-}
 
 test("BACKEND_TYPES is the schema's backend type enum, in its order", () => {
   const schema = readJson(CONFIG_SCHEMA) as { $defs: { backend: { properties: { type: { enum: unknown } } } } };
@@ -54,43 +21,16 @@ test("BACKEND_TYPES is the schema's backend type enum, in its order", () => {
 });
 
 describe("valid config fixtures", () => {
-  for (const file of fixtureFiles(VALID_DIR)) {
-    test(file, () => {
-      const result = validateConfig(readJson(path.join(VALID_DIR, file)));
-      assert.deepEqual(result.ok ? [] : result.issues, []);
-    });
-  }
+  testValidFixtures(VALID_DIR, validateConfig);
 });
 
 // The documented example configs must stay valid; the gateway's suite checks them too.
 describe("example configs", () => {
-  for (const file of fixtureFiles(EXAMPLES_DIR)) {
-    test(file, () => {
-      const result = validateConfig(readJson(path.join(EXAMPLES_DIR, file)));
-      assert.deepEqual(result.ok ? [] : result.issues, []);
-    });
-  }
+  testValidFixtures(EXAMPLES_DIR, validateConfig);
 });
 
 describe("invalid config fixtures", () => {
-  const cases = readCases();
-
-  test(`every invalid fixture has a ${CASES_FILE} entry and every entry has a fixture`, () => {
-    assert.deepEqual([...cases.keys()].sort(), fixtureFiles(INVALID_DIR));
-  });
-
-  for (const file of fixtureFiles(INVALID_DIR)) {
-    const expected = cases.get(file);
-    if (!expected) continue;
-    test(`${file}: ${expected.reason}`, () => {
-      const result = validateConfig(readJson(path.join(INVALID_DIR, file)));
-      assert.equal(result.ok, false, "the document is rejected");
-      if (result.ok) return;
-      const codes = [...new Set(result.issues.map((issue) => issue.code))];
-      // A semantic fixture breaks exactly one rule, so no other code may appear.
-      assert.deepEqual(codes, [expected.kind === "semantic" ? expected.code : "schema"]);
-    });
-  }
+  testInvalidFixtures(INVALID_DIR, validateConfig);
 });
 
 // The 2026-10-05 review's H1: the gateway's log exporter reads its collector's

@@ -19,8 +19,9 @@
 - `control/` — npm workspaces: `control/kaiak-control` (package of the same name) and
   `control/sample`.
 - `protocol/` — JSON Schemas for the config document and every protocol message, plus
-  shared fixtures (valid and invalid configs, usage batches, stream sequences). Both
-  halves run the fixtures in their test suites.
+  shared fixtures (valid and invalid configs, usage batches, stream sequences, each
+  backend type's models-list request). Both halves run the fixtures in their test
+  suites.
 
 ## Gateway: Go, standard library only (settled 2026-09-24)
 

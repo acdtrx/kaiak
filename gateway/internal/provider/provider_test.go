@@ -16,6 +16,7 @@ import (
 
 	"kaiak/internal/config"
 	"kaiak/internal/fakebackend"
+	"kaiak/internal/fixturetest"
 )
 
 func TestURLJoining(t *testing.T) {
@@ -422,7 +423,7 @@ func TestReservedVariablesAreNeverSentAsACredential(t *testing.T) {
 // api_key_env is refused, and a backend naming one anyway — past a validation bug —
 // gets no credential: the value never reaches the backend the config author chose.
 func TestLogExportVariablesAreNeverSentAsACredential(t *testing.T) {
-	data, err := os.ReadFile("../../../protocol/fixtures/config/valid/minimal.json")
+	data, err := os.ReadFile(fixturetest.Dir("config", "valid", "minimal.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

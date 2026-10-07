@@ -5,145 +5,41 @@ package config
 // semantic fixture fails with the rule code its cases.json entry names.
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"maps"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"kaiak/internal/fixturetest"
 )
 
-const (
-	fixturesDir = "../../../protocol/fixtures/config"
-	examplesDir = "../../../examples"
-	casesFile   = "cases.json"
-)
+const examplesDir = "../../../examples"
 
-type invalidCase struct {
-	Kind   string  `json:"kind"`
-	Code   *string `json:"code"`
-	Reason string  `json:"reason"`
-}
+// fixturesDir is protocol/fixtures/config.
+var fixturesDir = fixturetest.Dir("config")
 
-func fixtureFiles(t *testing.T, dir string) []string {
-	t.Helper()
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var files []string
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".json") && e.Name() != casesFile {
-			files = append(files, e.Name())
-		}
-	}
-	slices.Sort(files)
-	if len(files) == 0 {
-		t.Fatalf("no fixtures in %s", dir)
-	}
-	return files
-}
-
-func readCases(t *testing.T, dir string) map[string]invalidCase {
-	t.Helper()
-	data, err := os.ReadFile(filepath.Join(dir, casesFile))
-	if err != nil {
-		t.Fatal(err)
-	}
-	dec := json.NewDecoder(strings.NewReader(string(data)))
-	dec.DisallowUnknownFields()
-	var cases map[string]invalidCase
-	if err := dec.Decode(&cases); err != nil {
-		t.Fatalf("%s: %v", casesFile, err)
-	}
-	for file, c := range cases {
-		switch {
-		case c.Kind != "schema" && c.Kind != "semantic":
-			t.Errorf("%s: kind %q is not schema or semantic", file, c.Kind)
-		case c.Kind == "semantic" && c.Code == nil:
-			t.Errorf("%s: semantic case names no code", file)
-		case c.Kind == "schema" && c.Code != nil:
-			t.Errorf("%s: schema case names a code", file)
-		}
-		if c.Reason == "" {
-			t.Errorf("%s: no reason", file)
-		}
-	}
-	return cases
+// parse is Parse as a fixture decoder.
+func parse(data []byte) error {
+	_, err := Parse(data)
+	return err
 }
 
 func TestValidFixtures(t *testing.T) {
-	dir := filepath.Join(fixturesDir, "valid")
-	for _, file := range fixtureFiles(t, dir) {
-		t.Run(file, func(t *testing.T) {
-			data, err := os.ReadFile(filepath.Join(dir, file))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := Parse(data); err != nil {
-				t.Fatalf("rejected: %v", err)
-			}
-		})
-	}
+	fixturetest.RunValid(t, fixturetest.Dir("config", "valid"), parse)
 }
 
 // The documented example configs (examples/*.json) must stay valid; kaiak-control's
 // suite checks them too.
 func TestExampleConfigs(t *testing.T) {
-	for _, file := range fixtureFiles(t, examplesDir) {
-		t.Run(file, func(t *testing.T) {
-			data, err := os.ReadFile(filepath.Join(examplesDir, file))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := Parse(data); err != nil {
-				t.Fatalf("rejected: %v", err)
-			}
-		})
-	}
+	fixturetest.RunValid(t, examplesDir, parse)
 }
 
 func TestInvalidFixtures(t *testing.T) {
-	dir := filepath.Join(fixturesDir, "invalid")
-	files := fixtureFiles(t, dir)
-	cases := readCases(t, dir)
-
-	caseFiles := make([]string, 0, len(cases))
-	for file := range cases {
-		caseFiles = append(caseFiles, file)
-	}
-	slices.Sort(caseFiles)
-	if !slices.Equal(caseFiles, files) {
-		t.Errorf("%s entries and fixture files differ:\n entries: %v\n files:   %v", casesFile, caseFiles, files)
-	}
-
-	for _, file := range files {
-		expected, ok := cases[file]
-		if !ok {
-			continue
-		}
-		t.Run(file, func(t *testing.T) {
-			data, err := os.ReadFile(filepath.Join(dir, file))
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, err = Parse(data)
-			var invalid *ValidationError
-			if !errors.As(err, &invalid) {
-				t.Fatalf("want a *ValidationError (%s), got %v", expected.Reason, err)
-			}
-			want := CodeSchema
-			if expected.Kind == "semantic" {
-				want = *expected.Code
-			}
-			// A semantic fixture breaks exactly one rule, so no other code may appear.
-			if codes := invalid.Codes(); !slices.Equal(codes, []string{want}) {
-				t.Errorf("codes %v, want [%s] (%s)\n%v", codes, want, expected.Reason, err)
-			}
-		})
-	}
+	fixturetest.RunInvalid(t, fixturetest.Dir("config", "invalid"), parse, CodeSchema)
 }
 
 // The fixtures for a backend type that requires api_key_env are refused for the
@@ -155,11 +51,7 @@ func TestBackendsRequiringAPIKeyEnv(t *testing.T) {
 		"azure-without-api-key-env.json":  "vllm",
 	} {
 		t.Run(file, func(t *testing.T) {
-			data, err := os.ReadFile(filepath.Join(fixturesDir, "invalid", file))
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, err = Parse(data)
+			_, err := Parse(fixturetest.Read(t, filepath.Join(fixturesDir, "invalid", file)))
 			var invalid *ValidationError
 			if !errors.As(err, &invalid) {
 				t.Fatalf("want a *ValidationError, got %v", err)
@@ -173,41 +65,20 @@ func TestBackendsRequiringAPIKeyEnv(t *testing.T) {
 	}
 }
 
-// duplicateCase is an entry of protocol/fixtures/duplicate-members/cases.json: raw
-// documents repeating an object member, which the gateway refuses (duplicate-member,
-// at path) before any decoder reads them. kaiak-control's suite runs the same files
-// and checks JSON.parse's reading of each (the last occurrence) is otherwise valid, so
-// the repeat is each file's only defect.
-type duplicateCase struct {
-	Kind   string `json:"kind"`
-	Path   string `json:"path"`
-	Reason string `json:"reason"`
-}
-
-const duplicatesDir = "../../../protocol/fixtures/duplicate-members"
-
+// The config fixtures of protocol/fixtures/duplicate-members (the message ones run in
+// the control package): each is refused with duplicate-member at its path, before any
+// decoder reads it.
 func TestDuplicateMemberFixtures(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join(duplicatesDir, casesFile))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var cases map[string]duplicateCase
-	if err := json.Unmarshal(data, &cases); err != nil {
-		t.Fatal(err)
-	}
+	cases := fixturetest.DuplicateCases(t)
 	ran := 0
-	for _, file := range fixtureFiles(t, duplicatesDir) {
-		c, ok := cases[file]
-		if !ok || c.Kind != "config" {
+	for _, file := range slices.Sorted(maps.Keys(cases)) {
+		c := cases[file]
+		if c.Kind != "config" {
 			continue // a message fixture: the control package runs it
 		}
 		ran++
 		t.Run(file, func(t *testing.T) {
-			raw, err := os.ReadFile(filepath.Join(duplicatesDir, file))
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, err = Parse(raw)
+			_, err := Parse(fixturetest.Read(t, filepath.Join(fixturetest.Dir("duplicate-members"), file)))
 			var invalid *ValidationError
 			if !errors.As(err, &invalid) || !slices.Equal(invalid.Codes(), []string{CodeDuplicateMember}) {
 				t.Fatalf("want a %s rejection (%s), got %v", CodeDuplicateMember, c.Reason, err)
@@ -246,13 +117,9 @@ type resolvedGroup struct {
 
 func TestResolvedFixtures(t *testing.T) {
 	dir := filepath.Join(fixturesDir, "resolved")
-	for _, file := range fixtureFiles(t, dir) {
+	for _, file := range fixturetest.Files(t, dir) {
 		t.Run(file, func(t *testing.T) {
-			data, err := os.ReadFile(filepath.Join(dir, file))
-			if err != nil {
-				t.Fatal(err)
-			}
-			dec := json.NewDecoder(strings.NewReader(string(data)))
+			dec := json.NewDecoder(bytes.NewReader(fixturetest.Read(t, filepath.Join(dir, file))))
 			dec.DisallowUnknownFields()
 			var fixture resolvedFixture
 			if err := dec.Decode(&fixture); err != nil {

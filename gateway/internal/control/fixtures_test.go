@@ -14,54 +14,34 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
 	"kaiak/internal/accounting"
 	"kaiak/internal/config"
+	"kaiak/internal/fixturetest"
 )
 
-const (
-	fixturesDir = "../../../protocol/fixtures/messages"
-	casesFile   = "cases.json"
-)
+// fixturesDir is protocol/fixtures/messages.
+var fixturesDir = fixturetest.Dir("messages")
 
-// decoder decodes one kind of message and returns the value (for round trips) and the
-// codes of any rejection.
-type decoder func(data []byte) (value any, codes []string)
-
-func codesOf(err error) []string {
-	if err == nil {
-		return nil
-	}
-	var invalid *ValidationError
-	if errors.As(err, &invalid) {
-		return invalid.Codes()
-	}
-	return []string{"not a *ValidationError: " + err.Error()}
-}
+// decoder decodes one kind of message and returns the value (for round trips) or the
+// rejection.
+type decoder func(data []byte) (value any, err error)
 
 func decodeWith[T any](decode func([]byte) (T, error)) decoder {
-	return func(data []byte) (any, []string) {
-		v, err := decode(data)
-		return v, codesOf(err)
-	}
+	return func(data []byte) (any, error) { return decode(data) }
 }
 
 // decoders maps each fixture directory to its message's decoder.
 var decoders = map[string]decoder{
-	"config-event": func(data []byte) (any, []string) {
+	"config-event": func(data []byte) (any, error) {
 		event, err := DecodeConfigEvent(data)
 		if err != nil {
-			return nil, codesOf(err)
+			return nil, err
 		}
 		if _, err := config.Parse(event.Config); err != nil {
-			var invalid *config.ValidationError
-			if !errors.As(err, &invalid) {
-				return nil, []string{"not a *config.ValidationError: " + err.Error()}
-			}
-			return nil, invalid.Codes()
+			return nil, err
 		}
 		return event, nil
 	},
@@ -72,66 +52,10 @@ var decoders = map[string]decoder{
 	"usage-record": decodeWith(DecodeUsageRecord),
 }
 
-type invalidCase struct {
-	Kind   string  `json:"kind"`
-	Code   *string `json:"code"`
-	Reason string  `json:"reason"`
-}
-
-func fixtureFiles(t *testing.T, dir string) []string {
-	t.Helper()
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var files []string
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".json") && e.Name() != casesFile {
-			files = append(files, e.Name())
-		}
-	}
-	slices.Sort(files)
-	if len(files) == 0 {
-		t.Fatalf("no fixtures in %s", dir)
-	}
-	return files
-}
-
-func readCases(t *testing.T, dir string) map[string]invalidCase {
-	t.Helper()
-	data, err := os.ReadFile(filepath.Join(dir, casesFile))
-	if err != nil {
-		t.Fatal(err)
-	}
-	dec := json.NewDecoder(strings.NewReader(string(data)))
-	dec.DisallowUnknownFields()
-	var cases map[string]invalidCase
-	if err := dec.Decode(&cases); err != nil {
-		t.Fatalf("%s: %v", casesFile, err)
-	}
-	for file, c := range cases {
-		switch {
-		case c.Kind != "schema" && c.Kind != "semantic":
-			t.Errorf("%s: kind %q is not schema or semantic", file, c.Kind)
-		case c.Kind == "semantic" && c.Code == nil:
-			t.Errorf("%s: semantic case names no code", file)
-		case c.Kind == "schema" && c.Code != nil:
-			t.Errorf("%s: schema case names a code", file)
-		}
-		if c.Reason == "" {
-			t.Errorf("%s: no reason", file)
-		}
-	}
-	return cases
-}
-
-func readFixture(t *testing.T, path string) []byte {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return data
+// rejection is decode as a fixture decoder: only the rejection counts.
+func (decode decoder) rejection(data []byte) error {
+	_, err := decode(data)
+	return err
 }
 
 func TestEveryFixtureKindHasADecoder(t *testing.T) {
@@ -139,65 +63,31 @@ func TestEveryFixtureKindHasADecoder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var dirs, kinds []string
+	var dirs []string
 	for _, e := range entries {
 		if e.IsDir() {
 			dirs = append(dirs, e.Name())
 		}
 	}
-	for kind := range decoders {
-		kinds = append(kinds, kind)
-	}
 	slices.Sort(dirs)
-	slices.Sort(kinds)
-	if !slices.Equal(dirs, kinds) {
+	if kinds := slices.Sorted(maps.Keys(decoders)); !slices.Equal(dirs, kinds) {
 		t.Errorf("fixture directories %v, decoders %v", dirs, kinds)
 	}
 }
 
 func TestValidMessageFixtures(t *testing.T) {
 	for kind, decode := range decoders {
-		dir := filepath.Join(fixturesDir, kind, "valid")
-		for _, file := range fixtureFiles(t, dir) {
-			t.Run(kind+"/"+file, func(t *testing.T) {
-				if _, codes := decode(readFixture(t, filepath.Join(dir, file))); codes != nil {
-					t.Fatalf("rejected: %v", codes)
-				}
-			})
-		}
+		t.Run(kind, func(t *testing.T) {
+			fixturetest.RunValid(t, filepath.Join(fixturesDir, kind, "valid"), decode.rejection)
+		})
 	}
 }
 
 func TestInvalidMessageFixtures(t *testing.T) {
 	for kind, decode := range decoders {
-		dir := filepath.Join(fixturesDir, kind, "invalid")
-		files := fixtureFiles(t, dir)
-		cases := readCases(t, dir)
-		caseFiles := make([]string, 0, len(cases))
-		for file := range cases {
-			caseFiles = append(caseFiles, file)
-		}
-		slices.Sort(caseFiles)
-		if !slices.Equal(caseFiles, files) {
-			t.Errorf("%s: %s entries and fixture files differ:\n entries: %v\n files:   %v", kind, casesFile, caseFiles, files)
-		}
-		for _, file := range files {
-			expected, ok := cases[file]
-			if !ok {
-				continue
-			}
-			t.Run(kind+"/"+file, func(t *testing.T) {
-				_, codes := decode(readFixture(t, filepath.Join(dir, file)))
-				want := CodeSchema
-				if expected.Kind == "semantic" {
-					want = *expected.Code
-				}
-				// A semantic fixture breaks exactly one rule, so no other code may appear.
-				if !slices.Equal(codes, []string{want}) {
-					t.Errorf("codes %v, want [%s] (%s)", codes, want, expected.Reason)
-				}
-			})
-		}
+		t.Run(kind, func(t *testing.T) {
+			fixturetest.RunInvalid(t, filepath.Join(fixturesDir, kind, "invalid"), decode.rejection, CodeSchema)
+		})
 	}
 }
 
@@ -206,12 +96,12 @@ func TestInvalidMessageFixtures(t *testing.T) {
 func TestValidMessageFixturesRoundTrip(t *testing.T) {
 	for kind, decode := range decoders {
 		dir := filepath.Join(fixturesDir, kind, "valid")
-		for _, file := range fixtureFiles(t, dir) {
+		for _, file := range fixturetest.Files(t, dir) {
 			t.Run(kind+"/"+file, func(t *testing.T) {
-				data := readFixture(t, filepath.Join(dir, file))
-				value, codes := decode(data)
-				if codes != nil {
-					t.Fatalf("rejected: %v", codes)
+				data := fixturetest.Read(t, filepath.Join(dir, file))
+				value, err := decode(data)
+				if err != nil {
+					t.Fatalf("rejected: %v", err)
 				}
 				encoded, err := json.Marshal(value)
 				if err != nil {
@@ -277,7 +167,7 @@ func TestAccountingRecordEncodesToAValidMessage(t *testing.T) {
 
 // A totals amount past 2^53 decodes exactly.
 func TestTotalsAmountBeyondSafeInteger(t *testing.T) {
-	totals, err := DecodeTotals(readFixture(t, filepath.Join(fixturesDir, "totals", "valid", "windows.json")))
+	totals, err := DecodeTotals(fixturetest.Read(t, filepath.Join(fixturesDir, "totals", "valid", "windows.json")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,8 +191,9 @@ func TestIntegerSpellings(t *testing.T) {
 
 func TestSyntaxError(t *testing.T) {
 	_, err := DecodeUsageAck([]byte(`{"batch":`))
-	if codes := codesOf(err); !slices.Equal(codes, []string{CodeSyntax}) {
-		t.Errorf("codes %v, want [%s]", codes, CodeSyntax)
+	var invalid *ValidationError
+	if !errors.As(err, &invalid) || !slices.Equal(invalid.Codes(), []string{CodeSyntax}) {
+		t.Errorf("got %v, want a %s rejection", err, CodeSyntax)
 	}
 }
 
@@ -310,48 +201,19 @@ func TestSyntaxError(t *testing.T) {
 // in the config package): each is refused with duplicate-member at its path, before
 // any decoder reads it. Every file there must have an entry naming a known kind.
 func TestDuplicateMemberFixtures(t *testing.T) {
-	const dir = "../../../protocol/fixtures/duplicate-members"
-	data, err := os.ReadFile(filepath.Join(dir, casesFile))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var cases map[string]struct {
-		Kind   string `json:"kind"`
-		Path   string `json:"path"`
-		Reason string `json:"reason"`
-	}
-	if err := json.Unmarshal(data, &cases); err != nil {
-		t.Fatal(err)
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var files []string
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".json") && e.Name() != casesFile {
-			files = append(files, e.Name())
-		}
-	}
-	listed := slices.Sorted(maps.Keys(cases))
-	if !slices.Equal(listed, files) {
-		t.Errorf("%s entries and fixture files differ:\n entries: %v\n files:   %v", casesFile, listed, files)
-	}
-	for _, file := range files {
+	cases := fixturetest.DuplicateCases(t)
+	for _, file := range slices.Sorted(maps.Keys(cases)) {
 		c := cases[file]
 		if c.Kind == "config" {
 			continue
 		}
-		if _, known := decoders[c.Kind]; !known {
+		decode, known := decoders[c.Kind]
+		if !known {
 			t.Errorf("%s: unknown kind %q", file, c.Kind)
 			continue
 		}
 		t.Run(file, func(t *testing.T) {
-			raw, err := os.ReadFile(filepath.Join(dir, file))
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, err = decodeByKind(c.Kind, raw)
+			_, err := decode(fixturetest.Read(t, filepath.Join(fixturetest.Dir("duplicate-members"), file)))
 			var invalid *ValidationError
 			if !errors.As(err, &invalid) || !slices.Equal(invalid.Codes(), []string{CodeDuplicateMember}) {
 				t.Fatalf("want a %s rejection (%s), got %v", CodeDuplicateMember, c.Reason, err)
@@ -361,23 +223,4 @@ func TestDuplicateMemberFixtures(t *testing.T) {
 			}
 		})
 	}
-}
-
-// decodeByKind runs the message decoder of kind and returns its error.
-func decodeByKind(kind string, raw []byte) (any, error) {
-	switch kind {
-	case "config-event":
-		return DecodeConfigEvent(raw)
-	case "status":
-		return DecodeStatus(raw)
-	case "totals":
-		return DecodeTotals(raw)
-	case "usage-ack":
-		return DecodeUsageAck(raw)
-	case "usage-batch":
-		return DecodeUsageBatch(raw)
-	case "usage-record":
-		return DecodeUsageRecord(raw)
-	}
-	return nil, errors.New("unknown kind " + kind)
 }

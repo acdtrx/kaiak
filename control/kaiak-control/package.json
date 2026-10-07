@@ -11,6 +11,7 @@
   "files": [
     "src",
     "!src/**/*.test.ts",
+    "!src/test-support",
     "schema",
     "GUIDE.md"
   ],

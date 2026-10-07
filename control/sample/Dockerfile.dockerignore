@@ -8,3 +8,4 @@
 !control/sample/package.json
 !control/sample/src
 **/*.test.ts
+control/kaiak-control/src/test-support

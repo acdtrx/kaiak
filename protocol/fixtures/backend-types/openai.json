@@ -1,0 +1,10 @@
+{
+  "base_url": "https://api.openai.com/v1",
+  "credential": "sk-fixture-credential",
+  "models_list": {
+    "url": "https://api.openai.com/v1/models",
+    "headers": {
+      "authorization": "Bearer sk-fixture-credential"
+    }
+  }
+}

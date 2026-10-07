@@ -15,8 +15,9 @@
 - **`control/`** — the control-plane side: `kaiak-control` (the reusable library) and
   `sample` (a thin app on it). Never in the request path.
 - **`protocol/`** — JSON Schemas and shared fixtures for the config document and every
-  protocol message. It is the contract: both halves run the same fixtures in their test
-  suites, so neither can drift alone.
+  protocol message, and each backend type's models-list request (which the gateway and
+  `backend-verify` both send). It is the contract: both halves run the same fixtures in
+  their test suites, so neither can drift alone.
 
 ## Data flow
 
@@ -224,6 +225,10 @@ enforce the boundaries.
 - `fakeotlp` — an OpenTelemetry collector for tests: takes OTLP/HTTP JSON log
   exports, answers each as the test scripts, and keeps every export decoded with its
   own types — not `otlplog`'s — so reading them checks the encoder. Tests only.
+- `fixturetest` — the runner of the shared fixtures in `protocol/fixtures/`: where
+  they are, the fixture listing, the `cases.json` rules (invalid and duplicate-member
+  cases) and the valid and invalid runs over a decoder. `config` and `control` run
+  their fixtures through it. Tests only.
 
 Test tooling outside the binary:
 
@@ -351,6 +356,10 @@ Test tooling outside the binary:
     usage batches and statuses;
     starts the core with the app and stops it on close. Routes only — logging and the rest of
     the app are the host's.
+  - `test-support` — what the suites share: the runner of the shared fixtures in
+    `protocol/fixtures/` (where they are, the fixture listing, the `cases.json` rules,
+    the valid and invalid runs over a validator). Imported by tests only; not in the
+    package's `exports` or `files`, nor in the sample's image.
 
 ```mermaid
 flowchart LR

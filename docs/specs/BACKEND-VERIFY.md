@@ -73,6 +73,13 @@ way by the gateway:
 | `anthropic` | `GET <baseUrl>/models?limit=1000` | `x-api-key: <credential>`, plus `anthropic-version: 2023-06-01` |
 | `azure-anthropic` | none — no request is sent | — |
 
+- **Pinned by a shared fixture** (settled 2026-10-08): `protocol/fixtures/backend-types/<type>.json`
+  holds, for a sample `base_url` and credential, the models-list URL and the headers
+  the request carries besides `Accept` and `User-Agent` — or `null` for a type with no
+  models list. The gateway's provider tests and this subsystem's tests both read it,
+  and each has one file per type it knows. Only what both halves send is in it:
+  `/props`, server recognition and the fields read are verify-only.
+
 - **The Anthropic types** (settled 2026-10-06): Anthropic's models list is paged
   (20 by default), so one request asks for the most a page holds. Claude in
   Microsoft Foundry has no Models API, so an `azure-anthropic` check sends nothing

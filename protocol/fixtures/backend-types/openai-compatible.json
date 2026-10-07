@@ -1,0 +1,10 @@
+{
+  "base_url": "http://localhost:8080/v1",
+  "credential": "sk-fixture-credential",
+  "models_list": {
+    "url": "http://localhost:8080/v1/models",
+    "headers": {
+      "authorization": "Bearer sk-fixture-credential"
+    }
+  }
+}
