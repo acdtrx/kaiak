@@ -298,21 +298,25 @@ Test tooling outside the binary:
     control-plane processes agree: the current config, the sequence every write moves
     (internal: it orders what each core sends on its streams), conditional writes
     (publish on the hash of the config it was checked against, batch on the
-    instance's last batch, gateway records on their revision), the consistent totals
-    snapshot, and `subscribe()`, which tells every core of every change. The contract
-    ships as tests (`store-contract`, a second package entry).
+    instance's last batch of its epoch, gateway records on a revision that never
+    repeats), the consistent totals snapshot, and `subscribe()`, which tells every
+    core of every change and announces a catch-up when the store's change channel
+    reconnects. The contract ships as tests (`store-contract`, a second package
+    entry), with a deliberately broken store as their negative control.
   - `config-publishing` — publishing (validate, refuse a changed group parent, then
     replace the current config conditionally), the current config and its hash, and
-    the delivery of each new current config to the core's listeners.
+    the delivery of each new current config to the core's listeners — a failed read
+    retried, then announced (the Fastify plugin ends its streams).
   - `usage` — usage intake and totals (`docs/specs/CONTROL-PROTOCOL.md`, Usage
     intake): validates a batch, de-duplicates it by the instance's last counted batch
-    ID (one batch at a time per instance, the store's write conditional on that ID),
+    of its epoch (one batch at a time per instance, the store's write conditional on
+    that batch),
     stamps it with the receipt time, adds each record to the hour and month windows
     of global and each group of its path, whatever the config (the record's
     `gateway_time` window when that is the current or previous one), and answers an
     ack naming the batch; recent records; a subscription to counted batches for
-    pushes. Totals are made per gateway (`counted_through`) from one store snapshot,
-    listing the current config's limits.
+    pushes. Totals are made per gateway (`counted_through`) from one store snapshot of
+    the windows current once the read is over, listing the current config's limits.
   - `gateways` — gateway status and the live set (`docs/specs/CONTROL-PROTOCOL.md`,
     Status intake): validates a status, keeps the latest per instance with its
     receipt time, joins the instance to the live set, flags two processes sharing an

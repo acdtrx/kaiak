@@ -1190,11 +1190,12 @@ own, and a client sending repeats is broken either way.
 - **Scopes** (settled 2026-09-27): global and every group on the key's path — its
   group and each ancestor (`CONTROL-PROTOCOL.md`, Config → The group tree). Keys have
   no limits of their own; a key's usage counts toward every scope on its path. A
-  request passes every scope's limits that cover its model. A group's limits are its
+  request passes every limit of every scope on its path. A group's limits are its
   effective ones, its parent's `child_defaults` merged in.
-- **Types**: requests/min, tokens/min, tokens/hour, USD/month (extensible). Each limit
-  names the models it covers. Per-minute windows are **sliding**; hourly windows are
-  fixed UTC hours; USD months are calendar months, UTC.
+- **Types**: requests/min, tokens/min, tokens/hour, USD/month (extensible), at most
+  one of each per scope. A limit counts every model its scope uses. Per-minute
+  windows are **sliding**; hourly windows are fixed UTC hours; USD months are
+  calendar months, UTC.
 - **Where each window is enforced** (principle 6):
   - **Per-minute windows** — locally in each gateway, on a **share**: limit ÷ the
     live-gateway count the control plane pushes (Control-plane mode, below). Drift:

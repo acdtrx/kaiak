@@ -10,7 +10,8 @@
 > model defaults (config format 5, protocol version 5) — on 2026-10-06; to several
 > control-plane processes over one store and limits without model sets (same formats)
 > on 2026-10-06; to a broadcast-only control plane — the current config by hash, no
-> config versions — on 2026-10-07.
+> config versions — and the pre-merge review's store contract (batch cursors per
+> epoch, revisions that never repeat, the catch-up) on 2026-10-07.
 >
 > Background, in this order: `docs/architecture/control-plane.html` (how gateways and a
 > control plane work together, with diagrams), `docs/specs/CONTROL-PROTOCOL.md` (the
@@ -134,8 +135,16 @@ await app.listen({ host: "0.0.0.0", port: 8090 });
   leave it), `heartbeatIntervalMs` (15 000), `totalsPushIntervalMs` (1 000),
   `stalledStreamTimeoutMs` (30 000).
 - Core options worth knowing: `recentRecordsSize` (100), `gatewayLiveTimeoutMs` (30 000),
-  `gatewayForgetAfterMs` (1 h), `batchCursorRetentionMs` (7 days). Defaults match
-  the gateway's timings; change them only with a reason.
+  `gatewayForgetAfterMs` (1 h), `batchCursorRetentionMs` (7 days),
+  `deliveryRetryDelaysMs` (100, 200, 400, 800, 1600: retries of a failed read of the
+  current config). Defaults match the gateway's timings; change them only with a
+  reason.
+- The core reports what the host should see through listeners: `onRollback` (the
+  store's sequence went back) and `onDeliveryFailed` (the current config could not be
+  read after a change, retries included). The Fastify plugin logs both and ends its
+  streams, so gateways reconnect and read the current state; a host serving streams
+  some other way does the same. `stop()` releases the core's store subscription;
+  `start()` takes it again and catches up on what changed meanwhile.
 - Several cores over one store are several `createControlPlane({ store })` calls —
   one per process in a real deployment (§2, rule 1). The sample shows the shape inside
   one process: `KAIAK_SAMPLE_PROTOCOL_PORTS` adds protocol replicas, each a core and a
@@ -159,18 +168,23 @@ behind) ends its streams so gateways reconnect to the store's current state. Eve
 write is **conditional** on what the core read, so two processes never both win; a
 refused write changes nothing and the core decides again. Reads of the totals are
 **one snapshot**. And every change, by any process, reaches every process through
-`subscribe()`.
+`subscribe()` — with a **catch-up** whenever the store's change channel comes back from
+a disconnect.
+
+Several processes need their clocks kept in step: NTP-synchronized, within a second.
+Each core picks the current hour and month from its own clock, and the expiry sweep
+compares its clock with receipt times other processes wrote.
 
 | Methods | Contract to hold |
 | --- | --- |
 | `currentConfig()`, `publishConfig(entry, expectedHash)` | One current config: `{ config, hash, publishedAt }` plus the sequence its publish moved the store to. A publish **replaces** it **only while the current config's hash is still `expectedHash`** (`undefined` = none published yet) — the config the core checked the parents rule against — and moves the sequence, in one transaction. Otherwise write nothing and return `{ saved: false, current }`. The store keeps no earlier configs; config history is your app's. A publish never depends on usage. |
-| `lastBatch(instance)`, `saveCountedBatch(counted, expectedLast, keepRecords)` | The exactly-once guarantee. Write the batch ID as the instance's last, add every `additions` entry to the window totals, append `records` and move the sequence — **all in one transaction, and only if the instance's last batch still equals `expectedLast`** (`undefined` = none yet). Otherwise write nothing and return `{ saved: false, last }`. A compare-and-set on the cursor row (`UPDATE … WHERE … = $expected`) is the usual shape. |
-| `totalsSnapshot(current, instance?)` | The sequence, the current config, the instance's last batch, the current windows (`tokens_per_hour` at `hourStart`, `usd_per_month` at `monthStart`) and the live set's size, **read in one snapshot** (`REPEATABLE READ`, or one statement). A message built from it holds exactly the batches counted at its sequence. |
+| `lastBatch(instance, epoch)`, `saveCountedBatch(counted, expectedLast, keepRecords)` | The exactly-once guarantee. A cursor per **(instance, epoch)**: `lastBatch` returns `{ inEpoch, latest }` — the instance's last counted batch in that epoch, and in any epoch. `saveCountedBatch` writes the batch as its epoch's last (and so the instance's latest), adds every `additions` entry to the window totals, appends `records` and moves the sequence — **all in one transaction, and only if the instance's last batch in the batch's epoch still equals `expectedLast`** (`undefined` = none yet in that epoch). Otherwise write nothing and return `{ saved: false, cursors }`. One cursor per instance is not enough: a write stalled on an earlier epoch would read a newer epoch's batch as "a fresh spool" and count again. |
+| `totalsSnapshot(current, instance?)` | The sequence, the current config, the instance's latest counted batch, the current windows (`tokens_per_hour` at `hourStart`, `usd_per_month` at `monthStart`) and the live set's size, **read in one snapshot** (`REPEATABLE READ`, or one statement). A message built from it holds exactly the batches counted at its sequence. Reading the cursor in a statement of its own is the classic mistake: the contract tests catch it. |
 | `dropPastWindowTotals(oldest)` | Past windows *may* be dropped; keeping them for reporting is allowed — the core only reads current windows. Does not move the sequence. |
 | `recentRecords(limit)` | Newest first. |
-| `gateway`, `gateways`, `saveGateway(record, expectedRevision)`, `forgetGateways([{ instance, revision }])` | Latest status per instance with a per-instance write count (`revision`). Each write and each forget only if the stored record is still at the revision the core read; a write or forget that changes the live set moves the sequence in the same transaction. Forgetting a gateway keeps its batch cursor. |
-| `dropBatchCursorsCountedBefore(cutoff)` | Drop cursors counted before `cutoff`, return their instances. |
-| `subscribe(listener)` | Every change **any process** makes — `config-published` (with the new hash), `batch-counted`, `gateways-changed`, each with the sequence after it — after its write, in the store's order, to every subscriber of every process. For a database: a notification channel (Postgres `LISTEN`/`NOTIFY` sent in the writing transaction, Redis pub/sub). A lost notification leaves streams without a config or a push until the next change; the core does not poll. |
+| `gateway`, `gateways`, `saveGateway(record, expectedRevision)`, `forgetGateways([{ instance, revision }])` | Latest status per instance with a `revision` that **never repeats for the instance**, a forgotten and recreated one included — take it from a store-wide counter, never from the record itself. Each write and each forget only if the stored record is still at the revision the core read; a write or forget that changes the live set moves the sequence in the same transaction. Every write notifies `gateways-changed` (with `liveChanged` false when the live set stays as it was). Forgetting a gateway keeps its batch cursors. |
+| `dropBatchCursorsCountedBefore(cutoff)` | Drop each (instance, epoch) cursor counted before `cutoff`, return the instances that lost one. |
+| `subscribe(listener)` | Every change **any process** makes — `config-published` (with the new hash), `batch-counted`, `gateways-changed`, each with the sequence after it — after its write, in the store's order, to every subscriber of every process. For a database: a notification channel (Postgres `LISTEN`/`NOTIFY` sent in the writing transaction, Redis pub/sub). A channel drops what is sent while it is down, so **every time it reconnects, announce `{ type: "catch-up", sequence }`** to every subscriber: the core rereads the current config, the totals and the live set. The core does not poll. |
 
 Representation notes:
 
@@ -194,22 +208,34 @@ A sketch, not a prescription (Postgres):
 
 ```sql
 create table store_meta   (id int primary key default 1, sequence bigint not null default 0,
+                           gateway_writes bigint not null default 0,
                            config jsonb, config_hash text, published_at bigint);
-create table batch_cursor (instance text primary key, epoch text not null, sequence bigint not null,
-                           counted_at bigint not null);
-create table window_total (group_id text, type text, window_start bigint,
+create table batch_cursor (instance text, epoch text, sequence bigint not null,
+                           counted_at bigint not null, counted_seq bigint not null,
+                           primary key (instance, epoch));
+create table window_total (group_id text not null,       -- '' for global: a key column is never null
+                           type text, window_start bigint,
                            used numeric(20,0) not null, primary key (group_id, type, window_start));
 create table usage_record (record_id text primary key, received_at bigint not null, record jsonb not null);
-create table gateway      (instance text primary key, revision int not null, live boolean not null,
+create table gateway      (instance text primary key, revision bigint not null, live boolean not null,
                            state jsonb not null);
 ```
 
-Each conditional write is one transaction that fails cleanly when its condition does
-not hold, moves the sequence, and notifies:
+`batch_cursor.counted_seq` is the store sequence the batch's write moved to: the
+instance's latest batch is the row with the highest.
+
+Each conditional write is one transaction that **locks the `store_meta` row first**
+(every write moves its sequence, so they serialize on it anyway; taking it first means
+two writes never lock other rows in opposite orders and deadlock), fails cleanly when
+its condition does not hold, moves the sequence, and notifies. A unique violation on a
+first write (two processes inserting the first cursor of an epoch, or the first record
+of a gateway) is the condition failing too: roll back and return `{ saved: false, … }`
+with what the store holds now, never an error.
 
 ```sql
 -- publishConfig: the current hash is the condition.
 begin;
+  select sequence from store_meta where id = 1 for update;
   update store_meta set config = $config, config_hash = $hash, published_at = $publishedAt,
                         sequence = sequence + 1
     where config_hash is not distinct from $expectedHash
@@ -218,35 +244,64 @@ begin;
                    'hash', $hash, 'sequence', <sequence>)::text);
 commit;
 
--- saveCountedBatch: compare-and-set on the cursor (an insert for the first batch).
+-- saveCountedBatch: compare-and-set on the batch's epoch's cursor.
 begin;
-  update batch_cursor set epoch = $epoch, sequence = $seq, counted_at = $at
-    where instance = $instance and epoch = $expectedEpoch and sequence = $expectedSeq;
-                                                          -- 0 rows: refused, roll back
+  update store_meta set sequence = sequence + 1 where id = 1 returning sequence;
+  -- $expectedSeq set: update that cursor; none yet in the epoch: insert it.
+  update batch_cursor set sequence = $seq, counted_at = $at, counted_seq = <sequence>
+    where instance = $instance and epoch = $epoch and sequence = $expectedSeq;
+  insert into batch_cursor values ($instance, $epoch, $seq, $at, <sequence>);
+                                  -- 0 rows / unique violation: refused, roll back
   insert into window_total … on conflict (group_id, type, window_start)
     do update set used = window_total.used + excluded.used;
-  insert into usage_record …;                             -- your ledger too (§6)
-  update store_meta set sequence = sequence + 1 returning sequence;
+  insert into usage_record … on conflict (record_id) do nothing;   -- your ledger (§6)
   select pg_notify('kaiak', …'batch-counted'…);
 commit;
 
--- saveGateway / forgetGateways: the revision is the condition.
-update gateway set state = $state, live = $live, revision = revision + 1
-  where instance = $instance and revision = $expectedRevision;   -- 0 rows: refused
+-- saveGateway: the revision is the condition; the revision comes from a store-wide
+-- counter, so it never repeats for an instance.
+begin;
+  update store_meta set gateway_writes = gateway_writes + 1 where id = 1
+    returning gateway_writes, sequence;
+  -- $expectedRevision set: update; none stored: insert.
+  update gateway set state = $state, live = $live, revision = <gateway_writes>
+    where instance = $instance and revision = $expectedRevision
+    returning <old live>;                                 -- 0 rows: refused, roll back
+  insert into gateway values ($instance, <gateway_writes>, $live, $state);
+                                                          -- unique violation: refused
+  -- the live set changed: update store_meta set sequence = sequence + 1 …
+  select pg_notify('kaiak', …'gateways-changed', liveChanged…);   -- on every write
+commit;
+-- forgetGateways: delete … where instance = $instance and revision = $revision, the
+-- same lock, a sequence step when a live gateway went, one notification.
 ```
 
-Run `totalsSnapshot` in one `REPEATABLE READ` transaction. Every process `LISTEN`s on
-the channel and passes each payload to its subscribers; `pg_notify` inside the
-transaction is delivered only on commit, in commit order.
+Run `totalsSnapshot` in one `REPEATABLE READ` transaction, on the primary: a read
+replica can lag the commit a notification announced. Every process `LISTEN`s on the
+channel from a **dedicated connection** — a pooler in transaction mode (PgBouncer)
+cannot hold a `LISTEN` — and passes each payload to its subscribers; `pg_notify` inside
+the transaction is delivered only on commit, in commit order. When that connection
+drops and comes back, announce a `catch-up` to the subscribers before passing new
+payloads.
+
+A store restored from a backup, or failed over to a standby that was behind, goes
+back in sequence; each core sees that and ends its streams, so nothing needs to be
+done to the store itself.
 
 ## 6. Usage records: your ledger
 
 The core keeps only what enforcement needs: current hour/month totals and the last
 `recentRecordsSize` records (a live view, not a history). **For billing, reports and
 audit, persist records in `saveCountedBatch`**: `counted.records` holds every record of
-a batch counted *now* — a resent batch is never passed again — so a table written in
-that same transaction is an exactly-once usage ledger for free. `keepRecords` only
-bounds what `recentRecords` must return; your ledger table can keep everything.
+a batch counted *now*, so a table written in that same transaction is your usage
+ledger. Insert its records **idempotently by `record_id`** (`on conflict (record_id) do
+nothing`): within the batch cursor retention (7 days) a resent batch is never passed
+again, but a gateway resending a batch after the retention has it counted again in the
+enforcement windows (Usage intake → Batch cursor retention) — a plain insert would then
+fail the whole transaction on the duplicate key, every retry the same, and block that
+gateway's usage for good. With the idempotent insert the ledger never charges a record
+twice. `keepRecords` only bounds what `recentRecords` must return; your ledger table
+can keep everything.
 
 What a record carries (`UsageRecord`, `protocol/schema/usage-record.schema.json`):
 record and request IDs, gateway instance, key ID, `groups` (the key's group path,
@@ -562,7 +617,10 @@ if (current && totals) {
 
   `attach` gives a second handle on the same store, as a second process holds it
   (another pool and listener): the tests race writes across both handles and listen
-  through the other. Then drive the core with your store — the kaiak-control tests
+  through the other. Pass `reconnect` too — a function that drops a handle's listening
+  connection — and the suite checks the catch-up. The suite is checked against a
+  deliberately broken store (`src/store-contract/torn-store.ts`, a cursor read outside
+  the snapshot): it must fail there, and does. Then drive the core with your store — the kaiak-control tests
   (`src/**/**.test.ts`) show how to call `acceptUsageBatch`, `acceptStatus` and
   `publishConfig` directly without HTTP, two cores over one store included.
 - Validate against the shared fixtures in the kaiak repo's `protocol/fixtures/` (valid
@@ -580,6 +638,11 @@ if (current && totals) {
   — the in-memory store, or a database store without conditional writes or a change
   channel. Nothing refuses it: totals go out of order or miss pushes, and spend is
   counted twice or lost. Run the contract tests (§11) with `attach` first.
+- One batch cursor per instance, a gateway revision kept on the record itself
+  (`revision + 1`), or a `LISTEN` through a transaction-mode pooler — each passes a
+  quick test and fails under replicas (§5).
+- A plain `insert` into a ledger keyed by `record_id` — a batch resent after the
+  cursor retention then blocks its gateway for good (§6).
 - Sending gateways a remaining *allowance* per scope — they must get totals; the
   library already does this.
 - Treating `recentRecords()` as the usage history — it is the last 100.

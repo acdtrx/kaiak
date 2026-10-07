@@ -283,7 +283,7 @@ svg .band { stroke: none; }
 <section id="usage">
 <h2>Usage delivery: at least once, counted exactly once</h2>
 <figure>
-<svg viewBox="0 0 960 330" role="img" aria-label="Usage records flow from request finishers into a filling batch, are sealed every 5 seconds or at 500 records into a queue held in memory or in the spool, and are sent one batch at a time. The control plane checks the batch, de-duplicates it by the instance's last counted batch ID, writes it conditionally in one atomic store write, and answers with an ack carrying fresh totals; the gateway then drops the batch and adopts the totals.">
+<svg viewBox="0 0 960 330" role="img" aria-label="Usage records flow from request finishers into a filling batch, are sealed every 5 seconds or at 500 records into a queue held in memory or in the spool, and are sent one batch at a time. The control plane checks the batch, de-duplicates it by the instance's last counted batch of its epoch, writes it conditionally in one atomic store write, and answers with an ack naming the batch; the gateway drops the batch from its spool, and stops counting it as its own once totals on its stream show it counted.">
   <defs>
     <marker id="u-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker>
     <marker id="u-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-hot"/></marker>
@@ -341,13 +341,13 @@ svg .band { stroke: none; }
   <text x="20" y="268" class="l">• stops counting batches ≤ counted_through as its own</text>
 
   <text x="580" y="196" class="t">One atomic store write:</text>
-  <text x="580" y="218" class="l">• the batch ID becomes the instance's last</text>
+  <text x="580" y="218" class="l">• the batch ID becomes its epoch's last</text>
   <text x="580" y="238" class="l">• its amounts join the hour / month windows</text>
   <text x="580" y="258" class="l">• its records join the recent records</text>
-  <text x="580" y="284" class="s">Written only if the last batch is still the one the</text>
+  <text x="580" y="284" class="s">Written only if its epoch's last batch is still the one the</text>
   <text x="580" y="300" class="s">decision was made against — else decided again.</text>
 </svg>
-<figcaption>A batch ID is <code>{ instance, epoch, sequence }</code>. A resend after a lost ack carries the same ID, so the control plane acks it without counting — constant state per gateway, no record-ID index needed. Each record counts in the window its <code>gateway_time</code> falls in, if that is the current or previous hour/month, so a backlog sent after an outage lands where it was used.</figcaption>
+<figcaption>A batch ID is <code>{ instance, epoch, sequence }</code>. A resend after a lost ack carries the same ID, so the control plane acks it without counting — one cursor per gateway and epoch, kept for the retention, and no record-ID index needed. Each record counts in the window its <code>gateway_time</code> falls in, if that is the current or previous hour/month, so a backlog sent after an outage lands where it was used.</figcaption>
 </figure>
 
 <ul>
@@ -523,7 +523,7 @@ svg .band { stroke: none; }
   <line x1="600" y1="100" x2="638" y2="100" class="edge-dash"/>
   <path d="M600,120 C620,150 700,160 720,188" class="edge-dash" marker-end="url(#i-a)"/>
 </svg>
-<figcaption>The core knows nothing of HTTP; the Fastify plugin is its adapter. The core keeps nothing replicas must agree on: the store holds the totals sequence, decides every change by a conditional write, reads totals in one snapshot and tells every core of every change. So a store that holds that contract across processes (a database with transactions and a change channel) runs any number of control-plane replicas behind a load balancer; the in-memory store, one process. The sample control plane is exactly this picture with a config file as the "editor" and a read-only page as the "UI" (its protocol replicas show several cores over its one store, inside one process). How to build the real one: <code>control/kaiak-control/GUIDE.md</code>.</figcaption>
+<figcaption>The core knows nothing of HTTP; the Fastify plugin is its adapter. The core keeps nothing replicas must agree on: the store holds the totals sequence, decides every change by a conditional write, reads totals in one snapshot and tells every core of every change — with a catch-up when its change channel reconnects. So a store that holds that contract across processes (a database with transactions and a change channel) runs any number of control-plane replicas behind a load balancer; the in-memory store, one process. The sample control plane is exactly this picture with a config file as the "editor" and a read-only page as the "UI" (its protocol replicas show several cores over its one store, inside one process). How to build the real one: <code>control/kaiak-control/GUIDE.md</code>.</figcaption>
 </figure>
 </section>
 

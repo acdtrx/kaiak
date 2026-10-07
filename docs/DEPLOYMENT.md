@@ -512,7 +512,8 @@ the document (a script, or the control plane) rather than editing it by hand.
   gets about one share, not the whole limit (known limit; demand-weighted shares in
   `docs/BACKLOG.md`). Size per-minute limits with that in mind, or rely on hourly
   limits, which the control plane counts across replicas. Each apply logs a warning
-  for a per-minute token limit whose share is below a covered model's default output.
+  for a per-minute token limit whose share is below the default output of a model its
+  scope may use.
 - **Token limits reserve the whole output limit while a request runs**
   (`GATEWAY.md` → Limits: check and reserve). A request is admitted against a
   `tokens_per_minute` or `tokens_per_hour` limit only if its **reservation** fits:
@@ -992,7 +993,9 @@ directory's owner must be the gateway's user:
   `models`**: a scope (global or a group) holds at most one limit per type, counting
   every model (USD limits count priced models only, as before); delete `models` from
   every limit and merge limits of one type in one scope. An edited limit keeps its
-  window's spend, and a limit added mid-window starts with the window's usage so far.
+  window's spend; a limit added mid-window starts with the window's usage so far in
+  control-plane mode (the control plane counts every scope whatever its limits), and
+  empty in file mode (the gateway counts only the limits it runs).
   The data-directory files `limits.json` (format 3), `totals.json` (format 4) and
   `last-known-good.json` (format 7: the config and its hash) change format: their
   old copies are discarded at the first start (file mode's windows start empty;
@@ -1000,6 +1003,16 @@ directory's owner must be the gateway's user:
   stream). **The control plane broadcasts its current config**: no config versions —
   a gateway applies the config the control plane sends, and reports configs by
   their `config_hash`.
+- **Host apps on `kaiak-control`** (this release): the store interface changed — the
+  current config only (`currentConfig`, `publishConfig(entry, expectedHash)`), batch
+  cursors per (instance, epoch) (`lastBatch(instance, epoch)`), the totals snapshot,
+  conditional gateway writes on revisions that never repeat, `subscribe()` with a
+  `catch-up` after a reconnect — and the store lease is gone. Removed core options:
+  `storeLeaseTtlMs`, `onStoreLeaseLost`, `controlPlaneId`, `onLimitCarriedOver`,
+  `configHistorySize`; removed exports: `limitIdentity` and the config-version types.
+  A publish replaces the current config (history is the app's). Port the store with
+  the contract tests (`kaiak-control/store-contract`; `control/kaiak-control/GUIDE.md`
+  §5, §11).
 
 ## Images
 

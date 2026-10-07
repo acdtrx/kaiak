@@ -62,7 +62,7 @@ from a clone, or serve `docs/` with GitHub Pages.
   its key's path, plus the global limits, and its usage counts toward each of them.
 - **Limits.** requests/min and tokens/min (enforced per gateway on a share),
   tokens/hour and USD/month (from totals the control plane pushes to every gateway),
-  each over all models or a set of models.
+  at most one of each per scope, each over all of the scope's usage.
 - **Usage.** Every routed request settles into a usage record: tokens by kind and cost
   in nano-USD. Records go to the control plane in batches, delivered at least once and
   counted exactly once.

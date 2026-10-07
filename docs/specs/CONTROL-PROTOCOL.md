@@ -390,8 +390,8 @@ the `{ error, detail }` body, `error` being the stable code:
   `value`) is at most 2^53 − 1, so both halves read it exactly — `kaiak-control` as a
   JavaScript number, the gateway as an `int64`. An integer may be spelled with a
   fraction or exponent (`4096.0`, `1e3`), as JSON Schema counts it.
-- **Public model names** (the `models` keys, and every `allowed_models` and limit
-  `models` entry) must not end in `/props` (settled 2026-09-24): the gateway serves
+- **Public model names** (the `models` keys, and every `allowed_models` entry) must
+  not end in `/props` (settled 2026-09-24): the gateway serves
   `GET /v1/models/{id}/props`, and model names may contain `/`, so such a name would
   lose its own `/v1/models/{id}` path to the props endpoint. The schema expresses it
   (`public_model_name`).
@@ -809,7 +809,8 @@ How the control plane takes `POST /v1/usage`, as `kaiak-control` implements it.
   config (Counted toward), so an edited limit keeps its spend, a limit removed from the
   config leaves the totals, and a limit added within a window starts with the scope's
   usage counted in that window so far — a monthly budget added mid-month counts the
-  month (settled 2026-10-06; it replaces "a new limit starts at 0"). **A group ID used
+  month (settled 2026-10-06). Rejected: a new limit starting at 0 — it held while
+  counting followed the config's limits, which it no longer does. **A group ID used
   again resumes its window's spend** (settled
   2026-09-27): a group deleted and created again with the same ID within the same
   hour or month — a move included, whatever its new parent — gets that window's
@@ -846,8 +847,8 @@ How the control plane takes `POST /v1/usage`, as `kaiak-control` implements it.
   readers — are in Config stream. Acks carry no totals (Usage batches).
 - **Editing a limit keeps its spend** (settled 2026-10-06): a limit is identified by
   its scope and type, so a new value applies to the window's spend so far, on both
-  sides, with nothing to carry. It replaces the model-set carry-over (settled
-  2026-09-25, D5): a publish that changed a limit's model set raised the new limit's
+  sides, with nothing to carry. Rejected: a model-set carry-over (settled 2026-09-25,
+  D5), where a publish that changed a limit's model set raised the new limit's
   window to its predecessor's, and needed no batch counted between reading the spend
   and storing the version — a coupling of publishing and counting across processes
   that limits without model sets remove.
@@ -1001,7 +1002,7 @@ How the control plane takes `POST /v1/status`, as `kaiak-control` implements it.
   more, default `900000` (15 minutes; a policy decision, so it lives with the policy;
   ignored in file mode) — requests to them get `503` until the
   control plane is back. Other models keep serving — unpriced models included, whatever
-  USD limit names them: they cost nothing (settled 2026-09-25, D6; `GATEWAY.md`,
+  USD limits their scopes have: they cost nothing (settled 2026-09-25, D6; `GATEWAY.md`,
   Limits → Unpriced models).
 - **What counts as an outage** (settled 2026-09-24): contact is bytes on the config
   stream (heartbeats included) or a usage ack, and an open
