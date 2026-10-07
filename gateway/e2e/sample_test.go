@@ -370,15 +370,20 @@ func TestAcrossHalves(t *testing.T) {
 		served(t, "chat-2 from last-known-good", chat(t, a, "chat-2"))
 	})
 
+	restarted := float64(time.Now().UnixNano()) / 1e9
 	sample = startSample(t, node, root, configFile, token)
 	proxy.setUpstream(t, sample.url)
 
 	t.Run("the control plane back: reconnected, serving, spool delivered", func(t *testing.T) {
 		// The new sample's current config is the one both gateways run (the file did
 		// not change): its config event is skipped by its hash, and nothing reloads.
+		// Its totals come on the stream (acks carry none): until they are applied, gw-a
+		// enforces the old store's spend it restored at its boot.
 		for _, g := range []*gateway{a, b} {
 			g.waitMetricWithin(t, "the outage over", "kaiak_control_outage", recoverLimit, func(v float64) bool { return v == 0 })
 			g.waitMetricWithin(t, "the spool delivered", "kaiak_usage_spool_batches", recoverLimit, func(v float64) bool { return v == 0 })
+			g.waitMetricWithin(t, "the new store's totals", "kaiak_control_totals_applied_timestamp_seconds", recoverLimit,
+				func(v float64) bool { return v >= restarted })
 		}
 		served(t, "priced on gw-a, the new store's budget unspent", chat(t, a, "priced"))
 		allCounted(t, recoverLimit)

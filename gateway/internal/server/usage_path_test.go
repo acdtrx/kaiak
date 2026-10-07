@@ -237,6 +237,9 @@ func TestUsageAcksFailingPastTheGraceRefusePricedBudgets(t *testing.T) {
 
 	g.cp.SetUsageFault(nil)
 	g.nextCounted(t)
+	// The ack ends the wait, not the push: totals travel on the stream and can arrive
+	// before the ack's answer is taken.
+	waitFor(t, func() bool { return !g.limiter.Outage() })
 	if w := do(t, g.h, pair); w.Code != 200 {
 		t.Errorf("after the ack: status %d: %s", w.Code, w.Body.String())
 	}
