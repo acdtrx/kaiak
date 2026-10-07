@@ -292,6 +292,57 @@ Found by [K] M3, [G] L5, [R] L-R5 and [B] B10.
 - **Catch-up skip for the memory store** ([R], [B]): acceptable, since its channel
   cannot lose a change. A database store must supply the reconnect hook (2M7).
 
-## Outcome
+## Outcome (2026-10-07)
 
-Filled in by step 14.
+Phase 5 of `docs/plans/control-replicas/` (steps 11–14). Decisions are the plan
+OVERVIEW's. Commits:
+- `ee0792f`: store, contract tests, schema and fixtures;
+- `ab0b11c`: the specs and GUIDE §5, §11;
+- `a2bc01c`: two leftover lines;
+- `635b126`: kaiak-control and the sample;
+- `6ff61d5`: the GUIDE;
+- `2a8590c`: the gateway;
+- `06f7d0a`: e2e, `GATEWAY.md` and `DEPLOYMENT.md`;
+- `d64cb8c`: the remaining docs.
+
+| Finding | Outcome | Where |
+|---|---|---|
+| 2H1 false rollback | **Dissolved** (decision 21): the store sequence and rollback detection are removed; streams order by when each read was issued | `ee0792f`, `ab0b11c`, `635b126` |
+| 2H2 write after a stream's end | **Fixed**: teardown is synchronous and idempotent, every write checks it, and a response error goes through it | `635b126` |
+| 2H3 a dropped limit unspent after a rejection | **Dissolved** (decision 22): totals list every scope with usage, and the gateway counts every scope, limits on top. End-to-end test in the replicas e2e | `ee0792f`, `ab0b11c`, `635b126`, `2a8590c`, `06f7d0a` |
+| 2M1 a republish after a restore not delivered | **Fixed** (decision 24): the core-wide `delivered` is removed; each stream skips by its own last-sent hash | `635b126` |
+| 2M2 one `counted_through` across epochs | **Fixed** (decision 23): one entry per epoch, the `counted-through-epoch-duplicate` rule on both halves, and the gateway retiring by its own epoch's entry | `ee0792f`, `ab0b11c`, `635b126`, `2a8590c` |
+| 2M3 the ack hand-off gap | **Fixed**: one lock acquisition; `noteAcked` is removed | `2a8590c` |
+| 2M4 configs and totals not ordered together | **Dissolved** (decision 22): totals no longer depend on the config; each kind is ordered among its own reads | `635b126` |
+| 2M5 a delayed first status read | **Fixed**: the receipt-time check on every attempt | `635b126` |
+| 2M6 acks as contact | **Fixed** (decision 25): stream bytes only | `ab0b11c`, `2a8590c` |
+| 2M7 the catch-up contract test never ran | **Fixed**: the in-repo lossy channel runs it with two subscribers and writes while the channel is down; two new negative controls | `ee0792f` |
+| 2M8 removal leftovers | **Fixed**: every location listed, plus the README and architecture pages (step 14 Result: the greps) | `a2bc01c`, `ab0b11c`, `635b126`, `2a8590c`, `06f7d0a`, `d64cb8c` |
+| 2M9 snapshot tests missing config and live count | **Dissolved** (decision 26): the snapshot is the windows and the cursors, tested under concurrency (8 instances × 2 epochs) and by the torn store | `ee0792f` |
+| 2M10 a stale rejection after the running config | **Fixed**: the running hash clears the rejection and reports status; spec wording | `ab0b11c`, `2a8590c` |
+| 2L1 the Postgres sketch | **Fixed** (decision 27): the config stored as text and sent verbatim; no `store_meta` (so no seed row); `select … for update`; the catch-up carries nothing | `ee0792f`, `ab0b11c`, `635b126` |
+| 2L2 a missed rollback drops configs | **Dissolved** (decision 21) | `635b126` |
+| 2L3 a throwing host listener stops deliveries | **Fixed**: each run settles on its own; listener errors go to `onListenerError` | `635b126` |
+| 2L4 exact revisions in the contract tests | **Fixed**: only "differ and increase" is asserted | `ee0792f` |
+| 2L5 another instance's restored spool retired late | **Documented** in `GATEWAY.md` (over-count only) | `06f7d0a` |
+| 2L6 the acknowledged list unbounded | **Fixed**: an entry is dropped once its windows have passed | `2a8590c` |
+| 2L7 no metric for a config moved off | **Fixed**: `kaiak_control_config_rejected`, with a starter alert | `2a8590c`, `06f7d0a` |
+| 2L8 the e2e never asserts that a reconnect reloads nothing | **Fixed**: both cross-half reconnects assert no control config applied | `06f7d0a` |
+| 2L9 the wrong hash in `full.json` | **Fixed**, with a fixture test of every valid config event's hash | `ee0792f` |
+| 2L10 the migration note | **Fixed**: store interface, publishing result, totals, status fields, new and removed API | `d64cb8c` |
+| 2L11 narrating Rejected lines | **Fixed**: K's three were rewritten with the sections they sit in; this phase's own Rejected lines are in the present | `ab0b11c`, `d64cb8c` |
+| 2L12 ARCHITECTURE's control-plane bullet | **Fixed**: `start`/`stop` take and release the subscription | `d64cb8c` |
+
+The step-10 deviation (replica clocks within a second, no gateway-side window check)
+was accepted by the user (decision 28).
+
+**Regression tests:** each failed before its fix (Results of steps 12 and 13):
+- `control/kaiak-control/src/fastify/round-2.test.ts`;
+- the gateway's `TestEachEpochIsCoveredByItsOwnEntry`,
+  `TestAckHandOffNeverHidesABatchFromTotals`,
+  `TestRunningConfigReceivedAgainClearsTheRejection`, `TestAnAckIsNotContact`,
+  `TestALimitKeepsItsSpendWhateverTheControlPlanesConfig`;
+- the replicas e2e subtest.
+
+Reproductions of dissolved findings (2H1's rollback counts, 2M4) were replaced by
+tests of the new rule.

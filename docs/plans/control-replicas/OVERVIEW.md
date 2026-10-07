@@ -336,6 +336,6 @@ Expected reds inside phase 1:
   totals both cores serve; a config published through one core reaches both; a gateway
   moved to the other core resumes without a resync while the first is undisturbed.
 - [x] **`scripts/check-all.sh` green at each phase end** (steps 5 and 6).
-- [ ] **Phase 5** (`STEP-14-docs-and-green.md`): every round-2 reproduction ported and
+- [x] **Phase 5** (`STEP-14-docs-and-green.md`, done 2026-10-07): every round-2 reproduction ported and
   passing; the removal checklist greps clean; `scripts/check-all.sh` green three
   times in a row.
