@@ -172,7 +172,7 @@
   | The body does not fit in what the requests in flight leave of the body budget (`Retry-After: 1`; Request pipeline → request bodies) | 503 | `server_error` | `server_busy` |
   | The gateway is draining and refuses new requests; or a request the drain cut off before its response started | 503 | `server_error` | `server_shutting_down` |
   | No config in force (the admission stage's guard; the binary binds its listeners only once a config is in force, in both modes) | 503 | `server_error` | `config_not_loaded` |
-  | A USD limit covers the request's priced model and the control plane has been out of reach past `control_outage_grace_ms`, or its newest totals have been for another config that long, or no totals for the applied config have arrived since the start (control-plane mode) | 503 | `server_error` | `budget_unavailable` |
+  | A USD limit covers the request's priced model and the control plane has been out of reach past `control_outage_grace_ms` (no stream bytes, or usage waiting that long for an answer), or no totals have arrived since the start (control-plane mode) | 503 | `server_error` | `budget_unavailable` |
 
   Upstream error messages never name the backend or its address; the log line does
   (settled 2026-09-24). A client string an error message echoes (the method, the

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://kaiak.invalid/protocol/schema/config.schema.json",
   "title": "kaiak config document",
-  "description": "Everything a gateway needs to serve: backends, models, the group tree, keys and limits. Used by file mode, by the control plane's config snapshot and by the sample control plane's config file. Cross-reference rules this schema cannot express are listed in docs/specs/CONTROL-PROTOCOL.md (Config) and checked by code in both halves.",
+  "description": "Everything a gateway needs to serve: backends, models, the group tree, keys and limits. Used by file mode, by the control plane's config event and by the sample control plane's config file. Cross-reference rules this schema cannot express are listed in docs/specs/CONTROL-PROTOCOL.md (Config) and checked by code in both halves.",
   "type": "object",
   "additionalProperties": false,
   "required": ["format_version", "global", "backends", "models", "keys"],
@@ -84,7 +84,7 @@
           "default": 4194304
         },
         "control_outage_grace_ms": {
-          "description": "Control-plane mode: how long a gateway keeps serving priced models covered by a usd_per_month limit while their spend cannot be known — no contact with the control plane (no open config stream, no snapshot, stream bytes or usage ack), usage batches waiting that long for an answer, or the control plane's newest totals being for another config; past it, requests to them are refused (503 budget_unavailable) until that ends. Unpriced models and models no USD limit covers keep serving. Ignored in file mode.",
+          "description": "Control-plane mode: how long a gateway keeps serving priced models covered by a usd_per_month limit while their spend cannot be known — no contact with the control plane (no open config stream and no stream bytes), or usage batches waiting that long for an answer; past it, requests to them are refused (503 budget_unavailable) until that ends. Unpriced models and models no USD limit covers keep serving. Ignored in file mode.",
           "type": "integer",
           "minimum": 0,
           "maximum": 9007199254740991,
