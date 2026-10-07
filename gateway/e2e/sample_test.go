@@ -731,8 +731,13 @@ func (w *totalsWatch) wait(t *testing.T, what string, limit time.Duration, match
 		case ended:
 			t.Fatalf("totals stream ended (%v) before %s", err, what)
 		}
+		// A match may read the clock (servedTokens.counted checks the current hour),
+		// and the top of the hour brings no push of its own: look again then too.
+		nextHour := time.NewTimer(time.Until(time.Now().UTC().Truncate(time.Hour).Add(time.Hour)))
 		select {
 		case <-changed:
+			nextHour.Stop()
+		case <-nextHour.C:
 		case <-deadline.C:
 			t.Fatalf("totals: %s not seen within %s; latest %+v", what, limit, latest)
 		}
@@ -779,27 +784,33 @@ func (s *servedTokens) total() int64 {
 	return n
 }
 
-// counted reports whether totals' global hourly token total is the answers of its
-// window: exactly, but an answer at the window's edges may count in either hour.
+// counted reports whether totals' global hourly token total of the current UTC hour
+// is the answers of that hour: exactly, but an answer at the hour's edges may count
+// in either hour. Totals carry only the current hour (CONTROL-PROTOCOL.md, Messages →
+// Totals): a window of an earlier hour is one the push merged in before the hour
+// ended, and an answer stamped just before the top of the hour whose batch is counted
+// after it lands in that earlier window, which no push lists again — so only the
+// current hour can be checked, and a window not listed for it has used nothing.
 func (s *servedTokens) counted(totals control.Totals) bool {
+	start := time.Now().UTC().Truncate(time.Hour)
+	end := start.Add(time.Hour)
+	var used int64
 	for _, w := range totals.Windows {
-		if w.Group != "" || w.Type != config.LimitTokensPerHour {
-			continue
+		if w.Group == "" && w.Type == config.LimitTokensPerHour && w.WindowStart.Equal(start) {
+			used = w.Used
 		}
-		start, end := w.WindowStart, w.WindowStart.Add(time.Hour)
-		var sure, edge int64
-		for _, a := range s.answers {
-			switch {
-			case a.at.Before(start) || !a.at.Before(end.Add(hourEdge)):
-			case a.at.Before(start.Add(hourEdge)) || !a.at.Before(end):
-				edge += a.tokens
-			default:
-				sure += a.tokens
-			}
-		}
-		return w.Used >= sure && w.Used <= sure+edge
 	}
-	return len(s.answers) == 0
+	var sure, edge int64
+	for _, a := range s.answers {
+		switch {
+		case a.at.Before(start) || !a.at.Before(end.Add(hourEdge)):
+		case a.at.Before(start.Add(hourEdge)) || !a.at.Before(end):
+			edge += a.tokens
+		default:
+			sure += a.tokens
+		}
+	}
+	return used >= sure && used <= sure+edge
 }
 
 // used is the window's used amount of group's limit (global: "") of type typ; 0 when
