@@ -400,5 +400,5 @@ Expected reds inside phase 1:
 - [x] **Phase 5** (`STEP-14-docs-and-green.md`, done 2026-10-07): every round-2 reproduction ported and
   passing; the removal checklist greps clean; `scripts/check-all.sh` green three
   times in a row.
-- [ ] **Phase 6** (`STEP-17-docs-and-green.md`): every round-3 reproduction ported and
-  passing; `scripts/check-all.sh` green three times in a row.
+- [x] **Phase 6** (`STEP-17-docs-and-green.md`, done 2026-10-07): every round-3
+  reproduction ported and passing; `scripts/check-all.sh` green three times in a row.
