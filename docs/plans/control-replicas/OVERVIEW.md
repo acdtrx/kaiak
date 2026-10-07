@@ -264,7 +264,8 @@ Settled with the user after the third pre-merge review (2026-10-07,
 31. **A totals event that fails decoding ends the stream.** The reconnect brings
     complete totals. Other unknown or malformed events are still logged and skipped
     (3H1).
-32. **The spool keeps a batch until saved totals cover it.**
+32. *Superseded by decision 35 (2026-10-07): there is no data directory.*
+    **The spool keeps a batch until saved totals cover it.**
     - A batch leaves the spool only when a `totals.json` save whose
       `counted_through` covers it has completed. Until then it is kept, marked
       acknowledged and never resent.
@@ -286,6 +287,49 @@ Settled with the user after the third pre-merge review (2026-10-07,
 34. **The memory bound counts the counters a config allocates:** two per scope plus
     its per-minute counters, 50 000 at most, on both halves. Minute buckets are
     allocated only for per-minute counters (3M2).
+
+Settled with the user after the fourth pre-merge review (2026-10-07,
+`docs/reviews/2026-10-07/AUDIT-4.md`):
+
+35. **No data directory. The gateway never writes to disk.**
+    - Removed:
+      - `KAIAK_DATA_DIR`;
+      - the on-disk usage spool (its index, formats, restore and other-instance
+        batches);
+      - `last-known-good.json`;
+      - `totals.json`;
+      - `limits.json` (the file-mode snapshot);
+      - the crash rebuild;
+      - every data-file format version;
+      - the guidance for persistent volumes and `emptyDir`.
+    - Kept:
+      - the in-memory usage queue, with the drain reserving its last seconds to
+        deliver it;
+      - the seed config for a boot with no control plane;
+      - the stale-totals signal, whose acknowledged batches are remembered in memory
+        (at most 10 000);
+      - batch epochs, a fresh one at every process start.
+    - **Boot:** the control plane's stream, else the seed config when the control
+      plane is unavailable, else exit.
+    - **File mode is for local and development use:** its counts start from zero at
+      every start.
+    - Why:
+      - production deployments run on ephemeral disks, where none of it survives a
+        restart;
+      - rounds 2, 3 and 4 each found a High in the on-disk restart path.
+    - Rejected: keeping the data directory as an opt-in. It is the most delicate code
+      in the gateway, and it serves a deployment shape no one runs.
+36. **A counter lives while anything holds it.**
+    - Hour and month counters of a scope the config no longer has are kept while
+      either is true:
+      - their current window holds own usage;
+      - a running request holds a reservation on them, of any amount, zero included.
+    - The reference outlives a window roll-over.
+    - They are pruned once neither holds.
+    - Retained counters are outside the `counters-exceeded` bound: they end with their
+      window (accepted).
+    - Why: D-H3. A zero-amount USD reservation, or a token reservation across the hour
+      boundary, left a running request settling into a detached counter.
 
 ## Constraints
 
@@ -358,6 +402,12 @@ merge.
       memory bound.
   17. `STEP-17-docs-and-green.md`: wording, migration note, AUDIT-3 outcome, three
       green runs.
+- **Phase 7 — no data directory** (steps 18–20). A removal; green only at the end.
+  18. `STEP-18-contract.md`: specs, AGENTS.md, docs, protocol text, and the removal
+      checklist.
+  19. `STEP-19-gateway.md`: the gateway removal, and decision 36.
+  20. `STEP-20-green.md`: leftovers, the checklist greps clean, AUDIT-4's outcome,
+      three green runs.
 
 Expected reds inside phase 1:
 - After step 1, both halves fail the totals fixtures. Step 4 clears `kaiak-control`'s
@@ -402,3 +452,6 @@ Expected reds inside phase 1:
   times in a row.
 - [x] **Phase 6** (`STEP-17-docs-and-green.md`, done 2026-10-07): every round-3
   reproduction ported and passing; `scripts/check-all.sh` green three times in a row.
+- [ ] **Phase 7** (`STEP-20-green.md`): the data-directory removal checklist greps
+  clean; D-H3's reproductions ported and passing; `scripts/check-all.sh` green three
+  times in a row.
