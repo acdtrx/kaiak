@@ -99,7 +99,7 @@ svg .band { stroke: none; }
   <thead><tr><th>Concern</th><th>Gateway (<code>kaiak</code>, Go)</th><th>Control plane (<code>kaiak-control</code>, Node)</th></tr></thead>
   <tbody>
     <tr><td>Config</td><td>Validates and applies what it is sent; keeps the running one if the new one is invalid</td><td>Validates what the host app hands it (the group tree included), makes it the current config and broadcasts it; refuses a publish that moves a group to another parent. The app is the source of truth: it composes the config and keeps its history</td></tr>
-    <tr><td>Usage</td><td>Meters every request, settles records, delivers them in batches</td><td>Counts each batch exactly once, keeps hour and month totals per limit of global and of each group</td></tr>
+    <tr><td>Usage</td><td>Meters every request, settles records, delivers them in batches</td><td>Counts each batch exactly once, keeps hour and month totals for global and every group, limited or not</td></tr>
     <tr><td>Budgets</td><td>Enforces pushed totals + its own uncounted usage; per-minute limits on its share</td><td>Pushes totals and the live-gateway count; never decides a single request</td></tr>
     <tr><td>Keys</td><td>Holds only hashes (in config); resolves key → key ID, group and the group's path</td><td>Generates keys; stores only ID and hash</td></tr>
     <tr><td>Status</td><td>Reports state, the applied config's hash, rejections, routing state</td><td>Keeps the latest per gateway; tracks the live set</td></tr>
@@ -228,7 +228,7 @@ svg .band { stroke: none; }
 <section id="config">
 <h2>Config pushes</h2>
 <figure>
-<svg viewBox="0 0 960 250" role="img" aria-label="A host calls publishConfig; the core validates the document and makes it the current config; every open stream sends it as a config event followed by totals; each gateway applies or rejects it and reports the result, by hash, in its next status.">
+<svg viewBox="0 0 960 250" role="img" aria-label="A host calls publishConfig; the core validates the document and makes it the current config; every open stream sends it as a config event; each gateway applies or rejects it and reports the result, by hash, in its next status.">
   <defs>
     <marker id="c2-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker>
     <marker id="c2-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-hot"/></marker>
@@ -247,7 +247,7 @@ svg .band { stroke: none; }
 
   <rect x="660" y="40" width="130" height="60" rx="8" class="box"/>
   <text x="725" y="66" text-anchor="middle" class="t">every stream</text>
-  <text x="725" y="84" text-anchor="middle" class="s">config, then totals</text>
+  <text x="725" y="84" text-anchor="middle" class="s">config event</text>
 
   <rect x="840" y="20" width="100" height="44" rx="8" class="box"/>
   <text x="890" y="47" text-anchor="middle" class="l">gateway A</text>
@@ -274,9 +274,9 @@ svg .band { stroke: none; }
 <h3>One current config, ordered by its sender</h3>
 <ul>
   <li>The control plane holds one <strong>current config</strong> and its <code>config_hash</code> (SHA-256 of its JSON as sent). The hash says what a config is, never when: a gateway applies whatever config its stream sends, skipping one identical to the config it runs or to the one it last rejected.</li>
-  <li><strong>Order is the sender's job.</strong> A core never sends a stream a config or totals read before what it already sent there; it uses the store's sequence for this, which never goes on the wire.</li>
-  <li><strong>Rollback.</strong> A core that reads the store's sequence going back — a restore from a backup, a failover to a copy behind — ends its streams; the gateways reconnect and take the store's current state, the restored config included. Rejected: gateways accepting only a newer config, which would leave them on a config the control plane no longer has.</li>
-  <li>Slow readers: config events queue and are never dropped; totals never queue (one is held and sent with fresh values on drain); a stream that takes nothing for 30 s is closed and the gateway reconnects.</li>
+  <li><strong>Order is the sender's job.</strong> A core sends on a stream what it read last, by when it issued each read, never by a value the store returns: a config read issued before a config already sent there is dropped. Configs and totals are ordered apart — totals do not depend on the config. Each stream also skips a config whose hash is the last it sent.</li>
+  <li><strong>A restored store is the current state.</strong> After a restore from a backup, or a failover to a copy behind, the store's config and totals go out like any other; nothing tells a restore apart. Rejected: gateways accepting only a newer config, which would leave them on a config the control plane no longer has; detecting a rollback from a store sequence, which arrives out of order on ordinary traffic, so the check fires with no restore.</li>
+  <li>Slow readers: config events queue and are never dropped; totals never queue (the windows changed meanwhile gather and go out together on drain); a stream that takes nothing for 30 s is closed and the gateway reconnects. Ending a stream stops every send on it at once.</li>
 </ul>
 </section>
 
@@ -378,7 +378,7 @@ svg .band { stroke: none; }
 
   <rect x="640" y="90" width="300" height="120" rx="10" class="hot"/>
   <text x="790" y="118" text-anchor="middle" class="t">control plane</text>
-  <text x="790" y="144" text-anchor="middle" class="l">T = everything counted, per limit window</text>
+  <text x="790" y="144" text-anchor="middle" class="l">T = everything counted, per scope window</text>
   <text x="790" y="166" text-anchor="middle" class="l">live_gateways = 2</text>
   <text x="790" y="190" text-anchor="middle" class="s">keeps no allowance, decides no request</text>
 
@@ -397,8 +397,9 @@ svg .band { stroke: none; }
 </figure>
 
 <ul>
-  <li><strong>Totals apply whatever the config</strong>: a gateway applies each window to the limit it runs with the same scope and type, whatever config it runs — one it rejected the newest of included; a window for a limit it does not run is ignored.</li>
-  <li><strong>On the stream only, in order</strong>: totals travel only on the gateway's stream, never on acks, and the core keeps each stream in order by the store's sequence, which never goes on the wire. After an ack the gateway keeps counting that batch as its own until the next push (about a second); a push's <code>counted_through</code> retires it.</li>
+  <li><strong>Count everything, limits on top</strong>: totals carry every scope and type with usage, whatever the config, and the gateway counts its own usage the same way; a limit is a check over its scope's count. So a gateway running a config it was moved off (it rejected the newest) still enforces the spend of a limit the newest dropped, and a limit added mid-window starts with the window's usage.</li>
+  <li><strong>Complete, then changes</strong>: a stream's first totals are complete; later ones list only the windows that changed, and a window not listed keeps its value. One store read per push serves every stream of a core.</li>
+  <li><strong>On the stream only</strong>: totals travel only on the gateway's stream, never on acks. After an ack the gateway keeps counting that batch as its own until the next push (about a second); a push's <code>counted_through</code> — the instance's last counted batch of each epoch — retires it.</li>
   <li><strong>Exact sums</strong>: <code>used</code> travels as a decimal string (nano-USD for money), summed as <code>BigInt</code> — a month of spend can exceed what a JavaScript number holds exactly.</li>
   <li><strong>Totals per scope</strong>: a scope (global or a group) holds at most one limit per type, and a limit's identity is (scope, type); a totals window names its <code>group</code>, or none for a global limit. A record adds to the windows of every scope on its <code>groups</code> path, whether or not a limit is there: an edited limit keeps its spend, a limit added mid-window starts with the window's usage, and publishing never waits on counting.</li>
 </ul>
@@ -472,7 +473,7 @@ svg .band { stroke: none; }
     <tr><td>Per-minute limits</td><td>Enforced locally as before, on the last known share.</td></tr>
     <tr><td>Usage</td><td>Held in memory (or the spool) and sent in order on reconnect, each record into the window it was used in.</td></tr>
     <tr><td>Priced models under a USD limit</td><td>Served until the outage passes <code>global.control_outage_grace_ms</code> (15 min), then <code>503 budget_unavailable</code> until contact returns. Free models keep serving.</td></tr>
-    <tr><td>What counts as contact</td><td>Bytes on the stream (heartbeats included) or a usage ack. Status reports do not count. Usage batches unanswered past the grace also count as an outage, even with the stream open.</td></tr>
+    <tr><td>What counts as contact</td><td>Bytes on the stream (heartbeats included). Usage acks and status reports do not count: neither brings totals. Usage batches unanswered past the grace also count as an outage, even with the stream open.</td></tr>
     <tr><td>Reconnect</td><td>Reopen the stream — it sends the current config, then the totals — and send the held batches in order.</td></tr>
   </tbody>
 </table>
@@ -519,11 +520,11 @@ svg .band { stroke: none; }
   <line x1="165" y1="130" x2="165" y2="168" class="edge" marker-end="url(#i-a)"/>
   <line x1="465" y1="130" x2="465" y2="168" class="edge" marker-end="url(#i-a)"/>
   <line x1="320" y1="254" x2="320" y2="288" class="edge" marker-end="url(#i-a)"/>
-  <text x="330" y="276" class="s">async · one sequence · conditional writes · subscribe</text>
+  <text x="330" y="276" class="s">async · conditional writes · one snapshot · subscribe</text>
   <line x1="600" y1="100" x2="638" y2="100" class="edge-dash"/>
   <path d="M600,120 C620,150 700,160 720,188" class="edge-dash" marker-end="url(#i-a)"/>
 </svg>
-<figcaption>The core knows nothing of HTTP; the Fastify plugin is its adapter. The core keeps nothing replicas must agree on: the store holds the totals sequence, decides every change by a conditional write, reads totals in one snapshot and tells every core of every change — with a catch-up when its change channel reconnects. So a store that holds that contract across processes (a database with transactions and a change channel) runs any number of control-plane replicas behind a load balancer; the in-memory store, one process. The sample control plane is exactly this picture with a config file as the "editor" and a read-only page as the "UI" (its protocol replicas show several cores over its one store, inside one process). How to build the real one: <code>control/kaiak-control/GUIDE.md</code>.</figcaption>
+<figcaption>The core knows nothing of HTTP; the Fastify plugin is its adapter. The core keeps nothing replicas must agree on: the store holds the current config's text, decides every change by a conditional write, reads the windows and cursors in one snapshot and tells every core of every change — with a catch-up when its change channel reconnects. So a store that holds that contract across processes (a database with transactions and a change channel) runs any number of control-plane replicas behind a load balancer; the in-memory store, one process. The sample control plane is exactly this picture with a config file as the "editor" and a read-only page as the "UI" (its protocol replicas show several cores over its one store, inside one process). How to build the real one: <code>control/kaiak-control/GUIDE.md</code>.</figcaption>
 </figure>
 </section>
 

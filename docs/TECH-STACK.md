@@ -224,13 +224,15 @@
 
 ## Transport
 
-- **Gateway ↔ control plane**: plain HTTP plus one SSE stream per gateway, shaped as
-  **snapshot + subscribe** — a GET snapshot carries a version cursor, the stream resumes
-  from it, a gateway too far behind re-fetches the snapshot. Contract in
+- **Gateway ↔ control plane**: plain HTTP (usage batches and statuses as POSTs) plus
+  one SSE stream per gateway that carries everything the control plane sends: the
+  current config and the complete totals on connect, then every change. A reconnect
+  starts over from the current state; there is no cursor to resume from. Contract in
   `docs/specs/CONTROL-PROTOCOL.md`.
 - **Client ↔ gateway**: the OpenAI HTTP API, Anthropic Messages and OpenAI
   Responses; SSE for streaming responses.
-- **Sample page**: one SSE connection per browser, same snapshot + subscribe shape.
+- **Sample page**: one SSE connection per browser, the same shape: every section on
+  connect, then the sections that changed.
 
 ## Dependency inventory
 

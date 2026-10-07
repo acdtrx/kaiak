@@ -183,8 +183,8 @@ plane (with your UI, your users and your database) is a separate application tha
 imports `kaiak-control`. The library does the whole protocol side. You supply:
 
 - **a store**: an implementation of the `ControlPlaneStore` interface on your
-  database. Its contract covers exactly-once usage counting, one sequence,
-  conditional writes and change notification — what lets any number of
+  database. Its contract covers exactly-once usage counting, conditional writes,
+  one consistent totals read and change notification — what lets any number of
   control-plane processes run over one store — and the current config. The library
   ships the contract as tests your store runs;
 - **a config source**: your app is the source of truth for config. It builds whole

@@ -1004,16 +1004,42 @@ directory's owner must be the gateway's user:
   stream). **The control plane broadcasts its current config**: no config versions —
   a gateway applies the config the control plane sends, and reports configs by
   their `config_hash`.
-- **Host apps on `kaiak-control`** (this release): the store interface changed — the
-  current config only (`currentConfig`, `publishConfig(entry, expectedHash)`), batch
-  cursors per (instance, epoch) (`lastBatch(instance, epoch)`), the totals snapshot,
-  conditional gateway writes on revisions that never repeat, `subscribe()` with a
-  `catch-up` after a reconnect — and the store lease is gone. Removed core options:
-  `storeLeaseTtlMs`, `onStoreLeaseLost`, `controlPlaneId`, `onLimitCarriedOver`,
-  `configHistorySize`; removed exports: `limitIdentity` and the config-version types.
-  A publish replaces the current config (history is the app's). Port the store with
-  the contract tests (`kaiak-control/store-contract`; `control/kaiak-control/GUIDE.md`
-  §5, §11).
+- **Host apps on `kaiak-control`** (this release):
+  - **The store interface changed** (`control/kaiak-control/GUIDE.md` §5):
+    - the current config only, kept as its JSON **text** with its hash
+      (`ConfigEntry { text, hash, publishedAt }`; `currentConfig()`,
+      `publishConfig(entry, expectedHash)`, a conditional replace);
+    - batch cursors per (instance, epoch) (`lastBatch(instance, epoch)`);
+    - `totalsSnapshot(current)` returns the windows and every instance's cursors from
+      one consistent read — no config, live count or instance parameter;
+    - conditional gateway writes on revisions that never repeat;
+    - `subscribe()` with a `catch-up` change after the store's channel reconnects;
+    - **no store sequence** anywhere: not in write results, snapshots, changes or the
+      current config;
+    - the store lease is gone.
+
+    Port the store with the contract tests (`kaiak-control/store-contract`, its
+    `reconnect(handle, whileDown)` hook for a store with a change channel; GUIDE
+    §11).
+  - **Publishing:** a publish replaces the current config (history is the app's).
+    `publishConfig(doc)` answers `{ ok: true, published }`, where `published` is
+    `{ text, hash, publishedAt, config }` — no version. `currentConfig()` and
+    `onConfigPublished` give the same shape. `onConfigPublished` may hear one config
+    more than once (GUIDE §9).
+  - **Totals** list every scope and type with usage, whatever the config.
+    `counted_through` is an array (one entry per epoch). On the stream, totals are
+    complete on connect, then list only the windows that changed.
+  - **Gateway status:** `applied_config_hash` and `last_rejection.config_hash`
+    replace the version and epoch fields — for host UIs.
+  - **New core API:**
+    - `onDeliveryFailed(listener)` and the `deliveryRetryDelaysMs` option;
+    - `readConfig()`, `onConfigRead()` and `readTotals()`, for a host serving
+      streams outside the Fastify plugin (GUIDE §4).
+  - **Removed:**
+    - core options `storeLeaseTtlMs`, `onStoreLeaseLost`, `controlPlaneId`,
+      `onLimitCarriedOver` and `configHistorySize`;
+    - exports `limitIdentity`, `validateConfigSnapshot` (now `validateConfigEvent`),
+      `validateResync`, and the config-version types.
 
 ## Images
 

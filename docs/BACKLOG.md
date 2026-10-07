@@ -78,7 +78,7 @@ Group entries under headings as themes emerge.
   `api_key_env` naming a gateway environment variable. Gains: one place to manage
   keys, rotation by config push instead of a gateway rollout, gateways need only the
   control URL and token. Costs: every copy of the config becomes a secret —
-  control-plane config versions (old keys after rotation), the gateway's
+  the host app's config history (old keys after rotation), the gateway's
   last-known-good cache and seed file, the control stream (TLS mandatory), and every
   place config is shown, diffed, echoed in errors or used as a fixture needs masking;
   it reverses the settled "secrets never in config" (`docs/DEPLOYMENT.md` → Secrets
@@ -307,15 +307,6 @@ Group entries under headings as themes emerge.
   Trust model). Revisit trigger: gateways run where their token cannot be kept as
   tightly as the control plane's own secrets (another team's cluster, a customer
   site), or a forged usage or status report is seen.
-- **Totals size bound** — every totals push carries the full totals: one window per
-  configured hour or month limit with spend, about 115 B each with ordinary IDs. The
-  effective-limits bound (50 000) keeps that to about 5.8 MB, under the 16 MiB message
-  cap, but long group IDs can bring it close, and every gateway receives it with every
-  push (2026-09-27 review, R5; past the cap a gateway's stream fails, and after the
-  outage grace priced USD-limited models answer `503 budget_unavailable`). Fixes:
-  totals as deltas since the stream's last push, or only the windows that changed.
-  Revisit trigger: totals messages above a few MiB, or active windows in the tens of
-  thousands.
 - **Seal usage batches by encoded size** — a gateway seals a batch at 500 records or
   5 s, never by size; a batch whose backend model names are made of characters Go's
   JSON encoder writes as six bytes (`<`, `>`, `&`) can pass the control plane's 2 MiB
@@ -333,11 +324,11 @@ Group entries under headings as themes emerge.
 ## Observability
 
 - **Control-plane config publish cost** — `publishConfig`'s validation and
-  resolution time and the encoded snapshot size are not measured: every gateway
-  receives that snapshot, and a gateway refuses one over 16 MiB. The gateway side is
+  resolution time and the encoded config event's size are not measured: every gateway
+  receives that event, and a gateway refuses one over 16 MiB. The gateway side is
   measured (`GATEWAY.md` → Observability: Config load cost). Revisit trigger:
   publishes feel slow, or a gateway's `kaiak_config_size_bytes` comes near the
-  16 MiB snapshot cap.
+  16 MiB message cap.
 - **Request outcomes in the control plane** — an app built on `kaiak-control` sees
   usage but not failures in its own store: a usage record has no outcome field, only
   the `estimated` and `partial` flags, and a backend error status (a `4xx` relayed, a

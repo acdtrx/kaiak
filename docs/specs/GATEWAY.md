@@ -2058,8 +2058,8 @@ own, and a client sending repeats is broken either way.
     response-header timeout), a backstop under each request's own bound (status
     10 s, usage batch 30 s). Rejected: a resume position and `resync` (settled
     2026-09-24), and ignoring a config older than the one the gateway runs — the
-    control plane sends only its current config, and the gateway that refused an
-    older one stayed on a config the control plane no longer had after a restore.
+    control plane sends only its current config, and a gateway refusing an older one
+    stays, after a restore, on a config the control plane no longer has.
   - **Reconnect**: before every new attempt after a failure or an ended stream, a
     delay drawn uniformly from 0 to an exponential step — 500 ms doubling per
     attempt, capped at 30 s (full jitter, so gateways that lost the control plane

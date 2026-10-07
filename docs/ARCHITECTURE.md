@@ -67,8 +67,8 @@ flowchart LR
   stable instance ID (settled 2026-09-25; `docs/specs/GATEWAY.md`, Configuration
   sources).
 - **Control plane**: any number of processes over one store whose implementation holds
-  the store contract (one totals sequence, conditional writes, consistent reads, change
-  notification — `docs/specs/CONTROL-PROTOCOL.md`, Control-plane processes); one process
+  the store contract (conditional writes, consistent reads, change notification with a
+  catch-up — `docs/specs/CONTROL-PROTOCOL.md`, Control-plane processes); one process
   with the in-memory store. Never in the request path.
 - **Admin port** (`9090`: probes, `/metrics`) stays inside the cluster; only the API
   port (`8080`) is exposed to clients.
@@ -146,15 +146,18 @@ enforce the boundaries.
   protocol's bound, hands each in control-plane mode to the control client's batch
   sender (the batcher, which tags it with its batch's usage generation), then to a
   fan-out of sinks (usage metrics).
-- `limits` — one window counter per limit of global and of each group (sliding
-  minute, UTC hour, UTC month); a request is checked against global and every group
+- `limits` — a sliding-minute counter per per-minute limit, and a UTC-hour token count
+  and a UTC-month cost count for global and every group whether limited or not, each
+  limit a check over its scope's count; a request is checked against global and every group
   on its key's path, following the live config; check-and-reserve before routing,
   settlement from the request's usage records in a finisher; the file-mode usage snapshot through
   `state`. In control-plane mode: hour and month windows over the pushed totals plus
   the gateway's own usage not yet counted (tagged by the usage generation each
-  record carries), totals applied only to the config they were computed under,
-  per-minute shares from the live-gateway count, the outage refusal for priced
-  money-limited models (no contact, or usage batches unanswered, past the grace), and
+  record carries), totals applied by scope and type whatever the config runs (the
+  first after each connect complete, later ones the changed windows only), per-minute
+  shares from the live-gateway count, the outage refusal for priced
+  money-limited models (no stream contact, or usage batches unanswered, past the
+  grace), and
   the last applied totals kept in `state` across restarts. It knows nothing of the
   protocol: `cmd/kaiak` converts the client's totals updates and contact.
 - `metrics` — a small registry (counters, gauges, fixed-bucket histograms, gauges and
@@ -295,14 +298,15 @@ Test tooling outside the binary:
   - `storage` — the storage interface every piece of control-plane state goes
     through (async, so a database implements it) and the in-memory store, its
     reference implementation and the sample's store. The store is where
-    control-plane processes agree: the current config, the sequence every write moves
-    (internal: it orders what each core sends on its streams), conditional writes
+    control-plane processes agree: the current config's JSON text and its hash,
+    conditional writes
     (publish on the hash of the config it was checked against, batch on the
     instance's last batch of its epoch, gateway records on a revision that never
     repeats), the consistent totals snapshot, and `subscribe()`, which tells every
     core of every change and announces a catch-up when the store's change channel
     reconnects. The contract ships as tests (`store-contract`, a second package
-    entry), with a deliberately broken store as their negative control.
+    entry, with a lossy channel that runs the catch-up test), with deliberately
+    broken stores as their negative controls.
   - `config-publishing` — publishing (validate, refuse a changed group parent, then
     replace the current config conditionally), the current config and its hash, and
     the delivery of each new current config to the core's listeners — a failed read
@@ -315,8 +319,10 @@ Test tooling outside the binary:
     of global and each group of its path, whatever the config (the record's
     `gateway_time` window when that is the current or previous one), and answers an
     ack naming the batch; recent records; a subscription to counted batches for
-    pushes. Totals are made per gateway (`counted_through`) from one store snapshot of
-    the windows current once the read is over, listing the current config's limits.
+    pushes. Totals list every scope and type with usage in its current window,
+    whatever the config, from one store snapshot of the windows and every instance's
+    cursors, taken once the read's windows are current; `counted_through` is the
+    recipient's cursor of each epoch.
   - `gateways` — gateway status and the live set (`docs/specs/CONTROL-PROTOCOL.md`,
     Status intake): validates a status, keeps the latest per instance with its
     receipt time, joins the instance to the live set, flags two processes sharing an
@@ -337,15 +343,18 @@ Test tooling outside the binary:
   - `control-plane` — the core the host app builds (`createControlPlane`): store,
     token, clock, recent-records size, live-set timings in; the
     operations of the subsystems above out, the live set's size wired into totals;
-    `start`/`stop` run and stop the expiry sweep (every core sweeps; its writes are
+    `start`/`stop` take and release the store subscription (`start` announces a
+    catch-up) and run and stop the expiry sweep (every core sweeps; its writes are
     conditional). Listener events come from the store's notifications.
     HTTP adapters and the host app use it; it knows nothing of HTTP.
   - `fastify` — the HTTP adapter: a Fastify plugin (`controlProtocolPlugin`) the host
     registers with a core instance. It mounts the gateway endpoints (default under
     `/v1`), runs the request checks and adds the protocol header on every response,
     and writes the stream straight to the socket (subscribe, the current config, live
-    config pushes, totals coalesced per stream and held for slow readers, each stream
-    kept in order, all streams ended on a rollback, heartbeat, the stall bound); takes
+    config pushes ordered by when each read was issued and skipped by the stream's
+    last-sent hash, one totals read per push for every stream — complete on connect,
+    then the changed windows, held for slow readers —, heartbeat, the stall bound, a
+    synchronous teardown); takes
     usage batches and statuses;
     starts the core with the app and stops it on close. Routes only — logging and the rest of
     the app are the host's.
@@ -353,11 +362,10 @@ Test tooling outside the binary:
 ```mermaid
 flowchart LR
     fastify --> cp
-    fastify --> cv
+    fastify --> cpub
     fastify --> protocol
     fastify --> messages
-    fastify --> storage
-    cp[control-plane] --> cv[config-versions]
+    cp[control-plane] --> cpub[config-publishing]
     cp --> protocol
     cp --> storage
     cp --> usage
@@ -365,12 +373,13 @@ flowchart LR
     gateways --> messages
     gateways --> storage
     usage --> messages
-    usage --> config
     usage --> storage
     storage --> messages
-    cv --> config
-    cv --> storage
-    storage --> config
+    sc[store-contract] --> storage
+    sc --> messages
+    cpub --> config
+    cpub --> schemas
+    cpub --> storage
     keys --> schemas
     bv[backend-verify] --> config
     bv --> schemas

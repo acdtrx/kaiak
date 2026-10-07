@@ -172,7 +172,7 @@ the `{ error, detail }` body, `error` being the stable code:
   still fails is reported to the host and closes every stream the process holds, so
   its gateways reconnect and read the current config on connect. A totals read that
   fails is retried at the push interval. Rejected: dropping the failed read until the
-  next change — a published config (a revoked key) then stayed off that process's
+  next change — a published config (a revoked key) would stay off that process's
   gateways with nothing reported.
 - **A restored store is the current state** (settled 2026-10-07): after a restore from
   a backup, or a failover to a standby that was behind, the store's config and totals
@@ -180,10 +180,10 @@ the `{ error, detail }` body, `error` being the stable code:
   sent to every gateway not running it, and the totals' windows are the restored
   ones. Nothing in the protocol tells a restore apart. Rejected: detecting a rollback
   (a store sequence going back) and closing every stream — the sequence arrives out of
-  order on ordinary traffic, so it fired with no restore, and a gateway reconnecting
-  gets the same current state that a push carries; requiring a store that rolls back
-  to take a new identity (a config epoch) — it depended on whoever restored the store
-  remembering to.
+  order on ordinary traffic, so the check fires with no restore, and a gateway
+  reconnecting gets the same current state that a push carries; requiring a store
+  that rolls back to take a new identity (a config epoch) — it depends on whoever
+  restores the store remembering to.
 - **Heartbeat**: a comment line (`: heartbeat`) every 15 s, so idle proxies and load
   balancers keep the connection. The gateway may treat a much longer silence as a dead
   connection and reconnect.
@@ -198,7 +198,7 @@ the `{ error, detail }` body, `error` being the stable code:
   Each push carries the newest values its process has read. A publish changes no
   totals. The stream is the only way totals reach a gateway (Usage batches: the ack
   carries none). Rejected: the complete totals on every push — with every scope's
-  windows listed, a deployment with thousands of groups sent megabytes to every
+  windows listed, a deployment with thousands of groups sends megabytes to every
   gateway every second.
 - **Slow readers** (settled 2026-09-24): config events wait in the control plane's
   send buffer until the gateway reads them; a heartbeat is skipped while earlier
@@ -341,7 +341,7 @@ the `{ error, detail }` body, `error` being the stable code:
   first totals on a stream set every base (a scope not listed: 0); later ones replace
   the bases they list. Rejected: applying totals only when they were computed under
   the gateway's config (settled 2026-09-25, H3), with a mismatch state refusing
-  budgets after a grace — a gateway that rejected a config kept stale bases; keeping
+  budgets after a grace — a gateway that rejects a config keeps stale bases; keeping
   the last base of a limit the totals stop listing — it misses the other gateways'
   new spend for that limit.
 - **Status**: `state` is `starting`, `ready` or `draining`; `started_at` is when the
