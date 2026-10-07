@@ -843,7 +843,7 @@ before priced models are refused. Scale the 300 with the grace if you change it.
 |---|---|---|---|---|
 | Control plane unreachable (lead time) | page | `count(kaiak_control_connected == 0 and time() - kaiak_control_last_contact_timestamp_seconds > 300) > 0` | — | No contact for 5 minutes: config updates and key revocations have stopped, and priced USD-limited models are refused when the grace ends. Check the control plane. |
 | Control-plane outage | page | `count(kaiak_control_outage == 1) > 0` | — | The grace has passed: priced models under a USD limit are being refused. |
-| Usage not acknowledged | page | `count(kaiak_usage_spool_batches > 0 unless time() - kaiak_usage_last_ack_timestamp_seconds <= 300) > 0` | 2m | Batches wait and nothing was acknowledged for 5 minutes (or ever, on a new pod): the control plane takes the stream but not `/v1/usage` — spend is not shared, usage piles up in memory, and unanswered batches become an outage at the grace. The `for` matters: a pod idle for 5 minutes has an old last ack when its next batch seals, true for the few seconds until its ack. |
+| Usage not acknowledged | page | `count(kaiak_usage_queue_batches > 0 unless time() - kaiak_usage_last_ack_timestamp_seconds <= 300) > 0` | 2m | Batches wait and nothing was acknowledged for 5 minutes (or ever, on a new pod): the control plane takes the stream but not `/v1/usage` — spend is not shared, usage piles up in memory, and unanswered batches become an outage at the grace. The `for` matters: a pod idle for 5 minutes has an old last ack when its next batch seals, true for the few seconds until its ack. |
 | Budget refusals | page | `sum(increase(kaiak_errors_total{class="budget_unavailable"}[5m])) > 0` | — | Clients refused because spend is unknown. Two causes: a control-plane outage (`kaiak_control_outage == 1`); or **no totals yet** — a pod started and its first totals were late (`first totals not received within the boot wait` in its log; `kaiak_control_totals_applied_timestamp_seconds` absent). |
 | No healthy deployment | page | `sum(increase(kaiak_errors_total{class="no_healthy_deployment"}[5m])) > 0` | — | Every deployment of a model has its circuit open: its requests are refused `503`. `kaiak_circuit_open` names them. |
 | Pods crash-looping | page | `kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff", container="kaiak"} == 1` (kube-state-metrics) | — | A gateway cannot boot: the control plane stayed unavailable through the boot wait and there is no seed, or the token or config is refused. The pod's last log line names the cause. |
@@ -952,8 +952,10 @@ Boot).
   the directory (`usage-spool.json`, `usage-batch-*.json`, `usage-rejected-*.json`,
   `last-known-good.json`, `totals.json`, `limits.json`, `kaiak.lock`) and remove its
   volume, and unset `KAIAK_DATA_DIR`. A restart now counts from the control plane's
-  next totals, and a boot with the control plane down uses the seed. **The control
-  plane broadcasts its current config**: no config versions —
+  next totals, and a boot with the control plane down uses the seed. **The usage
+  queue metrics are renamed**: `kaiak_usage_spool_batches` → `kaiak_usage_queue_batches`
+  and `kaiak_usage_spool_records` → `kaiak_usage_queue_records`; update dashboards and
+  alerts. **The control plane broadcasts its current config**: no config versions —
   a gateway applies the config the control plane sends, and reports configs by
   their `config_hash`.
 - **Host apps on `kaiak-control`** (this release):

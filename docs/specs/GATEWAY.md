@@ -2188,8 +2188,8 @@ own, and a client sending repeats is broken either way.
   | `kaiak_log_export_records_total` | counter | `outcome` | With OTLP log export on (settled 2026-10-05): log records by what became of them — `exported` (accepted by the collector), `failed` (in a batch given up), `dropped` (never sent: a full queue, or still queued at exit; Observability → OTLP log export). All three at 0 from startup; absent when export is off |
   | `kaiak_build_info` | gauge | `version`, `go_version` | Always 1; `version` is the release the binary was built as — the image build links its `git describe` version in (`docs/TECH-STACK.md`, Container images), else the module version Go stamped, else `(devel)` |
   | `kaiak_usage_batch_sends_total` | counter | `result` | Control-plane mode: usage batch sends — `acked`, `rejected` (dropped), `failed` (retried) |
-  | `kaiak_usage_spool_batches` | gauge | — | Control-plane mode: sealed usage batches not yet acknowledged (in memory) |
-  | `kaiak_usage_spool_records` | gauge | — | Control-plane mode: records in those batches |
+  | `kaiak_usage_queue_batches` | gauge | — | Control-plane mode: sealed usage batches not yet acknowledged (in memory) |
+  | `kaiak_usage_queue_records` | gauge | — | Control-plane mode: records in those batches |
   | `kaiak_usage_queued_bytes` | gauge | — | Control-plane mode: encoded bytes of the unacknowledged records held in memory, what `KAIAK_USAGE_MEMORY_BYTES` bounds — every queued record |
   | `kaiak_usage_dropped_records_total` | counter | `reason` | Control-plane mode: usage records dropped before reaching the control plane — `invalid` (failed the record checks, dropped alone), `memory_bound` (over the in-memory bound) |
   | `kaiak_usage_last_ack_timestamp_seconds` | gauge | — | Control-plane mode: Unix time of the last acknowledged batch; absent before one. An ack is not contact for the outage rule (only stream bytes are) |
@@ -2205,7 +2205,7 @@ own, and a client sending repeats is broken either way.
 
   - **Alert on usage delivery, not only the stream** (settled 2026-09-25, M16): a
     control plane can keep the config stream open while it no longer takes usage.
-    Alert when `kaiak_usage_spool_batches > 0` and `time() -
+    Alert when `kaiak_usage_queue_batches > 0` and `time() -
     kaiak_usage_last_ack_timestamp_seconds` stays above the outage grace (before any
     ack the metric is absent: alert on a queue that stays non-empty), and on
     `kaiak_control_outage == 1`. A config the gateway rejected shows in its
