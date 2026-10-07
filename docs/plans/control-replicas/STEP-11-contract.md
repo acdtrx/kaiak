@@ -301,7 +301,7 @@ lines in `GATEWAY.md` and `config.schema.json`).
 |---|---|---|
 | store sequence (`CurrentConfig`, `TotalsSnapshot`, `StoreChange`, write results), `highestSequence`, `observeSequence` | done: none in `storage/`, `store-contract/`, specs, GUIDE §5 | core: config-publishing, control-plane, usage, fastify and their tests (12); sample page (12) |
 | `onRollback`, `rollback`, `Rollback` | done in specs (one dated Rejected line), GUIDE §5 | core and GUIDE §4 line 142 (12); `docs/ARCHITECTURE.md:348`, `docs/architecture/control-plane.html:278` (14) |
-| `lastSent` by sequence; core-wide `delivered` | — | `fastify/gateway-stream.ts` (12); `delivered` greps clean already (renamed earlier) — 12 checks the dedup is per stream |
+| `lastSent` by sequence; core-wide `delivered` | — | `fastify/gateway-stream.ts` `lastSent`, `config-publishing/index.ts:71` `delivered` (12) |
 | `limitedOf`, `listedWindows`' config filter, "counted but not listed", "the config's limits" | done in specs (one Rejected line) | `usage/index.ts`, `usage.test.ts`, `status-totals.test.ts` (12); `docs/ARCHITECTURE.md:319` (14). The hits for "whatever the config's limits" (GUIDE §5, §7; `types.ts`) state the current rule and stay |
 | `counted_through` as one object or `null` | done: schema, fixtures (the one hit is the invalid fixture `counted-through-null.json`) | `messages/types.ts`, `usage`, `status-totals.test.ts`, sample `page.test.ts` (12); gateway `messages.go`, schema walker, limits, fakecontrol (13) |
 | the snapshot's `config` and `liveGateways` | done in the store | `usage/index.ts` (12). `liveGateways` in `gateways/` is the core's own count and stays |
