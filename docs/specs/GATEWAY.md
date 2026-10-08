@@ -160,6 +160,7 @@
   | Body over `max_request_body_bytes`, or over the whole body budget (`KAIAK_BODY_MEMORY_BYTES`) when that is smaller | 413 | `invalid_request_error` | `request_too_large` |
   | A Responses request sets `previous_response_id`, `conversation`, `prompt` or `background: true`, or refers to an item or file stored at the backend (`param` names it; Client API → Responses is stateless) | 400 | `invalid_request_error` | `stateful_responses_unsupported` |
   | A Messages request refers to a file stored at the backend (`param` names it; Client API → Responses is stateless: stored objects) | 400 | `invalid_request_error` | `stored_object_unsupported` |
+  | A rerank request names `texts`, TEI's rerank format, whatever its value (`param: "texts"`; Client API → owned fields: rerank; settled 2026-10-09) | 400 | `invalid_request_error` | `tei_format_unsupported` |
   | A tool type the backend would run, a shell running in the backend's container, `mcp_servers`, `container`, or a Responses `tool_choice` or input item naming such a tool (`param` names it; Client API → Hosted tools are refused) | 400 | `invalid_request_error` | `hosted_tool_unsupported` |
   | A Messages request to an `anthropic` or `azure-anthropic` deployment asks for a price option the gateway does not price (`param` names it; Providers → Standard price on Anthropic types) | 400 | `invalid_request_error` | `price_option_unsupported` |
   | No deployment of the model is on a backend that serves the endpoint (Providers → Endpoint support) | 400 | `invalid_request_error` | `endpoint_not_served` |
@@ -220,12 +221,23 @@
     how many documents it holds, for the cap (Limits → Output multiplicity: batch
     caps) — a list holds one per element, any other value (a string, a multimodal
     object) counts as one, and the backend judges its shape; `query`, read only for
-    the input estimate (Limits → The input estimate). Everything else passes
-    untouched: `top_n`, `return_documents`, `instruction`, `chat_template_kwargs`,
-    `max_tokens_per_doc`, `truncate_prompt_tokens`, multimodal content parts, and
-    `stream`, which neither server reads — a rerank request is never a stream: the
-    non-stream timers apply (Routing and reliability → Timeouts) and the request
-    line's `gen_ai.request.stream` is `false`.
+    the input estimate (Limits → The input estimate); `texts`, refused (below).
+    Everything else passes untouched: `top_n`, `return_documents`, `instruction`,
+    `chat_template_kwargs`, `max_tokens_per_doc`, `truncate_prompt_tokens`,
+    multimodal content parts, and `stream`, which neither server reads — a rerank
+    request is never a stream: the non-stream timers apply (Routing and reliability
+    → Timeouts) and the request line's `gen_ai.request.stream` is `false`.
+    **`texts` is refused** (settled 2026-10-09), whatever its value — `null` too,
+    unlike every other owned field — on every backend type: `400
+    tei_format_unsupported`, `param: "texts"`, the message naming the member, never
+    its value. It is TEI's rerank format, which the gateway does not serve, and
+    llama-server reads it whenever the request names it (`tools/server/
+    server-context.cpp`, `post_rerank`, `master` on 2026-10-09): it takes the
+    documents from `texts` when `documents` is absent or not a list of strings — past
+    the documents cap, which counts `documents` — and answers a request naming
+    `texts` in TEI's shape, a bare list with no `model` and no `usage` — so the record
+    would settle on the estimate, which counted one document. Rejected: passing it —
+    a client could rerank any number of documents past the cap, billed as one.
 - **Request IDs**: `x-request-id` is accepted (or generated), forwarded to the backend,
   returned to the client, and stamped on the log line and the usage record. A client
   ID is kept when it is 1–128 characters of `[A-Za-z0-9._:-]`; any other value is
@@ -751,14 +763,21 @@ own, and a client sending repeats is broken either way.
     on a `vllm` backend shows as the config-apply warning (below) and the
     endpoint-missing warning instead.
   - `llama-server`: `{"error": {"message": "File Not Found", "type":
-    "not_found_error", "code": 404}}` (run on build 11146). Its HTTP layer gives
-    every `404` that body, so in router mode a model the server does not have reads
-    as a wrong path too — the deployment's failure on the core endpoints; on its
-    other endpoints (Messages, Responses, the token-counting endpoints, rerank) the
-    same body reads as an endpoint missing (below), neutral for the circuit.
-    llama-server serves
-    chat completions and its models list without `/v1` as well, so a `base_url`
-    missing it gives no `404` there (`docs/BACKLOG.md`, llama-server quirks).
+    "not_found_error", "code": 404}}` (run on build 11146); its HTTP layer gives
+    every `404` that body. It reads as a wrong path on the core endpoints only: on
+    its other endpoints (Messages, Responses, the token-counting endpoints, rerank)
+    the same body reads as an endpoint missing (below), neutral for the circuit —
+    so a wrong `base_url` on a `llama-server` backend counts toward the circuit
+    through its core endpoints alone, and shows on the others as `endpoint_missing`
+    attempts with the endpoint-missing warning (settled 2026-10-09). A model a
+    router-mode server does not have (or has not loaded, with autoload off) is not a
+    `404`: the router answers `400 invalid_request_error`, `model '<name>' not
+    found` (`tools/server/server-models.cpp`, `router_validate_model`, `master` on
+    2026-10-09), relayed to the client as its own mistake — naming the backend-side
+    model, with no failover and no circuit count (`docs/BACKLOG.md`, llama-server
+    router mode). llama-server serves chat completions and its models list without
+    `/v1` as well, so a `base_url` missing it gives no `404` there
+    (`docs/BACKLOG.md`, llama-server quirks).
   - `openai`: an `invalid_request_error` whose message starts `Invalid URL` (`Invalid
     URL (POST /chat/completions)`) — OpenAI's known answer, not verified live.
   - `azure-openai`: `{"error": {"code": "404", "message": "Resource not found"}}` —
@@ -819,11 +838,13 @@ own, and a client sending repeats is broken either way.
     warning on requests, and the memory below keeps traffic off it.
   - **llama-server registers every route whatever its model or flags**
     (`tools/server/server.cpp`), so its `File Not Found` keeps its reading: a wrong
-    path on the core endpoints. On two of the gateway's endpoints it answers `501`,
-    type `not_supported_error`, when it was not started in their mode: embeddings
-    without `--embeddings` (`This server does not support embeddings. Start it with
-    --embeddings`) and rerank without `--embeddings` and pooling `rank` (`This server
-    does not support reranking. Start it with --reranking`). That answer reads as
+    path on the core endpoints. On its other endpoints it reads as the endpoint
+    missing, so a wrong `base_url` reads that way there too (Wrong path to a host).
+    On two of the gateway's endpoints it answers `501`, type `not_supported_error`,
+    when it was not started in their mode: embeddings without `--embeddings` (`This
+    server does not support embeddings. Start it with --embeddings`) and rerank
+    without `--embeddings` and pooling `rank` (`This server does not support
+    reranking. Start it with --reranking`). That answer reads as
     the endpoint missing (settled 2026-10-08), matched by status and type on those
     two endpoints; the message is not read. They are the only `501`s llama-server
     answers on the gateway's endpoints (`master` at build b11513, as in b9917 and
@@ -833,7 +854,14 @@ own, and a client sending repeats is broken either way.
     part the model cannot take (an image, audio or video with no projector for it)
     answers `500 server_error` on chat, Messages and Responses, not `501` — one of
     llama-server's client errors answered `500` (`docs/BACKLOG.md`, llama-server
-    quirks).
+    quirks). So does a generating request — chat, completions, Messages, Responses —
+    sent to an encoder model (a BERT-style reranker such as bge-reranker-v2-m3, or a
+    BERT embedding model), whose context keeps no memory: `500 server_error`, `the
+    current context does not support logits computation` (`tools/server/
+    server-context.cpp`, `master` on 2026-10-09), read as a backend failure —
+    retried and counted toward the circuit, so a few such requests open the
+    deployment's circuit for every client. Keep chat clients off such a model's
+    name, or serve it on vLLM (same backlog entry).
   - **Remembered per deployment for a probe interval** (settled 2026-10-06, the
     pre-merge review's M3; per deployment 2026-10-08): the deployment is left out of
     routing for that endpoint until the interval passes — unless every deployment of
@@ -848,8 +876,11 @@ own, and a client sending repeats is broken either way.
     `tools/server/server-models.cpp`), so one model's `501` on rerank says nothing of
     the reranker beside it; a vLLM server serves one model, and its other names
     (LoRA adapters) each learn the same at the cost of one attempt per interval.
-    Logged at warning level with the backend, the deployment's model and the
-    endpoint, once per interval, attempt outcome `endpoint_missing`. Rejected:
+    The interval runs from the answer that set it: answers inside it — when every
+    deployment is remembered and tried — do not extend it (settled 2026-10-09), so
+    the first answer after it remembers the deployment afresh. Logged at warning
+    level with the backend, the deployment's model and the endpoint, once per
+    interval, steady traffic or not, attempt outcome `endpoint_missing`. Rejected:
     remembering per backend — a chat model's `501` on a router-mode llama-server
     would keep the reranker on the same backend out of rerank routing.
 - **Complete responses** (settled 2026-09-25; the audit's M13): HTTP framing ending

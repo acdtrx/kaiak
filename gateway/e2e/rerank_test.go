@@ -6,7 +6,7 @@ package e2e
 // each a fake backend answering in its server's shape — with the model edit alone;
 // the answer comes back in that shape under the public model name; the usage settles
 // from the reported prompt tokens, priced on tokens_in, or is estimated and flagged
-// when the answer reports none; the documents cap and a model with no
+// when the answer reports none; the documents cap, TEI's texts and a model with no
 // rerank-serving deployment are refused before any backend; and a chat request to the
 // vllm reranker, whose server has no chat route, is answered as the endpoint missing,
 // neutral for the circuit.
@@ -260,7 +260,7 @@ func TestRerank(t *testing.T) {
 		})
 	}
 
-	// More documents than max_rerank_documents, and a model none of whose
+	// More documents than max_rerank_documents, TEI's texts, and a model none of whose
 	// deployments' types serves rerank, are refused in OpenAI's shape before any
 	// backend is asked.
 	t.Run("refused before any backend", func(t *testing.T) {
@@ -271,6 +271,15 @@ func TestRerank(t *testing.T) {
 		if r.StatusCode != http.StatusBadRequest || e["code"] != "invalid_value" || e["param"] != "documents" ||
 			strings.Contains(string(r.body), "secret") {
 			t.Errorf("4 documents: %d %s, want 400 invalid_value on documents, naming no document", r.StatusCode, r.body)
+		}
+		// TEI's texts, which llama-server would read in place of documents — past the
+		// cap — and answer without usage.
+		r = g.post(t, "/v1/rerank", key, "rerank-texts", map[string]any{"model": "rerank-llama", "query": "what does a panda eat",
+			"texts": append(slices.Clone(rerankDocuments), "the secret document")})
+		e, _ = r.json(t)["error"].(map[string]any)
+		if r.StatusCode != http.StatusBadRequest || e["code"] != "tei_format_unsupported" || e["param"] != "texts" ||
+			strings.Contains(string(r.body), "secret") {
+			t.Errorf("texts: %d %s, want 400 tei_format_unsupported on texts, naming no document", r.StatusCode, r.body)
 		}
 		r = g.post(t, "/v1/rerank", key, "rerank-unserved", rerankBody(t, rerankUnserved.model, rerankDocuments, nil))
 		if r.StatusCode != http.StatusBadRequest || openAIErrorCode(t, r) != "endpoint_not_served" ||

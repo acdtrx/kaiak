@@ -54,15 +54,21 @@ func (m *MissingEndpoints) Retain(models map[string]*config.Model) {
 	}
 }
 
-// remember records that d's server does not serve api until now+ttl, and reports
-// whether it was not already remembered — the one moment worth a warning per interval.
+// remember records that d's server does not serve api until now+ttl, unless that is
+// already remembered, and reports whether it was not — the one moment worth a
+// warning. An entry is never extended: it ends one interval after it was set, so the
+// deployment is tried again then and, still lacking the endpoint, remembered afresh
+// with its warning — once per interval, however steady the traffic, also while every
+// deployment of the model is remembered and they are all tried meanwhile.
 func (m *MissingEndpoints) remember(d config.Deployment, api provider.Endpoint, now time.Time, ttl time.Duration) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := missingEndpoint{routing.IDOf(d), api}
-	fresh := !now.Before(m.until[key])
+	if now.Before(m.until[key]) {
+		return false
+	}
 	m.until[key] = now.Add(ttl)
-	return fresh
+	return true
 }
 
 // exclude is model as routing sees it for api at now: its deployments remembered as

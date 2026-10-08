@@ -536,7 +536,9 @@ answers `upstream_endpoint_missing` and leaves the deployment in service.
     have: a wrong `-base-url` (OpenAI without `/v1`; for Azure, a path after the
     resource endpoint). The gateway's log also warns `the backend has no models list
     at its base_url` at startup. On vLLM a wrong `-base-url` answers
-    `upstream_endpoint_missing` instead (below), with the same startup warning.
+    `upstream_endpoint_missing` instead (below), with the same startup warning; on
+    llama-server it does on Messages, Responses, the token-counting endpoints and
+    rerank, while chat, completions and embeddings answer `upstream_path_missing`.
   - `502 upstream_model_missing` — the backend does not serve `-model` (for Azure,
     no deployment of that name).
   - `404` relayed from the backend — a `404` the gateway does not read as the
@@ -553,9 +555,11 @@ answers `upstream_endpoint_missing` and leaves the deployment in service.
   loaded leaves it out (vLLM creates its routes from the model: a chat model has no
   rerank route, a reranker no chat route — check that `-base-url` and
   `-rerank-base-url` are not swapped), or its flags do (llama-server started without
-  `--reranking` answers rerank `501`). On vLLM a wrong `-base-url` shows the same way,
-  with the startup warning `the backend has no models list at its base_url`. The
-  deployment keeps serving its other endpoints.
+  `--reranking` answers rerank `501`); the deployment keeps serving its other
+  endpoints. A wrong `-base-url` shows the same way on vLLM, and on llama-server's
+  Messages, Responses, token-counting and rerank checks (its chat, completions and
+  embeddings checks answer `upstream_path_missing`), with the startup warning `the
+  backend has no models list at its base_url`.
 - `rerank-relevance`: the server scored the irrelevant document higher — on vLLM the
   score template (`--chat-template`) or the `--hf_overrides` is missing, on
   llama-server the GGUF carries no rerank prompt (`docs/DEPLOYMENT.md` → Rerankers).

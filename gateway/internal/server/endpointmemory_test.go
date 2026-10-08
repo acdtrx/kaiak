@@ -246,6 +246,103 @@ func TestEveryDeploymentRememberedIsTriedAgain(t *testing.T) {
 	}
 }
 
+// Steady traffic to a model whose only deployment lacks the endpoint warns once per
+// probe interval: the deployment is tried on every request — the model has no other —
+// and an attempt inside the interval finds it remembered without extending the
+// entry, so the first attempt after the interval remembers it afresh, with its
+// warning (docs/specs/GATEWAY.md, Providers → An endpoint missing from a server;
+// Observability).
+func TestMissingEndpointWarnsOncePerInterval(t *testing.T) {
+	other := fakebackend.New()
+	t.Cleanup(other.Close)
+	g := newTestGateway(t)
+	const interval = 100 * time.Millisecond
+	withRouterModels(t, g, other, int(interval/time.Millisecond))
+	g.backend.SetReply(notSupported("reranking", "--reranking"))
+
+	start := time.Now()
+	requests := 0
+	for time.Since(start) < 5*interval {
+		w := do(t, g.h, call{method: "POST", path: "/v1/rerank", key: workloadKey, body: rerankOn + `"chat"}`})
+		expectError(t, w, http.StatusBadGateway, "upstream_endpoint_missing")
+		requests++
+		time.Sleep(interval / 10) // steady traffic, about ten requests per interval
+	}
+	elapsed := time.Since(start)
+	if n := len(g.backend.Requests()); n != requests {
+		t.Fatalf("ls got %d requests of %d, want every one: the model's only deployment is tried each time", n, requests)
+	}
+	// Warnings come at least an interval apart, and at most an interval and the
+	// gap between two requests apart.
+	if n, most := len(warnings(g)), int(elapsed/interval)+1; n < 3 || n > most {
+		t.Errorf("%d endpoint-missing warnings over %s of steady traffic, want one per %s interval: 3 to %d",
+			n, elapsed.Round(time.Millisecond), interval, most)
+	}
+}
+
+// An entry is never extended: it lasts one interval from when it was set, however
+// often the deployment is found lacking the endpoint meanwhile, and the first time
+// after that remembers it afresh — the moment worth a warning.
+func TestMissingEndpointEntryLastsOneInterval(t *testing.T) {
+	m := NewMissingEndpoints()
+	d := config.Deployment{Backend: &config.Backend{ID: "vl"}, Model: "reranker-back"}
+	t0 := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	const interval = 10 * time.Second
+	for _, c := range []struct {
+		at    time.Duration
+		fresh bool
+	}{
+		{0, true},
+		{interval / 2, false},
+		{interval - time.Nanosecond, false},
+		{interval, true},
+		{interval + interval/2, false},
+		{2*interval - time.Nanosecond, false},
+		{2 * interval, true},
+	} {
+		if got := m.remember(d, provider.Rerank, t0.Add(c.at), interval); got != c.fresh {
+			t.Errorf("remembered at +%s: fresh %v, want %v", c.at, got, c.fresh)
+		}
+	}
+	if got := m.remember(d, provider.Embeddings, t0.Add(interval/2), interval); !got {
+		t.Error("another endpoint of the same deployment: not fresh, want its own entry")
+	}
+}
+
+// Only the endpoint missing is remembered: a missing model, a refused credential and
+// a wrong path are failures of the deployment or its backend — counted by the
+// circuit — not a server without the endpoint, and leave the memory and its warning
+// alone (docs/specs/GATEWAY.md, Providers → An endpoint missing from a server).
+func TestOnlyAMissingEndpointIsRemembered(t *testing.T) {
+	other := fakebackend.New()
+	t.Cleanup(other.Close)
+	g := newTestGateway(t)
+	withRouterModels(t, g, other, 3600000)
+	for _, c := range []struct {
+		name, path, body string
+		reply            fakebackend.Reply
+		code             string
+	}{
+		{"missing model", "/v1/rerank", rerankOn + `"chat"}`, fakebackend.Reply{Status: http.StatusNotFound,
+			Body: `{"error":{"message":"The model ` + "`chat-gguf`" + ` does not exist.","type":"not_found_error","code":404}}`},
+			"upstream_model_missing"},
+		{"refused credential", "/v1/rerank", rerankOn + `"chat"}`, fakebackend.Reply{Status: http.StatusUnauthorized,
+			Body: `{"error":{"message":"Invalid API Key","type":"authentication_error","code":401}}`}, "upstream_auth_failed"},
+		{"wrong path", "/v1/chat/completions", `{"model":"chat"}`, fakebackend.Reply{Status: http.StatusNotFound,
+			Body: `{"error":{"message":"File Not Found","type":"not_found_error","code":404}}`}, "upstream_path_missing"},
+	} {
+		g.backend.SetReply(c.reply)
+		w := do(t, g.h, call{method: "POST", path: c.path, key: workloadKey, body: c.body})
+		expectError(t, w, http.StatusBadGateway, c.code)
+	}
+	if got := rememberedDeployments(g.missing); len(got) != 0 {
+		t.Errorf("remembered %v, want nothing", got)
+	}
+	if lines := warnings(g); len(lines) != 0 {
+		t.Errorf("%d endpoint-missing warnings, want none:\n%s", len(lines), strings.Join(lines, "\n"))
+	}
+}
+
 // An applied config that no longer has a deployment forgets what the
 // missing-endpoint memory holds for it — its backend removed, or the deployment
 // alone: no request visits its entry again, so its expiry would never remove it. A

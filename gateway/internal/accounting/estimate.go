@@ -84,7 +84,7 @@ func EstimateInput(ep provider.Endpoint, body []byte) InputEstimate {
 			continue
 		}
 		if ep == provider.Rerank && key == "query" {
-			start := s.dec.InputOffset()
+			start := valueOffset(body, s.dec.InputOffset())
 			var q part
 			if _, ok := s.value(key, "", roleNone, false, 1, &q); !ok {
 				return fallback
@@ -128,6 +128,21 @@ func EstimateInput(ep provider.Endpoint, body []byte) InputEstimate {
 		Total:         total,
 		LargestPrompt: part{text: rest.text + largest.text, fixed: rest.fixed + largest.fixed}.tokens(),
 	}
+}
+
+// valueOffset is where the value of the member whose name ends at off begins in body:
+// past the colon and the whitespace around it, which the decoder reads only with the
+// value.
+func valueOffset(body []byte, off int64) int64 {
+	for off < int64(len(body)) {
+		switch body[off] {
+		case ':', ' ', '\t', '\r', '\n':
+			off++
+		default:
+			return off
+		}
+	}
+	return off
 }
 
 // part is an estimate under way: text bytes and tokens counted directly. While a

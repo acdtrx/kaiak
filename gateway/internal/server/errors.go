@@ -220,6 +220,15 @@ func errTooManyDocuments(documents, limit int64) *apiError {
 		message: fmt.Sprintf("'documents' holds %d documents; the gateway's maximum is %d per request.", documents, limit)}
 }
 
+// errRerankTEIFormat refuses a rerank request carrying texts, TEI's rerank format
+// (docs/specs/GATEWAY.md, Client API → owned fields: rerank): llama-server reads it in
+// place of documents and answers it without usage. The message names the member,
+// never its value.
+func errRerankTEIFormat() *apiError {
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "tei_format_unsupported", class: metrics.ErrorInvalidRequest, param: "texts",
+		message: "'texts' is TEI's rerank format; the gateway serves Jina's: send the documents in 'documents'."}
+}
+
 // errOutputLimitTooLarge refuses an output limit (param: max_tokens or
 // max_completion_tokens) above the model's context length, in OpenAI's code and
 // wording for the same refusal.

@@ -50,8 +50,8 @@ func TestRerankUsage(t *testing.T) {
 func TestEstimateRerankInput(t *testing.T) {
 	const m = InlineMediaTokens
 	text := func(s string) int64 { return EstimateTokens(int64(len(s))) }
-	// A value's span, which a media item leaves out of the text and the query's own
-	// estimate measures, includes the ":" before it.
+	// The query's own estimate is its value's alone, without the ":" and whitespace
+	// before it; a media item's span, which it leaves out of the text, includes them.
 	const query = `"what is a panda"`
 	const imageQuery = `{"content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,QUJDRA"}}]}`
 	// imageQueryText is imageQuery less the image's data URL, which counts m.
@@ -67,11 +67,19 @@ func TestEstimateRerankInput(t *testing.T) {
 		{name: "many documents",
 			body:    `{"model":"m","query":` + query + `,"documents":["a","b","c","d"],"top_n":2}`,
 			own:     text(`{"model":"m","query":` + query + `,"documents":["a","b","c","d"],"top_n":2}`),
-			repeats: 3 * text(":"+query)},
+			repeats: 3 * text(query)},
 		{name: "the query after the documents",
 			body:    `{"model":"m","documents":["a","b","c","d"],"query":` + query + `}`,
 			own:     text(`{"model":"m","documents":["a","b","c","d"],"query":` + query + `}`),
-			repeats: 3 * text(":"+query)},
+			repeats: 3 * text(query)},
+		{name: "whitespace around the query's colon",
+			body:    `{"model":"m", "query"` + " \n:\t " + query + `, "documents":["a","b"]}`,
+			own:     text(`{"model":"m", "query"` + " \n:\t " + query + `, "documents":["a","b"]}`),
+			repeats: text(query)},
+		{name: "a query that is a media item",
+			body:    `{"model":"m","query":"data:image/png;base64,QUJDRA","documents":["a","b","c"]}`,
+			own:     text(`{"model":"m","query","documents":["a","b","c"]}`) + m,
+			repeats: 2 * m},
 		{name: "documents that are not a list are one",
 			body: `{"model":"m","query":` + query + `,"documents":"one long document"}`,
 			own:  text(`{"model":"m","query":` + query + `,"documents":"one long document"}`)},
@@ -81,12 +89,12 @@ func TestEstimateRerankInput(t *testing.T) {
 		{name: "a query with an image part",
 			body:    `{"model":"m","query":` + imageQuery + `,"documents":["a","b","c"]}`,
 			own:     text(`{"model":"m","query":`+imageQueryText+`,"documents":["a","b","c"]}`) + m,
-			repeats: 2 * (text(":"+imageQueryText) + m)},
+			repeats: 2 * (text(imageQueryText) + m)},
 		{name: "a document with an image part counts once",
 			body: `{"model":"m","query":` + query + `,"documents":["a",{"content":[{"type":"image_url","image_url":{"url":"https://example.com/p.png"}}]}]}`,
 			own: text(`{"model":"m","query":`+query+`,"documents":["a",{"content":[{"type":"image_url","image_url":{"url"}}]}]}`) +
 				m,
-			repeats: text(":" + query)},
+			repeats: text(query)},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			want := InputEstimate{Total: c.own + c.repeats, LargestPrompt: c.own}

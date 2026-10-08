@@ -174,6 +174,32 @@ func TestInputSize(t *testing.T) {
 	}
 }
 
+// A product of amounts saturates at math.MaxInt64 rather than wrapping: a sequence
+// count or a repeated query's estimate is compared with a cap or reserved, and a
+// wrapped product would read small or negative.
+func TestSaturatingMul(t *testing.T) {
+	const top = math.MaxInt64
+	for _, c := range []struct{ a, b, want int64 }{
+		{0, 0, 0},
+		{0, top, 0},
+		{top, 0, 0},
+		{1, top, top},
+		{top, 1, top},
+		{3, 7, 21},
+		{1 << 31, 1 << 31, 1 << 62},
+		{1 << 32, 1 << 31, top},
+		{2, top/2 + 1, top},
+		{2, top / 2, top - 1},
+		{3_037_000_499, 3_037_000_499, 3_037_000_499 * 3_037_000_499},
+		{3_037_000_500, 3_037_000_500, top},
+		{top, top, top},
+	} {
+		if got := SaturatingMul(c.a, c.b); got != c.want {
+			t.Errorf("SaturatingMul(%d, %d) = %d, want %d", c.a, c.b, got, c.want)
+		}
+	}
+}
+
 func TestCostPicksTheTierByInputSize(t *testing.T) {
 	// OpenAI-style long context: above 272k input tokens, about 2× input and 1.5×
 	// output, cached input included.

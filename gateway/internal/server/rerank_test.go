@@ -193,6 +193,37 @@ func TestRerankRefusals(t *testing.T) {
 		body: `{"model":"reranker","query":"q","documents":["a"]}`}), http.StatusInternalServerError, "upstream_error")
 }
 
+// A rerank request carrying texts, TEI's rerank format, is refused before routing on
+// every backend type, whatever texts holds — null too, and beside documents:
+// llama-server reads a request naming texts as TEI's, takes the documents from it
+// when documents is absent or not a list of strings, past the documents cap, and
+// answers without usage. The refusal names the member, never its value
+// (docs/specs/GATEWAY.md, Client API → owned fields: rerank).
+func TestRerankRefusesTEIFormat(t *testing.T) {
+	g := newTestGateway(t)
+	withRerankModels(t, g)
+	g.backend.SetRerankShape(fakebackend.LlamaServerRerank)
+	for _, body := range []string{
+		`{"model":"reranker-ls","query":"q","texts":["secret-a","b","c","d","e","f","g","h"]}`,
+		`{"model":"reranker-ls","query":"q","documents":["a"],"texts":[]}`,
+		`{"model":"reranker-ls","query":"q","texts":null,"documents":["a"]}`,
+		`{"model":"reranker-ls","query":"q","documents":"a","texts":"secret-a"}`,
+		`{"model":"reranker","query":"q","documents":["a"],"texts":["secret-a"]}`,
+	} {
+		w := do(t, g.h, call{method: "POST", path: "/v1/rerank", key: workloadKey, body: body})
+		expectError(t, w, http.StatusBadRequest, "tei_format_unsupported")
+		if typ, _, param := openAIError(t, w); typ != "invalid_request_error" || param == nil || *param != "texts" {
+			t.Errorf("%s: type %q, param %v, want invalid_request_error on texts", body, typ, param)
+		}
+		if msg := errorMessage(t, w); !strings.Contains(msg, "'texts'") || strings.Contains(msg, "secret-a") {
+			t.Errorf("%s: message %q, want texts named and its value not", body, msg)
+		}
+	}
+	if n := len(g.backend.Requests()); n != 0 {
+		t.Errorf("%d requests reached the backend, want none", n)
+	}
+}
+
 // A rerank answer without usage settles the request's input estimate, flagged
 // estimated, and no output: nothing is generated (docs/specs/GATEWAY.md, Accounting).
 func TestRerankUsageMissingIsEstimated(t *testing.T) {

@@ -399,7 +399,11 @@ default builder), `KAIAK_IMAGE_REPO` (required: the registry and namespace, e.g.
   llama-server not started with `--reranking` (or `--embeddings`) answers rerank (or
   embeddings) `501`. **A wrong `base_url` on a `vllm` backend** shows the same way —
   the config-apply warning `the backend has no models list at its base_url` and the
-  endpoint-missing warning on its requests — not as an open circuit.
+  endpoint-missing warning on its requests — not as an open circuit. On a
+  `llama-server` backend it shows that way on Messages, Responses, the
+  token-counting endpoints and rerank, and as `502 upstream_path_missing`, a circuit
+  failure, on chat completions, completions and embeddings (`GATEWAY.md` →
+  Providers: Wrong path to a host).
 
 ## Config for many hosts
 
@@ -588,7 +592,9 @@ the document (a script, or the control plane) rather than editing it by hand.
   no rerank API, and `openai-compatible` keeps OpenAI's three endpoints. The request
   is Jina's shape (`model`, `query`, `documents`, `top_n`, plus each server's own
   fields, passed through), and the answer is the server's own: vLLM's carries each
-  document back, llama-server's only its index and score.
+  document back, llama-server's only its index and score. TEI's shape (`texts`) is
+  refused, `400 tei_format_unsupported`: llama-server would take the documents from
+  it past the documents cap and answer without usage.
 - **A reranker gets a backend of its own on vLLM**: one vLLM process serves one
   model, and a reranker's serves only the pooling endpoints (rerank among them), no
   chat — deploy it on a backend entry for that process, as for an embeddings model.
@@ -662,6 +668,13 @@ the document (a script, or the control plane) rather than editing it by hand.
     retried, and counted toward the circuit, so long documents can open it for every
     client. For an encoder reranker set `-ub` and `-b` to at least a slot's context;
     a pair longer than `-ub` still answers `500`.
+  - **An encoder reranker answers chat with `500`**: a chat, completions, Messages
+    or Responses request sent to a BERT-style reranker on llama-server (such as
+    bge-reranker-v2-m3) answers `500 server_error` (`the current context does not
+    support logits computation`), which the gateway reads as the backend failing —
+    so a few chat requests sent to its model name open its circuit. Keep chat
+    clients off its model name, or serve it on vLLM, which has no chat route for a
+    reranker (an endpoint missing, neutral for the circuit).
 - **Before go-live, run the live kit** with the reranker
   (`docs/testing/LIVE-BACKENDS.md`, Reranker on a server of its own): it checks the
   answer, the relevance order, the usage, the oversize refusal and the
@@ -1031,7 +1044,8 @@ before priced models are refused. Scale the 300 with the grace if you change it.
 | Running a config the control plane moved off | ticket | `max(kaiak_control_config_rejected) == 1` | 15m | A gateway rejected the control plane's current config and runs an earlier one — its status `last_rejection` says which and why. It still enforces its own limits on the control plane's totals; it clears when the gateway applies a later config or receives the one it runs again. |
 | Circuit open | ticket | `max by (kaiak_backend_id, kaiak_deployment_model) (kaiak_circuit_state{kaiak_circuit_state="open"}) == 1` | 5m | A deployment is out of rotation, its backend failing the probe; the model's other deployments carry its load (none left: No healthy deployment pages). A half-open circuit (the backend answers its probe; the next request is the trial) reads 0 here and 1 on `kaiak_circuit_state="half_open"`: a recovered deployment with no traffic stays half-open indefinitely and must not alert. |
 | Circuit flapping | ticket | `max by (kaiak_backend_id, kaiak_deployment_model) (increase(kaiak_circuit_transitions_total{kaiak_circuit_state="open"}[30m])) > 3` | — | Probes half-open it and trials fail (the host answers its models list but cannot serve), or its models list comes and goes (a failed probe re-opens a half-open circuit). |
-| Wrong model, path or credential | ticket | `sum by (kaiak_backend_id, kaiak_deployment_model, kaiak_attempt_outcome) (increase(kaiak_upstream_attempts_total{kaiak_attempt_outcome=~"model_missing\|path_missing\|endpoint_missing\|auth_failed"}[10m])) > 0` | — | A host serves another model than the config says, its `base_url` leads to no endpoint (`path_missing`: typically the API version path left out; the gateway also warns `the backend has no models list at its base_url` when the config is applied), its server does not serve an endpoint its type serves (`endpoint_missing`: an older version, a model that leaves it out — a chat request to a vLLM reranker —, or a server not started for it — llama-server without `--reranking`; on `vllm` also a wrong `base_url`, with the same warning at config apply), or it refuses the gateway's key. |
+| Wrong model, path or credential | ticket | `sum by (kaiak_backend_id, kaiak_deployment_model, kaiak_attempt_outcome) (increase(kaiak_upstream_attempts_total{kaiak_attempt_outcome=~"model_missing\|path_missing\|auth_failed"}[10m])) > 0` | — | A host serves another model than the config says, its `base_url` leads to no endpoint (`path_missing`: typically the API version path left out; the gateway also warns `the backend has no models list at its base_url` when the config is applied), or it refuses the gateway's key. A wrong `base_url` shows as `endpoint_missing` instead on `vllm`, and on llama-server's endpoints beyond OpenAI's three (Endpoint missing on every attempt, below). |
+| Endpoint missing on every attempt | ticket | `sum by (kaiak_backend_id, kaiak_deployment_model) (increase(kaiak_upstream_attempts_total{kaiak_attempt_outcome="endpoint_missing"}[30m])) > 0 unless on (kaiak_backend_id, kaiak_deployment_model) sum by (kaiak_backend_id, kaiak_deployment_model) (increase(kaiak_upstream_attempts_total{kaiak_attempt_outcome!="endpoint_missing"}[30m])) > 0` | — | For 30 minutes every attempt on a deployment found its server without the endpoint, and none got another answer: a wrong `base_url` on `vllm` (with the config-apply warning `the backend has no models list at its base_url`) or on a llama-server deployment that gets only Messages, Responses or rerank traffic; a server restarted with another model or without the flag its traffic needs (llama-server without `--reranking`); or a model name pointing at the wrong server. The log's `the deployment's server does not serve an endpoint its type serves` names the deployment and the endpoint. `endpoint_missing` beside other outcomes does not alert: mostly clients sending an endpoint the deployment's model does not serve (a chat request to a reranker), answered neutrally while the deployment serves its own traffic. |
 | Backend failure rate | ticket | `sum by (kaiak_backend_id) (rate(kaiak_upstream_attempts_total{kaiak_attempt_outcome=~"unavailable\|timeout\|server_error\|broke_off"}[5m])) / sum by (kaiak_backend_id) (rate(kaiak_upstream_attempts_total[5m])) > 0.05 and sum by (kaiak_backend_id) (rate(kaiak_upstream_attempts_total[5m])) > 0.1` | 5m | A struggling host, before its circuit opens. The second clause needs about 30 attempts in 5 minutes, so one failed request on a quiet backend is not a 50% rate. On an Azure backend, `broke_off` or `timeout` from reasoning models means their stream timeouts are too short (Azure OpenAI). |
 | Deployment often cooling down | ticket | `max by (kaiak_backend_id, kaiak_deployment_model) (avg_over_time(kaiak_deployment_cooling_down[30m])) > 0.25` | — | The deployment answered `429` often enough to spend a quarter of the last 30 minutes cooling down: its quota (Azure tokens or requests per minute) is too small for its share of the traffic. Raise the quota, or deploy the model in another resource or region and list it (Azure OpenAI: quota). Clients see it only when every deployment of the model cools at once (`kaiak_errors_total{kaiak_error_class="upstream_rate_limited"}`). |
 | Queue rejections | ticket | `sum by (gen_ai_request_model) (rate(kaiak_queue_rejections_total[10m])) / sum by (gen_ai_request_model) (rate(http_server_request_duration_seconds_count[10m])) > 0.01` | 10m | Over 1% of a model's requests refused by its queue (`error_type="queue_full"` or `queue_timeout`) for 10 minutes: capacity. Compare `kaiak_backend_active_requests` with `kaiak_backend_active_requests_limit` across replicas (uneven shares), and the backends' own load. A burst that clears within minutes does not alert. |
@@ -1307,9 +1321,15 @@ Boot).
     on embeddings or rerank (not started for them) reads the same way, where it was
     a backend `5xx`. **A wrong `base_url` on a `vllm` backend no longer opens its
     circuit**: it shows as the config-apply warning and as `endpoint_missing`
-    attempts (the Wrong model, path or credential alert), where it was
-    `path_missing`. A missing endpoint is remembered per deployment, not per
-    backend, and a retry may go to another deployment on the same backend.
+    attempts, where it was `path_missing`. A missing endpoint is remembered per
+    deployment, not per backend, and a retry may go to another deployment on the
+    same backend.
+  - **The starter alerts changed** (Observability): `endpoint_missing` left the
+    Wrong model, path or credential alert — it now mostly means a client sent an
+    endpoint the deployment's model does not serve, which the operator cannot fix —
+    and a new alert, Endpoint missing on every attempt, fires for a deployment
+    whose attempts all find the endpoint missing (a wrong `base_url` on `vllm`
+    among them). Update alert rules copied from here.
   - **The warning's text changed**: `the deployment's server does not serve an
     endpoint its type serves` (with `kaiak.deployment.model` and `kaiak.endpoint`),
     once per probe interval and deployment, replaces `the backend's server lacks an

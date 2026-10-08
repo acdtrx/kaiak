@@ -140,12 +140,18 @@ func parseOpenAIFields(rq *request, top map[string]json.RawMessage) *apiError {
 	return nil
 }
 
-// parseRerankFields reads a rerank request's own owned field (docs/specs/GATEWAY.md,
-// Client API → owned fields): how many documents it holds, refused above
+// parseRerankFields reads a rerank request's own owned fields (docs/specs/GATEWAY.md,
+// Client API → owned fields): texts, TEI's rerank format, refused whatever its value,
+// null included — llama-server reads a request naming it as TEI's, takes the documents
+// from it when documents is absent or not a list of strings, and answers without
+// usage; and how many documents the request holds, refused above
 // max_rerank_documents. Its query is read by the input estimate alone; everything
 // else — top_n, return_documents, instruction, stream, … — is the backend's and passes
 // untouched.
 func parseRerankFields(rq *request, top map[string]json.RawMessage) *apiError {
+	if _, present := top["texts"]; present {
+		return errRerankTEIFormat()
+	}
 	if documents := rerankDocuments(top["documents"]); documents > rq.snapshot.MaxRerankDocuments {
 		return errTooManyDocuments(documents, rq.snapshot.MaxRerankDocuments)
 	}
@@ -153,15 +159,47 @@ func parseRerankFields(rq *request, top map[string]json.RawMessage) *apiError {
 }
 
 // rerankDocuments is how many documents a rerank request's documents holds: one per
-// element of a list; any other value — a string, a multimodal object — counts as one,
-// and the backend judges its shape. A document list holds no token IDs, unlike an
-// embeddings input (promptCount).
+// element of a list; any other value — a string, a multimodal object — and an absent
+// or null one count as one, and the backend judges its shape. A document list holds
+// no token IDs, unlike an embeddings input (promptCount).
+//
+// The list is counted, not decoded, so the count costs no allocation however long the
+// list: raw is a member value objectMembers has read whole, so its strings close and
+// its brackets balance, and its elements are the commas between them outside strings
+// and nested values, plus one. A body at the size cap holding a long list of small
+// values costs one pass over the list to refuse, nothing held.
 func rerankDocuments(raw json.RawMessage) int64 {
-	var list []json.RawMessage
-	if !startsWith(raw, '[') || json.Unmarshal(raw, &list) != nil {
+	if !startsWith(raw, '[') {
 		return 1
 	}
-	return int64(len(list))
+	inside := bytes.TrimLeft(bytes.TrimLeft(raw, " \t\r\n")[1:], " \t\r\n")
+	if len(inside) == 0 || inside[0] == ']' {
+		return 0
+	}
+	elements := int64(1)
+	depth, inString, escaped := 0, false, false
+	for _, c := range inside {
+		switch {
+		case inString:
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inString = false
+			}
+		case c == '"':
+			inString = true
+		case c == '[' || c == '{':
+			depth++
+		case c == ']' || c == '}':
+			depth--
+		case c == ',' && depth == 0:
+			elements++
+		}
+	}
+	return elements
 }
 
 // refuseHostedTools refuses a tool list (raw, the request member param) holding a

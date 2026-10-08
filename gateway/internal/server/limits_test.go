@@ -504,6 +504,51 @@ func TestBatchSizeIsCappedPerRequest(t *testing.T) {
 	}
 }
 
+// A rerank request's documents are counted as a list's elements, whatever they hold —
+// strings with brackets, commas, quotes and escapes in them, nested lists and
+// objects — the count decoding the list would give; any other value, absent or null,
+// is one. The count holds nothing: it allocates the same for a list of ten and of a
+// million (docs/specs/GATEWAY.md, Limits → Output multiplicity: batch caps).
+func TestRerankDocumentsAreCountedWithoutDecoding(t *testing.T) {
+	for _, c := range []struct {
+		raw  string
+		want int64
+	}{
+		{``, 1},
+		{`null`, 1},
+		{`"one document, with a comma"`, 1},
+		{`{"content":[{"type":"text","text":"a"},{"type":"text","text":"b"}]}`, 1},
+		{`[]`, 0},
+		{` [ ] `, 0},
+		{`["a"]`, 1},
+		{` [ "a" , "b" ] `, 2},
+		{`["a,b", "c],[d", "e\"],[\"f", "g\\", "h\\\\\",i"]`, 5},
+		{`[1, -2.5e3, true, false, null, "s"]`, 6},
+		{`[[1,2],[3,[4,5]],{"a":[6,7],"b":{"c":"8,9"}}]`, 3},
+		{`["a", {"content":[{"type":"image_url","image_url":{"url":"https://example.com/p.png"}}]}, ["x","y"], "{[,]}"]`, 4},
+	} {
+		got := rerankDocuments(json.RawMessage(c.raw))
+		if got != c.want {
+			t.Errorf("%s: %d documents, want %d", c.raw, got, c.want)
+		}
+		var list []json.RawMessage
+		if strings.HasPrefix(strings.TrimSpace(c.raw), "[") && (json.Unmarshal([]byte(c.raw), &list) != nil || int64(len(list)) != got) {
+			t.Errorf("%s: %d documents, decoding counts %d", c.raw, got, len(list))
+		}
+	}
+
+	allocs := func(n int) float64 {
+		raw := json.RawMessage("[" + strings.Repeat(`0,"d",{"a":[1]},`, n) + "0]")
+		if got := rerankDocuments(raw); got != int64(3*n+1) {
+			t.Fatalf("%d documents, want %d", got, 3*n+1)
+		}
+		return testing.AllocsPerRun(5, func() { rerankDocuments(raw) })
+	}
+	if few, many := allocs(3), allocs(300_000); few != 0 || many != 0 {
+		t.Errorf("counting allocates %v times for 10 documents and %v for 900 001, want none", few, many)
+	}
+}
+
 // Every refusal body names the kind of scope that refused — "group" or "global" —
 // and never the group's ID or its labels: a token limit spent, a request too large
 // for a token limit, a group USD limit whose spend is unknown, and global limits.

@@ -86,6 +86,18 @@ Group entries under headings as themes emerge.
   models; `/props?model=<name>` describes each — today `/props` is read only when the
   list has one model). Revisit trigger: a router-mode llama-server is deployed.
   (ruled 2026-09-29: out of the first `verifyBackend`.)
+- **llama-server router mode: a missing model** — a router-mode llama-server answers
+  a model it does not have (or has not loaded, with autoload off) with `400
+  invalid_request_error`, `model '<name>' not found` (`tools/server/server-models.cpp`,
+  `router_validate_model`, `master` on 2026-10-09), not a `404`, so the wrong-model
+  rule (`docs/specs/GATEWAY.md`, Providers → Wrong model on a host) does not catch
+  it: the `400` is relayed to the client as its own mistake, naming the backend-side
+  model, with no failover to the model's other deployments and no circuit count. A
+  model the router does not list still gets the config-apply warning. Fix: the
+  `llama-server` module reads that answer as the model missing — status, type and a
+  message naming the deployment's model as a whole word, as for vLLM's `404`.
+  Revisit trigger: a router-mode llama-server is deployed, or a client reports a
+  `400` naming a backend-side model.
 - **Backend credentials in config** — the key value in config instead of an
   `api_key_env` naming a gateway environment variable. Gains: one place to manage
   keys, rotation by config push instead of a gateway rollout, gateways need only the
@@ -135,7 +147,11 @@ Group entries under headings as themes emerge.
     including a `response_format` schema its grammar converter cannot handle, and an
     image, audio or video part sent to a model without a projector for it (`… input
     is not supported`, on chat, Messages and Responses; source read at build b11513,
-    2026-10-08); five
+    2026-10-08), and a generating request — chat, completions, Messages, Responses —
+    sent to an encoder model, a BERT-style reranker (bge-reranker-v2-m3,
+    jina-reranker) or embedding model, whose context keeps no memory (`the current
+    context does not support logits computation`, `tools/server/server-context.cpp`,
+    `master` on 2026-10-09: a chat client pointed at a reranker's name); five
     such requests open the circuit for every key, and one per probe interval keeps it
     open, billed $0. Fix: treat a llama-server `500` as the client's error (relayed,
     not retried, not a circuit failure); a dead server still opens the circuit
@@ -149,7 +165,9 @@ Group entries under headings as themes emerge.
     wrong-path rule (`GATEWAY.md`, Wrong path to a host) cannot see it. Fix: the
     module refuses (config issue) or warns about a `base_url` not ending in `/v1`.
   Until then: `global.max_n: 1` and `max_sequences_per_request: 1` refuse prompt lists
-  and `n` > 1 on every backend (not `n_cmpl`). Revisit trigger: llama-server serves a
+  and `n` > 1 on every backend (not `n_cmpl`); keep chat clients off an encoder
+  reranker's model name, or serve it on vLLM (`docs/DEPLOYMENT.md`, Rerankers).
+  Revisit trigger: llama-server serves a
   priced or limited model to clients that are not fully trusted, or a circuit opens
   on a llama-server model without the server being down, or a llama-server
   completions or embeddings client gets an answer it cannot read. (ruled 2026-09-30: deferred;
@@ -272,6 +290,18 @@ Group entries under headings as themes emerge.
 - **Output limit derived from remaining budget** — lower a request's output limit to
   what the remaining budget can pay for; refuse below a minimum instead of truncating.
   Revisit trigger: budget overshoot from single long requests shows up in practice.
+- **Counting prompts and embeddings inputs allocates per element** — `promptCount`
+  (`gateway/internal/server/inbound.go`) decodes a completion's `prompt` and an
+  embeddings request's `input` into one value per element before the
+  `max_sequences_per_request` and `max_embedding_inputs` caps refuse them, so a body
+  at the size cap holding a long list of small values (`[0,0,…]`) allocates hundreds
+  of megabytes for a request then refused (the rerank count decoded the same way,
+  measured 2026-10-09: a 4 MiB body, about 268 MB and 77 ms). `rerankDocuments`
+  beside it counts a list without allocating (2026-10-09); `promptCount` needs the
+  same walk plus its one rule more — a list holding only numbers is one token-ID
+  prompt. Revisit trigger:
+  memory pressure or GC time from large embeddings or completions bodies observed,
+  or the next pass over the inbound stage.
 
 ## Gateway edge cases (follow-up audit lows, 2026-09-25)
 

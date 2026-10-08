@@ -45,9 +45,13 @@ func (m *llamaServer) Send(ctx context.Context, req *Request) (Response, error) 
 }
 
 // unknownPath: llama-server answers a path it does not have with
-// {"error": {"message": "File Not Found", "type": "not_found_error", "code": 404}}.
-// Its HTTP layer gives every 404 that body, so in router mode a model it does not
-// have reads the same: on the core endpoints, the deployment's failure either way.
+// {"error": {"message": "File Not Found", "type": "not_found_error", "code": 404}};
+// its HTTP layer gives every 404 that body. On the core endpoints it is a wrong
+// base_url, on the others the endpoint missing — a wrong base_url reads that way
+// there too (docs/specs/GATEWAY.md, Providers → Wrong path to a host). A router-mode
+// server answers a model it does not have with 400 invalid_request_error ("model 'X'
+// not found"), not a 404: relayed as the caller's (docs/BACKLOG.md, llama-server
+// router mode).
 func (m *llamaServer) unknownPath(answer []byte) bool {
 	e, ok := readErrorAnswer(answer)
 	return ok && e.Type == "not_found_error" && e.Message == "File Not Found"

@@ -1,6 +1,6 @@
 # Step 7 — review and green
 
-**Status:** not started
+**Status:** in progress — review fixes done; the Codex review may add findings
 
 ## Intent
 
@@ -29,4 +29,45 @@ merge except for the live run (step 8).
 
 ## Result
 
-(filled in when the step is done)
+Two agent reviews of the worktree over `v0.12.1..rerank`; each finding re-checked by
+the main session or by a repro before the fix. llama.cpp sources read at `master`
+de7fa0a (2026-10-08).
+
+| # | Severity | Source | Finding | Done / recorded |
+|---|---|---|---|---|
+| 1 | high | agent reviews | llama-server reads `texts` (TEI's format) in place of `documents` — past the cap — and answers it with no `usage`: a `texts` list of any length settled as one document's estimate | Refused: `400 tei_format_unsupported`, `param: "texts"`, any value including `null`, every backend type (`server/inbound.go` `parseRerankFields`, `errors.go` `errRerankTEIFormat`). `GATEWAY.md` → owned fields: rerank (dated 2026-10-09, with the reason) and the error table; `DEPLOYMENT.md` → Rerankers |
+| 2 | low | agent reviews | `rerankDocuments` decoded the whole list before the cap (4 MiB of `[0,0,…]`: ~268 MB, ~77 ms) | Counted without decoding: one pass over the already-validated value, commas outside strings and nested values; same rule (list → elements, `[]` → 0, anything else, absent or null → 1). 4 MiB list: 0 allocations, ~4.5 ms. A `json.Decoder` walk was measured and not taken: `Token()` allocates per string or non-zero number; decoding each element into a no-op `Unmarshaler` holds allocations flat but costs ~131 ms, more CPU than before. `promptCount` unchanged: `BACKLOG.md` → Limits, Counting prompts and embeddings inputs allocates per element |
+| 3 | low | agent reviews | `accounting.SaturatingMul` untested (`return a*b` passed every test) | `TestSaturatingMul` at the int64 edge (mutation `return a*b` now fails) |
+| 4 | medium | agent reviews | Only `endpoint_missing` must be remembered, and `Retain` wired on apply: neither tested (both mutations passed) | `TestOnlyAMissingEndpointIsRemembered` (missing model, refused credential, wrong path: nothing remembered, no warning); `cmd/kaiak` `TestAppliedConfigForgetsADroppedDeploymentsMissingEndpoint` through `newGraph`'s applier (drop and re-add a deployment: warned afresh). Both mutations now fail |
+| 5 | low | agent reviews | `remember` extended a live entry on every failing attempt: with every deployment remembered, steady traffic warned once per episode, not once per interval | `remember` no longer extends a live entry: it ends one interval after it was set. Routing unchanged (a left-out deployment gets no attempt inside its interval). `GATEWAY.md` → Remembered per deployment: the interval runs from the answer that set it (2026-10-09). `TestMissingEndpointWarnsOncePerInterval` (steady traffic, 100 ms interval: 3 to elapsed/interval+1 warnings; the old code gave 1), `TestMissingEndpointEntryLastsOneInterval` (exact, synthetic clock) |
+| 6 | low (docs) | agent reviews | Router-mode llama-server said to answer a missing model `404 File Not Found`; it answers `400 invalid_request_error`, `model 'X' not found` (`server-models.cpp`, `router_validate_model`) | `llama_server.go` comment and `GATEWAY.md` → Wrong path to a host corrected; behaviour unchanged. `BACKLOG.md` → llama-server router mode: a missing model |
+| 7 | low (docs) | agent reviews | A wrong `base_url` on llama-server also reads as `endpoint_missing` on its non-core endpoints; the docs said so for vLLM only | `GATEWAY.md` (Wrong path to a host; An endpoint missing from a server — explicit), `DEPLOYMENT.md` → Clients, `LIVE-BACKENDS.md` → Reading failures (both passages) |
+| 8 | low (docs) | agent reviews | The "Wrong model, path or credential" alert included `endpoint_missing`, now mostly client mistakes against healthy deployments | `endpoint_missing` dropped from it; new ticket alert "Endpoint missing on every attempt": `endpoint_missing` attempts in 30 min `unless` any other outcome on the same deployment. Upgrade note added |
+| 9 | backlog | agent reviews | Chat to a llama-server encoder model (BERT-style reranker or embedder) answers `500` (`the current context does not support logits computation`), counted toward the circuit | Not fixed: added to `BACKLOG.md` → llama-server quirks, Client errors answered 500 (with the interim advice); one sentence in `GATEWAY.md` → An endpoint missing from a server, and in `DEPLOYMENT.md` → Rerankers |
+| 10 | nit | agent reviews | The query's own estimate included the `:` and whitespace before its value; the spec says its value's | Aligned: the query is measured from its value's first byte (`accounting/estimate.go` `valueOffset`); test cases for whitespace around the colon and a query that is a media item |
+
+**Tests added or changed:**
+- `server`: `TestRerankRefusesTEIFormat`; `TestRerankDocumentsAreCountedWithoutDecoding`
+  (nested and mixed elements, escapes, cross-checked against decoding; 0 allocations
+  for 10 and 900 001 documents); `TestMissingEndpointWarnsOncePerInterval`;
+  `TestMissingEndpointEntryLastsOneInterval`; `TestOnlyAMissingEndpointIsRemembered`;
+  `TestEveryErrorCodeHasItsClass` learns `tei_format_unsupported`.
+- `cmd/kaiak`: `TestAppliedConfigForgetsADroppedDeploymentsMissingEndpoint` (new
+  `graph_test.go`).
+- `accounting`: `TestSaturatingMul`; `TestEstimateRerankInput` expects the query's
+  value alone, two cases added.
+- `e2e` `TestRerank` → refused before any backend: a `texts` request to the
+  llama-server reranker.
+- Mutation checks run: `SaturatingMul` as `a*b`; the remembering guard matching
+  model_missing, auth_failed and path_missing; `Retain` removed from `newGraph`;
+  `remember` extending again — each fails its test.
+
+**Suite (2026-10-09):**
+- `scripts/check-gateway.sh`: green — gofmt, vet, staticcheck 2026.2.1, telemetry
+  boundary, `go test -race -count=1` (every package `ok`, `kaiak/e2e` 121 s), the
+  live-kit lint and self-test (`self-test passed for vllm, llama-server, openai,
+  azure-openai, anthropic, azure-anthropic, vllm with two backends`), `gateway checks
+  passed`.
+- `scripts/check-all.sh` ×2: green both times — gateway checks passed; control
+  `npm test` pass 629, fail 0, skipped 1; `npm run lint` `boundaries ok`; cross-half
+  e2e `ok kaiak/e2e` (70.9 s, 70.3 s); `all checks passed`.
