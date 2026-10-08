@@ -104,6 +104,9 @@ export interface Model {
   prices?: Price[];
 }
 
+// The allowed_models entry that stands alone for every model the config declares.
+export const ALL_MODELS = "*";
+
 // What a group gives each direct child unless the child's own entry overrides it.
 export interface ChildDefaults {
   allowed_models?: string[];

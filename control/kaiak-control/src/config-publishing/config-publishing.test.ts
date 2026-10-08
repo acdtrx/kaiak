@@ -7,9 +7,9 @@ import { describe, test } from "node:test";
 import type { Config } from "../config/index.ts";
 import { createMemoryStore } from "../storage/index.ts";
 import type { ControlPlaneStore } from "../storage/index.ts";
-import { configNumbered, numberOf } from "../test-support/index.ts";
+import { configHash, configNumbered, numberOf } from "../test-support/index.ts";
 
-import { configHash, createConfigPublishing } from "./index.ts";
+import { createConfigPublishing } from "./index.ts";
 import type { ConfigPublishing, PublishedConfig, PublishResult } from "./index.ts";
 
 const MINIMAL = path.resolve(import.meta.dirname, "../../../../protocol/fixtures/config/valid/minimal.json");

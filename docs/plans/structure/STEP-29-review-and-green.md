@@ -13,7 +13,8 @@ which review findings each step resolved.
   graph (the `control → limits` edge, the model check in `provider`, `fixturetest`,
   `fakeotlp`, the `kaiak-control` `listeners` and `test-support` subsystems); every spec
   section an earlier step touched reads true; no history-narrating comment was left in
-  touched code.
+  touched code. Known: `docs/architecture/control-plane.html` still lists `totals` in the
+  core's box (removed in step 8).
 - **Upgrade notes:** `docs/DEPLOYMENT.md` → Upgrades gets one bullet for this plan's
   host-visible changes: the `kaiak-control` API changes of decision 11 (`totals`,
   `countedThrough`, store window starts, `BatchCursors.latest`, the sweep methods,

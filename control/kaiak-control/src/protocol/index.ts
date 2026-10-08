@@ -53,7 +53,8 @@ function single(header: string | string[] | undefined): string | undefined {
   return typeof header === "string" ? header : undefined;
 }
 
-export function errorBody(error: ProtocolError): ErrorBody {
+// The body of a refused request: a failed request check, or an intake error.
+export function errorBody(error: { code: string; message: string }): ErrorBody {
   return { error: error.code, detail: error.message };
 }
 

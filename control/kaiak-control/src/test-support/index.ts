@@ -8,6 +8,7 @@
 // tests alone.
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { EventEmitter, once } from "node:events";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -16,7 +17,6 @@ import { test } from "node:test";
 import Fastify from "fastify";
 
 import type { Config } from "../config/index.ts";
-import { configHash } from "../config-publishing/index.ts";
 import { createControlPlane } from "../control-plane/index.ts";
 import type { ControlPlane, ControlPlaneOptions } from "../control-plane/index.ts";
 import { controlProtocolPlugin } from "../fastify/index.ts";
@@ -304,6 +304,12 @@ export function restorable(live: ControlPlaneStore, backup: ControlPlaneStore) {
 }
 
 // What the stream sends.
+
+// The config_hash of a config as the control plane publishes it: lowercase hex SHA-256
+// of its JSON text, written by JSON.stringify.
+export function configHash(config: Config): string {
+  return createHash("sha256").update(JSON.stringify(config)).digest("hex");
+}
 
 // Which configNumbered a config event carries, after checking the event is a valid
 // config event whose hash is its config's.

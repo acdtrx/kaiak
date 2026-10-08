@@ -3,8 +3,9 @@
 // (joined by a status, left after a silence the expiry sweep finds), and the flag for
 // two processes reporting under one instance name.
 
-import { validateGatewayStatus } from "../messages/index.ts";
-import type { GatewayStatus } from "../messages/index.ts";
+import { createListeners } from "../listeners/index.ts";
+import { checkIntake, validateGatewayStatus } from "../messages/index.ts";
+import type { GatewayStatus, IntakeError, IntakeRules } from "../messages/index.ts";
 import type {
   ControlPlaneStore,
   ForgetGateway,
@@ -27,19 +28,12 @@ export interface GatewayView {
   conflict?: GatewayConflict;
 }
 
-export interface StatusError {
-  // "status-invalid" (schema violation), a message rule code ("timestamp-invalid"),
-  // or "instance-mismatch" (the body's instance is not the requester's).
-  code: string;
-  message: string;
-  // The HTTP status an adapter answers with.
-  status: 400;
-}
-
 export type StatusIntake =
   // joined: the status added the instance to the live set. conflictStarted: this
-  // status raised the instance's conflict flag (it was not raised before).
-  { ok: true; joined: boolean; conflictStarted: boolean } | { ok: false; error: StatusError };
+  // status raised the instance's conflict flag (it was not raised before). A refused
+  // status's error code is "status-invalid" for a schema violation, a message rule
+  // code ("timestamp-invalid"), or "instance-mismatch".
+  { ok: true; joined: boolean; conflictStarted: boolean } | { ok: false; error: IntakeError };
 
 // liveChanged: the live set gained or lost a member, so the live-gateway count changed.
 export interface GatewaysChange {
@@ -48,19 +42,12 @@ export interface GatewaysChange {
 
 export type GatewaysChangedListener = (change: GatewaysChange) => void;
 
-// One run of the expiry sweep. trigger is what ran it: "schedule" for the core's timer,
-// whatever the caller passed otherwise.
-export type ExpirySweepRun =
-  | {
-      trigger: string;
-      at: number;
-      ok: true;
-      expired: string[];
-      forgotten: string[];
-      // Instances whose last counted batch passed the batch cursor retention.
-      batchCursorsDropped: string[];
-    }
-  | { trigger: string; at: number; ok: false; error: unknown };
+// What one expiry of silent gateways changed, each list in instance order.
+export interface GatewayExpiry {
+  // Gateways that left the live set, the forgotten live ones included.
+  expired: string[];
+  forgotten: string[];
+}
 
 export interface Gateways {
   // Takes one status from `instance` (the requester's checked instance ID).
@@ -75,14 +62,9 @@ export interface Gateways {
   onGatewaysChanged(listener: GatewaysChangedListener): () => void;
   // Takes one change the store announced (the core passes every one on).
   takeChange(change: StoreChange): void;
-  // Drops gateways silent for the live timeout from the live set, forgets those
-  // silent for the forget delay, and drops last counted batches past the batch cursor
-  // retention. Resolves with the run (also given to onExpirySweep);
-  // rejects if the store fails.
-  expireSilentGateways(trigger: string): Promise<ExpirySweepRun & { ok: true }>;
-  // Runs the sweep on a timer until stopped. Starting twice keeps one timer.
-  startExpirySweep(): void;
-  stopExpirySweep(): void;
+  // Drops gateways silent at `at` for the live timeout from the live set and forgets
+  // those silent for the forget delay; rejects if the store fails.
+  expireSilent(at: number): Promise<GatewayExpiry>;
 }
 
 export interface GatewaysOptions {
@@ -93,48 +75,35 @@ export interface GatewaysOptions {
   liveTimeoutMs: number;
   // Silence after which an expired gateway is forgotten.
   forgetAfterMs: number;
-  // How long an instance's last counted batch is kept after it was counted, whether
-  // or not the gateway is still remembered: a gateway resending a batch counted
-  // within it gets it acknowledged without counting.
-  batchCursorRetentionMs: number;
-  // Milliseconds between scheduled sweeps.
-  sweepIntervalMs: number;
-  // Hears of every sweep run, whatever triggered it.
-  onExpirySweep: (run: ExpirySweepRun) => void;
-  // Lets the store drop past window totals (Usage.dropPastWindows): store housekeeping
-  // the sweep runs last, so a store failing it fails the run, never a batch.
-  dropPastWindows: () => Promise<void>;
   // Called for each listener that throws; the status or the sweep stands either way.
   onListenerError: (error: unknown, change: GatewaysChange) => void;
 }
 
 const CONFLICT_REASON = "started-at-alternating";
 
+const STATUS_INTAKE: IntakeRules<GatewayStatus> = {
+  validate: validateGatewayStatus,
+  schemaCode: "status-invalid",
+  noun: "status",
+  instanceOf: (status) => status.instance,
+};
+
 export function createGateways(options: GatewaysOptions): Gateways {
-  const { store, clock, onExpirySweep, dropPastWindows, onListenerError } = options;
-  const { liveTimeoutMs, forgetAfterMs, batchCursorRetentionMs, sweepIntervalMs } = options;
-  for (const [name, value] of Object.entries({ liveTimeoutMs, forgetAfterMs, batchCursorRetentionMs, sweepIntervalMs })) {
+  const { store, clock, onListenerError, liveTimeoutMs, forgetAfterMs } = options;
+  for (const [name, value] of Object.entries({ liveTimeoutMs, forgetAfterMs })) {
     if (!Number.isSafeInteger(value) || value <= 0) {
       throw Object.assign(new Error(`${name} must be a positive integer, got ${value}`), { code: "gateways-option-invalid" });
     }
   }
 
-  const listeners = new Set<GatewaysChangedListener>();
-  let sweepTimer: ReturnType<typeof setInterval> | undefined;
+  const listeners = createListeners<GatewaysChange>(onListenerError);
 
   // Every listener hears of every change to the gateway records, this process's or
   // another's; a listener's failure goes to onListenerError and never reaches the store.
   // A store catching up after its channel was down may have missed a live-set change.
   const takeChange = (storeChange: StoreChange): void => {
     if (storeChange.type !== "gateways-changed" && storeChange.type !== "catch-up") return;
-    const change: GatewaysChange = { liveChanged: storeChange.type === "catch-up" || storeChange.liveChanged };
-    for (const listener of [...listeners]) {
-      try {
-        listener(change);
-      } catch (error) {
-        onListenerError(error, change);
-      }
-    }
+    listeners.emit({ liveChanged: storeChange.type === "catch-up" || storeChange.liveChanged });
   };
 
   // A status is judged against the stored record and written only while that record is
@@ -192,59 +161,34 @@ export function createGateways(options: GatewaysOptions): Gateways {
   // Every process sweeps. Each expiry and each forget is conditional on the record the
   // sweep judged, so a status that arrived meanwhile (or another process's sweep)
   // wins, and a gateway is never dropped from the live set while it reports.
-  const sweep = async (trigger: string): Promise<ExpirySweepRun & { ok: true }> => {
-    const at = clock();
-    try {
-      const expired: string[] = [];
-      const toForget: ForgetGateway[] = [];
-      const liveForgotten = new Set<string>();
-      for (const gateway of await store.gateways()) {
-        const silence = at - gateway.receivedAt;
-        if (silence >= forgetAfterMs) {
-          toForget.push({ instance: gateway.instance, revision: gateway.revision });
-          if (gateway.live) liveForgotten.add(gateway.instance);
-        } else if (gateway.live && silence >= liveTimeoutMs) {
-          const { revision, ...record } = gateway;
-          const written = await store.saveGateway({ ...record, live: false }, revision);
-          if (written.saved) expired.push(gateway.instance);
-        }
+  const expireSilent = async (at: number): Promise<GatewayExpiry> => {
+    const expired: string[] = [];
+    const toForget: ForgetGateway[] = [];
+    const liveForgotten = new Set<string>();
+    for (const gateway of await store.gateways()) {
+      const silence = at - gateway.receivedAt;
+      if (silence >= forgetAfterMs) {
+        toForget.push({ instance: gateway.instance, revision: gateway.revision });
+        if (gateway.live) liveForgotten.add(gateway.instance);
+      } else if (gateway.live && silence >= liveTimeoutMs) {
+        const { revision, ...record } = gateway;
+        const written = await store.saveGateway({ ...record, live: false }, revision);
+        if (written.saved) expired.push(gateway.instance);
       }
-      // In instance order, so two sweeps never take a database's records in opposite
-      // orders.
-      toForget.sort((a, b) => (a.instance < b.instance ? -1 : a.instance > b.instance ? 1 : 0));
-      const forgotten = toForget.length > 0 ? await store.forgetGateways(toForget) : [];
-      for (const instance of forgotten) if (liveForgotten.has(instance)) expired.push(instance);
-      const batchCursorsDropped = await store.dropBatchCursorsCountedBefore(at - batchCursorRetentionMs);
-      await dropPastWindows();
-      const run = {
-        trigger,
-        at,
-        ok: true as const,
-        expired: expired.sort(),
-        forgotten: [...forgotten].sort(),
-        batchCursorsDropped: batchCursorsDropped.sort(),
-      };
-      onExpirySweep(run);
-      return run;
-    } catch (error) {
-      onExpirySweep({ trigger, at, ok: false, error });
-      throw error;
     }
+    // In instance order, so two sweeps never take a database's records in opposite
+    // orders.
+    toForget.sort((a, b) => (a.instance < b.instance ? -1 : a.instance > b.instance ? 1 : 0));
+    const forgotten = toForget.length > 0 ? await store.forgetGateways(toForget) : [];
+    for (const instance of forgotten) if (liveForgotten.has(instance)) expired.push(instance);
+    return { expired: expired.sort(), forgotten: [...forgotten].sort() };
   };
 
   return {
     async acceptStatus(instance, doc) {
-      const validation = validateGatewayStatus(doc);
-      if (!validation.ok) {
-        const first = validation.issues[0];
-        const code = first === undefined || first.code === "schema" ? "status-invalid" : first.code;
-        return invalid(code, validation.issues.map((issue) => issue.message).join("; "));
-      }
-      const status = validation.message;
-      if (status.instance !== instance) {
-        return invalid("instance-mismatch", `the status's instance "${status.instance}" is not the requester's "${instance}"`);
-      }
-      return recordStatus(status);
+      const intake = checkIntake(STATUS_INTAKE, instance, doc);
+      if (!intake.ok) return intake;
+      return recordStatus(intake.message);
     },
 
     async gateways() {
@@ -264,35 +208,10 @@ export function createGateways(options: GatewaysOptions): Gateways {
       return (await store.gateways()).filter((gateway) => gateway.live).length;
     },
 
-    onGatewaysChanged(listener) {
-      // A wrapper, so the same function subscribed twice is two subscriptions.
-      const subscription: GatewaysChangedListener = (change) => listener(change);
-      listeners.add(subscription);
-      return () => {
-        listeners.delete(subscription);
-      };
-    },
+    onGatewaysChanged: listeners.add,
 
-    expireSilentGateways: sweep,
+    expireSilent,
 
     takeChange,
-
-    startExpirySweep() {
-      if (sweepTimer !== undefined) return;
-      sweepTimer = setInterval(() => {
-        sweep("schedule").catch(() => {
-          // The failure has gone to onExpirySweep; the next scheduled run tries again.
-        });
-      }, sweepIntervalMs);
-    },
-
-    stopExpirySweep() {
-      clearInterval(sweepTimer);
-      sweepTimer = undefined;
-    },
   };
-}
-
-function invalid(code: string, message: string): StatusIntake {
-  return { ok: false, error: { code, message, status: 400 } };
 }

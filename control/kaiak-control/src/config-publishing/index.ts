@@ -9,6 +9,7 @@ import { createHash } from "node:crypto";
 
 import { validateConfig } from "../config/index.ts";
 import type { Config, ConfigIssue } from "../config/index.ts";
+import { createListeners } from "../listeners/index.ts";
 import { pointer } from "../schemas/index.ts";
 import type { ConfigEntry, ControlPlaneStore, StoreChange } from "../storage/index.ts";
 
@@ -70,10 +71,6 @@ export interface ConfigPublishingOptions {
 
 // The config_hash: lowercase hex SHA-256 of the config's JSON text exactly as the
 // control plane writes it (JSON.stringify) and sends it.
-export function configHash(config: Config): string {
-  return hashOf(JSON.stringify(config));
-}
-
 function hashOf(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
@@ -85,7 +82,7 @@ export function createConfigPublishing({
   retryDelaysMs,
   onDeliveryFailed,
 }: ConfigPublishingOptions): ConfigPublishing {
-  const listeners = new Set<ConfigReadListener>();
+  const listeners = createListeners<ConfigRead>((error, read) => onListenerError(error, read.published));
   // Every read of the current config takes the next number when it is issued.
   let nextRead = 0;
   // Delivery to this process's listeners: the store announces a change, the current
@@ -93,16 +90,6 @@ export function createConfigPublishing({
   // they are handed out in the order they were issued. Nothing is skipped here: each
   // stream skips a config it already sent.
   let deliveries: Promise<void> = Promise.resolve();
-
-  const notify = (read: ConfigRead): void => {
-    for (const listener of [...listeners]) {
-      try {
-        listener(read);
-      } catch (error) {
-        onListenerError(error, read.published);
-      }
-    }
-  };
 
   const readOnce = async (): Promise<ConfigRead | undefined> => {
     const read = nextRead;
@@ -134,7 +121,7 @@ export function createConfigPublishing({
   const deliverCurrent = (): Promise<void> => {
     const run = deliveries.then(async () => {
       const read = await readCurrent();
-      if (read) notify(read);
+      if (read) listeners.emit(read);
     });
     deliveries = run.catch(() => {
       // The failure is the caller's, through `run`; the chain only orders the reads.
@@ -173,15 +160,6 @@ export function createConfigPublishing({
     }
   };
 
-  const subscribe = (listener: ConfigReadListener): (() => void) => {
-    // A wrapper, so the same function subscribed twice is two subscriptions.
-    const subscription: ConfigReadListener = (read) => listener(read);
-    listeners.add(subscription);
-    return () => {
-      listeners.delete(subscription);
-    };
-  };
-
   return {
     publishConfig: publishOne,
 
@@ -191,9 +169,9 @@ export function createConfigPublishing({
 
     readConfig: readOnce,
 
-    onConfigPublished: (listener) => subscribe((read) => listener(read.published)),
+    onConfigPublished: (listener) => listeners.add((read) => listener(read.published)),
 
-    onConfigRead: subscribe,
+    onConfigRead: listeners.add,
 
     takeChange,
   };

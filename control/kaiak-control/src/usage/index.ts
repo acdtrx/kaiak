@@ -7,9 +7,10 @@
 // from one store snapshot. Nothing here is held per process that another process could
 // disagree with: the store decides which batches count.
 
-import { validateUsageBatch } from "../messages/index.ts";
-import type { BatchId, TotalsLimitType, TotalsWindow, UsageAck, UsageBatch } from "../messages/index.ts";
-import type { BatchCursors, ControlPlaneStore, ReceivedRecord, StoreChange, WindowStarts, WindowTotal } from "../storage/index.ts";
+import { createListeners } from "../listeners/index.ts";
+import { checkIntake, validateUsageBatch } from "../messages/index.ts";
+import type { BatchId, IntakeError, IntakeRules, TotalsLimitType, TotalsWindow, UsageAck, UsageBatch } from "../messages/index.ts";
+import type { BatchCursor, ControlPlaneStore, ReceivedRecord, StoreChange, WindowStarts, WindowTotal } from "../storage/index.ts";
 
 import { batchAdditions } from "./aggregate.ts";
 import { currentWindows, formatWindowStart, formatWindowStarts, previousWindows, sameWindows } from "./windows.ts";
@@ -24,32 +25,25 @@ import { currentWindows, formatWindowStart, formatWindowStarts, previousWindows,
 //   again, not counted.
 export type BatchOutcome = "first" | "next" | "gap" | "new-epoch" | "duplicate";
 
-export interface UsageBatchError {
-  // "usage-batch-invalid" (schema violation), a message rule code
-  // ("record-instance-mismatch", "record-id-duplicate", "timestamp-invalid"), or
-  // "instance-mismatch" (the body's instance is not the requester's).
-  code: string;
-  message: string;
-  // The HTTP status an adapter answers with.
-  status: 400;
-}
-
+// previous: the batch before it — its epoch's last counted batch, or for a new epoch
+// the instance's batch counted last. A refused batch's error code is
+// "usage-batch-invalid" for a schema violation, a message rule code
+// ("record-instance-mismatch", "record-id-duplicate", "timestamp-invalid"), or
+// "instance-mismatch".
 export type UsageIntake =
   | { ok: true; ack: UsageAck; outcome: BatchOutcome; previous?: BatchId }
-  | { ok: false; error: UsageBatchError };
+  | { ok: false; error: IntakeError };
 
 export type TotalsChangedListener = () => void;
 
-// The totals at one store snapshot, for every gateway at once: each stream takes its
-// own instance's cursors (its counted_through) from it, and a host shows the windows
-// against its limits.
-export interface TotalsRead {
+// The counted totals at one store snapshot, for every gateway at once: each stream
+// takes its own instance's cursors (its counted_through) from it, and a host shows the
+// windows against its limits.
+export interface CountedTotals {
   // Every scope and type with usage in its current window, whatever the config.
   windows: TotalsWindow[];
   // Every instance's last counted batch of each epoch still kept.
   cursors: BatchId[];
-  // The live-gateway count, read apart from the snapshot.
-  liveGateways: number;
   // The current windows the snapshot was read for, as window_start values.
   windowStarts: Record<TotalsLimitType, string>;
 }
@@ -57,8 +51,8 @@ export interface TotalsRead {
 export interface Usage {
   // Takes one usage batch from `instance` (the requester's checked instance ID).
   acceptUsageBatch(instance: string, doc: unknown): Promise<UsageIntake>;
-  // The totals at one snapshot, for every gateway (TotalsRead).
-  readTotals(): Promise<TotalsRead>;
+  // The counted totals at one snapshot, for every gateway (CountedTotals).
+  readTotals(): Promise<CountedTotals>;
   // The newest received records, newest first.
   recentRecords(): Promise<ReceivedRecord[]>;
   // Calls listener after every batch any process counted (and on a store catch-up);
@@ -68,8 +62,9 @@ export interface Usage {
   takeChange(change: StoreChange): void;
   // Lets the store drop totals of windows before the previous ones (a late record can
   // still count in the previous window), once per hour in this process: a call within
-  // the hour this process last dropped in does nothing. The expiry sweep runs it, so a
-  // store that fails it fails the sweep run, reported to the host, never a batch.
+  // the hour this process last dropped in does nothing. The core's expiry sweep runs
+  // it, so a store that fails it fails the sweep run, reported to the host, never a
+  // batch.
   dropPastWindows(): Promise<void>;
 }
 
@@ -79,8 +74,6 @@ export interface UsageOptions {
   clock: () => number;
   // How many received records recentRecords keeps.
   recentRecordsSize: number;
-  // The size of the live set.
-  liveGateways: () => Promise<number>;
   // Called for each totals listener that throws (the batch is counted either way).
   onListenerError: (error: unknown) => void;
 }
@@ -89,14 +82,21 @@ export interface UsageOptions {
 // A window past it is reported at the ceiling — beyond any limit a config can express.
 const MAX_USED = 10n ** 18n - 1n;
 
-export function createUsage({ store, clock, recentRecordsSize, liveGateways, onListenerError }: UsageOptions): Usage {
+const BATCH_INTAKE: IntakeRules<UsageBatch> = {
+  validate: validateUsageBatch,
+  schemaCode: "usage-batch-invalid",
+  noun: "batch",
+  instanceOf: (message) => message.batch.instance,
+};
+
+export function createUsage({ store, clock, recentRecordsSize, onListenerError }: UsageOptions): Usage {
   if (!Number.isSafeInteger(recentRecordsSize) || recentRecordsSize < 0) {
     throw Object.assign(new Error(`recent records size must be a non-negative integer, got ${recentRecordsSize}`), {
       code: "recent-records-size-invalid",
     });
   }
 
-  const listeners = new Set<TotalsChangedListener>();
+  const listeners = createListeners<void>(onListenerError);
   // Batches from one instance run one at a time in this process, so a resend racing
   // its original here is decided without a refused write; across processes the
   // store's conditional write decides.
@@ -121,23 +121,17 @@ export function createUsage({ store, clock, recentRecordsSize, liveGateways, onL
   // listener's failure goes to onListenerError and never reaches the store.
   const takeChange = (change: StoreChange): void => {
     if (change.type !== "batch-counted" && change.type !== "catch-up") return;
-    for (const listener of [...listeners]) {
-      try {
-        listener();
-      } catch (error) {
-        onListenerError(error);
-      }
-    }
+    listeners.emit();
   };
 
   // The windows a snapshot reads are the ones current once the read is over: a read
   // that crossed an hour or month boundary — while a batch past it may have been
   // counted — reads again with the new windows, so a message never names a batch
   // counted while leaving out the window it was counted in.
-  const readTotals = async (): Promise<TotalsRead> => {
+  const readTotals = async (): Promise<CountedTotals> => {
     let windows = currentWindows(clock());
     for (;;) {
-      const [snapshot, live] = await Promise.all([store.totalsSnapshot(windows), liveGateways()]);
+      const snapshot = await store.totalsSnapshot(windows);
       const after = currentWindows(clock());
       if (!sameWindows(after, windows)) {
         windows = after;
@@ -146,7 +140,6 @@ export function createUsage({ store, clock, recentRecordsSize, liveGateways, onL
       return {
         windows: listedWindows(snapshot.windows, windows),
         cursors: snapshot.cursors,
-        liveGateways: live,
         windowStarts: formatWindowStarts(windows),
       };
     }
@@ -167,7 +160,7 @@ export function createUsage({ store, clock, recentRecordsSize, liveGateways, onL
     // epoch in between, nothing is written and the outcome is decided again against the
     // store's — so a batch is counted once however many processes take it, and however
     // many epochs its gateway went through meanwhile.
-    let cursors = await store.lastBatch(batch.instance, batch.epoch);
+    let cursors = await store.lastBatches(batch.instance);
     let outcome = outcomeOf(batch, cursors);
     while (outcome !== "duplicate") {
       const receivedAt = clock();
@@ -179,7 +172,7 @@ export function createUsage({ store, clock, recentRecordsSize, liveGateways, onL
           additions: batchAdditions(records, windows),
           records: records.map((record) => ({ receivedAt, record })),
         },
-        cursors.inEpoch,
+        inEpochOf(batch, cursors),
         recentRecordsSize,
       );
       if (written.saved) break;
@@ -187,37 +180,19 @@ export function createUsage({ store, clock, recentRecordsSize, liveGateways, onL
       outcome = outcomeOf(batch, cursors);
     }
 
-    const previous = cursors.inEpoch ?? cursors.latest;
+    const previous = inEpochOf(batch, cursors) ?? countedLastOf(cursors);
     return { ok: true, ack: { batch }, outcome, ...(previous !== undefined && { previous }) };
   };
 
   return {
     async acceptUsageBatch(instance, doc) {
-      const validation = validateUsageBatch(doc);
-      if (!validation.ok) {
-        const first = validation.issues[0];
-        const code = first === undefined || first.code === "schema" ? "usage-batch-invalid" : first.code;
-        return invalid(code, validation.issues.map((issue) => issue.message).join("; "));
-      }
-      const message = validation.message;
-      if (message.batch.instance !== instance) {
-        return invalid(
-          "instance-mismatch",
-          `the batch's instance "${message.batch.instance}" is not the requester's "${instance}"`,
-        );
-      }
-      return serialized(instance, () => countBatch(message));
+      const intake = checkIntake(BATCH_INTAKE, instance, doc);
+      if (!intake.ok) return intake;
+      return serialized(instance, () => countBatch(intake.message));
     },
     readTotals,
     recentRecords: () => store.recentRecords(recentRecordsSize),
-    onTotalsChanged(listener) {
-      // A wrapper, so the same function subscribed twice is two subscriptions.
-      const subscription: TotalsChangedListener = () => listener();
-      listeners.add(subscription);
-      return () => {
-        listeners.delete(subscription);
-      };
-    },
+    onTotalsChanged: listeners.add,
     dropPastWindows,
     takeChange,
   };
@@ -239,13 +214,23 @@ function listedWindows(stored: readonly WindowTotal[], windows: WindowStarts): T
   return listed;
 }
 
-function outcomeOf(batch: BatchId, { inEpoch, latest }: BatchCursors): BatchOutcome {
-  if (!latest) return "first";
+function outcomeOf(batch: BatchId, cursors: readonly BatchCursor[]): BatchOutcome {
+  if (cursors.length === 0) return "first";
+  const inEpoch = inEpochOf(batch, cursors);
   if (!inEpoch) return "new-epoch";
   if (batch.sequence <= inEpoch.sequence) return "duplicate";
   return batch.sequence === inEpoch.sequence + 1 ? "next" : "gap";
 }
 
-function invalid(code: string, message: string): UsageIntake {
-  return { ok: false, error: { code, message, status: 400 } };
+// The last batch counted in the batch's own epoch.
+function inEpochOf(batch: BatchId, cursors: readonly BatchCursor[]): BatchId | undefined {
+  return cursors.find((cursor) => cursor.batch.epoch === batch.epoch)?.batch;
+}
+
+// The instance's batch counted last, in any epoch: of two counted at one instant,
+// either — it only names the batch before in the intake's answer.
+function countedLastOf(cursors: readonly BatchCursor[]): BatchId | undefined {
+  let last: BatchCursor | undefined;
+  for (const cursor of cursors) if (!last || cursor.countedAt > last.countedAt) last = cursor;
+  return last?.batch;
 }

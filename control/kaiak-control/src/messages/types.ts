@@ -2,6 +2,7 @@
 // schemas. protocol/schema/ is the source of truth; these types follow it.
 
 import type { Config, UsageUnit } from "../config/index.ts";
+import type { PROTOCOL_VERSION } from "../protocol/index.ts";
 
 export interface UsageRecord {
   record_id: string;
@@ -88,7 +89,7 @@ export interface ConfigRejection {
 // POST /v1/status.
 export interface GatewayStatus {
   instance: string;
-  protocol_version: 5;
+  protocol_version: typeof PROTOCOL_VERSION;
   state: GatewayState;
   started_at: string;
   // The config_hash of the config in force; null before the first config from the

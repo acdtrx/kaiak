@@ -73,23 +73,21 @@ export interface CountedBatch {
   records: ReceivedRecord[];
 }
 
-// Where an instance's counting stands, as a batch is decided against it: the last batch
-// counted in the batch's own epoch, and the last batch counted in any epoch (the one
-// counted last, by countedAt) — which tells a fresh epoch from a first batch, and is
-// what the intake logs as the batch before it. Each epoch keeps its own last batch for
-// the batch cursor retention, so a batch of an earlier epoch is still known as counted
-// after its gateway moved to a new epoch (docs/specs/CONTROL-PROTOCOL.md, Usage
-// intake).
-export interface BatchCursors {
-  inEpoch: BatchId | undefined;
-  latest: BatchId | undefined;
+// One epoch's last counted batch of an instance, and when it was counted: the batch
+// cursor. Each epoch keeps its own for the batch cursor retention, so a batch of an
+// earlier epoch is still known as counted after its gateway moved to a new epoch
+// (docs/specs/CONTROL-PROTOCOL.md, Usage intake).
+export interface BatchCursor {
+  batch: BatchId;
+  // When it was counted, by the control plane's clock (milliseconds since the epoch).
+  countedAt: number;
 }
 
 // What the conditional batch write found: the batch saved, or — when the instance's
 // last counted batch in the batch's epoch was no longer the expected one — nothing
-// written, and where the instance's counting stands now, for the caller to decide
+// written, and the instance's cursors now (lastBatches), for the caller to decide
 // again.
-export type SaveCountedBatchResult = { saved: true } | { saved: false; cursors: BatchCursors };
+export type SaveCountedBatchResult = { saved: true } | { saved: false; cursors: BatchCursor[] };
 
 // What the conditional publish found: saved, or nothing written and the current config
 // the store holds now.
@@ -181,9 +179,9 @@ export interface ControlPlaneStore {
   // counted batches never refuse it, and it never refuses them.
   publishConfig(entry: ConfigEntry, expectedHash: string | undefined): Promise<PublishConfigResult>;
 
-  // Where an instance's counting stands for a batch of `epoch`: its last counted batch in
-  // that epoch, and in any epoch.
-  lastBatch(instance: string, epoch: string): Promise<BatchCursors>;
+  // An instance's batch cursors: its last counted batch of each epoch still kept, one
+  // per epoch, in no particular order; none before its first batch.
+  lastBatches(instance: string): Promise<BatchCursor[]>;
   // Stores a counted batch in one write — its ID as the instance's last batch in its
   // epoch, its additions to the totals, its records — only when the instance's last counted batch in the batch's epoch is still
   // `expectedLast` (undefined: none yet in that epoch). So the batch is either counted

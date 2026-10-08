@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { once, EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
@@ -9,7 +8,7 @@ import { createMemoryStore } from "../storage/index.ts";
 import type { ControlPlaneStore } from "../storage/index.ts";
 
 import { createGateways } from "./index.ts";
-import type { ExpirySweepRun, GatewaysChange, GatewaysOptions } from "./index.ts";
+import type { GatewaysChange, GatewaysOptions } from "./index.ts";
 
 const STATUS_FIXTURES = path.resolve(import.meta.dirname, "../../../../protocol/fixtures/messages/status");
 const READY = JSON.parse(readFileSync(path.join(STATUS_FIXTURES, "valid/ready.json"), "utf8")) as GatewayStatus;
@@ -20,7 +19,6 @@ function statusOf(instance: string, fields: Partial<GatewayStatus> = {}): Gatewa
 
 function setup(options: Partial<GatewaysOptions> = {}) {
   let now = Date.UTC(2026, 8, 24, 10, 0);
-  const runs: ExpirySweepRun[] = [];
   const changes: GatewaysChange[] = [];
   const store = options.store ?? createMemoryStore();
   const gateways = createGateways({
@@ -28,10 +26,6 @@ function setup(options: Partial<GatewaysOptions> = {}) {
     clock: () => now,
     liveTimeoutMs: 30_000,
     forgetAfterMs: 600_000,
-    batchCursorRetentionMs: 3_600_000,
-    sweepIntervalMs: 5_000,
-    onExpirySweep: (run) => runs.push(run),
-    dropPastWindows: async () => {},
     onListenerError: (error) => assert.fail(`listener failed: ${String(error)}`),
     ...options,
   });
@@ -40,7 +34,6 @@ function setup(options: Partial<GatewaysOptions> = {}) {
   gateways.onGatewaysChanged((change) => changes.push(change));
   return {
     gateways,
-    runs,
     changes,
     advance(ms: number) {
       now += ms;
@@ -73,19 +66,19 @@ test("gateways are listed by instance", async () => {
 });
 
 test("a gateway silent for the live timeout leaves the live set at the next sweep", async () => {
-  const { gateways, changes, runs, advance, now } = setup();
+  const { gateways, changes, advance, now } = setup();
   await gateways.acceptStatus("gw-1", statusOf("gw-1"));
   await gateways.acceptStatus("gw-2", statusOf("gw-2"));
   advance(20_000);
   await gateways.acceptStatus("gw-2", statusOf("gw-2"));
 
   advance(9_999);
-  const early = await gateways.expireSilentGateways("manual");
-  assert.deepEqual(early, { trigger: "manual", at: now(), ok: true, expired: [], forgotten: [], batchCursorsDropped: [] });
+  const early = await gateways.expireSilent(now());
+  assert.deepEqual(early, { expired: [], forgotten: [] });
   assert.equal(await gateways.liveGateways(), 2);
 
   advance(1);
-  const due = await gateways.expireSilentGateways("manual");
+  const due = await gateways.expireSilent(now());
   assert.deepEqual(due.expired, ["gw-1"]);
   assert.equal(await gateways.liveGateways(), 1);
   // Still listed, as not live, for a host's view.
@@ -96,7 +89,6 @@ test("a gateway silent for the live timeout leaves the live set at the next swee
       { instance: "gw-2", live: true },
     ],
   );
-  assert.deepEqual(runs, [early, due]);
   // Joins, gw-2's repeat, then the leave; the early sweep changed nothing.
   assert.deepEqual(changes, [{ liveChanged: true }, { liveChanged: true }, { liveChanged: false }, { liveChanged: true }]);
 
@@ -107,58 +99,37 @@ test("a gateway silent for the live timeout leaves the live set at the next swee
 });
 
 test("an expired gateway is forgotten after the forget delay", async () => {
-  const { gateways, advance } = setup();
+  const { gateways, advance, now } = setup();
   await gateways.acceptStatus("gw-1", statusOf("gw-1"));
   advance(30_000);
-  await gateways.expireSilentGateways("manual");
+  await gateways.expireSilent(now());
   advance(570_000);
-  const run = await gateways.expireSilentGateways("manual");
+  const run = await gateways.expireSilent(now());
   assert.deepEqual({ expired: run.expired, forgotten: run.forgotten }, { expired: [], forgotten: ["gw-1"] });
   assert.deepEqual(await gateways.gateways(), []);
 });
 
 test("a gateway never swept is expired and forgotten by the same run", async () => {
-  const { gateways, changes, advance } = setup();
+  const { gateways, changes, advance, now } = setup();
   await gateways.acceptStatus("gw-1", statusOf("gw-1"));
   advance(600_000);
-  const run = await gateways.expireSilentGateways("manual");
+  const run = await gateways.expireSilent(now());
   assert.deepEqual({ expired: run.expired, forgotten: run.forgotten }, { expired: ["gw-1"], forgotten: ["gw-1"] });
   assert.equal(await gateways.liveGateways(), 0);
   assert.deepEqual(changes.at(-1), { liveChanged: true });
 });
 
 test("a draining gateway still counts as live until it stops reporting", async () => {
-  const { gateways, advance } = setup();
+  const { gateways, advance, now } = setup();
   await gateways.acceptStatus("gw-1", statusOf("gw-1"));
   await gateways.acceptStatus("gw-1", statusOf("gw-1", { state: "draining" }));
   assert.equal(await gateways.liveGateways(), 1);
   advance(30_000);
-  await gateways.expireSilentGateways("manual");
+  await gateways.expireSilent(now());
   assert.equal(await gateways.liveGateways(), 0);
 });
 
-test("the scheduled sweep runs on its timer with the schedule trigger until stopped", async () => {
-  const sweeps = new EventEmitter();
-  const { gateways, advance } = setup({
-    sweepIntervalMs: 5,
-    onExpirySweep: (run) => sweeps.emit("run", run),
-  });
-  await gateways.acceptStatus("gw-1", statusOf("gw-1"));
-  advance(30_000);
-  gateways.startExpirySweep();
-  gateways.startExpirySweep();
-  try {
-    const [run] = (await once(sweeps, "run")) as [ExpirySweepRun];
-    assert.equal(run.trigger, "schedule");
-    assert.ok(run.ok);
-    assert.deepEqual(run.expired, ["gw-1"]);
-  } finally {
-    gateways.stopExpirySweep();
-  }
-  assert.equal(await gateways.liveGateways(), 0);
-});
-
-test("a failed sweep is reported with its trigger and the next one runs", async () => {
+test("an expiry the store fails rejects, and the next one runs", async () => {
   const store = createMemoryStore();
   let fail = true;
   const failing: ControlPlaneStore = {
@@ -168,12 +139,10 @@ test("a failed sweep is reported with its trigger and the next one runs", async 
       return store.gateways();
     },
   };
-  const { gateways, runs } = setup({ store: failing });
-  await assert.rejects(gateways.expireSilentGateways("manual"), { code: "store-down" });
-  assert.equal(runs.length, 1);
-  assert.ok(runs[0] && !runs[0].ok && runs[0].trigger === "manual");
+  const { gateways, now } = setup({ store: failing });
+  await assert.rejects(gateways.expireSilent(now()), { code: "store-down" });
   fail = false;
-  assert.ok((await gateways.expireSilentGateways("manual")).ok);
+  assert.deepEqual(await gateways.expireSilent(now()), { expired: [], forgotten: [] });
 });
 
 test("a status is validated and must name the requester's instance", async () => {
@@ -268,6 +237,5 @@ test("a throwing listener goes to the handler; the status stands", async () => {
 
 test("options must be positive integers", () => {
   assert.throws(() => setup({ liveTimeoutMs: 0 }), { code: "gateways-option-invalid" });
-  assert.throws(() => setup({ sweepIntervalMs: 1.5 }), { code: "gateways-option-invalid" });
-  assert.throws(() => setup({ batchCursorRetentionMs: -1 }), { code: "gateways-option-invalid" });
+  assert.throws(() => setup({ forgetAfterMs: 1.5 }), { code: "gateways-option-invalid" });
 });

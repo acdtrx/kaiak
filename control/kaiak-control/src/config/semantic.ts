@@ -8,6 +8,7 @@ import type { ValidationIssue } from "../schemas/index.ts";
 
 import { MAX_GROUP_DEPTH, ancestries } from "./tree.ts";
 import type { Ancestry } from "./tree.ts";
+import { ALL_MODELS } from "./types.ts";
 import type { Config, Group, Limit, LimitType, Model } from "./types.ts";
 
 export type SemanticRuleCode =
@@ -29,8 +30,6 @@ export type SemanticRuleCode =
   | "price-tiers-not-increasing"
   | "date-invalid"
   | "timestamp-invalid";
-
-const ALL_MODELS = "*";
 
 // The most counters a config may allocate on every gateway: an hour and a month counter
 // for global and every group, limited or not, and one per effective per-minute limit

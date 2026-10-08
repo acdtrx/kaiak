@@ -1,7 +1,5 @@
 // Public entry of kaiak-control: everything the library exposes is exported here.
 
-export const libraryName = "kaiak-control";
-
 export type { ValidationIssue } from "./schemas/index.ts";
 
 export { BACKEND_TYPES, resolveScopes, validateConfig } from "./config/index.ts";

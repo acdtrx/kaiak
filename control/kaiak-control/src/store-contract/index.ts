@@ -19,10 +19,12 @@ import { describe, test } from "node:test";
 
 import type { BatchId, UsageRecord } from "../messages/index.ts";
 import type {
+  BatchCursor,
   ControlPlaneStore,
   CountedBatch,
   ConfigEntry,
   GatewayRecord,
+  SaveCountedBatchResult,
   StoreChange,
   TotalsSnapshot,
   WindowStarts,
@@ -94,6 +96,16 @@ const sumUsed = (windows: WindowTotal[]): bigint => windows.reduce((sum, window)
 const byBatch = (a: BatchId, b: BatchId): number =>
   a.instance.localeCompare(b.instance) || a.epoch.localeCompare(b.epoch) || a.sequence - b.sequence;
 const sortedCursors = (snapshot: TotalsSnapshot): BatchId[] => [...snapshot.cursors].sort(byBatch);
+const cursor = (batch: BatchId, countedAt = 0): BatchCursor => ({ batch, countedAt });
+// An instance's batch cursors, in a fixed order: the store lists them in no particular
+// order.
+const sortedLastBatches = async (store: ControlPlaneStore, instance: string): Promise<BatchCursor[]> =>
+  (await store.lastBatches(instance)).sort((a, b) => byBatch(a.batch, b.batch));
+// What a refused batch write found, its cursors in a fixed order.
+const refusedWith = (result: SaveCountedBatchResult): { saved: false; cursors: BatchCursor[] } => {
+  assert.ok(!result.saved, "the write is refused");
+  return { saved: false, cursors: [...result.cursors].sort((a, b) => byBatch(a.batch, b.batch)) };
+};
 // The sequence of the last batch a snapshot names counted for one instance and epoch,
 // 0 for none.
 const countedIn = (snapshot: TotalsSnapshot, instance: string, epoch = BATCH_EPOCH): number =>
@@ -218,15 +230,15 @@ export function storeContractTests(subject: StoreContractSubject): void {
           await publishConfigs(a, 1);
           assert.deepEqual(await a.saveCountedBatch(counted("gw-1", 1), undefined, 10), { saved: true });
           // Another process that decided against "no batch yet" finds batch 1.
-          const standing = { inEpoch: batchId("gw-1", 1), latest: batchId("gw-1", 1) };
+          const standing = [cursor(batchId("gw-1", 1))];
           assert.deepEqual(await b.saveCountedBatch(counted("gw-1", 1), undefined, 10), { saved: false, cursors: standing });
           assert.deepEqual(await b.saveCountedBatch(counted("gw-1", 2), batchId("gw-1", 3), 10), {
             saved: false,
             cursors: standing,
           });
           assert.deepEqual(await b.saveCountedBatch(counted("gw-1", 2), batchId("gw-1", 1), 10), { saved: true });
-          assert.deepEqual(await a.lastBatch("gw-1", BATCH_EPOCH), { inEpoch: batchId("gw-1", 2), latest: batchId("gw-1", 2) });
-          assert.deepEqual(await a.lastBatch("gw-2", BATCH_EPOCH), { inEpoch: undefined, latest: undefined });
+          assert.deepEqual(await a.lastBatches("gw-1"), [cursor(batchId("gw-1", 2))]);
+          assert.deepEqual(await a.lastBatches("gw-2"), []);
         }),
       );
 
@@ -239,17 +251,19 @@ export function storeContractTests(subject: StoreContractSubject): void {
           // new epoch; a write of batch 2 decided before all that is refused.
           assert.ok((await b.saveCountedBatch(counted("gw-1", 2, { countedAt: 2 }), batchId("gw-1", 1), 10)).saved);
           assert.ok((await b.saveCountedBatch(counted("gw-1", 1, { countedAt: 3, epoch: OTHER_EPOCH }), undefined, 10)).saved);
-          assert.deepEqual(await a.saveCountedBatch(counted("gw-1", 2, { countedAt: 4 }), batchId("gw-1", 1), 10), {
+          // The refusal names each epoch's last batch, with when it was counted.
+          assert.deepEqual(refusedWith(await a.saveCountedBatch(counted("gw-1", 2, { countedAt: 4 }), batchId("gw-1", 1), 10)), {
             saved: false,
-            cursors: { inEpoch: batchId("gw-1", 2), latest: batchId("gw-1", 1, OTHER_EPOCH) },
+            cursors: [cursor(batchId("gw-1", 2), 2), cursor(batchId("gw-1", 1, OTHER_EPOCH), 3)],
           });
           // A batch of the earlier epoch never counted is counted against that epoch's
-          // last batch, and becomes the one counted last.
+          // last batch, and becomes that epoch's cursor with its own count time — the
+          // one counted last.
           assert.ok((await a.saveCountedBatch(counted("gw-1", 3, { countedAt: 5 }), batchId("gw-1", 2), 10)).saved);
-          assert.deepEqual(await b.lastBatch("gw-1", OTHER_EPOCH), {
-            inEpoch: batchId("gw-1", 1, OTHER_EPOCH),
-            latest: batchId("gw-1", 3),
-          });
+          assert.deepEqual(await sortedLastBatches(b, "gw-1"), [
+            cursor(batchId("gw-1", 3), 5),
+            cursor(batchId("gw-1", 1, OTHER_EPOCH), 3),
+          ]);
           // Totals name each epoch's last batch, the late one of the earlier epoch
           // included.
           assert.deepEqual(sortedCursors(await b.totalsSnapshot(CURRENT)), [batchId("gw-1", 3), batchId("gw-1", 1, OTHER_EPOCH)]);
@@ -318,13 +332,12 @@ export function storeContractTests(subject: StoreContractSubject): void {
           const saved = await a.saveGateway(gatewayRecord("gw-1", true), undefined);
           assert.ok(saved.saved);
           assert.deepEqual(await a.forgetGateways([{ instance: "gw-1", revision: saved.revision }]), ["gw-1"]);
-          assert.deepEqual((await b.lastBatch("gw-1", BATCH_EPOCH)).inEpoch, batchId("gw-1", 1));
+          assert.deepEqual(await b.lastBatches("gw-1"), [cursor(batchId("gw-1", 1), 100)]);
           // Each epoch's last batch ages on its own.
           await b.saveCountedBatch(counted("gw-2", 1, { countedAt: 100, epoch: OTHER_EPOCH }), undefined, 10);
           assert.deepEqual((await b.dropBatchCursorsCountedBefore(150)).sort(), ["gw-1", "gw-2"]);
-          assert.deepEqual(await a.lastBatch("gw-1", BATCH_EPOCH), { inEpoch: undefined, latest: undefined });
-          assert.deepEqual(await a.lastBatch("gw-2", OTHER_EPOCH), { inEpoch: undefined, latest: batchId("gw-2", 1) });
-          assert.deepEqual((await a.lastBatch("gw-2", BATCH_EPOCH)).inEpoch, batchId("gw-2", 1));
+          assert.deepEqual(await a.lastBatches("gw-1"), []);
+          assert.deepEqual(await a.lastBatches("gw-2"), [cursor(batchId("gw-2", 1), 200)]);
           assert.deepEqual((await b.totalsSnapshot(CURRENT)).cursors, [batchId("gw-2", 1)]);
         }),
       );
@@ -366,7 +379,7 @@ export function storeContractTests(subject: StoreContractSubject): void {
             for (const epoch of epochs) {
               const instance = `gw-${gw}`;
               for (;;) {
-                const last = (await a.lastBatch(instance, epoch)).inEpoch;
+                const last = (await a.lastBatches(instance)).find((kept) => kept.batch.epoch === epoch)?.batch;
                 const next = (last?.sequence ?? 0) + 1;
                 if (next > 3) break;
                 await a.saveCountedBatch(counted(instance, next, { epoch, group: group(instance, epoch) }), last, 1000);

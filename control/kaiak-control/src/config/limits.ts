@@ -5,6 +5,7 @@
 // both to it.
 
 import { MAX_GROUP_DEPTH, ancestries, pathOf } from "./tree.ts";
+import { ALL_MODELS } from "./types.ts";
 import type { Config, Group, Limit } from "./types.ts";
 
 // One scope as a config resolves it.
@@ -62,8 +63,6 @@ export function mergeLimits(defaults: readonly Limit[], own: readonly Limit[]): 
   });
   return [...merged, ...byType.values()];
 }
-
-const ALL_MODELS = "*";
 
 // The intersection of every restricting level's list along the path; undefined when
 // no level restricts. A level's list is its own allowed_models, else its parent's

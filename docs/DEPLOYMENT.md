@@ -964,7 +964,8 @@ Boot).
     - the current config only, kept as its JSON **text** with its hash
       (`ConfigEntry { text, hash, publishedAt }`; `currentConfig()`,
       `publishConfig(entry, expectedHash)`, a conditional replace);
-    - batch cursors per (instance, epoch) (`lastBatch(instance, epoch)`);
+    - batch cursors per (instance, epoch) (`lastBatches(instance)`, each with its
+      `countedAt`);
     - `totalsSnapshot(current)` returns the windows and every instance's cursors from
       one consistent read — no config, live count or instance parameter;
     - conditional gateway writes on revisions that never repeat;

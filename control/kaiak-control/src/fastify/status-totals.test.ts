@@ -7,9 +7,7 @@ import { performance } from "node:perf_hooks";
 import { afterEach, describe, test } from "node:test";
 
 import type { Config } from "../config/index.ts";
-import { configHash } from "../config-publishing/index.ts";
-import type { ControlPlane, ControlPlaneOptions } from "../control-plane/index.ts";
-import type { ExpirySweepRun } from "../gateways/index.ts";
+import type { ControlPlane, ControlPlaneOptions, ExpirySweepRun } from "../control-plane/index.ts";
 import type { GatewayStatus, Totals, UsageBatch } from "../messages/index.ts";
 import { PROTOCOL_VERSION } from "../protocol/index.ts";
 import { createMemoryStore } from "../storage/index.ts";
@@ -18,6 +16,7 @@ import {
   TEST_INSTANCE,
   closeAfterTest,
   closeOpened,
+  configHash,
   configNumbered,
   countingSubscriptions,
   failOnListenerError,

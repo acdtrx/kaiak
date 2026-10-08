@@ -297,6 +297,10 @@ Test tooling outside the binary:
     (cross-file `$ref`s resolve by `$id`) and turns violations into issues.
   - `calendar` — real-date and real-instant checks, the part of a timestamp a schema
     pattern cannot check.
+  - `listeners` — the listener set every module that tells subscribers of changes
+    keeps: a function subscribed twice is two subscriptions, an emit calls the
+    listeners subscribed when it began, a listener that throws goes to the module's
+    error handler and the rest are still called, unsubscribing twice is safe.
   - `config` — validates a config document: the shared schema from `protocol/`, then
     the semantic rules (`docs/specs/CONTROL-PROTOCOL.md`, Config — the group tree
     included); resolves each scope — global and every group — to its path,
@@ -304,7 +308,8 @@ Test tooling outside the binary:
     as the gateway's config does.
   - `messages` — validates each control-protocol message: its schema, then the
     message rules (`docs/specs/CONTROL-PROTOCOL.md`, Messages); one validator per
-    message.
+    message, and the one intake check of a posted message (validated, naming the
+    requester's instance) with its error.
   - `storage` — the storage interface every piece of control-plane state goes
     through (async, so a database implements it) and the in-memory store, its
     reference implementation and the sample's store. The store is where
@@ -329,17 +334,16 @@ Test tooling outside the binary:
     of global and each group of its path, whatever the config (the record's
     `gateway_time` window when that is the current or previous one), and answers an
     ack naming the batch; recent records; a subscription to counted batches for
-    pushes. Totals list every scope and type with usage in its current window,
+    pushes; dropping past windows, once an hour, when the sweep asks. Totals list every scope and type with usage in its current window,
     whatever the config, from one store snapshot of the windows and every instance's
     cursors, taken once the read's windows are current; `counted_through` is the
     recipient's cursor of each epoch.
   - `gateways` — gateway status and the live set (`docs/specs/CONTROL-PROTOCOL.md`,
     Status intake): validates a status, keeps the latest per instance with its
     receipt time, joins the instance to the live set, flags two processes sharing an
-    instance name; the expiry sweep (an invocable run plus its scheduling timer)
-    drops silent gateways from the set, forgets long-silent ones and drops batch
-    cursors past their retention (7 days by default); a subscription to
-    changes, telling whether the live count moved.
+    instance name; expiring silent gateways from the set and forgetting long-silent
+    ones, when the sweep asks; a subscription to changes, telling whether the live
+    count moved.
   - `keys` — key generation and hashing (Config, key format).
   - `backend-verify` — `verifyBackend`, the only code in `control/` that talks to a
     backend (`docs/specs/BACKEND-VERIFY.md`): checks that it answers and accepts the
@@ -352,10 +356,13 @@ Test tooling outside the binary:
     status an adapter answers with; the protocol version and header names.
   - `control-plane` — the core the host app builds (`createControlPlane`): store,
     token, clock, recent-records size, live-set timings in; the
-    operations of the subsystems above out, the live set's size wired into totals;
+    operations of the subsystems above out, the live set's size added to each totals
+    read; the expiry sweep, its housekeeping run (an invocable run, also on a timer
+    while started): expire and forget silent gateways, drop batch cursors past their
+    retention (7 days by default) and past windows, reported to the host as one run;
     `start`/`stop` take and release the store subscription (`start` announces a
-    catch-up) and run and stop the expiry sweep (every core sweeps; its writes are
-    conditional). Listener events come from the store's notifications.
+    catch-up) and run and stop the sweep's timer (every core sweeps; its writes are
+    conditional or idempotent). Listener events come from the store's notifications.
     HTTP adapters and the host app use it; it knows nothing of HTTP.
   - `fastify` — the HTTP adapter: a Fastify plugin (`controlProtocolPlugin`) the host
     registers with a core instance. It mounts the gateway endpoints (default under
@@ -387,10 +394,15 @@ flowchart LR
     cp --> storage
     cp --> usage
     cp --> gateways
+    cp --> listeners
     gateways --> messages
     gateways --> storage
     usage --> messages
     usage --> storage
+    usage --> listeners
+    gateways --> listeners
+    cpub --> listeners
+    storage --> listeners
     storage --> messages
     sc[store-contract] --> storage
     sc --> messages
@@ -404,6 +416,7 @@ flowchart LR
     config --> schemas
     config --> calendar
     messages --> config
+    messages --> protocol
     messages --> schemas
     messages --> calendar
 ```

@@ -7,12 +7,13 @@
 import { createConfigPublishing } from "../config-publishing/index.ts";
 import type { ConfigPublishing, PublishedConfig } from "../config-publishing/index.ts";
 import { createGateways } from "../gateways/index.ts";
-import type { ExpirySweepRun, Gateways, GatewaysChange } from "../gateways/index.ts";
+import type { Gateways, GatewaysChange } from "../gateways/index.ts";
+import { createListeners } from "../listeners/index.ts";
 import { checkGatewayRequest } from "../protocol/index.ts";
 import type { GatewayRequestCheck, RequestHeaders } from "../protocol/index.ts";
 import type { ControlPlaneStore, StoreChange } from "../storage/index.ts";
 import { createUsage } from "../usage/index.ts";
-import type { Usage } from "../usage/index.ts";
+import type { CountedTotals, Usage } from "../usage/index.ts";
 
 // What a listener that threw was being told of.
 export type ListenerEvent =
@@ -22,6 +23,28 @@ export type ListenerEvent =
   | { type: "delivery-failed"; error: unknown };
 
 export type ListenerErrorHandler = (error: unknown, event: ListenerEvent) => void;
+
+// One run of the expiry sweep, the core's housekeeping: silent gateways expired and
+// forgotten, batch cursors past their retention dropped, past windows dropped (once an
+// hour). trigger is what ran it: "schedule" for the core's timer, whatever the caller
+// passed otherwise.
+export type ExpirySweepRun =
+  | {
+      trigger: string;
+      at: number;
+      ok: true;
+      expired: string[];
+      forgotten: string[];
+      // Instances whose last counted batch passed the batch cursor retention.
+      batchCursorsDropped: string[];
+    }
+  | { trigger: string; at: number; ok: false; error: unknown };
+
+// The totals at one store snapshot (CountedTotals), with the live-gateway count, read
+// apart from the snapshot.
+export interface TotalsRead extends CountedTotals {
+  liveGateways: number;
+}
 
 export interface ControlPlaneOptions {
   store: ControlPlaneStore;
@@ -39,7 +62,7 @@ export interface ControlPlaneOptions {
   // gateway partitioned for longer than the forget delay that resends a counted batch
   // is not counted twice. Default 604800000 (7 days).
   batchCursorRetentionMs?: number;
-  // Milliseconds between scheduled expiry sweeps (startExpirySweep). Default 5000.
+  // Milliseconds between scheduled expiry sweeps (while started). Default 5000.
   expirySweepIntervalMs?: number;
   // Hears of every expiry sweep run — its trigger, time and result — for the host to
   // log. Default: nothing.
@@ -48,7 +71,8 @@ export interface ControlPlaneOptions {
   // failed; one read more than there are delays. Default [100, 200, 400, 800, 1600].
   deliveryRetryDelaysMs?: readonly number[];
   // Hears of a config, totals, gateways or delivery-failed listener that threw; the
-  // publish, the batch or the next config delivery goes ahead regardless. Default: rethrow the error from a microtask, so a listener bug surfaces
+  // publish, the batch or the next config delivery goes ahead regardless. Default:
+  // rethrow the error from a microtask, so a listener bug surfaces
   // as an uncaught exception the way a throwing event listener does. A host that would
   // rather keep running logs it here.
   onListenerError?: ListenerErrorHandler;
@@ -60,8 +84,14 @@ export type DeliveryFailedListener = (error: unknown) => void;
 
 export interface ControlPlane
   extends Omit<ConfigPublishing, "takeChange">,
-    Pick<Usage, "acceptUsageBatch" | "readTotals" | "recentRecords" | "onTotalsChanged">,
-    Omit<Gateways, "takeChange"> {
+    Pick<Usage, "acceptUsageBatch" | "recentRecords" | "onTotalsChanged">,
+    Omit<Gateways, "takeChange" | "expireSilent"> {
+  // The totals at one snapshot, for every gateway, with the live-gateway count.
+  readTotals(): Promise<TotalsRead>;
+  // Runs the expiry sweep once, now: expires and forgets silent gateways, drops batch
+  // cursors past their retention and past windows. Resolves with the run (also given to
+  // onExpirySweep); rejects, after reporting the failed run, if the store fails.
+  expireSilentGateways(trigger: string): Promise<ExpirySweepRun & { ok: true }>;
   // Checks a gateway request's token, protocol version and instance ID.
   checkGatewayRequest(headers: RequestHeaders): GatewayRequestCheck;
   // Calls listener every time the current config could not be read after a change,
@@ -75,8 +105,8 @@ export interface ControlPlane
   // core stopped before takes its store subscription again and catches up on what
   // changed meanwhile.
   start(): Promise<void>;
-  // Stops the sweep and releases the store subscription: a stopped core hears of no
-  // change.
+  // Stops the sweep's timer and releases the store subscription: a stopped core hears
+  // of no change.
   stop(): Promise<void>;
 }
 
@@ -104,39 +134,34 @@ export function createControlPlane(options: ControlPlaneOptions): ControlPlane {
   if (token.length === 0) {
     throw Object.assign(new Error("the gateway token must not be empty"), { code: "token-missing" });
   }
-  const deliveryFailedListeners = new Set<DeliveryFailedListener>();
+  for (const [name, value] of Object.entries({ batchCursorRetentionMs, expirySweepIntervalMs })) {
+    if (!Number.isSafeInteger(value) || value <= 0) {
+      throw Object.assign(new Error(`${name} must be a positive integer, got ${value}`), {
+        code: "control-plane-option-invalid",
+      });
+    }
+  }
+  const deliveryFailedListeners = createListeners<unknown>((listenerError, error) =>
+    onListenerError(listenerError, { type: "delivery-failed", error }),
+  );
   const configPublishing = createConfigPublishing({
     store,
     clock,
     onListenerError: (error, published) => onListenerError(error, { type: "config-published", published }),
     retryDelaysMs: deliveryRetryDelaysMs,
-    onDeliveryFailed: (error) => {
-      for (const listener of [...deliveryFailedListeners]) {
-        try {
-          listener(error);
-        } catch (listenerError) {
-          onListenerError(listenerError, { type: "delivery-failed", error });
-        }
-      }
-    },
+    onDeliveryFailed: deliveryFailedListeners.emit,
   });
   const gateways = createGateways({
     store,
     clock,
     liveTimeoutMs: gatewayLiveTimeoutMs,
     forgetAfterMs: gatewayForgetAfterMs,
-    batchCursorRetentionMs,
-    sweepIntervalMs: expirySweepIntervalMs,
-    onExpirySweep,
-    // The usage module is made below; the sweep runs only once both exist.
-    dropPastWindows: () => usage.dropPastWindows(),
     onListenerError: (error, change) => onListenerError(error, { type: "gateways-changed", change }),
   });
   const usage = createUsage({
     store,
     clock,
     recentRecordsSize,
-    liveGateways: gateways.liveGateways,
     onListenerError: (error) => onListenerError(error, { type: "totals-changed" }),
   });
   // The core's one store subscription: every change goes to each module.
@@ -147,6 +172,31 @@ export function createControlPlane(options: ControlPlaneOptions): ControlPlane {
   };
   let unsubscribe: (() => void) | undefined = store.subscribe(takeChange);
   let started = false;
+  let sweepTimer: ReturnType<typeof setInterval> | undefined;
+
+  const readTotals = async (): Promise<TotalsRead> => {
+    const [counted, liveGateways] = await Promise.all([usage.readTotals(), gateways.liveGateways()]);
+    return { ...counted, liveGateways };
+  };
+
+  // Every process sweeps: each of its writes is conditional (gateways) or idempotent
+  // (the drops), so cores sweeping together agree. Past windows go last, so a store
+  // failing that housekeeping fails the run, never a batch.
+  const expireSilentGateways = async (trigger: string): Promise<ExpirySweepRun & { ok: true }> => {
+    const at = clock();
+    try {
+      const { expired, forgotten } = await gateways.expireSilent(at);
+      const batchCursorsDropped = await store.dropBatchCursorsCountedBefore(at - batchCursorRetentionMs);
+      await usage.dropPastWindows();
+      const run = { trigger, at, ok: true as const, expired, forgotten, batchCursorsDropped: batchCursorsDropped.sort() };
+      onExpirySweep(run);
+      return run;
+    } catch (error) {
+      onExpirySweep({ trigger, at, ok: false, error });
+      throw error;
+    }
+  };
+
   return {
     publishConfig: configPublishing.publishConfig,
     currentConfig: configPublishing.currentConfig,
@@ -154,25 +204,16 @@ export function createControlPlane(options: ControlPlaneOptions): ControlPlane {
     onConfigPublished: configPublishing.onConfigPublished,
     onConfigRead: configPublishing.onConfigRead,
     acceptUsageBatch: usage.acceptUsageBatch,
-    readTotals: usage.readTotals,
+    readTotals,
     recentRecords: usage.recentRecords,
     onTotalsChanged: usage.onTotalsChanged,
     acceptStatus: gateways.acceptStatus,
     gateways: gateways.gateways,
     liveGateways: gateways.liveGateways,
     onGatewaysChanged: gateways.onGatewaysChanged,
-    expireSilentGateways: gateways.expireSilentGateways,
-    startExpirySweep: gateways.startExpirySweep,
-    stopExpirySweep: gateways.stopExpirySweep,
+    expireSilentGateways,
     checkGatewayRequest: (headers) => checkGatewayRequest(headers, token),
-    onDeliveryFailed(listener) {
-      // A wrapper, so the same function subscribed twice is two subscriptions.
-      const subscription: DeliveryFailedListener = (error) => listener(error);
-      deliveryFailedListeners.add(subscription);
-      return () => {
-        deliveryFailedListeners.delete(subscription);
-      };
-    },
+    onDeliveryFailed: deliveryFailedListeners.add,
     async start() {
       if (started) return;
       started = true;
@@ -180,11 +221,16 @@ export function createControlPlane(options: ControlPlaneOptions): ControlPlane {
         unsubscribe = store.subscribe(takeChange);
         takeChange({ type: "catch-up" });
       }
-      gateways.startExpirySweep();
+      sweepTimer = setInterval(() => {
+        expireSilentGateways("schedule").catch(() => {
+          // The failure has gone to onExpirySweep; the next scheduled run tries again.
+        });
+      }, expirySweepIntervalMs);
     },
     async stop() {
       started = false;
-      gateways.stopExpirySweep();
+      clearInterval(sweepTimer);
+      sweepTimer = undefined;
       unsubscribe?.();
       unsubscribe = undefined;
     },

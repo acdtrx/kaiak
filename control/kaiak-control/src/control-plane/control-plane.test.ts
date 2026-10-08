@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
+import { EventEmitter, once } from "node:events";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, test } from "node:test";
 
 import type { Config } from "../config/index.ts";
-import type { ExpirySweepRun } from "../gateways/index.ts";
 import type { UsageBatch } from "../messages/index.ts";
 import { INSTANCE_HEADER, PROTOCOL_HEADER, PROTOCOL_VERSION } from "../protocol/index.ts";
 import { createMemoryStore } from "../storage/index.ts";
@@ -12,7 +12,7 @@ import type { ControlPlaneStore, ForgetGateway, StoreChangeListener } from "../s
 import { configNumbered, fixture, gatewayStatus, testCore, usageBatch } from "../test-support/index.ts";
 
 import { createControlPlane } from "./index.ts";
-import type { ControlPlane, ControlPlaneOptions, ListenerEvent } from "./index.ts";
+import type { ControlPlane, ControlPlaneOptions, ExpirySweepRun, ListenerEvent } from "./index.ts";
 
 const FIXTURES = path.resolve(import.meta.dirname, "../../../../protocol/fixtures");
 const MINIMAL = path.join(FIXTURES, "config/valid/minimal.json");
@@ -307,6 +307,78 @@ test("a sweep forgets gateways in instance order", async () => {
   } finally {
     await core.stop();
   }
+});
+
+test("every sweep run reports its trigger, time and result to the host", async () => {
+  let now = NOW;
+  const runs: ExpirySweepRun[] = [];
+  const core = testCore({ clock: () => now, gatewayLiveTimeoutMs: 30_000, onExpirySweep: (run) => runs.push(run) });
+  assert.ok((await core.acceptStatus("gw-1", gatewayStatus("gw-1"))).ok);
+  assert.ok((await core.acceptStatus("gw-2", gatewayStatus("gw-2"))).ok);
+  now += 20_000;
+  assert.ok((await core.acceptStatus("gw-2", gatewayStatus("gw-2"))).ok);
+
+  now += 9_999;
+  const early = await core.expireSilentGateways("manual");
+  assert.deepEqual(early, { trigger: "manual", at: now, ok: true, expired: [], forgotten: [], batchCursorsDropped: [] });
+  now += 1;
+  const due = await core.expireSilentGateways("manual");
+  assert.deepEqual(due, { trigger: "manual", at: now, ok: true, expired: ["gw-1"], forgotten: [], batchCursorsDropped: [] });
+  assert.deepEqual(runs, [early, due]);
+});
+
+test("the scheduled sweep runs on the core's timer with the schedule trigger while started", async () => {
+  let now = NOW;
+  const sweeps = new EventEmitter();
+  const core = testCore({
+    clock: () => now,
+    gatewayLiveTimeoutMs: 30_000,
+    expirySweepIntervalMs: 5,
+    onExpirySweep: (run) => sweeps.emit("run", run),
+  });
+  try {
+    assert.ok((await core.acceptStatus("gw-1", gatewayStatus("gw-1"))).ok);
+    now += 30_000;
+    await core.start();
+    await core.start();
+    const [run] = (await once(sweeps, "run")) as [ExpirySweepRun];
+    assert.equal(run.trigger, "schedule");
+    assert.ok(run.ok);
+    assert.deepEqual(run.expired, ["gw-1"]);
+    assert.equal(await core.liveGateways(), 0);
+    // A core stopped and started again sweeps again.
+    await core.stop();
+    await core.start();
+    const [again] = (await once(sweeps, "run")) as [ExpirySweepRun];
+    assert.equal(again.trigger, "schedule");
+  } finally {
+    await core.stop();
+  }
+});
+
+test("a failed sweep is reported with its trigger and the next one runs", async () => {
+  const store = createMemoryStore();
+  let fail = true;
+  const failing: ControlPlaneStore = {
+    ...store,
+    async gateways() {
+      if (fail) throw Object.assign(new Error("store down"), { code: "store-down" });
+      return store.gateways();
+    },
+  };
+  const runs: ExpirySweepRun[] = [];
+  const core = testCore({ clock: () => NOW, store: failing, onExpirySweep: (run) => runs.push(run) });
+  await assert.rejects(core.expireSilentGateways("manual"), { code: "store-down" });
+  assert.equal(runs.length, 1);
+  assert.ok(runs[0] && !runs[0].ok && runs[0].trigger === "manual");
+  fail = false;
+  assert.ok((await core.expireSilentGateways("manual")).ok);
+});
+
+test("the sweep's options must be positive integers", () => {
+  assert.throws(() => testCore({ expirySweepIntervalMs: 1.5 }), { code: "control-plane-option-invalid" });
+  assert.throws(() => testCore({ batchCursorRetentionMs: -1 }), { code: "control-plane-option-invalid" });
+  assert.throws(() => testCore({ gatewayLiveTimeoutMs: 0 }), { code: "gateways-option-invalid" });
 });
 
 describe("several cores over one store", () => {

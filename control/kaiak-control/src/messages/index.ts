@@ -63,3 +63,45 @@ export const validateGatewayStatus = validateWith(
   schemaChecker<GatewayStatus>("status.schema.json"),
   checkGatewayStatus,
 );
+
+// A message a gateway posted that the control plane refuses: the message's schema
+// code ("status-invalid", "usage-batch-invalid") for a schema violation, a message
+// rule code, or "instance-mismatch" (the message names another instance than the
+// requester's).
+export interface IntakeError {
+  code: string;
+  message: string;
+  // The HTTP status an adapter answers with.
+  status: 400;
+}
+
+export type IntakeCheck<T> = { ok: true; message: T } | { ok: false; error: IntakeError };
+
+// How a posted message is checked before its endpoint takes it: validated, then held
+// to the requester's checked instance ID.
+export interface IntakeRules<T> {
+  validate: (doc: unknown) => MessageValidation<T>;
+  // The code a schema violation is refused with.
+  schemaCode: string;
+  // What the message is, for the instance-mismatch message ("status", "batch").
+  noun: string;
+  instanceOf: (message: T) => string;
+}
+
+export function checkIntake<T>(rules: IntakeRules<T>, instance: string, doc: unknown): IntakeCheck<T> {
+  const validation = rules.validate(doc);
+  if (!validation.ok) {
+    const first = validation.issues[0];
+    const code = first === undefined || first.code === "schema" ? rules.schemaCode : first.code;
+    return intakeError(code, validation.issues.map((issue) => issue.message).join("; "));
+  }
+  const named = rules.instanceOf(validation.message);
+  if (named !== instance) {
+    return intakeError("instance-mismatch", `the ${rules.noun}'s instance "${named}" is not the requester's "${instance}"`);
+  }
+  return { ok: true, message: validation.message };
+}
+
+function intakeError(code: string, message: string): IntakeCheck<never> {
+  return { ok: false, error: { code, message, status: 400 } };
+}

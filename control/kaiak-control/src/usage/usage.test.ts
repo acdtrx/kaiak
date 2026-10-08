@@ -4,15 +4,14 @@ import path from "node:path";
 import { describe, test } from "node:test";
 
 import type { Config } from "../config/index.ts";
-import { configHash } from "../config-publishing/index.ts";
 import { validateTotals } from "../messages/index.ts";
 import type { Totals, TotalsWindow, UsageBatch, UsageRecord } from "../messages/index.ts";
 import { createMemoryStore } from "../storage/index.ts";
 import type { ControlPlaneStore, WindowStarts, WindowTotal } from "../storage/index.ts";
-import { usageRecord } from "../test-support/index.ts";
+import { configHash, usageRecord } from "../test-support/index.ts";
 
 import { createUsage } from "./index.ts";
-import type { TotalsRead, Usage, UsageIntake, UsageOptions } from "./index.ts";
+import type { CountedTotals, Usage, UsageIntake, UsageOptions } from "./index.ts";
 
 const FIXTURES = path.resolve(import.meta.dirname, "../../../../protocol/fixtures");
 const INSTANCE = "gw-1";
@@ -95,7 +94,6 @@ async function harness(options: Partial<Omit<UsageOptions, "clock">> = {}): Prom
     store,
     clock: () => now,
     recentRecordsSize: 100,
-    liveGateways: async () => 0,
     onListenerError: (error) => listenerErrors.push(error),
     ...options,
   });
@@ -122,11 +120,11 @@ function acked(intake: UsageIntake): Extract<UsageIntake, { ok: true }> {
   return intake;
 }
 
-// The totals at one snapshot, windows sorted. Its windows and live count, as a stream
-// sends them, pass the totals schema and rules.
-async function currentTotals(usage: Usage): Promise<TotalsRead> {
+// The counted totals at one snapshot, windows sorted. Its windows, as a stream sends
+// them, pass the totals schema and rules.
+async function currentTotals(usage: Usage): Promise<CountedTotals> {
   const read = await usage.readTotals();
-  const message: Totals = { live_gateways: read.liveGateways, counted_through: [], windows: read.windows };
+  const message: Totals = { live_gateways: 0, counted_through: [], windows: read.windows };
   assert.ok(validateTotals(message).ok, "totals pass the totals schema and rules");
   return { ...read, windows: sorted(read.windows) };
 }
@@ -172,7 +170,6 @@ describe("aggregation", () => {
       used,
     });
     assert.deepEqual(totals, {
-      liveGateways: 0,
       cursors: [{ instance: INSTANCE, epoch: EPOCH_A, sequence: 1 }],
       windowStarts: { tokens_per_hour: HOUR_10, usd_per_month: SEPTEMBER },
       windows: sorted([
@@ -262,7 +259,6 @@ describe("aggregation", () => {
     const { usage, store } = await harness();
     assert.equal(await store.currentConfig(), undefined);
     assert.deepEqual(await currentTotals(usage), {
-      liveGateways: 0,
       cursors: [],
       windowStarts: { tokens_per_hour: HOUR_10, usd_per_month: SEPTEMBER },
       windows: [],
@@ -602,7 +598,6 @@ describe("recent records and listeners", () => {
           store: createMemoryStore(),
           clock: () => T0,
           recentRecordsSize: -1,
-          liveGateways: async () => 0,
           onListenerError: () => undefined,
         }),
       { code: "recent-records-size-invalid" },

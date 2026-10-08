@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 import { afterEach, describe, test } from "node:test";
 
 import type { ControlPlane } from "../control-plane/index.ts";
-import { configHash } from "../config-publishing/index.ts";
 import { PROTOCOL_VERSION } from "../protocol/index.ts";
 import { createMemoryStore } from "../storage/index.ts";
 import type { ControlPlaneStore, StoreChangeListener } from "../storage/index.ts";
@@ -11,6 +10,7 @@ import {
   TEST_INSTANCE,
   closeAfterTest,
   closeOpened,
+  configHash,
   configNumberOf,
   configNumbered,
   countingSubscriptions,

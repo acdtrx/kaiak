@@ -132,8 +132,7 @@ function registerGatewayRoutes(routes: FastifyInstance, options: ControlProtocol
   routes.post("/usage", { bodyLimit: USAGE_BODY_LIMIT_BYTES }, async (request, reply) => {
     const intake = await controlPlane.acceptUsageBatch(instanceOf(request), request.body);
     if (!intake.ok) {
-      const body: ErrorBody = { error: intake.error.code, detail: intake.error.message };
-      return reply.code(intake.error.status).send(body);
+      return reply.code(intake.error.status).send(errorBody(intake.error));
     }
     const { batch } = intake.ack;
     if (intake.outcome === "new-epoch") {
@@ -152,8 +151,7 @@ function registerGatewayRoutes(routes: FastifyInstance, options: ControlProtocol
     const instance = instanceOf(request);
     const intake = await controlPlane.acceptStatus(instance, request.body);
     if (!intake.ok) {
-      const body: ErrorBody = { error: intake.error.code, detail: intake.error.message };
-      return reply.code(intake.error.status).send(body);
+      return reply.code(intake.error.status).send(errorBody(intake.error));
     }
     if (intake.joined) request.log.info({ instance }, "gateway joined the live set");
     if (intake.conflictStarted) {
