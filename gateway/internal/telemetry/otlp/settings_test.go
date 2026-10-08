@@ -290,6 +290,99 @@ func TestSettingsPerSignal(t *testing.T) {
 	}
 }
 
+// The metrics signal is exported on an interval: it also reads its interval, its
+// export timeout and its temporality preference; logs read none of them.
+func TestMetricSettings(t *testing.T) {
+	const on = "http://c:4318"
+	read := func(t *testing.T, sig Signal, vars map[string]string) *Settings {
+		t.Helper()
+		vars["OTEL_EXPORTER_OTLP_ENDPOINT"] = on
+		s, err := ReadSettings(sig, envOf(vars))
+		if err != nil {
+			t.Fatalf("ReadSettings: %v", err)
+		}
+		if s == nil {
+			t.Fatal("ReadSettings: export off, want on")
+		}
+		return s
+	}
+	for _, tc := range []struct {
+		name string
+		vars map[string]string
+		// exportTimeout is the bound on one export: the shorter of the export
+		// timeout and the request timeout.
+		interval, exportTimeout time.Duration
+		temporality             Temporality
+	}{
+		{"defaults: the shorter timeout is the request's", map[string]string{}, 60 * time.Second, 10 * time.Second, Cumulative},
+		{"empty values count as unset", map[string]string{"OTEL_METRIC_EXPORT_INTERVAL": "", "OTEL_METRIC_EXPORT_TIMEOUT": "",
+			"OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE": ""}, 60 * time.Second, 10 * time.Second, Cumulative},
+		{"interval", map[string]string{"OTEL_METRIC_EXPORT_INTERVAL": "15000"}, 15 * time.Second, 10 * time.Second, Cumulative},
+		{"export timeout shorter than the request timeout", map[string]string{"OTEL_METRIC_EXPORT_TIMEOUT": "5000"}, 60 * time.Second, 5 * time.Second, Cumulative},
+		{"export timeout default under a longer metrics request timeout", map[string]string{"OTEL_EXPORTER_OTLP_METRICS_TIMEOUT": "45000"}, 60 * time.Second, 30 * time.Second, Cumulative},
+		{"general request timeout shorter than the export timeout", map[string]string{"OTEL_METRIC_EXPORT_TIMEOUT": "30000", "OTEL_EXPORTER_OTLP_TIMEOUT": "20000"}, 60 * time.Second, 20 * time.Second, Cumulative},
+		{"metrics request timeout wins over the general one", map[string]string{"OTEL_METRIC_EXPORT_TIMEOUT": "40000",
+			"OTEL_EXPORTER_OTLP_TIMEOUT": "1000", "OTEL_EXPORTER_OTLP_METRICS_TIMEOUT": "35000"}, 60 * time.Second, 35 * time.Second, Cumulative},
+		{"cumulative", map[string]string{"OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE": "cumulative"}, 60 * time.Second, 10 * time.Second, Cumulative},
+		{"delta", map[string]string{"OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE": "delta"}, 60 * time.Second, 10 * time.Second, Delta},
+		{"lowmemory", map[string]string{"OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE": "lowmemory"}, 60 * time.Second, 10 * time.Second, LowMemory},
+		{"temporality in any case", map[string]string{"OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE": "LowMemory"}, 60 * time.Second, 10 * time.Second, LowMemory},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := read(t, Metrics, tc.vars)
+			if s.Interval() != tc.interval || s.ExportTimeout() != tc.exportTimeout || s.Temporality() != tc.temporality {
+				t.Fatalf("interval %s, export timeout %s, temporality %s; want %s, %s, %s",
+					s.Interval(), s.ExportTimeout(), s.Temporality(), tc.interval, tc.exportTimeout, tc.temporality)
+			}
+		})
+	}
+
+	t.Run("logs read none of them", func(t *testing.T) {
+		s := read(t, Logs, map[string]string{"OTEL_EXPORTER_OTLP_TIMEOUT": "20000", "OTEL_METRIC_EXPORT_INTERVAL": "0",
+			"OTEL_METRIC_EXPORT_TIMEOUT": "5000", "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE": "both"})
+		if s.Interval() != 0 || s.ExportTimeout() != 20*time.Second || s.Temporality() != Cumulative {
+			t.Fatalf("interval %s, export timeout %s, temporality %s; want 0, the request timeout 20s, cumulative",
+				s.Interval(), s.ExportTimeout(), s.Temporality())
+		}
+	})
+	t.Run("metrics off: none of them read", func(t *testing.T) {
+		vars := map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": on, "OTEL_METRICS_EXPORTER": "none",
+			"OTEL_METRIC_EXPORT_INTERVAL": "0", "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE": "both"}
+		if s, err := ReadSettings(Metrics, envOf(vars)); s != nil || err != nil {
+			t.Fatalf("ReadSettings = %v, %v; want off, no error", s, err)
+		}
+	})
+
+	for _, tc := range []struct{ name, variable, value, want string }{
+		{"interval zero", "OTEL_METRIC_EXPORT_INTERVAL", "0", `OTEL_METRIC_EXPORT_INTERVAL="0": want a whole number of milliseconds above 0`},
+		{"interval negative", "OTEL_METRIC_EXPORT_INTERVAL", "-60000", `OTEL_METRIC_EXPORT_INTERVAL="-60000"`},
+		{"interval with a unit", "OTEL_METRIC_EXPORT_INTERVAL", "60s", `OTEL_METRIC_EXPORT_INTERVAL="60s"`},
+		{"interval not whole", "OTEL_METRIC_EXPORT_INTERVAL", "1.5", `OTEL_METRIC_EXPORT_INTERVAL="1.5"`},
+		{"interval overflowing", "OTEL_METRIC_EXPORT_INTERVAL", "9223372036854775807", `OTEL_METRIC_EXPORT_INTERVAL=`},
+		{"export timeout zero", "OTEL_METRIC_EXPORT_TIMEOUT", "0", `OTEL_METRIC_EXPORT_TIMEOUT="0": want a whole number of milliseconds above 0`},
+		{"export timeout negative", "OTEL_METRIC_EXPORT_TIMEOUT", "-1", `OTEL_METRIC_EXPORT_TIMEOUT="-1"`},
+		{"export timeout not a number", "OTEL_METRIC_EXPORT_TIMEOUT", "soon", `OTEL_METRIC_EXPORT_TIMEOUT="soon"`},
+		{"temporality unknown", "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE", "both",
+			`OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE="both": want cumulative, delta or lowmemory`},
+		{"temporality misspelled", "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE", "low_memory", `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE="low_memory"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vars := map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": on, tc.variable: tc.value}
+			if _, err := ReadSettings(Metrics, envOf(vars)); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("metrics: error %v, want it to hold %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestTemporalityString(t *testing.T) {
+	for tm, want := range map[Temporality]string{Cumulative: "cumulative", Delta: "delta", LowMemory: "lowmemory", Temporality(7): "Temporality(7)"} {
+		if got := tm.String(); got != want {
+			t.Errorf("%d.String() = %q, want %q", int(tm), got, want)
+		}
+	}
+}
+
 func TestUnknownSignalPanics(t *testing.T) {
 	defer func() {
 		if recover() == nil {

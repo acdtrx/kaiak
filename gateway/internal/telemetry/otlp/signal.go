@@ -25,6 +25,14 @@ type signalInfo struct {
 // signalVariables are the signal's own OTEL_* variables.
 type signalVariables struct {
 	exporter, endpoint, headers, timeout, protocol string
+	// periodic is nil for a signal not exported on an interval.
+	periodic *periodicVariables
+}
+
+// periodicVariables are the variables of a signal exported on an interval: the
+// time between exports, the bound on one export, and the temporality preference.
+type periodicVariables struct {
+	interval, timeout, temporality string
 }
 
 var signals = map[Signal]signalInfo{
@@ -48,6 +56,11 @@ var signals = map[Signal]signalInfo{
 			headers:  "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
 			timeout:  "OTEL_EXPORTER_OTLP_METRICS_TIMEOUT",
 			protocol: "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
+			periodic: &periodicVariables{
+				interval:    "OTEL_METRIC_EXPORT_INTERVAL",
+				timeout:     "OTEL_METRIC_EXPORT_TIMEOUT",
+				temporality: "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE",
+			},
 		},
 		path:     "v1/metrics",
 		response: "ExportMetricsServiceResponse",

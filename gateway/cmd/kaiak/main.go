@@ -105,6 +105,9 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 		logger = slog.New(logExport.Handler(logger.Handler()))
 		source = append(source, "kaiak.log_export.endpoint", s.logExport.EndpointHost())
 	}
+	if s.metricExport != nil {
+		source = append(source, "kaiak.metric_export.endpoint", s.metricExport.EndpointHost())
+	}
 	logger.Info("kaiak starting", append([]any{"process.pid", os.Getpid(), "service.instance.id", s.instanceID},
 		source...)...)
 

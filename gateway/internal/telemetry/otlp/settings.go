@@ -19,7 +19,14 @@ type Settings struct {
 	signal   Signal
 	endpoint *url.URL
 	headers  []header
-	timeout  time.Duration
+	// timeout bounds one request, its retries included.
+	timeout time.Duration
+	// interval is the time between exports, zero for a signal not exported on an
+	// interval. exportTimeout bounds one export, its retries included: timeout, or the
+	// shorter of it and the signal's own export timeout when it has one.
+	interval      time.Duration
+	exportTimeout time.Duration
+	temporality   Temporality
 	// serviceName is the resource's service.name.
 	serviceName string
 	// resource is OTEL_RESOURCE_ATTRIBUTES less service.name, service.version and
@@ -31,19 +38,52 @@ type header struct{ name, value string }
 
 type resourceAttr struct{ key, value string }
 
-// The specification's defaults: a collector beside the gateway, 10 s per export.
+// Temporality is a metric export's temporality preference
+// (OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE): which sums and histograms go
+// as deltas (docs/specs/GATEWAY.md, Observability: OTLP metric export).
+type Temporality int
+
+// The preferences the OpenTelemetry specification defines.
 const (
-	defaultHost        = "http://localhost:4318"
-	defaultTimeout     = 10 * time.Second
-	defaultServiceName = "kaiak"
+	// Cumulative has every sum and histogram cumulative. The default.
+	Cumulative Temporality = iota
+	// Delta has counters and histograms delta, up-down counters cumulative.
+	Delta
+	// LowMemory has the counters and histograms recorded as events happen delta;
+	// up-down counters and the counters read at collect cumulative.
+	LowMemory
+)
+
+// String is the preference as the variable spells it.
+func (t Temporality) String() string {
+	switch t {
+	case Cumulative:
+		return "cumulative"
+	case Delta:
+		return "delta"
+	case LowMemory:
+		return "lowmemory"
+	}
+	return fmt.Sprintf("Temporality(%d)", int(t))
+}
+
+// The specification's defaults: a collector beside the gateway, 10 s per request;
+// for a signal exported on an interval, an export every 60 s, each bounded by 30 s.
+const (
+	defaultHost          = "http://localhost:4318"
+	defaultTimeout       = 10 * time.Second
+	defaultServiceName   = "kaiak"
+	defaultInterval      = 60 * time.Second
+	defaultExportTimeout = 30 * time.Second
 )
 
 // ReadSettings reads sig's export settings from the environment through lookupEnv.
 // It returns nil when the signal's export is off: no endpoint and no
 // OTEL_<SIGNAL>_EXPORTER=otlp, or OTEL_<SIGNAL>_EXPORTER=none, or
 // OTEL_SDK_DISABLED=true. For each setting the signal's variable wins over the
-// general one. An empty variable counts as unset, as the OpenTelemetry
-// specification has it. A malformed value is an error naming the variable; an error
+// general one. A signal exported on an interval also reads its interval, its export
+// timeout and its temporality preference. An empty variable counts as unset, as the
+// OpenTelemetry specification has it. A malformed value is an error naming the variable; an error
 // about headers never holds their values. The resource (OTEL_SERVICE_NAME,
 // OTEL_RESOURCE_ATTRIBUTES) is read the same way for every signal, and only when
 // the signal's export is on.
@@ -99,17 +139,62 @@ func ReadSettings(sig Signal, lookupEnv func(string) (string, bool)) (*Settings,
 		}
 	}
 	if name, v := first(get, names.timeout, "OTEL_EXPORTER_OTLP_TIMEOUT"); v != "" {
-		ms, err := strconv.ParseInt(v, 10, 64)
-		if err != nil || ms <= 0 || ms > math.MaxInt64/int64(time.Millisecond) {
-			return nil, fmt.Errorf("%s=%q: want a whole number of milliseconds above 0", name, v)
+		if s.timeout, err = milliseconds(name, v); err != nil {
+			return nil, err
 		}
-		s.timeout = time.Duration(ms) * time.Millisecond
+	}
+	s.exportTimeout = s.timeout
+	if names.periodic != nil {
+		if err := s.readPeriodic(names.periodic, get); err != nil {
+			return nil, err
+		}
 	}
 
 	if s.serviceName, s.resource, err = readResource(get); err != nil {
 		return nil, err
 	}
 	return s, nil
+}
+
+// readPeriodic reads the settings of a signal exported on an interval. One export
+// is bounded by the shorter of its export timeout and the request timeout: both are
+// bounds an operator set.
+func (s *Settings) readPeriodic(names *periodicVariables, get func(string) string) error {
+	s.interval = defaultInterval
+	if v := get(names.interval); v != "" {
+		var err error
+		if s.interval, err = milliseconds(names.interval, v); err != nil {
+			return err
+		}
+	}
+	exportTimeout := defaultExportTimeout
+	if v := get(names.timeout); v != "" {
+		var err error
+		if exportTimeout, err = milliseconds(names.timeout, v); err != nil {
+			return err
+		}
+	}
+	s.exportTimeout = min(exportTimeout, s.timeout)
+	switch v := get(names.temporality); strings.ToLower(v) {
+	case "", "cumulative":
+		s.temporality = Cumulative
+	case "delta":
+		s.temporality = Delta
+	case "lowmemory":
+		s.temporality = LowMemory
+	default:
+		return fmt.Errorf("%s=%q: want cumulative, delta or lowmemory", names.temporality, v)
+	}
+	return nil
+}
+
+// milliseconds parses a duration variable: a whole number of milliseconds above 0.
+func milliseconds(name, v string) (time.Duration, error) {
+	ms, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || ms <= 0 || ms > math.MaxInt64/int64(time.Millisecond) {
+		return 0, fmt.Errorf("%s=%q: want a whole number of milliseconds above 0", name, v)
+	}
+	return time.Duration(ms) * time.Millisecond, nil
 }
 
 // readResource reads the resource's settings, the same for every signal: the
@@ -154,6 +239,19 @@ func (s *Settings) EndpointHost() string {
 	}
 	return net.JoinHostPort(s.endpoint.Hostname(), port)
 }
+
+// Interval is the time between exports; zero for a signal not exported on an
+// interval.
+func (s *Settings) Interval() time.Duration { return s.interval }
+
+// ExportTimeout bounds one export, its retries included: the request timeout, or
+// the shorter of it and the signal's export timeout for a signal exported on an
+// interval.
+func (s *Settings) ExportTimeout() time.Duration { return s.exportTimeout }
+
+// Temporality is the export's temporality preference; Cumulative for a signal that
+// has none.
+func (s *Settings) Temporality() Temporality { return s.temporality }
 
 // String describes the settings without the headers, so that printing them by
 // mistake cannot leak a credential.

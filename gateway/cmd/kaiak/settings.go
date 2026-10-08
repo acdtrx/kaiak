@@ -44,8 +44,10 @@ type settings struct {
 	maxConnections int64
 	// metricsToken is the bearer token /metrics requires; "" leaves it open.
 	metricsToken string
-	// logExport is where log records also go over OTLP; nil when export is off.
-	logExport *otlp.Settings
+	// logExport is where log records also go over OTLP, metricExport where metrics
+	// are pushed; each nil when that signal's export is off.
+	logExport    *otlp.Settings
+	metricExport *otlp.Settings
 }
 
 // Default listen addresses: the API port and the admin port.
@@ -127,6 +129,9 @@ func readSettings(lookupEnv func(string) (string, bool)) (settings, error) {
 	}
 	s.metricsToken, _ = lookupEnv("KAIAK_METRICS_TOKEN")
 	if s.logExport, err = otlp.ReadSettings(otlp.Logs, lookupEnv); err != nil {
+		return s, err
+	}
+	if s.metricExport, err = otlp.ReadSettings(otlp.Metrics, lookupEnv); err != nil {
 		return s, err
 	}
 	s.instanceID, _ = lookupEnv("KAIAK_INSTANCE_ID")

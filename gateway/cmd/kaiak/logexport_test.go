@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"kaiak/internal/telemetry/fakeotlp"
+	"kaiak/internal/telemetry/otlp"
 )
 
 func TestLogExportSettings(t *testing.T) {
@@ -45,6 +47,116 @@ func TestLogExportSettings(t *testing.T) {
 		if _, err := readSettings(envOf(env)); err == nil || !strings.Contains(err.Error(), name) {
 			t.Errorf("%s=%q: got %v, want a startup error naming it", name, value, err)
 		}
+	}
+}
+
+// Each signal's export is on or off on its own; one shared endpoint turns on both.
+func TestMetricExportSettings(t *testing.T) {
+	const secret = "s3cr3t-token"
+	env := func(extra map[string]string) func(string) (string, bool) {
+		vars := map[string]string{"KAIAK_CONFIG_FILE": "c.json", "KAIAK_INSTANCE_ID": "i"}
+		for k, v := range extra {
+			vars[k] = v
+		}
+		return envOf(vars)
+	}
+	for _, tc := range []struct {
+		name string
+		vars map[string]string
+		// logs and metrics are the endpoints' host:port; "" means that export is off.
+		logs, metrics string
+	}{
+		{"nothing set", nil, "", ""},
+		{"one shared endpoint: both", map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "http://collector:4318"}, "collector:4318", "collector:4318"},
+		{"metrics on, logs off", map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "http://collector:4318", "OTEL_LOGS_EXPORTER": "none"}, "", "collector:4318"},
+		{"logs on, metrics off", map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "http://collector:4318", "OTEL_METRICS_EXPORTER": "none"}, "collector:4318", ""},
+		{"metrics endpoint alone", map[string]string{"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": "https://metrics.example.com/v1/metrics"}, "", "metrics.example.com:443"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, err := readSettings(env(tc.vars))
+			if err != nil {
+				t.Fatalf("readSettings: %v", err)
+			}
+			for _, sig := range []struct {
+				name     string
+				settings *otlp.Settings
+				want     string
+			}{{"logs", s.logExport, tc.logs}, {"metrics", s.metricExport, tc.metrics}} {
+				switch {
+				case sig.want == "" && sig.settings != nil:
+					t.Errorf("%s export on to %s, want off", sig.name, sig.settings.EndpointHost())
+				case sig.want != "" && sig.settings == nil:
+					t.Errorf("%s export off, want on to %s", sig.name, sig.want)
+				case sig.settings != nil && sig.settings.EndpointHost() != sig.want:
+					t.Errorf("%s export to %s, want %s", sig.name, sig.settings.EndpointHost(), sig.want)
+				}
+			}
+		})
+	}
+	for name, value := range map[string]string{
+		"OTEL_METRICS_EXPORTER":                             "prometheus",
+		"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT":               "ftp://collector",
+		"OTEL_EXPORTER_OTLP_METRICS_HEADERS":                "authorization=" + secret + "%zz",
+		"OTEL_EXPORTER_OTLP_METRICS_TIMEOUT":                "0",
+		"OTEL_EXPORTER_OTLP_METRICS_PROTOCOL":               "http/protobuf",
+		"OTEL_METRIC_EXPORT_INTERVAL":                       "-1",
+		"OTEL_METRIC_EXPORT_TIMEOUT":                        "30s",
+		"OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE": "sometimes",
+	} {
+		vars := map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "http://collector:4318", "OTEL_LOGS_EXPORTER": "none", name: value}
+		_, err := readSettings(env(vars))
+		if err == nil || !strings.Contains(err.Error(), name) {
+			t.Errorf("%s=%q: got %v, want a startup error naming it", name, value, err)
+		} else if strings.Contains(err.Error(), secret) {
+			t.Errorf("%s: error %q echoes a header value", name, err)
+		}
+	}
+}
+
+// kaiak starting names where metrics are pushed when their export is on, and only
+// then.
+func TestStartingLineNamesTheMetricExportEndpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		vars map[string]string
+		want string
+	}{
+		{"off", nil, ""},
+		{"on", map[string]string{"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": "http://collector:4318/v1/metrics"}, "collector:4318"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vars := map[string]string{"KAIAK_CONFIG_FILE": minimalFixture, "KAIAK_INSTANCE_ID": "test-1",
+				"KAIAK_LISTEN_ADDR": "127.0.0.1:0", "KAIAK_ADMIN_ADDR": "127.0.0.1:0"}
+			for k, v := range tc.vars {
+				vars[k] = v
+			}
+			var logs syncBuffer
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			if err := run(ctx, slog.New(slog.NewJSONHandler(&logs, nil)), envOf(vars), make(chan os.Signal), make(chan os.Signal)); err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			var starting map[string]any
+			for line := range strings.Lines(logs.String()) {
+				var entry map[string]any
+				if err := json.Unmarshal([]byte(line), &entry); err == nil && entry["msg"] == "kaiak starting" {
+					starting = entry
+				}
+			}
+			if starting == nil {
+				t.Fatalf("no kaiak starting line:\n%s", logs.String())
+			}
+			got, present := starting["kaiak.metric_export.endpoint"]
+			switch {
+			case tc.want == "" && present:
+				t.Errorf("kaiak.metric_export.endpoint %v with export off, want absent", got)
+			case tc.want != "" && got != tc.want:
+				t.Errorf("kaiak.metric_export.endpoint %v, want %s", got, tc.want)
+			}
+			if v, ok := starting["kaiak.log_export.endpoint"]; ok {
+				t.Errorf("kaiak.log_export.endpoint %v with log export off, want absent", v)
+			}
+		})
 	}
 }
 
