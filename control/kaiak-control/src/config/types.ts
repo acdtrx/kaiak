@@ -140,6 +140,7 @@ export interface Global {
   max_n?: number;
   max_sequences_per_request?: number;
   max_embedding_inputs?: number;
+  max_rerank_documents?: number;
   max_concurrent_requests_per_key?: number;
   queue?: QueueSettings;
   retries?: RetrySettings;

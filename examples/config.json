@@ -22,6 +22,10 @@
       "base_url": "http://vllm-embed.internal:8000/v1",
       "api_key_env": "VLLM_EMBED_API_KEY"
     },
+    "vllm-rerank": {
+      "type": "vllm",
+      "base_url": "http://vllm-rerank.internal:8000/v1"
+    },
     "azure-swedencentral": {
       "type": "azure-openai",
       "base_url": "https://acme-swedencentral.openai.azure.com",
@@ -55,6 +59,13 @@
       "deployments": [{ "backend": "vllm-embed", "model": "BAAI/bge-m3" }],
       "metadata": {
         "context_length": 8192,
+        "capabilities": { "streaming": false, "tools": false, "vision": false, "reasoning": false }
+      }
+    },
+    "qwen3-reranker-8b": {
+      "deployments": [{ "backend": "vllm-rerank", "model": "Qwen/Qwen3-Reranker-8B" }],
+      "metadata": {
+        "context_length": 32768,
         "capabilities": { "streaming": false, "tools": false, "vision": false, "reasoning": false }
       }
     },
@@ -105,7 +116,7 @@
     "search-rag": {
       "parent": "search",
       "labels": { "kind": "project" },
-      "allowed_models": ["qwen3-32b", "gpt-4.1-mini", "bge-m3"],
+      "allowed_models": ["qwen3-32b", "gpt-4.1-mini", "bge-m3", "qwen3-reranker-8b"],
       "limits": [{ "type": "tokens_per_minute", "value": 200000 }]
     },
     "search-rag-prod": {
@@ -120,7 +131,7 @@
     "search-rag-dev": {
       "parent": "search-rag",
       "labels": { "kind": "env", "env": "dev" },
-      "allowed_models": ["qwen3-32b", "bge-m3"],
+      "allowed_models": ["qwen3-32b", "bge-m3", "qwen3-reranker-8b"],
       "limits": [
         { "type": "requests_per_minute", "value": 60 },
         { "type": "tokens_per_hour", "value": 1000000 }
@@ -147,7 +158,7 @@
     "users": {
       "labels": { "kind": "people" },
       "child_defaults": {
-        "allowed_models": ["qwen3-32b", "gpt-4.1-mini", "bge-m3"],
+        "allowed_models": ["qwen3-32b", "gpt-4.1-mini", "bge-m3", "qwen3-reranker-8b"],
         "limits": [
           { "type": "requests_per_minute", "value": 30 },
           { "type": "tokens_per_hour", "value": 500000 },
