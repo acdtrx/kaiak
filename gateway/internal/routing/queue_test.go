@@ -41,9 +41,9 @@ func queuedModel(name string, size int, timeout time.Duration, backends ...*conf
 func waitQueued(t *testing.T, r *Router, model string, n int) {
 	t.Helper()
 	deadline := time.Now().Add(waitTimeout)
-	for r.QueuedByModel()[model] != n {
+	for queuedIn(r)[model] != n {
 		if time.Now().After(deadline) {
-			t.Fatalf("queue %s holds %d, want %d", model, r.QueuedByModel()[model], n)
+			t.Fatalf("queue %s holds %d, want %d", model, queuedIn(r)[model], n)
 		}
 		runtime.Gosched()
 	}
@@ -122,7 +122,7 @@ func TestCapIsRespectedUnderConcurrency(t *testing.T) {
 		<-admitted
 	}
 	waitQueued(t, r, "m", requests-3)
-	if got := r.InFlightByBackend()["a"]; got != 3 {
+	if got := inFlight(r)["a"]; got != 3 {
 		t.Errorf("in flight %d with %d waiting, want the cap 3", got, requests-3)
 	}
 	// Each finished request lets exactly one waiter in.
@@ -137,7 +137,7 @@ func TestCapIsRespectedUnderConcurrency(t *testing.T) {
 	if p := peak.Load(); p != 3 {
 		t.Errorf("at most %d requests ran at once, want 3", p)
 	}
-	if got := r.InFlightByBackend(); len(got) != 0 {
+	if got := inFlight(r); len(got) != 0 {
 		t.Errorf("in flight %v at the end, want none", got)
 	}
 }
@@ -234,11 +234,11 @@ func TestQueueTimeout(t *testing.T) {
 	if slot.Deployment.Backend != nil {
 		t.Error("a timed-out request got a slot")
 	}
-	if q := r.QueuedByModel(); len(q) != 0 {
+	if q := queuedIn(r); len(q) != 0 {
 		t.Errorf("queues %v after the timeout, want none", q)
 	}
 	release()
-	if got := r.InFlightByBackend(); len(got) != 0 {
+	if got := inFlight(r); len(got) != 0 {
 		t.Errorf("in flight %v, want none", got)
 	}
 }
@@ -262,7 +262,7 @@ func TestLeavingTheQueueFreesItsPlace(t *testing.T) {
 		t.Fatal(res.err)
 	}
 	res.slot.Release()
-	if got := r.InFlightByBackend(); len(got) != 0 {
+	if got := inFlight(r); len(got) != 0 {
 		t.Errorf("in flight %v, want none", got)
 	}
 }
@@ -291,7 +291,7 @@ func TestConfiguredCaps(t *testing.T) {
 	second := enqueue(t, r, context.Background(), "second", m, 1)
 	r.Configure(&config.Snapshot{Backends: map[string]*config.Backend{"a": backend("a", 2)}})
 	res2 := receive(t, second)
-	if got := r.InFlightByBackend()["a"]; got != 2 {
+	if got := inFlight(r)["a"]; got != 2 {
 		t.Errorf("in flight %d, want 2", got)
 	}
 	res.slot.Release()
@@ -325,11 +325,13 @@ func TestQueueChangeIsToldOnEmptyAndNonEmpty(t *testing.T) {
 func TestCapIsSplitAmongLiveGateways(t *testing.T) {
 	r := New(Options{})
 	m := queuedModel("m", 10, time.Hour, backend("a", 4))
-	r.Configure(circuitSnapshot(5, time.Hour, m, queuedModel("odd", 10, time.Hour, backend("b", 5)),
-		queuedModel("small", 10, time.Hour, backend("c", 1))))
+	s := circuitSnapshot(5, time.Hour, m, queuedModel("odd", 10, time.Hour, backend("b", 5)),
+		queuedModel("small", 10, time.Hour, backend("c", 1)))
+	r.Configure(s)
 	r.SetLiveGateways(2)
-	if got := r.MaxInFlightByBackend(); got["a"] != 2 || got["b"] != 3 || got["c"] != 1 {
-		t.Fatalf("caps %v with 2 live gateways, want a 2 (4÷2), b 3 (5÷2 rounded up), c 1 (never 0)", got)
+	share := func(id string) int64 { return r.Serving(s).Backends[id].Share }
+	if a, b, c := share("a"), share("b"), share("c"); a != 2 || b != 3 || c != 1 {
+		t.Fatalf("caps a %d, b %d, c %d with 2 live gateways, want a 2 (4÷2), b 3 (5÷2 rounded up), c 1 (never 0)", a, b, c)
 	}
 	_, release1 := acquire(r, m)
 	defer release1()
@@ -343,7 +345,7 @@ func TestCapIsSplitAmongLiveGateways(t *testing.T) {
 		t.Fatalf("waiter = %v after the share rose", res.err)
 	}
 	res.slot.Release()
-	if got := r.MaxInFlightByBackend()["a"]; got != 4 {
+	if got := share("a"); got != 4 {
 		t.Errorf("cap %d with 0 live gateways (counted as 1), want 4", got)
 	}
 }

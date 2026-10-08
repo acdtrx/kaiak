@@ -112,6 +112,40 @@ func TestRegistrationAndUseAreValidated(t *testing.T) {
 	expectPanic(t, "too many label values", func() { c.Inc("1", "2", "3") })
 }
 
+// Gauge families read together are read once per write, each written in its place
+// by name, and an emit with the wrong number of label values panics.
+func TestGaugeFuncsReadOncePerWrite(t *testing.T) {
+	reg := NewRegistry()
+	reg.Gauge("m_middle", "Between.").Set(5)
+	reads := 0
+	reg.GaugeFuncs([]GaugeDesc{{"z_last", "Last.", []string{"k"}}, {"a_first", "First.", nil}},
+		func(emit []func(float64, ...string)) {
+			reads++
+			emit[0](float64(reads), "x")
+			emit[1](float64(reads))
+		})
+	want := `# HELP a_first First.
+# TYPE a_first gauge
+a_first 1
+# HELP m_middle Between.
+# TYPE m_middle gauge
+m_middle 5
+# HELP z_last Last.
+# TYPE z_last gauge
+z_last{k="x"} 1
+`
+	if got := text(reg); got != want || reads != 1 {
+		t.Errorf("%d reads, got:\n%s\nwant:\n%s", reads, got, want)
+	}
+	if got := text(reg); !strings.Contains(got, "a_first 2\n") || !strings.Contains(got, `z_last{k="x"} 2`+"\n") || reads != 2 {
+		t.Errorf("second write, %d reads:\n%s", reads, got)
+	}
+
+	bad := NewRegistry()
+	bad.GaugeFuncs([]GaugeDesc{{"g", "G.", []string{"k"}}}, func(emit []func(float64, ...string)) { emit[0](1) })
+	expectPanic(t, "too few label values emitted", func() { text(bad) })
+}
+
 func TestConcurrentUpdatesAndWrites(t *testing.T) {
 	reg := NewRegistry()
 	c := reg.Counter("c_total", "C.", "worker")
@@ -244,11 +278,11 @@ func TestOpsMetrics(t *testing.T) {
 		waited <- err
 	}()
 	defer func() { leave(); <-waited }()
-	for router.QueuedByModel()["m"] != 1 {
+	for router.Serving(nil).Models["m"].Queued != 1 {
 		runtime.Gosched()
 	}
 	reg := NewRegistry()
-	ops := NewOps(reg, router, holder)
+	ops := NewOps(reg, router, NewCircuits(reg), holder)
 	if out := text(reg); !strings.Contains(out, "kaiak_connections_refused_total 0\n") {
 		t.Errorf("refused connections not exposed at 0:\n%s", out)
 	}
@@ -317,7 +351,7 @@ func TestBuildInfo(t *testing.T) {
 func TestConfigLoadMetrics(t *testing.T) {
 	holder := &config.Holder{}
 	reg := NewRegistry()
-	ops := NewOps(reg, routing.New(routing.Options{}), holder)
+	ops := NewOps(reg, routing.New(routing.Options{}), NewCircuits(reg), holder)
 	out := text(reg)
 	for _, want := range []string{
 		`kaiak_config_apply_duration_seconds_count{trigger="startup",result="applied"} 0`,
@@ -472,7 +506,7 @@ func TestCircuitSampleOncePerDeployment(t *testing.T) {
 	router := routing.New(routing.Options{})
 	router.Configure(s)
 	reg := NewRegistry()
-	NewOps(reg, router, holder)
+	NewOps(reg, router, NewCircuits(reg), holder)
 	count := func(value string) int {
 		return strings.Count(text(reg), `kaiak_circuit_open{backend="local",deployment_model="llama"} `+value+"\n")
 	}
@@ -487,5 +521,139 @@ func TestCircuitSampleOncePerDeployment(t *testing.T) {
 	slot.Release()
 	if n0, n1 := count("0"), count("1"); n0 != 0 || n1 != 1 {
 		t.Errorf("open: %d closed and %d open samples, want 0 and 1", n0, n1)
+	}
+}
+
+// The routing gauges of one scrape, read from routing's picture against the live
+// config: every backend, model and deployment of it, the backend and model a reload
+// dropped while requests still ran on one and waited for the other, backend shares,
+// and open, half-open and cooling deployments — a deployment two models share once.
+func TestRoutingGauges(t *testing.T) {
+	a := &config.Backend{ID: "a", MaxInFlight: 4}
+	b := &config.Backend{ID: "b"}
+	c := &config.Backend{ID: "c", MaxInFlight: 2}
+	d := &config.Backend{ID: "d", MaxInFlight: 1}
+	gone := &config.Backend{ID: "gone", MaxInFlight: 1}
+	queue := config.Queue{Size: 5, Timeout: time.Hour}
+	chat := &config.Model{Name: "chat", Queue: queue, Deployments: []config.Deployment{{Backend: a, Model: "x"}, {Backend: b, Model: "o"}}}
+	alias := &config.Model{Name: "alias", Queue: queue, Deployments: []config.Deployment{{Backend: a, Model: "x"}}}
+	embed := &config.Model{Name: "embed", Queue: queue, Deployments: []config.Deployment{{Backend: c, Model: "e"}}}
+	opened := &config.Model{Name: "opened", Queue: queue, Deployments: []config.Deployment{{Backend: b, Model: "o"}}}
+	queued := &config.Model{Name: "queued", Queue: queue, Deployments: []config.Deployment{{Backend: d, Model: "q"}}}
+	old := &config.Model{Name: "old", Queue: queue, Deployments: []config.Deployment{{Backend: gone, Model: "g"}}}
+	circuit := config.Circuit{FailureThreshold: 1, ProbeInterval: time.Hour}
+	first := &config.Snapshot{Circuit: circuit,
+		Backends: map[string]*config.Backend{"a": a, "b": b, "c": c, "d": d, "gone": gone},
+		Models:   map[string]*config.Model{"chat": chat, "alias": alias, "embed": embed, "opened": opened, "queued": queued, "old": old}}
+	second := &config.Snapshot{Circuit: circuit,
+		Backends: map[string]*config.Backend{"a": a, "b": b, "c": c, "d": d},
+		Models:   map[string]*config.Model{"chat": chat, "alias": alias, "embed": embed, "opened": opened, "queued": queued}}
+
+	reg := NewRegistry()
+	circuits := NewCircuits(reg)
+	router := routing.New(routing.Options{Observer: circuits,
+		Probe: func(context.Context, *config.Backend) (func(string) bool, error) { return nil, nil }})
+	holder := &config.Holder{}
+	ops := NewOps(reg, router, circuits, holder)
+	apply := func(s *config.Snapshot, at int64) {
+		holder.Swap(s)
+		router.Configure(s)
+		ops.ConfigLoaded(config.Load{Trigger: config.TriggerStartup, Snapshot: s, At: time.UnixMilli(at)})
+	}
+	apply(first, 1_700_000_000_000)
+
+	acquire := func(m *config.Model) routing.Slot {
+		t.Helper()
+		slot, _, err := router.Acquire(context.Background(), m, routing.Avoid{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return slot
+	}
+	ctx, leave := context.WithCancel(context.Background())
+	waiting := 0
+	waited := make(chan struct{}, 4)
+	wait := func(m *config.Model) {
+		waiting++
+		go func() {
+			_, _, _ = router.Acquire(ctx, m, routing.Avoid{})
+			waited <- struct{}{}
+		}()
+		for router.Serving(nil).Models[m.Name].Queued != 1 {
+			runtime.Gosched()
+		}
+	}
+	defer func() {
+		leave()
+		for range waiting {
+			<-waited
+		}
+	}()
+
+	// b/o open; c/e half-open (a probe answered); a/x cooling down.
+	fail := func(m *config.Model) {
+		slot := acquire(m)
+		slot.Report(routing.Failure, "scripted")
+		slot.Release()
+	}
+	fail(opened)
+	fail(embed)
+	if err := router.ProbeNow(context.Background(), "c", "test"); err != nil {
+		t.Fatal(err)
+	}
+	cooling := acquire(alias)
+	cooling.Throttled(time.Hour)
+	cooling.Release()
+	// d's one slot is taken and a request waits for it.
+	held := acquire(queued)
+	defer held.Release()
+	wait(queued)
+	// gone's one slot is taken and a request waits for it; a reload drops both.
+	retired := acquire(old)
+	defer retired.Release()
+	wait(old)
+	apply(second, 1_700_000_001_000)
+	// a: two in flight.
+	defer acquire(chat).Release()
+	defer acquire(alias).Release()
+
+	want := `kaiak_backend_in_flight_requests{backend="a"} 2
+kaiak_backend_in_flight_requests{backend="b"} 0
+kaiak_backend_in_flight_requests{backend="c"} 0
+kaiak_backend_in_flight_requests{backend="d"} 1
+kaiak_backend_in_flight_requests{backend="gone"} 1
+kaiak_backend_max_in_flight{backend="a"} 4
+kaiak_backend_max_in_flight{backend="c"} 2
+kaiak_backend_max_in_flight{backend="d"} 1
+kaiak_circuit_half_open{backend="a",deployment_model="x"} 0
+kaiak_circuit_half_open{backend="b",deployment_model="o"} 0
+kaiak_circuit_half_open{backend="c",deployment_model="e"} 1
+kaiak_circuit_half_open{backend="d",deployment_model="q"} 0
+kaiak_circuit_open{backend="a",deployment_model="x"} 0
+kaiak_circuit_open{backend="b",deployment_model="o"} 1
+kaiak_circuit_open{backend="c",deployment_model="e"} 0
+kaiak_circuit_open{backend="d",deployment_model="q"} 0
+kaiak_deployment_cooling_down{backend="a",deployment_model="x"} 1
+kaiak_deployment_cooling_down{backend="b",deployment_model="o"} 0
+kaiak_deployment_cooling_down{backend="c",deployment_model="e"} 0
+kaiak_deployment_cooling_down{backend="d",deployment_model="q"} 0
+kaiak_queued_requests{model="alias"} 0
+kaiak_queued_requests{model="chat"} 0
+kaiak_queued_requests{model="embed"} 0
+kaiak_queued_requests{model="old"} 1
+kaiak_queued_requests{model="opened"} 0
+kaiak_queued_requests{model="queued"} 1
+`
+	var got strings.Builder
+	for line := range strings.Lines(text(reg)) {
+		for _, family := range []string{"kaiak_backend_in_flight_requests", "kaiak_backend_max_in_flight",
+			"kaiak_circuit_half_open", "kaiak_circuit_open", "kaiak_deployment_cooling_down", "kaiak_queued_requests"} {
+			if strings.HasPrefix(line, family+"{") {
+				got.WriteString(line)
+			}
+		}
+	}
+	if got.String() != want {
+		t.Errorf("routing gauges:\n%s\nwant:\n%s", got.String(), want)
 	}
 }

@@ -854,11 +854,16 @@ func TestProberKeepsProbingHalfOpenCircuits(t *testing.T) {
 	}
 }
 
-// notClosed returns when each circuit that is not closed (open or half-open) opened.
+// notClosed returns when each circuit r keeps that is not closed (open or half-open)
+// opened.
 func notClosed(r *Router) map[DeploymentID]time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	out := make(map[DeploymentID]time.Time)
-	for key, c := range r.Circuits() {
-		out[key] = c.OpenedAt
+	for key, c := range r.circuits {
+		if !c.openedAt.IsZero() {
+			out[key] = c.openedAt
+		}
 	}
 	return out
 }

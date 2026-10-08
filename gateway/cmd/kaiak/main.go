@@ -255,7 +255,7 @@ func newGraph(s settings, reported string, lookupEnv func(string) (string, bool)
 	}
 	circuits := metrics.NewCircuits(g.registry)
 	g.router = routing.New(routing.Options{Probe: g.providers.Probe, Observer: circuits, Logger: logger})
-	g.ops = metrics.NewOps(g.registry, g.router, g.holder)
+	g.ops = metrics.NewOps(g.registry, g.router, circuits, g.holder)
 	g.modelChecker = provider.NewModelChecker(g.providers, logger)
 	// Every applied config sets the backend caps routing enforces and the backends
 	// whose connection pools and missing endpoints are kept, and has its deployments'
@@ -263,7 +263,6 @@ func newGraph(s settings, reported string, lookupEnv func(string) (string, bool)
 	g.applier = config.NewApplier(g.holder, logger, lookupEnv, func(load config.Load) {
 		if applied := load.Snapshot; applied != nil {
 			g.router.Configure(applied)
-			circuits.PrepareSeries(applied)
 			g.providers.Retain(applied.Backends)
 			g.missingEndpoints.Retain(applied.Backends)
 			g.modelChecker.Check(applied)

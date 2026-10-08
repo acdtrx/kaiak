@@ -46,9 +46,9 @@ func newCappedGateway(t *testing.T) *testGateway {
 func waitQueued(t *testing.T, g *testGateway, model string, n int) {
 	t.Helper()
 	deadline := time.Now().Add(waitTimeout)
-	for g.router.QueuedByModel()[model] != n {
+	for g.router.Serving(nil).Models[model].Queued != n {
 		if time.Now().After(deadline) {
-			t.Fatalf("queue %s holds %d, want %d", model, g.router.QueuedByModel()[model], n)
+			t.Fatalf("queue %s holds %d, want %d", model, g.router.Serving(nil).Models[model].Queued, n)
 		}
 		runtime.Gosched()
 	}
@@ -311,7 +311,7 @@ func TestLeavingTheQueueReleasesTheReservation(t *testing.T) {
 	if got, want := reservedTokens(t, g), settledTokens(g); got != want {
 		t.Errorf("team tokens %d, want the settled %d", got, want)
 	}
-	if n := g.router.InFlightByBackend(); len(n) != 0 {
+	if n := inFlight(g); len(n) != 0 {
 		t.Errorf("in flight %v, want none", n)
 	}
 }
@@ -374,7 +374,7 @@ func TestSlotIsHandedOnEveryRelayEnd(t *testing.T) {
 				cancel()
 			}
 			srv.Close()
-			if n := g.router.InFlightByBackend(); len(n) != 0 {
+			if n := inFlight(g); len(n) != 0 {
 				t.Errorf("in flight %v, want none", n)
 			}
 		})

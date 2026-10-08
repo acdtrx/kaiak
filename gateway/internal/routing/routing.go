@@ -156,7 +156,8 @@ type grant struct {
 // text the backend sent (docs/specs/GATEWAY.md, Logs: no remote text).
 type ProbeFunc func(ctx context.Context, b *config.Backend) (serves func(model string) bool, err error)
 
-// CircuitState is a circuit's state, as the observer is told of its transitions.
+// CircuitState is a circuit's state, as the observer is told of its transitions and
+// Serving reports it.
 type CircuitState string
 
 const (
@@ -452,21 +453,6 @@ func (r *Router) SetLiveGateways(n int64) {
 	r.notify(changed)
 }
 
-// MaxInFlightByBackend returns the cap this gateway enforces per backend of the
-// applied config — its share of the configured cap. Backends without a cap are
-// absent.
-func (r *Router) MaxInFlightByBackend() map[string]int64 {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	shares := make(map[string]int64, len(r.backends))
-	for id, b := range r.backends {
-		if b.MaxInFlight > 0 {
-			shares[id] = r.share(b.MaxInFlight)
-		}
-	}
-	return shares
-}
-
 // take counts one request in flight on d; on a half-open circuit it is the trial.
 func (r *Router) take(d config.Deployment) grant {
 	key := IDOf(d)
@@ -595,30 +581,6 @@ func (r *Router) notify(changed bool) {
 	}
 }
 
-// InFlightByBackend returns the number of requests in flight per backend ID. Backends
-// with none are absent.
-func (r *Router) InFlightByBackend() map[string]int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	counts := make(map[string]int, len(r.backendLoad))
-	for id, n := range r.backendLoad {
-		counts[id] = n
-	}
-	return counts
-}
-
-// QueuedByModel returns the number of requests waiting per public model name. Models
-// with none are absent.
-func (r *Router) QueuedByModel() map[string]int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	counts := make(map[string]int, len(r.queues))
-	for name, q := range r.queues {
-		counts[name] = q.Len()
-	}
-	return counts
-}
-
 // throttle starts key's cooldown, ending d from now; one under way ends at the later
 // of the two — a later 429 with a shorter Retry-After never shortens the backend's
 // earlier word (a quota's reset does not move closer because one answer said less).
@@ -674,16 +636,4 @@ func (r *Router) dropRemovedCooldowns() {
 			delete(r.cooldowns, key)
 		}
 	}
-}
-
-// CoolingDown returns, per deployment cooling down after a 429, when its cooldown
-// ends. Deployments not cooling down are absent.
-func (r *Router) CoolingDown() map[DeploymentID]time.Time {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := make(map[DeploymentID]time.Time, len(r.cooldowns))
-	for key, c := range r.cooldowns {
-		out[key] = c.until
-	}
-	return out
 }

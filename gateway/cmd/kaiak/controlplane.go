@@ -57,8 +57,7 @@ func startControlPlane(ctx context.Context, stop <-chan os.Signal, deps controlP
 	cp.limiter.ObserveSyncs(deps.ops.ObserveLimitsSync)
 	opts := deps.opts
 	opts.Serving = func() control.Serving {
-		return servingStatus(deps.router.InFlightByBackend(), deps.router.QueuedByModel(), deps.router.Circuits(),
-			deps.holder.Current())
+		return servingStatus(deps.router.Serving(deps.holder.Current()))
 	}
 	opts.Observer = metrics.NewUsageDelivery(deps.registry)
 	opts.OnTotals = func(totals limits.Totals, counted uint64) {
@@ -175,44 +174,30 @@ func (s controlState) TotalsAppliedAt() (time.Time, bool) {
 	return s.limiter.TotalsAppliedAt()
 }
 
-// servingStatus is the routing state for status reports: every backend, model and
-// deployment of the applied config s (none while s is nil), every backend inFlight
-// counts requests on and every model queued counts waiting requests for (a reload may
-// have dropped them). A deployment's circuit is open or half-open, with its opening
-// time, as circuits has it; closed when circuits does not. Its collections are
-// non-nil, as control.Serving requires.
-func servingStatus(inFlight, queued map[string]int, circuits map[routing.DeploymentID]routing.CircuitReport, s *config.Snapshot) control.Serving {
-	out := control.Serving{Backends: map[string]control.BackendStatus{}, Models: map[string]control.ModelStatus{}}
-	if s != nil {
-		for id, b := range s.Backends {
-			out.Backends[id] = control.BackendStatus{MaxInFlight: b.MaxInFlight,
-				Deployments: map[string]control.DeploymentStatus{}}
-		}
-		for name, m := range s.Models {
-			out.Models[name] = control.ModelStatus{}
-			for _, d := range m.Deployments {
-				status := control.DeploymentStatus{Circuit: control.CircuitClosed}
-				if c, ok := circuits[routing.IDOf(d)]; ok {
-					at := c.OpenedAt.UTC()
-					status = control.DeploymentStatus{Circuit: control.CircuitOpen, OpenedAt: &at}
-					if c.State == routing.CircuitHalfOpen {
-						status.Circuit = control.CircuitHalfOpen
-					}
-				}
-				out.Backends[d.Backend.ID].Deployments[d.Model] = status
+// servingStatus formats what routing serves (routing.Serving) for status reports: a
+// backend's configured cap, not this gateway's share of it, and its deployments
+// under it, each with its circuit (and the opening time, in UTC, of one open or
+// half-open). Its collections are non-nil, as control.Serving requires.
+func servingStatus(serving routing.Serving) control.Serving {
+	out := control.Serving{Backends: make(map[string]control.BackendStatus, len(serving.Backends)),
+		Models: make(map[string]control.ModelStatus, len(serving.Models))}
+	for id, b := range serving.Backends {
+		out.Backends[id] = control.BackendStatus{MaxInFlight: b.MaxInFlight, InFlight: int64(b.InFlight),
+			Deployments: map[string]control.DeploymentStatus{}}
+	}
+	for name, m := range serving.Models {
+		out.Models[name] = control.ModelStatus{Queued: int64(m.Queued)}
+	}
+	for id, d := range serving.Deployments {
+		status := control.DeploymentStatus{Circuit: control.CircuitClosed}
+		if d.Circuit != routing.CircuitClosed {
+			at := d.OpenedAt.UTC()
+			status = control.DeploymentStatus{Circuit: control.CircuitOpen, OpenedAt: &at}
+			if d.Circuit == routing.CircuitHalfOpen {
+				status.Circuit = control.CircuitHalfOpen
 			}
 		}
-	}
-	for id, n := range inFlight {
-		b, ok := out.Backends[id]
-		if !ok {
-			b.Deployments = map[string]control.DeploymentStatus{}
-		}
-		b.InFlight = int64(n)
-		out.Backends[id] = b
-	}
-	for name, n := range queued {
-		out.Models[name] = control.ModelStatus{Queued: int64(n)}
+		out.Backends[id.Backend].Deployments[id.Model] = status
 	}
 	return out
 }

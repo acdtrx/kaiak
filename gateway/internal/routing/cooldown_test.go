@@ -19,8 +19,8 @@ func TestCoolingDeploymentIsSkipped(t *testing.T) {
 	}
 	slot.Throttled(time.Hour)
 	slot.Release()
-	if until, ok := r.CoolingDown()[a]; !ok || time.Until(until) < 59*time.Minute {
-		t.Fatalf("cooling down %v, want a for an hour", r.CoolingDown())
+	if until, ok := coolingDown(r)[a]; !ok || time.Until(until) < 59*time.Minute {
+		t.Fatalf("cooling down %v, want a for an hour", coolingDown(r))
 	}
 	_, releaseHeld := acquire(r, m)
 	defer releaseHeld()
@@ -93,8 +93,8 @@ func TestQueuedRequestGetsTheDeploymentWhoseCooldownEnds(t *testing.T) {
 		t.Fatalf("queued request: %v on %v queued %v, want a once it cooled down", got.err, IDOf(got.slot.Deployment), got.wait.Queued)
 	}
 	got.slot.Release()
-	if len(r.CoolingDown()) != 0 {
-		t.Errorf("cooling down %v, want none", r.CoolingDown())
+	if len(coolingDown(r)) != 0 {
+		t.Errorf("cooling down %v, want none", coolingDown(r))
 	}
 }
 
@@ -129,12 +129,12 @@ func TestCooldownsFollowTheConfig(t *testing.T) {
 	r.Configure(circuitSnapshot(5, time.Hour, m))
 	r.throttle(IDOf(gone.Deployments[0]), time.Hour)
 	r.throttle(IDOf(m.Deployments[0]), time.Hour)
-	if n := len(r.CoolingDown()); n != 1 {
-		t.Fatalf("cooling down %v, want a only", r.CoolingDown())
+	if n := len(coolingDown(r)); n != 1 {
+		t.Fatalf("cooling down %v, want a only", coolingDown(r))
 	}
 	r.Configure(circuitSnapshot(5, time.Hour, queuedModel("m", 10, time.Hour, backend("b", 0))))
-	if n := len(r.CoolingDown()); n != 0 {
-		t.Errorf("cooling down %v after a reload without a, want none", r.CoolingDown())
+	if n := len(coolingDown(r)); n != 0 {
+		t.Errorf("cooling down %v after a reload without a, want none", coolingDown(r))
 	}
 }
 
@@ -146,13 +146,13 @@ func TestLaterThrottleNeverShortensTheCooldown(t *testing.T) {
 	r.Configure(circuitSnapshot(5, time.Hour, m))
 	a := IDOf(m.Deployments[0])
 	r.throttle(a, time.Hour)
-	long := r.CoolingDown()[a]
+	long := coolingDown(r)[a]
 	r.throttle(a, time.Millisecond)
-	if until, ok := r.CoolingDown()[a]; !ok || !until.Equal(long) {
+	if until, ok := coolingDown(r)[a]; !ok || !until.Equal(long) {
 		t.Fatalf("cooling until %v (%v) after a shorter 429, want the hour's end %v", until, ok, long)
 	}
 	r.throttle(a, 2*time.Hour)
-	if until := r.CoolingDown()[a]; !until.After(long) {
+	if until := coolingDown(r)[a]; !until.After(long) {
 		t.Errorf("cooling until %v after a longer 429, want past %v", until, long)
 	}
 }

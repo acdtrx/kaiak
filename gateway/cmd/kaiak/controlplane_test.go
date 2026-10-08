@@ -28,17 +28,25 @@ func TestServingStatusCoversTheAppliedConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	openedAt := time.Date(2026, 9, 24, 12, 0, 0, 0, time.FixedZone("CEST", 2*60*60))
-	got := servingStatus(map[string]int{"vllm-a": 2, "retired": 1}, map[string]int{"qwen3-32b": 3, "retired-model": 1},
-		map[routing.DeploymentID]routing.CircuitReport{
-			{Backend: "vllm-b", Model: "BAAI/bge-m3"}:    {State: routing.CircuitOpen, OpenedAt: openedAt},
-			{Backend: "vllm-b", Model: "Qwen/Qwen3-32B"}: {State: routing.CircuitHalfOpen, OpenedAt: openedAt},
-		}, s)
+	// What an idle router serves against s, with live state set by hand: routing's
+	// own tests cover how it comes about.
+	serving := routing.New(routing.Options{}).Serving(s)
+	a := serving.Backends["vllm-a"]
+	a.InFlight = 2
+	serving.Backends["vllm-a"] = a
+	serving.Backends["retired"] = routing.BackendServing{InFlight: 1}
+	serving.Models["qwen3-32b"] = routing.ModelServing{Queued: 3}
+	serving.Models["retired-model"] = routing.ModelServing{Queued: 1}
+	serving.Deployments[routing.DeploymentID{Backend: "vllm-b", Model: "BAAI/bge-m3"}] = routing.DeploymentServing{
+		Circuit: routing.CircuitOpen, OpenedAt: openedAt}
+	serving.Deployments[routing.DeploymentID{Backend: "vllm-b", Model: "Qwen/Qwen3-32B"}] = routing.DeploymentServing{
+		Circuit: routing.CircuitHalfOpen, OpenedAt: openedAt}
+	got := servingStatus(serving)
 
 	if len(got.Backends) != 4 || len(got.Models) != 5 {
 		t.Fatalf("backends %v, models %v: want the config's 3 backends plus the retired one, and its 4 models plus the retired one", got.Backends, got.Models)
 	}
-	a := got.Backends["vllm-a"]
-	if a.InFlight != 2 || a.MaxInFlight != 8 || len(a.Deployments) != 1 || a.Deployments["Qwen/Qwen3-32B"].Circuit != control.CircuitClosed {
+	if a := got.Backends["vllm-a"]; a.InFlight != 2 || a.MaxInFlight != 8 || len(a.Deployments) != 1 || a.Deployments["Qwen/Qwen3-32B"].Circuit != control.CircuitClosed {
 		t.Errorf("vllm-a = %+v", a)
 	}
 	b := got.Backends["vllm-b"]
@@ -67,7 +75,7 @@ func TestServingStatusCoversTheAppliedConfig(t *testing.T) {
 		}
 	}
 
-	none := servingStatus(map[string]int{}, map[string]int{}, nil, nil)
+	none := servingStatus(routing.New(routing.Options{}).Serving(nil))
 	if none.Backends == nil || none.Models == nil || len(none.Backends)+len(none.Models) != 0 {
 		t.Errorf("before a config: %+v, want empty collections", none)
 	}

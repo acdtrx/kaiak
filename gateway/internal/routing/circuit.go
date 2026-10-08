@@ -201,33 +201,6 @@ func (r *Router) emit(ts []transition, changed bool) {
 	r.notify(changed)
 }
 
-// CircuitReport is a circuit that is not closed: open or half-open (State), and
-// when it opened. A half-open circuit keeps its opening time: it opened then and has
-// not closed since.
-type CircuitReport struct {
-	State    CircuitState
-	OpenedAt time.Time
-}
-
-// Circuits returns the circuits that are not closed, by deployment: open ones, and
-// half-open ones (a probe succeeded; the deployment takes one trial at a time).
-// Deployments with a closed circuit are absent.
-func (r *Router) Circuits() map[DeploymentID]CircuitReport {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := make(map[DeploymentID]CircuitReport)
-	for key, c := range r.circuits {
-		switch {
-		case c.openedAt.IsZero():
-		case c.halfOpen:
-			out[key] = CircuitReport{State: CircuitHalfOpen, OpenedAt: c.openedAt}
-		default:
-			out[key] = CircuitReport{State: CircuitOpen, OpenedAt: c.openedAt}
-		}
-	}
-	return out
-}
-
 // dropRemovedCircuits forgets the circuits of deployments the applied config no
 // longer has and stops the probers of backends left without an open or half-open
 // circuit. changed reports a dropped open circuit.

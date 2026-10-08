@@ -47,7 +47,15 @@ func openStream(t *testing.T, g *testGateway, srv *httptest.Server) (deploymentM
 	return backendModel(t, reqs[len(reqs)-1]), func() { stop(); resp.Body.Close() }
 }
 
-func inFlight(g *testGateway) map[string]int { return g.router.InFlightByBackend() }
+// inFlight is what g's router counts in flight per backend: only backends with
+// requests running.
+func inFlight(g *testGateway) map[string]int {
+	counts := make(map[string]int)
+	for id, b := range g.router.Serving(nil).Backends {
+		counts[id] = b.InFlight
+	}
+	return counts
+}
 
 func TestLoadGoesToTheLeastBusyDeployment(t *testing.T) {
 	g := newTestGateway(t)

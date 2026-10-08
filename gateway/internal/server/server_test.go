@@ -251,13 +251,14 @@ func buildTestGateway(t *testing.T, opts testOptions) *testGateway {
 	reg := metrics.NewRegistry()
 	metrics.RegisterBuildInfo(reg, "(devel)")
 	usage := &recordedUsage{metrics: metrics.NewUsageMetrics(reg, holder), settled: make(chan accounting.UsageRecord, 64)}
-	router := routing.New(routing.Options{Probe: providers.Probe, Observer: metrics.NewCircuits(reg), Logger: logger})
+	circuits := metrics.NewCircuits(reg)
+	router := routing.New(routing.Options{Probe: providers.Probe, Observer: circuits, Logger: logger})
 	router.Configure(holder.Current())
 	recorder := accounting.NewRecorder(accounting.RecorderOptions{Instance: "gw-test", Batcher: batcher, Metrics: usage,
 		Logger: logger})
 	drain := NewDrain()
 	missing := NewMissingEndpoints()
-	h := NewAPI(holder, drain, bodies, providers, limiter, router, missing, recorder, metrics.NewOps(reg, router, holder), logger)
+	h := NewAPI(holder, drain, bodies, providers, limiter, router, missing, recorder, metrics.NewOps(reg, router, circuits, holder), logger)
 	return &testGateway{h: h, logs: &logs, log: log, backend: backend, holder: holder, router: router,
 		limiter: limiter, missing: missing, usage: usage, metrics: reg, drain: drain, bodies: bodies}
 }

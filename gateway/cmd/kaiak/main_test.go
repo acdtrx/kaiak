@@ -230,7 +230,7 @@ func TestSignalTriggersReloadAndStopsWithContext(t *testing.T) {
 	}
 	holder := &config.Holder{}
 	registry := metrics.NewRegistry()
-	ops := metrics.NewOps(registry, routing.New(routing.Options{}), holder)
+	ops := metrics.NewOps(registry, routing.New(routing.Options{}), metrics.NewCircuits(registry), holder)
 	loader := config.NewFileLoader(path, config.NewApplier(holder, logger, envOf(nil), ops.ConfigLoaded))
 	if err := loader.Load(config.TriggerStartup); err != nil {
 		t.Fatal(err)

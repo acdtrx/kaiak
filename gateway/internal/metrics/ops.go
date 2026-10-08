@@ -108,6 +108,7 @@ var queueReasons = []QueueReason{QueueFull, QueueTimeout}
 // names, backend IDs and classes — never a key or any content.
 type Ops struct {
 	holder          *config.Holder
+	circuits        *Circuits
 	requestDuration *HistogramVec
 	firstToken      *HistogramVec
 	tokenRate       *HistogramVec
@@ -128,14 +129,17 @@ type Ops struct {
 	refusedConns    *CounterVec
 }
 
-// NewOps registers the ops metrics on reg. In-flight counts and queue depths are read
-// from router at scrape time, with every backend and model of holder's live config
-// present (0 when idle); backend caps are the shares routing enforces. Counters and
-// histograms whose label values the config determines are created at 0 for holder's
-// config, if it has one, and for every config applied since (ConfigLoaded).
-func NewOps(reg *Registry, router *routing.Router, holder *config.Holder) *Ops {
+// NewOps registers the ops metrics on reg. The routing gauges — in-flight counts,
+// backend caps, queue depths, circuit and cooldown states — are read at scrape time
+// from one routing.Serving against holder's live config, so every backend, model and
+// deployment of it is present (0 when idle); backend caps are the shares routing
+// enforces. Counters and histograms whose label values the config determines,
+// circuits' among them, are created at 0 for holder's config, if it has one, and for
+// every config applied since (ConfigLoaded).
+func NewOps(reg *Registry, router *routing.Router, circuits *Circuits, holder *config.Holder) *Ops {
 	o := &Ops{
-		holder: holder,
+		holder:   holder,
+		circuits: circuits,
 		requestDuration: reg.Histogram("kaiak_request_duration_seconds",
 			"Time from request arrival to the end of its response, by endpoint, model and status class.",
 			durationBuckets, "endpoint", "model", "status_class"),
@@ -203,90 +207,51 @@ func NewOps(reg *Registry, router *routing.Router, holder *config.Holder) *Ops {
 	if s := holder.Current(); s != nil {
 		o.prepareSeries(s)
 	}
-	reg.GaugeFunc("kaiak_backend_in_flight_requests",
-		"Requests in flight per backend, from routing until the response is over.",
-		[]string{"backend"}, func(emit func(float64, ...string)) {
-			counts := router.InFlightByBackend()
-			if s := holder.Current(); s != nil {
-				for id := range s.Backends {
-					if _, ok := counts[id]; !ok {
-						counts[id] = 0
-					}
-				}
-			}
-			for id, n := range counts {
-				emit(float64(n), id)
-			}
-		})
-	reg.GaugeFunc("kaiak_backend_max_in_flight",
-		"The cap on requests in flight per backend this gateway enforces: its share of max_in_flight among the live gateways; backends without a cap are absent.",
-		[]string{"backend"}, func(emit func(float64, ...string)) {
-			for id, n := range router.MaxInFlightByBackend() {
-				emit(float64(n), id)
-			}
-		})
-	reg.GaugeFunc("kaiak_queued_requests",
-		"Requests waiting in each model's queue for a slot.",
-		[]string{"model"}, func(emit func(float64, ...string)) {
-			counts := router.QueuedByModel()
-			if s := holder.Current(); s != nil {
-				for name := range s.Models {
-					if _, ok := counts[name]; !ok {
-						counts[name] = 0
-					}
-				}
-			}
-			for name, n := range counts {
-				emit(float64(n), name)
-			}
-		})
-	circuitGauge := func(state routing.CircuitState) func(emit func(float64, ...string)) {
-		return func(emit func(float64, ...string)) {
-			// One sample per distinct deployment: public models may share one.
-			values := make(map[routing.DeploymentID]float64)
-			if s := holder.Current(); s != nil {
-				for _, m := range s.Models {
-					for _, d := range m.Deployments {
-						values[routing.DeploymentID{Backend: d.Backend.ID, Model: d.Model}] = 0
-					}
-				}
-			}
-			for id, c := range router.Circuits() {
-				if c.State == state {
-					values[id] = 1
-				}
-			}
-			for id, v := range values {
-				emit(v, id.Backend, id.Model)
+	deployment := []string{"backend", "deployment_model"}
+	reg.GaugeFuncs([]GaugeDesc{
+		{"kaiak_backend_in_flight_requests",
+			"Requests in flight per backend, from routing until the response is over.", []string{"backend"}},
+		{"kaiak_backend_max_in_flight",
+			"The cap on requests in flight per backend this gateway enforces: its share of max_in_flight among the live gateways; backends without a cap are absent.",
+			[]string{"backend"}},
+		{"kaiak_queued_requests", "Requests waiting in each model's queue for a slot.", []string{"model"}},
+		{"kaiak_circuit_open",
+			"1 while the deployment's circuit breaker is open (waiting for a probe), else 0; half-open counts 0.", deployment},
+		{"kaiak_circuit_half_open",
+			"1 while the deployment's circuit breaker is half-open (a probe succeeded; the next request is its trial), else 0.",
+			deployment},
+		{"kaiak_deployment_cooling_down",
+			"1 while the deployment cools down after a 429 (routing sends it no request while another deployment of the model is eligible), else 0.",
+			deployment},
+	}, func(emit []func(float64, ...string)) {
+		inFlight, maxInFlight, queued, open, halfOpen, cooling := emit[0], emit[1], emit[2], emit[3], emit[4], emit[5]
+		serving := router.Serving(holder.Current())
+		for id, b := range serving.Backends {
+			inFlight(float64(b.InFlight), id)
+			if b.Share > 0 {
+				maxInFlight(float64(b.Share), id)
 			}
 		}
-	}
-	reg.GaugeFunc("kaiak_circuit_open",
-		"1 while the deployment's circuit breaker is open (waiting for a probe), else 0; half-open counts 0.",
-		[]string{"backend", "deployment_model"}, circuitGauge(routing.CircuitOpen))
-	reg.GaugeFunc("kaiak_circuit_half_open",
-		"1 while the deployment's circuit breaker is half-open (a probe succeeded; the next request is its trial), else 0.",
-		[]string{"backend", "deployment_model"}, circuitGauge(routing.CircuitHalfOpen))
-	reg.GaugeFunc("kaiak_deployment_cooling_down",
-		"1 while the deployment cools down after a 429 (routing sends it no request while another deployment of the model is eligible), else 0.",
-		[]string{"backend", "deployment_model"}, func(emit func(float64, ...string)) {
-			// One sample per distinct deployment: public models may share one.
-			values := make(map[routing.DeploymentID]float64)
-			if s := holder.Current(); s != nil {
-				for _, m := range s.Models {
-					for _, d := range m.Deployments {
-						values[routing.DeploymentID{Backend: d.Backend.ID, Model: d.Model}] = 0
-					}
-				}
-			}
-			for id := range router.CoolingDown() {
-				values[id] = 1
-			}
-			for id, v := range values {
-				emit(v, id.Backend, id.Model)
-			}
-		})
+		for name, m := range serving.Models {
+			queued(float64(m.Queued), name)
+		}
+		deploymentGauge(open, serving, func(d routing.DeploymentServing) bool { return d.Circuit == routing.CircuitOpen })
+		deploymentGauge(halfOpen, serving, func(d routing.DeploymentServing) bool { return d.Circuit == routing.CircuitHalfOpen })
+		deploymentGauge(cooling, serving, routing.DeploymentServing.CoolingDown)
+	})
 	return o
+}
+
+// deploymentGauge emits one sample per deployment of serving — public models may
+// share one: 1 where is holds, else 0.
+func deploymentGauge(emit func(float64, ...string), serving routing.Serving, is func(routing.DeploymentServing) bool) {
+	for id, d := range serving.Deployments {
+		v := 0.0
+		if is(d) {
+			v = 1
+		}
+		emit(v, id.Backend, id.Model)
+	}
 }
 
 // Circuits counts circuit-breaker events, fed by routing (a routing.Observer).
@@ -295,7 +260,8 @@ type Circuits struct {
 	probes      *CounterVec
 }
 
-// NewCircuits registers the circuit-breaker counters on reg.
+// NewCircuits registers the circuit-breaker counters on reg. Their series per config
+// are created by the Ops given them (NewOps).
 func NewCircuits(reg *Registry) *Circuits {
 	return &Circuits{
 		transitions: reg.Counter("kaiak_circuit_transitions_total",
@@ -310,10 +276,10 @@ func (c *Circuits) CircuitChanged(d routing.DeploymentID, to routing.CircuitStat
 	c.transitions.Inc(d.Backend, d.Model, string(to))
 }
 
-// PrepareSeries creates at 0, for every deployment of s, its circuit transitions
+// prepareSeries creates at 0, for every deployment of s, its circuit transitions
 // by state entered and its backend's probes by result, so the first opening shows
 // as an increase. Series of deployments a later config drops stay until restart.
-func (c *Circuits) PrepareSeries(s *config.Snapshot) {
+func (c *Circuits) prepareSeries(s *config.Snapshot) {
 	for _, m := range s.Models {
 		for _, d := range m.Deployments {
 			for _, to := range []routing.CircuitState{routing.CircuitOpen, routing.CircuitHalfOpen, routing.CircuitClosed} {
@@ -435,11 +401,12 @@ func (o *Ops) ObserveLimitsSync(d time.Duration) {
 // prepareSeries creates at 0 every ops series whose label values s determines
 // (docs/specs/GATEWAY.md, Observability: series at 0): per model its queue
 // rejections, queue wait and attempts; per deployment its upstream attempts by
-// outcome and its backend's attempt duration; per model and backend of its
-// deployments the retries by reason, time to first token and decode rate. Series of
-// deployments a later config drops stay until restart. The request duration is left
-// out: its status class comes from traffic.
+// outcome and its backend's attempt duration, and the circuit counters; per model
+// and backend of its deployments the retries by reason, time to first token and
+// decode rate. Series of deployments a later config drops stay until restart. The
+// request duration is left out: its status class comes from traffic.
 func (o *Ops) prepareSeries(s *config.Snapshot) {
+	o.circuits.prepareSeries(s)
 	for name, m := range s.Models {
 		for _, reason := range queueReasons {
 			o.queueRejections.Add(0, name, string(reason))

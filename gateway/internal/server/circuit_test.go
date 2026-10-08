@@ -36,7 +36,7 @@ func newCircuitGateway(t *testing.T, threshold int, edit func(string) string) *t
 }
 
 func circuitOpen(g *testGateway, backend, model string) bool {
-	_, ok := notClosed(g.router)[routing.DeploymentID{Backend: backend, Model: model}]
+	_, ok := notClosed(g)[routing.DeploymentID{Backend: backend, Model: model}]
 	return ok
 }
 
@@ -242,7 +242,7 @@ func TestOpenDeploymentIsSkippedAndProbedBackIn(t *testing.T) {
 		do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey, body: `{"model":"pair"}`})
 	}
 	if !circuitOpen(g, "local-b", "pair-b") || circuitOpen(g, "local", "pair-a") {
-		t.Fatalf("open circuits %v, want only local-b/pair-b", notClosed(g.router))
+		t.Fatalf("open circuits %v, want only local-b/pair-b", notClosed(g))
 	}
 	served := len(g.backend.Requests())
 	for range 4 {
@@ -283,7 +283,7 @@ func TestOpenDeploymentIsSkippedAndProbedBackIn(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !circuitOpen(g, "local-b", "pair-b") {
-		t.Fatalf("half-open circuit reported closed: %v", notClosed(g.router))
+		t.Fatalf("half-open circuit reported closed: %v", notClosed(g))
 	}
 	// Half-open is not open to the metrics: an idle recovered deployment must not keep
 	// an open-circuit alert firing.
@@ -295,8 +295,8 @@ func TestOpenDeploymentIsSkippedAndProbedBackIn(t *testing.T) {
 	if len(other.Requests()) != 3 {
 		t.Errorf("the half-open deployment got %d requests in total, want 3 (its trial)", len(other.Requests()))
 	}
-	if len(notClosed(g.router)) != 0 {
-		t.Fatalf("open circuits %v after the trial succeeded", notClosed(g.router))
+	if len(notClosed(g)) != 0 {
+		t.Fatalf("open circuits %v after the trial succeeded", notClosed(g))
 	}
 
 	logs := g.logText()
@@ -470,12 +470,14 @@ func TestResponseTimeoutsOfAHungBackendOpenItsCircuit(t *testing.T) {
 		`kaiak_upstream_attempts_total{backend="slow",deployment_model="slow",outcome="response_timeout"} 4`)
 }
 
-// notClosed returns when each circuit of r that is not closed (open or half-open)
-// opened.
-func notClosed(r *routing.Router) map[routing.DeploymentID]time.Time {
+// notClosed returns when each circuit of g's config that is not closed (open or
+// half-open) opened.
+func notClosed(g *testGateway) map[routing.DeploymentID]time.Time {
 	out := make(map[routing.DeploymentID]time.Time)
-	for key, c := range r.Circuits() {
-		out[key] = c.OpenedAt
+	for key, d := range g.router.Serving(g.holder.Current()).Deployments {
+		if d.Circuit != routing.CircuitClosed {
+			out[key] = d.OpenedAt
+		}
 	}
 	return out
 }

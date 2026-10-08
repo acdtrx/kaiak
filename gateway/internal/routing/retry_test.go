@@ -83,7 +83,7 @@ func TestQueuedRetryWaitsForItsDeploymentAndLetsOthersPass(t *testing.T) {
 	}
 	res.slot.Release()
 	got.slot.Release()
-	if n := r.InFlightByBackend(); len(n) != 0 {
+	if n := inFlight(r); len(n) != 0 {
 		t.Errorf("in flight %v, want none", n)
 	}
 }

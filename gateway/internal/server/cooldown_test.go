@@ -99,7 +99,7 @@ func TestCooldownEnds(t *testing.T) {
 		t.Errorf("during the cooldown: %s, want one attempt on local-b", line)
 	}
 	deadline := time.Now().Add(5 * time.Second)
-	for len(g.router.CoolingDown()) > 0 {
+	for coolingDown(g) {
 		if time.Now().After(deadline) {
 			t.Fatal("the cooldown did not end")
 		}
@@ -144,4 +144,14 @@ func TestThrottleCooldown(t *testing.T) {
 			}
 		})
 	}
+}
+
+// coolingDown reports whether a deployment of g's config cools down after a 429.
+func coolingDown(g *testGateway) bool {
+	for _, d := range g.router.Serving(g.holder.Current()).Deployments {
+		if d.CoolingDown() {
+			return true
+		}
+	}
+	return false
 }

@@ -358,20 +358,9 @@ Group entries under headings as themes emerge.
   - *Metrics* — wanted (user, 2026-10-07): OTLP metrics export alongside
     `/metrics`, the way the logs layer was added, with metric names and units
     renamed to the OpenTelemetry semantic conventions where one exists (`kaiak.*`
-    for the rest). It takes in the metrics-side findings of the structure review, so
-    each metric changes once (details in `docs/reviews/2026-10-07-structure/`:
-    `modules/gateway-observability.md` for F5, `STRUCTURE.md` for T12):
-    - *F5, per-config gauges* — one helper for the per-deployment gauges (circuit
-      open, half-open, cooling) and one for zero-filled router counts; `NewOps` takes
-      the `Circuits` and prepares both per applied config, so `main` drops its call.
-    - *T12, routing observation* — routing produces one picture of configured and
-      still-active backends, models and deployments (caps, shares, circuit and
-      cooldown state) against a config snapshot; `main` formats it as the status
-      message and `metrics` as gauges, instead of each rebuilding it from router
-      getters.
-    Trigger: the structure plan (`docs/plans/structure/`) is merged — its attempt
-    classification and limit-type/unit packages create the label lists the metrics
-    read.
+    for the rest). Trigger: the structure plan (`docs/plans/structure/`) is
+    merged — its attempt classification and limit-type/unit packages create the
+    label lists the metrics read.
   - *Traces* — new work. Confined test first: forward the W3C `traceparent` header
     to backends (vLLM can continue the trace) and log `trace_id` on the request line,
     linking client traces to gateway lines. Span export (per request, per attempt,

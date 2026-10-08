@@ -55,7 +55,7 @@ func TestFewestInFlightWins(t *testing.T) {
 	}
 	releaseA()
 	releaseA2()
-	if got := r.InFlightByBackend(); got["a"] != 0 || got["b"] != 2 {
+	if got := inFlight(r); got["a"] != 0 || got["b"] != 2 {
 		t.Errorf("in flight %v, want b: 2", got)
 	}
 }
@@ -67,11 +67,11 @@ func TestReleaseIsCountedOnce(t *testing.T) {
 	_, second := acquire(r, m)
 	first()
 	first()
-	if got := r.InFlightByBackend()["a"]; got != 1 {
+	if got := inFlight(r)["a"]; got != 1 {
 		t.Errorf("in flight %d after one request released twice, want 1", got)
 	}
 	second()
-	if got := r.InFlightByBackend(); len(got) != 0 {
+	if got := inFlight(r); len(got) != 0 {
 		t.Errorf("in flight %v after every release, want none", got)
 	}
 }
@@ -86,7 +86,7 @@ func TestCountsSurviveAConfigSwap(t *testing.T) {
 		t.Errorf("after reload chose %s, want b (a still busy from the old snapshot)", d.Backend.ID)
 	}
 	releaseA()
-	if got := r.InFlightByBackend(); got["a"] != 0 || got["b"] != 1 {
+	if got := inFlight(r); got["a"] != 0 || got["b"] != 1 {
 		t.Errorf("in flight %v, want b: 1", got)
 	}
 }
@@ -102,7 +102,7 @@ func TestConcurrentAcquireAndRelease(t *testing.T) {
 		})
 	}
 	wg.Wait()
-	if got := r.InFlightByBackend(); len(got) != 0 {
+	if got := inFlight(r); len(got) != 0 {
 		t.Errorf("in flight %v, want none", got)
 	}
 }

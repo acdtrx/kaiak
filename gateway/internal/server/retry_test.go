@@ -546,7 +546,7 @@ func TestRetryQueuesForACappedBackend(t *testing.T) {
 			t.Errorf("log line: %s", line)
 		}
 		expectMetricLines(t, scrape(g), `kaiak_queue_wait_seconds_count{model="retry"} 1`)
-		if n := g.router.InFlightByBackend(); len(n) != 0 {
+		if n := inFlight(g); len(n) != 0 {
 			t.Errorf("in flight %v, want none", n)
 		}
 	})
@@ -579,7 +579,7 @@ func TestRetryQueuesForACappedBackend(t *testing.T) {
 		if got, want := reservedTokens(t, g), settledTokens(g); got != want {
 			t.Errorf("team tokens %d, want the settled %d", got, want)
 		}
-		if n := g.router.InFlightByBackend(); len(n) != 0 {
+		if n := inFlight(g); len(n) != 0 {
 			t.Errorf("in flight %v, want none", n)
 		}
 	})
@@ -628,7 +628,7 @@ func TestDrainCutsARetryWaitingInTheQueue(t *testing.T) {
 	if !strings.Contains(line, `"error.type":"server_shutting_down"`) || !strings.Contains(line, `"kaiak.attempts":1,`) {
 		t.Errorf("log line: %s", line)
 	}
-	if n := g.router.InFlightByBackend(); len(n) != 0 {
+	if n := inFlight(g); len(n) != 0 {
 		t.Errorf("in flight %v, want none", n)
 	}
 }

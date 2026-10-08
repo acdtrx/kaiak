@@ -33,8 +33,23 @@ func (r *Registry) WriteText(w *bytes.Buffer) {
 	}
 	r.mu.Unlock()
 	slices.SortFunc(families, func(a, b *family) int { return strings.Compare(a.name, b.name) })
+	// Each group of families read together is read once, before any is written.
+	grouped := make(map[*family][]sample)
 	for _, f := range families {
-		f.writeText(w)
+		if g := f.group; g != nil && g.families[0] == f {
+			emit := make([]func(float64, ...string), len(g.families))
+			collected := make([][]sample, len(g.families))
+			for i, gf := range g.families {
+				emit[i] = gf.emitInto(&collected[i])
+			}
+			g.collect(emit)
+			for i, gf := range g.families {
+				grouped[gf] = collected[i]
+			}
+		}
+	}
+	for _, f := range families {
+		f.writeText(w, grouped[f])
 	}
 }
 
@@ -42,10 +57,22 @@ func (r *Registry) WriteText(w *bytes.Buffer) {
 type sample struct {
 	labelValues []string
 	s           *series
-	value       float64 // collected gauges only
+	value       float64 // collected families only
 }
 
-func (f *family) writeText(w *bytes.Buffer) {
+// emitInto returns the emit function of a family read at write time: each call adds
+// one sample to samples.
+func (f *family) emitInto(samples *[]sample) func(float64, ...string) {
+	return func(value float64, labelValues ...string) {
+		if len(labelValues) != len(f.labels) {
+			panic("metrics: " + f.name + ": wrong number of label values emitted")
+		}
+		*samples = append(*samples, sample{labelValues: slices.Clone(labelValues), value: value})
+	}
+}
+
+// writeText writes the family; grouped are its samples when its group was read.
+func (f *family) writeText(w *bytes.Buffer, grouped []sample) {
 	w.WriteString("# HELP ")
 	w.WriteString(f.name)
 	w.WriteByte(' ')
@@ -57,14 +84,12 @@ func (f *family) writeText(w *bytes.Buffer) {
 	w.WriteByte('\n')
 
 	var samples []sample
-	if f.collect != nil {
-		f.collect(func(value float64, labelValues ...string) {
-			if len(labelValues) != len(f.labels) {
-				panic("metrics: " + f.name + ": wrong number of label values emitted")
-			}
-			samples = append(samples, sample{labelValues: slices.Clone(labelValues), value: value})
-		})
-	} else {
+	switch {
+	case f.group != nil:
+		samples = grouped
+	case f.collect != nil:
+		f.collect(f.emitInto(&samples))
+	default:
 		f.mu.RLock()
 		for _, s := range f.series {
 			samples = append(samples, sample{labelValues: s.labelValues, s: s})
@@ -75,7 +100,7 @@ func (f *family) writeText(w *bytes.Buffer) {
 
 	for _, smp := range samples {
 		switch {
-		case f.collect != nil:
+		case f.collect != nil || f.group != nil:
 			f.writeLine(w, "", smp.labelValues, "", "", formatFloat(smp.value))
 		case f.kind == kindCounter:
 			n := smp.s.count.Load()

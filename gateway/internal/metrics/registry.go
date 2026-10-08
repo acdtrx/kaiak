@@ -64,8 +64,10 @@ type family struct {
 	// buckets are a histogram's upper bounds, increasing; +Inf is implicit.
 	buckets []float64
 	// collect, when set, produces a gauge's or counter's samples at write time
-	// instead of stored series.
+	// instead of stored series; group, when set, produces them for the families
+	// read together with it (GaugeFuncs).
 	collect func(emit func(value float64, labelValues ...string))
+	group   *gaugeGroup
 
 	mu     sync.RWMutex
 	series map[string]*series
@@ -114,6 +116,30 @@ func (r *Registry) Gauge(name, help string, labels ...string) *GaugeVec {
 // once per series. It runs on the scraping goroutine and must not block.
 func (r *Registry) GaugeFunc(name, help string, labels []string, collect func(emit func(value float64, labelValues ...string))) {
 	r.register(&family{name: name, help: help, kind: kindGauge, labels: labels, collect: collect})
+}
+
+// GaugeDesc describes one gauge family of GaugeFuncs.
+type GaugeDesc struct {
+	Name, Help string
+	Labels     []string
+}
+
+// gaugeGroup is gauge families read together: collect gets one emit per family, in
+// the order of families.
+type gaugeGroup struct {
+	families []*family
+	collect  func(emit []func(value float64, labelValues ...string))
+}
+
+// GaugeFuncs registers gauge families read together from live state at write time:
+// collect runs once per write and gets one emit per family, in the order of gauges,
+// each called once per series of its family — so the families of one write agree
+// with each other. It runs on the scraping goroutine and must not block.
+func (r *Registry) GaugeFuncs(gauges []GaugeDesc, collect func(emit []func(value float64, labelValues ...string))) {
+	g := &gaugeGroup{collect: collect}
+	for _, d := range gauges {
+		g.families = append(g.families, r.register(&family{name: d.Name, help: d.Help, kind: kindGauge, labels: d.Labels, group: g}))
+	}
 }
 
 // CounterFunc registers a counter read from a count kept elsewhere at write time:
