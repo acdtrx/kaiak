@@ -423,6 +423,20 @@ func (l *attempts) settle(rq *request, at *attempt) {
 	rq.usage = &rec
 }
 
+// totalUsage is the request's usage over all its records (one per attempt that has
+// usage): each unit's amount and the cost in nano-USD, summed.
+func (rq *request) totalUsage() (accounting.Units, int64) {
+	units := make(accounting.Units)
+	var cost int64
+	for _, rec := range rq.records {
+		for unit, n := range rec.Units {
+			units[unit] += n
+		}
+		cost += rec.CostNanoUSD
+	}
+	return units, cost
+}
+
 // end ends the request's last attempt once the request is over, however it ended: a
 // held response is closed, its usage settled, the circuit breaker told and its slot
 // freed. The last attempt is never retried, even one a retry was decided for (the

@@ -48,12 +48,6 @@ type Resource struct {
 	InstanceID string
 }
 
-// Counts are the records by what became of them, since the exporter started:
-// accepted by the collector, in a batch given up, or never sent.
-type Counts struct {
-	Exported, Failed, Dropped uint64
-}
-
 // options are the exporter's fixed sizes and its timing; tests replace them.
 type options struct {
 	capacity  int
@@ -169,9 +163,10 @@ func (e *Exporter) Handler(next slog.Handler) slog.Handler {
 	return &handler{next: next, exp: e}
 }
 
-// Counts reads the counts.
-func (e *Exporter) Counts() Counts {
-	return Counts{Exported: e.exported.Load(), Failed: e.failed.Load(), Dropped: e.dropped.Load()}
+// Counts are the records by what became of them, since the exporter started:
+// accepted by the collector, in a batch given up, or never sent.
+func (e *Exporter) Counts() (exported, failed, dropped uint64) {
+	return e.exported.Load(), e.failed.Load(), e.dropped.Load()
 }
 
 // Flush sends what is queued until the queue is empty — records logged meanwhile

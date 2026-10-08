@@ -247,10 +247,7 @@ func newGraph(s settings, lookupEnv func(string) (string, bool), logger *slog.Lo
 	g := &graph{holder: &config.Holder{}, providers: provider.NewRegistry(lookupEnv), registry: metrics.NewRegistry(),
 		missingEndpoints: server.NewMissingEndpoints()}
 	if logExport != nil {
-		metrics.RegisterLogExport(g.registry, func() metrics.LogExportCounts {
-			c := logExport.Counts()
-			return metrics.LogExportCounts{Exported: c.Exported, Failed: c.Failed, Dropped: c.Dropped}
-		})
+		metrics.RegisterLogExport(g.registry, logExport.Counts)
 	}
 	circuits := metrics.NewCircuits(g.registry)
 	g.router = routing.New(routing.Options{Probe: g.providers.Probe, Observer: circuits, Logger: logger})

@@ -414,8 +414,8 @@ func TestUsageDeliveryMetrics(t *testing.T) {
 
 func TestLogExportMetrics(t *testing.T) {
 	reg := NewRegistry()
-	counts := LogExportCounts{}
-	RegisterLogExport(reg, func() LogExportCounts { return counts })
+	var exported, failed, dropped uint64
+	RegisterLogExport(reg, func() (uint64, uint64, uint64) { return exported, failed, dropped })
 	want := `# HELP kaiak_log_export_records_total Log records exported over OTLP, by outcome (exported: accepted by the collector; failed: in a batch given up; dropped: never sent, a full queue or still queued at exit).
 # TYPE kaiak_log_export_records_total counter
 kaiak_log_export_records_total{outcome="dropped"} 0
@@ -425,7 +425,7 @@ kaiak_log_export_records_total{outcome="failed"} 0
 	if got := text(reg); got != want {
 		t.Errorf("at startup:\n%s\nwant:\n%s", got, want)
 	}
-	counts = LogExportCounts{Exported: 1024, Failed: 3, Dropped: 7}
+	exported, failed, dropped = 1024, 3, 7
 	out := text(reg)
 	for _, line := range []string{
 		`kaiak_log_export_records_total{outcome="exported"} 1024`,

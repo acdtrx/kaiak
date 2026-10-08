@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"kaiak/internal/accounting"
 	"kaiak/internal/clip"
 	"kaiak/internal/config"
 	"kaiak/internal/logattr"
@@ -90,16 +89,9 @@ func (a *API) logRequest(rq *request) {
 		attrs = append(attrs, slog.String("kaiak.auth.failure", string(rq.authFailure)))
 	}
 	if u := rq.usage; u != nil {
-		// Units and cost are the request's: every record's (one per attempt that
-		// has usage); the flags are the answering attempt's.
-		units := make(accounting.Units)
-		var cost int64
-		for _, rec := range rq.records {
-			for unit, n := range rec.Units {
-				units[unit] += n
-			}
-			cost += rec.CostNanoUSD
-		}
+		// Units and cost are the request's (totalUsage); the flags are the answering
+		// attempt's.
+		units, cost := rq.totalUsage()
 		// gen_ai.usage.input_tokens is all input, as the GenAI convention means it:
 		// config.InputUnits, the input neither read from nor written to the cache plus
 		// its two cache parts.

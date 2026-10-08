@@ -13,8 +13,7 @@ import (
 // generated content of the choices (docs/specs/GATEWAY.md, Accounting).
 type openAIUsage struct {
 	endpoint provider.Endpoint
-	// latest is the latest usage the backend reported; nil when none yet.
-	latest Units
+	latestReport
 	// contentBytes counts generated content seen in stream chunks.
 	contentBytes int64
 }
@@ -33,9 +32,7 @@ func (u *openAIUsage) streamEvent(payload []byte) {
 	// A member of an unexpected type is skipped; the others are still read. Invalid
 	// JSON fills nothing.
 	_ = json.Unmarshal(payload, &chunk)
-	if units, ok := u.parse(chunk.Usage); ok {
-		u.latest = units
-	}
+	u.keep(u.parse(chunk.Usage))
 	for _, c := range chunk.Choices {
 		u.contentBytes += choiceContentBytes(c)
 	}
@@ -43,11 +40,7 @@ func (u *openAIUsage) streamEvent(payload []byte) {
 
 func (u *openAIUsage) contentMember() string { return "choices" }
 
-func (u *openAIUsage) bodyUsage(raw json.RawMessage) {
-	if units, ok := u.parse(raw); ok {
-		u.latest = units
-	}
-}
+func (u *openAIUsage) bodyUsage(raw json.RawMessage) { u.keep(u.parse(raw)) }
 
 // bodyContentBytes counts the choices' generated content. Embeddings generate
 // nothing.
@@ -65,8 +58,6 @@ func (u *openAIUsage) bodyContentBytes(raw json.RawMessage) int64 {
 	}
 	return n
 }
-
-func (u *openAIUsage) reported() (Units, bool) { return u.latest, true }
 
 func (u *openAIUsage) streamContentBytes() int64 {
 	if u.endpoint == provider.Embeddings {
@@ -89,41 +80,32 @@ type usageReport struct {
 	} `json:"completion_tokens_details"`
 }
 
-// parse maps a usage object onto the units (docs/specs/CONTROL-PROTOCOL.md,
-// Units and price units): tokens_cached = cached, tokens_cache_write = written,
-// tokens_in = prompt − cached − written, tokens_out = completion (reasoning
-// included), tokens_reasoning = the reasoning share of it. Cached is clamped to
-// prompt first, then written to what remains, so the three input units add up to
-// prompt. Embeddings count prompt tokens only. A null, missing or malformed usage, or
-// one with neither token count, is no report.
+// parse maps a usage object onto the units: prompt_tokens includes the cache and
+// completion_tokens the reasoning (inclusiveUnits). Embeddings count prompt tokens
+// only. A null, missing or malformed usage, or one with neither token count, is no
+// report.
 func (u *openAIUsage) parse(raw json.RawMessage) (Units, bool) {
 	if len(raw) == 0 || raw[0] != '{' {
 		return nil, false
 	}
 	var r usageReport
-	if json.Unmarshal(raw, &r) != nil || (r.PromptTokens == nil && r.CompletionTokens == nil) {
+	if json.Unmarshal(raw, &r) != nil {
 		return nil, false
 	}
-	prompt := nonNegative(r.PromptTokens)
 	if u.endpoint == provider.Embeddings {
-		return withEveryTokenUnit(Units{config.UnitTokensIn: prompt}), true
+		if r.PromptTokens == nil && r.CompletionTokens == nil {
+			return nil, false
+		}
+		return withEveryTokenUnit(Units{config.UnitTokensIn: nonNegative(r.PromptTokens)}), true
 	}
-	completion := nonNegative(r.CompletionTokens)
 	var cached, written, reasoning int64
 	if d := r.PromptTokensDetails; d != nil {
-		cached = min(max(d.CachedTokens, 0), prompt)
-		written = min(max(d.CacheWriteTokens, 0), prompt-cached)
+		cached, written = d.CachedTokens, d.CacheWriteTokens
 	}
 	if d := r.CompletionTokensDetails; d != nil {
-		reasoning = min(max(d.ReasoningTokens, 0), completion)
+		reasoning = d.ReasoningTokens
 	}
-	return withEveryTokenUnit(Units{
-		config.UnitTokensIn:         prompt - cached - written,
-		config.UnitTokensCached:     cached,
-		config.UnitTokensCacheWrite: written,
-		config.UnitTokensOut:        completion,
-		config.UnitTokensReasoning:  reasoning,
-	}), true
+	return inclusiveUnits(r.PromptTokens, r.CompletionTokens, cached, written, reasoning)
 }
 
 // generatedContent is where a choice carries generated text: a chat message (non-

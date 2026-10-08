@@ -1,10 +1,6 @@
 package accounting
 
-import (
-	"encoding/json"
-
-	"kaiak/internal/config"
-)
+import "encoding/json"
 
 // responsesUsage reads OpenAI Responses answers (docs/specs/GATEWAY.md, Accounting →
 // Responses usage): a body's top-level usage; a stream's response.usage in
@@ -12,8 +8,7 @@ import (
 // OpenAI's prompt_tokens does, so the cached and written tokens come out of it; output
 // tokens include reasoning, reported apart in output_tokens_details.
 type responsesUsage struct {
-	// latest is the latest usage the backend reported; nil when none yet.
-	latest Units
+	latestReport
 	// contentBytes counts generated content seen in stream events.
 	contentBytes int64
 }
@@ -32,35 +27,25 @@ type responsesUsageReport struct {
 	} `json:"output_tokens_details"`
 }
 
-// parse maps a usage object onto the units: tokens_cached = cached, tokens_cache_write
-// = written, tokens_in = input − cached − written, tokens_out = output (reasoning
-// included), tokens_reasoning = the reasoning share of it. Clamped as OpenAI's
-// usage is: cached ≤ input first, then written ≤ what remains, reasoning ≤ output. A
-// null, missing or malformed usage, or one with neither token count, is no report.
+// parse maps a usage object onto the units: input_tokens includes the cache and
+// output_tokens the reasoning (inclusiveUnits). A null, missing or malformed usage,
+// or one with neither token count, is no report.
 func (u *responsesUsage) parse(raw json.RawMessage) (Units, bool) {
 	if len(raw) == 0 || raw[0] != '{' {
 		return nil, false
 	}
 	var r responsesUsageReport
-	if json.Unmarshal(raw, &r) != nil || (r.InputTokens == nil && r.OutputTokens == nil) {
+	if json.Unmarshal(raw, &r) != nil {
 		return nil, false
 	}
-	input, output := nonNegative(r.InputTokens), nonNegative(r.OutputTokens)
 	var cached, written, reasoning int64
 	if d := r.InputTokensDetails; d != nil {
-		cached = min(max(d.CachedTokens, 0), input)
-		written = min(max(d.CacheWriteTokens, 0), input-cached)
+		cached, written = d.CachedTokens, d.CacheWriteTokens
 	}
 	if d := r.OutputTokensDetails; d != nil {
-		reasoning = min(max(d.ReasoningTokens, 0), output)
+		reasoning = d.ReasoningTokens
 	}
-	return withEveryTokenUnit(Units{
-		config.UnitTokensIn:         input - cached - written,
-		config.UnitTokensCached:     cached,
-		config.UnitTokensCacheWrite: written,
-		config.UnitTokensOut:        output,
-		config.UnitTokensReasoning:  reasoning,
-	}), true
+	return inclusiveUnits(r.InputTokens, r.OutputTokens, cached, written, reasoning)
 }
 
 // responsesEvent is what the meter reads of one Responses stream event.
@@ -101,9 +86,7 @@ func (u *responsesUsage) streamEvent(payload []byte) {
 	switch {
 	case ev.Type == "response.completed" || ev.Type == "response.incomplete":
 		if ev.Response != nil {
-			if units, ok := u.parse(ev.Response.Usage); ok {
-				u.latest = units
-			}
+			u.keep(u.parse(ev.Response.Usage))
 		}
 	case responsesContentDeltas[ev.Type]:
 		u.contentBytes += int64(len(ev.Delta))
@@ -115,11 +98,7 @@ func (u *responsesUsage) streamEvent(payload []byte) {
 
 func (u *responsesUsage) contentMember() string { return "output" }
 
-func (u *responsesUsage) bodyUsage(raw json.RawMessage) {
-	if units, ok := u.parse(raw); ok {
-		u.latest = units
-	}
-}
+func (u *responsesUsage) bodyUsage(raw json.RawMessage) { u.keep(u.parse(raw)) }
 
 // responsesItem is an output item: a message, a reasoning item, a function call or a
 // custom tool call.
@@ -161,7 +140,5 @@ func (u *responsesUsage) bodyContentBytes(raw json.RawMessage) int64 {
 	}
 	return n
 }
-
-func (u *responsesUsage) reported() (Units, bool) { return u.latest, true }
 
 func (u *responsesUsage) streamContentBytes() int64 { return u.contentBytes }

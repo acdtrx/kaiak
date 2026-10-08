@@ -256,6 +256,47 @@ func (m *Meter) outputBytes() int64 {
 	return m.reader.bodyContentBytes(raw)
 }
 
+// inclusiveUnits maps a usage report whose input count includes the tokens read from
+// and written to the cache, and whose output count includes reasoning (OpenAI's and
+// Responses' usage), onto the units (docs/specs/CONTROL-PROTOCOL.md, Units and price
+// units): tokens_cached = cached, tokens_cache_write = written, tokens_in = input −
+// cached − written, tokens_out = output (reasoning included), tokens_reasoning = the
+// reasoning share of it. Cached is clamped to input first, then written to what
+// remains, so the three input units add up to input; reasoning is clamped to output.
+// A report with neither count is no report.
+func inclusiveUnits(input, output *int64, cached, written, reasoning int64) (Units, bool) {
+	if input == nil && output == nil {
+		return nil, false
+	}
+	in, out := nonNegative(input), nonNegative(output)
+	cached = min(max(cached, 0), in)
+	written = min(max(written, 0), in-cached)
+	reasoning = min(max(reasoning, 0), out)
+	return withEveryTokenUnit(Units{
+		config.UnitTokensIn:         in - cached - written,
+		config.UnitTokensCached:     cached,
+		config.UnitTokensCacheWrite: written,
+		config.UnitTokensOut:        out,
+		config.UnitTokensReasoning:  reasoning,
+	}), true
+}
+
+// latestReport is the usage of a format whose every report is whole (OpenAI,
+// Responses): the latest replaces any before it, and its output count is final.
+type latestReport struct {
+	// latest is the latest usage the backend reported; nil when none yet.
+	latest Units
+}
+
+// keep makes units the latest report when ok.
+func (r *latestReport) keep(units Units, ok bool) {
+	if ok {
+		r.latest = units
+	}
+}
+
+func (r *latestReport) reported() (Units, bool) { return r.latest, true }
+
 func nonNegative(n *int64) int64 {
 	if n == nil || *n < 0 {
 		return 0

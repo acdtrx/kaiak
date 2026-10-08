@@ -134,9 +134,16 @@ func (h *harness) recordedWaits() []time.Duration {
 	return append([]time.Duration(nil), h.waits...)
 }
 
-func wantCounts(t *testing.T, e *Exporter, want Counts) {
+// counts are an exporter's counts, compared whole.
+type counts struct {
+	Exported, Failed, Dropped uint64
+}
+
+func wantCounts(t *testing.T, e *Exporter, want counts) {
 	t.Helper()
-	if got := e.Counts(); got != want {
+	var got counts
+	got.Exported, got.Failed, got.Dropped = e.Counts()
+	if got != want {
 		t.Fatalf("counts %+v, want %+v", got, want)
 	}
 }
@@ -203,7 +210,7 @@ func TestBatchBySize(t *testing.T) {
 		t.Fatalf("second batch %q, want the one left", second.Messages())
 	}
 	<-done
-	wantCounts(t, h.e, Counts{Exported: batchSize + 1})
+	wantCounts(t, h.e, counts{Exported: batchSize + 1})
 }
 
 func TestBatchByInterval(t *testing.T) {
@@ -215,7 +222,7 @@ func TestBatchByInterval(t *testing.T) {
 		t.Fatalf("batch %q, want m0..m2", r.Messages())
 	}
 	h.flush(t)
-	wantCounts(t, h.e, Counts{Exported: 3})
+	wantCounts(t, h.e, counts{Exported: 3})
 }
 
 func TestRetryOnEachRetryableStatus(t *testing.T) {
@@ -234,7 +241,7 @@ func TestRetryOnEachRetryableStatus(t *testing.T) {
 			if n := col.Requests(); n != 3 {
 				t.Fatalf("%d requests, want 3 (two retries)", n)
 			}
-			wantCounts(t, h.e, Counts{Exported: 2})
+			wantCounts(t, h.e, counts{Exported: 2})
 			waits := h.recordedWaits()
 			if len(waits) != 2 {
 				t.Fatalf("waits %v, want 2", waits)
@@ -284,7 +291,7 @@ func TestRetryOnNetworkError(t *testing.T) {
 	if n := col.Requests(); n != 2 {
 		t.Fatalf("%d requests, want 2 (one retry)", n)
 	}
-	wantCounts(t, h.e, Counts{Exported: 3})
+	wantCounts(t, h.e, counts{Exported: 3})
 }
 
 func TestRetryAfterIsHonoured(t *testing.T) {
@@ -315,7 +322,7 @@ func TestRetryAfterIsHonoured(t *testing.T) {
 			if len(waits) != 1 || waits[0] < tc.min || waits[0] > tc.max {
 				t.Fatalf("waits %v, want one within [%s, %s]", waits, tc.min, tc.max)
 			}
-			wantCounts(t, h.e, Counts{Exported: 1})
+			wantCounts(t, h.e, counts{Exported: 1})
 		})
 	}
 }
@@ -334,7 +341,7 @@ func TestRetryAfterBeyondTheTimeLeftFailsAtOnce(t *testing.T) {
 	if w := h.recordedWaits(); len(w) != 0 {
 		t.Fatalf("waited %v, want no wait", w)
 	}
-	wantCounts(t, h.e, Counts{Failed: 4})
+	wantCounts(t, h.e, counts{Failed: 4})
 }
 
 func TestRetriesEndWithTheTimeout(t *testing.T) {
@@ -348,7 +355,7 @@ func TestRetriesEndWithTheTimeout(t *testing.T) {
 	if n := col.Requests(); n != 1 {
 		t.Fatalf("%d requests, want 1", n)
 	}
-	wantCounts(t, h.e, Counts{Failed: 2})
+	wantCounts(t, h.e, counts{Failed: 2})
 }
 
 func TestNoRetryOnOtherStatuses(t *testing.T) {
@@ -365,7 +372,7 @@ func TestNoRetryOnOtherStatuses(t *testing.T) {
 			if n := col.Requests(); n != 1 {
 				t.Fatalf("%d requests, want 1", n)
 			}
-			wantCounts(t, h.e, Counts{Failed: 3})
+			wantCounts(t, h.e, counts{Failed: 3})
 			reports := h.reports.reports(t)
 			if len(reports) != 1 {
 				t.Fatalf("reports %v, want 1", reports)
@@ -402,7 +409,7 @@ func TestPartialSuccessCountsRejectedAsFailed(t *testing.T) {
 			if n := col.Requests(); n != 1 {
 				t.Fatalf("%d requests, want 1: a partial success is not retried", n)
 			}
-			wantCounts(t, h.e, Counts{Exported: tc.exported, Failed: tc.failed})
+			wantCounts(t, h.e, counts{Exported: tc.exported, Failed: tc.failed})
 		})
 	}
 }
@@ -434,7 +441,7 @@ func TestOversizedResponseFailsUnretried(t *testing.T) {
 			if n := col.Requests(); n != 1 {
 				t.Fatalf("%d requests, want 1", n)
 			}
-			wantCounts(t, h.e, Counts{Failed: 2})
+			wantCounts(t, h.e, counts{Failed: 2})
 		})
 	}
 }
@@ -443,12 +450,12 @@ func TestFullQueueDropsTheNewest(t *testing.T) {
 	col := fakeotlp.New(t, nil)
 	h := newHarness(t, col, nil, options{capacity: 4})
 	h.logN(10, "m")
-	wantCounts(t, h.e, Counts{Dropped: 6})
+	wantCounts(t, h.e, counts{Dropped: 6})
 	h.flush(t)
 	if r := col.Next(t); !reflect.DeepEqual(r.Messages(), messages("m", 0, 4)) {
 		t.Fatalf("sent %q, want the oldest four", r.Messages())
 	}
-	wantCounts(t, h.e, Counts{Exported: 4, Dropped: 6})
+	wantCounts(t, h.e, counts{Exported: 4, Dropped: 6})
 	reports := h.reports.reports(t)
 	if len(reports) != 1 || reports[0]["kaiak.log_export.dropped"] != float64(6) || reports[0]["kaiak.log_export.failed"] != float64(0) {
 		t.Fatalf("reports %v, want one with 6 dropped", reports)
@@ -492,7 +499,7 @@ func TestStalledCollectorNeverBlocksHandle(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("logging blocked behind a stalled collector")
 	}
-	wantCounts(t, h.e, Counts{Dropped: 996})
+	wantCounts(t, h.e, counts{Dropped: 996})
 }
 
 func TestFlushDeliversWhatIsQueued(t *testing.T) {
@@ -500,7 +507,7 @@ func TestFlushDeliversWhatIsQueued(t *testing.T) {
 	h := newHarness(t, col, nil, options{})
 	h.logN(600, "m")
 	h.flush(t)
-	wantCounts(t, h.e, Counts{Exported: 600})
+	wantCounts(t, h.e, counts{Exported: 600})
 	var got []string
 	for len(got) < 600 {
 		got = append(got, col.Next(t).Messages()...)
@@ -524,7 +531,7 @@ func TestFlushEndsWithItsDeadlineAndCloseDrops(t *testing.T) {
 		t.Fatalf("Flush = %v, want the deadline", err)
 	}
 	h.e.Close()
-	wantCounts(t, h.e, Counts{Failed: 3, Dropped: 5})
+	wantCounts(t, h.e, counts{Failed: 3, Dropped: 5})
 	// The report at exit is never held back: the drops at Close get their own
 	// line within the minute of the cut export's.
 	reports := h.reports.reports(t)
@@ -545,7 +552,7 @@ func TestAfterClose(t *testing.T) {
 	if !strings.Contains(next.String(), "after close") {
 		t.Fatal("the next handler missed a record logged after Close")
 	}
-	wantCounts(t, h.e, Counts{Dropped: 1})
+	wantCounts(t, h.e, counts{Dropped: 1})
 	if err := h.e.Flush(context.Background()); !errors.Is(err, errClosed) {
 		t.Fatalf("Flush after Close = %v, want errClosed", err)
 	}
@@ -626,7 +633,7 @@ func TestRedirectIsNotFollowed(t *testing.T) {
 			if n := col.Requests(); n != 1 {
 				t.Fatalf("%d requests, want 1: a redirect is not retried", n)
 			}
-			wantCounts(t, h.e, Counts{Failed: 2})
+			wantCounts(t, h.e, counts{Failed: 2})
 			reports := h.reports.reports(t)
 			if len(reports) != 1 || reports[0]["http.response.status_code"] != float64(status) {
 				t.Fatalf("reports %v, want one with status %d", reports, status)
@@ -649,7 +656,7 @@ func TestRedirectToAPageAnsweringOKIsNotExported(t *testing.T) {
 	h := newHarness(t, col, nil, options{})
 	h.logN(3, "m")
 	h.flush(t)
-	wantCounts(t, h.e, Counts{Failed: 3})
+	wantCounts(t, h.e, counts{Failed: 3})
 	reports := h.reports.reports(t)
 	if len(reports) != 1 || reports[0]["http.response.status_code"] != float64(http.StatusFound) {
 		t.Fatalf("reports %v, want one with status 302", reports)
@@ -711,7 +718,7 @@ func TestTransportErrorTextIsNeverReported(t *testing.T) {
 	h := newHarness(t, col, map[string]string{"OTEL_EXPORTER_OTLP_LOGS_TIMEOUT": "100"}, options{})
 	h.logN(1, "m")
 	h.flush(t)
-	wantCounts(t, h.e, Counts{Failed: 1})
+	wantCounts(t, h.e, counts{Failed: 1})
 	reports := h.reports.reports(t)
 	if len(reports) != 1 {
 		t.Fatalf("reports %v, want 1", reports)
@@ -763,7 +770,7 @@ func TestUnreadableAnswerFailsUnretried(t *testing.T) {
 			if n := col.Requests(); n != 1 {
 				t.Fatalf("%d requests, want 1: an unreadable answer is not retried", n)
 			}
-			wantCounts(t, h.e, Counts{Failed: 3})
+			wantCounts(t, h.e, counts{Failed: 3})
 			reports := h.reports.reports(t)
 			if len(reports) != 1 || reports[0]["http.response.status_code"] != float64(200) {
 				t.Fatalf("reports %v, want one with status 200", reports)
@@ -783,7 +790,7 @@ func TestAnswersThatDeliver(t *testing.T) {
 			h := newHarness(t, col, nil, options{})
 			h.logN(2, "m")
 			h.flush(t)
-			wantCounts(t, h.e, Counts{Exported: 2})
+			wantCounts(t, h.e, counts{Exported: 2})
 			if r := h.reports.reports(t); len(r) != 0 {
 				t.Fatalf("reports %v, want none", r)
 			}
@@ -810,7 +817,7 @@ func TestLongRetryAfterFailsTheBatch(t *testing.T) {
 			if n := col.Requests(); n != 1 {
 				t.Fatalf("%d requests (waits %v), want 1: the batch fails without a retry", n, h.recordedWaits())
 			}
-			wantCounts(t, h.e, Counts{Failed: 1})
+			wantCounts(t, h.e, counts{Failed: 1})
 			if got := retryAfter(header, time.Now()); got < 172800*time.Second {
 				t.Fatalf("retryAfter(%q) = %v, want at least two days", header, got)
 			}
@@ -846,7 +853,7 @@ func TestRetryAfterBelowTheBackoffWaitsTheBackoff(t *testing.T) {
 					t.Errorf("wait %d = %s, want the backoff, within [%s, %s]", i, waits[i], base/2, base)
 				}
 			}
-			wantCounts(t, h.e, Counts{Exported: 1})
+			wantCounts(t, h.e, counts{Exported: 1})
 		})
 	}
 }
