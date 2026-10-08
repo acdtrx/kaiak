@@ -26,9 +26,9 @@ Then the branch merges.
   - Qwen3-Reranker-8B on vLLM, with the `DEPLOYMENT.md` flags;
   - a Qwen3-Reranker GGUF on llama-server: converted with llama.cpp's converter,
     which knows the model, or a published conversion.
-- **Each server runs with the documented settings first.** Then llama-server runs once
-  more with its default `-ub`, to record what an operator without the setting would
-  see.
+- **Each server runs with the documented settings.** llama-server runs a build at or
+  after b11223, where an oversize pair should answer `400` whatever `-ub` is
+  (decision 15).
 - **The user's DGX model is restored afterwards** (kaiak working style).
 
 ## Acceptance criteria

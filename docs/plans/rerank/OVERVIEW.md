@@ -139,9 +139,14 @@ Made while planning (confirm in review):
       and the score template (`--chat-template`). Without the template, scores are
       worse.
     - **llama-server:**
-      - Start it with `--embedding --pooling rank --reranking`.
-      - Set `-ub` and `-b` to at least a slot's context. Otherwise a long pair answers
-        `500` (read as the backend failing) instead of `400 exceed_context_size_error`.
+      - Start it with `--embedding --pooling rank --reranking`, on build b11223 or
+        later (corrected at step 6, 2026-10-09). From that build a causal reranker
+        such as Qwen3-Reranker is processed in chunks, so a pair over a slot's context
+        answers `400 exceed_context_size_error` whatever `-ub` is. On older builds,
+        and for encoder rerankers (bge-reranker-v2-m3) on any build, a pair longer
+        than the physical batch (`-ub`) answers `500`, read as the backend failing:
+        raising `-ub` to a slot's context does not help, because the batch check
+        comes first.
 16. **No version bump** (changed at step 1 review, 2026-10-08): config format and
     protocol stay 5. `max_rerank_documents` is optional and additive, the case the
     settled "Types bump no version" rule covers (`CONTROL-PROTOCOL.md`, 2026-10-01):
@@ -167,9 +172,9 @@ Made while planning (confirm in review):
   `--hf_overrides`), which kaiak cannot see.
   - Mitigation: `DEPLOYMENT.md` gives the exact flags.
   - The live run checks that a relevant document outranks an irrelevant one.
-- **llama-server's default batch size turns a long pair into a `500`,** which counts
-  toward the circuit.
-  - Mitigation: `DEPLOYMENT.md` (decision 15).
+- **llama-server answers a long pair with a `500`** on builds before b11223 and for
+  encoder rerankers, which counts toward the circuit.
+  - Mitigation: `DEPLOYMENT.md` names the build (decision 15).
   - The live run sends an oversize document to both servers.
 - **Weaker wrong-`base_url` signal on `vllm`** (decision 14).
   - Mitigation: the config-apply warning and the per-request endpoint-missing warning
