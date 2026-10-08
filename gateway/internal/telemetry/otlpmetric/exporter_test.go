@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strconv"
@@ -1052,6 +1054,81 @@ func TestForceFlushEndsWithItsContext(t *testing.T) {
 		t.Fatalf("the second flush ended %s after the first began: the first export outlived its context", d)
 	}
 	wantCounts(t, h.e, Counts{Exported: 1, Failed: map[string]uint64{"timeout": 1}})
+}
+
+// largeExport is an exporter of a registry with 100,000 series, at the target
+// scale's order, posting to a collector that takes every request; vars set its
+// timeouts. It reports when the first request arrived.
+func largeExport(t *testing.T, vars map[string]string) (*Exporter, <-chan time.Time) {
+	t.Helper()
+	firstRequest := make(chan time.Time, 1)
+	col := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case firstRequest <- time.Now():
+		default:
+		}
+		_, _ = io.Copy(io.Discard, r.Body)
+	}))
+	t.Cleanup(col.Close)
+	reg := metric.NewRegistry()
+	c := reg.Counter(metric.Definition{Name: "test.usage", Attributes: []string{"key", "model", "operation"}})
+	for i := range 100_000 {
+		c.Inc(fmt.Sprintf("key-%06d", i), "model", "chat")
+	}
+	vars["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"] = col.URL
+	s, err := otlp.ReadSettings(otlp.Metrics, envOf(vars))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := newExporter(s, otlp.Service{}, reg, slog.New(slog.DiscardHandler), options{tick: make(chan time.Time)})
+	t.Cleanup(func() { e.Shutdown(context.Background()) })
+	return e, firstRequest
+}
+
+// The export's time covers its collect and encoding, not only delivery: a large
+// export whose time runs out before it is encoded sends nothing, and its points
+// count as a timeout.
+func TestExportTimeoutCoversEncoding(t *testing.T) {
+	e, firstRequest := largeExport(t, map[string]string{"OTEL_METRIC_EXPORT_TIMEOUT": "10", "OTEL_EXPORTER_OTLP_METRICS_TIMEOUT": "10000"})
+	start := time.Now()
+	if err := e.ForceFlush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case at := <-firstRequest:
+		// A generous scheduling allowance beyond the 10 ms export timeout.
+		if d := at.Sub(start); d > 100*time.Millisecond {
+			t.Fatalf("first request sent %s after the export began, past its 10ms timeout", d)
+		}
+	default:
+	}
+	wantCounts(t, e, Counts{Failed: map[string]uint64{"timeout": 100_000}})
+}
+
+// The final export at exit ends within its bound however large the collect: a
+// ForceFlush whose context ends while the export encodes, then Shutdown, return
+// long before the encoding would have ended, and the export's points count as a
+// timeout.
+func TestExitCutsAnExportWhileItEncodes(t *testing.T) {
+	e, _ := largeExport(t, map[string]string{"OTEL_METRIC_EXPORT_TIMEOUT": "20000", "OTEL_EXPORTER_OTLP_METRICS_TIMEOUT": "20000"})
+	start := time.Now()
+	if err := e.ForceFlush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	whole := time.Since(start)
+	wantCounts(t, e, Counts{Exported: 100_000})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	start = time.Now()
+	if err := e.ForceFlush(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("ForceFlush = %v, want the deadline", err)
+	}
+	e.Shutdown(context.Background())
+	if d := time.Since(start); d > whole/2 {
+		t.Fatalf("ForceFlush with 20ms, then Shutdown, took %s; a whole export takes %s", d, whole)
+	}
+	wantCounts(t, e, Counts{Exported: 100_000, Failed: map[string]uint64{"timeout": 100_000}})
 }
 
 // Shutdown cuts the export in flight — its points count as failed — and its

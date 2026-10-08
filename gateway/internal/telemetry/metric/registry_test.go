@@ -226,6 +226,32 @@ func TestCollect(t *testing.T) {
 	}
 }
 
+// A series created while a collect runs — here while its callbacks run, before the
+// series maps are read — and carried by it never starts after the collect's time.
+func TestSeriesCreatedDuringACollectStartsBeforeItsTime(t *testing.T) {
+	reg := NewRegistry()
+	c := reg.Counter(Definition{Name: "c"})
+	g := reg.ObservableGauge(Definition{Name: "g"})
+	entered, recorded := make(chan struct{}), make(chan struct{})
+	reg.Callback(func(o *Observer) {
+		close(entered)
+		<-recorded
+		g.Observe(o, 0)
+	}, g)
+	done := make(chan Snapshot, 1)
+	go func() { done <- reg.Collect() }()
+	<-entered
+	c.Inc()
+	close(recorded)
+	snap := <-done
+	if f := snap.Families[0]; f.Name != "c" || len(f.Points) != 1 {
+		t.Fatalf("c: %+v, want its series in the collect", f)
+	}
+	if p := snap.Families[0].Points[0]; p.StartTime.After(snap.Time) {
+		t.Fatalf("c starts %s after the collect's time", p.StartTime.Sub(snap.Time))
+	}
+}
+
 func TestConcurrentRecordingAndCollects(t *testing.T) {
 	reg := NewRegistry()
 	attrs := []string{"worker"}

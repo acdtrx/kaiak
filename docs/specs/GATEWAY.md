@@ -2971,7 +2971,8 @@ own, and a client sending repeats is broken either way.
     `count` and `sum`. Counts are `asInt` (a decimal string, as OTLP JSON writes
     64-bit integers); durations, timestamps, rates, the build info and the cost
     (its exact integer sum of nano-dollars ÷ 10⁹) are `asDouble`. Every point
-    carries `timeUnixNano`, the collect's time. Sums and histograms carry
+    carries `timeUnixNano`, the collect's time, taken once its series are read, so
+    no point starts after it. Sums and histograms carry
     `aggregationTemporality` (OTLP's integers: `1` delta, `2` cumulative) and on
     each point `startTimeUnixNano`: in a cumulative stream the process start, or
     the series' creation when later — the same for every point of the stream, so a
@@ -2998,8 +2999,9 @@ own, and a client sending repeats is broken either way.
     export.
   - **Interval and timeout**: an export every `OTEL_METRIC_EXPORT_INTERVAL`
     (default 60 s), the first one interval after export starts. One export in
-    flight: a tick that comes while one runs is skipped, never queued. One export,
-    its retries included, is bounded by the shorter of `OTEL_METRIC_EXPORT_TIMEOUT`
+    flight: a tick that comes while one runs is skipped, never queued. One export —
+    its collect, its encoding (the longest part at a large registry), its requests
+    and their retries — is bounded by the shorter of `OTEL_METRIC_EXPORT_TIMEOUT`
     (default 30 s: the specification's bound on one export by the periodic reader)
     and the OTLP timeout (`OTEL_EXPORTER_OTLP_METRICS_TIMEOUT`, default 10 s: its
     bound on one request with its retries) — with the defaults, 10 s. Both are

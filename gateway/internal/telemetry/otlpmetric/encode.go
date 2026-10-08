@@ -2,6 +2,7 @@ package otlpmetric
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"strconv"
 	"time"
@@ -40,6 +41,10 @@ type histogramDataPoint struct {
 // (docs/specs/GATEWAY.md, Observability → OTLP metric export: size).
 const maxRequestSize = 4 << 20
 
+// checkEvery is how many data points encoding goes between two looks at its
+// context: about a millisecond of work.
+const checkEvery = 1024
+
 // request is one body to post and the data points it carries.
 type request struct {
 	body   []byte
@@ -50,8 +55,9 @@ type request struct {
 // ExportMetricsServiceRequests under res, each at most limit bytes: whole metrics
 // where they fit, a metric too large for one request split by its points (each
 // part repeating the metric's name, unit and description). A single point larger
-// than limit goes alone, over the bound. No stream, no request.
-func encodeRequests(res otlp.Resource, now time.Time, streams []stream, limit int) ([]request, error) {
+// than limit goes alone, over the bound. No stream, no request. Encoding ends with
+// ctx, with its error: a large collect takes long to encode.
+func encodeRequests(ctx context.Context, res otlp.Resource, now time.Time, streams []stream, limit int) ([]request, error) {
 	resource, err := json.Marshal(res)
 	if err != nil {
 		return nil, err
@@ -100,6 +106,9 @@ func encodeRequests(res otlp.Resource, now time.Time, streams []stream, limit in
 		encoded := make([][]byte, len(s.points))
 		size := len(head) + len(tail) + len(s.points) - 1
 		for i, p := range s.points {
+			if i%checkEvery == 0 && ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
 			if encoded[i], err = encodePoint(s, p, timeUnixNano); err != nil {
 				return nil, err
 			}

@@ -106,7 +106,8 @@ func (o *Observer) add(f *family, p Point, attrs []string) {
 
 // Snapshot is one collect of a registry in the data model.
 type Snapshot struct {
-	// Time is when the collect ran.
+	// Time is when the collect ran: taken once every series is read, so no point
+	// in it starts after it — a series created during the collect included.
 	Time time.Time
 	// Families are every registered instrument, by name.
 	Families []Family
@@ -160,7 +161,6 @@ type HistogramValue struct {
 // Collect reads every instrument: callbacks run once each, recorded series are read
 // as they stand.
 func (r *Registry) Collect() Snapshot {
-	now := time.Now()
 	r.mu.Lock()
 	families := make([]*family, 0, len(r.families))
 	for _, f := range r.families {
@@ -175,7 +175,7 @@ func (r *Registry) Collect() Snapshot {
 		cb.observe(o)
 	}
 
-	snap := Snapshot{Time: now, Families: make([]Family, 0, len(families))}
+	snap := Snapshot{Families: make([]Family, 0, len(families))}
 	for _, f := range families {
 		fam := Family{Definition: f.def, Kind: f.kind, Number: f.number, Observed: f.observed, Divisor: f.divisor}
 		if f.observed {
@@ -186,6 +186,7 @@ func (r *Registry) Collect() Snapshot {
 		slices.SortFunc(fam.Points, func(a, b Point) int { return slices.Compare(a.Attributes, b.Attributes) })
 		snap.Families = append(snap.Families, fam)
 	}
+	snap.Time = time.Now()
 	slices.SortFunc(snap.Families, func(a, b Family) int { return strings.Compare(a.Name, b.Name) })
 	return snap
 }

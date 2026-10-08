@@ -216,23 +216,30 @@ func (e *Exporter) run(ctx context.Context, tick <-chan time.Time) {
 }
 
 // export collects the registry and sends the collect, its requests one after the
-// other within the export's timeout; each request's points count by its own
-// outcome.
+// other; each request's points count by its own outcome. The export's timeout, and
+// ctx, bound all of it: the collect and its encoding take long at a large
+// registry. The collect and the temporality are not cut — tens of milliseconds at
+// 100,000 series, a small part of the encoding — so the delta state moves on whole:
+// an export cut while it encodes loses its deltas, as any failed delta export does.
 func (e *Exporter) export(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, e.exportTimeout)
+	defer cancel()
 	snap := e.registry.Collect()
 	streams := e.reader.streams(snap)
-	requests, err := encodeRequests(e.client.Resource(), snap.Time, streams, e.opts.maxRequestSize)
+	requests, err := encodeRequests(ctx, e.client.Resource(), snap.Time, streams, e.opts.maxRequestSize)
 	if err != nil {
 		n := 0
 		for _, s := range streams {
 			n += len(s.points)
 		}
-		e.fail(uint64(n), errorTypeOther, 0, fmt.Errorf("encode export: %w", err))
+		if cut := ctx.Err(); cut != nil && errors.Is(err, cut) {
+			e.fail(uint64(n), otlp.ErrorTimeout, 0, fmt.Errorf("export cut short: %w", cut))
+		} else {
+			e.fail(uint64(n), errorTypeOther, 0, fmt.Errorf("encode export: %w", err))
+		}
 		e.reportProblems()
 		return
 	}
-	ctx, cancel := context.WithTimeout(ctx, e.exportTimeout)
-	defer cancel()
 	for _, r := range requests {
 		n := uint64(r.points)
 		o := e.client.Export(ctx, r.body)
