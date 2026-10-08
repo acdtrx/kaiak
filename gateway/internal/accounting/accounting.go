@@ -47,6 +47,10 @@ type UsageRecord struct {
 	// tag the record's usage with it, so they stop counting it the moment the control
 	// plane shows its batch counted.
 	Generation uint64 `json:"-"`
+	// Operation is the request's gen_ai.operation.name, from its endpoint: chat,
+	// text_completion or embeddings. Never sent: the protocol has no field for it; the
+	// usage metrics label the record with it.
+	Operation string `json:"-"`
 }
 
 // Deployment is where the request ran: the backend ID and the model name on it.
@@ -108,6 +112,8 @@ type Request struct {
 	Groups     []string
 	Model      *config.Model
 	Deployment config.Deployment
+	// Operation is the endpoint's gen_ai.operation.name (UsageRecord.Operation).
+	Operation string
 	// Start is when the request arrived; it picks the price entry in force.
 	Start time.Time
 }
@@ -130,6 +136,7 @@ func (r *Recorder) Settle(rq Request, meter *Meter, complete bool) UsageRecord {
 		Estimated:       flags.Estimated,
 		Partial:         flags.Partial,
 		GatewayTime:     r.now().UTC(),
+		Operation:       rq.Operation,
 	}
 	if clamped := clampToProtocol(&rec); len(clamped) > 0 {
 		if r.opts.Logger != nil {

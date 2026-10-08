@@ -166,6 +166,40 @@ func TestAccountingRecordEncodesToAValidMessage(t *testing.T) {
 	}
 }
 
+// The record's gateway-local fields — its usage generation and its operation — never
+// reach the wire: every valid batch fixture, its records carrying both, encodes back
+// to the fixture unchanged.
+func TestGatewayLocalRecordFieldsAreNeverSent(t *testing.T) {
+	dir := filepath.Join(fixturesDir, "usage-batch", "valid")
+	for _, file := range fixturetest.Files(t, dir) {
+		t.Run(file, func(t *testing.T) {
+			data := fixturetest.Read(t, filepath.Join(dir, file))
+			batch, err := DecodeUsageBatch(data)
+			if err != nil {
+				t.Fatalf("rejected: %v", err)
+			}
+			for i := range batch.Records {
+				batch.Records[i].Generation = 7
+				batch.Records[i].Operation = "chat"
+			}
+			encoded, err := json.Marshal(batch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var want, got any
+			if err := json.Unmarshal(data, &want); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(encoded, &got); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("gateway-local fields reached the batch:\n got:  %s\n want: %s", encoded, data)
+			}
+		})
+	}
+}
+
 // A totals amount past 2^53 decodes exactly.
 func TestTotalsAmountBeyondSafeInteger(t *testing.T) {
 	totals, err := DecodeTotals(fixturetest.Read(t, filepath.Join(fixturesDir, "totals", "valid", "windows.json")))

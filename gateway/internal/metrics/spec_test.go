@@ -18,17 +18,9 @@ import (
 )
 
 // pendingFamilies are families of the spec's metric list not yet in their listed
-// form, left out of the comparison on both sides: the usage metrics (records and
-// cost by the listed usage labels, the GenAI token counters in place of
-// kaiak_usage_tokens_total) and the metric exporter's own count, which comes with
-// OTLP metric export.
+// form, left out of the comparison on both sides: the metric exporter's own count,
+// which comes with OTLP metric export.
 var pendingFamilies = []string{
-	"kaiak_usage_records_total", "kaiak_usage_cost_usd_total", "kaiak_usage_tokens_total",
-	"gen_ai_client_inference_usage_input_tokens_total",
-	"gen_ai_client_inference_usage_cache_read_input_tokens_total",
-	"gen_ai_client_inference_usage_cache_write_input_tokens_total",
-	"gen_ai_client_inference_usage_output_tokens_total",
-	"gen_ai_client_inference_usage_reasoning_output_tokens_total",
 	"otel_sdk_exporter_metric_data_point_exported_total",
 }
 
@@ -188,7 +180,7 @@ func scrapedFamilies(t *testing.T, scrape string) map[string]family {
 // export on — and feeds each event that gives a family its every attribute.
 func fullScrape(t *testing.T) string {
 	t.Helper()
-	capped := &config.Backend{ID: "capped", MaxInFlight: 2}
+	capped := &config.Backend{ID: "capped", Type: config.BackendOpenAI, MaxInFlight: 2}
 	model := &config.Model{Name: "chat", Deployments: []config.Deployment{{Backend: capped, Model: "chat-7b"}}}
 	group := &config.Group{ID: "eval", PathIDs: []string{"research", "eval"}}
 	snap := &config.Snapshot{KeyIDLabel: true, GroupLabel: true,
@@ -223,8 +215,9 @@ func fullScrape(t *testing.T) string {
 	ops.ObserveUpstreamAttempt("capped", "chat-7b", AttemptSuccess, time.Second)
 	ops.ObserveAttempts("chat", 1)
 	ops.ConnectionRefused()
-	usage.Record(accounting.UsageRecord{KeyID: "k-eval", Groups: group.PathIDs, Model: "chat",
-		Units: accounting.Units{config.UnitTokensIn: 1}})
+	usage.Record(accounting.UsageRecord{KeyID: "k-eval", Groups: group.PathIDs, Model: "chat", Operation: "chat",
+		Deployment: accounting.Deployment{Backend: "capped", Model: "chat-7b"},
+		Units:      accounting.Units{config.UnitTokensIn: 1}})
 	usage.RecordClamped()
 	delivery.UsageBatchSent(control.BatchAcked, time.Now())
 	delivery.UsageQueueDepth(1, 1, 100)

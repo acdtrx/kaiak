@@ -342,8 +342,8 @@ func Serves(t config.BackendType, e Endpoint) bool {
 	return slices.Contains(kindOf(t).serves, e)
 }
 
-// ProviderName is gen_ai.provider.name for backends of type t; "" for a type with no
-// well-known value.
+// ProviderName is gen_ai.provider.name for backends of type t — the one mapping the
+// request line and the usage metrics read; "" for a type with no well-known value.
 func ProviderName(t config.BackendType) string {
 	return kindOf(t).providerName
 }

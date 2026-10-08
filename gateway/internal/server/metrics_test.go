@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"encoding/json"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -71,7 +72,9 @@ func TestOpsAndUsageMetricsMoveWithRequests(t *testing.T) {
 		t.Fatalf("%d usage records, want 3 (pair, down, open)", len(records))
 	}
 	pair := records[0]
-	wl := `kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",model="pair",status="complete"`
+	wl := `kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",gen_ai_request_model="pair",` +
+		`gen_ai_operation_name="chat",kaiak_usage_status="complete"`
+	tokens := wl + `,gen_ai_token_modality="unknown"`
 	usageLine := func(name, labels string, value int64) string {
 		return name + "{" + labels + "} " + strconv.FormatInt(value, 10)
 	}
@@ -93,14 +96,14 @@ func TestOpsAndUsageMetricsMoveWithRequests(t *testing.T) {
 		`kaiak_errors_total{kaiak_error_class="auth"} 0`,
 		// Usage metrics carry the record's own numbers.
 		usageLine("kaiak_usage_records_total", wl, 1),
-		usageLine("kaiak_usage_tokens_total", wl+`,unit="tokens_in"`, pair.Units[config.UnitTokensIn]),
-		usageLine("kaiak_usage_tokens_total", wl+`,unit="tokens_cached"`, pair.Units[config.UnitTokensCached]),
-		usageLine("kaiak_usage_tokens_total", wl+`,unit="tokens_cache_write"`, pair.Units[config.UnitTokensCacheWrite]),
-		usageLine("kaiak_usage_tokens_total", wl+`,unit="tokens_out"`, pair.Units[config.UnitTokensOut]),
-		usageLine("kaiak_usage_tokens_total", wl+`,unit="tokens_reasoning"`, pair.Units[config.UnitTokensReasoning]),
+		usageLine("gen_ai_client_inference_usage_input_tokens_total", tokens, pair.Units.Sum(config.InputUnits)),
+		usageLine("gen_ai_client_inference_usage_cache_read_input_tokens_total", tokens, pair.Units[config.UnitTokensCached]),
+		usageLine("gen_ai_client_inference_usage_cache_write_input_tokens_total", tokens, pair.Units[config.UnitTokensCacheWrite]),
+		usageLine("gen_ai_client_inference_usage_output_tokens_total", tokens, pair.Units[config.UnitTokensOut]),
+		usageLine("gen_ai_client_inference_usage_reasoning_output_tokens_total", tokens, pair.Units[config.UnitTokensReasoning]),
 		`kaiak_usage_cost_usd_total{`+wl+`} `+strconv.FormatFloat(float64(pair.CostNanoUSD)/1e9, 'g', -1, 64),
-		`kaiak_usage_records_total{kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",model="down",status="partial"} 1`,
-		`kaiak_usage_records_total{kaiak_key_group="ann",kaiak_key_root_group="users",kaiak_key_id="k-ann",model="open",status="complete"} 1`,
+		`kaiak_usage_records_total{kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",gen_ai_request_model="down",gen_ai_operation_name="chat",kaiak_usage_status="partial"} 1`,
+		`kaiak_usage_records_total{kaiak_key_group="ann",kaiak_key_root_group="users",kaiak_key_id="k-ann",gen_ai_request_model="open",gen_ai_operation_name="chat",kaiak_usage_status="complete"} 1`,
 		`kaiak_backend_active_requests{kaiak_backend_id="local"} 0`,
 	)
 	if pair.CostNanoUSD != 120_000 || pair.Units[config.UnitTokensIn] != 40 || pair.Units[config.UnitTokensCacheWrite] != 20 {
@@ -114,6 +117,46 @@ func TestOpsAndUsageMetricsMoveWithRequests(t *testing.T) {
 			t.Errorf("metrics carry a secret %q", secret)
 		}
 	}
+}
+
+// The usage metrics count tokens as the request line does: input on the metric is
+// the line's gen_ai.usage.input_tokens (cache reads and writes included), output its
+// gen_ai.usage.output_tokens (reasoning included). The operation is the endpoint's,
+// the provider the deployment's backend type's — absent for a self-hosted type.
+func TestUsageMetricsCountAsTheRequestLine(t *testing.T) {
+	g := newTestGateway(t)
+	g.backend.SetReply(fakebackend.Reply{Usage: &fakebackend.Usage{
+		PromptTokens: 100, CachedTokens: 40, CacheWriteTokens: 20, CompletionTokens: 10, ReasoningTokens: 4}})
+	if w := post(t, g, "cached", `{"model":"on-azure","messages":[]}`); w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	var line map[string]any
+	if err := json.Unmarshal([]byte(logLine(t, g, "cached")), &line); err != nil {
+		t.Fatal(err)
+	}
+	input, output := line["gen_ai.usage.input_tokens"], line["gen_ai.usage.output_tokens"]
+	if input != float64(100) || output != float64(10) {
+		t.Fatalf("log line input %v, output %v; want the backend's 100 and 10", input, output)
+	}
+	tokens := `{kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",gen_ai_request_model="on-azure",` +
+		`gen_ai_operation_name="chat",gen_ai_provider_name="azure.ai.openai",kaiak_usage_status="complete",gen_ai_token_modality="unknown"} `
+	expectMetricLines(t, g.metricsText(),
+		`gen_ai_client_inference_usage_input_tokens_total`+tokens+strconv.FormatFloat(input.(float64), 'g', -1, 64),
+		`gen_ai_client_inference_usage_cache_read_input_tokens_total`+tokens+`40`,
+		`gen_ai_client_inference_usage_cache_write_input_tokens_total`+tokens+`20`,
+		`gen_ai_client_inference_usage_output_tokens_total`+tokens+strconv.FormatFloat(output.(float64), 'g', -1, 64),
+		`gen_ai_client_inference_usage_reasoning_output_tokens_total`+tokens+`4`)
+
+	if w := do(t, g.h, call{method: "POST", path: "/v1/embeddings", key: userKey, body: `{"model":"open","input":"x"}`}); w.Code != http.StatusOK {
+		t.Fatalf("embeddings: status %d: %s", w.Code, w.Body.String())
+	}
+	if w := do(t, g.h, call{method: "POST", path: "/v1/completions", key: userKey, body: `{"model":"open","prompt":"x"}`}); w.Code != http.StatusOK {
+		t.Fatalf("completions: status %d: %s", w.Code, w.Body.String())
+	}
+	ann := `kaiak_usage_records_total{kaiak_key_group="ann",kaiak_key_root_group="users",kaiak_key_id="k-ann",gen_ai_request_model="open",`
+	expectMetricLines(t, g.metricsText(),
+		ann+`gen_ai_operation_name="embeddings",kaiak_usage_status="complete"} 1`,
+		ann+`gen_ai_operation_name="text_completion",kaiak_usage_status="complete"} 1`)
 }
 
 func TestStreamMetricsTimeToFirstTokenAndDecodeRate(t *testing.T) {
@@ -228,7 +271,7 @@ func TestKeyIDLabelSwitchedOff(t *testing.T) {
 		t.Fatalf("status %d", w.Code)
 	}
 	text := g.metricsText()
-	expectMetricLines(t, text, `kaiak_usage_records_total{kaiak_key_group="ann",kaiak_key_root_group="users",model="open",status="complete"} 1`)
+	expectMetricLines(t, text, `kaiak_usage_records_total{kaiak_key_group="ann",kaiak_key_root_group="users",gen_ai_request_model="open",gen_ai_operation_name="chat",kaiak_usage_status="complete"} 1`)
 	if strings.Contains(text, "kaiak_key_id=") {
 		t.Errorf("kaiak_key_id label present while switched off:\n%s", text)
 	}
@@ -249,7 +292,7 @@ func TestGroupLabelSwitchedOff(t *testing.T) {
 		t.Fatalf("status %d", w.Code)
 	}
 	text := g.metricsText()
-	expectMetricLines(t, text, `kaiak_usage_records_total{kaiak_key_root_group="users",kaiak_key_id="k-ann",model="open",status="complete"} 1`)
+	expectMetricLines(t, text, `kaiak_usage_records_total{kaiak_key_root_group="users",kaiak_key_id="k-ann",gen_ai_request_model="open",gen_ai_operation_name="chat",kaiak_usage_status="complete"} 1`)
 	if strings.Contains(text, `kaiak_key_group=`) {
 		t.Errorf("kaiak_key_group label present while switched off:\n%s", text)
 	}
@@ -307,7 +350,7 @@ func TestMetricsServedOnAdminOnlyAndWellFormed(t *testing.T) {
 	for _, family := range []string{"kaiak_build_info", "http_server_request_duration_seconds", "kaiak_time_to_first_token_seconds",
 		"kaiak_output_token_rate_per_second", "kaiak_errors_total", "kaiak_backend_active_requests",
 		"kaiak_config_loads_total", "kaiak_config_last_applied_timestamp_seconds", "kaiak_usage_records_total",
-		"kaiak_usage_tokens_total", "kaiak_usage_cost_usd_total", "kaiak_backend_active_requests_limit", "kaiak_queue_size",
+		"gen_ai_client_inference_usage_input_tokens_total", "kaiak_usage_cost_usd_total", "kaiak_backend_active_requests_limit", "kaiak_queue_size",
 		"kaiak_queue_wait_duration_seconds", "kaiak_queue_rejections_total", "kaiak_retries_total", "kaiak_request_attempts",
 		"kaiak_circuit_state", "kaiak_deployment_cooling_down", "kaiak_circuit_transitions_total", "kaiak_probes_total",
 		"kaiak_upstream_attempts_total", "kaiak_upstream_attempt_duration_seconds"} {
@@ -356,7 +399,7 @@ func TestMetricsUnderConcurrentRequests(t *testing.T) {
 	text := g.metricsText()
 	validateExposition(t, text)
 	expectMetricLines(t, text,
-		`kaiak_usage_records_total{kaiak_key_group="ann",kaiak_key_root_group="users",kaiak_key_id="k-ann",model="open",status="complete"} 24`,
+		`kaiak_usage_records_total{kaiak_key_group="ann",kaiak_key_root_group="users",kaiak_key_id="k-ann",gen_ai_request_model="open",gen_ai_operation_name="chat",kaiak_usage_status="complete"} 24`,
 		`http_server_request_duration_seconds_count{http_request_method="POST",url_scheme="http",http_route="/v1/chat/completions",http_response_status_code="200",gen_ai_request_model="open"} 24`,
 		`kaiak_time_to_first_token_seconds_count{gen_ai_request_model="open",kaiak_backend_id="local"} 12`,
 	)

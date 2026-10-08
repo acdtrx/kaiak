@@ -287,8 +287,8 @@ func TestTimedOutAttemptIsRecordedAndLimitsSettleTheSum(t *testing.T) {
 		t.Errorf("log line: %s", line)
 	}
 	expectMetricLines(t, scrape(g),
-		`kaiak_usage_records_total{kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",model="retry",status="partial"} 1`,
-		`kaiak_usage_records_total{kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",model="retry",status="complete"} 1`,
+		`kaiak_usage_records_total{kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",gen_ai_request_model="retry",gen_ai_operation_name="chat",kaiak_usage_status="partial"} 1`,
+		`kaiak_usage_records_total{kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",gen_ai_request_model="retry",gen_ai_operation_name="chat",kaiak_usage_status="complete"} 1`,
 		`http_server_request_duration_seconds_count{http_request_method="POST",url_scheme="http",http_route="/v1/chat/completions",http_response_status_code="200",gen_ai_request_model="retry"} 1`)
 }
 

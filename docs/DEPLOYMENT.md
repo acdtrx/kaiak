@@ -716,12 +716,14 @@ the document (a script, or the control plane) rather than editing it by hand.
   first requests on a new config feel). They are there to measure, not to alert on:
   no threshold is known yet.
 - **Cardinality** (`GATEWAY.md` → Observability: Cardinality): usage series per
-  replica ≈ `label sets × models used × 2 statuses × 6`. 500 keys using 3 models
-  each: 18,000 series per replica, × the replicas for the store's total. When it
+  replica ≈ `label sets × models used × operations × providers × 2 statuses × 7`
+  (records, cost and the five token counters; a model is usually used for one
+  operation through one provider). 500 keys using 3 models each: 21,000 series per
+  replica, × the replicas for the store's total. When it
   outgrows the metrics store, switch `global.metrics.key_id_label` off first (one
   label set per group that owns keys — no gain when every key has its own group),
   then `global.metrics.group_label` (one per top-level group, as
-  `kaiak_key_root_group` stays: 216 series when those 500 keys sit under 5 team groups and a `users`
+  `kaiak_key_root_group` stays: 252 series when those 500 keys sit under 5 team groups and a `users`
   group); old series clear on restart. `kaiak_key_root_group` bounds series only when the
   top-level groups are few: with people as top-level groups it has one value per
   person and `group_label` off saves nothing — put them under one `users` group.

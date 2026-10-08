@@ -468,30 +468,30 @@ func (r *run) checkMetrics() {
 		return
 	}
 	text := string(body)
-	chat := `model="` + modelChat + `"`
+	chat := `gen_ai_request_model="` + modelChat + `"`
 	records := sumSeries(text, "kaiak_usage_records_total{", chat)
-	tokensOut := sumSeries(text, "kaiak_usage_tokens_total{", chat, `unit="tokens_out"`)
+	tokensOut := sumSeries(text, "gen_ai_client_inference_usage_output_tokens_total{", chat)
 	cost := sumSeries(text, "kaiak_usage_cost_usd_total{", chat)
-	opsChat := `gen_ai_request_model="` + modelChat + `"`
 	refused := sumSeries(text, `kaiak_errors_total{kaiak_error_class="rate_limited"}`)
 	succeeded := sumSeries(text, "kaiak_upstream_attempts_total{", `kaiak_attempt_outcome="success"`)
 	timed := sumSeries(text, "kaiak_upstream_attempt_duration_seconds_count{")
 	missingEndpoint := ""
 	for _, ep := range []string{epMessages, epResponses} {
-		if r.o.serves(ep) && sumSeries(text, "http_server_request_duration_seconds_count{", `http_route="/v1/`+ep+`"`, opsChat) < 1 {
+		if r.o.serves(ep) && sumSeries(text, "http_server_request_duration_seconds_count{", `http_route="/v1/`+ep+`"`, chat) < 1 {
 			missingEndpoint = ep
 		}
 	}
 	backendOnUsage := false
 	for line := range strings.SplitSeq(text, "\n") {
-		backendOnUsage = backendOnUsage || strings.HasPrefix(line, "kaiak_usage_") && strings.Contains(line, "kaiak_backend_id=")
+		usageLine := strings.HasPrefix(line, "kaiak_usage_") || strings.HasPrefix(line, "gen_ai_client_inference_usage_")
+		backendOnUsage = backendOnUsage || usageLine && strings.Contains(line, "kaiak_backend_id=")
 	}
 	priced := r.o.priceIn != 0 || r.o.priceOut != 0
 	switch {
 	case records < 3:
 		r.fail("metrics", "kaiak_usage_records_total for %s = %v, want ≥ 3", modelChat, records)
 	case tokensOut <= 0:
-		r.fail("metrics", "no tokens_out for %s", modelChat)
+		r.fail("metrics", "no gen_ai_client_inference_usage_output_tokens_total for %s", modelChat)
 	case priced && cost <= 0:
 		r.fail("metrics", "no cost for %s", modelChat)
 	case refused < 1:
@@ -505,7 +505,7 @@ func (r *run) checkMetrics() {
 	case missingEndpoint != "":
 		r.fail("metrics", "http_server_request_duration_seconds has no %s request for %s", missingEndpoint, modelChat)
 	default:
-		r.pass("metrics", fmt.Sprintf("%s: %v usage records, %v tokens out, %v USD; %v rate-limited; %v successful upstream attempts",
+		r.pass("metrics", fmt.Sprintf("%s: %v usage records, %v output tokens, %v USD; %v rate-limited; %v successful upstream attempts",
 			modelChat, records, tokensOut, cost, refused, succeeded))
 	}
 }

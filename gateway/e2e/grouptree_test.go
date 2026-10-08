@@ -148,9 +148,9 @@ func TestGroupTreeEndToEnd(t *testing.T) {
 			}
 		}
 		for series, want := range map[string]float64{
-			`kaiak_usage_records_total{kaiak_key_group="rag-api",kaiak_key_root_group="acme",kaiak_key_id="k-prod",model="chat",status="complete"}`:     2,
-			`kaiak_usage_records_total{kaiak_key_group="rag-sandbox",kaiak_key_root_group="acme",kaiak_key_id="k-dev",model="rpm",status="complete"}`:   1,
-			`kaiak_usage_records_total{kaiak_key_group="search-api",kaiak_key_root_group="acme",kaiak_key_id="k-search",model="rpm",status="complete"}`: 1,
+			`kaiak_usage_records_total{kaiak_key_group="rag-api",kaiak_key_root_group="acme",kaiak_key_id="k-prod",gen_ai_request_model="chat",gen_ai_operation_name="chat",kaiak_usage_status="complete"}`:     2,
+			`kaiak_usage_records_total{kaiak_key_group="rag-sandbox",kaiak_key_root_group="acme",kaiak_key_id="k-dev",gen_ai_request_model="rpm",gen_ai_operation_name="chat",kaiak_usage_status="complete"}`:   1,
+			`kaiak_usage_records_total{kaiak_key_group="search-api",kaiak_key_root_group="acme",kaiak_key_id="k-search",gen_ai_request_model="rpm",gen_ai_operation_name="chat",kaiak_usage_status="complete"}`: 1,
 		} {
 			if got := g.metric(t, series); got != want {
 				t.Errorf("%s = %v, want %v", series, got, want)

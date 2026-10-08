@@ -374,7 +374,7 @@ func (o *Ops) CountRequestError(group *config.Group, keyID, model, code string) 
 	if group != nil {
 		path = group.PathIDs
 	}
-	o.requestErrors.Inc(append(keyLabels(o.holder, path, keyID), model, code)...)
+	o.requestErrors.Inc(append(keyLabels(o.holder.Current(), path, keyID), model, code)...)
 }
 
 // CountError counts one request that ended in an error of class c.

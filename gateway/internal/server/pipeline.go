@@ -24,9 +24,10 @@ type endpoint struct {
 	// path is a model endpoint's route as the client API documents it; a body
 	// endpoint's is its API's (route).
 	path string
-	// operation is the endpoint's gen_ai.operation.name on the log line: the GenAI
-	// convention's well-known value — a chat operation in any of its APIs is "chat" —
-	// and "" for the model and token-counting endpoints, which have none.
+	// operation is the endpoint's gen_ai.operation.name on the log line and on its
+	// usage records (the usage metrics' label): the GenAI convention's well-known
+	// value — a chat operation in any of its APIs is "chat" — and "" for the model and
+	// token-counting endpoints, which have none and settle no usage record.
 	operation string
 	// body: the endpoint is a POST carrying a JSON request body in api's format,
 	// passed through to a backend serving api; its route is api's path under /v1/

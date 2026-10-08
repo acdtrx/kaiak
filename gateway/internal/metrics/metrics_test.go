@@ -24,34 +24,46 @@ func text(r *metric.Registry) string {
 }
 
 func TestUsageMetricsCountsRecords(t *testing.T) {
+	backends := map[string]*config.Backend{
+		"cloud": {ID: "cloud", Type: config.BackendAnthropic},
+		"local": {ID: "local", Type: config.BackendVLLM},
+	}
 	holder := &config.Holder{}
-	holder.Swap(&config.Snapshot{KeyIDLabel: true, GroupLabel: true})
+	holder.Swap(&config.Snapshot{KeyIDLabel: true, GroupLabel: true, Backends: backends})
 	reg := metric.NewRegistry()
 	usage := NewUsageMetrics(reg, holder)
 	units := accounting.Units{config.UnitTokensIn: 60, config.UnitTokensCached: 40,
 		config.UnitTokensCacheWrite: 30, config.UnitTokensOut: 10, config.UnitTokensReasoning: 4}
 	rec := accounting.UsageRecord{KeyID: "k-eval", Groups: []string{"research", "rag", "rag-prod", "eval"},
-		Model: "pair", Deployment: accounting.Deployment{Backend: "local", Model: "pair-a"},
+		Model: "pair", Operation: "chat", Deployment: accounting.Deployment{Backend: "cloud", Model: "pair-a"},
 		Units: units, CostNanoUSD: 120_000}
 	usage.Record(rec)
 	usage.Record(rec)
-	// A key on a top-level group: that group is its own top-level group.
-	topLevel := accounting.UsageRecord{KeyID: "k-ann", Groups: []string{"ann"}, Model: "open",
+	// A key on a top-level group: that group is its own top-level group. A self-hosted
+	// backend type has no provider name.
+	topLevel := accounting.UsageRecord{KeyID: "k-ann", Groups: []string{"ann"}, Model: "open", Operation: "embeddings",
 		Deployment: accounting.Deployment{Backend: "local", Model: "open"}, Units: units, Partial: true}
 	usage.Record(topLevel)
 
 	out := text(reg)
-	wl := `kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",model="pair",status="complete"`
+	wl := `kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",gen_ai_request_model="pair",` +
+		`gen_ai_operation_name="chat",gen_ai_provider_name="anthropic",kaiak_usage_status="complete"`
+	tokens := wl + `,gen_ai_token_modality="unknown"`
+	ann := `kaiak_key_group="ann",kaiak_key_root_group="ann",kaiak_key_id="k-ann",gen_ai_request_model="open",` +
+		`gen_ai_operation_name="embeddings",kaiak_usage_status="partial"`
 	for _, want := range []string{
 		`kaiak_usage_records_total{` + wl + `} 2`,
-		`kaiak_usage_tokens_total{` + wl + `,unit="tokens_in"} 120`,
-		`kaiak_usage_tokens_total{` + wl + `,unit="tokens_cached"} 80`,
-		`kaiak_usage_tokens_total{` + wl + `,unit="tokens_cache_write"} 60`,
-		`kaiak_usage_tokens_total{` + wl + `,unit="tokens_out"} 20`,
-		`kaiak_usage_tokens_total{` + wl + `,unit="tokens_reasoning"} 8`,
+		// Input is all input: in + cached + cache write, twice.
+		`gen_ai_client_inference_usage_input_tokens_total{` + tokens + `} 260`,
+		`gen_ai_client_inference_usage_cache_read_input_tokens_total{` + tokens + `} 80`,
+		`gen_ai_client_inference_usage_cache_write_input_tokens_total{` + tokens + `} 60`,
+		// Output includes reasoning: the record's tokens_out as it is.
+		`gen_ai_client_inference_usage_output_tokens_total{` + tokens + `} 20`,
+		`gen_ai_client_inference_usage_reasoning_output_tokens_total{` + tokens + `} 8`,
 		`kaiak_usage_cost_usd_total{` + wl + `} 0.00024`,
-		`kaiak_usage_records_total{kaiak_key_group="ann",kaiak_key_root_group="ann",kaiak_key_id="k-ann",model="open",status="partial"} 1`,
-		`kaiak_usage_cost_usd_total{kaiak_key_group="ann",kaiak_key_root_group="ann",kaiak_key_id="k-ann",model="open",status="partial"} 0`,
+		`kaiak_usage_records_total{` + ann + `} 1`,
+		`kaiak_usage_cost_usd_total{` + ann + `} 0`,
+		`gen_ai_client_inference_usage_input_tokens_total{` + ann + `,gen_ai_token_modality="unknown"} 130`,
 	} {
 		if !strings.Contains(out, want+"\n") {
 			t.Errorf("missing %q in:\n%s", want, out)
@@ -63,20 +75,23 @@ func TestUsageMetricsCountsRecords(t *testing.T) {
 	}
 
 	// Switched off: new records carry no kaiak.key.id.
-	holder.Swap(&config.Snapshot{KeyIDLabel: false, GroupLabel: true})
+	holder.Swap(&config.Snapshot{KeyIDLabel: false, GroupLabel: true, Backends: backends})
 	usage.Record(topLevel)
 	out = text(reg)
-	if want := `kaiak_usage_records_total{kaiak_key_group="ann",kaiak_key_root_group="ann",model="open",status="partial"} 1`; !strings.Contains(out, want+"\n") {
+	if want := `kaiak_usage_records_total{kaiak_key_group="ann",kaiak_key_root_group="ann",gen_ai_request_model="open",` +
+		`gen_ai_operation_name="embeddings",kaiak_usage_status="partial"} 1`; !strings.Contains(out, want+"\n") {
 		t.Errorf("missing %q in:\n%s", want, out)
 	}
 
 	// group_label switched off: new records carry no kaiak.key.group;
-	// kaiak.key.root_group stays; series written before stay.
+	// kaiak.key.root_group stays; series written before stay. The live config no
+	// longer has the record's backend: no provider name.
 	holder.Swap(&config.Snapshot{KeyIDLabel: true, GroupLabel: false})
 	usage.Record(rec)
 	out = text(reg)
 	for _, want := range []string{
-		`kaiak_usage_records_total{kaiak_key_root_group="research",kaiak_key_id="k-eval",model="pair",status="complete"} 1`,
+		`kaiak_usage_records_total{kaiak_key_root_group="research",kaiak_key_id="k-eval",gen_ai_request_model="pair",` +
+			`gen_ai_operation_name="chat",kaiak_usage_status="complete"} 1`,
 		`kaiak_usage_records_total{` + wl + `} 2`,
 	} {
 		if !strings.Contains(out, want+"\n") {
@@ -84,7 +99,7 @@ func TestUsageMetricsCountsRecords(t *testing.T) {
 		}
 	}
 	// No usage series is labeled by backend: backends multiply every group's series.
-	if strings.Contains(out, "kaiak_usage_records_total{") && strings.Contains(out, `kaiak_backend_id="local"`) {
+	if strings.Contains(out, `kaiak_backend_id=`) {
 		t.Errorf("a usage series carries the backend:\n%s", out)
 	}
 }

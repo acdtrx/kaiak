@@ -327,6 +327,7 @@ func TestRecorderSettlesOneRecordToTheBatcherThenTheMetrics(t *testing.T) {
 		Groups:     []string{"users", "ann"},
 		Model:      model,
 		Deployment: config.Deployment{Backend: &config.Backend{ID: "vllm"}, Model: "org/chat"},
+		Operation:  "chat",
 		Start:      day("2025-07-01"),
 	}, meter, true)
 
@@ -339,6 +340,10 @@ func TestRecorderSettlesOneRecordToTheBatcherThenTheMetrics(t *testing.T) {
 	if batcher.records[0].Generation != 0 || usage.records[0].Generation != 7 || rec.Generation != 7 {
 		t.Errorf("generations: batcher saw %d, metrics %d, caller %d; want 0, 7, 7",
 			batcher.records[0].Generation, usage.records[0].Generation, rec.Generation)
+	}
+	// The operation labels the metrics; the encoded record (below) never carries it.
+	if batcher.records[0].Operation != "chat" || usage.records[0].Operation != "chat" {
+		t.Errorf("operations: batcher saw %q, metrics %q; want chat", batcher.records[0].Operation, usage.records[0].Operation)
 	}
 	data, err := json.Marshal(rec)
 	if err != nil {

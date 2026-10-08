@@ -317,19 +317,21 @@ func TestGatewayEndToEnd(t *testing.T) {
 	})
 
 	t.Run("metrics reflect the traffic", func(t *testing.T) {
-		usage := `{kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",model="chat",status="complete"}`
+		labels := `kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",gen_ai_request_model="chat",` +
+			`gen_ai_operation_name="chat",kaiak_usage_status="complete"`
+		usage := `{` + labels + `}`
 		for series, want := range map[string]float64{
-			`kaiak_errors_total{kaiak_error_class="auth"}`:                                                     2,
-			`kaiak_errors_total{kaiak_error_class="rate_limited"}`:                                             1,
-			`kaiak_errors_total{kaiak_error_class="budget_exceeded"}`:                                          1,
-			`kaiak_config_loads_total{kaiak_trigger="sighup",kaiak_config_result="rejected"}`:                  1,
-			`kaiak_config_loads_total{kaiak_trigger="sighup",kaiak_config_result="applied"}`:                   1,
-			`kaiak_config_apply_duration_seconds_count{kaiak_trigger="startup",kaiak_config_result="applied"}`: 1,
-			`kaiak_config_apply_duration_seconds_count{kaiak_trigger="sighup",kaiak_config_result="rejected"}`: 1,
-			`kaiak_config_apply_duration_seconds_count{kaiak_trigger="sighup",kaiak_config_result="applied"}`:  1,
-			`kaiak_usage_records_total` + usage:                                                                4,
-			`kaiak_usage_tokens_total` + strings.TrimSuffix(usage, "}") + `,unit="tokens_out"}`:                16,
-			`kaiak_backend_active_requests{kaiak_backend_id="fake"}`:                                           0,
+			`kaiak_errors_total{kaiak_error_class="auth"}`:                                                      2,
+			`kaiak_errors_total{kaiak_error_class="rate_limited"}`:                                              1,
+			`kaiak_errors_total{kaiak_error_class="budget_exceeded"}`:                                           1,
+			`kaiak_config_loads_total{kaiak_trigger="sighup",kaiak_config_result="rejected"}`:                   1,
+			`kaiak_config_loads_total{kaiak_trigger="sighup",kaiak_config_result="applied"}`:                    1,
+			`kaiak_config_apply_duration_seconds_count{kaiak_trigger="startup",kaiak_config_result="applied"}`:  1,
+			`kaiak_config_apply_duration_seconds_count{kaiak_trigger="sighup",kaiak_config_result="rejected"}`:  1,
+			`kaiak_config_apply_duration_seconds_count{kaiak_trigger="sighup",kaiak_config_result="applied"}`:   1,
+			`kaiak_usage_records_total` + usage:                                                                 4,
+			`gen_ai_client_inference_usage_output_tokens_total{` + labels + `,gen_ai_token_modality="unknown"}`: 16,
+			`kaiak_backend_active_requests{kaiak_backend_id="fake"}`:                                            0,
 		} {
 			if got := g.metric(t, series); got != want {
 				t.Errorf("%s = %v, want %v", series, got, want)
@@ -463,7 +465,8 @@ func TestTieredPrices(t *testing.T) {
 		})
 	}
 
-	usage := `{kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",model="tiered",status="complete"}`
+	usage := `{kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",gen_ai_request_model="tiered",` +
+		`gen_ai_operation_name="chat",kaiak_usage_status="complete"}`
 	if got, want := g.metric(t, `kaiak_usage_cost_usd_total`+usage), 0.0008395; got != want {
 		t.Errorf("cost metric %v, want %v", got, want)
 	}
@@ -531,14 +534,17 @@ func TestInputWrittenToTheCache(t *testing.T) {
 		})
 	}
 
-	usage := func(model, unit string) string {
-		return fmt.Sprintf(`{kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",model=%q,status="complete"%s}`, model, unit)
+	usage := func(model, modality string) string {
+		return fmt.Sprintf(`{kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",gen_ai_request_model=%q,`+
+			`gen_ai_operation_name="chat",kaiak_usage_status="complete"%s}`, model, modality)
 	}
+	const tokens = `,gen_ai_token_modality="unknown"`
 	for series, want := range map[string]float64{
-		`kaiak_usage_tokens_total` + usage("written", `,unit="tokens_cache_write"`):        121, // 40 + 40 + 41
-		`kaiak_usage_tokens_total` + usage("written", `,unit="tokens_cached"`):             10,
-		`kaiak_usage_tokens_total` + usage("write-unpriced", `,unit="tokens_cache_write"`): 40,
-		`kaiak_usage_cost_usd_total` + usage("written", ""):                                0.0004335, // 0.00009 + 0.000081 + 0.0002625
+		`gen_ai_client_inference_usage_cache_write_input_tokens_total` + usage("written", tokens):        121, // 40 + 40 + 41
+		`gen_ai_client_inference_usage_cache_read_input_tokens_total` + usage("written", tokens):         10,
+		`gen_ai_client_inference_usage_input_tokens_total` + usage("written", tokens):                    221, // 60 + 60 + 101: all input
+		`gen_ai_client_inference_usage_cache_write_input_tokens_total` + usage("write-unpriced", tokens): 40,
+		`kaiak_usage_cost_usd_total` + usage("written", ""):                                              0.0004335, // 0.00009 + 0.000081 + 0.0002625
 	} {
 		if got := g.metric(t, series); got != want {
 			t.Errorf("%s = %v, want %v", series, got, want)

@@ -316,17 +316,17 @@ func TestFirstEventTimeoutRetried(t *testing.T) {
 	}
 	// One client request, two usage records: a's partial estimate and b's answer.
 	records := func(labels ...string) float64 {
-		return sumMetric(t, g, "kaiak_usage_records_total", append([]string{`model="chat"`}, labels...)...)
+		return sumMetric(t, g, "kaiak_usage_records_total", append([]string{`gen_ai_request_model="chat"`}, labels...)...)
 	}
 	if got := records(); got != 2 {
 		t.Errorf("usage records = %v, want 2", got)
 	}
 	// Usage metrics carry no backend: a's record is the partial one, b's the
 	// complete one; the attempts metric shows each on its backend.
-	if got := records(`status="partial"`); got != 1 {
+	if got := records(`kaiak_usage_status="partial"`); got != 1 {
 		t.Errorf("partial usage records = %v, want the timed-out attempt's", got)
 	}
-	if got := records(`status="complete"`); got != 1 {
+	if got := records(`kaiak_usage_status="complete"`); got != 1 {
 		t.Errorf("complete usage records = %v, want the answer's", got)
 	}
 	for backend, outcome := range map[string]string{"a": "timeout", "b": "success"} {

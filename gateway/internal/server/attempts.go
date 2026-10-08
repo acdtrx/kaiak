@@ -417,6 +417,7 @@ func (l *attempts) settle(rq *request, at *attempt) {
 		Groups:     rq.identity.Group.PathIDs,
 		Model:      rq.snapshot.Models[rq.model],
 		Deployment: at.deployment,
+		Operation:  rq.endpoint.operation,
 		Start:      rq.start,
 	}, at.meter, at.retryReason == "" && rq.relayEnd == "")
 	rq.records = append(rq.records, rec)

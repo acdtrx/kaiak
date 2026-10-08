@@ -157,7 +157,7 @@
               "default": true
             },
             "group_label": {
-              "description": "Label usage metrics with the key's group (key_group). Each group that owns keys multiplies the usage series; switch off with many of them. Off, the top-level group (root_group) still labels them.",
+              "description": "Label usage metrics with the key's group (kaiak.key.group). Each group that owns keys multiplies the usage series; switch off with many of them. Off, the top-level group (kaiak.key.root_group) still labels them.",
               "type": "boolean",
               "default": true
             }

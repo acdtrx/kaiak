@@ -153,7 +153,8 @@ func TestCompleteTotalsResetAPushedWindowTheyDoNotList(t *testing.T) {
 
 // A backend reporting 2^53 tokens. The record is clamped to the protocol's bound
 // at settlement, so its batch — and the other records in it — is accepted: every
-// counted record passes the usage record's checks.
+// counted record passes the usage record's checks, which refuse an unknown member —
+// the record's gateway-local generation and operation never reach the wire.
 func TestBackendReportingTooManyTokensDoesNotLoseItsBatch(t *testing.T) {
 	g := newControlledGateway(t, 2, nil)
 	g.backend.QueueReplies(fakebackend.Reply{}, fakebackend.Reply{Usage: &fakebackend.Usage{PromptTokens: 1 << 53}})
