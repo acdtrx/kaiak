@@ -130,7 +130,7 @@ type usageSender struct {
 	// queuedBytes is the encoded size of the queued records (Options.UsageMemoryBytes
 	// bounds it).
 	queuedBytes int64
-	// changed is closed and replaced whenever the queue shrinks (FlushUsage waits on it).
+	// changed is closed and replaced whenever the queue shrinks (flushUsage waits on it).
 	changed chan struct{}
 	// waitingSince is when the sealed and queued batches started waiting for the
 	// control plane's next answer: when the first of them was sealed, or the control
@@ -142,7 +142,7 @@ type usageSender struct {
 	sealWake chan struct{}
 	queued   chan struct{}
 
-	// queueMu serializes queueSealed (the sealer and FlushUsage); nextSequence, the
+	// queueMu serializes queueSealed (the sealer and flushUsage); nextSequence, the
 	// sequence the next queued batch takes, is guarded by it.
 	queueMu      sync.Mutex
 	nextSequence int64
@@ -240,7 +240,7 @@ func (u *usageSender) depthChangedLocked() {
 
 // runSealer seals the filling batch every interval, and queues sealed batches when
 // Record sealed a full one, until ctx ends. Sealing at stop would serve nothing: the
-// sender stops on the same ctx, and FlushUsage seals before it.
+// sender stops on the same ctx, and flushUsage seals before it.
 func (u *usageSender) runSealer(ctx context.Context) {
 	ticker := time.NewTicker(u.interval)
 	defer ticker.Stop()
@@ -439,24 +439,10 @@ func (u *usageSender) sendOutstanding(ctx context.Context, b queuedBatch) {
 			append(attrs, "http.response.status_code", refused.status, "error.type", refused.code)...)
 	default:
 		u.observe(BatchFailed)
-		level := slog.LevelWarn
-		if configProblem(err) {
-			level = slog.LevelError
-		}
-		u.logger.Log(ctx, level, "usage batch not delivered; retrying", append(attrs, "exception.message", err)...)
+		u.logger.Log(ctx, failureLevel(err, refusalIsError), "usage batch not delivered; retrying",
+			append(attrs, "exception.message", err)...)
 		_ = u.c.opts.wait(ctx, u.backoff.next()) // cancelled: the loop sees ctx and stops
 	}
-}
-
-// configProblem reports whether a failed send points at a configuration or version
-// problem (the token, the protocol version, an endpoint that answers what it should
-// not) rather than an outage: logged at error level, still retried.
-func configProblem(err error) bool {
-	if errors.Is(err, errProtocolMismatch) {
-		return true
-	}
-	var s *statusError
-	return errors.As(err, &s) && s.status < 500
 }
 
 func (u *usageSender) observe(result string) {
@@ -496,11 +482,11 @@ func (u *usageSender) post(ctx context.Context, batch UsageBatch) error {
 	return nil
 }
 
-// FlushUsage seals the filling batch, queues it, and waits until every queued batch is
+// flushUsage seals the filling batch, queues it, and waits until every queued batch is
 // acknowledged or dropped, or until ctx ends; it reports whether nothing is left. The
-// sending itself is Run's: FlushUsage is called while Run still runs (the drain, before
+// sending itself is Run's: flushUsage is called while Run still runs (the drain, before
 // the client stops). What is not delivered is lost with the process.
-func (c *Client) FlushUsage(ctx context.Context, trigger string) bool {
+func (c *Client) flushUsage(ctx context.Context, trigger string) bool {
 	u := c.usage
 	u.seal(trigger)
 	for {

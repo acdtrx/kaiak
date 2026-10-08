@@ -229,8 +229,8 @@ func flush(t *testing.T, c *Client) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), testWaitLimit)
 	defer cancel()
-	if !c.FlushUsage(ctx, "test") {
-		t.Fatal("FlushUsage did not empty the queue")
+	if !c.flushUsage(ctx, "test") {
+		t.Fatal("flushUsage did not empty the queue")
 	}
 }
 
@@ -291,7 +291,7 @@ func TestOneBatchOutstandingOthersQueueBehindIt(t *testing.T) {
 	}
 	flushCtx, cancel := context.WithCancel(context.Background())
 	flushed := make(chan bool, 1)
-	go func() { flushed <- c.FlushUsage(flushCtx, "test") }()
+	go func() { flushed <- c.flushUsage(flushCtx, "test") }()
 	defer cancel()
 
 	h.cp.SetUsageFault(nil)

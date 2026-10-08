@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -101,7 +102,7 @@ func (r *statusReporter) run(ctx context.Context) {
 	var gapEnd <-chan time.Time
 	report := func(trigger string) {
 		last, gapEnd = r.now(), nil
-		_ = r.c.ReportStatus(ctx, trigger) // failures are logged; the next trigger retries
+		_ = r.c.reportStatus(ctx, trigger) // failures are logged; the next trigger retries
 	}
 	report(statusTriggerStart)
 	for {
@@ -130,9 +131,9 @@ func (r *statusReporter) run(ctx context.Context) {
 	}
 }
 
-// ReportStatus sends one status report now; trigger names what asked for it. The
+// reportStatus sends one status report now; trigger names what asked for it. The
 // result is logged and returned.
-func (c *Client) ReportStatus(ctx context.Context, trigger string) error {
+func (c *Client) reportStatus(ctx context.Context, trigger string) error {
 	r := c.status
 	s := c.currentStatus()
 	err := r.post(ctx, s)
@@ -147,7 +148,7 @@ func (c *Client) ReportStatus(ctx context.Context, trigger string) error {
 	case err == nil:
 		c.logger.Debug("status report delivered", attrs...)
 	case ctx.Err() != nil:
-	case !wasFailing || configProblem(err):
+	case !wasFailing || failureLevel(err, refusalIsError) == slog.LevelError: // starting, or retrying cannot fix it
 		c.logger.Warn("status report not delivered; retried with the next report", append(attrs, "exception.message", err)...)
 	default:
 		c.logger.Debug("status report not delivered", append(attrs, "exception.message", err)...)

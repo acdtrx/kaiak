@@ -298,7 +298,7 @@ the live-backend kit's `LIVE_*` (`docs/testing/LIVE-BACKENDS.md`) and npm's
 directory `npm` ran from; unset in the image, where the working directory counts).
 Durations are whole milliseconds; a malformed value is a startup error.
 
-**Gateway** (`gateway/cmd/kaiak/main.go`; contract: `GATEWAY.md` → Configuration
+**Gateway** (`gateway/cmd/kaiak/settings.go`; contract: `GATEWAY.md` → Configuration
 sources):
 
 | Variable | Default | Meaning |

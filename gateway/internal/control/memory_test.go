@@ -58,8 +58,8 @@ func TestAnUndeliveredFlushIsLoggedAsLost(t *testing.T) {
 	c.Record(testRecord(1))
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	if c.FlushUsage(ctx, "drain") {
-		t.Fatal("FlushUsage reports everything delivered with the control plane down")
+	if c.flushUsage(ctx, "drain") {
+		t.Fatal("flushUsage reports everything delivered with the control plane down")
 	}
 	logged := false
 	for line := range strings.SplitSeq(h.logs.String(), "\n") {

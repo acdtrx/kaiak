@@ -60,7 +60,7 @@ func newEpoch() string {
 // sequence of the epoch. Each batch's records are checked first (checkRecords): a
 // record the protocol refuses is dropped alone, and a batch left empty takes no
 // sequence. queueSealed is the only code that removes sealed batches and takes
-// sequences, and queueMu serializes it (the sealer and FlushUsage), so the checks run
+// sequences, and queueMu serializes it (the sealer and flushUsage), so the checks run
 // outside u.mu, off the request path's lock.
 func (u *usageSender) queueSealed() {
 	u.queueMu.Lock()

@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -113,11 +114,40 @@ func TestStatusFollowsRejectionsAndTheDrain(t *testing.T) {
 
 	c.SetDraining()
 	h.statusUntil("state draining", func(s Status) bool { return s.State == StateDraining })
-	if err := c.ReportStatus(context.Background(), "test"); err != nil {
+	if err := c.reportStatus(context.Background(), "test"); err != nil {
 		t.Fatal(err)
 	}
 	if s := h.nextStatus(); s.State != StateDraining {
 		t.Errorf("final report state %s", s.State)
+	}
+}
+
+// The drain's last step flushes the usage, then sends a final draining status —
+// unless the drain was hurried (ctx cancelled); a flush that ran to its deadline
+// still reports.
+func TestFinishFlushesThenReportsDrainingUnlessHurried(t *testing.T) {
+	h := newHarness(t)
+	h.cp.Publish(configA(t))
+	c := h.client(nil)
+	if err := h.boot(c); err != nil {
+		t.Fatal(err)
+	}
+	c.SetDraining() // Run is not running: only Finish sends reports
+
+	hurried, cancel := context.WithCancel(context.Background())
+	cancel()
+	c.Finish(hurried)
+	if n := len(h.cp.Statuses()); n != 0 {
+		t.Errorf("%d status reports after a hurried finish, want none", n)
+	}
+	past, cancelPast := context.WithDeadline(context.Background(), time.Now())
+	defer cancelPast()
+	c.Finish(past)
+	if s := h.nextStatus(); s.State != StateDraining {
+		t.Errorf("final report state %s, want draining", s.State)
+	}
+	if n := strings.Count(h.logs.String(), `msg="usage flushed"`); n != 2 {
+		t.Errorf("%d usage flushes logged, want one per finish:\n%s", n, h.logs.String())
 	}
 }
 

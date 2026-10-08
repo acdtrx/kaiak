@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"regexp"
@@ -46,6 +47,32 @@ func (e *statusError) Error() string {
 		return fmt.Sprintf("control plane answered %d", e.status)
 	}
 	return fmt.Sprintf("control plane answered %d %s", e.status, e.code)
+}
+
+// refusals says what failureLevel makes of a 4xx answer.
+type refusals bool
+
+const (
+	// refusalWarns: the boot and the config stream log a refused answer at warning
+	// level.
+	refusalWarns refusals = false
+	// refusalIsError: usage and status deliveries log a refused answer — the token or
+	// the endpoint is wrong — at error level.
+	refusalIsError refusals = true
+)
+
+// failureLevel is the log level of a failed exchange with the control plane: error
+// when the failure is one retrying cannot fix — another protocol version, a malformed
+// totals event (only the stream reads them), and a 4xx answer when refused says so —
+// else warning.
+func failureLevel(err error, refused refusals) slog.Level {
+	if errors.Is(err, errProtocolMismatch) || errors.Is(err, errMalformedTotals) {
+		return slog.LevelError
+	}
+	if s, ok := errors.AsType[*statusError](err); ok && s.status < 500 && refused == refusalIsError {
+		return slog.LevelError
+	}
+	return slog.LevelWarn
 }
 
 // get sends one GET to the control plane with the headers every request carries,

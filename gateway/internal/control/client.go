@@ -345,10 +345,7 @@ func (c *Client) bootConfig(ctx context.Context) (ConfigEvent, error) {
 		}
 		level := slog.LevelDebug
 		if attempt == 1 {
-			level = slog.LevelWarn
-			if errors.Is(err, errProtocolMismatch) {
-				level = slog.LevelError
-			}
+			level = failureLevel(err, refusalWarns)
 		}
 		c.logger.Log(ctx, level, "config not received at startup: retrying within the boot wait",
 			"kaiak.control.attempt", attempt, logattr.Seconds("kaiak.control.boot_wait", c.opts.BootWait), "exception.message", err)
@@ -385,7 +382,7 @@ func (c *Client) bootFromSeed() bool {
 
 // Run works with the control plane until ctx is cancelled, and returns once all of
 // its goroutines have: it follows the config, sends usage batches and reports status.
-// Usage not delivered when ctx ends is not sent: FlushUsage, called before, delivers it.
+// Usage not delivered when ctx ends is not sent: Finish, called before, delivers it.
 func (c *Client) Run(ctx context.Context) {
 	var work sync.WaitGroup
 	work.Go(func() { c.usage.runSealer(ctx) })
@@ -394,6 +391,26 @@ func (c *Client) Run(ctx context.Context) {
 	c.followConfig(ctx)
 	work.Wait()
 	c.http.CloseIdleConnections()
+}
+
+// finalStatusTimeout bounds the last status report of a drain.
+const finalStatusTimeout = 2 * time.Second
+
+// Finish is the client's part of the drain's last step (docs/specs/GATEWAY.md,
+// Lifecycle), called once the drained requests' records are settled and while Run
+// still runs: the usage flush — the filling batch sealed, queued batches sent until
+// acknowledged, or until ctx ends — then a final draining status, bounded by
+// finalStatusTimeout, unless ctx was cancelled: a cancelled ctx is a hurried drain,
+// while one past its deadline still sends the status. What is not delivered is lost
+// with the process.
+func (c *Client) Finish(ctx context.Context) {
+	c.flushUsage(ctx, "drain")
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return
+	}
+	statusCtx, cancel := context.WithTimeout(context.Background(), finalStatusTimeout)
+	defer cancel()
+	_ = c.reportStatus(statusCtx, "drain") // the result is logged; the usage flush is over either way
 }
 
 // takeTotals hands one totals event to the consumer with the usage it shows counted:
@@ -485,23 +502,17 @@ func rejectionCodes(err error) []string {
 }
 
 func (c *Client) logFetchFailure(msg string, err error) {
-	level := slog.LevelWarn
-	if errors.Is(err, errProtocolMismatch) {
-		level = slog.LevelError
-	}
-	c.logger.Log(context.Background(), level, msg, "exception.message", err)
+	c.logger.Log(context.Background(), failureLevel(err, refusalWarns), msg, "exception.message", err)
 }
 
 func (c *Client) logStreamEnd(r streamResult) {
 	attrs := []any{logattr.Seconds("kaiak.lasted", r.lasted)}
-	switch {
-	case r.err == nil:
+	if r.err == nil {
 		c.logger.Info("config stream ended by the control plane", attrs...)
-	case errors.Is(r.err, errProtocolMismatch), errors.Is(r.err, errMalformedTotals):
-		c.logger.Error("config stream failed", append(attrs, "exception.message", r.err)...)
-	default:
-		c.logger.Warn("config stream failed", append(attrs, "exception.message", r.err)...)
+		return
 	}
+	c.logger.Log(context.Background(), failureLevel(r.err, refusalWarns), "config stream failed",
+		append(attrs, "exception.message", r.err)...)
 }
 
 func waitTimer(ctx context.Context, d time.Duration) error {
