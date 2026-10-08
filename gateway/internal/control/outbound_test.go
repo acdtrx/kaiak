@@ -24,12 +24,12 @@ var (
 
 // DecodeUsageBatch reads the body of POST /v1/usage.
 func DecodeUsageBatch(data []byte) (UsageBatch, error) {
-	return decode("usage batch", data, (*walker).usageBatch, (*ruleCheck).usageBatch, decodeTyped[UsageBatch])
+	return decode[UsageBatch]("usage batch", data, (*walker).usageBatch, (*ruleCheck).usageBatch)
 }
 
 // DecodeStatus reads the body of POST /v1/status.
 func DecodeStatus(data []byte) (Status, error) {
-	return decode("status", data, (*walker).status, (*ruleCheck).status, decodeTyped[Status])
+	return decode[Status]("status", data, (*walker).status, (*ruleCheck).status)
 }
 
 func (w *walker) usageBatch(v any, path string) {
@@ -54,7 +54,7 @@ func (w *walker) status(v any, path string) {
 			})
 		})},
 		"backends": {Required: true, Check: w.CollectionOf(config.IsID, "a backend ID", w.backendStatus)},
-		"models": {Required: true, Check: w.CollectionOf(config.IsPublicModelName, publicModelNameWhat,
+		"models": {Required: true, Check: w.CollectionOf(config.IsPublicModelName, config.PublicModelNameWhat,
 			func(v any, path string) {
 				w.Object(v, path, map[string]schemacheck.Field{
 					"queued": {Required: true, Check: w.count()},

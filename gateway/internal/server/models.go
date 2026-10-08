@@ -22,32 +22,20 @@ type modelEntry struct {
 	Created int64  `json:"created"`
 	OwnedBy string `json:"owned_by"`
 
-	ContextLength    int64            `json:"context_length"`
-	Capabilities     capabilitiesJSON `json:"capabilities"`
-	ReasoningEfforts []string         `json:"reasoning_efforts"`
+	ContextLength    int64               `json:"context_length"`
+	Capabilities     config.Capabilities `json:"capabilities"`
+	ReasoningEfforts []string            `json:"reasoning_efforts"`
 	// Endpoints are the body endpoints some deployment of the model serves, by their
 	// metric names, sorted: which API reaches the model. Information from the config,
 	// not health.
 	Endpoints []string `json:"endpoints"`
 }
 
-type capabilitiesJSON struct {
-	Streaming bool `json:"streaming"`
-	Tools     bool `json:"tools"`
-	Vision    bool `json:"vision"`
-	Reasoning bool `json:"reasoning"`
-}
-
 // modelProps is /v1/models/{id}/props: the model entry plus what the gateway applies
 // to a request's output — the output limit (null when none is declared).
 type modelProps struct {
 	modelEntry
-	OutputLimit *outputLimitJSON `json:"output_limit"`
-}
-
-type outputLimitJSON struct {
-	Default int64 `json:"default"`
-	Ceiling int64 `json:"ceiling"`
+	OutputLimit *config.OutputLimit `json:"output_limit"`
 }
 
 type modelList struct {
@@ -66,17 +54,12 @@ func newModelEntry(m *config.Model) modelEntry {
 		efforts = []string{}
 	}
 	return modelEntry{
-		ID:            m.Name,
-		Object:        "model",
-		Created:       modelCreated,
-		OwnedBy:       "kaiak",
-		ContextLength: m.ContextLength,
-		Capabilities: capabilitiesJSON{
-			Streaming: m.Capabilities.Streaming,
-			Tools:     m.Capabilities.Tools,
-			Vision:    m.Capabilities.Vision,
-			Reasoning: m.Capabilities.Reasoning,
-		},
+		ID:               m.Name,
+		Object:           "model",
+		Created:          modelCreated,
+		OwnedBy:          "kaiak",
+		ContextLength:    m.ContextLength,
+		Capabilities:     m.Capabilities,
 		ReasoningEfforts: efforts,
 		Endpoints:        servedEndpoints(m),
 	}
@@ -104,10 +87,10 @@ type anthropicModelEntry struct {
 	DisplayName string `json:"display_name"`
 	CreatedAt   string `json:"created_at"`
 
-	ContextLength    int64            `json:"context_length"`
-	Capabilities     capabilitiesJSON `json:"capabilities"`
-	ReasoningEfforts []string         `json:"reasoning_efforts"`
-	Endpoints        []string         `json:"endpoints"`
+	ContextLength    int64               `json:"context_length"`
+	Capabilities     config.Capabilities `json:"capabilities"`
+	ReasoningEfforts []string            `json:"reasoning_efforts"`
+	Endpoints        []string            `json:"endpoints"`
 }
 
 // anthropicModelList is Anthropic's model list: always one page. first_id and last_id
@@ -188,11 +171,7 @@ func answerModelEndpoint(_ context.Context, rq *request) *apiError {
 		writeJSON(rq.w, newModelEntry(rq.snapshot.Models[rq.model]))
 	case endpointModelProps:
 		m := rq.snapshot.Models[rq.model]
-		props := modelProps{modelEntry: newModelEntry(m)}
-		if m.OutputLimit != nil {
-			props.OutputLimit = &outputLimitJSON{Default: m.OutputLimit.Default, Ceiling: m.OutputLimit.Ceiling}
-		}
-		writeJSON(rq.w, props)
+		writeJSON(rq.w, modelProps{modelEntry: newModelEntry(m), OutputLimit: m.OutputLimit})
 	}
 	return nil
 }

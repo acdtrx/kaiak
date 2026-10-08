@@ -2,6 +2,7 @@ package schemacheck
 
 import (
 	"errors"
+	"slices"
 	"testing"
 )
 
@@ -30,13 +31,15 @@ func TestFirstDuplicateMember(t *testing.T) {
 	}
 }
 
-func TestDecodeRefusesADuplicateMember(t *testing.T) {
-	_, err := Decode([]byte(`{"a":[{"b":1,"b":2}]}`))
-	var duplicate *DuplicateMemberError
-	if !errors.As(err, &duplicate) || duplicate.Path != "/a/0/b" {
-		t.Fatalf("err = %v, want a *DuplicateMemberError at /a/0/b", err)
+func TestValidateRefusesADuplicateMember(t *testing.T) {
+	noIssues := func(any) []Issue { return nil }
+	_, err := Validate("doc", []byte(`{"a":[{"b":1,"b":2}]}`), noIssues)
+	invalid, ok := errors.AsType[*ValidationError](err)
+	if !ok || !slices.Equal(invalid.Codes(), []string{CodeDuplicateMember}) || invalid.Issues[0].Path != "/a/0/b" {
+		t.Fatalf("err = %v, want a %s rejection at /a/0/b", err, CodeDuplicateMember)
 	}
-	if _, err := Decode([]byte(`{"a":1,"a"`)); errors.As(err, &duplicate) {
-		t.Error("a syntax error reported as a duplicate")
+	_, err = Validate("doc", []byte(`{"a":1,"a"`), noIssues)
+	if invalid, ok := errors.AsType[*ValidationError](err); !ok || !slices.Equal(invalid.Codes(), []string{CodeSyntax}) {
+		t.Errorf("err = %v: a syntax error reported as a duplicate", err)
 	}
 }

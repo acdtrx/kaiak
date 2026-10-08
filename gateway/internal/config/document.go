@@ -1,15 +1,17 @@
 package config
 
 // The config document as decoded, before resolution. These types follow
-// protocol/schema/config.schema.json and are decoded only after the document passed
-// checkSchema, so every field has the type the schema requires. Numbers are float64:
-// the schema calls a number with no fractional part an integer (4096.0 included), and
-// checkSchema has already enforced integrality and range. Pointers mark fields whose
-// absence means something (a default applies); a nil slice is an omitted list, an
-// empty one an empty list.
+// protocol/schema/config.schema.json and are decoded (schemacheck.DecodeTyped) only
+// after the document passed checkSchema, so every field has the type the schema
+// requires: an integer field is an int64 (checkSchema has enforced integrality and
+// range, 4096.0 included), a number that may hold a fraction a float64 (limit values,
+// prices). Pointers mark fields whose absence means something (a default applies); a
+// nil slice is an omitted list, an empty one an empty list. Model metadata passed
+// through unchanged decodes straight into the snapshot's types (Capabilities,
+// OutputLimit).
 
 type document struct {
-	FormatVersion float64               `json:"format_version"`
+	FormatVersion int64                 `json:"format_version"`
 	Global        globalDoc             `json:"global"`
 	Backends      map[string]backendDoc `json:"backends"`
 	Models        map[string]modelDoc   `json:"models"`
@@ -19,12 +21,12 @@ type document struct {
 
 type globalDoc struct {
 	Limits               []limitDoc  `json:"limits"`
-	MaxRequestBodyBytes  *float64    `json:"max_request_body_bytes"`
-	ControlOutageGraceMS *float64    `json:"control_outage_grace_ms"`
-	MaxN                 *float64    `json:"max_n"`
-	MaxSequences         *float64    `json:"max_sequences_per_request"`
-	MaxEmbeddingInputs   *float64    `json:"max_embedding_inputs"`
-	MaxConcurrentPerKey  *float64    `json:"max_concurrent_requests_per_key"`
+	MaxRequestBodyBytes  *int64      `json:"max_request_body_bytes"`
+	ControlOutageGraceMS *int64      `json:"control_outage_grace_ms"`
+	MaxN                 *int64      `json:"max_n"`
+	MaxSequences         *int64      `json:"max_sequences_per_request"`
+	MaxEmbeddingInputs   *int64      `json:"max_embedding_inputs"`
+	MaxConcurrentPerKey  *int64      `json:"max_concurrent_requests_per_key"`
 	Queue                *queueDoc   `json:"queue"`
 	Retries              *retriesDoc `json:"retries"`
 	Circuit              *circuitDoc `json:"circuit"`
@@ -34,17 +36,17 @@ type globalDoc struct {
 // queueDoc is global.queue or a model's override; a nil field keeps the value it
 // overrides.
 type queueDoc struct {
-	Size      *float64 `json:"size"`
-	TimeoutMS *float64 `json:"timeout_ms"`
+	Size      *int64 `json:"size"`
+	TimeoutMS *int64 `json:"timeout_ms"`
 }
 
 type retriesDoc struct {
-	MaxAttempts *float64 `json:"max_attempts"`
+	MaxAttempts *int64 `json:"max_attempts"`
 }
 
 type circuitDoc struct {
-	FailureThreshold *float64 `json:"failure_threshold"`
-	ProbeIntervalMS  *float64 `json:"probe_interval_ms"`
+	FailureThreshold *int64 `json:"failure_threshold"`
+	ProbeIntervalMS  *int64 `json:"probe_interval_ms"`
 }
 
 type metricsDoc struct {
@@ -53,20 +55,20 @@ type metricsDoc struct {
 }
 
 type backendDoc struct {
-	Type                string   `json:"type"`
-	BaseURL             string   `json:"base_url"`
-	APIKeyEnv           string   `json:"api_key_env"`
-	ConnectTimeoutMS    *float64 `json:"connect_timeout_ms"`
-	FirstEventTimeoutMS *float64 `json:"first_event_timeout_ms"`
-	ResponseTimeoutMS   *float64 `json:"response_timeout_ms"`
-	StallTimeoutMS      *float64 `json:"stall_timeout_ms"`
-	MaxInFlight         *float64 `json:"max_in_flight"`
+	Type                string `json:"type"`
+	BaseURL             string `json:"base_url"`
+	APIKeyEnv           string `json:"api_key_env"`
+	ConnectTimeoutMS    *int64 `json:"connect_timeout_ms"`
+	FirstEventTimeoutMS *int64 `json:"first_event_timeout_ms"`
+	ResponseTimeoutMS   *int64 `json:"response_timeout_ms"`
+	StallTimeoutMS      *int64 `json:"stall_timeout_ms"`
+	MaxInFlight         *int64 `json:"max_in_flight"`
 }
 
 type modelDoc struct {
 	Deployments []deploymentDoc `json:"deployments"`
 	Metadata    metadataDoc     `json:"metadata"`
-	OutputLimit *outputLimitDoc `json:"output_limit"`
+	OutputLimit *OutputLimit    `json:"output_limit"`
 	Queue       *queueDoc       `json:"queue"`
 	Retries     *retriesDoc     `json:"retries"`
 	Prices      []priceDoc      `json:"prices"`
@@ -78,21 +80,9 @@ type deploymentDoc struct {
 }
 
 type metadataDoc struct {
-	ContextLength    float64         `json:"context_length"`
-	Capabilities     capabilitiesDoc `json:"capabilities"`
-	ReasoningEfforts []string        `json:"reasoning_efforts"`
-}
-
-type capabilitiesDoc struct {
-	Streaming bool `json:"streaming"`
-	Tools     bool `json:"tools"`
-	Vision    bool `json:"vision"`
-	Reasoning bool `json:"reasoning"`
-}
-
-type outputLimitDoc struct {
-	Default float64 `json:"default"`
-	Ceiling float64 `json:"ceiling"`
+	ContextLength    int64        `json:"context_length"`
+	Capabilities     Capabilities `json:"capabilities"`
+	ReasoningEfforts []string     `json:"reasoning_efforts"`
 }
 
 type priceDoc struct {
@@ -101,7 +91,7 @@ type priceDoc struct {
 }
 
 type priceTierDoc struct {
-	AboveInputTokens float64            `json:"above_input_tokens"`
+	AboveInputTokens int64              `json:"above_input_tokens"`
 	USDPerMillion    map[string]float64 `json:"usd_per_million"`
 }
 

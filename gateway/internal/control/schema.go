@@ -39,11 +39,6 @@ func countedLimitTypes() []string {
 	return names
 }
 
-const (
-	publicModelNameWhat = `a model name not ending in "/props"`
-	timestampWhat       = "an RFC 3339 UTC timestamp (Z suffix)"
-)
-
 type walker struct {
 	schemacheck.Checker
 }
@@ -57,7 +52,7 @@ func (w *walker) instance() func(v any, path string) {
 }
 
 func (w *walker) timestamp() func(v any, path string) {
-	return w.StringWhere(config.IsTimestamp, timestampWhat)
+	return w.StringWhere(config.IsTimestamp, config.TimestampWhat)
 }
 
 func (w *walker) count() func(v any, path string) {
@@ -87,7 +82,7 @@ func (w *walker) usageRecord(v any, path string) {
 		"gateway_instance": {Required: true, Check: w.instance()},
 		"key_id":           {Required: true, Check: w.id()},
 		"groups":           {Required: true, Check: w.ArrayOf(1, config.MaxGroupDepth, true, w.id())},
-		"model":            {Required: true, Check: w.StringWhere(config.IsPublicModelName, publicModelNameWhat)},
+		"model":            {Required: true, Check: w.StringWhere(config.IsPublicModelName, config.PublicModelNameWhat)},
 		"deployment": {Required: true, Check: func(v any, path string) {
 			w.Object(v, path, map[string]schemacheck.Field{
 				"backend": {Required: true, Check: w.id()},

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"kaiak/internal/schemacheck"
 )
 
 func parseFixture(t *testing.T, name string) *Snapshot {
@@ -43,12 +45,12 @@ func TestPriceTiersResolve(t *testing.T) {
 	}
 }
 
-func mustReject(t *testing.T, doc string) *ValidationError {
+func mustReject(t *testing.T, doc string) *schemacheck.ValidationError {
 	t.Helper()
 	_, err := Parse([]byte(doc))
-	var invalid *ValidationError
+	var invalid *schemacheck.ValidationError
 	if !errors.As(err, &invalid) {
-		t.Fatalf("want a *ValidationError, got %v", err)
+		t.Fatalf("want a *schemacheck.ValidationError, got %v", err)
 	}
 	return invalid
 }
@@ -366,14 +368,14 @@ func TestRejectionsOutsideTheFixtures(t *testing.T) {
 	for _, tc := range []struct {
 		name, doc, code string
 	}{
-		{"not JSON", `{"format_version": 1`, CodeSyntax},
-		{"trailing data", valid + ` {}`, CodeSyntax},
-		{"null field", minimalDoc(`{ "type": "openai-compatible", "base_url": "http://x/v1", "api_key_env": null }`), CodeSchema},
-		{"null collection", strings.Replace(valid, `"groups": { "me": {} }`, `"groups": null`, 1), CodeSchema},
-		{"fractional timeout", minimalDoc(`{ "type": "openai-compatible", "base_url": "http://x/v1", "connect_timeout_ms": 1.5 }`), CodeSchema},
+		{"not JSON", `{"format_version": 1`, schemacheck.CodeSyntax},
+		{"trailing data", valid + ` {}`, schemacheck.CodeSyntax},
+		{"null field", minimalDoc(`{ "type": "openai-compatible", "base_url": "http://x/v1", "api_key_env": null }`), schemacheck.CodeSchema},
+		{"null collection", strings.Replace(valid, `"groups": { "me": {} }`, `"groups": null`, 1), schemacheck.CodeSchema},
+		{"fractional timeout", minimalDoc(`{ "type": "openai-compatible", "base_url": "http://x/v1", "connect_timeout_ms": 1.5 }`), schemacheck.CodeSchema},
 		// The schema's patterns are ECMAScript: \s includes \v and Unicode spaces.
-		{"vertical tab in base_url", minimalDoc(`{ "type": "openai-compatible", "base_url": "http://x/v\u000b1" }`), CodeSchema},
-		{"no-break space in base_url", minimalDoc(`{ "type": "openai-compatible", "base_url": "http://x y/v1" }`), CodeSchema},
+		{"vertical tab in base_url", minimalDoc(`{ "type": "openai-compatible", "base_url": "http://x/v\u000b1" }`), schemacheck.CodeSchema},
+		{"no-break space in base_url", minimalDoc(`{ "type": "openai-compatible", "base_url": "http://x y/v1" }`), schemacheck.CodeSchema},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			invalid := mustReject(t, tc.doc)

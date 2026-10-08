@@ -18,10 +18,10 @@ const allModels = "*"
 
 type semanticCheck struct {
 	doc    *document
-	issues []Issue
+	issues []schemacheck.Issue
 }
 
-func checkSemantics(doc *document) []Issue {
+func checkSemantics(doc *document) []schemacheck.Issue {
 	c := &semanticCheck{doc: doc}
 
 	for _, name := range slices.Sorted(maps.Keys(doc.Models)) {
@@ -68,7 +68,7 @@ func checkSemantics(doc *document) []Issue {
 }
 
 func (c *semanticCheck) report(code, path, message string) {
-	c.issues = append(c.issues, Issue{Code: code, Path: path, Message: message})
+	c.issues = append(c.issues, schemacheck.Issue{Code: code, Path: path, Message: message})
 }
 
 func (c *semanticCheck) model(name string, model modelDoc) {
@@ -89,11 +89,11 @@ func (c *semanticCheck) model(name string, model modelDoc) {
 	if limit := model.OutputLimit; limit != nil {
 		if limit.Default > limit.Ceiling {
 			c.report(CodeOutputLimitDefaultAboveCeiling, schemacheck.Pointer(path, "output_limit"),
-				fmt.Sprintf("default %v is above ceiling %v", limit.Default, limit.Ceiling))
+				fmt.Sprintf("default %d is above ceiling %d", limit.Default, limit.Ceiling))
 		}
 		if limit.Ceiling > metadata.ContextLength {
 			c.report(CodeOutputLimitAboveContext, schemacheck.Pointer(path, "output_limit", "ceiling"),
-				fmt.Sprintf("ceiling %v is above context_length %v", limit.Ceiling, metadata.ContextLength))
+				fmt.Sprintf("ceiling %d is above context_length %d", limit.Ceiling, metadata.ContextLength))
 		}
 	}
 
@@ -120,13 +120,13 @@ func (c *semanticCheck) priceTiers(tiers []priceTierDoc, path string) {
 		if j == 0 {
 			if tier.AboveInputTokens != 0 {
 				c.report(CodePriceTierFirstNotZero, thresholdPath,
-					fmt.Sprintf("the first tier starts above %d tokens, not 0", int64(tier.AboveInputTokens)))
+					fmt.Sprintf("the first tier starts above %d tokens, not 0", tier.AboveInputTokens))
 			}
 			continue
 		}
 		if previous := tiers[j-1].AboveInputTokens; tier.AboveInputTokens <= previous {
 			c.report(CodePriceTiersNotIncreasing, thresholdPath,
-				fmt.Sprintf("%d is not above the previous tier's %d", int64(tier.AboveInputTokens), int64(previous)))
+				fmt.Sprintf("%d is not above the previous tier's %d", tier.AboveInputTokens, previous))
 		}
 	}
 }

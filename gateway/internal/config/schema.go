@@ -65,11 +65,10 @@ func IsReservedEnvName(name string) bool {
 // take such a model's own path for its props endpoint.
 const reservedModelSuffix = "/props"
 
-const publicModelNameWhat = `a model name not ending in "` + reservedModelSuffix + `"`
-
 // IsID checks the shape of a backend, group or key ID. It,
 // IsBackendModelName, IsPublicModelName and IsTimestamp are the config schema's shared
-// $defs, which the protocol message schemas refer to.
+// $defs, which the protocol message schemas refer to; PublicModelNameWhat and
+// TimestampWhat describe theirs in the walkers' messages.
 func IsID(s string) bool { return idPattern.MatchString(s) }
 
 // IsBackendModelName checks a model name on a backend (a deployment's model), in the
@@ -84,11 +83,18 @@ const backendModelNameWhat = "a backend model name: 1 to 512 printable ASCII cha
 // instant exists is schemacheck.IsRealTimestamp.
 func IsTimestamp(s string) bool { return timestampPattern.MatchString(s) }
 
+// TimestampWhat describes a timestamp (IsTimestamp) in schema messages.
+const TimestampWhat = "an RFC 3339 UTC timestamp (Z suffix)"
+
 // IsPublicModelName checks a public model name: a model name not ending in the
 // reserved suffix.
 func IsPublicModelName(s string) bool {
 	return modelNamePattern.MatchString(s) && !strings.HasSuffix(s, reservedModelSuffix)
 }
+
+// PublicModelNameWhat describes a public model name (IsPublicModelName) in schema
+// messages.
+const PublicModelNameWhat = `a model name not ending in "` + reservedModelSuffix + `"`
 
 var (
 	backendTypes = []string{
@@ -112,14 +118,10 @@ func limitTypeEnum() []string {
 }
 
 // checkSchema validates the generic JSON tree against the config schema.
-func checkSchema(tree any) []Issue {
+func checkSchema(tree any) []schemacheck.Issue {
 	c := &schemaCheck{}
 	c.document(tree)
-	issues := make([]Issue, 0, len(c.Issues()))
-	for _, issue := range c.Issues() {
-		issues = append(issues, Issue{Code: CodeSchema, Path: issue.Path, Message: issue.Message})
-	}
-	return issues
+	return c.Issues()
 }
 
 type schemaCheck struct {
@@ -131,7 +133,7 @@ func (c *schemaCheck) document(v any) {
 		"format_version": {Required: true, Check: c.Const(FormatVersion)},
 		"global":         {Required: true, Check: c.global},
 		"backends":       {Required: true, Check: c.CollectionOf(idPattern.MatchString, "an ID", c.backend)},
-		"models":         {Required: true, Check: c.CollectionOf(IsPublicModelName, publicModelNameWhat, c.model)},
+		"models":         {Required: true, Check: c.CollectionOf(IsPublicModelName, PublicModelNameWhat, c.model)},
 		"groups":         {Check: c.CollectionOf(idPattern.MatchString, "an ID", c.group)},
 		"keys":           {Required: true, Check: c.CollectionOf(idPattern.MatchString, "an ID", c.key)},
 	})
@@ -328,7 +330,7 @@ func (c *schemaCheck) key(v any, path string) {
 	c.Object(v, path, map[string]schemacheck.Field{
 		"hash":       {Required: true, Check: c.StringMatching(keyHashPattern, `"sha256:" and 64 lowercase hex digits`)},
 		"group":      {Required: true, Check: c.StringMatching(idPattern, "an ID")},
-		"expires_at": {Check: c.StringMatching(timestampPattern, "an RFC 3339 UTC timestamp (Z suffix)")},
+		"expires_at": {Check: c.StringMatching(timestampPattern, TimestampWhat)},
 		"disabled":   {Check: c.Boolean},
 	})
 }
@@ -337,7 +339,7 @@ func (c *schemaCheck) allowedModels(v any, path string) {
 	c.ArrayOf(0, 0, true, func(v any, path string) {
 		s, ok := v.(string)
 		if !ok || (s != allModels && !IsPublicModelName(s)) {
-			c.Fail(path, "must be "+publicModelNameWhat+` or "*"`)
+			c.Fail(path, "must be "+PublicModelNameWhat+` or "*"`)
 		}
 	})(v, path)
 }

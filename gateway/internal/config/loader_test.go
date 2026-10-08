@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"kaiak/internal/schemacheck"
 )
 
 // fullEnv sets the API-key variables full.json names.
@@ -44,7 +46,7 @@ func newTestLoader(t *testing.T, env func(string) (string, bool)) (*FileLoader, 
 	return loader, holder, path, &logs
 }
 
-func TestApplierReportsEveryLoadToTheObserver(t *testing.T) {
+func TestApplierTellsOnLoadOfEveryLoad(t *testing.T) {
 	var loads []Load
 	var logs bytes.Buffer
 	holder := &Holder{}
@@ -56,7 +58,8 @@ func TestApplierReportsEveryLoadToTheObserver(t *testing.T) {
 	}
 
 	before := time.Now()
-	if _, err := applier.Apply("control", valid, "kaiak.config.hash", strings.Repeat("a", 64)); err != nil {
+	applied, err := applier.Apply("control", valid, "kaiak.config.hash", strings.Repeat("a", 64))
+	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := applier.Apply("control", []byte(`{`), "kaiak.config.hash", strings.Repeat("b", 64)); err == nil {
@@ -72,7 +75,7 @@ func TestApplierReportsEveryLoadToTheObserver(t *testing.T) {
 	}
 	var got []load
 	for _, l := range loads {
-		got = append(got, load{l.Trigger, l.Applied, l.Document, l.Bytes})
+		got = append(got, load{l.Trigger, l.Applied(), l.Document, l.Bytes})
 		if l.At.Before(before) {
 			t.Errorf("load %+v: no end time", l)
 		}
@@ -84,6 +87,10 @@ func TestApplierReportsEveryLoadToTheObserver(t *testing.T) {
 	want := []load{{"control", true, true, len(valid)}, {"control", false, true, 1}, {"sighup", false, false, 0}}
 	if !slices.Equal(got, want) {
 		t.Errorf("loads %+v, want %+v", got, want)
+	}
+	// An applied load carries the snapshot it swapped in.
+	if len(loads) == len(want) && (loads[0].Snapshot != applied || holder.Current() != applied) {
+		t.Errorf("applied load's snapshot %p, want the one applied, %p", loads[0].Snapshot, applied)
 	}
 	out := logs.String()
 	for _, line := range []string{
@@ -135,8 +142,8 @@ func TestFailedReloadKeepsTheRunningSnapshot(t *testing.T) {
 	}
 	err := loader.Load("sighup")
 
-	var invalid *ValidationError
-	if !errors.As(err, &invalid) || !slices.Equal(invalid.Codes(), []string{CodeSchema}) {
+	var invalid *schemacheck.ValidationError
+	if !errors.As(err, &invalid) || !slices.Equal(invalid.Codes(), []string{schemacheck.CodeSchema}) {
 		t.Fatalf("want a schema rejection, got %v", err)
 	}
 	if holder.Current() != running {
@@ -180,7 +187,7 @@ func TestLoadRejectsUnsetAPIKeyVariables(t *testing.T) {
 	copyFixture(t, "full.json", path)
 
 	err := loader.Load("startup")
-	var invalid *ValidationError
+	var invalid *schemacheck.ValidationError
 	if !errors.As(err, &invalid) || !slices.Equal(invalid.Codes(), []string{CodeAPIKeyEnvUnset}) {
 		t.Fatalf("want an %s rejection, got %v", CodeAPIKeyEnvUnset, err)
 	}
@@ -213,9 +220,9 @@ func TestDuplicateMembersCannotHideABackendFromTheSchema(t *testing.T) {
 	doc = strings.Replace(doc, `{ "backend": "local", "model": "llama" }`, `{ "backend": "sneaky", "model": "llama" }`, 1)
 
 	_, err := Check([]byte(doc), func(string) (string, bool) { return "dummy-secret", true })
-	var invalid *ValidationError
-	if !errors.As(err, &invalid) || !slices.Equal(invalid.Codes(), []string{CodeDuplicateMember}) {
-		t.Fatalf("want a %s rejection, got %v", CodeDuplicateMember, err)
+	var invalid *schemacheck.ValidationError
+	if !errors.As(err, &invalid) || !slices.Equal(invalid.Codes(), []string{schemacheck.CodeDuplicateMember}) {
+		t.Fatalf("want a %s rejection, got %v", schemacheck.CodeDuplicateMember, err)
 	}
 	if len(invalid.Issues) != 1 || invalid.Issues[0].Path != "/backends" {
 		t.Errorf("issues = %v, want one at /backends", invalid.Issues)
@@ -224,7 +231,7 @@ func TestDuplicateMembersCannotHideABackendFromTheSchema(t *testing.T) {
 	nested := strings.Replace(minimalDoc(`{ "type": "openai-compatible", "base_url": "http://x/v1" }`),
 		`"context_length": 8192.0,`, `"context_length": 8192.0, "context_length": 1,`, 1)
 	invalid = mustReject(t, nested)
-	if !slices.Equal(invalid.Codes(), []string{CodeDuplicateMember}) || invalid.Issues[0].Path != "/models/llama/metadata/context_length" {
+	if !slices.Equal(invalid.Codes(), []string{schemacheck.CodeDuplicateMember}) || invalid.Issues[0].Path != "/models/llama/metadata/context_length" {
 		t.Errorf("nested duplicate: %v", invalid)
 	}
 }

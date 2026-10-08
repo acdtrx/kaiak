@@ -20,6 +20,7 @@ import (
 	"kaiak/internal/accounting"
 	"kaiak/internal/config"
 	"kaiak/internal/fixturetest"
+	"kaiak/internal/schemacheck"
 )
 
 // fixturesDir is protocol/fixtures/messages.
@@ -86,7 +87,7 @@ func TestValidMessageFixtures(t *testing.T) {
 func TestInvalidMessageFixtures(t *testing.T) {
 	for kind, decode := range decoders {
 		t.Run(kind, func(t *testing.T) {
-			fixturetest.RunInvalid(t, filepath.Join(fixturesDir, kind, "invalid"), decode.rejection, CodeSchema)
+			fixturetest.RunInvalid(t, filepath.Join(fixturesDir, kind, "invalid"), decode.rejection)
 		})
 	}
 }
@@ -191,9 +192,9 @@ func TestIntegerSpellings(t *testing.T) {
 
 func TestSyntaxError(t *testing.T) {
 	_, err := DecodeUsageAck([]byte(`{"batch":`))
-	var invalid *ValidationError
-	if !errors.As(err, &invalid) || !slices.Equal(invalid.Codes(), []string{CodeSyntax}) {
-		t.Errorf("got %v, want a %s rejection", err, CodeSyntax)
+	var invalid *schemacheck.ValidationError
+	if !errors.As(err, &invalid) || !slices.Equal(invalid.Codes(), []string{schemacheck.CodeSyntax}) {
+		t.Errorf("got %v, want a %s rejection", err, schemacheck.CodeSyntax)
 	}
 }
 
@@ -214,9 +215,9 @@ func TestDuplicateMemberFixtures(t *testing.T) {
 		}
 		t.Run(file, func(t *testing.T) {
 			_, err := decode(fixturetest.Read(t, filepath.Join(fixturetest.Dir("duplicate-members"), file)))
-			var invalid *ValidationError
-			if !errors.As(err, &invalid) || !slices.Equal(invalid.Codes(), []string{CodeDuplicateMember}) {
-				t.Fatalf("want a %s rejection (%s), got %v", CodeDuplicateMember, c.Reason, err)
+			var invalid *schemacheck.ValidationError
+			if !errors.As(err, &invalid) || !slices.Equal(invalid.Codes(), []string{schemacheck.CodeDuplicateMember}) {
+				t.Fatalf("want a %s rejection (%s), got %v", schemacheck.CodeDuplicateMember, c.Reason, err)
 			}
 			if invalid.Issues[0].Path != c.Path {
 				t.Errorf("path %q, want %q", invalid.Issues[0].Path, c.Path)

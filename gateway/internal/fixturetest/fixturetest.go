@@ -14,6 +14,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"kaiak/internal/schemacheck"
 )
 
 // protocolDir is protocol/ seen from a package directory two levels below gateway/
@@ -108,18 +110,12 @@ func RunValid(t *testing.T, dir string, decode func(data []byte) error) {
 	}
 }
 
-// coded is a validation error: both halves' rejections carry rule codes.
-type coded interface {
-	error
-	Codes() []string
-}
-
 // RunInvalid runs every fixture in dir as a subtest named for its file, after checking
 // the cases file has an entry for each fixture and no other: decode must refuse it
-// with a validation error whose codes are exactly [schemaCode] for a schema case, or
-// exactly the case's code for a semantic one — a semantic fixture breaks one rule, so
-// no other code may appear.
-func RunInvalid(t *testing.T, dir string, decode func(data []byte) error, schemaCode string) {
+// with a *schemacheck.ValidationError whose codes are exactly [schema] for a schema
+// case, or exactly the case's code for a semantic one — a semantic fixture breaks one
+// rule, so no other code may appear.
+func RunInvalid(t *testing.T, dir string, decode func(data []byte) error) {
 	t.Helper()
 	files := Files(t, dir)
 	cases := InvalidCases(t, dir)
@@ -133,11 +129,11 @@ func RunInvalid(t *testing.T, dir string, decode func(data []byte) error, schema
 		}
 		t.Run(file, func(t *testing.T) {
 			err := decode(Read(t, filepath.Join(dir, file)))
-			var invalid coded
-			if !errors.As(err, &invalid) {
+			invalid, ok := errors.AsType[*schemacheck.ValidationError](err)
+			if !ok {
 				t.Fatalf("want a validation error (%s), got %v", expected.Reason, err)
 			}
-			want := schemaCode
+			want := schemacheck.CodeSchema
 			if expected.Kind == "semantic" {
 				want = *expected.Code
 			}

@@ -271,7 +271,7 @@ func TestOpsMetrics(t *testing.T) {
 		}
 	}
 	ops.ObserveAttempts("m", 2)
-	ops.ConfigLoaded(config.Load{Trigger: "startup", Applied: true, At: time.UnixMilli(1_700_000_000_500)})
+	ops.ConfigLoaded(config.Load{Trigger: "startup", Snapshot: holder.Current(), At: time.UnixMilli(1_700_000_000_500)})
 	expectPanic(t, "unknown error class", func() { ops.CountError("nope") })
 
 	out := text(reg)
@@ -332,7 +332,7 @@ func TestConfigLoadMetrics(t *testing.T) {
 	}
 
 	holder.Swap(&config.Snapshot{})
-	ops.ConfigLoaded(config.Load{Trigger: "startup", Applied: true, At: time.Now(), Document: true, Bytes: 2048,
+	ops.ConfigLoaded(config.Load{Trigger: "startup", Snapshot: holder.Current(), At: time.Now(), Document: true, Bytes: 2048,
 		Duration: 700 * time.Microsecond})
 	ops.ConfigLoaded(config.Load{Trigger: "sighup", At: time.Now(), Document: true, Bytes: 9999,
 		Duration: 40 * time.Millisecond})

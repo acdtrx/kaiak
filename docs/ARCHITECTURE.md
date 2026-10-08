@@ -185,10 +185,13 @@ enforce the boundaries.
 - `sse` — the server-sent events reader (WHATWG format): splits a stream into blocks
   with their raw bytes, data, event name and ID, bounded in size. The provider relays
   backend streams with it; `control` follows the config stream with it.
-- `schemacheck` — the parts every document walker is built from: strict JSON decoding
-  and checks mirroring the JSON Schemas in `protocol/` (the standard library has no
-  schema validator), real-date and real-instant checks. `config` and `control` build
-  their walkers on it.
+- `schemacheck` — the one validation pipeline every received document goes through
+  (syntax, repeated members, the document's schema walker, then the strict typed
+  decode) and its one rejection error (issues with codes and paths); the parts every
+  walker is built from, mirroring the JSON Schemas in `protocol/` (the standard
+  library has no schema validator); real-date and real-instant checks. `config` and
+  `control` build their walkers on it and add their own rules between the walker and
+  the typed decode.
 - `control` — the only code that talks to the control plane (a capability fence, as
   `provider` is for backends: no other package opens a connection to it). The
   control-protocol messages: Go types, strict decoding and validation against

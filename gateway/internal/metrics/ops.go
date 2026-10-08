@@ -473,19 +473,16 @@ func (o *Ops) ObserveAttempts(model string, n int) {
 // KAIAK_MAX_CONNECTIONS open.
 func (o *Ops) ConnectionRefused() { o.refusedConns.Inc() }
 
-// ConfigLoaded records one config load (a config.LoadObserver): its trigger and
+// ConfigLoaded records one config load (a config.Applier's onLoad): its trigger and
 // result, its duration when there was a document, and for an applied config when and
-// its size. An applied config's series are created at 0 (the holder holds it by
-// then).
+// its size. An applied config's series are created at 0.
 func (o *Ops) ConfigLoaded(l config.Load) {
 	result := "rejected"
-	if l.Applied {
+	if l.Applied() {
 		result = "applied"
 		o.configApplied.Set(float64(l.At.UnixMilli()) / 1000)
 		o.configSize.Set(float64(l.Bytes))
-		if s := o.holder.Current(); s != nil {
-			o.prepareSeries(s)
-		}
+		o.prepareSeries(l.Snapshot)
 	}
 	if l.Document {
 		o.configApply.Observe(l.Duration.Seconds(), l.Trigger, result)

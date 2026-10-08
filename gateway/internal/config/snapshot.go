@@ -1,9 +1,6 @@
 package config
 
 import (
-	"bytes"
-	"encoding/json"
-	"errors"
 	"maps"
 	"math"
 	"slices"
@@ -287,16 +284,19 @@ type Deployment struct {
 	Model string
 }
 
+// Capabilities and OutputLimit are a model's declared metadata, which the gateway
+// passes through unchanged: their JSON names are the config document's and the model
+// endpoints' alike (docs/specs/GATEWAY.md, Client API, model endpoints).
 type Capabilities struct {
-	Streaming bool
-	Tools     bool
-	Vision    bool
-	Reasoning bool
+	Streaming bool `json:"streaming"`
+	Tools     bool `json:"tools"`
+	Vision    bool `json:"vision"`
+	Reasoning bool `json:"reasoning"`
 }
 
 type OutputLimit struct {
-	Default int64
-	Ceiling int64
+	Default int64 `json:"default"`
+	Ceiling int64 `json:"ceiling"`
 }
 
 type Price struct {
@@ -369,56 +369,34 @@ func (m ModelSet) Allows(model string) bool {
 func (m ModelSet) Names() []string { return m.names }
 
 // Parse decodes and validates a config document and resolves it into a Snapshot. On
-// rejection the error is a *ValidationError listing the issues of the first stage that
-// failed: syntax, duplicate members, schema, then semantic rules.
+// rejection the error is a *schemacheck.ValidationError listing the issues of the
+// first stage that failed: syntax, duplicate members, schema, then semantic rules.
 func Parse(data []byte) (*Snapshot, error) {
-	tree, err := schemacheck.Decode(data)
-	var duplicate *schemacheck.DuplicateMemberError
-	switch {
-	case errors.As(err, &duplicate):
-		return nil, &ValidationError{Issues: []Issue{{Code: CodeDuplicateMember, Path: duplicate.Path,
-			Message: "appears more than once in its object"}}}
-	case err != nil:
-		return nil, &ValidationError{Issues: []Issue{{Code: CodeSyntax, Message: err.Error()}}}
-	}
-	if issues := checkSchema(tree); len(issues) > 0 {
-		return nil, &ValidationError{Issues: issues}
-	}
-	doc, err := decodeDocument(data)
+	tree, err := schemacheck.Validate(rejectedSubject, data, checkSchema)
 	if err != nil {
-		// checkSchema accepted a document the Go types cannot hold: the two disagree.
-		return nil, &ValidationError{Issues: []Issue{{Code: CodeSchema, Message: err.Error()}}}
-	}
-	if issues := checkSemantics(doc); len(issues) > 0 {
-		return nil, &ValidationError{Issues: issues}
-	}
-	return resolve(doc), nil
-}
-
-// decodeDocument is the strict typed decode: unknown fields are errors, so a schema
-// field the Go types lack fails loudly instead of being dropped. schemacheck.Decode
-// has already checked that data holds exactly one JSON value.
-func decodeDocument(data []byte) (*document, error) {
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	var doc document
-	if err := dec.Decode(&doc); err != nil {
 		return nil, err
 	}
-	return &doc, nil
+	doc, err := schemacheck.DecodeTyped[document](rejectedSubject, tree)
+	if err != nil {
+		return nil, err
+	}
+	if issues := checkSemantics(&doc); len(issues) > 0 {
+		return nil, &schemacheck.ValidationError{Subject: rejectedSubject, Issues: issues}
+	}
+	return resolve(&doc), nil
 }
 
 // resolve builds the Snapshot from a document that passed every check.
 func resolve(doc *document) *Snapshot {
 	s := &Snapshot{
-		MaxRequestBodyBytes:         DefaultMaxRequestBodyBytes,
+		MaxRequestBodyBytes:         valueOr(doc.Global.MaxRequestBodyBytes, DefaultMaxRequestBodyBytes),
 		KeyIDLabel:                  DefaultKeyIDLabel,
 		GroupLabel:                  DefaultGroupLabel,
 		ControlOutageGrace:          millisecondsOr(doc.Global.ControlOutageGraceMS, DefaultControlOutageGrace),
-		MaxN:                        DefaultMaxN,
-		MaxSequencesPerRequest:      DefaultMaxSequencesPerRequest,
-		MaxEmbeddingInputs:          DefaultMaxEmbeddingInputs,
-		MaxConcurrentRequestsPerKey: DefaultMaxConcurrentPerKey,
+		MaxN:                        valueOr(doc.Global.MaxN, DefaultMaxN),
+		MaxSequencesPerRequest:      valueOr(doc.Global.MaxSequences, DefaultMaxSequencesPerRequest),
+		MaxEmbeddingInputs:          valueOr(doc.Global.MaxEmbeddingInputs, DefaultMaxEmbeddingInputs),
+		MaxConcurrentRequestsPerKey: valueOr(doc.Global.MaxConcurrentPerKey, DefaultMaxConcurrentPerKey),
 		Circuit:                     Circuit{FailureThreshold: DefaultFailureThreshold, ProbeInterval: DefaultProbeInterval},
 		GlobalLimits:                resolveLimits(doc.Global.Limits),
 		Backends:                    make(map[string]*Backend, len(doc.Backends)),
@@ -427,28 +405,9 @@ func resolve(doc *document) *Snapshot {
 		Groups:                      make(map[string]*Group, len(doc.Groups)),
 		keysByHash:                  make(map[string]*Key, len(doc.Keys)),
 	}
-	if doc.Global.MaxRequestBodyBytes != nil {
-		s.MaxRequestBodyBytes = int64(*doc.Global.MaxRequestBodyBytes)
-	}
-	if doc.Global.MaxN != nil {
-		s.MaxN = int64(*doc.Global.MaxN)
-	}
-	if doc.Global.MaxSequences != nil {
-		s.MaxSequencesPerRequest = int64(*doc.Global.MaxSequences)
-	}
-	if doc.Global.MaxEmbeddingInputs != nil {
-		s.MaxEmbeddingInputs = int64(*doc.Global.MaxEmbeddingInputs)
-	}
-	if doc.Global.MaxConcurrentPerKey != nil {
-		s.MaxConcurrentRequestsPerKey = int64(*doc.Global.MaxConcurrentPerKey)
-	}
 	if m := doc.Global.Metrics; m != nil {
-		if m.KeyIDLabel != nil {
-			s.KeyIDLabel = *m.KeyIDLabel
-		}
-		if m.GroupLabel != nil {
-			s.GroupLabel = *m.GroupLabel
-		}
+		s.KeyIDLabel = valueOr(m.KeyIDLabel, s.KeyIDLabel)
+		s.GroupLabel = valueOr(m.GroupLabel, s.GroupLabel)
 	}
 	if c := doc.Global.Circuit; c != nil {
 		s.Circuit.FailureThreshold = countOr(c.FailureThreshold, s.Circuit.FailureThreshold)
@@ -467,7 +426,7 @@ func resolve(doc *document) *Snapshot {
 			FirstEventTimeout: millisecondsOr(b.FirstEventTimeoutMS, DefaultFirstEventTimeout),
 			ResponseTimeout:   millisecondsOr(b.ResponseTimeoutMS, DefaultResponseTimeout),
 			StallTimeout:      millisecondsOr(b.StallTimeoutMS, DefaultStallTimeout),
-			MaxInFlight:       maxInFlight(b.MaxInFlight),
+			MaxInFlight:       valueOr(b.MaxInFlight, 0), // unsaturated: the status reports the cap as written
 		}
 	}
 
@@ -497,23 +456,16 @@ func resolve(doc *document) *Snapshot {
 
 func resolveModel(name string, m modelDoc, backends map[string]*Backend) *Model {
 	model := &Model{
-		Name:          name,
-		Deployments:   make([]Deployment, len(m.Deployments)),
-		ContextLength: int64(m.Metadata.ContextLength),
-		Capabilities: Capabilities{
-			Streaming: m.Metadata.Capabilities.Streaming,
-			Tools:     m.Metadata.Capabilities.Tools,
-			Vision:    m.Metadata.Capabilities.Vision,
-			Reasoning: m.Metadata.Capabilities.Reasoning,
-		},
+		Name:             name,
+		Deployments:      make([]Deployment, len(m.Deployments)),
+		ContextLength:    m.Metadata.ContextLength,
+		Capabilities:     m.Metadata.Capabilities,
 		ReasoningEfforts: m.Metadata.ReasoningEfforts,
+		OutputLimit:      m.OutputLimit,
 		Prices:           make([]Price, len(m.Prices)),
 	}
 	for i, d := range m.Deployments {
 		model.Deployments[i] = Deployment{Backend: backends[d.Backend], Model: d.Model}
-	}
-	if m.OutputLimit != nil {
-		model.OutputLimit = &OutputLimit{Default: int64(m.OutputLimit.Default), Ceiling: int64(m.OutputLimit.Ceiling)}
 	}
 	for i, p := range m.Prices {
 		// The semantic rules have checked the date names a real day.
@@ -524,7 +476,7 @@ func resolveModel(name string, m modelDoc, backends map[string]*Backend) *Model 
 			for unit, usd := range tier.USDPerMillion {
 				units[Unit(unit)] = usd
 			}
-			tiers[j] = PriceTier{AboveInputTokens: int64(tier.AboveInputTokens), USDPerMillion: units}
+			tiers[j] = PriceTier{AboveInputTokens: tier.AboveInputTokens, USDPerMillion: units}
 		}
 		model.Prices[i] = Price{EffectiveFrom: from, Tiers: tiers}
 	}
@@ -649,33 +601,30 @@ func applyRetries(attempts int, o *retriesDoc) int {
 	return attempts
 }
 
-// countOr converts a validated non-negative integer, saturating at math.MaxInt32 (no
-// count in the config is meaningful beyond it); nil is fallback.
-func countOr(n *float64, fallback int) int {
+// valueOr is what p points to; nil is fallback.
+func valueOr[T any](p *T, fallback T) T {
+	if p == nil {
+		return fallback
+	}
+	return *p
+}
+
+// countOr is a validated non-negative count, saturating at math.MaxInt32 (no count in
+// the config is meaningful beyond it); nil is fallback.
+func countOr(n *int64, fallback int) int {
 	if n == nil {
 		return fallback
 	}
-	if *n >= math.MaxInt32 {
-		return math.MaxInt32
-	}
-	return int(*n)
+	return int(min(*n, math.MaxInt32))
 }
 
-// maxInFlight converts a validated backend cap (at most 2^53 - 1, exact in a float64)
-// without saturating: the status reports the configured cap as written; nil is 0, no
-// cap.
-func maxInFlight(n *float64) int64 {
-	if n == nil {
-		return 0
-	}
-	return int64(*n)
-}
-
-func millisecondsOr(ms *float64, fallback time.Duration) time.Duration {
+// millisecondsOr is a validated non-negative millisecond count as a duration,
+// saturating at the longest one; nil is fallback.
+func millisecondsOr(ms *int64, fallback time.Duration) time.Duration {
 	if ms == nil {
 		return fallback
 	}
-	if *ms >= float64(math.MaxInt64/int64(time.Millisecond)) {
+	if *ms >= math.MaxInt64/int64(time.Millisecond) {
 		return time.Duration(math.MaxInt64)
 	}
 	return time.Duration(*ms) * time.Millisecond

@@ -3,8 +3,9 @@
 // standard library has no JSON Schema validator. A Checker walks the generic JSON tree,
 // so every issue carries its exact path, and reports every violation (as
 // kaiak-control's validator does). The packages owning each document build their
-// walkers from these parts; the shared fixtures in protocol/fixtures keep each walker
-// and its schema in agreement.
+// walkers from these parts and read the document through one pipeline: Validate
+// (syntax, repeated members, the walker), their own rules, then DecodeTyped. The
+// shared fixtures in protocol/fixtures keep each walker and its schema in agreement.
 package schemacheck
 
 import (
@@ -31,19 +32,89 @@ const JSWhitespace = `\t\n\v\f\r \x{00a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{202
 // without rounding.
 const MaxSafeInteger = 1<<53 - 1
 
-// Issue is one schema violation.
+// Codes for the rejections of Validate's stages. A schema violation has no per-rule
+// code: CodeSchema plus the walker's own message (docs/specs/CONTROL-PROTOCOL.md,
+// Config and Messages). The owners of each document add codes for their own rules.
+const (
+	// CodeSyntax: the document is not a single JSON value.
+	CodeSyntax = "syntax"
+	// CodeDuplicateMember: an object in the document names the same member twice
+	// (JSON leaves the meaning open; decoders disagree on which one wins).
+	CodeDuplicateMember = "duplicate-member"
+	// CodeSchema: the document breaks its schema.
+	CodeSchema = "schema"
+)
+
+// Issue is one reason a document was rejected.
 type Issue struct {
+	Code string
 	// Path is a JSON Pointer (RFC 6901) into the document; "" is the root.
 	Path    string
 	Message string
 }
 
-// Decode parses data as exactly one JSON value, keeping numbers as json.Number. An
-// object naming a member twice, at any depth, is a *DuplicateMemberError: JSON leaves
-// its meaning open, and Go's decoders disagree on it — the generic tree keeps the last
+func (i Issue) String() string {
+	path := i.Path
+	if path == "" {
+		path = "/"
+	}
+	return fmt.Sprintf("%s: %s [%s]", path, i.Message, i.Code)
+}
+
+// ValidationError rejects a document and lists every issue of the stage that failed
+// (syntax, then duplicate members, then schema, then the owner's rules).
+type ValidationError struct {
+	// Subject names the document, e.g. "config" or "usage ack".
+	Subject string
+	Issues  []Issue
+}
+
+func (e *ValidationError) Error() string {
+	parts := make([]string, len(e.Issues))
+	for i, issue := range e.Issues {
+		parts[i] = issue.String()
+	}
+	return e.Subject + " rejected: " + strings.Join(parts, "; ")
+}
+
+// Codes returns the distinct issue codes, sorted.
+func (e *ValidationError) Codes() []string {
+	codes := make([]string, 0, len(e.Issues))
+	for _, issue := range e.Issues {
+		codes = append(codes, issue.Code)
+	}
+	slices.Sort(codes)
+	return slices.Compact(codes)
+}
+
+// Validate reads data as one document of subject and returns its generic tree
+// (numbers as json.Number): data must be exactly one JSON value, no object in it may
+// name a member twice, and walk — the document's schema walker — must find no issue.
+// A rejection is a *ValidationError listing the issues of the first stage that failed.
+//
+// A repeated member is refused at any depth before the walker runs: JSON leaves its
+// meaning open, and Go's decoders disagree on it — the generic tree keeps the last
 // member, a typed decode merges both into a map — so a walker checking the tree would
 // not see what the typed decode builds.
-func Decode(data []byte) (any, error) {
+func Validate(subject string, data []byte, walk func(tree any) []Issue) (any, error) {
+	reject := func(issues ...Issue) (any, error) {
+		return nil, &ValidationError{Subject: subject, Issues: issues}
+	}
+	tree, err := decodeTree(data)
+	if err != nil {
+		return reject(Issue{Code: CodeSyntax, Message: err.Error()})
+	}
+	if path, found := FirstDuplicateMember(data); found {
+		return reject(Issue{Code: CodeDuplicateMember, Path: path, Message: "appears more than once in its object"})
+	}
+	if issues := walk(tree); len(issues) > 0 {
+		return reject(issues...)
+	}
+	return tree, nil
+}
+
+// decodeTree parses data as exactly one JSON value, keeping numbers as json.Number.
+func decodeTree(data []byte) (any, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
 	var tree any
@@ -53,20 +124,46 @@ func Decode(data []byte) (any, error) {
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		return nil, errors.New("unexpected data after the JSON document")
 	}
-	if path, found := FirstDuplicateMember(data); found {
-		return nil, &DuplicateMemberError{Path: path}
-	}
 	return tree, nil
 }
 
-// DuplicateMemberError rejects a document with an object naming a member twice.
-type DuplicateMemberError struct {
-	// Path is the JSON Pointer of the repeated member.
-	Path string
+// DecodeTyped decodes a tree that Validate accepted into T, strictly: unknown fields
+// are errors, so a schema field the Go types lack fails loudly instead of being
+// dropped. Integer fields may be written with a fraction or exponent (4096.0, 1e3) —
+// JSON Schema counts those as integers — so they are rewritten as plain integers
+// first, in place: the tree is not to be read afterwards. A failure means the walker
+// accepted what the types cannot hold — the two disagree — and is a *ValidationError
+// with CodeSchema.
+func DecodeTyped[T any](subject string, tree any) (T, error) {
+	var v T
+	data, err := json.Marshal(plainIntegers(tree))
+	if err == nil {
+		dec := json.NewDecoder(bytes.NewReader(data))
+		dec.DisallowUnknownFields()
+		err = dec.Decode(&v)
+	}
+	if err != nil {
+		return v, &ValidationError{Subject: subject, Issues: []Issue{{Code: CodeSchema, Message: err.Error()}}}
+	}
+	return v, nil
 }
 
-func (e *DuplicateMemberError) Error() string {
-	return "member " + e.Path + " appears more than once in its object"
+func plainIntegers(v any) any {
+	switch v := v.(type) {
+	case map[string]any:
+		for k, item := range v {
+			v[k] = plainIntegers(item)
+		}
+	case []any:
+		for i, item := range v {
+			v[i] = plainIntegers(item)
+		}
+	case json.Number:
+		if f := NumberValue(v); IsInteger(f) && strings.ContainsAny(string(v), ".eE") {
+			return json.Number(strconv.FormatFloat(f, 'f', -1, 64))
+		}
+	}
+	return v
 }
 
 // FirstDuplicateMember scans data, one JSON value, for an object naming a member twice
@@ -163,9 +260,9 @@ type Checker struct {
 // Issues returns every issue found so far.
 func (c *Checker) Issues() []Issue { return c.issues }
 
-// Fail records an issue at path.
+// Fail records a schema issue at path.
 func (c *Checker) Fail(path, message string) {
-	c.issues = append(c.issues, Issue{Path: path, Message: message})
+	c.issues = append(c.issues, Issue{Code: CodeSchema, Path: path, Message: message})
 }
 
 // Object checks v is an object holding the required fields and no unknown ones, runs

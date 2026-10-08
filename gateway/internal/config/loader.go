@@ -14,13 +14,16 @@ import (
 	"kaiak/internal/schemacheck"
 )
 
-// Load is one config load as its observer hears of it (the ops metrics).
+// Load is the notice of one config load, applied or rejected, that the Applier hands
+// its onLoad: the applied-config notification. Whatever follows the config in force —
+// routing's caps, connection pools, the model check, the ops metrics — takes an
+// applied config from Snapshot here.
 type Load struct {
-	// Trigger names what asked for the load; Applied is whether the config was swapped
-	// in, At when the load ended.
+	// Trigger names what asked for the load; At is when the load ended.
 	Trigger string
-	Applied bool
 	At      time.Time
+	// Snapshot is the config swapped in; nil when the load was rejected.
+	Snapshot *Snapshot
 	// Document: there was a document to validate — false for a load that failed
 	// before (Reject). Only then are Bytes, the document's size, and Duration, the time
 	// from the start of its validation to the swap or the rejection, set.
@@ -29,32 +32,33 @@ type Load struct {
 	Duration time.Duration
 }
 
-// LoadObserver is told of every config load.
-type LoadObserver func(Load)
+// Applied reports whether the load swapped its config in.
+func (l Load) Applied() bool { return l.Snapshot != nil }
 
 // Applier is the one path by which a config document becomes the live snapshot,
 // whatever its source (config file, control plane, seed config): validate it
 // completely, swap it into the Holder atomically, log the result with its trigger and
-// report it to the observer. Sources read their documents and hand them over; they
-// never swap the Holder themselves.
+// hand its Load to onLoad. Sources read their documents and hand them over; they never
+// swap the Holder themselves.
 type Applier struct {
 	holder    *Holder
 	logger    *slog.Logger
 	lookupEnv func(string) (string, bool)
-	observe   LoadObserver
-	// mu serializes loads, so two triggers never race to swap.
+	onLoad    func(Load)
+	// mu serializes loads, so two triggers never race to swap, and onLoad hears them
+	// one at a time, in the order they were swapped in.
 	mu sync.Mutex
 }
 
 // NewApplier returns the apply path into holder. lookupEnv is how it reads the process
-// environment (os.LookupEnv outside tests); observe may be nil.
-func NewApplier(holder *Holder, logger *slog.Logger, lookupEnv func(string) (string, bool), observe LoadObserver) *Applier {
-	return &Applier{holder: holder, logger: logger, lookupEnv: lookupEnv, observe: observe}
+// environment (os.LookupEnv outside tests); onLoad, told of every load, may be nil.
+func NewApplier(holder *Holder, logger *slog.Logger, lookupEnv func(string) (string, bool), onLoad func(Load)) *Applier {
+	return &Applier{holder: holder, logger: logger, lookupEnv: lookupEnv, onLoad: onLoad}
 }
 
 // Apply validates data and swaps it in. A config that fails anywhere is logged with
 // its issue codes and not applied; the running snapshot, if any, stays, and the error
-// is a *ValidationError. trigger names what asked for the load; attrs describe the
+// is a *schemacheck.ValidationError. trigger names what asked for the load; attrs describe the
 // source (file, config hash) for both log lines.
 func (a *Applier) Apply(trigger string, data []byte, attrs ...any) (*Snapshot, error) {
 	a.mu.Lock()
@@ -69,7 +73,7 @@ func (a *Applier) Apply(trigger string, data []byte, attrs ...any) (*Snapshot, e
 		return nil, err
 	}
 	a.holder.Swap(snapshot)
-	load := Load{Trigger: trigger, Applied: true, Document: true, Bytes: len(data), Duration: time.Since(start)}
+	load := Load{Trigger: trigger, Snapshot: snapshot, Document: true, Bytes: len(data), Duration: time.Since(start)}
 	a.logger.Info("config applied", append(append([]any{"kaiak.trigger", trigger}, attrs...),
 		"kaiak.config.backends", len(snapshot.Backends), "kaiak.config.models", len(snapshot.Models),
 		"kaiak.config.keys", len(snapshot.keysByHash), "kaiak.config.size", load.Bytes,
@@ -103,8 +107,7 @@ func (a *Applier) Reject(trigger string, err error, attrs ...any) error {
 // reject logs and counts a failed load. Callers hold a.mu.
 func (a *Applier) reject(load Load, err error, attrs []any) {
 	logAttrs := append(append([]any{"kaiak.trigger", load.Trigger}, attrs...), "exception.message", err)
-	var invalid *ValidationError
-	if errors.As(err, &invalid) {
+	if invalid, ok := errors.AsType[*schemacheck.ValidationError](err); ok {
 		logAttrs = append(logAttrs, "kaiak.config.issue_codes", invalid.Codes())
 	}
 	if a.holder.Loaded() {
@@ -118,9 +121,9 @@ func (a *Applier) reject(load Load, err error, attrs []any) {
 }
 
 func (a *Applier) report(load Load) {
-	if a.observe != nil {
+	if a.onLoad != nil {
 		load.At = time.Now()
-		a.observe(load)
+		a.onLoad(load)
 	}
 }
 
@@ -156,14 +159,14 @@ func (l *FileLoader) Load(trigger string) error {
 // environment does not set: such a backend could never authenticate. Only presence is
 // checked; the value is read by the provider that uses it.
 func checkCredentials(s *Snapshot, lookupEnv func(string) (string, bool)) error {
-	var issues []Issue
+	var issues []schemacheck.Issue
 	for _, id := range slices.Sorted(maps.Keys(s.Backends)) {
 		name := s.Backends[id].APIKeyEnv
 		if name == "" {
 			continue
 		}
 		if value, ok := lookupEnv(name); !ok || value == "" {
-			issues = append(issues, Issue{
+			issues = append(issues, schemacheck.Issue{
 				Code:    CodeAPIKeyEnvUnset,
 				Path:    schemacheck.Pointer("/backends", id, "api_key_env"),
 				Message: fmt.Sprintf("environment variable %s is not set", name),
@@ -171,7 +174,7 @@ func checkCredentials(s *Snapshot, lookupEnv func(string) (string, bool)) error 
 		}
 	}
 	if len(issues) > 0 {
-		return &ValidationError{Issues: issues}
+		return &schemacheck.ValidationError{Subject: rejectedSubject, Issues: issues}
 	}
 	return nil
 }

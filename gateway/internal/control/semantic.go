@@ -3,6 +3,7 @@ package control
 import (
 	"fmt"
 
+	"kaiak/internal/config"
 	"kaiak/internal/schemacheck"
 )
 
@@ -12,16 +13,16 @@ import (
 // could not hold an instant that does not exist.
 
 type ruleCheck struct {
-	issues []Issue
+	issues []schemacheck.Issue
 }
 
 func (r *ruleCheck) report(code, path, message string) {
-	r.issues = append(r.issues, Issue{Code: code, Path: path, Message: message})
+	r.issues = append(r.issues, schemacheck.Issue{Code: code, Path: path, Message: message})
 }
 
 func (r *ruleCheck) timestamp(value any, path string) {
 	if s, _ := value.(string); !schemacheck.IsRealTimestamp(s) {
-		r.report(CodeTimestampInvalid, path, fmt.Sprintf("%q is not a real instant", s))
+		r.report(config.CodeTimestampInvalid, path, fmt.Sprintf("%q is not a real instant", s))
 	}
 }
 

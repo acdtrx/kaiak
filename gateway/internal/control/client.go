@@ -16,6 +16,7 @@ import (
 
 	"kaiak/internal/config"
 	"kaiak/internal/logattr"
+	"kaiak/internal/schemacheck"
 )
 
 // This file is the control-plane client: the only code in the gateway that talks to
@@ -351,7 +352,7 @@ func unavailable(err error) bool {
 	if s, ok := errors.AsType[*statusError](err); ok {
 		return s.status >= 500
 	}
-	_, invalid := errors.AsType[*ValidationError](err)
+	_, invalid := errors.AsType[*schemacheck.ValidationError](err)
 	return !invalid
 }
 
@@ -460,11 +461,10 @@ func (c *Client) applyConfig(e ConfigEvent) bool {
 
 // rejectionCodes are the issue codes of a config rejection, as the log shows them.
 func rejectionCodes(err error) []string {
-	var invalid *config.ValidationError
-	if errors.As(err, &invalid) {
+	if invalid, ok := errors.AsType[*schemacheck.ValidationError](err); ok {
 		return invalid.Codes()
 	}
-	return []string{config.CodeSchema}
+	return []string{schemacheck.CodeSchema}
 }
 
 func (c *Client) logFetchFailure(msg string, err error) {

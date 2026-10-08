@@ -374,13 +374,13 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 	// whose connection pools and missing endpoints are kept, and has its deployments'
 	// models checked in the background.
 	applier := config.NewApplier(holder, logger, lookupEnv, func(load config.Load) {
-		if load.Applied {
-			router.Configure(holder.Current())
-			circuits.PrepareSeries(holder.Current())
-			providers.Retain(holder.Current().Backends)
-			missingEndpoints.Retain(holder.Current().Backends)
-			modelChecker.Check(holder.Current())
-			if bodyCap := holder.Current().MaxRequestBodyBytes; bodyCap > s.bodyMemory {
+		if applied := load.Snapshot; applied != nil {
+			router.Configure(applied)
+			circuits.PrepareSeries(applied)
+			providers.Retain(applied.Backends)
+			missingEndpoints.Retain(applied.Backends)
+			modelChecker.Check(applied)
+			if bodyCap := applied.MaxRequestBodyBytes; bodyCap > s.bodyMemory {
 				logger.Warn("max_request_body_bytes exceeds the body budget: bodies above the budget are refused as too large",
 					"kaiak.config.max_request_body_size", bodyCap, "kaiak.body_budget.size", s.bodyMemory)
 			}

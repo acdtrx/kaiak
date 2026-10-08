@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"kaiak/internal/fixturetest"
+	"kaiak/internal/schemacheck"
 )
 
 const examplesDir = "../../../examples"
@@ -39,7 +40,7 @@ func TestExampleConfigs(t *testing.T) {
 }
 
 func TestInvalidFixtures(t *testing.T) {
-	fixturetest.RunInvalid(t, fixturetest.Dir("config", "invalid"), parse, CodeSchema)
+	fixturetest.RunInvalid(t, fixturetest.Dir("config", "invalid"), parse)
 }
 
 // The fixtures for a backend type that requires api_key_env are refused for the
@@ -52,9 +53,9 @@ func TestBackendsRequiringAPIKeyEnv(t *testing.T) {
 	} {
 		t.Run(file, func(t *testing.T) {
 			_, err := Parse(fixturetest.Read(t, filepath.Join(fixturesDir, "invalid", file)))
-			var invalid *ValidationError
+			var invalid *schemacheck.ValidationError
 			if !errors.As(err, &invalid) {
-				t.Fatalf("want a *ValidationError, got %v", err)
+				t.Fatalf("want a *schemacheck.ValidationError, got %v", err)
 			}
 			want := "/backends/" + backend
 			if len(invalid.Issues) != 1 || invalid.Issues[0].Path != want ||
@@ -79,9 +80,9 @@ func TestDuplicateMemberFixtures(t *testing.T) {
 		ran++
 		t.Run(file, func(t *testing.T) {
 			_, err := Parse(fixturetest.Read(t, filepath.Join(fixturetest.Dir("duplicate-members"), file)))
-			var invalid *ValidationError
-			if !errors.As(err, &invalid) || !slices.Equal(invalid.Codes(), []string{CodeDuplicateMember}) {
-				t.Fatalf("want a %s rejection (%s), got %v", CodeDuplicateMember, c.Reason, err)
+			var invalid *schemacheck.ValidationError
+			if !errors.As(err, &invalid) || !slices.Equal(invalid.Codes(), []string{schemacheck.CodeDuplicateMember}) {
+				t.Fatalf("want a %s rejection (%s), got %v", schemacheck.CodeDuplicateMember, c.Reason, err)
 			}
 			if invalid.Issues[0].Path != c.Path {
 				t.Errorf("path %q, want %q", invalid.Issues[0].Path, c.Path)
