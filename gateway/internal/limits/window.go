@@ -165,9 +165,9 @@ func (w *window) previousWindow(now, t time.Time) bool {
 	return windowStart(w.kind, t).Equal(previous)
 }
 
-// pushed is the control plane's amount counting in the current window: its base when
-// it names that window, else nothing yet. Callers have rolled the window.
-func (w *window) pushed() int64 {
+// currentBase is the control plane's amount counting in the current window: its base
+// when it names that window, else nothing yet. Callers have rolled the window.
+func (w *window) currentBase() int64 {
 	if w.shared && w.baseStart == w.start {
 		return w.base
 	}
@@ -185,7 +185,7 @@ func live(s int64, now time.Time) bool {
 func (w *window) usedAt(now time.Time) int64 {
 	if w.kind != SlidingMinute {
 		w.roll(now)
-		return accounting.SaturatingAdd(w.used, w.pushed())
+		return accounting.SaturatingAdd(w.used, w.currentBase())
 	}
 	var sum int64
 	for i := range minuteBuckets {

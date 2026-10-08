@@ -39,10 +39,9 @@ func scopeOf(group string) Scope {
 	return ScopeGroup
 }
 
-// effectiveLimit converts a configured limit value into the counter's integer unit:
-// requests and tokens as they are (the schema makes them integers), USD in
-// nano-dollars.
-func effectiveLimit(l config.Limit) int64 {
+// maxOf is a configured limit's value in its counter's integer unit: requests and
+// tokens as they are (the schema makes them integers), USD in nano-dollars.
+func maxOf(l config.Limit) int64 {
 	v := l.Value
 	if l.Type.Measure() == config.MeasureCost {
 		v = math.Round(v * 1e9)
@@ -70,24 +69,24 @@ func keyOf(group string, typ config.LimitType) counterKey {
 func (k counterKey) scope() Scope { return scopeOf(k.group) }
 
 // counter is one scope's window of one type. limited: the scope has a limit of the
-// type, limit; a counter without one only counts, and never refuses. refs counts the
-// running requests holding a reservation on it, of any amount: a retained counter
-// stays while one does, whatever its window holds. measure is its type's: a cost
-// counter counts nano-USD, accounting's cost unit.
+// type, max its value in the counter's unit (maxOf); a counter without one only
+// counts, and never refuses. refs counts the running requests holding a reservation on
+// it, of any amount: a retained counter stays while one does, whatever its window
+// holds. measure is its type's: a cost counter counts nano-USD, accounting's cost unit.
 type counter struct {
 	key     counterKey
-	limited bool
-	limit   config.Limit
 	measure config.Measure
+	limited bool
+	max     int64
 	w       *window
 	refs    int
 }
 
 // Limiter holds every counter of the live config — each scope's hour and month counts
-// and each per-minute limit's window — and the hour and month counts of scopes a reload
-// removed, while their window holds own usage or a running request holds them. Its lock guards all counters, so
-// checking and reserving across a request's scopes is all-or-nothing: two concurrent
-// requests can never both take the last unit.
+// and each per-minute limit's window — and the hour and month counts of scopes the live
+// config does not have, while their window counts something or a running request holds
+// them. Its lock guards all counters, so checking and reserving across a request's
+// scopes is all-or-nothing: two concurrent requests can never both take the last unit.
 type Limiter struct {
 	holder *config.Holder
 	now    func() time.Time
@@ -108,14 +107,15 @@ type Limiter struct {
 	// minute are the per-minute counters of counters: the ones a live-gateway count
 	// re-shares.
 	minute []*counter
-	// retained are the hour and month counts of scopes the live config does not have,
-	// kept while their current window holds own usage or a running request holds a
-	// reservation on them: a group created again under its ID takes them back, and the
+	// retained are the hour and month counts of scopes the live config does not have —
+	// a reload removed them, or a pushed window named them — kept while their current
+	// window holds own usage or a pushed base, or a running request holds a reservation
+	// on them: a reload that adds the scope takes them back, base included, and the
 	// requests running settle on them (docs/specs/GATEWAY.md, Limits → A count outlives
 	// its scope's config).
 	retained map[counterKey]*counter
-	// housekeptAt is the start of the hour the retained counts and the pushed windows
-	// were last pruned in (housekeepLocked).
+	// housekeptAt is the start of the hour the retained counts were last pruned in
+	// (housekeepLocked).
 	housekeptAt time.Time
 	// owning are the shared counters holding settled own usage by generation, the ones
 	// retiring a generation visits; a counter that rolled its window may stay listed
@@ -123,11 +123,8 @@ type Limiter struct {
 	owning map[*counter]struct{}
 
 	// Control-plane mode (shared.go). live is the live-gateway count per-minute shares
-	// divide by (at least 1); pushed is every window the stream's totals have listed
-	// since its last complete totals, by scope and type, those of scopes the config
-	// does not have included — a reload that adds the scope finds its base.
-	live   int64
-	pushed map[counterKey]PushedWindow
+	// divide by (at least 1).
+	live int64
 	// totalsAt is when totals were last applied; zero before any: the hour and month
 	// spend is unknown then, not zero (noTotalsLocked).
 	totalsAt time.Time
@@ -191,7 +188,7 @@ type Contact struct {
 func NewShared(holder *config.Holder, now func() time.Time, contact func() Contact, logger *slog.Logger) *Limiter {
 	return &Limiter{holder: holder, now: now, contact: contact, logger: orDiscard(logger),
 		counters: map[counterKey]*counter{}, retained: map[counterKey]*counter{}, owning: map[*counter]struct{}{},
-		live: 1, pushed: map[counterKey]PushedWindow{}, firstTotals: make(chan struct{})}
+		live: 1, firstTotals: make(chan struct{})}
 }
 
 func (l *Limiter) shared() bool { return l.contact != nil }
@@ -209,10 +206,11 @@ func (l *Limiter) ObserveSyncs(f func(time.Duration)) {
 // sync matches the counters to the live snapshot when it changed: every scope gets
 // its hour and month counts, limited or not, and each per-minute limit its window.
 // Counts whose scope and type still exist keep their counter (a limit added, changed or
-// removed applies to the count so far), and so does a scope created again while its
-// counts are retained; new ones start empty (in control-plane mode, from their pushed
-// base). The hour and month counts of a deleted scope are retained while they hold own
-// usage or a running request holds them; removed per-minute limits are dropped.
+// removed applies to the count so far), and so does a scope whose counts are retained —
+// created again, or named by a pushed window before — with its base; new ones start
+// empty. The hour and month counts of a deleted scope are retained while their window
+// counts something or a running request holds them; removed per-minute limits are
+// dropped.
 // Callers hold l.mu.
 func (l *Limiter) sync() {
 	l.housekeepLocked(l.now())
@@ -240,7 +238,7 @@ func (l *Limiter) sync() {
 			if !ok {
 				c = l.newCounter(k)
 			}
-			c.limited, c.limit = false, config.Limit{Type: typ}
+			c.limited, c.max = false, 0
 			next[k] = c
 			out = append(out, c)
 			return c
@@ -255,7 +253,7 @@ func (l *Limiter) sync() {
 			if !ok {
 				c = take(lim.Type)
 			}
-			c.limited, c.limit = true, lim
+			c.limited, c.max = true, maxOf(lim)
 		}
 		return out
 	}
@@ -273,7 +271,7 @@ func (l *Limiter) sync() {
 	}
 	for k, c := range l.counters {
 		if _, kept := next[k]; !kept && k.typ.Counted() {
-			c.limited, c.limit = false, config.Limit{Type: k.typ}
+			c.limited, c.max = false, 0
 			l.retained[k] = c
 		}
 	}
@@ -281,32 +279,31 @@ func (l *Limiter) sync() {
 	l.applied = snap
 	l.pruneRetainedLocked(l.now())
 	if l.shared() {
-		// The counters were rebuilt from the pushed windows already (by group or global
-		// and type): only the small-share warning runs again.
+		// The bases are on the counters, kept by group (or global) and type: only the
+		// small-share warning runs again.
 		l.warnSmallSharesLocked()
 	}
 }
 
 // pruneRetainedLocked drops the retained counts no running request holds whose
-// current window holds no own usage: the window they kept usage for has ended, or it
-// was all shown counted. A count a request holds stays, whatever its window holds — a
-// USD reservation holds nothing, and a token reservation's window may have rolled —
-// so the request settles on the counter a group created again takes back. Callers
-// hold l.mu.
+// current window counts nothing — no own usage and no pushed base: the window they
+// were kept for has ended, its own usage was all shown counted, or the totals zeroed
+// it. A count a request holds stays, whatever its window holds — a USD reservation
+// holds nothing, and a token reservation's window may have rolled — so the request
+// settles on the counter a group created again takes back. Callers hold l.mu.
 func (l *Limiter) pruneRetainedLocked(now time.Time) {
 	for k, c := range l.retained {
-		c.w.roll(now)
-		if c.refs == 0 && c.w.used == 0 {
+		if c.refs == 0 && c.w.usedAt(now) == 0 {
 			delete(l.retained, k)
 			delete(l.owning, c)
 		}
 	}
 }
 
-// housekeepLocked prunes, once an hour, on whatever brings the limiter into use, what
-// outlives its window: the retained counts (pruneRetainedLocked) and the pushed
-// windows (prunePushedLocked). Both end on an hour boundary, and neither a reload nor
-// a totals event (file mode has none) need come after it. Callers hold l.mu.
+// housekeepLocked prunes the retained counts (pruneRetainedLocked) once an hour, on
+// whatever brings the limiter into use: their windows end on an hour boundary, and
+// neither a reload nor a totals event (file mode has none) need come after it. Callers
+// hold l.mu.
 func (l *Limiter) housekeepLocked(now time.Time) {
 	hour := windowStart(UTCHour, now)
 	if !hour.After(l.housekeptAt) {
@@ -314,7 +311,6 @@ func (l *Limiter) housekeepLocked(now time.Time) {
 	}
 	l.housekeptAt = hour
 	l.pruneRetainedLocked(now)
-	l.prunePushedLocked(now)
 }
 
 // newCounter is the counter of a scope and type no existing counter has: it starts
@@ -343,27 +339,13 @@ func LogValue(m config.Measure, v int64) any {
 	return v
 }
 
-// applyLimit sets c's effective limit — the configured value, or in control-plane
-// mode a per-minute window's share; 0 for a count without a limit, which is never
-// checked — and a shared window's pushed base. Callers hold l.mu.
+// applyLimit sets the limit c's window enforces: its max, or in control-plane mode a
+// per-minute window's share of it; 0 for a count without a limit, which is never
+// checked. Callers hold l.mu.
 func (l *Limiter) applyLimit(c *counter) {
-	limit := int64(0)
-	if c.limited {
-		limit = effectiveLimit(c.limit)
-	}
-	if !l.shared() {
-		c.w.limit = limit
-		return
-	}
-	if !c.key.typ.Counted() {
-		c.w.limit = share(limit, l.live)
-		return
-	}
-	c.w.limit = limit
-	if p, ok := l.pushed[c.key]; ok {
-		c.w.setBase(l.now(), p.Start, p.Used)
-	} else {
-		c.w.base = 0 // not listed since the last complete totals: nothing used there
+	c.w.limit = c.max
+	if l.shared() && !c.key.typ.Counted() {
+		c.w.limit = share(c.max, l.live)
 	}
 }
 
@@ -375,7 +357,7 @@ func (c *counter) admits(now time.Time, need int64) bool {
 	if c.w.admits(now, need) {
 		return true
 	}
-	return !c.key.typ.Counted() && need > c.w.limit && need <= effectiveLimit(c.limit) && c.w.usedAt(now) == 0
+	return !c.key.typ.Counted() && need > c.w.limit && need <= c.max && c.w.usedAt(now) == 0
 }
 
 // inFlightRetry is what a token limit blocked only by requests still running counts
@@ -400,7 +382,7 @@ func (c *counter) blockedByRunning(now time.Time, need int64) bool {
 	if fits(settled, need, c.w.limit) {
 		return true
 	}
-	return !c.key.typ.Counted() && need > c.w.limit && need <= effectiveLimit(c.limit) && settled == 0
+	return !c.key.typ.Counted() && need > c.w.limit && need <= c.max && settled == 0
 }
 
 // share is a per-minute limit's share among live gateways: rounded down, never below
@@ -462,6 +444,12 @@ func need(c *counter, tokens int64) int64 {
 	return 0
 }
 
+// rejection is a refusal by c's limit, its identity and limits filled in.
+func (c *counter) rejection() *Rejection {
+	return &Rejection{Scope: c.key.scope(), Group: c.key.group, Type: c.key.typ, Measure: c.measure,
+		Limit: c.w.limit, Max: c.max}
+}
+
 // Reservation is what a request holds on its counters until it settles.
 type Reservation struct {
 	holds   []heldCounter
@@ -493,8 +481,9 @@ func (l *Limiter) Reserve(s Subject, tokens int64) (*Reservation, *Rejection) {
 	if l.outageLocked(now) || l.noTotalsLocked() {
 		for _, c := range counters {
 			if c.limited && c.measure == config.MeasureCost {
-				return nil, &Rejection{Scope: c.key.scope(), Group: c.key.group, Type: c.limit.Type, Measure: c.measure,
-					Limit: c.w.limit, Max: effectiveLimit(c.limit), Unavailable: true}
+				rej := c.rejection()
+				rej.Unavailable = true
+				return nil, rej
 			}
 		}
 	}
@@ -515,8 +504,8 @@ func (l *Limiter) Reserve(s Subject, tokens int64) (*Reservation, *Rejection) {
 			wait = c.w.waitFor(now, n)
 		}
 		if rej == nil || wait > rej.RetryAfter {
-			rej = &Rejection{Scope: c.key.scope(), Group: c.key.group, Type: c.limit.Type, Measure: c.measure, Limit: c.w.limit,
-				Max: effectiveLimit(c.limit), Used: c.w.usedAt(now), Requested: n, RetryAfter: wait}
+			rej = c.rejection()
+			rej.Used, rej.Requested, rej.RetryAfter = c.w.usedAt(now), n, wait
 		}
 	}
 	if rej != nil {

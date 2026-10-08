@@ -54,12 +54,13 @@ type PushedWindow struct {
 // live-gateway count applies at once (per-minute shares keep what they counted), and
 // its windows become the bases of the hour and month counts of their scope and type —
 // complete totals replace every base (0 without a window), others only those they
-// list. Windows of scopes the config does not have are kept for a reload that adds
-// them, until their window has passed. counted, when not 0, is the newest usage
-// generation the message shows counted: it leaves the counters' own usage now, as the
-// totals that include it are applied. A changes-only message touches only the windows
-// it lists, the per-minute shares when the live count changed, and the counters
-// holding own usage.
+// list. A window of a scope the config does not have sets the base of its retained
+// count, kept for a reload that adds the scope until the window has passed
+// (pruneRetainedLocked). counted, when not 0, is the newest usage generation the
+// message shows counted: it leaves the counters' own usage now, as the totals that
+// include it are applied. A changes-only message touches only the windows it lists,
+// the per-minute shares when the live count changed, and the counters holding own
+// usage.
 func (l *Limiter) TakeTotals(t Totals, counted uint64) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -68,47 +69,44 @@ func (l *Limiter) TakeTotals(t Totals, counted uint64) {
 	if l.totalsAt.IsZero() {
 		close(l.firstTotals)
 	}
-	live := max(t.LiveGateways, 1)
-	reshare := live != l.live
-	l.live = live
-	l.totalsAt = now
-	if t.Complete {
-		l.pushed = make(map[counterKey]PushedWindow, len(t.Windows))
-	}
-	for _, w := range t.Windows {
-		l.pushed[keyOf(w.Group, w.Type)] = w
-		l.warnAheadLocked(w, now)
-	}
-	if t.Complete {
-		for _, c := range l.counters {
+	if live := max(t.LiveGateways, 1); live != l.live {
+		l.live = live
+		for _, c := range l.minute {
 			l.applyLimit(c)
 		}
-	} else {
-		if reshare {
-			for _, c := range l.minute {
-				l.applyLimit(c)
+	}
+	l.totalsAt = now
+	if t.Complete {
+		// A count with no window has used nothing in the control plane's window.
+		for _, counters := range []map[counterKey]*counter{l.counters, l.retained} {
+			for _, c := range counters {
+				c.w.base = 0
 			}
 		}
-		for _, w := range t.Windows {
-			if c, ok := l.counters[keyOf(w.Group, w.Type)]; ok {
-				l.applyLimit(c)
-			}
-		}
+	}
+	for _, w := range t.Windows {
+		l.warnAheadLocked(w, now)
+		l.pushedCounterLocked(keyOf(w.Group, w.Type)).w.setBase(now, w.Start, w.Used)
 	}
 	l.retireCountedLocked(counted)
 	l.pruneRetainedLocked(now)
 	l.warnSmallSharesLocked()
 }
 
-// prunePushedLocked drops the pushed windows that have ended: a changes-only message
-// never lists a window again once its hour or month is over, so without this a
-// long-lived stream would keep every scope it ever saw. Callers hold l.mu.
-func (l *Limiter) prunePushedLocked(now time.Time) {
-	for k, w := range l.pushed {
-		if w.Start.Before(windowStart(kindOf(k.typ.Window()), now)) {
-			delete(l.pushed, k)
-		}
+// pushedCounterLocked is the count a pushed window of k is the base of: the live
+// config's, a retained one, or for a scope the config does not have a new retained
+// one, which a reload that adds the scope takes back with its base (sync). The control
+// client admits hour and month windows only. Callers hold l.mu.
+func (l *Limiter) pushedCounterLocked(k counterKey) *counter {
+	if c, ok := l.counters[k]; ok {
+		return c
 	}
+	if c, ok := l.retained[k]; ok {
+		return c
+	}
+	c := l.newCounter(k)
+	l.retained[k] = c
+	return c
 }
 
 // warnSmallSharesLocked logs, once per applied config and live-gateway count, each
@@ -123,7 +121,7 @@ func (l *Limiter) warnSmallSharesLocked() {
 	}
 	l.sharesChecked.snapshot, l.sharesChecked.live = l.applied, l.live
 	for _, c := range l.counters {
-		if c.key.typ.Counted() || c.measure != config.MeasureTokens || c.w.limit >= effectiveLimit(c.limit) {
+		if c.key.typ.Counted() || c.measure != config.MeasureTokens || c.w.limit >= c.max {
 			continue
 		}
 		group := l.applied.Groups[c.key.group]
@@ -137,7 +135,7 @@ func (l *Limiter) warnSmallSharesLocked() {
 			}
 			l.logger.Warn("per-minute share below the model's default output: a request at the default is admitted only while this gateway's window is empty",
 				append(identityAttrs(c.key.group), "kaiak.model.name", name,
-					"kaiak.limit.configured", effectiveLimit(c.limit), "kaiak.limit.live_gateways", l.live,
+					"kaiak.limit.configured", c.max, "kaiak.limit.live_gateways", l.live,
 					"kaiak.limit.enforced", c.w.limit, "kaiak.model.output_default", m.OutputLimit.Default)...)
 		}
 	}

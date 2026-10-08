@@ -302,6 +302,32 @@ func TestTotalsMatching(t *testing.T) {
 	}
 }
 
+// A deleted group's count keeps its pushed base for a reload that creates the group
+// again; complete totals that do not list it zero that base, as every other count's.
+func TestCompleteTotalsZeroADeletedGroupsBase(t *testing.T) {
+	c := newClock("2026-10-07T12:30:00Z")
+	with := limitsDoc{extraGroup: "temporary"}
+	h := holderOf(snapshot(t, with))
+	l, _ := c.shared(h)
+	l.TakeTotals(Totals{Complete: true, Windows: []PushedWindow{
+		pushedWindow("temporary", config.LimitTokensPerHour, "2026-10-07T12:00:00Z", 400)}}, 0)
+	h.Swap(snapshot(t, limitsDoc{}))
+	readAll(l)
+	l.TakeTotals(Totals{}, 0)
+	h.Swap(snapshot(t, with))
+	if got := used(t, l, "temporary", config.LimitTokensPerHour); got != 400 {
+		t.Fatalf("re-created group's hour %d, want the 400 pushed before it was deleted", got)
+	}
+
+	h.Swap(snapshot(t, limitsDoc{}))
+	readAll(l)
+	l.TakeTotals(Totals{Complete: true}, 0)
+	h.Swap(snapshot(t, with))
+	if got := used(t, l, "temporary", config.LimitTokensPerHour); got != 0 {
+		t.Errorf("re-created group's hour %d, want 0: complete totals did not list it", got)
+	}
+}
+
 func TestPerMinuteShares(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -691,8 +717,9 @@ func TestUsageNotShownCountedPastTheGraceIsAnOutage(t *testing.T) {
 }
 
 // A changes-only stream never lists a window again once its hour or month is over:
-// the pushed windows that ended are dropped, those of deleted scopes too, so a
-// long-lived stream does not keep every scope it ever saw (AUDIT-3 3M1, [C] C8).
+// the counts pushed windows of deleted scopes keep are dropped once the window has
+// ended, so a long-lived stream does not keep every scope it ever saw (AUDIT-3 3M1,
+// [C] C8).
 func TestEndedPushedWindowsAreDropped(t *testing.T) {
 	c := newClock("2026-10-07T12:30:00Z")
 	l, _ := c.shared(holderOf(snapshot(t, limitsDoc{})))
@@ -702,15 +729,15 @@ func TestEndedPushedWindowsAreDropped(t *testing.T) {
 	}}, 0)
 	c.set("2026-10-07T13:30:00Z")
 	l.TakeTotals(Totals{}, 0)
-	if _, kept := l.pushed[keyOf("deleted", config.LimitTokensPerHour)]; kept {
+	if _, kept := l.retained[keyOf("deleted", config.LimitTokensPerHour)]; kept {
 		t.Error("an ended hour window kept")
 	}
-	if _, kept := l.pushed[keyOf("deleted", config.LimitUSDPerMonth)]; !kept {
+	if _, kept := l.retained[keyOf("deleted", config.LimitUSDPerMonth)]; !kept {
 		t.Error("a current month window dropped")
 	}
 	c.set("2026-12-07T12:30:00Z")
 	l.TakeTotals(Totals{}, 0)
-	if _, kept := l.pushed[keyOf("deleted", config.LimitUSDPerMonth)]; kept {
+	if _, kept := l.retained[keyOf("deleted", config.LimitUSDPerMonth)]; kept {
 		t.Error("an ended month window of a deleted group kept")
 	}
 }
