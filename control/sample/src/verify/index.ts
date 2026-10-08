@@ -9,8 +9,8 @@
 
 import { parseArgs } from "node:util";
 
-import { BACKEND_TYPES, verifyBackend } from "kaiak-control";
-import type { BackendReport, BackendType, VerifyBackendOptions } from "kaiak-control";
+import { BACKEND_TYPES, MODEL_CAPABILITIES, verifyBackend } from "kaiak-control";
+import type { BackendReport, BackendType, VerifiedCapabilities, VerifyBackendOptions } from "kaiak-control";
 
 export type VerifyResult =
   // The backend was checked: exit status 0 when report.ok, 1 otherwise.
@@ -72,9 +72,9 @@ function parse(args: readonly string[], env: NodeJS.ProcessEnv): VerifyBackendOp
 
   const baseUrl = values["base-url"];
   if (!baseUrl) return { message: "--base-url is required: the backend's base_url, as config spells it" };
-  const type = values.type ?? "openai-compatible";
-  if (!isBackendType(type)) return { message: `--type must be one of ${BACKEND_TYPES.join(", ")}, not "${type}"` };
-  const options: VerifyBackendOptions = { type, baseUrl };
+  // Unchecked here: verifyBackend refuses a type config would not take, before sending
+  // anything (verify-input-invalid).
+  const options: VerifyBackendOptions = { type: (values.type ?? "openai-compatible") as BackendType, baseUrl };
 
   const keyEnv = values["api-key-env"];
   if (keyEnv !== undefined) {
@@ -93,10 +93,6 @@ function parse(args: readonly string[], env: NodeJS.ProcessEnv): VerifyBackendOp
     options.timeoutMs = Number(timeout);
   }
   return options;
-}
-
-function isBackendType(value: string): value is BackendType {
-  return (BACKEND_TYPES as readonly string[]).includes(value);
 }
 
 function isInputInvalid(error: unknown): error is Error & { code: "verify-input-invalid" } {
@@ -120,7 +116,7 @@ export function explain(report: BackendReport, options: VerifyBackendOptions): s
     "",
   ];
   const hints = Object.entries(model?.capabilities ?? {}).filter(
-    ([name]) => model?.sources.capabilities?.[name as "vision" | "tools" | "reasoning"]?.hint === true,
+    ([name]) => model?.sources.capabilities?.[name as keyof VerifiedCapabilities]?.hint === true,
   );
   if (hints.length > 0) {
     lines.push(`Hints, to confirm by hand: ${hints.map(([name, value]) => `${name} ${String(value)}`).join(", ")}`);
@@ -128,9 +124,7 @@ export function explain(report: BackendReport, options: VerifyBackendOptions): s
   const reported = report.metadata.capabilities ?? {};
   const toDecide = [
     ...(report.metadata.context_length === undefined ? ["context_length"] : []),
-    ...["streaming", "tools", "vision", "reasoning"]
-      .filter((name) => !(name in reported))
-      .map((name) => `capabilities.${name}`),
+    ...MODEL_CAPABILITIES.filter((name) => !(name in reported)).map((name) => `capabilities.${name}`),
     "reasoning_efforts (when reasoning is true)",
   ];
   lines.push(`Still to decide by hand: ${toDecide.join(", ")}`, "");

@@ -15,6 +15,12 @@ export const BACKEND_TYPES = [
 
 export type BackendType = (typeof BACKEND_TYPES)[number];
 
+// The capabilities a model's metadata declares, every one required, as a value for apps
+// that list or ask for them; a test pins it to the schema's required list.
+export const MODEL_CAPABILITIES = ["streaming", "tools", "vision", "reasoning"] as const;
+
+export type ModelCapability = (typeof MODEL_CAPABILITIES)[number];
+
 export type LimitType = "requests_per_minute" | "tokens_per_minute" | "tokens_per_hour" | "usd_per_month";
 
 // Usage units a usage record counts. tokens_in is plain input, tokens_cached input read
@@ -55,12 +61,7 @@ export interface Deployment {
 
 export interface ModelMetadata {
   context_length: number;
-  capabilities: {
-    streaming: boolean;
-    tools: boolean;
-    vision: boolean;
-    reasoning: boolean;
-  };
+  capabilities: Record<ModelCapability, boolean>;
   reasoning_efforts?: string[];
 }
 

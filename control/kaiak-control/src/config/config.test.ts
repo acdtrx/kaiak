@@ -8,7 +8,7 @@ import { describe, test } from "node:test";
 
 import { fixturePath, readJson, testInvalidFixtures, testValidFixtures } from "../test-support/index.ts";
 
-import { BACKEND_TYPES, validateConfig } from "./index.ts";
+import { BACKEND_TYPES, MODEL_CAPABILITIES, validateConfig } from "./index.ts";
 
 const VALID_DIR = fixturePath("config", "valid");
 const INVALID_DIR = fixturePath("config", "invalid");
@@ -18,6 +18,13 @@ const CONFIG_SCHEMA = path.resolve(import.meta.dirname, "../../schema/config.sch
 test("BACKEND_TYPES is the schema's backend type enum, in its order", () => {
   const schema = readJson(CONFIG_SCHEMA) as { $defs: { backend: { properties: { type: { enum: unknown } } } } };
   assert.deepEqual(BACKEND_TYPES, schema.$defs.backend.properties.type.enum);
+});
+
+test("MODEL_CAPABILITIES is the schema's required metadata capabilities, in its order", () => {
+  const schema = readJson(CONFIG_SCHEMA) as {
+    $defs: { model: { properties: { metadata: { properties: { capabilities: { required: unknown } } } } } };
+  };
+  assert.deepEqual(MODEL_CAPABILITIES, schema.$defs.model.properties.metadata.properties.capabilities.required);
 });
 
 describe("valid config fixtures", () => {

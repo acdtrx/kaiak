@@ -139,22 +139,83 @@ interface Settings {
   signal?: AbortSignal;
 }
 
+// What a backend type means for verification. The URL and the headers are the
+// gateway's: each row reads against gateway/internal/provider/<type>.go (url, header),
+// and protocol/fixtures/backend-types/ pins both halves to the same request.
+type TypeRules =
+  // No models list: nothing is sent, and the report says not checkable, and why.
+  | { list: "none"; why: string }
+  | {
+      // "base-models": the list names the resource's base models, not the deployments
+      // config routes to, so no model in it is reported or checked.
+      list: "models" | "base-models";
+      // A URL under the base, as the gateway module's url(path).
+      url(base: string, path: string): string;
+      // The credential header (none without a credential) and the type's fixed headers,
+      // as the gateway module's header().
+      headers(credential?: string): Record<string, string>;
+      // Appended to the models list's URL.
+      listQuery?: string;
+      // Recognize the server from the entries' owned_by (Server recognition).
+      recognizeServer: boolean;
+      // The list entry's field read as context_length, whatever the server.
+      entryContextField?: string;
+    };
+
+const bearer = (credential?: string): Record<string, string> =>
+  credential === undefined ? {} : { Authorization: `Bearer ${credential}` };
+const apiKey = (credential?: string): Record<string, string> => (credential === undefined ? {} : { "api-key": credential });
+const underBase = (base: string, path: string): string => `${base}/${path}`;
+const openAiShaped = { list: "models", url: underBase, headers: bearer, recognizeServer: true } as const;
+
+// The compiler holds the rows to BACKEND_TYPES: a new type compiles only with its row.
+const TYPE_RULES: Record<BackendType, TypeRules> = {
+  "openai-compatible": openAiShaped,
+  openai: openAiShaped,
+  vllm: openAiShaped,
+  "llama-server": openAiShaped,
+  "azure-openai": {
+    list: "base-models",
+    url: (base, path) => `${base}/openai/v1/${path}`,
+    headers: apiKey,
+    recognizeServer: false,
+  },
+  anthropic: {
+    list: "models",
+    url: underBase,
+    headers: (credential) => ({
+      ...(credential === undefined ? {} : { "x-api-key": credential }),
+      "anthropic-version": ANTHROPIC_VERSION,
+    }),
+    // Anthropic's list is paged, 20 by default: one request asks for the most a page
+    // holds.
+    listQuery: "?limit=1000",
+    // The type already says what the server is.
+    recognizeServer: false,
+    entryContextField: "max_input_tokens",
+  },
+  "azure-anthropic": { list: "none", why: "Microsoft Foundry has no models list" },
+};
+
+// A list entry's context_length field on a server recognized as vLLM.
+const VLLM_CONTEXT_FIELD = "max_model_len";
+
 // Checks a backend and reports what it says about its models. Throws
 // { code: "verify-input-invalid" } on invalid options, before sending anything; rejects
 // with the signal's reason when the caller's signal aborts.
 export async function verifyBackend(options: VerifyBackendOptions): Promise<BackendReport> {
   const settings = checkInput(options);
   settings.signal?.throwIfAborted();
+  const rules = TYPE_RULES[settings.type];
 
-  // Claude in Microsoft Foundry has no models list: nothing is sent, and the report
-  // says not checkable — never ok, so no caller reads it as verified.
-  if (settings.type === "azure-anthropic") {
+  // Nothing is sent, and the report says not checkable — never ok, so no caller reads
+  // it as verified.
+  if (rules.list === "none") {
     return {
       ok: false,
       failure: {
         code: "not-checkable",
-        message:
-          "Microsoft Foundry has no models list: the backend cannot be checked; its reachability and credential stay unchecked until the gateway's first request",
+        message: `${rules.why}: the backend cannot be checked; its reachability and credential stay unchecked until the gateway's first request`,
       },
       server: "unknown",
       models: [],
@@ -162,43 +223,45 @@ export async function verifyBackend(options: VerifyBackendOptions): Promise<Back
     };
   }
 
-  const listUrl = modelsListUrl(settings);
-  const answer = await getJson(listUrl, settings);
+  const get: GetOptions = {
+    headers: { Accept: "application/json", "User-Agent": USER_AGENT, ...rules.headers(settings.credential) },
+    timeoutMs: settings.timeoutMs,
+    ...(settings.signal === undefined ? {} : { signal: settings.signal }),
+  };
+  const listUrl = `${rules.url(settings.baseUrl, "models")}${rules.listQuery ?? ""}`;
+  const answer = await getJson(listUrl, get);
   const list = modelsListOf(answer, listUrl, settings);
   if ("failure" in list) return { ok: false, failure: list.failure, server: "unknown", models: [], notes: [] };
 
-  if (settings.type === "azure-openai") {
+  if (rules.list === "base-models") {
     return {
       ok: true,
       server: "unknown",
       models: [],
       ...(settings.model === undefined ? {} : { metadata: {} }),
       notes: [
-        "azure-openai lists base models, not deployments: the models are not reported and every deployment name counts as served",
+        `${settings.type} lists base models, not deployments: the models are not reported and every deployment name counts as served`,
       ],
     };
   }
 
-  // An anthropic backend's type already says what it is: no recognition from owned_by.
-  const server = settings.type === "anthropic" ? "unknown" : recognizeServer(list.data);
-  const models = list.data.map((entry): VerifiedModel => ({ id: entry.id, sources: {}, notes: [] }));
+  const server = rules.recognizeServer ? recognizeServer(list.data) : "unknown";
+  const contextField = rules.entryContextField ?? (server === "vllm" ? VLLM_CONTEXT_FIELD : undefined);
+  const models = list.data.map((entry): VerifiedModel => {
+    const model: VerifiedModel = { id: entry.id, sources: {}, notes: [] };
+    if (contextField !== undefined) readContextLength(entry, listUrl, contextField, model);
+    return model;
+  });
   const notes: string[] = [];
   // Only the server's own type gets its gateway module's rules; the backend is reached
   // the same way under either, so this is a note, not a failure.
   if (server !== "unknown" && server !== settings.type) {
     notes.push(`the models list says the server is ${server}: use type "${server}", not "${settings.type}"`);
   }
-  if (settings.type === "anthropic") {
-    list.data.forEach((entry, index) => readAnthropicEntry(entry, listUrl, modelAt(models, index)));
-    if (list.data.length === 0) notes.push("the models list is empty");
-  } else if (server === "vllm") {
-    list.data.forEach((entry, index) => readVllmEntry(entry, listUrl, modelAt(models, index)));
-  } else if (server === "unknown") {
-    notes.push(
-      list.data.length === 0
-        ? "the models list is empty"
-        : "server not recognized from owned_by: only reachability, the credential and the listed ids are checked",
-    );
+  if (list.data.length === 0) {
+    notes.push("the models list is empty");
+  } else if (rules.recognizeServer && server === "unknown") {
+    notes.push("server not recognized from owned_by: only reachability, the credential and the listed ids are checked");
   }
 
   const requested = settings.model === undefined ? undefined : models.find((model) => model.id === settings.model);
@@ -212,7 +275,7 @@ export async function verifyBackend(options: VerifyBackendOptions): Promise<Back
     };
   }
 
-  if (server === "llama-server") await readLlamaServerProps(settings, models);
+  if (server === "llama-server") await readLlamaServerProps(settings.baseUrl, get, models);
 
   return {
     ok: true,
@@ -254,6 +317,13 @@ function checkInput(options: VerifyBackendOptions): Settings {
   };
 }
 
+// What every GET of one check carries.
+interface GetOptions {
+  headers: Record<string, string>;
+  timeoutMs: number;
+  signal?: AbortSignal;
+}
+
 // What one GET got back.
 type Answer =
   | { kind: "json"; status: number; body: unknown }
@@ -268,17 +338,17 @@ type Answer =
 // the caller's signal aborts it (rejecting with its reason), a redirect is returned as
 // it is, and a 2xx body is read up to BODY_CAP_BYTES and parsed as JSON. Other bodies
 // are not read: no backend text reaches a report.
-async function getJson(url: string, settings: Settings): Promise<Answer> {
-  const timeout = AbortSignal.timeout(settings.timeoutMs);
-  const signal = settings.signal ? AbortSignal.any([settings.signal, timeout]) : timeout;
+async function getJson(url: string, get: GetOptions): Promise<Answer> {
+  const timeout = AbortSignal.timeout(get.timeoutMs);
+  const signal = get.signal ? AbortSignal.any([get.signal, timeout]) : timeout;
   const aborted = (): Answer => {
-    settings.signal?.throwIfAborted();
+    get.signal?.throwIfAborted();
     return { kind: "timeout" };
   };
 
   let response: Response;
   try {
-    response = await fetch(url, { method: "GET", headers: requestHeaders(settings), redirect: "manual", signal });
+    response = await fetch(url, { method: "GET", headers: get.headers, redirect: "manual", signal });
   } catch (error) {
     if (signal.aborted) return aborted();
     return { kind: "unreachable", ...causeOf(error) };
@@ -304,30 +374,6 @@ async function getJson(url: string, settings: Settings): Promise<Answer> {
     // Invalid UTF-8 or JSON: the answer is reported as not JSON, never its text.
     return { kind: "not-json", status };
   }
-}
-
-// The models list's URL per type (docs/specs/BACKEND-VERIFY.md, Requests). Anthropic's
-// list is paged, 20 by default: one request asks for the most a page holds.
-function modelsListUrl(settings: Settings): string {
-  switch (settings.type) {
-    case "azure-openai":
-      return `${settings.baseUrl}/openai/v1/models`;
-    case "anthropic":
-      return `${settings.baseUrl}/models?limit=1000`;
-    default:
-      return `${settings.baseUrl}/models`;
-  }
-}
-
-function requestHeaders(settings: Settings): Record<string, string> {
-  const headers: Record<string, string> = { Accept: "application/json", "User-Agent": USER_AGENT };
-  if (settings.type === "anthropic") headers["anthropic-version"] = ANTHROPIC_VERSION;
-  if (settings.credential !== undefined) {
-    if (settings.type === "azure-openai") headers["api-key"] = settings.credential;
-    else if (settings.type === "anthropic") headers["x-api-key"] = settings.credential;
-    else headers["Authorization"] = `Bearer ${settings.credential}`;
-  }
-  return headers;
 }
 
 // The platform's error code for a failed connection (ECONNREFUSED, ENOTFOUND, …) — a
@@ -362,33 +408,40 @@ function modelsListOf(
   settings: Settings,
 ): ModelsList | { failure: { code: VerifyFailureCode; message: string } } {
   const fail = (code: VerifyFailureCode, message: string) => ({ failure: { code, message } });
+  if (answer.kind === "json") {
+    if (isModelsList(answer.body)) return answer.body;
+    return fail("not-a-models-list", `${url} answered ${answer.status} without a data array of entries with a string id`);
+  }
+  if (answer.kind === "status" && (answer.status === 401 || answer.status === 403)) {
+    const sent = settings.credential === undefined ? "no credential was sent" : "the credential was refused";
+    return fail("credential-refused", `${url} answered ${answer.status}: ${sent}`);
+  }
+  if (answer.kind === "status" && answer.status >= 300 && answer.status <= 399) {
+    return fail("not-a-models-list", `${url} answered ${answer.status}, a redirect (not followed)`);
+  }
+  const code = answer.kind === "unreachable" || answer.kind === "timeout" ? answer.kind : "not-a-models-list";
+  return fail(code, describeAnswer(answer, url, settings.timeoutMs));
+}
+
+// Why an answer that is not JSON gave nothing to read.
+function describeAnswer(answer: Exclude<Answer, { kind: "json" }>, url: string, timeoutMs: number): string {
   switch (answer.kind) {
     case "unreachable":
-      return fail("unreachable", `no answer from ${url}${answer.cause === undefined ? "" : ` (${answer.cause})`}`);
+      return `no answer from ${url}${answer.cause === undefined ? "" : ` (${answer.cause})`}`;
     case "timeout":
-      return fail("timeout", `${url} did not answer whole within ${settings.timeoutMs} ms`);
+      return `${url} did not answer whole within ${timeoutMs} ms`;
     case "status":
-      if (answer.status === 401 || answer.status === 403) {
-        const sent = settings.credential === undefined ? "no credential was sent" : "the credential was refused";
-        return fail("credential-refused", `${url} answered ${answer.status}: ${sent}`);
-      }
-      if (answer.status >= 300 && answer.status <= 399) {
-        return fail("not-a-models-list", `${url} answered ${answer.status}, a redirect (not followed)`);
-      }
-      return fail("not-a-models-list", `${url} answered ${answer.status}`);
+      return `${url} answered ${answer.status}`;
     case "cut":
-      return fail("not-a-models-list", `${url} answered ${answer.status} but the body was cut off`);
+      return `${url} answered ${answer.status} but the body was cut off`;
     case "too-large":
-      return fail("not-a-models-list", `${url} answered ${answer.status} with a body over 1 MiB`);
+      return `${url} answered ${answer.status} with a body over 1 MiB`;
     case "not-json":
-      return fail("not-a-models-list", `${url} answered ${answer.status} with a body that is not JSON`);
-    case "json":
-      if (isModelsList(answer.body)) return answer.body;
-      return fail("not-a-models-list", `${url} answered ${answer.status} without a data array of entries with a string id`);
+      return `${url} answered ${answer.status} with a body that is not JSON`;
   }
 }
 
-// From every entry's owned_by (every type but azure-openai and the Anthropic types).
+// From every entry's owned_by, for the types whose row asks (TYPE_RULES).
 function recognizeServer(entries: ModelEntry[]): VerifiedServer {
   if (entries.length === 0) return "unknown";
   if (entries.every((entry) => entry.owned_by === "vllm")) return "vllm";
@@ -396,29 +449,14 @@ function recognizeServer(entries: ModelEntry[]): VerifiedServer {
   return "unknown";
 }
 
-function modelAt(models: VerifiedModel[], index: number): VerifiedModel {
-  const model = models[index];
-  if (!model) throw new Error(`no verified model at index ${index}`);
-  return model;
-}
-
-function readVllmEntry(entry: ModelEntry, url: string, model: VerifiedModel): void {
-  const read = readField(entry, "max_model_len", isContextLength);
+// Sets the model's context_length from the field, or notes why it is left out.
+function readContextLength(doc: Record<string, unknown>, url: string, field: string, model: VerifiedModel): void {
+  const read = readField(doc, field, isContextLength);
   if (read.kind === "value") {
     model.context_length = read.value as number;
-    model.sources.context_length = { url, field: "max_model_len", hint: false };
+    model.sources.context_length = { url, field, hint: false };
   } else {
-    model.notes.push(absentNote("context_length", url, "max_model_len", read.kind, "a positive integer"));
-  }
-}
-
-function readAnthropicEntry(entry: ModelEntry, url: string, model: VerifiedModel): void {
-  const read = readField(entry, "max_input_tokens", isContextLength);
-  if (read.kind === "value") {
-    model.context_length = read.value as number;
-    model.sources.context_length = { url, field: "max_input_tokens", hint: false };
-  } else {
-    model.notes.push(absentNote("context_length", url, "max_input_tokens", read.kind, "a positive integer"));
+    model.notes.push(absentNote("context_length", url, field, read.kind, "a positive integer"));
   }
 }
 
@@ -432,9 +470,9 @@ const PROPS_CONTEXT_FIELD = "default_generation_settings.n_ctx";
 
 // llama-server serves /props at its root only, and it describes the one model the
 // server holds: read only when the root is known and the list has one entry.
-async function readLlamaServerProps(settings: Settings, models: VerifiedModel[]): Promise<void> {
+async function readLlamaServerProps(baseUrl: string, get: GetOptions, models: VerifiedModel[]): Promise<void> {
   const noteAll = (note: string) => models.forEach((model) => model.notes.push(note));
-  if (!settings.baseUrl.endsWith("/v1")) {
+  if (!baseUrl.endsWith("/v1")) {
     noteAll("/props skipped: the base URL does not end in /v1, so the server's root is unknown");
     return;
   }
@@ -444,21 +482,15 @@ async function readLlamaServerProps(settings: Settings, models: VerifiedModel[])
     return;
   }
 
-  const url = `${settings.baseUrl.slice(0, -"/v1".length)}/props`;
-  const answer = await getJson(url, settings);
-  const props = propsOf(answer, url, settings);
+  const url = `${baseUrl.slice(0, -"/v1".length)}/props`;
+  const answer = await getJson(url, get);
+  const props = propsOf(answer, url, get.timeoutMs);
   if (typeof props === "string") {
     model.notes.push(`${props}: its values are not reported`);
     return;
   }
 
-  const context = readField(props, PROPS_CONTEXT_FIELD, isContextLength);
-  if (context.kind === "value") {
-    model.context_length = context.value as number;
-    model.sources.context_length = { url, field: PROPS_CONTEXT_FIELD, hint: false };
-  } else {
-    model.notes.push(absentNote("context_length", url, PROPS_CONTEXT_FIELD, context.kind, "a positive integer"));
-  }
+  readContextLength(props, url, PROPS_CONTEXT_FIELD, model);
 
   const capabilities: VerifiedCapabilities = {};
   const sources: NonNullable<VerifiedModel["sources"]["capabilities"]> = {};
@@ -478,23 +510,9 @@ async function readLlamaServerProps(settings: Settings, models: VerifiedModel[])
 }
 
 // The /props document, or why it could not be read.
-function propsOf(answer: Answer, url: string, settings: Settings): Record<string, unknown> | string {
-  switch (answer.kind) {
-    case "unreachable":
-      return `no answer from ${url}${answer.cause === undefined ? "" : ` (${answer.cause})`}`;
-    case "timeout":
-      return `${url} did not answer whole within ${settings.timeoutMs} ms`;
-    case "status":
-      return `${url} answered ${answer.status}`;
-    case "cut":
-      return `${url} answered ${answer.status} but the body was cut off`;
-    case "too-large":
-      return `${url} answered ${answer.status} with a body over 1 MiB`;
-    case "not-json":
-      return `${url} answered ${answer.status} with a body that is not JSON`;
-    case "json":
-      return isObject(answer.body) ? answer.body : `${url} answered ${answer.status} with JSON that is not an object`;
-  }
+function propsOf(answer: Answer, url: string, timeoutMs: number): Record<string, unknown> | string {
+  if (answer.kind !== "json") return describeAnswer(answer, url, timeoutMs);
+  return isObject(answer.body) ? answer.body : `${url} answered ${answer.status} with JSON that is not an object`;
 }
 
 type FieldRead = { kind: "value"; value: unknown } | { kind: "missing" } | { kind: "malformed" };

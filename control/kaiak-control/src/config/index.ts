@@ -10,7 +10,7 @@ import type { Config } from "./types.ts";
 export { resolveScopes } from "./limits.ts";
 export type { ResolvedScope } from "./limits.ts";
 export type { SemanticRuleCode } from "./semantic.ts";
-export { BACKEND_TYPES } from "./types.ts";
+export { BACKEND_TYPES, MODEL_CAPABILITIES } from "./types.ts";
 export type * from "./types.ts";
 
 export type ConfigIssue = ValidationIssue;

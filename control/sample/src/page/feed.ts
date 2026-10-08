@@ -146,6 +146,12 @@ export function createPageFeed(options: PageFeedOptions): PageFeed {
       raw.writeHead(200, EVENT_STREAM_HEADERS);
       raw.flushHeaders();
 
+      // Once closed, nothing more is written to this stream: closing is the first thing
+      // every ending does, before the response ends, so a render or a heartbeat that
+      // finishes after the end finds the stream closed (a write after end is an error
+      // event on the response).
+      let closed = false;
+
       // Writes go through Node's own buffer; a socket that takes nothing for the stall
       // timeout ends the stream.
       let stallTimer: ReturnType<typeof setTimeout> | undefined;
@@ -155,14 +161,17 @@ export function createPageFeed(options: PageFeedOptions): PageFeed {
       };
       const browser: Browser = {
         write(chunk) {
+          if (closed) return;
           if (raw.write(chunk) || stallTimer !== undefined) return;
           stallTimer = setTimeout(() => {
             log.warn({ stalledStreamTimeoutMs }, "page stream: the browser has not read for too long; ending the stream");
+            close();
             raw.destroy();
           }, stalledStreamTimeoutMs);
           raw.once("drain", drained);
         },
         end() {
+          close();
           raw.end();
         },
       };
@@ -172,25 +181,34 @@ export function createPageFeed(options: PageFeedOptions): PageFeed {
 
       open.add(browser);
       if (open.size === 1) subscribe();
-      const close = (): void => {
+      function close(): void {
+        if (closed) return;
+        closed = true;
         clearInterval(heartbeat);
         clearTimeout(stallTimer);
         receiving.delete(browser);
         open.delete(browser);
         if (open.size < maxStreams) capWarned = false;
         if (open.size === 0) unsubscribe();
-      };
+      }
       raw.once("close", close);
+      // A failing socket ends the stream like a closed one; the error is the connection's,
+      // never the process's.
+      raw.on("error", (error) => {
+        log.warn({ err: error }, "page stream: the connection failed; ending the stream");
+        close();
+      });
       if (raw.destroyed) {
         close();
         return true;
       }
 
       inTurn(async () => {
-        if (!open.has(browser)) return;
+        if (closed) return;
         const chunk = await renderEvents(SECTION_IDS);
-        if (!open.has(browser)) return;
+        if (closed) return;
         if (chunk === undefined) {
+          close();
           raw.destroy();
           return;
         }

@@ -563,7 +563,7 @@ field by field, is `docs/specs/BACKEND-VERIFY.md`.
     their config names.
 - **`metadata` is partial.** Merge it into the model's `metadata`, then have the
   operator complete the rest: `capabilities.streaming` always, every capability not
-  reported, `reasoning_efforts`. A value the backend does not report is absent, never
+  reported (`MODEL_CAPABILITIES` lists those config requires), `reasoning_efforts`. A value the backend does not report is absent, never
   guessed — do not default it in your form either; leave it for the operator to
   decide, and publishing refuses the config until they do.
 - **Hints stay out of `metadata`.** `tools` and `reasoning` from llama-server are read

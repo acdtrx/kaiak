@@ -2,7 +2,7 @@
 
 export type { ValidationIssue } from "./schemas/index.ts";
 
-export { BACKEND_TYPES, resolveScopes, validateConfig } from "./config/index.ts";
+export { BACKEND_TYPES, MODEL_CAPABILITIES, resolveScopes, validateConfig } from "./config/index.ts";
 export type * from "./config/index.ts";
 
 export {
