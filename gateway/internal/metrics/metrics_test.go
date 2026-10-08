@@ -15,6 +15,7 @@ import (
 	"kaiak/internal/routing"
 	"kaiak/internal/telemetry/metric"
 	"kaiak/internal/telemetry/otlplog"
+	"kaiak/internal/telemetry/otlpmetric"
 )
 
 func text(r *metric.Registry) string {
@@ -306,6 +307,27 @@ otel_sdk_exporter_log_exported_total{` + exporter + `,error_type="rejected"} 2
 otel_sdk_processor_log_processed_total{` + processor + `} 1030
 otel_sdk_processor_log_processed_total{` + processor + `,error_type="queue_full"} 5
 otel_sdk_processor_log_processed_total{` + processor + `,error_type="shutdown"} 2
+`
+	if got := samples(text(reg)); got != want {
+		t.Errorf("counted:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestMetricExportMetrics(t *testing.T) {
+	reg := metric.NewRegistry()
+	var counts otlpmetric.Counts
+	RegisterMetricExport(reg, func() otlpmetric.Counts { return counts })
+	const exporter = `otel_component_type="otlp_http_json_metric_exporter",otel_component_name="otlp_http_json_metric_exporter/0"`
+	// At startup: the accepted series at 0; no failure series.
+	want := `otel_sdk_exporter_metric_data_point_exported_total{` + exporter + `} 0
+`
+	if got := samples(text(reg)); got != want {
+		t.Errorf("at startup:\n%s\nwant:\n%s", got, want)
+	}
+	counts = otlpmetric.Counts{Exported: 420, Failed: map[string]uint64{"timeout": 60, "rejected": 2}}
+	want = `otel_sdk_exporter_metric_data_point_exported_total{` + exporter + `} 420
+otel_sdk_exporter_metric_data_point_exported_total{` + exporter + `,error_type="rejected"} 2
+otel_sdk_exporter_metric_data_point_exported_total{` + exporter + `,error_type="timeout"} 60
 `
 	if got := samples(text(reg)); got != want {
 		t.Errorf("counted:\n%s\nwant:\n%s", got, want)

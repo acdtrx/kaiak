@@ -15,14 +15,8 @@ import (
 	"kaiak/internal/routing"
 	"kaiak/internal/telemetry/metric"
 	"kaiak/internal/telemetry/otlplog"
+	"kaiak/internal/telemetry/otlpmetric"
 )
-
-// pendingFamilies are families of the spec's metric list not yet in their listed
-// form, left out of the comparison on both sides: the metric exporter's own count,
-// which comes with OTLP metric export.
-var pendingFamilies = []string{
-	"otel_sdk_exporter_metric_data_point_exported_total",
-}
 
 // A full scrape of every family the gateway registers, each driven until every
 // attribute it can carry shows, holds exactly the families of the spec's metric list
@@ -32,9 +26,6 @@ func TestFullScrapeIsTheSpecsMetricList(t *testing.T) {
 	spec := specMetricList(t)
 	got := scrapedFamilies(t, fullScrape(t))
 	for name, want := range spec {
-		if slices.Contains(pendingFamilies, name) {
-			continue
-		}
 		f, ok := got[name]
 		if !ok {
 			t.Errorf("%s is in the metric list but not in the scrape", name)
@@ -48,7 +39,7 @@ func TestFullScrapeIsTheSpecsMetricList(t *testing.T) {
 		}
 	}
 	for name := range got {
-		if _, ok := spec[name]; !ok && !slices.Contains(pendingFamilies, name) {
+		if _, ok := spec[name]; !ok {
 			t.Errorf("%s is in the scrape but not in the metric list", name)
 		}
 	}
@@ -176,8 +167,8 @@ func scrapedFamilies(t *testing.T, scrape string) map[string]family {
 	return families
 }
 
-// fullScrape registers every family as main does — control-plane mode, OTLP log
-// export on — and feeds each event that gives a family its every attribute.
+// fullScrape registers every family as main does — control-plane mode, OTLP log and
+// metric export on — and feeds each event that gives a family its every attribute.
 func fullScrape(t *testing.T) string {
 	t.Helper()
 	capped := &config.Backend{ID: "capped", Type: config.BackendOpenAI, MaxInFlight: 2}
@@ -191,6 +182,9 @@ func fullScrape(t *testing.T) string {
 	RegisterBuildInfo(reg, "1.2.3")
 	RegisterLogExport(reg, func() otlplog.Counts {
 		return otlplog.Counts{Handed: 3, Exported: 2, Failed: map[string]uint64{"503": 1}}
+	})
+	RegisterMetricExport(reg, func() otlpmetric.Counts {
+		return otlpmetric.Counts{Exported: 40, Failed: map[string]uint64{"timeout": 4}}
 	})
 	circuits := NewCircuits(reg)
 	router := routing.New(routing.Options{Observer: circuits})

@@ -202,10 +202,11 @@ enforce the boundaries.
   - `telemetry/otlpmetric` — the periodic metric exporter: collects the registry on
     an interval, applies the temporality and posts through `otlp`.
   - `telemetry/fakeotlp` — an OpenTelemetry collector for tests: takes OTLP/HTTP
-    JSON log exports, answers each as the test scripts, and keeps every export
-    decoded with its own types — not `otlplog`'s — so reading them checks the
-    encoder. Tests only (the tree's own, `cmd/kaiak`'s and the e2e suite's); in the
-    tree so that the tree's tests use no kaiak fixture.
+    JSON log and metric exports, answers each as the test scripts, and keeps every
+    export decoded with its own types — not the exporters' — refusing members it
+    does not know, so reading them checks the encoders. Tests only (the tree's
+    own, `cmd/kaiak`'s and the e2e suite's); in the tree so that the tree's tests
+    use no kaiak fixture.
 
   `cmd/kaiak` wraps the process logger with the log exporter when log export is on
   (giving it a stderr-only logger for its own problem reports: no feedback loop),

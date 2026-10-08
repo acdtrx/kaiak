@@ -156,6 +156,12 @@ func TestCollect(t *testing.T) {
 	if again := reg.Collect(); !again.Families[0].Points[0].StartTime.Equal(early) {
 		t.Error("a series' start time moved between collects")
 	}
+	if f := check("cost", KindCounter, Double, false); f.Divisor != 1e9 || f.Points[0].Double != 0.25 || f.Points[0].SubUnits != 250_000_000 {
+		t.Errorf("cost: divisor %v, %+v", f.Divisor, f.Points[0])
+	}
+	if f := byName["c"]; f.Divisor != 0 || f.Points[0].SubUnits != 0 {
+		t.Errorf("c: a plain counter with divisor %v, sub-units %d", f.Divisor, f.Points[0].SubUnits)
+	}
 	if p := check("cost", KindCounter, Double, false).Points[0]; p.Double != 0.25 {
 		t.Errorf("cost: %+v", p)
 	}

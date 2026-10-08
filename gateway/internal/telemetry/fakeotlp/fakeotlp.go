@@ -1,8 +1,8 @@
 // Package fakeotlp is an OpenTelemetry collector for tests: it takes OTLP/HTTP JSON
-// log exports, answers each as the test scripts, and keeps every export it received,
-// decoded. It decodes with its own types, not the gateway's encoder types, so a test
-// reading what it received checks the encoder. Test tooling only: nothing in the
-// gateway binary imports it.
+// log and metric exports, answers each as the test scripts, and keeps every export
+// it received, decoded. It decodes with its own types, not the gateway's encoder
+// types, and refuses a member it does not know, so a test reading what it received
+// checks the encoder. Test tooling only: nothing in the gateway binary imports it.
 package fakeotlp
 
 import (
@@ -18,24 +18,32 @@ import (
 	"time"
 )
 
-// Export is an ExportLogsServiceRequest as OTLP/HTTP JSON writes it.
+// Export is an ExportLogsServiceRequest or an ExportMetricsServiceRequest as
+// OTLP/HTTP JSON writes it: one of its members is set.
 type Export struct {
-	ResourceLogs []ResourceLogs `json:"resourceLogs"`
+	ResourceLogs    []ResourceLogs    `json:"resourceLogs"`
+	ResourceMetrics []ResourceMetrics `json:"resourceMetrics"`
+}
+
+// Resource is the resource an export's logs or metrics come from.
+type Resource struct {
+	Attributes []KeyValue `json:"attributes"`
+}
+
+// Scope is an instrumentation scope.
+type Scope struct {
+	Name string `json:"name"`
 }
 
 // ResourceLogs is one resource's logs, by instrumentation scope.
 type ResourceLogs struct {
-	Resource struct {
-		Attributes []KeyValue `json:"attributes"`
-	} `json:"resource"`
+	Resource  Resource    `json:"resource"`
 	ScopeLogs []ScopeLogs `json:"scopeLogs"`
 }
 
 // ScopeLogs is one instrumentation scope's records.
 type ScopeLogs struct {
-	Scope struct {
-		Name string `json:"name"`
-	} `json:"scope"`
+	Scope      Scope    `json:"scope"`
 	LogRecords []Record `json:"logRecords"`
 }
 
@@ -47,6 +55,67 @@ type Record struct {
 	SeverityText         string     `json:"severityText"`
 	Body                 Value      `json:"body"`
 	Attributes           []KeyValue `json:"attributes"`
+}
+
+// ResourceMetrics is one resource's metrics, by instrumentation scope.
+type ResourceMetrics struct {
+	Resource     Resource       `json:"resource"`
+	ScopeMetrics []ScopeMetrics `json:"scopeMetrics"`
+}
+
+// ScopeMetrics is one instrumentation scope's metrics.
+type ScopeMetrics struct {
+	Scope   Scope    `json:"scope"`
+	Metrics []Metric `json:"metrics"`
+}
+
+// Metric is one metric: exactly one of Sum, Gauge and Histogram is set.
+type Metric struct {
+	Name        string     `json:"name"`
+	Description string     `json:"description"`
+	Unit        string     `json:"unit"`
+	Sum         *Sum       `json:"sum"`
+	Gauge       *Gauge     `json:"gauge"`
+	Histogram   *Histogram `json:"histogram"`
+}
+
+// Sum is a sum's points; AggregationTemporality is 1 (delta) or 2 (cumulative).
+type Sum struct {
+	DataPoints             []NumberDataPoint `json:"dataPoints"`
+	AggregationTemporality int               `json:"aggregationTemporality"`
+	IsMonotonic            bool              `json:"isMonotonic"`
+}
+
+// Gauge is a gauge's points.
+type Gauge struct {
+	DataPoints []NumberDataPoint `json:"dataPoints"`
+}
+
+// Histogram is a histogram's points.
+type Histogram struct {
+	DataPoints             []HistogramDataPoint `json:"dataPoints"`
+	AggregationTemporality int                  `json:"aggregationTemporality"`
+}
+
+// NumberDataPoint is a sum's or gauge's point: exactly one of AsInt (a decimal
+// string) and AsDouble is set.
+type NumberDataPoint struct {
+	Attributes        []KeyValue `json:"attributes"`
+	StartTimeUnixNano string     `json:"startTimeUnixNano"`
+	TimeUnixNano      string     `json:"timeUnixNano"`
+	AsInt             *string    `json:"asInt"`
+	AsDouble          *float64   `json:"asDouble"`
+}
+
+// HistogramDataPoint is a histogram's point; its 64-bit counts are decimal strings.
+type HistogramDataPoint struct {
+	Attributes        []KeyValue `json:"attributes"`
+	StartTimeUnixNano string     `json:"startTimeUnixNano"`
+	TimeUnixNano      string     `json:"timeUnixNano"`
+	Count             string     `json:"count"`
+	Sum               *float64   `json:"sum"`
+	BucketCounts      []string   `json:"bucketCounts"`
+	ExplicitBounds    []float64  `json:"explicitBounds"`
 }
 
 // KeyValue is one attribute.
@@ -86,6 +155,17 @@ func (r Received) Records() []Record {
 	return out
 }
 
+// Metrics are the export's metrics, in order, across its resources and scopes.
+func (r Received) Metrics() []Metric {
+	var out []Metric
+	for _, rm := range r.Export.ResourceMetrics {
+		for _, sm := range rm.ScopeMetrics {
+			out = append(out, sm.Metrics...)
+		}
+	}
+	return out
+}
+
 // Messages are the bodies of the export's records, in order ("" for a body that is
 // not a string).
 func (r Received) Messages() []string {
@@ -105,7 +185,7 @@ func (r Received) Messages() []string {
 type Respond func(w http.ResponseWriter, r *http.Request, n int)
 
 // AnswerStatus answers each export with the status status gives: 200 with an empty
-// ExportLogsServiceResponse, any other with an OTLP Status body. status may block
+// export response, any other with an OTLP Status body. status may block
 // until the request's context ends.
 func AnswerStatus(status func(n int, r *http.Request) int) Respond {
 	return func(w http.ResponseWriter, r *http.Request, n int) {
@@ -136,7 +216,7 @@ type Collector struct {
 const nextWait = 15 * time.Second
 
 // New starts a collector answering each export with respond; nil answers 200 with an
-// empty ExportLogsServiceResponse. An export that does not decode fails the test and
+// empty export response. An export that does not decode fails the test and
 // is answered 400.
 func New(t *testing.T, respond Respond) *Collector {
 	t.Helper()
@@ -146,7 +226,9 @@ func New(t *testing.T, respond Respond) *Collector {
 	c := &Collector{arrived: make(chan struct{}, 1)}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var export Export
-		if err := json.NewDecoder(r.Body).Decode(&export); err != nil {
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&export); err != nil {
 			t.Errorf("collector: export not decoded: %v", err)
 			w.WriteHeader(http.StatusBadRequest)
 			return
@@ -201,7 +283,12 @@ func (c *Collector) None(t *testing.T) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.read < len(c.received) {
-		t.Fatalf("unexpected export with %q", c.received[c.read].Messages())
+		r := c.received[c.read]
+		var names []string
+		for _, m := range r.Metrics() {
+			names = append(names, m.Name)
+		}
+		t.Fatalf("unexpected export with records %q, metrics %q", r.Messages(), names)
 	}
 }
 

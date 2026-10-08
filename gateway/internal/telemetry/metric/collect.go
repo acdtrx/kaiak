@@ -121,6 +121,9 @@ type Family struct {
 	Number Number
 	// Observed: read at collect, not recorded as events happen.
 	Observed bool
+	// Divisor of a scaled counter (Registry.ScaledCounter): its points' Double is
+	// SubUnits ÷ Divisor. 0 for every other family.
+	Divisor float64
 	// Points are the series, by attribute values.
 	Points []Point
 }
@@ -137,6 +140,9 @@ type Point struct {
 	// Int or Double is the value of a sum or gauge, as the family's Number says.
 	Int    int64
 	Double float64
+	// SubUnits is a scaled counter's exact count of whole sub-units, which Double
+	// divides: a reader that subtracts values subtracts these, so sums stay exact.
+	SubUnits uint64
 	// Histogram is a histogram's value.
 	Histogram HistogramValue
 }
@@ -171,7 +177,7 @@ func (r *Registry) Collect() Snapshot {
 
 	snap := Snapshot{Time: now, Families: make([]Family, 0, len(families))}
 	for _, f := range families {
-		fam := Family{Definition: f.def, Kind: f.kind, Number: f.number, Observed: f.observed}
+		fam := Family{Definition: f.def, Kind: f.kind, Number: f.number, Observed: f.observed, Divisor: f.divisor}
 		if f.observed {
 			fam.Points = o.points[f]
 		} else {
@@ -203,6 +209,7 @@ func (f *family) collectSeries() []Point {
 		case KindCounter:
 			n := s.count.Load()
 			if f.divisor > 0 {
+				p.SubUnits = n
 				p.Double = float64(n) / f.divisor
 			} else {
 				p.Int = int64(n)
