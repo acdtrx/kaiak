@@ -8,6 +8,8 @@ export { BACKEND_TYPES, resolveScopes, validateConfig } from "./config/index.ts"
 export type * from "./config/index.ts";
 
 export {
+  isCountedType,
+  scopeTypeKey,
   validateConfigEvent,
   validateGatewayStatus,
   validateTotals,

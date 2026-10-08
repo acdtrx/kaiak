@@ -11,6 +11,7 @@ import { describe, test } from "node:test";
 import { fixtureFiles, fixturePath, readJson, testInvalidFixtures, testValidFixtures } from "../test-support/index.ts";
 
 import {
+  COUNTED_TYPES,
   validateConfigEvent,
   validateGatewayStatus,
   validateTotals,
@@ -46,6 +47,13 @@ for (const [kind, validate] of Object.entries(VALIDATORS)) {
     testInvalidFixtures(path.join(FIXTURES, kind, "invalid"), validate, "invalid/");
   });
 }
+
+test("COUNTED_TYPES is the totals schema's window type enum", () => {
+  const schema = readJson(path.resolve(import.meta.dirname, "../../schema/totals.schema.json")) as {
+    $defs: { window: { properties: { type: { enum: unknown } } } };
+  };
+  assert.deepEqual(COUNTED_TYPES, schema.$defs.window.properties.type.enum);
+});
 
 test("a totals amount above 2^53 reads exactly as a BigInt", () => {
   const result = validateTotals(readJson(path.join(FIXTURES, "totals", "valid", "windows.json")));

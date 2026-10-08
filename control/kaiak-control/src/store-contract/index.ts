@@ -21,11 +21,11 @@ import type { BatchId, UsageRecord } from "../messages/index.ts";
 import type {
   ControlPlaneStore,
   CountedBatch,
-  CurrentWindows,
   ConfigEntry,
   GatewayRecord,
   StoreChange,
   TotalsSnapshot,
+  WindowStarts,
   WindowTotal,
 } from "../storage/index.ts";
 
@@ -53,8 +53,8 @@ export interface StoreContractSubject {
 
 const HOUR = Date.UTC(2026, 9, 6, 12);
 const MONTH = Date.UTC(2026, 9, 1);
-const CURRENT: CurrentWindows = { hourStart: HOUR, monthStart: MONTH };
-const PREVIOUS: CurrentWindows = { hourStart: HOUR - 3_600_000, monthStart: Date.UTC(2026, 8, 1) };
+const CURRENT: WindowStarts = { tokens_per_hour: HOUR, usd_per_month: MONTH };
+const PREVIOUS: WindowStarts = { tokens_per_hour: HOUR - 3_600_000, usd_per_month: Date.UTC(2026, 8, 1) };
 const BATCH_EPOCH = "b".repeat(32);
 const OTHER_EPOCH = "c".repeat(32);
 
@@ -416,7 +416,7 @@ export function storeContractTests(subject: StoreContractSubject): void {
         "a snapshot reads only the current windows, and dropping past ones keeps the current",
         withStore(async (a, b) => {
           await publishConfigs(a, 1);
-          const past: WindowTotal = { group: "g", type: "tokens_per_hour", windowStart: PREVIOUS.hourStart, used: 3n };
+          const past: WindowTotal = { group: "g", type: "tokens_per_hour", windowStart: PREVIOUS.tokens_per_hour, used: 3n };
           const month: WindowTotal = { type: "usd_per_month", windowStart: MONTH, used: 9n };
           const batch = counted("gw-1", 1, { used: 0n });
           batch.additions = [past, hourWindow(2n), month];

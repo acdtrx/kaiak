@@ -15,9 +15,10 @@
 - **`control/`** — the control-plane side: `kaiak-control` (the reusable library) and
   `sample` (a thin app on it). Never in the request path.
 - **`protocol/`** — JSON Schemas and shared fixtures for the config document and every
-  protocol message, and each backend type's models-list request (which the gateway and
-  `backend-verify` both send). It is the contract: both halves run the same fixtures in
-  their test suites, so neither can drift alone.
+  protocol message, each backend type's models-list request (which the gateway and
+  `backend-verify` both send), and what a usage record counts toward each limit type
+  (the gateway's limiter and `kaiak-control`'s usage counting). It is the contract:
+  both halves run the same fixtures in their test suites, so neither can drift alone.
 
 ## Data flow
 

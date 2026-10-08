@@ -2,7 +2,7 @@
 // the page on load, and every live update, is these renders. Everything interpolated
 // goes through `html`, which escapes it.
 
-import { resolveScopes } from "kaiak-control";
+import { isCountedType, resolveScopes, scopeTypeKey } from "kaiak-control";
 import type { Config, ControlPlane, DeploymentStatus, GatewayStatus, GatewayView, Limit, PublishedConfig, ReceivedRecord, ResolvedScope, TotalsRead } from "kaiak-control";
 
 import type { ConfigFileState } from "../config-file/index.ts";
@@ -230,7 +230,7 @@ async function renderTotals({ core }: PageSources): Promise<Markup> {
   const rows: Markup[] = [];
   for (const { group, path, limits } of resolveScopes(current.config)) {
     const label = group === undefined ? html`global` : groupPath(path);
-    for (const limit of limits) rows.push(limitRow(label, limit, used.get(limitKey(group, limit)), totals.windowStarts));
+    for (const limit of limits) rows.push(limitRow(label, group, limit, used, totals.windowStarts));
   }
   const intro = html`<p class="muted">Current windows: tokens per UTC hour, dollars per UTC month, counted from every gateway's usage (${formatCount(totals.liveGateways)} live). Per-minute limits are enforced by each gateway on its share and not counted here.</p>`;
   if (rows.length === 0) return html`${heading}${intro}<p class="muted">The config sets no limits.</p>`;
@@ -246,26 +246,28 @@ interface UsedWindow {
   windowStart: string;
 }
 
-// A limit's identity: its group (none for global) and type.
-function limitKey(group: string | undefined, limit: Pick<Limit, "type">): string {
-  return JSON.stringify([group ?? null, limit.type]);
-}
-
 // The totals list only windows with usage; limits missing here have used nothing yet.
 function usedByLimit(totals: TotalsRead): Map<string, UsedWindow> {
   const used = new Map<string, UsedWindow>();
   for (const window of totals.windows) {
-    used.set(limitKey(window.group, window), { used: BigInt(window.used), windowStart: window.window_start });
+    used.set(scopeTypeKey(window.group, window.type), { used: BigInt(window.used), windowStart: window.window_start });
   }
   return used;
 }
 
 // A limit with nothing used yet shows the current window, as the totals were read for it.
-function limitRow(label: Markup, limit: Limit, window: UsedWindow | undefined, windowStarts: TotalsRead["windowStarts"]): Markup {
-  if (limit.type !== "tokens_per_hour" && limit.type !== "usd_per_month") {
+function limitRow(
+  label: Markup,
+  group: string | undefined,
+  limit: Limit,
+  usedWindows: ReadonlyMap<string, UsedWindow>,
+  windowStarts: TotalsRead["windowStarts"],
+): Markup {
+  if (!isCountedType(limit.type)) {
     const unit = limit.type === "requests_per_minute" ? "requests" : "tokens";
     return html`<tr><td>${label}</td><td>${formatCount(limit.value)} ${unit} / min</td><td colspan="3" class="muted">per gateway share, not counted here</td></tr>`;
   }
+  const window = usedWindows.get(scopeTypeKey(group, limit.type));
   const used = window?.used ?? 0n;
   const money = limit.type === "usd_per_month";
   const ceiling = money ? usdToNano(limit.value) : BigInt(limit.value);

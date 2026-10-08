@@ -7,9 +7,9 @@ import type { FastifyBaseLogger, FastifyReply } from "fastify";
 
 import type { ConfigRead } from "../config-publishing/index.ts";
 import type { ControlPlane } from "../control-plane/index.ts";
+import { scopeTypeKey } from "../messages/index.ts";
 import type { Totals, TotalsWindow } from "../messages/index.ts";
 
-import { windowIdentity } from "./totals-feed.ts";
 import type { TotalsFeed } from "./totals-feed.ts";
 
 export interface GatewayStreamOptions {
@@ -127,7 +127,7 @@ export async function streamToGateway(reply: FastifyReply, options: GatewayStrea
   const unsubscribeConfigs = core.onConfigRead(sendConfig);
   const membership = totals.join({
     take(windows) {
-      if (!complete) for (const window of windows) changed.set(windowIdentity(window), window);
+      if (!complete) for (const window of windows) changed.set(scopeTypeKey(window.group, window.type), window);
       sendTotals();
     },
   });

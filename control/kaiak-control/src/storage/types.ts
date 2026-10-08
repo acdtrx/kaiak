@@ -49,11 +49,9 @@ export interface WindowTotal extends WindowKey {
   used: bigint;
 }
 
-// The windows current at one instant.
-export interface CurrentWindows {
-  hourStart: number;
-  monthStart: number;
-}
+// One window start per counted limit type (milliseconds since the epoch): the windows
+// current at one instant, or the oldest ones still needed.
+export type WindowStarts = Record<TotalsLimitType, number>;
 
 // A usage record as the control plane took it.
 export interface ReceivedRecord {
@@ -202,16 +200,15 @@ export interface ControlPlaneStore {
     keepRecords: number,
   ): Promise<SaveCountedBatchResult>;
 
-  // The totals at one snapshot: the stored totals of the current windows
-  // (tokens_per_hour windows starting at hourStart, usd_per_month windows at
-  // monthStart) and every instance's last counted batch of each epoch, both as of one
-  // point between writes.
-  totalsSnapshot(current: CurrentWindows): Promise<TotalsSnapshot>;
-  // Totals of windows before `oldest` (tokens_per_hour windows starting before its
-  // hourStart, usd_per_month windows before its monthStart) are no longer needed and
-  // may be dropped. The caller passes the previous windows: late records still count
-  // there. Dropping changes no current window and is not announced.
-  dropPastWindowTotals(oldest: CurrentWindows): Promise<void>;
+  // The totals at one snapshot: the stored totals of the current windows (each
+  // window whose start is `current[type]`) and every instance's last counted batch of
+  // each epoch, both as of one point between writes.
+  totalsSnapshot(current: WindowStarts): Promise<TotalsSnapshot>;
+  // Totals of windows before `oldest` (each window starting before `oldest[type]`) are
+  // no longer needed and may be dropped. The caller passes the previous windows: late
+  // records still count there. Dropping changes no current window and is not
+  // announced.
+  dropPastWindowTotals(oldest: WindowStarts): Promise<void>;
 
   // The newest received records, newest first, at most `limit`: the reverse of the
   // order they were saved, a batch's records saved in batch order, so records with the

@@ -859,6 +859,13 @@ How the control plane takes `POST /v1/usage`, as `kaiak-control` implements it.
   type, and totals list every one with usage (Messages → Totals). Per-minute limits
   are not counted (they stay local to gateways). Rejected: counting only toward the
   limits of the config in force — it ties counting to publishes.
+  - **Counted-units fixtures** (settled 2026-10-08): `protocol/fixtures/usage/` pins
+    this rule across the halves. Each file is `{ reason, units, cost_nano_usd,
+    expected: { <limit type>: <decimal string> } }` — a record's five token units and
+    its cost, and what it counts toward every token and cost limit type, in that
+    type's unit (`tokens_per_minute` included: the gateway's per-minute token limits
+    count the same tokens, `GATEWAY.md`, Limits → Settle). The gateway's limiter tests
+    check every type; `kaiak-control`'s usage tests check the counted ones.
 - **Groups the config no longer defines** (deleted after the gateway settled the
   record) still count toward their windows, which no limit checks; the listed groups
   that remain and global count as always — so usage settled just before a delete

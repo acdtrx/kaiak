@@ -11,6 +11,7 @@ import { checkGatewayStatus, checkTotals, checkUsageBatch, checkUsageRecord } fr
 import type { ConfigEvent, GatewayStatus, Totals, UsageAck, UsageBatch, UsageRecord } from "./types.ts";
 
 export type { MessageRuleCode } from "./semantic.ts";
+export { COUNTED_TYPES, isCountedType, scopeTypeKey } from "./totals.ts";
 export type * from "./types.ts";
 
 export type MessageValidation<T> = { ok: true; message: T } | { ok: false; issues: ValidationIssue[] };

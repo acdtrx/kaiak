@@ -8,7 +8,7 @@ import { configHash } from "../config-publishing/index.ts";
 import { validateTotals } from "../messages/index.ts";
 import type { Totals, TotalsWindow, UsageBatch, UsageRecord } from "../messages/index.ts";
 import { createMemoryStore } from "../storage/index.ts";
-import type { ControlPlaneStore, CurrentWindows, WindowTotal } from "../storage/index.ts";
+import type { ControlPlaneStore, WindowStarts, WindowTotal } from "../storage/index.ts";
 import { usageRecord } from "../test-support/index.ts";
 
 import { createUsage } from "./index.ts";
@@ -30,7 +30,7 @@ function fullConfig(): Config {
 }
 
 // What the store holds for the windows current at `current`, whatever the config limits.
-async function storedWindows(store: ControlPlaneStore, current: CurrentWindows): Promise<WindowTotal[]> {
+async function storedWindows(store: ControlPlaneStore, current: WindowStarts): Promise<WindowTotal[]> {
   return (await store.totalsSnapshot(current)).windows;
 }
 
@@ -394,7 +394,7 @@ describe("windows by the control plane's clock", () => {
 
     // The 10:00 window is the previous one now: it stays (late records still count
     // there) until a drop of past windows in a later hour (the expiry sweep's).
-    const at10 = { hourStart: Date.UTC(2026, 8, 24, 10), monthStart: Date.UTC(2026, 8, 1) };
+    const at10 = { tokens_per_hour: Date.UTC(2026, 8, 24, 10), usd_per_month: Date.UTC(2026, 8, 1) };
     // global, users and carol: each counted in its hour and its month.
     assert.deepEqual(
       (await storedWindows(store, at10)).map((total) => total.type).sort(),
@@ -439,7 +439,7 @@ describe("windows by the control plane's clock", () => {
         { group: "carol", type: "usd_per_month", window_start: SEPTEMBER, used: "1300" },
       ],
     );
-    const at11 = await storedWindows(store, { hourStart: Date.UTC(2026, 8, 24, 11), monthStart: Date.UTC(2026, 7, 1) });
+    const at11 = await storedWindows(store, { tokens_per_hour: Date.UTC(2026, 8, 24, 11), usd_per_month: Date.UTC(2026, 7, 1) });
     assert.deepEqual(
       at11.filter((total) => total.group === "carol").map((total) => [total.type, total.used]),
       [["tokens_per_hour", 600n]],
@@ -464,7 +464,7 @@ describe("windows by the control plane's clock", () => {
       (await currentTotals(usage)).windows.filter((window) => window.group === "carol"),
       [{ group: "carol", type: "usd_per_month", window_start: "2026-10-01T00:00:00Z", used: "27" }],
     );
-    const september = await storedWindows(store, { hourStart: Date.UTC(2026, 8, 30, 23), monthStart: Date.UTC(2026, 8, 1) });
+    const september = await storedWindows(store, { tokens_per_hour: Date.UTC(2026, 8, 30, 23), usd_per_month: Date.UTC(2026, 8, 1) });
     assert.deepEqual(
       september.filter((total) => total.group === "carol").map((total) => [total.type, total.used]),
       [["usd_per_month", 50n]],
@@ -491,7 +491,7 @@ describe("windows by the control plane's clock", () => {
     ]);
     // September is the previous month now: its windows stay while late records can
     // still count there.
-    const september = await storedWindows(store, { hourStart: Date.UTC(2026, 8, 30, 23), monthStart: Date.UTC(2026, 8, 1) });
+    const september = await storedWindows(store, { tokens_per_hour: Date.UTC(2026, 8, 30, 23), usd_per_month: Date.UTC(2026, 8, 1) });
     assert.deepEqual(
       september.map((total) => [total.group ?? "global", total.type, total.used]).sort(),
       [
@@ -505,7 +505,7 @@ describe("windows by the control plane's clock", () => {
   test("dropping past windows can be run by hand", async () => {
     const { usage, store, setTime } = await harness();
     acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [oneTokenRecord()])));
-    const t0Windows = { hourStart: Date.UTC(2026, 8, 24, 10), monthStart: Date.UTC(2026, 8, 1) };
+    const t0Windows = { tokens_per_hour: Date.UTC(2026, 8, 24, 10), usd_per_month: Date.UTC(2026, 8, 1) };
     // global, users and carol, each an hour and a month window.
     assert.equal((await storedWindows(store, t0Windows)).length, 6);
     // Two months on: September is older than the previous month.

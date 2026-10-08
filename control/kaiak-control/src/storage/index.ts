@@ -2,4 +2,5 @@
 // reference implementation and the sample's store).
 
 export { createMemoryStore } from "./memory.ts";
+export { windowKeyOf } from "./window-key.ts";
 export type * from "./types.ts";

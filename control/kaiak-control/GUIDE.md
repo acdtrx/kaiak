@@ -195,8 +195,8 @@ compares its clock with receipt times other processes wrote.
 | --- | --- |
 | `currentConfig()`, `publishConfig(entry, expectedHash)` | One current config: `{ text, hash, publishedAt }` — `text` is the config's JSON exactly as the core wrote it, and is returned **unchanged**, byte for byte (the hash is over it). A publish **replaces** it **only while the current config's hash is still `expectedHash`** (`undefined` = none published yet) — the config the core checked the parents rule against. Otherwise write nothing and return `{ saved: false, current }`. The store keeps no earlier configs; config history is your app's. A publish never depends on usage. |
 | `lastBatch(instance, epoch)`, `saveCountedBatch(counted, expectedLast, keepRecords)` | The exactly-once guarantee. A cursor per **(instance, epoch)**: `lastBatch` returns `{ inEpoch, latest }` — the instance's last counted batch in that epoch, and the one counted last in any epoch (greatest `countedAt`). `saveCountedBatch` writes the batch as its epoch's last, adds every `additions` entry to the window totals and appends `records` — **all in one transaction, and only if the instance's last batch in the batch's epoch still equals `expectedLast`** (`undefined` = none yet in that epoch). Otherwise write nothing and return `{ saved: false, cursors }`. One cursor per instance is not enough: a write stalled on an earlier epoch would read a newer epoch's batch as a new epoch's start and count again. |
-| `totalsSnapshot(current)` | The current windows (`tokens_per_hour` at `hourStart`, `usd_per_month` at `monthStart`) and **every** instance's cursors, one per (instance, epoch), **read in one snapshot** (`REPEATABLE READ`, or one statement). The windows then hold exactly the batches the cursors name. Reading the cursors in a statement of its own is the classic mistake: the contract tests are likely to catch it, not certain — against a real database it shows only when a batch commits between the two statements. |
-| `dropPastWindowTotals(oldest)` | Past windows *may* be dropped; keeping them for reporting is allowed — the core only reads current windows. Not announced. |
+| `totalsSnapshot(current)` | The current windows (each type's window starting at `current[type]`) and **every** instance's cursors, one per (instance, epoch), **read in one snapshot** (`REPEATABLE READ`, or one statement). The windows then hold exactly the batches the cursors name. Reading the cursors in a statement of its own is the classic mistake: the contract tests are likely to catch it, not certain — against a real database it shows only when a batch commits between the two statements. |
+| `dropPastWindowTotals(oldest)` | Windows starting before `oldest[type]` *may* be dropped; keeping them for reporting is allowed — the core only reads current windows. Not announced. |
 | `recentRecords(limit)` | Newest first: the reverse of the order they were saved, a batch's records saved in batch order — so records with equal receipt times still come back in a defined order (keep an insertion-order column). |
 | `gateway`, `gateways`, `saveGateway(record, expectedRevision)`, `forgetGateways([{ instance, revision }])` | Latest status per instance with a `revision` that **never repeats for the instance**, a forgotten and recreated one included, and across a restore (below) — take it from a store-wide counter or sequence (gaps are fine), never from the record itself. Each write and each forget only if the stored record is still at the revision the core read. Every write notifies `gateways-changed` (with `liveChanged` false when the live set stays as it was). Forgetting a gateway keeps its batch cursors. |
 | `dropBatchCursorsCountedBefore(cutoff)` | Drop each (instance, epoch) cursor counted before `cutoff`, return the instances that lost one. |
@@ -299,8 +299,8 @@ makes after a notification, it goes to the primary.
 ```sql
 begin isolation level repeatable read;
   select group_id, type, window_start, used from window_total
-    where (type = 'tokens_per_hour' and window_start = $hourStart)
-       or (type = 'usd_per_month' and window_start = $monthStart);
+    join unnest($types::text[], $starts::bigint[]) as current (type, window_start)
+      using (type, window_start);          -- $types, $starts: the entries of `current`
   select instance, epoch, sequence from batch_cursor;
 commit;
 ```
@@ -602,13 +602,13 @@ Totals vs limits (as the sample's status page does, `control/sample/src/page/sec
 const current = await controlPlane.currentConfig();
 const totals = await controlPlane.readTotals();
 if (current) {
-  const used = new Map(totals.windows.map((w) => [JSON.stringify([w.group ?? null, w.type]), BigInt(w.used)]));
+  const used = new Map(totals.windows.map((w) => [scopeTypeKey(w.group, w.type), BigInt(w.used)]));
   for (const { group, limits } of resolveScopes(current.config)) { // group undefined = global
     for (const limit of limits) {
-      const spent = used.get(JSON.stringify([group ?? null, limit.type])) ?? 0n; // absent = nothing used
-      // tokens_per_hour / usd_per_month only: per-minute limits are enforced on
-      // gateways and never counted here. USD amounts are nano-USD. The window is
-      // totals.windowStarts[limit.type].
+      // Per-minute limits are enforced on gateways and never counted here.
+      if (!isCountedType(limit.type)) continue;
+      const spent = used.get(scopeTypeKey(group, limit.type)) ?? 0n; // absent = nothing used
+      // USD amounts are nano-USD. The window is totals.windowStarts[limit.type].
     }
   }
 }

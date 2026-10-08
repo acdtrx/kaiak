@@ -9,10 +9,10 @@
 
 import { validateUsageBatch } from "../messages/index.ts";
 import type { BatchId, TotalsLimitType, TotalsWindow, UsageAck, UsageBatch } from "../messages/index.ts";
-import type { BatchCursors, ControlPlaneStore, CurrentWindows, ReceivedRecord, StoreChange, WindowTotal } from "../storage/index.ts";
+import type { BatchCursors, ControlPlaneStore, ReceivedRecord, StoreChange, WindowStarts, WindowTotal } from "../storage/index.ts";
 
 import { batchAdditions } from "./aggregate.ts";
-import { currentWindows, formatWindowStart, previousWindows, windowStartFor } from "./windows.ts";
+import { currentWindows, formatWindowStart, formatWindowStarts, previousWindows, sameWindows } from "./windows.ts";
 
 // How a batch relates to the last one counted for its instance:
 // - first: the instance's first batch;
@@ -101,9 +101,9 @@ export function createUsage({ store, clock, recentRecordsSize, liveGateways, onL
   // its original here is decided without a refused write; across processes the
   // store's conditional write decides.
   const queues = new Map<string, Promise<unknown>>();
-  // The hour this process last dropped past windows in: dropping is idempotent, so
-  // every process drops on its own, once an hour.
-  let prunedHourStart: number | undefined;
+  // The windows current when this process last dropped past windows: dropping is
+  // idempotent, so every process drops on its own, once an hour.
+  let prunedIn: WindowStarts | undefined;
 
   const serialized = <T>(instance: string, run: () => Promise<T>): Promise<T> => {
     const result = (queues.get(instance) ?? Promise.resolve()).then(run);
@@ -139,7 +139,7 @@ export function createUsage({ store, clock, recentRecordsSize, liveGateways, onL
     for (;;) {
       const [snapshot, live] = await Promise.all([store.totalsSnapshot(windows), liveGateways()]);
       const after = currentWindows(clock());
-      if (after.hourStart !== windows.hourStart || after.monthStart !== windows.monthStart) {
+      if (!sameWindows(after, windows)) {
         windows = after;
         continue;
       }
@@ -147,10 +147,7 @@ export function createUsage({ store, clock, recentRecordsSize, liveGateways, onL
         windows: listedWindows(snapshot.windows, windows),
         cursors: snapshot.cursors,
         liveGateways: live,
-        windowStarts: {
-          tokens_per_hour: formatWindowStart(windows.hourStart),
-          usd_per_month: formatWindowStart(windows.monthStart),
-        },
+        windowStarts: formatWindowStarts(windows),
       };
     }
   };
@@ -159,9 +156,9 @@ export function createUsage({ store, clock, recentRecordsSize, liveGateways, onL
   // is the previous one.
   const dropPastWindows = async (): Promise<void> => {
     const windows = currentWindows(clock());
-    if (prunedHourStart === windows.hourStart) return;
+    if (prunedIn && sameWindows(prunedIn, windows)) return;
     await store.dropPastWindowTotals(previousWindows(windows));
-    prunedHourStart = windows.hourStart;
+    prunedIn = windows;
   };
 
   const countBatch = async ({ batch, records }: UsageBatch): Promise<UsageIntake> => {
@@ -228,10 +225,10 @@ export function createUsage({ store, clock, recentRecordsSize, liveGateways, onL
 
 // The windows a totals message lists: every scope and type with usage in its current
 // window, whatever the config.
-function listedWindows(stored: readonly WindowTotal[], windows: CurrentWindows): TotalsWindow[] {
+function listedWindows(stored: readonly WindowTotal[], windows: WindowStarts): TotalsWindow[] {
   const listed: TotalsWindow[] = [];
   for (const { group, type, windowStart, used } of stored) {
-    if (windowStart !== windowStartFor(type, windows) || used === 0n) continue;
+    if (windowStart !== windows[type] || used === 0n) continue;
     listed.push({
       ...(group !== undefined && { group }),
       type,

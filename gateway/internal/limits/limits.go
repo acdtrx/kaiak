@@ -597,7 +597,8 @@ func (l *Limiter) checkCountLocked(c *counter) {
 }
 
 // amountOf is what rec counts on a token or cost counter: its cost, or its
-// config.CountedUnits, the tokens that load the backend.
+// config.CountedUnits, the tokens that load the backend. protocol/fixtures/usage/
+// holds the control plane's counting to the same amounts.
 func amountOf(m config.Measure, rec accounting.UsageRecord) int64 {
 	if m == config.MeasureCost {
 		return rec.CostNanoUSD

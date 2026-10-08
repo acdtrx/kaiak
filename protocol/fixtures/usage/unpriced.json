@@ -1,0 +1,6 @@
+{
+  "reason": "an unpriced model costs 0: its tokens count, no cost does",
+  "units": { "tokens_in": 1500, "tokens_cached": 0, "tokens_cache_write": 0, "tokens_out": 250, "tokens_reasoning": 0 },
+  "cost_nano_usd": 0,
+  "expected": { "tokens_per_minute": "1750", "tokens_per_hour": "1750", "usd_per_month": "0" }
+}

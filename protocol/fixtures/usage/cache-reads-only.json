@@ -1,0 +1,6 @@
+{
+  "reason": "a prompt read wholly from the cache, with no output, counts no tokens; its cost still counts",
+  "units": { "tokens_in": 0, "tokens_cached": 8192, "tokens_cache_write": 0, "tokens_out": 0, "tokens_reasoning": 0 },
+  "cost_nano_usd": 1229,
+  "expected": { "tokens_per_minute": "0", "tokens_per_hour": "0", "usd_per_month": "1229" }
+}

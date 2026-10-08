@@ -12,6 +12,7 @@ import { performance } from "node:perf_hooks";
 import type { FastifyBaseLogger } from "fastify";
 
 import type { ControlPlane } from "../control-plane/index.ts";
+import { scopeTypeKey } from "../messages/index.ts";
 import type { BatchId, TotalsWindow } from "../messages/index.ts";
 
 // The latest read: every window with usage by scope and type, every instance's cursors
@@ -52,11 +53,6 @@ export interface TotalsFeedOptions {
   // At most one read per this many milliseconds.
   intervalMs: number;
   log: FastifyBaseLogger;
-}
-
-// A window's identity: its scope and type.
-export function windowIdentity({ group, type }: TotalsWindow): string {
-  return JSON.stringify([group ?? null, type]);
 }
 
 export function createTotalsFeed({ core, intervalMs, log }: TotalsFeedOptions): TotalsFeed {
@@ -112,7 +108,7 @@ export function createTotalsFeed({ core, intervalMs, log }: TotalsFeedOptions): 
     }
     if (failing) log.info("config stream: reading the totals to push works again");
     failing = false;
-    const windows = new Map(next.windows.map((window) => [windowIdentity(window), window]));
+    const windows = new Map(next.windows.map((window) => [scopeTypeKey(window.group, window.type), window]));
     const changed = state ? changedWindows(state.windows, windows, next.windowStarts) : [...windows.values()];
     state = { windows, cursors: next.cursors, liveGateways: next.liveGateways, read: number };
     for (const subscriber of [...subscribers]) subscriber.take(changed);

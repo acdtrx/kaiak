@@ -6,6 +6,7 @@ import { isRealTimestamp } from "../calendar/index.ts";
 import { pointer } from "../schemas/index.ts";
 import type { ValidationIssue } from "../schemas/index.ts";
 
+import { scopeTypeKey } from "./totals.ts";
 import type { GatewayStatus, Totals, UsageBatch, UsageRecord } from "./types.ts";
 
 export type MessageRuleCode =
@@ -39,7 +40,7 @@ export function checkTotals(totals: Totals): ValidationIssue[] {
     const windowPath = pointer("/windows", index);
     checkTimestamp(window.window_start, pointer(windowPath, "window_start"), report);
     // A window belongs to one count: its group (or global) and type.
-    const identity = JSON.stringify([window.group ?? null, window.type]);
+    const identity = scopeTypeKey(window.group, window.type);
     const first = seen.get(identity);
     if (first !== undefined) {
       report("totals-window-duplicate", windowPath, `same scope and type as ${pointer("/windows", first)}`);

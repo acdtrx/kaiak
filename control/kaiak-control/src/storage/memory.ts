@@ -5,16 +5,16 @@
 
 import type { BatchId } from "../messages/index.ts";
 
+import { windowKeyOf } from "./window-key.ts";
 import type {
   BatchCursors,
   ConfigEntry,
   ControlPlaneStore,
-  CurrentWindows,
   ReceivedRecord,
   StoreChange,
   StoreChangeListener,
   StoredGateway,
-  WindowKey,
+  WindowStarts,
   WindowTotal,
 } from "./types.ts";
 
@@ -34,15 +34,14 @@ export function createMemoryStore(): ControlPlaneStore {
 
   const addTotals = (additions: WindowTotal[]): void => {
     for (const addition of additions) {
-      const key = windowKey(addition);
+      const key = windowKeyOf(addition);
       const stored = totals.get(key);
       if (stored) stored.used += addition.used;
       else totals.set(key, structuredClone(addition));
     }
   };
 
-  const isCurrent = (total: WindowTotal, current: CurrentWindows): boolean =>
-    total.windowStart === (total.type === "tokens_per_hour" ? current.hourStart : current.monthStart);
+  const isCurrent = (total: WindowTotal, current: WindowStarts): boolean => total.windowStart === current[total.type];
 
   const cursorsOf = (instance: string, epoch: string): BatchCursors => {
     const epochs = lastBatches.get(instance);
@@ -108,8 +107,7 @@ export function createMemoryStore(): ControlPlaneStore {
 
     async dropPastWindowTotals(oldest) {
       for (const [key, total] of totals) {
-        const start = total.type === "tokens_per_hour" ? oldest.hourStart : oldest.monthStart;
-        if (total.windowStart < start) totals.delete(key);
+        if (total.windowStart < oldest[total.type]) totals.delete(key);
       }
     },
 
@@ -182,8 +180,4 @@ export function createMemoryStore(): ControlPlaneStore {
 function sameBatch(a: BatchId | undefined, b: BatchId | undefined): boolean {
   if (a === undefined || b === undefined) return a === b;
   return a.instance === b.instance && a.epoch === b.epoch && a.sequence === b.sequence;
-}
-
-function windowKey({ group, type, windowStart }: WindowKey): string {
-  return JSON.stringify([group ?? null, type, windowStart]);
 }

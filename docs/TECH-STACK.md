@@ -20,8 +20,8 @@
   `control/sample`.
 - `protocol/` — JSON Schemas for the config document and every protocol message, plus
   shared fixtures (valid and invalid configs, usage batches, stream sequences, each
-  backend type's models-list request). Both halves run the fixtures in their test
-  suites.
+  backend type's models-list request, what a usage record counts toward each limit
+  type). Both halves run the fixtures in their test suites.
 
 ## Gateway: Go, standard library only (settled 2026-09-24)
 

@@ -1,0 +1,6 @@
+{
+  "reason": "every unit present, each with its own digit: token limits count tokens_in, tokens_cache_write and tokens_out (1 + 300 + 4000); tokens_cached does not count, and tokens_reasoning is inside tokens_out; usd_per_month counts the cost in nano-USD",
+  "units": { "tokens_in": 1, "tokens_cached": 20, "tokens_cache_write": 300, "tokens_out": 4000, "tokens_reasoning": 500 },
+  "cost_nano_usd": 678901234,
+  "expected": { "tokens_per_minute": "4301", "tokens_per_hour": "4301", "usd_per_month": "678901234" }
+}
