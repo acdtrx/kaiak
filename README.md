@@ -12,7 +12,7 @@ from a **control plane** that pushes changes live and receives usage and status 
 You build that control plane with **`kaiak-control`**, the Node library in this repo;
 a small sample control plane shows how.
 
-- **Gateway** (`gateway/`): Go, standard library only, zero third-party dependencies.
+- **Gateway** (`gateway/`): Go, one static binary with minimal dependencies.
   Stateless — it writes nothing to disk — and it keeps serving when the control plane
   is down.
 - **`kaiak-control`** (`control/kaiak-control/`): the control-plane side of the

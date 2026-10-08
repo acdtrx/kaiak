@@ -51,7 +51,8 @@ The name reads the same both ways (the gateway carries traffic in both direction
    With no config from any of them it refuses to start, so its supervisor retries.
    What it cannot know during an outage (live budget totals) is handled by an
    explicit, configured policy — never by blocking requests on the control plane.
-3. **Self-contained.** One static binary, no external services, no third-party code.
+3. **Self-contained.** One static binary, no external services; third-party code only
+   where it is minimal, maintained and clearly worth its cost (settled 2026-10-08).
    Runs locally with a config file and nothing else; runs on Kubernetes unchanged.
 4. **Passthrough first.** The common case — an OpenAI-format client talking to an
    OpenAI-compatible backend — is forwarded with minimal edits. Converting through an
@@ -65,7 +66,7 @@ The name reads the same both ways (the gateway carries traffic in both direction
    global enforcement is impossible without coordination on the request path. kaiak
    accepts a documented overshoot — requests in flight plus one reporting interval —
    instead. Every limit states where it is enforced and how far it can drift.
-7. **Two usage paths, never mixed.** Metrics (Prometheus) are for dashboards: cheap,
+7. **Two usage paths, never mixed.** Metrics (Prometheus, OTLP) are for dashboards: cheap,
    approximate, reset-tolerant. Usage records (to the control plane) are for billing:
    exact, idempotent, durable. Neither is derived from the other.
 8. **Strict config, safe swaps.** Unknown fields and wrong types fail loudly. A config

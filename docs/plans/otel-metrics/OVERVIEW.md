@@ -130,10 +130,10 @@ Made while planning (confirm in review):
     and state (`closed`, `open`, `half_open`), 1 for the current one — the
     conventions' state-attribute pattern (`k8s.node.condition`, `hw.status`) — instead
     of one 0/1 gauge per non-closed state. The cooldown stays its own 0/1 gauge.
-17. **No `target_info`, no `otel_scope_*` labels on `/metrics`.** Prometheus's OTLP
-    ingestion adds neither by default, and scrape configs set `job`/`instance`
-    themselves; the compatibility spec's exporter rule (scope labels by default) is
-    the deviation, named.
+17. **No `target_info`, no `otel_scope_*` labels on `/metrics`.** Scrape configs set
+    `job`/`instance`, which the resource would repeat, and the scope is one constant;
+    Prometheus's OTLP ingestion adds no scope labels by default. The compatibility
+    spec's exporter rule (both by default) is the deviation, named.
 18. **Attribute names are the log vocabulary's**; where the log line has no name, a
     new `kaiak.*` one: `kaiak.key.root_group`, `kaiak.error.class`,
     `kaiak.attempt.outcome`, `kaiak.circuit.state`, `kaiak.probe.result`,
@@ -173,7 +173,7 @@ Prometheus names as Prometheus's OTLP ingestion translates them
 | `kaiak.request.errors` | counter | `{request}` | key labels, `gen_ai.request.model`, `error.type` | `kaiak_request_errors_total` | same, `code` |
 | `kaiak.limit.rejections` | counter | `{request}` | `kaiak.limit.scope`, `kaiak.limit.type` | `kaiak_limit_rejections_total` | same, `scope_kind`, `type` |
 | `kaiak.backend.active_requests` | up-down counter (read at collect) | `{request}` | `kaiak.backend.id` | `kaiak_backend_active_requests` | `kaiak_backend_in_flight_requests` |
-| `kaiak.backend.active_requests.limit` | up-down counter (read at collect) | `{request}` | `kaiak.backend.id` | `kaiak_backend_active_requests_limit` | `kaiak_backend_max_in_flight` |
+| `kaiak.backend.active_requests_limit` | up-down counter (read at collect) | `{request}` | `kaiak.backend.id` | `kaiak_backend_active_requests_limit` | `kaiak_backend_max_in_flight` |
 | `kaiak.queue.size` | up-down counter (read at collect) | `{request}` | `gen_ai.request.model` | `kaiak_queue_size` | `kaiak_queued_requests` |
 | `kaiak.queue.wait_duration` | histogram | `s` | `gen_ai.request.model` | `kaiak_queue_wait_duration_seconds` | `kaiak_queue_wait_seconds` |
 | `kaiak.queue.rejections` | counter | `{request}` | `gen_ai.request.model`, `error.type` (`queue_full`, `queue_timeout`) | `kaiak_queue_rejections_total` | same, `reason` (`full`, `timeout`) |
@@ -181,8 +181,8 @@ Prometheus names as Prometheus's OTLP ingestion translates them
 | `kaiak.upstream.attempts` | counter | `{attempt}` | `kaiak.backend.id`, `kaiak.deployment.model`, `kaiak.attempt.outcome` | `kaiak_upstream_attempts_total` | same |
 | `kaiak.upstream.attempt.duration` | histogram | `s` | `kaiak.backend.id` | `kaiak_upstream_attempt_duration_seconds` | same |
 | `kaiak.request.attempts` | histogram | `{attempt}` | `gen_ai.request.model` | `kaiak_request_attempts` | same |
-| `kaiak.circuit.state` | gauge (read at collect) | `{deployment}` | `kaiak.backend.id`, `kaiak.deployment.model`, `kaiak.circuit.state` | `kaiak_circuit_state` | `kaiak_circuit_open`, `kaiak_circuit_half_open` |
-| `kaiak.deployment.cooling_down` | gauge (read at collect) | `{deployment}` | `kaiak.backend.id`, `kaiak.deployment.model` | `kaiak_deployment_cooling_down` | same |
+| `kaiak.circuit.state` | up-down counter (read at collect) | `{deployment}` | `kaiak.backend.id`, `kaiak.deployment.model`, `kaiak.circuit.state` | `kaiak_circuit_state` | `kaiak_circuit_open`, `kaiak_circuit_half_open` |
+| `kaiak.deployment.cooling_down` | up-down counter (read at collect) | `{deployment}` | `kaiak.backend.id`, `kaiak.deployment.model` | `kaiak_deployment_cooling_down` | same |
 | `kaiak.circuit.transitions` | counter | `{transition}` | `kaiak.backend.id`, `kaiak.deployment.model`, `kaiak.circuit.state` (entered) | `kaiak_circuit_transitions_total` | same, `to` |
 | `kaiak.probes` | counter | `{probe}` | `kaiak.backend.id`, `kaiak.probe.result` | `kaiak_probes_total` | same, `result` |
 | `kaiak.config.loads` | counter | `{load}` | `kaiak.trigger`, `kaiak.config.result` | `kaiak_config_loads_total` | same, `trigger`, `result` |

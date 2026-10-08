@@ -10,7 +10,7 @@
 
 ## Two halves and a contract
 
-- **`gateway/`** — the product: the `kaiak` binary (Go, standard library only). Serves
+- **`gateway/`** — the product: the `kaiak` binary (Go, one static binary). Serves
   client traffic from a config file or from a control plane, never waiting on one.
 - **`control/`** — the control-plane side: `kaiak-control` (the reusable library) and
   `sample` (a thin app on it). Never in the request path.
@@ -56,6 +56,11 @@ flowchart LR
   an OpenTelemetry collector too — queued and sent in the background, never on the
   request path, flushed at exit after usage (`docs/specs/GATEWAY.md`, Observability
   → OTLP log export).
+- Metrics are scraped from `/metrics` always and, with an OTLP endpoint, pushed to a
+  collector too — one definition per metric, the same series in both (Prometheus
+  names on the scrape, OpenTelemetry names in the push), collected on an interval
+  in the background, a final export at exit after usage and before the logs
+  (`docs/specs/GATEWAY.md`, Observability → Metric list, OTLP metric export).
 
 ## Deployment shape
 
@@ -96,8 +101,8 @@ enforce the boundaries.
   table; a body endpoint's identity is the `provider.Endpoint` it serves, whose path
   and client API format are `provider`'s. The format decides the owned fields the
   inbound stage reads and the error shape of every answer the gateway gives on that
-  route; the row holds the rest (its output-limit keys, its metric and operation
-  names, whether it only counts tokens). The attempts stage is routing → accounting →
+  route; the row holds the rest (its output-limit keys, its name and operation
+  name, whether it only counts tokens). The attempts stage is routing → accounting →
   provider run once per attempt: an attempt that failed before
   anything reached the client is retried — through all three again, the queue
   included — on another deployment when there is one; limits reserve once per client
@@ -166,11 +171,11 @@ enforce the boundaries.
   nothing of `control`: its `Totals` and `Contact` are what the control client hands
   it, and a totals message's windows decode straight into its `PushedWindow`, which
   carries their JSON tags.
-- `metrics` — a small registry (counters, gauges, fixed-bucket histograms, gauges and
-  counters read at scrape time) and its Prometheus text exposition, served on the admin port; the
-  ops metrics the `server` pipeline feeds when a request is over; the usage metrics
-  accounting hands each settled record. The registry is built in `cmd/kaiak` and
-  passed in.
+- `metrics` — the gateway's metric families, defined on `telemetry/metric`'s
+  registry: the ops metrics the `server` pipeline feeds when a request is over; the
+  usage metrics accounting hands each settled record; the per-config series
+  created at 0. The registry is built in `cmd/kaiak` and passed in; `/metrics` on
+  the admin port and the OTLP metric exporter both read it.
 - `clip` — bounds a client-controlled string (path, method, model name) before it is
   logged or echoed in an error message; `server` and `auth` use it.
 - `logattr` — log attribute values in the units the log vocabulary fixes (a duration
@@ -179,15 +184,29 @@ enforce the boundaries.
   failure, malformed response, …) in the gateway's own words, so a log line
   reporting a transport failure never carries the bytes Go quoted from the remote
   party (`docs/specs/GATEWAY.md`, Logs: no remote text); `sse`, `provider`, `control`
-  and `otlplog` use it.
-- `otlplog` — OTLP log export: reads the `OTEL_*` settings, and its `slog` handler
-  hands every record to the stderr handler and queues a copy; one sender goroutine
-  posts the queue as OTLP/HTTP JSON batches with retries, dropping the newest when
-  full, and flushes on demand. It imports nothing of the gateway's but `netfail`.
-  `cmd/kaiak` wraps the process logger with it when export is on, gives it a
-  stderr-only logger for its own problem reports (no feedback loop), reads its counts
-  into `metrics` (`kaiak_log_export_records_total`) and runs its final flush as the
-  process's last act.
+  and the telemetry tree use it.
+- `telemetry/` — the OpenTelemetry code, a tree of its own that imports only the
+  standard library and `netfail` (checked by `scripts/check-gateway.sh`), with
+  tests that use no kaiak fixtures, so it can leave the repo as a library when a
+  second project needs it (`docs/TECH-STACK.md`, The telemetry tree):
+  - `telemetry/otlp` — the OTLP/HTTP connection every signal shares: the `OTEL_*`
+    settings per signal, the resource, the HTTP client (no redirects) and one
+    export request with its delivery rules (what counts as delivered, retries and
+    `Retry-After`, the outcome in the gateway's own words);
+  - `telemetry/otlplog` — the log exporter: its `slog` handler hands every record to
+    the stderr handler and queues a copy; one sender goroutine posts the queue
+    through `otlp` in batches, dropping the newest when full;
+  - `telemetry/metric` — instruments (counter, up-down counter, gauge, histogram,
+    and the forms read at collect), the collect step producing OpenTelemetry's data
+    model, and the Prometheus text writer with the name translation;
+  - `telemetry/otlpmetric` — the periodic metric exporter: collects the registry on
+    an interval, applies the temporality and posts through `otlp`.
+
+  `cmd/kaiak` wraps the process logger with the log exporter when log export is on
+  (giving it a stderr-only logger for its own problem reports: no feedback loop),
+  starts the metric exporter when metric export is on, registers the exporters' own
+  counts on the registry, and at exit runs the final metric export, then the log
+  export's final flush as the process's last act.
 - `sse` — the server-sent events reader (WHATWG format): splits a stream into blocks
   with their raw bytes, data, event name and ID, bounded in size; a failure of the
   stream under it comes back by its class (`netfail`). The provider relays backend

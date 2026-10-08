@@ -23,7 +23,7 @@
   backend type's models-list request, what a usage record counts toward each limit
   type). Both halves run the fixtures in their test suites.
 
-## Gateway: Go, standard library only (settled 2026-09-24)
+## Gateway: Go (settled 2026-09-24)
 
 - **Why Go**: the gateway is a proxy on the hot path holding many long-lived streams. Go
   gives one static binary (~18 MB image on a static distroless base), millisecond
@@ -32,10 +32,24 @@
   crypto and TLS. Rejected: Node (the control plane's language — viable for an
   I/O-bound proxy, but a ~150 MB image and no path to zero dependencies with a real
   HTTP framework); Rust (more effort than the problem needs).
-- **Zero third-party dependencies** is a hard constraint, not a preference: the
-  self-contained requirement is the product. Anything the standard library lacks is
-  written in-repo (SSE parsing, Prometheus text exposition, AWS SigV4 when Bedrock
-  arrives). An exception needs a dated ruling here.
+- **Dependencies: minimal, maintained, clearly worth what they cost** (settled
+  2026-10-08). The self-contained requirement is the product: the binary stays
+  usable standalone — one static binary, depending on no service but the control
+  plane (and that only in control-plane mode) — and storage and management stay
+  with the app built on `kaiak-control`. Within that, a third-party module may
+  enter when it is small (few transitive modules), maintained (CODING-RULES §3),
+  and clearly worth its cost — weighed in binary size, the modules it brings, and
+  whether it keeps the gateway's own rules (no remote text in logs, the delivery
+  and drop rules, malformed settings failing the start). Each one is a dated ruling
+  here, asked for first, and listed in the inventory below. What the standard
+  library covers in a few hundred lines stays in-repo (SSE parsing, the Prometheus
+  text exposition, OTLP/HTTP JSON export). Rejected: zero third-party
+  dependencies as a hard rule (the 2026-09-24 ruling) — the self-contained
+  requirement is about what the binary needs to run, not about who wrote its
+  code. Allowed by this rule, not decided here: the OpenTelemetry trace SDK
+  core (`go.opentelemetry.io/otel`, `sdk/trace`, the TraceContext propagator)
+  links four small third-party modules (`xxhash`, `logr`, `stdr`, `uuid`) and no
+  gRPC or protobuf — the traces work's to take or leave, with its own ruling.
 - **HTTP**: `net/http` server and client. Two listeners: the API port (client traffic)
   and the admin port (`/metrics`, `/healthz`, `/readyz`) — the admin port is never
   exposed through an ingress.
@@ -50,23 +64,54 @@
   per request with request ID, key ID, model, backend, status, latency, tokens;
   attribute names follow OpenTelemetry's semantic conventions where they fit
   (`docs/specs/GATEWAY.md`, Observability: Logs).
-- **OTLP log export: hand-written OTLP/HTTP with JSON encoding** (settled
-  2026-10-05). An `slog` handler beside the stderr one queues each record; a
-  background sender posts batches as OTLP JSON (`resourceLogs` → `scopeLogs` →
-  `logRecords`) with `net/http` and `encoding/json`. OTLP/HTTP JSON is a documented
-  encoding that every collector's OTLP HTTP receiver accepts, and the gateway
-  writes only logs — a few hundred lines. Rejected: the OpenTelemetry Go SDK and its
-  OTLP log exporter — it would be the gateway's first third-party module, with its
-  transitive tree (protobuf among it), for what the standard library already
-  covers; protobuf encoding (`http/protobuf`, the specification's default) — it needs
-  the protobuf runtime or a hand-written protobuf encoder; gRPC — a dependency, and
-  the target collectors take OTLP/HTTP. Revisit if traces need span export
-  (`docs/BACKLOG.md` → OpenTelemetry export).
+- **OTLP export: hand-written OTLP/HTTP with JSON encoding** (logs settled
+  2026-10-05, metrics 2026-10-08). Logs: an `slog` handler beside the stderr one
+  queues each record; a background sender posts batches as OTLP JSON
+  (`resourceLogs` → `scopeLogs` → `logRecords`). Metrics: a periodic reader
+  collects the registry and posts `resourceMetrics` → `scopeMetrics` → `metrics`.
+  Both with `net/http` and `encoding/json`, over one shared connection layer.
+  OTLP/HTTP JSON is a documented encoding that every collector's OTLP HTTP receiver
+  accepts. Rejected: protobuf encoding (`http/protobuf`, the specification's
+  default) — it needs the protobuf runtime or a hand-written protobuf encoder;
+  gRPC — a dependency, and the target collectors take OTLP/HTTP.
+  - **The OpenTelemetry Go SDK's exporters rejected** (settled 2026-10-08, after a
+    spike on SDK v1.47.0, `otlploghttp` v0.23.0, `otelslog` v0.21.0): the OTLP
+    exporters link the gRPC client stack, protobuf, grpc-gateway and genproto even
+    for the HTTP exporters — about 13.5 MB over a 12.7 MB binary — and the metric
+    and log HTTP exporters write protobuf only. They also break settled rules
+    (`docs/specs/GATEWAY.md` → Observability): export errors are strings embedding
+    the collector's response body or partial-success message, and a malformed
+    headers variable prints the header value, so no remote text cannot be kept; a
+    `200` login page and a JSON partial success count as delivered; a refused
+    connection is not retried; redirects are followed with the credential headers
+    unless a custom client is passed, which then ignores the timeout option;
+    malformed `OTEL_*` values are ignored silently, and options left unset are
+    filled from the environment; a histogram series cannot exist before its first
+    observation (series at 0); the log batch processor drops the oldest records and
+    does not expose its drops; the `slog` bridge nests groups as maps, writes times
+    as integer nanoseconds and drops the error attribute's key. Our exporters cost a
+    few hundred lines each and keep every rule.
+- **The telemetry tree** (settled 2026-10-08): the OpenTelemetry code lives under
+  `gateway/internal/telemetry/` — `otlp` (the OTLP/HTTP connection every signal
+  shares: the `OTEL_*` settings per signal, the resource, one export request and
+  its delivery rules), `otlplog` (the log exporter), `metric` (instruments, the
+  collect step, the Prometheus text writer with the OpenTelemetry → Prometheus
+  name translation), `otlpmetric` (the periodic metric exporter). It imports only
+  the standard library and `kaiak/internal/netfail` (itself standard library only),
+  which `scripts/check-gateway.sh` checks, and its tests use no kaiak fixtures: it
+  is built to be extracted into a module of its own when a second project needs it,
+  and stays in the repo until then. It keeps OpenTelemetry's model — instruments
+  defined by name, unit, description, kind and attributes; the resource and scope
+  apart; aggregation, collection and export separate, each reader with its own
+  temporality; exporters with `ForceFlush` and `Shutdown` — not the SDK's API
+  shape.
 - **Persistence: none in the gateway** (settled 2026-10-07, `docs/specs/GATEWAY.md` →
   Configuration sources): it writes nothing to disk. Config, usage totals and usage
   records live in the control plane, whose host app owns the store
   (`control/kaiak-control/GUIDE.md`).
-- **Metrics**: Prometheus text exposition written by hand on the admin port.
+- **Metrics**: one registry of OpenTelemetry instruments (`telemetry/metric`),
+  written as the Prometheus text exposition on the admin port and pushed by the
+  OTLP metric exporter — both by hand (settled 2026-10-08).
 - **Build & image**: `CGO_ENABLED=0` static build; multi-stage container build ending on
   a static distroless non-root base holding only the binary. Kubernetes manifests are
   out of scope (settled 2026-09-24 — operators own their cluster setup).
@@ -83,7 +128,7 @@
     `node:26-slim`'s `node`). Kubernetes checks `runAsNonRoot` against the image's
     user only when it is numeric; a name fails the restricted Pod Security Standard
     unless every pod sets `runAsUser`.
-  - **Version stamping** (settled 2026-09-25, N-O7): `kaiak_build_info{version}`
+  - **Version stamping** (settled 2026-09-25, N-O7): `kaiak.build.info`'s `service.version`
     reports the `git describe` version `scripts/build-images.sh` passes as the
     `VERSION` build argument, linked into a package-level `version` string in
     `internal/metrics` with `-ldflags -X`; unstamped builds fall back to Go's module
@@ -140,8 +185,8 @@
   third module (the fake backend is `internal` to the gateway).
 - **Lint**: `gofmt`, `go vet` and **staticcheck** (settled 2026-09-24). staticcheck runs
   as `go run honnef.co/go/tools/cmd/staticcheck@<pinned version>` from a script: fetched
-  once into the module cache, never listed in `go.mod`, never in the binary — the
-  zero-dependency rule holds literally.
+  once into the module cache, never listed in `go.mod`, never in the binary — a
+  tool, not a dependency.
 
 ### Go rules (apply in `gateway/`)
 

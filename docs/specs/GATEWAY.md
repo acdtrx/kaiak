@@ -452,9 +452,9 @@ own, and a client sending repeats is broken either way.
   1: a config repeating `backends` hid one from the schema): a backend naming a
   `KAIAK_` variable gets no credential at all, so the value never leaves. **`OTEL_`
   is reserved the same way** (settled 2026-10-05, the 2026-10-05 review's H1) — by
-  the schema, both halves, and again by the provider: the log export's headers
-  (`OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_EXPORTER_OTLP_LOGS_HEADERS`) carry the
-  collector's credentials, and a models probe alone would have sent them to the
+  the schema, both halves, and again by the provider: the OTLP export's headers
+  (`OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_EXPORTER_OTLP_LOGS_HEADERS`,
+  `OTEL_EXPORTER_OTLP_METRICS_HEADERS`) carry the collector's credentials, and a models probe alone would have sent them to the
   author's URL. The whole prefix, since endpoints can carry credentials too
   (`CONTROL-PROTOCOL.md`, Config → `api_key_env`).
 - **Backend model names** (settled 2026-09-25, E12): a deployment's `model` is the
@@ -936,7 +936,7 @@ own, and a client sending repeats is broken either way.
   room. Rejected: a longer ceiling — a resource whose quota refills should be back
   within a minute, and a new `429` costs one attempt; counting `429` toward the
   circuit — quota is not a fault, and probes cannot tell when it refills. Shown as
-  `kaiak_deployment_cooling_down`; not in status (no protocol change).
+  `kaiak.deployment.cooling_down`; not in status (no protocol change).
 - **Usage across attempts** (settled 2026-09-24; D1 2026-09-25): one client request
   counts once toward request limits. An attempt answered `5xx` or `429`, or that
   failed to connect or to write its request in full, produces no usage (the backend
@@ -1044,8 +1044,8 @@ own, and a client sending repeats is broken either way.
     the backend generates, so a trial whose backend pings and then fails is a
     failed trial. The first-event timeout still counts any block. **Half-open is
     its own state in status and metrics** (settled 2026-09-25): status reports
-    `half_open` with the circuit's original opening time; `kaiak_circuit_open` reads
-    0 for it and `kaiak_circuit_half_open` 1 — an idle recovered deployment, which
+    `half_open` with the circuit's original opening time; `kaiak.circuit.state`
+    reads 1 on `half_open` and 0 on `open` — an idle recovered deployment, which
     no trial closes, must not keep an open-circuit alert firing. Rejected: reporting
     half-open as open, which paged for deployments that had recovered.
   - An open deployment is not eligible: routing skips it, the dispatcher gives none
@@ -1113,7 +1113,7 @@ own, and a client sending repeats is broken either way.
   requests at once. File mode enforces the whole cap (one gateway per config file).
   Rounding up keeps a small cap usable on every gateway at the cost of overshooting
   by at most one request per gateway. Status reports the configured cap; the metric
-  `kaiak_backend_max_in_flight` shows the share enforced. Known limit: a gateway
+  `kaiak.backend.active_requests_limit` shows the share enforced. Known limit: a gateway
   whose requests run longer queues while other gateways' shares sit idle — the
   demand-weighted split is in `docs/BACKLOG.md`. Rejected: leaving the cap per
   gateway (N gateways admitted N × the cap onto one host).
@@ -1627,7 +1627,7 @@ own, and a client sending repeats is broken either way.
     `kaiak.control.outage_grace`) and `control plane outage over: contact is
     back` (info: `kaiak.lasted`, from the grace running out). Nothing signals the grace running
     out, so each transition is logged when the outage is next decided — by a
-    request or a metrics scrape (`kaiak_control_outage`) — and can lag it on an
+    request or a metrics collect (`kaiak.control.outage`) — and can lag it on an
     idle, unscraped gateway; the fields give the true times. Rejected: a timer of
     its own — a second clock for what the gauge and the requests already decide.
   - **Usage acks count for money limits** (settled 2026-09-25, M16; counted usage
@@ -1771,7 +1771,7 @@ own, and a client sending repeats is broken either way.
   reporting more is broken or hostile; the clamped record still counts (it spends
   any budget it touches) instead of making its whole batch unacceptable to the
   control plane. Each clamp is logged at warning level with the request ID and
-  counted (`kaiak_usage_clamped_records_total`); the record's flags are unchanged.
+  counted (`kaiak.usage.clamped_records`); the record's flags are unchanged.
 - **Cost** = units × the prices of one tier of the model's price table entry in force
   at request time (the latest `effective_from` on or before the request's start,
   UTC). The tier is picked from the record's input size,
@@ -1863,45 +1863,63 @@ own, and a client sending repeats is broken either way.
   listener requires `Authorization: Bearer <token>` (Observability: admin port).
 - `KAIAK_LOG_FORMAT` — `json` (default: one JSON object per line, for production) or
   `text` (development). Any other value is a startup error.
-- **OTLP log export** (settled 2026-10-05; Observability → OTLP log export) — the
-  standard OpenTelemetry exporter variables, a subset of the OpenTelemetry SDK
-  specification's, so a collector sidecar or node agent needs no kaiak-specific
-  setup. For each setting the `LOGS` variable wins over the general one:
-  - `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` — the URL logs are posted to, used as is;
-    else `OTEL_EXPORTER_OTLP_ENDPOINT` with `/v1/logs` appended to its path
-    (`http://collector:4318` → `http://collector:4318/v1/logs`). `http://` or
-    `https://`, absolute; anything else is a startup error.
-  - **On or off**: export is on when either endpoint variable is set, or when
-    `OTEL_LOGS_EXPORTER=otlp` — then, with no endpoint, to the specification's
-    default `http://localhost:4318/v1/logs` (a sidecar). `OTEL_LOGS_EXPORTER=none`
-    or `OTEL_SDK_DISABLED=true` turn it off whatever else is set, so an operator who
-    injects an endpoint for other telemetry can opt a gateway out.
-    `OTEL_LOGS_EXPORTER` takes `otlp` or `none`; `OTEL_SDK_DISABLED` `true` or
-    `false` (any case). Nothing set: off, and nothing is attempted.
-  - `OTEL_EXPORTER_OTLP_LOGS_HEADERS` / `OTEL_EXPORTER_OTLP_HEADERS` — headers sent
-    with every export, `key=value,key=value`, values percent-decoded (the
-    specification's format). Never logged or echoed: an error about them names the
-    variable, never a value. No backend can name an `OTEL_` variable as its
-    `api_key_env` (Providers: credentials; settled 2026-10-05).
-  - `OTEL_EXPORTER_OTLP_LOGS_TIMEOUT` / `OTEL_EXPORTER_OTLP_TIMEOUT` (default
-    `10000`) — whole milliseconds above 0: how long one batch may take, its retries
-    included.
-  - `OTEL_EXPORTER_OTLP_LOGS_PROTOCOL` / `OTEL_EXPORTER_OTLP_PROTOCOL` — only
-    `http/json`. The specification's default is `http/protobuf`; here unset means
-    `http/json`, the one encoding the gateway writes. `grpc` or `http/protobuf` set
-    explicitly is a startup error saying that only `http/json` is supported — a
-    gateway that sent JSON to a collector expecting protobuf would fail every
-    export instead. Rejected: gRPC and protobuf (no dependency writes them; the
-    OTLP/HTTP receiver every collector has accepts JSON).
+- **OTLP export** (logs settled 2026-10-05, metrics 2026-10-08; Observability → OTLP
+  log export, OTLP metric export) — the standard OpenTelemetry exporter variables, a
+  subset of the OpenTelemetry SDK specification's, so a collector sidecar or node
+  agent needs no kaiak-specific setup. Each signal has its own settings; for each,
+  the signal's variable (`…_LOGS_…`, `…_METRICS_…`) wins over the general one:
+  - `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` — the
+    URL the signal is posted to, used as is; else `OTEL_EXPORTER_OTLP_ENDPOINT` with
+    `/v1/logs` or `/v1/metrics` appended to its path (`http://collector:4318` →
+    `http://collector:4318/v1/logs`, `…/v1/metrics`). `http://` or `https://`,
+    absolute; anything else is a startup error.
+  - **On or off, per signal**: a signal's export is on when its own or the general
+    endpoint variable is set, or when its exporter variable is `otlp` — then, with
+    no endpoint, to the specification's default `http://localhost:4318/v1/logs` or
+    `…/v1/metrics` (a sidecar). So one `OTEL_EXPORTER_OTLP_ENDPOINT` turns on both
+    signals. `OTEL_LOGS_EXPORTER=none` or `OTEL_METRICS_EXPORTER=none` turns that
+    signal off whatever else is set, `OTEL_SDK_DISABLED=true` both, so an operator
+    who injects an endpoint for other telemetry can opt a gateway, or one of its
+    signals, out. `OTEL_LOGS_EXPORTER` and `OTEL_METRICS_EXPORTER` take `otlp` or
+    `none`; `OTEL_SDK_DISABLED` `true` or `false` (any case). Nothing set: off,
+    and nothing is attempted.
+  - `OTEL_EXPORTER_OTLP_LOGS_HEADERS`, `OTEL_EXPORTER_OTLP_METRICS_HEADERS` /
+    `OTEL_EXPORTER_OTLP_HEADERS` — headers sent with every export of the signal,
+    `key=value,key=value`, values percent-decoded (the specification's format).
+    Never logged or echoed: an error about them names the variable, never a value.
+    No backend can name an `OTEL_` variable as its `api_key_env` (Providers:
+    credentials; settled 2026-10-05).
+  - `OTEL_EXPORTER_OTLP_LOGS_TIMEOUT`, `OTEL_EXPORTER_OTLP_METRICS_TIMEOUT` /
+    `OTEL_EXPORTER_OTLP_TIMEOUT` (default `10000`) — whole milliseconds above 0: how
+    long one request may take, its retries included (for metrics, within the
+    export timeout below).
+  - `OTEL_EXPORTER_OTLP_LOGS_PROTOCOL`, `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL` /
+    `OTEL_EXPORTER_OTLP_PROTOCOL` — only `http/json`. The specification's default
+    is `http/protobuf`; here unset means `http/json`, the one encoding the gateway
+    writes. `grpc` or `http/protobuf` set explicitly is a startup error saying that
+    only `http/json` is supported — a gateway that sent JSON to a collector
+    expecting protobuf would fail every export instead. Rejected: gRPC and protobuf
+    (no dependency writes them; the OTLP/HTTP receiver every collector has accepts
+    JSON).
+  - Metrics only: `OTEL_METRIC_EXPORT_INTERVAL` (default `60000`) and
+    `OTEL_METRIC_EXPORT_TIMEOUT` (default `30000`) — whole milliseconds above 0: the
+    time between exports and the bound on one export (Observability → OTLP metric
+    export: interval and timeout); `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE`
+    — `cumulative` (default), `delta` or `lowmemory`, any case (Observability → OTLP
+    metric export: temporality).
   - `OTEL_SERVICE_NAME` (default `kaiak`) and `OTEL_RESOURCE_ATTRIBUTES`
-    (`key=value,…`, values percent-decoded) — the resource (Observability → OTLP
-    log export).
+    (`key=value,…`, values percent-decoded) — the resource both signals share
+    (Observability → OTLP log export).
   - A malformed value of any of these is a startup error naming the variable, as
     with every `KAIAK_*` variable — export settings are read before anything else
-    starts, and a start failure is written to stderr. Not read: compression (the
-    export is uncompressed), certificate and client-key variables (TLS uses the
-    system's roots: `SSL_CERT_FILE`, `SSL_CERT_DIR`), `*_INSECURE` (gRPC only), the
-    batch processor's `OTEL_BLRP_*` and the attribute limits.
+    starts, and a start failure is written to stderr. An empty variable counts as
+    unset, as the specification has it. Not read: compression (the export is
+    uncompressed), certificate and client-key variables (TLS uses the system's
+    roots: `SSL_CERT_FILE`, `SSL_CERT_DIR`), `*_INSECURE` (gRPC only), the batch
+    processor's `OTEL_BLRP_*`, the attribute limits, `OTEL_METRICS_EXEMPLAR_FILTER`
+    (no exemplars are recorded) and
+    `OTEL_EXPORTER_OTLP_METRICS_DEFAULT_HISTOGRAM_AGGREGATION` (explicit buckets
+    only: a histogram's buckets are part of its definition, Metric list).
 - `KAIAK_DRAIN_GRACE_MS` (default `5000`) and `KAIAK_DRAIN_TIMEOUT_MS` (default
   `60000`) — the drain's grace period and timeout (Lifecycle), whole milliseconds, 0
   or more; anything else is a startup error.
@@ -2097,7 +2115,7 @@ own, and a client sending repeats is broken either way.
     queued batches' records), the oldest queued batches are dropped —
     except the outstanding one, which may be on the wire and whose ack must still
     find it — logged at error level and counted in
-    `kaiak_usage_dropped_records_total{reason="memory_bound"}`. A record the checks
+    `kaiak.usage.dropped_records` (`memory_bound`). A record the checks
     refuse is logged and dropped (nothing to keep it in), a batch the control plane
     refuses likewise. What a pod loses when it ends: the records not yet
     acknowledged if it is killed, only what the drain's flush could not deliver if
@@ -2108,7 +2126,7 @@ own, and a client sending repeats is broken either way.
       deployment notes): each record counts its encoded size, taken from the
       encoding the record checks at seal time already make (Record checks at seal
       time), so the bound is exact at no extra cost; the queued bytes are exposed as
-      `kaiak_usage_queued_bytes`. A typical record encodes to about 500 bytes and
+      `kaiak.usage.queue.size`. A typical record encodes to about 500 bytes and
       holds about as much heap (measured: 506 and 536 bytes for a record with
       32-character IDs and a pod-name instance), so the default holds about 130 000
       records — about 145 records/s through the 15-minute outage grace. Rejected: a
@@ -2119,7 +2137,7 @@ own, and a client sending repeats is broken either way.
       as the control plane will check it. A record that fails would make the control
       plane refuse the whole batch — up to 500 records — so it is dropped alone:
       logged at error level with its request ID, and counted in
-      `kaiak_usage_dropped_records_total{reason="invalid"}`; the rest of the batch
+      `kaiak.usage.dropped_records` (`invalid`); the rest of the batch
       goes on (a batch left empty is dropped, taking no sequence). Settlement
       already clamps every unit and the cost to 2^53 − 1 (Accounting), so this
       guards against what clamping does not cover.
@@ -2176,143 +2194,273 @@ own, and a client sending repeats is broken either way.
   (SHA-256 digests). `/healthz` and `/readyz` stay open: probes carry no
   credentials, and they reveal nothing. Rejected: a token in config — the scraper's
   secret belongs to the deployment, like the control-plane token.
-- **Ops metrics**: request latency, time to first token, tokens/s, errors by class,
-  backend health and circuit state, queue depth, in-flight per backend.
-- **Usage metrics**: usage records, tokens by unit, estimated cost — labeled by the
-  key's group, its top-level group, key ID, model, status. The key-ID and group labels
-  can be switched off in config when the series estimate (Cardinality, below) grows
-  too large.
-- **Metric list** (settled 2026-09-24). Prometheus text format 0.0.4, written by the
-  gateway (`kaiak_` prefix, base units, `_total` counters):
+- **Ops metrics**: request duration, time to first token, decode rate, errors by class,
+  backend health and circuit state, queue size, active requests per backend.
+- **Usage metrics**: usage records, tokens by kind (the GenAI usage counters),
+  estimated cost — labeled by the key's group, its top-level group, key ID, model,
+  operation, provider and status. The key-ID and group labels can be switched off in
+  config when the series estimate (Cardinality, below) grows too large.
+- **Metric list** (settled 2026-09-24; OpenTelemetry names settled 2026-10-08). Each
+  metric is defined once — OpenTelemetry name, kind, unit, description, attributes —
+  and both outputs write that one definition: `/metrics` in the Prometheus text
+  format 0.0.4 under the Prometheus name (its translation, Naming below), and OTLP
+  metric export (below) under the OpenTelemetry name. Kinds are OpenTelemetry's
+  instruments: a **counter** only grows (a Prometheus counter, `_total`); an
+  **up-down counter** goes both ways and still means something summed over its
+  series — across attributes or gateways it counts requests, bytes held, deployments
+  in a state (a Prometheus gauge); a **gauge** is a value whose sum means nothing (a
+  timestamp, the config's size, a flag of the process); a **histogram** has fixed
+  buckets. *Read at collect*: the value is read from live state at each
+  collect (a scrape, an export), not recorded as events happen. Attribute renames
+  that apply to every family carrying the attribute: `model` → `gen_ai.request.model`,
+  `backend` → `kaiak.backend.id`, `deployment_model` → `kaiak.deployment.model`,
+  `key_group` → `kaiak.key.group`, `root_group` → `kaiak.key.root_group`, `key_id` →
+  `kaiak.key.id`, `status` → `kaiak.usage.status`. The Was column gives the
+  Prometheus name before (`same` when unchanged) and the previous label of each
+  other attribute.
+  The usage labels are `kaiak.key.group`, `kaiak.key.root_group`, `kaiak.key.id`,
+  `gen_ai.request.model`, `gen_ai.operation.name`, `gen_ai.provider.name`,
+  `kaiak.usage.status` (below).
 
-  | Name | Type | Labels | Meaning |
-  |---|---|---|---|
-  | `kaiak_request_duration_seconds` | histogram | `endpoint`, `model`, `status_class` | Arrival to end of response, every client request; its `_count` is the client request count — once per request, whatever its attempts |
-  | `kaiak_time_to_first_token_seconds` | histogram | `model`, `backend` | The answering attempt's send to the first stream event carrying generated content, observed as that event arrives; streams only (settled 2026-09-25, D6: from the request's arrival, a failed first attempt's wait was blamed on the backend that then answered) |
-  | `kaiak_output_tokens_per_second` | histogram | `model`, `backend` | Decode speed of streams that ran to their end: (`tokens_out` − 1) ÷ time from first content to the last event; needs ≥ 2 output tokens |
-  | `kaiak_errors_total` | counter | `class` | Requests that ended in an error (classes below) |
-  | `kaiak_request_errors_total` | counter | `key_group`, `root_group`, `key_id`, `model`, `code` | Requests that ended in an error — refusals before routing included — by who sent them and how they ended (Errors by key, below); a series exists once counted |
-  | `kaiak_limit_rejections_total` | counter | `scope_kind`, `type` | Requests a limit refused (`rate_limit_exceeded`, `budget_exceeded`) by the kind of scope the limit belongs to (`global`, `group`; settled 2026-09-27) and its type (`requests_per_minute`, `tokens_per_minute`, `tokens_per_hour`, `usd_per_month`); `budget_unavailable` is not counted here — no caller's limit was hit (settled 2026-09-25, D6). No group ID: the log line names it |
-  | `kaiak_backend_in_flight_requests` | gauge | `backend` | Requests routed and not yet over; every configured backend present, 0 when idle |
-  | `kaiak_backend_max_in_flight` | gauge | `backend` | The backend cap this gateway enforces: its share of `max_in_flight` among the live gateways (Caps across gateways); backends without a cap are absent |
-  | `kaiak_queued_requests` | gauge | `model` | Requests waiting in the model's queue; every configured model present, 0 when empty |
-  | `kaiak_queue_wait_seconds` | histogram | `model` | Time queued requests waited before getting a slot (refused ones are counted below instead) |
-  | `kaiak_queue_rejections_total` | counter | `model`, `reason` | Requests the model's queue refused: `full` (`queue_full`), `timeout` (`queue_timeout`) |
-  | `kaiak_retries_total` | counter | `model`, `backend`, `reason` | Retries sent — attempts after an earlier attempt of the same request failed, counted as each is sent — by that attempt's backend and failure: `unavailable`, `timeout`, `server_error`, `rate_limited`, `auth_failed`, `model_missing`, `path_missing`, `endpoint_missing` |
-  | `kaiak_upstream_attempts_total` | counter | `backend`, `deployment_model`, `outcome` | Every upstream attempt (first attempts and retries) by its outcome — the circuit breaker's classification, named (below) |
-  | `kaiak_upstream_attempt_duration_seconds` | histogram | `backend` | Every upstream attempt from its send to its end: a relayed response to the end of its relay (stream or not), a retried or failed attempt to its failure (a held backend error: its status and first event) |
-  | `kaiak_request_attempts` | histogram | `model` | Attempts per routed request, the first included (buckets 1–10) |
-  | `kaiak_circuit_open` | gauge | `backend`, `deployment_model` | 1 while the deployment's circuit is open (out of rotation, waiting for a probe), else 0 — half-open reads 0; exactly one sample per configured deployment, however many public models share it (`deployment_model` is the model name on the backend, the log line's `kaiak.deployment.model` — `model` everywhere else is the public name) |
-  | `kaiak_circuit_half_open` | gauge | `backend`, `deployment_model` | 1 while the deployment's circuit is half-open (a probe succeeded; the next request is its trial), else 0; one sample per configured deployment, as `kaiak_circuit_open` |
-  | `kaiak_deployment_cooling_down` | gauge | `backend`, `deployment_model` | 1 while the deployment cools down after a `429` (Routing and reliability: 429 cooldown), else 0; one sample per configured deployment, as `kaiak_circuit_open` |
-  | `kaiak_circuit_transitions_total` | counter | `backend`, `deployment_model`, `to` | Circuit transitions per deployment: `to` is `open`, `half_open` or `closed` |
-  | `kaiak_probes_total` | counter | `backend`, `result` | Probes of backends with open circuits: `success`, `failure` |
-  | `kaiak_config_loads_total` | counter | `trigger`, `result` | Config loads: `startup`/`sighup`/`control`/`seed`, `applied`/`rejected` |
-  | `kaiak_config_last_applied_timestamp_seconds` | gauge | — | Unix time the running config was applied |
-  | `kaiak_config_size_bytes` | gauge | — | Size of the running config document in bytes, as applied (a file's bytes, a config event's `config`); absent before the first config (Config load cost, below) |
-  | `kaiak_config_apply_duration_seconds` | histogram | `trigger`, `result` | Every config load that had a document, from the start of its validation (syntax, schema, semantic rules, credentials, snapshot build) to the swap or the rejection; labels as `kaiak_config_loads_total`. A file that could not be read is counted there, not here |
-  | `kaiak_limits_sync_duration_seconds` | histogram | — | The limiter matching its counters to a newly applied config — done inside the first limiter call after the swap (normally a request's admission), under the limiter's lock, so that request waits for it and every other request waits behind it. Calls that find no new config are not observed |
-  | `kaiak_connections_refused_total` | counter | — | API connections closed at accept because `KAIAK_MAX_CONNECTIONS` were open (0 with no cap) |
-  | `kaiak_log_export_records_total` | counter | `outcome` | With OTLP log export on (settled 2026-10-05): log records by what became of them — `exported` (accepted by the collector), `failed` (in a batch given up), `dropped` (never sent: a full queue, or still queued at exit; Observability → OTLP log export). All three at 0 from startup; absent when export is off |
-  | `kaiak_build_info` | gauge | `version`, `go_version` | Always 1; `version` is the release the binary was built as — the image build links its `git describe` version in (`docs/TECH-STACK.md`, Container images), else the module version Go stamped, else `(devel)` |
-  | `kaiak_usage_batch_sends_total` | counter | `result` | Control-plane mode: usage batch sends — `acked`, `rejected` (dropped), `failed` (retried) |
-  | `kaiak_usage_queue_batches` | gauge | — | Control-plane mode: sealed usage batches not yet acknowledged (in memory) |
-  | `kaiak_usage_queue_records` | gauge | — | Control-plane mode: records in those batches |
-  | `kaiak_usage_queued_bytes` | gauge | — | Control-plane mode: encoded bytes of the unacknowledged records held in memory, what `KAIAK_USAGE_MEMORY_BYTES` bounds — every queued record |
-  | `kaiak_usage_dropped_records_total` | counter | `reason` | Control-plane mode: usage records dropped before reaching the control plane — `invalid` (failed the record checks, dropped alone), `memory_bound` (over the in-memory bound) |
-  | `kaiak_usage_last_ack_timestamp_seconds` | gauge | — | Control-plane mode: Unix time of the last acknowledged batch; absent before one. An ack is not contact for the outage rule (only stream bytes are) |
-  | `kaiak_control_connected` | gauge | — | Control-plane mode: 1 while a config stream is open, else 0 |
-  | `kaiak_control_last_contact_timestamp_seconds` | gauge | — | Control-plane mode: Unix time of the last contact (stream bytes); the process start before any |
-  | `kaiak_control_totals_applied_timestamp_seconds` | gauge | — | Control-plane mode: Unix time stream totals were last applied; absent before any |
-  | `kaiak_control_outage` | gauge | — | Control-plane mode: 1 while in outage past the grace (priced money-limited models refused) — the stream down, or usage batches unanswered — else 0 |
-  | `kaiak_control_config_rejected` | gauge | — | Control-plane mode: 1 while the latest config received from the control plane was rejected (status `last_rejection` set) and another config stays in force, else 0 (settled 2026-10-07) |
-  | `kaiak_usage_records_total` | counter | usage labels | Usage records settled: one per routed request, plus one per retried attempt sent in full and unanswered. Records, not requests — count client requests with `kaiak_request_duration_seconds_count` |
-  | `kaiak_usage_clamped_records_total` | counter | — | Usage records whose units or cost passed 2^53 − 1 and were clamped to it (Accounting) |
-  | `kaiak_usage_tokens_total` | counter | usage labels, `unit` | Tokens per usage unit (all five token units, zeros included) |
-  | `kaiak_usage_cost_usd_total` | counter | usage labels | Estimated cost in USD (the records' nano-dollars ÷ 10⁹, summed exactly as integers) |
+  | OpenTelemetry name | Kind | Unit | Attributes | Prometheus | Meaning | Was |
+  |---|---|---|---|---|---|---|
+  | `http.server.request.duration` | histogram | `s` | `http.request.method`, `url.scheme`, `http.route`, `http.response.status_code`, `error.type`, `gen_ai.request.model` | `http_server_request_duration_seconds` | Arrival to end of response, every client request; its count is the client request count — once per request, whatever its attempts (attributes below) | `kaiak_request_duration_seconds`; `endpoint` → `http.route`, `status_class` → `http.response.status_code` and `error.type`; method and scheme added |
+  | `kaiak.time_to_first_token` | histogram | `s` | `gen_ai.request.model`, `kaiak.backend.id` | `kaiak_time_to_first_token_seconds` | The answering attempt's send to the first stream event carrying generated content, observed as that event arrives; streams only (settled 2026-09-25, D6: from the request's arrival, a failed first attempt's wait was blamed on the backend that then answered) | same |
+  | `kaiak.output_token_rate` | histogram | `{token}/s` | `gen_ai.request.model`, `kaiak.backend.id` | `kaiak_output_token_rate_per_second` | Decode speed of streams that ran to their end: (`tokens_out` − 1) ÷ time from first content to the last event; needs ≥ 2 output tokens | `kaiak_output_tokens_per_second` |
+  | `kaiak.errors` | counter | `{request}` | `kaiak.error.class` | `kaiak_errors_total` | Requests that ended in an error (classes below) | same; `class` |
+  | `kaiak.request.errors` | counter | `{request}` | `kaiak.key.group`, `kaiak.key.root_group`, `kaiak.key.id`, `gen_ai.request.model`, `error.type` | `kaiak_request_errors_total` | Requests that ended in an error — refusals before routing included — by who sent them and how they ended (Errors by key, below); a series exists once counted | same; `code` |
+  | `kaiak.limit.rejections` | counter | `{request}` | `kaiak.limit.scope`, `kaiak.limit.type` | `kaiak_limit_rejections_total` | Requests a limit refused (`rate_limit_exceeded`, `budget_exceeded`) by the kind of scope the limit belongs to (`global`, `group`; settled 2026-09-27) and its type (`requests_per_minute`, `tokens_per_minute`, `tokens_per_hour`, `usd_per_month`); `budget_unavailable` is not counted here — no caller's limit was hit (settled 2026-09-25, D6). No group ID: the log line names it | same; `scope_kind`, `type` |
+  | `kaiak.backend.active_requests` | up-down counter, read at collect | `{request}` | `kaiak.backend.id` | `kaiak_backend_active_requests` | Requests routed and not yet over; every configured backend present, 0 when idle | `kaiak_backend_in_flight_requests` |
+  | `kaiak.backend.active_requests_limit` | up-down counter, read at collect | `{request}` | `kaiak.backend.id` | `kaiak_backend_active_requests_limit` | The backend cap this gateway enforces: its share of `max_in_flight` among the live gateways (Caps across gateways) — summed over the gateways, the cap; backends without a cap are absent | `kaiak_backend_max_in_flight` |
+  | `kaiak.queue.size` | up-down counter, read at collect | `{request}` | `gen_ai.request.model` | `kaiak_queue_size` | Requests waiting in the model's queue; every configured model present, 0 when empty | `kaiak_queued_requests` |
+  | `kaiak.queue.wait_duration` | histogram | `s` | `gen_ai.request.model` | `kaiak_queue_wait_duration_seconds` | Time queued requests waited before getting a slot (refused ones are counted below instead) | `kaiak_queue_wait_seconds` |
+  | `kaiak.queue.rejections` | counter | `{request}` | `gen_ai.request.model`, `error.type` | `kaiak_queue_rejections_total` | Requests the model's queue refused, by the error code answered: `queue_full`, `queue_timeout` | same; `reason` (`full`, `timeout`) |
+  | `kaiak.retries` | counter | `{attempt}` | `gen_ai.request.model`, `kaiak.backend.id`, `kaiak.attempt.outcome` | `kaiak_retries_total` | Retries sent — attempts after an earlier attempt of the same request failed, counted as each is sent — by that attempt's backend and outcome: `unavailable`, `timeout`, `server_error`, `rate_limited`, `auth_failed`, `model_missing`, `path_missing`, `endpoint_missing` | same; `reason` |
+  | `kaiak.upstream.attempts` | counter | `{attempt}` | `kaiak.backend.id`, `kaiak.deployment.model`, `kaiak.attempt.outcome` | `kaiak_upstream_attempts_total` | Every upstream attempt (first attempts and retries) by its outcome — the circuit breaker's classification, named (below) | same; `outcome` |
+  | `kaiak.upstream.attempt.duration` | histogram | `s` | `kaiak.backend.id` | `kaiak_upstream_attempt_duration_seconds` | Every upstream attempt from its send to its end: a relayed response to the end of its relay (stream or not), a retried or failed attempt to its failure (a held backend error: its status and first event) | same |
+  | `kaiak.request.attempts` | histogram | `{attempt}` | `gen_ai.request.model` | `kaiak_request_attempts` | Attempts per routed request, the first included (buckets 1–10) | same |
+  | `kaiak.circuit.state` | up-down counter, read at collect | `{deployment}` | `kaiak.backend.id`, `kaiak.deployment.model`, `kaiak.circuit.state` | `kaiak_circuit_state` | 1 on the deployment's current state — `closed`, `open` (out of rotation, waiting for a probe) or `half_open` (a probe succeeded; the next request is its trial) — 0 on the other two: three series per configured deployment, however many public models share it (`kaiak.deployment.model` is the model name on the backend — `gen_ai.request.model` is always the public name) | `kaiak_circuit_open`, `kaiak_circuit_half_open` (a 0/1 gauge per state but closed) |
+  | `kaiak.deployment.cooling_down` | up-down counter, read at collect | `{deployment}` | `kaiak.backend.id`, `kaiak.deployment.model` | `kaiak_deployment_cooling_down` | 1 while the deployment cools down after a `429` (Routing and reliability: 429 cooldown), else 0; one series per configured deployment, as `kaiak.circuit.state` | same |
+  | `kaiak.circuit.transitions` | counter | `{transition}` | `kaiak.backend.id`, `kaiak.deployment.model`, `kaiak.circuit.state` | `kaiak_circuit_transitions_total` | Circuit transitions per deployment, by the state entered: `open`, `half_open`, `closed` | same; `to` |
+  | `kaiak.probes` | counter | `{probe}` | `kaiak.backend.id`, `kaiak.probe.result` | `kaiak_probes_total` | Probes of backends with open circuits: `success`, `failure` | same; `result` |
+  | `kaiak.config.loads` | counter | `{load}` | `kaiak.trigger`, `kaiak.config.result` | `kaiak_config_loads_total` | Config loads: `startup`/`sighup`/`control`/`seed`, `applied`/`rejected` | same; `trigger`, `result` |
+  | `kaiak.config.last_applied_timestamp` | gauge | `s` | — | `kaiak_config_last_applied_timestamp_seconds` | Unix time the running config was applied | same |
+  | `kaiak.config.size` | gauge | `By` | — | `kaiak_config_size_bytes` | Size of the running config document, as applied (a file's bytes, a config event's `config`); absent before the first config (Config load cost, below) | same |
+  | `kaiak.config.apply.duration` | histogram | `s` | `kaiak.trigger`, `kaiak.config.result` | `kaiak_config_apply_duration_seconds` | Every config load that had a document, from the start of its validation (syntax, schema, semantic rules, credentials, snapshot build) to the swap or the rejection; attributes as `kaiak.config.loads`. A file that could not be read is counted there, not here | same; `trigger`, `result` |
+  | `kaiak.limits.sync.duration` | histogram | `s` | — | `kaiak_limits_sync_duration_seconds` | The limiter matching its counters to a newly applied config — done inside the first limiter call after the swap (normally a request's admission), under the limiter's lock, so that request waits for it and every other request waits behind it. Calls that find no new config are not observed | same |
+  | `kaiak.connections.refused` | counter | `{connection}` | — | `kaiak_connections_refused_total` | API connections closed at accept because `KAIAK_MAX_CONNECTIONS` were open (0 with no cap) | same |
+  | `kaiak.build.info` | gauge | — | `service.version`, `process.runtime.version` | `kaiak_build_info` | Always 1; `service.version` is the release the binary was built as — the image build links its `git describe` version in (`docs/TECH-STACK.md`, Container images), else the module version Go stamped, else `(devel)`; `process.runtime.version` the Go version it was built with (`go1.27.1`) | same; `version`, `go_version` |
+  | `kaiak.usage.batch.sends` | counter | `{batch}` | `kaiak.usage.batch.result` | `kaiak_usage_batch_sends_total` | Control-plane mode: usage batch sends — `acked`, `rejected` (dropped), `failed` (retried) | same; `result` |
+  | `kaiak.usage.queue.batches` | up-down counter | `{batch}` | — | `kaiak_usage_queue_batches` | Control-plane mode: sealed usage batches not yet acknowledged (in memory) | same |
+  | `kaiak.usage.queue.records` | up-down counter | `{record}` | — | `kaiak_usage_queue_records` | Control-plane mode: records in those batches | same |
+  | `kaiak.usage.queue.size` | up-down counter | `By` | — | `kaiak_usage_queue_size_bytes` | Control-plane mode: encoded size of the unacknowledged records held in memory, what `KAIAK_USAGE_MEMORY_BYTES` bounds — every queued record | `kaiak_usage_queued_bytes` |
+  | `kaiak.usage.dropped_records` | counter | `{record}` | `kaiak.usage.drop_reason` | `kaiak_usage_dropped_records_total` | Control-plane mode: usage records dropped before reaching the control plane — `invalid` (failed the record checks, dropped alone), `memory_bound` (over the in-memory bound) | same; `reason` |
+  | `kaiak.usage.last_ack_timestamp` | gauge | `s` | — | `kaiak_usage_last_ack_timestamp_seconds` | Control-plane mode: Unix time of the last acknowledged batch; absent before one. An ack is not contact for the outage rule (only stream bytes are) | same |
+  | `kaiak.control.connected` | gauge, read at collect | — | — | `kaiak_control_connected` | Control-plane mode: 1 while a config stream is open, else 0 | same |
+  | `kaiak.control.last_contact_timestamp` | gauge, read at collect | `s` | — | `kaiak_control_last_contact_timestamp_seconds` | Control-plane mode: Unix time of the last contact (stream bytes); the process start before any | same |
+  | `kaiak.control.totals_applied_timestamp` | gauge, read at collect | `s` | — | `kaiak_control_totals_applied_timestamp_seconds` | Control-plane mode: Unix time stream totals were last applied; absent before any | same |
+  | `kaiak.control.outage` | gauge, read at collect | — | — | `kaiak_control_outage` | Control-plane mode: 1 while in outage past the grace (priced money-limited models refused) — the stream down, or usage batches unanswered — else 0 | same |
+  | `kaiak.control.config_rejected` | gauge, read at collect | — | — | `kaiak_control_config_rejected` | Control-plane mode: 1 while the latest config received from the control plane was rejected (status `last_rejection` set) and another config stays in force, else 0 (settled 2026-10-07) | same |
+  | `kaiak.usage.records` | counter | `{record}` | usage labels | `kaiak_usage_records_total` | Usage records settled: one per routed request, plus one per retried attempt sent in full and unanswered. Records, not requests — count client requests with `http.server.request.duration`'s count | same |
+  | `kaiak.usage.clamped_records` | counter | `{record}` | — | `kaiak_usage_clamped_records_total` | Usage records whose units or cost passed 2^53 − 1 and were clamped to it (Accounting) | same |
+  | `kaiak.usage.cost_usd` | counter | `{USD}` | usage labels | `kaiak_usage_cost_usd_total` | Estimated cost in USD (the records' nano-dollars ÷ 10⁹, summed exactly as integers) | same |
+  | `gen_ai.client.inference.usage.input_tokens` | counter | `{token}` | usage labels, `gen_ai.token.modality` | `gen_ai_client_inference_usage_input_tokens_total` | **All** input: `tokens_in + tokens_cached + tokens_cache_write`, as the log line's `gen_ai.usage.input_tokens` | `kaiak_usage_tokens_total{unit="tokens_in"}` — meaning changed: it counted input neither read from nor written to the cache |
+  | `gen_ai.client.inference.usage.cache_read.input_tokens` | counter | `{token}` | as above | `gen_ai_client_inference_usage_cache_read_input_tokens_total` | Input read from the cache — part of the input count | `kaiak_usage_tokens_total{unit="tokens_cached"}` |
+  | `gen_ai.client.inference.usage.cache_write.input_tokens` | counter | `{token}` | as above | `gen_ai_client_inference_usage_cache_write_input_tokens_total` | Input written to the cache — part of the input count | `kaiak_usage_tokens_total{unit="tokens_cache_write"}` |
+  | `gen_ai.client.inference.usage.output_tokens` | counter | `{token}` | as above | `gen_ai_client_inference_usage_output_tokens_total` | All output, reasoning included | `kaiak_usage_tokens_total{unit="tokens_out"}` |
+  | `gen_ai.client.inference.usage.reasoning.output_tokens` | counter | `{token}` | as above | `gen_ai_client_inference_usage_reasoning_output_tokens_total` | Reasoning output — part of the output count | `kaiak_usage_tokens_total{unit="tokens_reasoning"}` |
+  | `otel.sdk.processor.log.processed` | counter, read at collect | `{log_record}` | `otel.component.type`, `otel.component.name`, `error.type` | `otel_sdk_processor_log_processed_total` | With OTLP log export on: log records the export's queue is done with — handed to the exporter (no `error.type`), or dropped: `queue_full` (refused by the full queue), `shutdown` (still queued when the final flush ended) (Exporters' own counts, below) | `kaiak_log_export_records_total{outcome="dropped"}` |
+  | `otel.sdk.exporter.log.exported` | counter, read at collect | `{log_record}` | `otel.component.type`, `otel.component.name`, `error.type` | `otel_sdk_exporter_log_exported_total` | With OTLP log export on: log records the exporter sent — accepted by the collector (no `error.type`), or failed, by how (Exporters' own counts) | `kaiak_log_export_records_total{outcome="exported"}`, `{outcome="failed"}` |
+  | `otel.sdk.exporter.metric_data_point.exported` | counter, read at collect | `{data_point}` | `otel.component.type`, `otel.component.name`, `error.type` | `otel_sdk_exporter_metric_data_point_exported_total` | With OTLP metric export on: data points the exporter sent — accepted (no `error.type`), or failed, by how (Exporters' own counts) | — (added) |
 
+  - **Naming** (settled 2026-10-08):
+    - **One definition, two outputs.** A metric's name is its OpenTelemetry name;
+      `/metrics` writes the name Prometheus's own OTLP ingestion makes of it by
+      default (`UnderscoreEscapingWithSuffixes`, the translation of OpenTelemetry's
+      Prometheus compatibility specification): characters outside `[a-zA-Z0-9_:]`
+      become `_`, runs of `_` collapse to one; the unit's suffix is appended unless
+      the name already ends with it — `s` → `_seconds`, `By` → `_bytes`, a unit
+      `x/y` → `_per_<y>` (`{token}/s` → `_per_second`), a unit in braces (`{token}`)
+      adds none; counters end in `_total`; up-down counters are Prometheus gauges,
+      with no `_total`; a histogram is its `_bucket` (with `le`), `_sum` and `_count`
+      lines. Attribute keys become label names by the same character rule
+      (`kaiak.backend.id` → `kaiak_backend_id`, `error.type` → `error_type`). So a
+      gateway scraped and the same gateway pushing to Prometheus's OTLP receiver land
+      as the same series. **No unit `1`**: Prometheus still appends `_ratio` to a
+      gauge with it, which the compatibility specification no longer does — flags
+      and the build info have no unit. Rejected: Prometheus names on `/metrics` and
+      OpenTelemetry names over OTLP — one metric under two names, a scrape query and a
+      push query that differ, and a mapping to keep in step (the log vocabulary's
+      reasoning, Logs: one vocabulary); keeping the `kaiak_` names for both —
+      collectors and backends build their HTTP and GenAI views on the standard names.
+    - **No `target_info`, no `otel_scope_*` labels on `/metrics`** — a named
+      deviation from the compatibility specification, which has exporters write both
+      by default. A scrape config sets `job` and `instance`, which identify the
+      target, and the resource would repeat them: `service.instance.id` is the pod
+      the scrape targets, `service.version` is on `kaiak.build.info`; the scope is
+      one constant (`kaiak`) on every series. Prometheus's OTLP ingestion does not add scope labels by default
+      either. The OTLP export carries the resource and the scope as OTLP does.
+    - **The conventions' names where the meaning matches**, `kaiak.` names for the
+      rest, by the log vocabulary's rules (Logs: naming the rest) — metric names and
+      attribute keys share one hierarchy, so no metric name is also a namespace
+      (`kaiak.backend.active_requests_limit`, not `….active_requests.limit`). From
+      the conventions: `http.server.request.duration` (HTTP, stable), the GenAI usage
+      counters `gen_ai.client.inference.usage.*`, and the SDK's own counts
+      `otel.sdk.*` (Conventions followed, below). **Attribute keys are the log
+      vocabulary's** — a label and a log field naming the same thing have one name;
+      where the log line has none, a new `kaiak.` key: `kaiak.key.root_group`,
+      `kaiak.error.class`, `kaiak.attempt.outcome`, `kaiak.circuit.state`,
+      `kaiak.probe.result`, `kaiak.config.result`, `kaiak.usage.status`,
+      `kaiak.usage.batch.result`, `kaiak.usage.drop_reason`.
+    - **Named deviations from the conventions**:
+      - Request duration buckets are kaiak's (0.005, 0.01, 0.025, 0.05, 0.1, 0.25,
+        0.5, 1, 2.5, 5, 10, 30, 60, 120, 300 s): the HTTP convention's advice stops at
+        10 s, and generations run for minutes.
+      - `error.type` on the request duration is kaiak's error code for every request
+        that ended in an error, `4xx` included (next bullets); the convention sets it
+        for a server's `5xx` only, with the status as its value. The status is
+        already an attribute; the code says which refusal (`model_not_found`,
+        `rate_limit_exceeded`, `queue_full`) at about the same cardinality — each
+        code answers with its own status.
+      - `url.scheme` is always `http`: the API listener speaks plain HTTP; TLS, where
+        there is any, ends before it.
+      - `gen_ai.provider.name`, required by the GenAI convention, is left out for
+        the self-hosted backend types, as on the request line (Logs: the request
+        line): they have no well-known value.
+      - Time to first token and decode rate keep `kaiak.` names: the convention's
+        `gen_ai.client.inference.time_to_first_chunk` counts any first chunk, a
+        role-only one included, and `time_per_output_chunk` measures each chunk,
+        not a whole stream's rate.
+      - Upstream attempts are not `gen_ai.client.inference.duration`: its
+        `gen_ai.request.model` would be the backend's model name, the opposite of
+        every other metric's (the public name, as on the log line); attempts carry
+        the backend's name as `kaiak.deployment.model`.
+      - `otel.sdk.processor.log.processed` adds `error.type` `shutdown` beside the
+        convention's `queue_full` (Exporters' own counts).
+  - **The request duration's attributes** (settled 2026-10-08):
+    `http.request.method` — the method when the HTTP convention knows it, else
+    `_OTHER`, as on the request line (never the method as sent); `url.scheme` —
+    `http`; `http.route` — the route as the Client API documents it, never the path:
+    `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/messages`,
+    `/v1/messages/count_tokens`, `/v1/responses`, `/v1/responses/input_tokens`,
+    `/v1/models`, `/v1/models/{model}`, `/v1/models/{model}/props` (`{model}`
+    literal; the Anthropic-shaped model list and entry count under `/v1/models` and
+    `/v1/models/{model}`), absent for a path no route matched;
+    `http.response.status_code` — the status answered, absent when the client left
+    before any answer; `error.type` — for a request that ended in an error, the
+    request line's `error.type`, or the `kaiak.relay_end` of a response broken off
+    after it started (`client_closed`, `upstream_failed`, …): the value
+    `kaiak.request.errors` carries; `gen_ai.request.model` once the model passed its
+    access check. **A client that left before any answer has no status code**
+    (settled 2026-10-08), as on the request line: its series carries
+    `error.type="client_closed"`, and the count over every series stays the client
+    request count. Rejected: a stand-in status (`499`, or counting it under `4xx`) —
+    a status no response carried, which a collector's HTTP views read as one.
+    `kaiak.errors` (class `client_closed`) and `kaiak.request.errors`
+    (`error.type` `client_closed`) count it too. Rejected: an
+    `endpoint` attribute of kaiak's own names beside the route — the route names
+    the endpoint, and the convention's views read `http.route`.
   - **Alert on usage delivery, not only the stream** (settled 2026-09-25, M16): a
     control plane can keep the config stream open while it no longer takes usage.
     Alert when `kaiak_usage_queue_batches > 0` and `time() -
     kaiak_usage_last_ack_timestamp_seconds` stays above the outage grace (before any
     ack the metric is absent: alert on a queue that stays non-empty), and on
     `kaiak_control_outage == 1`. A config the gateway rejected shows in its
-    status report's `last_rejection`, in `kaiak_config_loads_total{result="rejected"}`,
-    and in `kaiak_control_config_rejected`, which stays 1 for as long as the gateway
-    runs another config than the control plane's current one.
-  - Usage labels (settled 2026-09-27): `key_group` (the key's group ID),
-    `root_group` (its top-level group's ID — the key's group itself when that is
-    top-level), `key_id`, `model` (public name), `status` — `complete`, or
-    `partial` when the record is flagged partial. The two group labels give one
-    fixed-size label set whatever the tree's depth: `root_group` sums a whole
-    branch (a team, the `users` group); `key_group` is the detail. **Not `group`**
-    (settled 2026-09-27): scrape configs commonly set a target label `group`, and
-    with `honor_labels: false` Prometheus renames the gateway's to
-    `exported_group`, so dashboards on `group` silently find nothing.
-    Intermediate levels are not labels — a path of any length would be a label
-    set of any width. A group's `labels` never become metric labels. **No
-    `backend`** (settled 2026-09-25, H9): it multiplied every group's series by the
-    backends serving each model (≈ 240k series per replica at 500 keys × 20 hosts);
-    per-backend traffic is the ops metrics' job (`kaiak_upstream_attempts_total`,
-    `kaiak_backend_in_flight_requests`). The usage record keeps its deployment.
+    status report's `last_rejection`, in
+    `kaiak_config_loads_total{kaiak_config_result="rejected"}`, and in
+    `kaiak_control_config_rejected`, which stays 1 for as long as the gateway runs
+    another config than the control plane's current one.
+  - Usage labels (settled 2026-09-27; OpenTelemetry names, operation and provider
+    2026-10-08): `kaiak.key.group` (the key's group ID), `kaiak.key.root_group` (its
+    top-level group's ID — the key's group itself when that is top-level),
+    `kaiak.key.id`, `gen_ai.request.model` (the public name the client asked for, as
+    on the log line), `gen_ai.operation.name` (`chat`, `text_completion`,
+    `embeddings` — the request line's, from the endpoint: the usage record carries
+    it inside the gateway and never on the wire, since the protocol has no field for
+    it), `gen_ai.provider.name` (from the record's deployment's backend type in the
+    live config, as on the request line; absent for the self-hosted types and for a
+    backend the config has since dropped), `kaiak.usage.status` — `complete`, or
+    `partial` when the record is flagged partial. The token counters add
+    `gen_ai.token.modality`, the GenAI convention's required attribute, always
+    `unknown`: no backend reports tokens by modality. The two group labels give one
+    fixed-size label set whatever the tree's depth: `kaiak.key.root_group` sums a
+    whole branch (a team, the `users` group); `kaiak.key.group` is the detail.
+    **Never a bare `group`** (settled 2026-09-27): scrape configs commonly set a
+    target label `group`, and with `honor_labels: false` Prometheus renames the
+    gateway's to `exported_group`, so dashboards on `group` silently find nothing —
+    `kaiak.key.group` translates to `kaiak_key_group`. Intermediate levels are not
+    labels — a path of any length would be a label set of any width. A group's
+    `labels` never become metric labels. **No `kaiak.backend.id`** (settled
+    2026-09-25, H9): it multiplied every group's series by the backends serving each
+    model (≈ 240k series per replica at 500 keys × 20 hosts); per-backend traffic is
+    the ops metrics' job (`kaiak.upstream.attempts`,
+    `kaiak.backend.active_requests`). The usage record keeps its deployment.
   - **Upstream attempts** (settled 2026-09-25, M4): per-backend health reads from
-    `kaiak_upstream_attempts_total` and `kaiak_upstream_attempt_duration_seconds`,
-    fed once per attempt as its slot is released — the same moment and the same
-    classification as the circuit breaker's report (Routing and reliability:
-    outcome classes), so the two never disagree — not when the request is over:
-    a failed first attempt shows while its retry streams for minutes (settled
-    2026-09-25, D6; the independent daily-operations review's finding 5), and
-    exactly once however the request then ends. Outcomes, a fixed set: success —
-    `success`; failures — `unavailable`, `timeout` (a stream's first-event
-    timeout), `auth_failed`, `model_missing`, `path_missing`, `server_error` (a backend `5xx` but
-    `529`, or a stream opening with an error event naming a failure),
+    `kaiak.upstream.attempts` and `kaiak.upstream.attempt.duration`, fed once per
+    attempt as its slot is released — the same moment and the same classification
+    as the circuit breaker's report (Routing and reliability: outcome classes), so
+    the two never disagree — not when the request is over: a failed first attempt
+    shows while its retry streams for minutes (settled 2026-09-25, D6; the
+    independent daily-operations review's finding 5), and exactly once however the
+    request then ends. `kaiak.attempt.outcome`, a fixed set: success — `success`;
+    failures — `unavailable`, `timeout` (a stream's first-event timeout),
+    `auth_failed`, `model_missing`, `path_missing`, `server_error` (a backend `5xx`
+    but `529`, or a stream opening with an error event naming a failure),
     `broke_off` (broken off, stalled or incomplete after the first event); neutral
-    — `endpoint_missing` (settled 2026-10-06), `response_timeout` (a non-stream response timeout, before or after the first
-    bytes; before them it is a failure for a half-open trial and from the 3rd in a
-    row — Routing and reliability: outcome classes), `rate_limited` (a backend `429` or `529`,
-    or an error event naming the backend busy), `client_error` (another backend `4xx`, a
-    provider's refusal before sending — `price_option_unsupported`, settled 2026-10-06 —
-    or an error event naming the caller's fault),
-    `canceled` (the client left, or the drain cut, before the first event),
-    `internal` (a gateway fault building the upstream request). Label values are
-    config names and the fixed outcomes only, never client input; every configured
-    deployment has all fourteen series from the start, at 0 (next bullet).
+    — `endpoint_missing` (settled 2026-10-06), `response_timeout` (a non-stream
+    response timeout, before or after the first bytes; before them it is a failure
+    for a half-open trial and from the 3rd in a row — Routing and reliability:
+    outcome classes), `rate_limited` (a backend `429` or `529`, or an error event
+    naming the backend busy), `client_error` (another backend `4xx`, a provider's
+    refusal before sending — `price_option_unsupported`, settled 2026-10-06 — or an
+    error event naming the caller's fault), `canceled` (the client left, or the
+    drain cut, before the first event), `internal` (a gateway fault building the
+    upstream request). Attribute values are config names and the fixed outcomes
+    only, never client input; every configured deployment has all fourteen series
+    from the start, at 0 (Series at 0).
+  - **Circuit state, one family** (settled 2026-10-08): `kaiak.circuit.state` has a
+    series per deployment and state — `closed`, `open`, `half_open` — 1 on the
+    current one, the conventions' pattern for a state (`hw.status`,
+    `k8s.node.condition.status`: one series per state, 1 on the current). Summed
+    by state it counts the deployments in each, an alert on `open` reads one
+    series, and closed is visible too. An up-down counter, as those are: summed
+    over deployments or gateways it counts. Rejected: a 0/1 gauge per state but
+    closed — a recovered deployment showed only as zeros, and a new state would
+    have been a new family. The cooldown is not a circuit state (a `429` leaves
+    the circuit as it is) and keeps its own 0/1 family.
   - **Series at 0** (settled 2026-09-25, E5; the audit's N-O4): every counter and
-    histogram whose label values are fixed or come from the config exists at 0
+    histogram whose attribute values are fixed or come from the config exists at 0
     from startup, and a config apply creates those of its new models, deployments
     and backends — so `increase(...) > 0` sees the first rejection, opening or
-    burst instead of a series born at 1. At startup: `kaiak_errors_total` per class,
-    `kaiak_limit_rejections_total` per scope kind × type,
-    `kaiak_config_loads_total` and `kaiak_config_apply_duration_seconds` per
-    trigger × result (all five triggers, whichever mode),
-    `kaiak_limits_sync_duration_seconds`, the usage-delivery counters per result and drop reason,
-    `kaiak_usage_clamped_records_total`. Per applied config: per model
-    `kaiak_queue_rejections_total` × reason, `kaiak_queue_wait_seconds`,
-    `kaiak_request_attempts`; per deployment `kaiak_upstream_attempts_total` ×
-    outcome and `kaiak_circuit_transitions_total` × state; per deployment's backend
-    `kaiak_upstream_attempt_duration_seconds` and `kaiak_probes_total` × result;
-    per model × backend of its deployments `kaiak_retries_total` × reason,
-    `kaiak_time_to_first_token_seconds`, `kaiak_output_tokens_per_second`.
-    Exceptions, created on first use: the **usage metrics** — their group and key
-    labels come from traffic, and every group × key × model at 0 is exactly the
-    cardinality the key-ID and group switches exist to avoid; and
-    `kaiak_request_duration_seconds` — its `status_class` comes from the answer
-    (count client requests with its `_count`, alert on `kaiak_errors_total`).
+    burst instead of a series born at 1. At startup: `kaiak.errors` per class,
+    `kaiak.limit.rejections` per scope × type, `kaiak.config.loads` and
+    `kaiak.config.apply.duration` per trigger × result (all four triggers, whichever
+    mode), `kaiak.limits.sync.duration`, `kaiak.connections.refused`, the
+    usage-delivery counters per result and drop reason,
+    `kaiak.usage.clamped_records`; with OTLP export on, each exporter's accepted
+    series (no `error.type`) and the log queue's three (handed over, `queue_full`,
+    `shutdown`). Per applied config: per model
+    `kaiak.queue.rejections` × error code, `kaiak.queue.wait_duration`,
+    `kaiak.request.attempts`; per deployment `kaiak.upstream.attempts` × outcome and
+    `kaiak.circuit.transitions` × state; per deployment's backend
+    `kaiak.upstream.attempt.duration` and `kaiak.probes` × result; per model ×
+    backend of its deployments `kaiak.retries` × outcome,
+    `kaiak.time_to_first_token`, `kaiak.output_token_rate`. Read at collect, from the
+    live config: `kaiak.backend.active_requests` per backend, `kaiak.queue.size` per
+    model, `kaiak.circuit.state` per deployment × its three states,
+    `kaiak.deployment.cooling_down` per deployment. Exceptions, created on first
+    use: the **usage metrics** — their group and key attributes come from traffic,
+    and every group × key × model at 0 is exactly the cardinality the key-ID and
+    group switches exist to avoid; `kaiak.request.errors` (Errors by key);
+    `http.server.request.duration` — its status code and `error.type` come from the
+    answer (count client requests with its count, alert on `kaiak.errors`); and the
+    exporters' failure series — their `error.type` includes the collector's status.
     Series of models and deployments a reload drops stay until restart, as every
     written series does (counters never go back). Body and header refusals have no
-    family of their own: bodies refused are `kaiak_errors_total`
-    (`invalid_request`, `server_busy`), oversize headers are answered `431` by the
-    HTTP server before the pipeline and not counted.
-  - `endpoint`: `chat_completions`, `completions`, `embeddings`, `messages`,
-    `messages_count_tokens`, `responses`, `responses_input_tokens` (settled
-    2026-10-06), `list_models`, `get_model`, `model_props` (the Anthropic-shaped
-    model list counts under `list_models` and `get_model`). `status_class`: `2xx`, `4xx` (499 included), `5xx`.
-    **A client that left before any answer stays `4xx`** (settled 2026-10-05): the
-    request line leaves out its status (Logs: the request line), the metric keeps
-    its own rule — every client request lands in one `status_class`, so `_count`
-    stays the client request count. `kaiak_errors_total{class="client_closed"}` and
-    `kaiak_request_errors_total{code="client_closed"}` count it, unchanged.
-  - Error classes, from the Client API table: `auth` (missing/invalid key),
+    family of their own: bodies refused are `kaiak.errors` (`invalid_request`,
+    `server_busy`), oversize headers are answered `431` by the HTTP server before
+    the pipeline and not counted.
+  - `kaiak.error.class` values, from the Client API table: `auth` (missing/invalid key),
     `not_found` (`model_not_found`, `unknown_url`), `invalid_request` (the other
     `400`s, `413`, `405`), `rate_limited` (`rate_limit_exceeded`,
     `concurrency_limit_exceeded`), `budget_exceeded`, `budget_unavailable`
@@ -2341,59 +2489,77 @@ own, and a client sending repeats is broken either way.
     faults, because its remedy differs (more capacity or quota, not a fix). Backend
     `401`/`403` stay `upstream_error` via `upstream_auth_failed`: the gateway's
     credential is the platform's problem.
-  - **Only config names become label values**: the model only once it passed the
-    model-access check, the endpoint only once the path matched one; otherwise the
-    label is left out. A client cannot mint series by sending made-up model names or
-    paths. No label ever carries a key, a secret or content.
-  - An empty label value is left out of the series (Prometheus reads it as the same
-    thing): with `group_label` off, series have no `key_group`; with
-    `key_id_label` off, no `key_id`.
-  - **Cardinality** (settled 2026-09-25, H9). Usage series per replica ≈
-    `label sets × models × statuses × 7`, where 7 = records 1 + cost 1 + tokens 5
-    (one per unit; settled 2026-10-02, with `tokens_cache_write`), statuses ≤ 2
-    (`complete`, `partial`), models = the models each
-    label set actually used, and label sets = the distinct group/key combinations
-    seen: the keys used with `key_id_label` on (a key belongs to one group, and a
-    group to one top-level group, so the group labels add nothing); with it off, the
-    groups that own keys; with `group_label` off as well, the top-level groups (every
-    key under one top-level group in one set). **`root_group` bounds series only
-    when the top-level groups are few** (settled 2026-09-27): a tree whose
-    top-level groups are themselves many — people as top-level groups, each with
-    a key — has as many `root_group` values as groups, and `group_label` off
-    saves nothing; such a tree puts them under one parent (a `users` group) to
-    gain from the switch. Hosts do not enter: usage carries no
-    backend. Worked example — 20 hosts, 500 keys: 450 personal keys, one per person,
-    each person a group under a top-level `users` group, and 50 workload keys, one
-    per workload group, in team → project → env → workload branches under 5
-    top-level team groups; 3 models per key: both labels on, 500 × 3 × 2 × 7 =
-    21,000 series; `key_id_label` off, 500 groups — the same 21,000 here, since every
-    key has its own group; `group_label` off too, 6 top-level groups (5 teams +
-    `users`), 6 × 3 × 2 × 7 = 252. Multiply by the gateway replicas for the metrics
-    store's total, and switch `key_id_label` off first, then `group_label`, when the
-    total outgrows what the store is sized for. Series stay until restart once written
-    (below). Ops series: request duration `endpoint` × `model` × `status_class` ×
-    18 lines (15 buckets + `+Inf`, sum, count); first-token and decode-rate
-    histograms model × backend × 15 and 13 lines; queue wait model × 17 lines;
-    attempts model × 13 lines; retries model × backend × 8 reasons; limit
-    rejections 8 (2 scope kinds × 4 types); upstream attempts
-    deployments × ≤ 14 outcomes; attempt duration backends × 18 lines; config apply
-    duration 10 × 18 lines (5 triggers × 2 results) and limiter sync 18 — all bounded
-    by the config, never by clients or keys.
+  - **Only config names become attribute values**: the model only once it passed
+    the model-access check, the route only once the path matched one; the method
+    only as one of the convention's known methods or `_OTHER`; otherwise the
+    attribute is left out. A client cannot mint series by sending made-up model
+    names, paths or methods. No attribute ever carries a key, a secret or content.
+  - An empty attribute value is left out of the series, on `/metrics` and over OTLP
+    alike (Prometheus reads an empty label as absent): with `group_label` off,
+    series have no `kaiak.key.group`; with `key_id_label` off, no `kaiak.key.id`.
+  - **Cardinality** (settled 2026-09-25, H9; recounted 2026-10-08 for the
+    operation, the provider and the request duration's attributes). Usage series
+    per replica ≈ `label sets × models × operations × providers × statuses × 7`,
+    where 7 = records 1 + cost 1 + the 5 token counters (`gen_ai.token.modality`
+    is one value, `unknown`), statuses ≤ 2 (`complete`, `partial`), models = the
+    models each label set actually used, operations and providers = those each
+    such key × model pair actually used — at most 3 operations (`chat`,
+    `text_completion`, `embeddings`) and the provider kinds among the model's
+    deployments, but usually one each: an embedding model is used for `embeddings`
+    alone, a chat model for `chat` (`text_completion` only through the completions
+    endpoint), and a model's deployments usually share one backend type or are all
+    self-hosted (no provider at all). Label sets = the distinct group/key
+    combinations seen: the keys used with `key_id_label` on (a key belongs to one
+    group, and a group to one top-level group, so the group labels add nothing);
+    with it off, the groups that own keys; with `group_label` off as well, the
+    top-level groups (every key under one top-level group in one set).
+    **`kaiak.key.root_group` bounds series only when the top-level groups are few**
+    (settled 2026-09-27): a tree whose top-level groups are themselves many —
+    people as top-level groups, each with a key — has as many `kaiak.key.root_group`
+    values as groups, and `group_label` off saves nothing; such a tree puts them
+    under one parent (a `users` group) to gain from the switch. Hosts do not enter:
+    usage carries no backend. Worked example — 20 hosts, 500 keys: 450 personal
+    keys, one per person, each person a group under a top-level `users` group, and
+    50 workload keys, one per workload group, in team → project → env → workload
+    branches under 5 top-level team groups; 3 models per key, each used for one
+    operation through one provider: both labels on, 500 × 3 × 2 × 7 = 21,000
+    series; `key_id_label` off, 500 groups — the same 21,000 here, since every key
+    has its own group; `group_label` off too, 6 top-level groups (5 teams +
+    `users`), 6 × 3 × 2 × 7 = 252. A model reached through both `chat` and
+    `text_completion`, or served by two providers, doubles its share. Multiply by
+    the gateway replicas for the metrics store's total, and switch `key_id_label`
+    off first, then `group_label`, when the total outgrows what the store is sized
+    for. Series stay until restart once written (below). Ops series: request
+    duration routes × models × the status / `error.type` pairs actually answered ×
+    18 lines (15 buckets + `+Inf`, sum, count) — a success is one pair (`200`, no
+    `error.type`), each error code answers with its status (Client API table), a
+    relayed backend error is its status and class; a route a model is not used
+    through has no series, the method varies only on `405` refusals, the scheme
+    never, and a refusal before the route or model is known has neither;
+    first-token and decode-rate histograms model × backend × 15 and 13 lines; queue
+    wait model × 17 lines; attempts model × 13 lines; retries model × backend × 8
+    outcomes; limit rejections 8 (2 scope kinds × 4 types); upstream attempts
+    deployments × ≤ 14 outcomes; circuit state deployments × 3; cooling down
+    deployments; attempt duration backends × 18 lines; config apply duration 8 ×
+    18 lines (4 triggers × 2 results) and limiter sync 18; the exporters' own counts
+    a handful per export (accepted, and the failures met) — all bounded by the
+    config, never by clients or keys.
 - **Config load cost** (settled 2026-10-01): large configs (some 20 models over 30
   deployments, thousands of keys) are measured before anything about loading them
-  is optimized — `kaiak_config_size_bytes`, `kaiak_config_apply_duration_seconds`,
-  `kaiak_limits_sync_duration_seconds` and the `kaiak.config.size` / `kaiak.duration` fields on the
+  is optimized — `kaiak.config.size`, `kaiak.config.apply.duration`,
+  `kaiak.limits.sync.duration` and the `kaiak.config.size` / `kaiak.duration` fields on the
   load lines. The apply is timed from the start of its validation, after any wait for
   another load, to the swap or the rejection; the limiter's sync is timed on its
   own, since it runs later, on the request path, and is the cost requests feel. Both
   histograms share buckets from 0.5 ms to 30 s (0.0005, 0.001, 0.0025, 0.005, 0.01,
   0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30; slower in `+Inf`), resolving a
-  small config's sub-millisecond load and a large one's seconds. `result` splits the
-  apply histogram because a rejection stops at its first failing stage (a syntax
-  error in microseconds): mixed in, rejections would hide what an applied config
-  costs. No labels beyond `trigger` and `result` — nothing per key, group or
-  backend. Rejected: a size or duration per stage (parse, checks, snapshot build,
-  per config section) — kept out until a measurement says which part costs.
+  small config's sub-millisecond load and a large one's seconds.
+  `kaiak.config.result` splits the apply histogram because a rejection stops at its
+  first failing stage (a syntax error in microseconds): mixed in, rejections would
+  hide what an applied config costs. No attributes beyond `kaiak.trigger` and
+  `kaiak.config.result` — nothing per key, group or backend. Rejected: a size or
+  duration per stage (parse, checks, snapshot build, per config section) — kept out
+  until a measurement says which part costs.
 - **Two paths, not derived** (principle 7; settled 2026-09-24): usage metrics are
   handed each settled record by accounting as it is produced —
   the same settlement the usage record carries, so dashboards and billing never count
@@ -2401,30 +2567,61 @@ own, and a client sending repeats is broken either way.
   that reset on restart and are never read back into a record; records never come
   from metrics. Ops metrics are observed by the request pipeline itself; the decode
   rate reads the settled `tokens_out` only as an input.
-- **Errors by key** (settled 2026-10-01): `kaiak_request_errors_total` counts every
-  request that `kaiak_errors_total` counts, labelled as the usage metrics are —
-  `key_group`, `root_group`, `key_id` (all absent without a valid key) and `model`
-  (only once it passed the access check, so a client cannot add names) — and by
-  `code`: the request log line's `error.type`, or the `kaiak.relay_end` of a response
-  broken off after it started (`client_closed`, `upstream_failed`, …). A team's
-  dashboard then shows its errors and refusals beside its usage: the usage metrics
-  see only settled records, so a refusal before routing never reached them and a
-  routed failure looked like an empty success. Its series follow the keys that met
-  an error and the codes they met (a fixed set): within the usage series' bound
-  (Cardinality) times the codes actually seen. Rejected: these labels on
-  `kaiak_errors_total` — its classes are present at 0 from startup for fleet
-  alerts, and a per-key family cannot be; carrying outcomes to the control plane
-  in usage records and batches — a protocol change, deferred until an app built on
-  `kaiak-control` needs them in its own store (`docs/BACKLOG.md`).
+- **Errors by key** (settled 2026-10-01): `kaiak.request.errors` counts every
+  request that `kaiak.errors` counts, labelled as the usage metrics are —
+  `kaiak.key.group`, `kaiak.key.root_group`, `kaiak.key.id` (all absent without a
+  valid key) and `gen_ai.request.model` (only once it passed the access check, so
+  a client cannot add names) — and by `error.type`: the request log line's
+  `error.type`, or the `kaiak.relay_end` of a response broken off after it started
+  (`client_closed`, `upstream_failed`, …). A team's dashboard then shows its errors
+  and refusals beside its usage: the usage metrics see only settled records, so a
+  refusal before routing never reached them and a routed failure looked like an
+  empty success. Its series follow the keys that met an error and the codes they
+  met (a fixed set): within the usage series' bound (Cardinality) times the codes
+  actually seen. Rejected: these attributes on `kaiak.errors` — its classes are
+  present at 0 from startup for fleet alerts, and a per-key family cannot be;
+  carrying outcomes to the control plane in usage records and batches — a protocol
+  change, deferred until an app built on `kaiak-control` needs them in its own
+  store (`docs/BACKLOG.md`).
 - **Key-ID and group switches** (key ID settled 2026-09-24; group 2026-09-27):
   `global.metrics.key_id_label` and `global.metrics.group_label` (default on) are
   read from the live config at each record (and at each error, for
-  `kaiak_request_errors_total`). Off, new series carry no `key_id` (no
-  `key_group`; `root_group` stays — it keeps a per-branch view, bounded by the
-  top-level groups: Cardinality); series already written with one stay until
-  restart (counters never go back, and dropping them would make sums fall).
-  Switching one off stops growth at once; a restart clears the old series. The
-  usage record always keeps its key ID and group path.
+  `kaiak.request.errors`). Off, new series carry no `kaiak.key.id` (no
+  `kaiak.key.group`; `kaiak.key.root_group` stays — it keeps a per-branch view,
+  bounded by the top-level groups: Cardinality); series already written with one
+  stay until restart (counters never go back, and dropping them would make sums
+  fall). Switching one off stops growth at once; a restart clears the old series.
+  The usage record always keeps its key ID and group path.
+- **Exporters' own counts** (settled 2026-10-08): with an OTLP export on, its
+  exporter counts what it handled under OpenTelemetry's conventions for an SDK's own
+  metrics (`otel.sdk.*`, development stage) — read at collect from the exporter's
+  counters, so they reach `/metrics` and the metric export alike.
+  - `otel.component.type` names the component: `batching_log_processor` (the log
+    export's queue), `otlp_http_json_log_exporter`, `otlp_http_json_metric_exporter`
+    — the convention's well-known values; `otel.component.name` is
+    `<type>/0`, the convention's form for the process's one instance of each.
+  - `error.type` on a failed export, a small fixed set in the gateway's own words
+    (Logs: no remote text): the collector's HTTP status as a string (`503`,
+    `400`, `302`) when the status ended the export — one not retried, or the last
+    when the retries ran out of time; `rejected` — a partial success's rejected
+    records or points; `malformed_response` — an answer that could not be read as
+    the signal's response (a `2xx` with a login page or truncated JSON, a malformed
+    HTTP answer); `timeout` — the export's time ran out during an attempt (its
+    timeout, or the bound at exit); and a connection that failed by its class:
+    `connection_refused`, `name_not_resolved`, `host_unreachable`,
+    `connection_closed`, `tls_failure`, else `connection_failed` — the classes the
+    `… export failing` lines name in words. The status string is the HTTP
+    convention's own `error.type` for a failed status; the classes say what to fix
+    (an address, a certificate, a collector's capacity) at a cardinality the
+    convention asks for. Rejected: one value for every failure — an operator could
+    not tell a wrong address from an overloaded collector without stderr.
+  - The log queue's `error.type`: `queue_full` (the convention's) and `shutdown`
+    (kaiak's: still queued when the final flush ended — the convention names only
+    the full queue, and a drop at exit is a different fix: a longer termination
+    grace, not a bigger queue).
+  - An export's own outcome is counted after it ends, so it shows in the next
+    export and the next scrape; the final export's outcome is in its stderr line
+    only.
 - **Logs**: every log line is one structured record on stderr — a JSON object per
   line (`KAIAK_LOG_FORMAT=json`, the default) or `key=value` text — carrying the
   time, the level (`INFO` and above: nothing below is written), the message and the
@@ -2473,20 +2670,25 @@ own, and a client sending repeats is broken either way.
     the input count is computed, not renamed: `gen_ai.usage.input_tokens` is all
     input, cache reads and writes its parts. One rename for anyone querying the
     previous names, made before the first release (no compatibility: no
-    double-writing of old and new names). Usage records, the control protocol and
-    the Prometheus metrics keep their own names — each is its own contract.
-    Rejected: translating names in the OTLP exporter only — one field would have
+    double-writing of old and new names). The metrics take the same vocabulary
+    (settled 2026-10-08; Metric list: naming); usage records and the control
+    protocol keep their own names — each is its own contract. Rejected: translating names in the OTLP exporter only — one field would have
     two names, a stderr query and a collector query would differ, and the
     translation table would be a second contract to keep in step; keeping kaiak's
     names — collectors' processors and backends' HTTP and GenAI views read the
     standard names.
-  - **Conventions followed**: HTTP, URL, error, exception, server, service, process
-    and file attributes from `open-telemetry/semantic-conventions` v1.44.0
-    (2026-08-04; the definitions used are unchanged on its `main` on 2026-10-05);
-    GenAI attributes from `open-telemetry/semantic-conventions-genai`, `main` at
-    commit `e07f4eb` (2026-10-02) — a development-stage convention with no release
-    yet. A later rename in a convention is one change to these tables and their
-    tests.
+  - **Conventions followed**, by the log attributes and the metrics alike: HTTP,
+    URL, error, exception, server, service, process and file attributes, the
+    `http.server.request.duration` metric (stable) and the SDK's own metrics
+    (`otel.sdk.*`, `otel.component.*`; development stage) from
+    `open-telemetry/semantic-conventions` v1.44.0 (2026-08-04; the definitions used
+    are unchanged on its `main` on 2026-10-05); GenAI attributes and metrics from
+    `open-telemetry/semantic-conventions-genai`, `main` at commit `4f85037`
+    (2026-10-06, which named the client metrics `gen_ai.client.inference.*`) — a
+    development-stage convention with no release yet; the Prometheus names by the
+    OpenTelemetry specification's Prometheus compatibility rules (stable) as
+    Prometheus applies them (Metric list: naming). A later rename in a convention is
+    one change to these tables and their tests.
   - **Naming the rest** (settled 2026-10-05): every non-standard name starts with
     `kaiak.`. An object with several properties is a namespace
     (`kaiak.limit.scope`, `kaiak.limit.used`); a single fact is one underscored
@@ -2514,8 +2716,9 @@ own, and a client sending repeats is broken either way.
       dollars. OpenTelemetry has no convention for currency, and a currency is not
       a unit the conventions leave out of names — a cost without one is ambiguous.
     - Times are RFC 3339 strings in UTC.
-    - The rule is for log attributes only: configuration keeps its names and
-      units (`KAIAK_*_MS` and `KAIAK_*_BYTES` variables, and the config's `*_ms`
+    - The rule is for log attributes and metrics (whose units the Metric list
+      states, in OpenTelemetry's notation: `s`, `By`, `{token}`): configuration
+      keeps its names and units (`KAIAK_*_MS` and `KAIAK_*_BYTES` variables, and the config's `*_ms`
       and `*_bytes` fields, are whole milliseconds and bytes).
   - **The request line**: one per client request, message `request`, written after
     settlement as the request's last act. It is not an OpenTelemetry event: its
@@ -2530,10 +2733,10 @@ own, and a client sending repeats is broken either way.
     | `http.request.method` | `method` | always | The method when it is one the HTTP convention knows (`GET`, `POST`, `PUT`, `DELETE`, `HEAD`, `OPTIONS`, `PATCH`, `CONNECT`, `TRACE`, `QUERY`), else `_OTHER` — the convention's rule |
     | `http.request.method_original` | `method` | the method is `_OTHER` | The method as sent, clipped |
     | `url.path` | `path` | always | The path, clipped |
-    | `http.response.status_code` | `status` | a response was sent | The status answered. Absent when the client left before any answer — `error.type` is `client_closed` (settled 2026-10-05, the 2026-10-05 review's L6): the HTTP convention sets the status only when a response was sent. Rejected: nginx's `499` — a status no response carried, read by a collector's HTTP views as one. The metrics keep their own rule (Metric list: `status_class`) |
+    | `http.response.status_code` | `status` | a response was sent | The status answered. Absent when the client left before any answer — `error.type` is `client_closed` (settled 2026-10-05, the 2026-10-05 review's L6): the HTTP convention sets the status only when a response was sent. Rejected: nginx's `499` — a status no response carried, read by a collector's HTTP views as one. `http.server.request.duration` follows the same rule (Metric list: the request duration's attributes) |
     | `kaiak.request.duration` | `latency_ms` | always | Arrival to the end of the response, in seconds |
     | `kaiak.key.id` | `key_id` | once known | The key ID — a refused key's too, when it has one |
-    | `kaiak.key.group` | `group` | once authenticated (settled 2026-09-27) | The key's group: its config ID, the usage metrics' `key_group`; never its `labels` |
+    | `kaiak.key.group` | `group` | once authenticated (settled 2026-09-27) | The key's group: its config ID, as on the usage metrics; never its `labels` |
     | `kaiak.auth.failure` | `auth_failure` | a `401` | `missing_key`, `malformed_key`, `unknown_key`, `disabled_key`, `expired_key` |
     | `gen_ai.request.model` | `model` | once known | The model the client asked for — the public name, or a refused name — clipped |
     | `gen_ai.request.stream` | `stream` | once the model passed its access check (body endpoints) | The client's `stream` flag |
@@ -2549,7 +2752,7 @@ own, and a client sending repeats is broken either way.
     | `kaiak.backend.id` | `backend` | once routed | The last attempt's backend (config ID) |
     | `kaiak.backend.type` | — (added) | once routed | Its type: `openai`, `azure-openai`, `vllm`, `llama-server`, `anthropic`, `azure-anthropic`, `openai-compatible` |
     | `gen_ai.provider.name` | — (added) | once routed to an `openai`, `azure-openai`, `anthropic` or `azure-anthropic` backend | `openai`, `azure.ai.openai`, `anthropic`, `anthropic` — the convention's well-known values. Claude in Foundry is Anthropic's service and API on Azure, and no Azure value names it (`azure.ai.inference` is Azure's Model Inference API), so it is `anthropic` too (settled 2026-10-06). The self-hosted types have no well-known value and leave it out: `kaiak.backend.type` names every type |
-    | `kaiak.deployment.model` | `deployment_model` | once routed | The last attempt's model name on its backend (`deployment_model` on the metrics). Not `gen_ai.response.model`: that is the name the backend's answer reports, which the gateway does not read |
+    | `kaiak.deployment.model` | `deployment_model` | once routed | The last attempt's model name on its backend (the metrics' attribute too). Not `gen_ai.response.model`: that is the name the backend's answer reports, which the gateway does not read |
     | `kaiak.attempts` | `attempts` | once routed | Attempts made, the first included |
     | `kaiak.tried` | `tried` | more than one attempt | Every attempt in order as `backend/deployment_model:outcome`, the outcome the backend's status or the gateway's error code (`down/m:upstream_unavailable,local/m:200`) |
     | `kaiak.retry_refused` | `retry_refused` | a retry got no slot, or the model's retry budget was spent | `queue_full`, `queue_timeout`, `no_deployment_left`, `retry_budget` |
@@ -2592,6 +2795,7 @@ own, and a client sending repeats is broken either way.
     | `kaiak.config.file` | `config_file` | `kaiak starting` in file mode: `KAIAK_CONFIG_FILE` |
     | `kaiak.control.url` | `control_url` | `kaiak starting` in control-plane mode, and every line of the control-plane client: the control plane's URL, credentials redacted |
     | `kaiak.log_export.endpoint` | — (added) | `kaiak starting` with OTLP log export on: the endpoint's `host:port`; absent when export is off. Never a header |
+    | `kaiak.metric_export.endpoint` | — (added 2026-10-08) | `kaiak starting` with OTLP metric export on: the endpoint's `host:port`, as `kaiak.log_export.endpoint`; absent when export is off |
     | `kaiak.signal` | `signal` | `second stop signal: skipping the remaining drain` |
     | `kaiak.config.max_request_body_size`, `kaiak.body_budget.size` | `max_request_body_bytes`, `body_memory_bytes` | The warning that the config's body cap (`max_request_body_bytes`) exceeds the body budget (`KAIAK_BODY_MEMORY_BYTES`) — both in bytes |
     | `kaiak.control.totals_wait` | `wait_ms` | `waiting for the first totals`: the wait's bound, in seconds |
@@ -2621,7 +2825,7 @@ own, and a client sending repeats is broken either way.
     | `kaiak.circuit.open_duration` | `open_ms` | `circuit half-open`, `circuit closed`: how long it was open, in seconds |
     | `kaiak.circuit.half_opened` | `circuits_half_open` | `probe succeeded`: circuits it made half-open |
     | `kaiak.backend.base_url`, `kaiak.backend.base_url_hint` | `base_url`, `hint` | `the backend has no models list at its base_url`: the URL and the suggested fix |
-    | `kaiak.endpoint`, `kaiak.request.id` | — (added 2026-10-06) | `the backend's server lacks an endpoint its type serves: an older version?` (once per probe interval and backend; Providers → An endpoint missing from a server): the endpoint, by its metric name (`messages`, `responses`, …), and the request that found it — with `kaiak.backend.id` and `kaiak.deployment.model` |
+    | `kaiak.endpoint`, `kaiak.request.id` | — (added 2026-10-06) | `the backend's server lacks an endpoint its type serves: an older version?` (once per probe interval and backend; Providers → An endpoint missing from a server): the endpoint, by its name (`messages`, `responses`, …; Request pipeline's endpoint table), and the request that found it — with `kaiak.backend.id` and `kaiak.deployment.model` |
     | `kaiak.backend.type` | — (added 2026-10-06) | `model check not available for this backend type` (`azure-anthropic` and `azure-openai`, whose probe cannot tell which models they serve): the type — with `kaiak.backend.id`; the request line's field of the same name (above) |
     | `kaiak.drain.grace`, `kaiak.drain.timeout`, `kaiak.drain.flush_reserve`, `kaiak.drain.cut_after` | `grace`, `timeout`, `flush_reserve`, `cut_after` (duration strings) | `draining`: the times in force, in seconds (Lifecycle → Draining) |
     | `kaiak.drain.in_flight` | `in_flight`; `requests` on `drain: cutting off in-flight requests` | Requests in flight |
@@ -2630,10 +2834,11 @@ own, and a client sending repeats is broken either way.
     | `server.address`, `server.port` | `addr` (`host:port`) | `listening`: the bound address and port, split |
     | `kaiak.listener.shutdown_timeout` | `timeout` (a duration string) | `shutdown timed out; closing open connections`: the timeout, in seconds |
     | `kaiak.log_export.failed`, `kaiak.log_export.dropped` | — (added) | `log export failing` (stderr only; OTLP log export, below): records failed and dropped since the previous such line; with `http.response.status_code` (the collector's last answer, when it answered) and `exception.message` (the last error, in the gateway's own words — never the collector's text) |
+    | `kaiak.metric_export.failed` | — (added 2026-10-08) | `metric export failing` (OTLP metric export, below): data points failed since the previous such line; with `http.response.status_code` and `exception.message`, as `log export failing` |
 
     The HTTP server's own messages (`http: …`, at warn level) carry no attributes.
 - **OTLP log export** (settled 2026-10-05): with an OTLP endpoint configured
-  (Configuration sources: OTLP log export), every log line also goes to an
+  (Configuration sources: OTLP export), every log line also goes to an
   OpenTelemetry collector over OTLP/HTTP with JSON encoding — for infrastructure
   that cannot read container output. stderr is always written; the export is beside
   it, never instead of it. Configured per gateway from the standard `OTEL_*`
@@ -2644,7 +2849,7 @@ own, and a client sending repeats is broken either way.
     tables above). Nothing is added per record but what OTLP's shape needs.
   - **Resource**: `service.name` (`OTEL_SERVICE_NAME`, else a `service.name` in
     `OTEL_RESOURCE_ATTRIBUTES`, else `kaiak`), `service.version` (the build version,
-    as `kaiak_build_info` reports it), `service.instance.id` (the instance ID —
+    as `kaiak.build.info` reports it), `service.instance.id` (the instance ID —
     `KAIAK_INSTANCE_ID`, default the hostname — known at start in every mode, so in
     the resource from the first record), plus every other attribute of
     `OTEL_RESOURCE_ATTRIBUTES`. `service.version` and `service.instance.id` are the
@@ -2711,12 +2916,13 @@ own, and a client sending repeats is broken either way.
     - **A full queue drops the newest records** and counts them. The queue is the
       backlog of an outage: when the collector is back, the oldest records go first.
       Rejected: dropping the oldest — the start of an outage is what explains it.
-    - Counted in `kaiak_log_export_records_total{outcome}` (Metric list):
-      `exported` (accepted by the collector), `failed` (in a batch given up: an
-      unretried status, a redirect, an unreadable answer, retries out of time, a
-      partial success's rejections),
-      `dropped` (never sent: refused by a full queue, or still queued when the final
-      flush ended).
+    - Counted (Metric list: exporters' own counts) in
+      `otel.sdk.exporter.log.exported` — accepted by the collector, or failed by
+      `error.type` (in a batch given up: an unretried status, a redirect, an
+      unreadable answer, retries out of time, a partial success's rejections) — and
+      `otel.sdk.processor.log.processed` — handed to the exporter, or never sent:
+      `queue_full` (refused by a full queue), `shutdown` (still queued when the
+      final flush ended).
     - **Export problems go to stderr only**, never into the export (no feedback
       loop): one `log export failing` line (warn) at the first failure or drop,
       then at most one a minute while they continue, with the records failed and
@@ -2729,9 +2935,9 @@ own, and a client sending repeats is broken either way.
       are never silent.
   - **At exit** (settled 2026-10-05): the sender keeps exporting through the drain,
     each line as it is written. Usage comes first — usage is the record, logs are
-    not: the final flush runs after the usage flush and the final status
-    (Lifecycle → Draining, step 5), as the process's last act, after `kaiak
-    stopped`. It sends what is queued until the queue is empty, bounded by the
+    not: the final flush runs after the usage flush, the final status and the
+    final metric export (Lifecycle → Draining, step 5), as the process's last act,
+    after `kaiak stopped`. It sends what is queued until the queue is empty, bounded by the
     drain's deadline (grace + drain timeout from the drain's start) or 1 s from the
     flush's start, whichever is later — so the last lines still go when the usage
     flush took the whole reserve. After a second stop signal, which skips the
@@ -2744,6 +2950,92 @@ own, and a client sending repeats is broken either way.
     config) ends with the same flush, bounded by 1 s, after `kaiak stopped with an
     error`, so the line naming the cause reaches the collector. What is still queued
     then is dropped and counted.
+
+- **OTLP metric export** (settled 2026-10-08): with an OTLP endpoint configured
+  (Configuration sources: OTLP export), the gateway also pushes its metrics to an
+  OpenTelemetry collector over OTLP/HTTP with JSON encoding, at a fixed interval —
+  for infrastructure that collects by push (a collector, Prometheus's OTLP
+  receiver) rather than by scraping. `/metrics` always answers; the export is
+  beside it, never instead of it. Configured per gateway from the standard `OTEL_*`
+  variables, never from the pushed config, as the log export is.
+  - **Content**: every family of the Metric list and every series `/metrics` would
+    write at that moment, under the OpenTelemetry names, with their units,
+    descriptions and attributes; one collect per export. An empty attribute value is
+    left out, as on `/metrics`.
+  - **Resource and scope**: the log export's (OTLP log export: resource) — one
+    resource for both signals, so a collector joins a gateway's logs and metrics on
+    it; one scope, named `kaiak`, no `schemaUrl`.
+  - **Data model**: a counter is a `sum` with `isMonotonic: true`, an up-down
+    counter a `sum` with `isMonotonic: false`, a gauge a `gauge`, a histogram a
+    `histogram` with `bucketCounts` (one more than its bounds), `explicitBounds`,
+    `count` and `sum`. Counts are `asInt` (a decimal string, as OTLP JSON writes
+    64-bit integers); durations, timestamps, rates, the build info and the cost
+    (its exact integer sum of nano-dollars ÷ 10⁹) are `asDouble`. Every point
+    carries `timeUnixNano`, the collect's time. Sums and histograms carry
+    `aggregationTemporality` (OTLP's integers: `1` delta, `2` cumulative) and on
+    each point `startTimeUnixNano`: in a cumulative stream the process start, or
+    the series' creation when later — the same for every point of the stream, so a
+    backend sees no reset while the process lives; in a delta stream the previous
+    export's time, or the series' start for its first point. Gauges carry no start.
+  - **Temporality** (`OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE`, the
+    three choices the OpenTelemetry specification defines): `cumulative` (the
+    default) — every sum and histogram cumulative; `delta` — counters and
+    histograms delta, up-down counters cumulative; `lowmemory` — counters and
+    histograms recorded as events happen delta, up-down counters and the counters
+    read at collect (the exporters' own counts) cumulative. `/metrics` is always
+    cumulative: each reader keeps its own state, so the export's temporality never
+    changes a scrape. **A delta stream sends every series every time**, an
+    unchanged one as 0, so a series created at 0 (Series at 0) stays in the
+    stream and a delta backend sees the first increase as one. Rejected: the
+    SDK's rule of sending only the series that changed — a series created at 0
+    would appear once, then vanish until it moved. A delta export that fails is not
+    sent again: its points are counted failed and lost, as the specification's
+    delta streams lose them; a cumulative stream carries its values into the next
+    export.
+  - **Interval and timeout**: an export every `OTEL_METRIC_EXPORT_INTERVAL`
+    (default 60 s), the first one interval after export starts. One export in
+    flight: a tick that comes while one runs is skipped, never queued. One export,
+    its retries included, is bounded by the shorter of `OTEL_METRIC_EXPORT_TIMEOUT`
+    (default 30 s: the specification's bound on one export by the periodic reader)
+    and the OTLP timeout (`OTEL_EXPORTER_OTLP_METRICS_TIMEOUT`, default 10 s: its
+    bound on one request with its retries) — with the defaults, 10 s. Both are
+    upper bounds an operator set; honoring both is the shorter. Rejected: one
+    overriding the other — an operator who lowered either would see it ignored.
+  - **Size**: an export whose encoding passes 4 MiB goes as several requests of at
+    most 4 MiB each — whole metrics where they fit, a larger metric's points split
+    across requests — each delivered on its own within the export's time. The usage
+    families alone reach tens of megabytes at the target scale with the key-ID
+    label on (Cardinality); 4 MiB is the collector's default message limit over
+    gRPC and well under its HTTP receiver's default. A request that fails fails its own points only.
+  - **Delivery**: the log export's rules (OTLP log export: delivery) — one `POST`
+    per request to the metrics endpoint (`Content-Type: application/json`,
+    `User-Agent: kaiak/<version>`, the configured headers); delivered is a `2xx`
+    whose body is empty or an `ExportMetricsServiceResponse`, a partial success
+    counting its `rejectedDataPoints` failed and the rest exported; a `2xx` that
+    cannot be read as one fails the request, unretried; no redirects; the same
+    retryable statuses, backoff and `Retry-After`, within the export's time; never
+    any text the collector sent.
+  - **Counted** in `otel.sdk.exporter.metric_data_point.exported` (Metric list:
+    exporters' own counts): data points accepted, or failed by `error.type`.
+  - **Export problems**: one `metric export failing` line (warn) at the first
+    failure, then at most one a minute while failures continue, with the data
+    points failed since the previous one, the collector's last status when it
+    answered and the last error in the gateway's own words (Logs: operational
+    events, no remote text). It is an ordinary line — stderr, and the log export
+    when that is on: a failing metric export cannot feed itself through it. As for
+    logs, the report at exit is never held back.
+  - **At exit**: the exporter keeps its interval through the drain. After the usage
+    flush and the final status, once the listeners have stopped, one final export
+    collects and sends what the process ends with — the last requests' counts —
+    before `kaiak stopped` and the log export's final flush (Lifecycle → Draining,
+    step 5): usage is the record and goes first; the metrics go before the logs so
+    their final `metric export failing` line still reaches the log export. The
+    final export is bounded as the log flush is: by the drain's deadline (grace +
+    drain timeout from the drain's start) or 1 s from its start, whichever is
+    later, and within that by its own timeout; a second stop signal cuts it to its
+    1 s. A start that fails once the exporter runs (a rejected config at startup, a
+    boot that ends with no config) ends with the same final export, bounded by 1 s,
+    before `kaiak stopped with an error`.
 
 ## Lifecycle
 
@@ -2777,7 +3069,7 @@ own, and a client sending repeats is broken either way.
     listener keeps at most that many connections open — idle keep-alive ones
     included, counted before any request on them is authenticated; a connection
     accepted beyond it is **closed at once**, before a byte is read or written, and
-    counted in `kaiak_connections_refused_total`. Why close rather than answer
+    counted in `kaiak.connections.refused`. Why close rather than answer
     `503`: closing costs no goroutine, read or write, so a flood cannot make the
     refusals themselves expensive; a client sees a connection closed with no
     answer, like a full backlog. The admin listener is not capped: probes and
@@ -2837,10 +3129,12 @@ own, and a client sending repeats is broken either way.
      (bounded to 2 s). What is not delivered is lost with the process (logged at
      error level, as other lost usage is: `usage not flushed: lost at exit`, with the
      batches and records; settled 2026-10-01, the 2026-09-30 review's O7). Then the
-     control-plane client stops, the admin listener stops, `kaiak stopped` is logged and, with OTLP log export on, the
+     control-plane client stops, the admin listener stops, with OTLP metric export
+     on its final export runs (Observability → OTLP metric export: at exit; settled
+     2026-10-08), `kaiak stopped` is logged and, with OTLP log export on, the log
      export's final flush runs (Observability → OTLP log export: at exit; settled
      2026-10-05: after usage — usage is the record, logs are not); the process
-     exits 0. The admin listener serves throughout:
+     exits 0. The admin listener serves throughout the drain:
      `/healthz` stays 200, `/metrics` answers.
   - A **second** SIGTERM/SIGINT during the drain skips whatever waiting remains:
     in-flight requests are cut off at once, then step 5 runs (the usage flush seals
@@ -2848,14 +3142,15 @@ own, and a client sending repeats is broken either way.
     the final status is skipped) and the
     process exits 0 — like a timed-out drain, the shutdown completed; the cut requests are in the
     log and in their partial records. A second signal arriving later, during the
-    final log flush, cuts that flush to its 1 s (Observability → OTLP log export:
-    at exit; settled 2026-10-05).
+    final metric export or the final log flush, cuts each to its 1 s
+    (Observability → OTLP metric export and OTLP log export: at exit; settled
+    2026-10-05, for metrics 2026-10-08).
   - A listener that fails at runtime starts the same drain, and the process exits 1
     with the error.
   - Kubernetes: `terminationGracePeriodSeconds` must exceed grace + drain timeout +
     about 10 s — after the drain, the final status report (≤ 2 s), the admin
-    listener's shutdown (≤ 5 s with a scrape open), and with OTLP log export on its
-    final flush — 1 s
+    listener's shutdown (≤ 5 s with a scrape open), and with OTLP export on the
+    final metric export and the final log flush — 1 s each
     when the drain used its whole time. Default 5 + 60 + 10 s → at least 75 s; the
     Kubernetes default of 30 s would SIGKILL long streams mid-drain.
   - No draining metric: `/readyz` already says it, and a scrape during a

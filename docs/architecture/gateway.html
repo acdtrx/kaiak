@@ -95,7 +95,7 @@ svg .band { stroke: none; }
 <section id="glance">
 <h2>At a glance</h2>
 <ul>
-  <li><strong>One static Go binary, standard library only.</strong> No third-party code, no external services. <code>gateway/cmd/kaiak</code> builds the dependency graph and owns shutdown; every subsystem is a package under <code>gateway/internal/</code>, and Go's <code>internal/</code> visibility plus its ban on import cycles keep the boundaries.</li>
+  <li><strong>One static Go binary.</strong> Minimal third-party code, each module a dated ruling; no external services. <code>gateway/cmd/kaiak</code> builds the dependency graph and owns shutdown; every subsystem is a package under <code>gateway/internal/</code>, and Go's <code>internal/</code> visibility plus its ban on import cycles keep the boundaries.</li>
   <li><strong>Two listeners.</strong> API on <code>:8080</code> (three client APIs: OpenAI's chat completions, completions, embeddings and models; Anthropic Messages; OpenAI Responses, stateless — each passed through only to backends that speak it) and admin on <code>:9090</code> (<code>/healthz</code>, <code>/readyz</code>, <code>/metrics</code>). Only the API port faces clients.</li>
   <li><strong>Two config modes.</strong> <em>File mode</em> (<code>KAIAK_CONFIG_FILE</code>, reload on SIGHUP, limits kept locally) or <em>control-plane mode</em> (<code>KAIAK_CONTROL_URL</code> + <code>KAIAK_CONTROL_TOKEN</code>, config pushed live, usage and status reported back). The second is covered in <a href="control-plane.html">the integration page</a>.</li>
   <li><strong>Stateless.</strong> It writes nothing to disk. Usage not yet delivered waits in memory; the drain delivers it. File mode is for local and development use: its counts start from zero at every start.</li>

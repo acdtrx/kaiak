@@ -31,7 +31,7 @@ english.
 
 - Two halves, one repo (layout in `docs/TECH-STACK.md`):
   - `gateway/` — the product: Go (current stable), one static binary `kaiak`. Go modules
-    only; standard library only.
+    only; third-party modules only as the dependency rule below allows.
   - `control/` — Node.js (current stable), ESM, native TypeScript; npm workspaces
     `control/kaiak-control` (the reusable library, package of the same name) and
     `control/sample` (the sample control plane). Package manager: npm — do not
@@ -57,8 +57,11 @@ english.
   smoke `scripts/smoke-images.sh --gateway <image> --sample <image>`, push
   `scripts/build-images.sh --push` (smoke first, pushes only if it passes).
 - Hard constraints:
-  - The gateway has **zero third-party Go dependencies**. Any exception is a dated ruling
-    in `docs/TECH-STACK.md`, asked for first.
+  - The gateway's dependencies are **minimal, maintained and clearly worth what they
+    cost** (settled 2026-10-08): each one a dated ruling in `docs/TECH-STACK.md`, asked
+    for first. The binary stays usable standalone — one static binary, depending on no
+    service but the control plane; storage and management stay with the app built on
+    `kaiak-control`.
   - The gateway serves traffic with **no control plane reachable** (file mode; in
     control-plane mode once booted, or from the seed config at boot) — the control
     plane is never in the request path.
