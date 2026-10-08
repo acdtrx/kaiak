@@ -184,7 +184,8 @@ criteria and commits at the step boundary.
   15. `STEP-15-control-limits-seam.md` — `control` speaks `limits` types; adapters and
       their drifted test copy gone.
   16. `STEP-16-hurry-context.md` — "hurry" as a context.
-  17. `STEP-17-boot-one-stream.md` — one stream per boot.
+  17. `STEP-17-boot-one-stream.md` — one stream per boot. **Not taken** (user,
+      2026-10-08): the hand-off did not stay simple (decision 13).
   18. `STEP-18-limiter-counters.md` — one counter store; counters carry what they need.
   19. `STEP-19-main-split.md` — `main.go` split by job; `Client.Finish`.
 - **Phase 5 — Endpoints, provider and inbound** (steps 20–23). One place per endpoint
