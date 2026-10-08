@@ -164,7 +164,7 @@ func (r *Registry) register(d Definition, kind Kind, number Number, observed boo
 	}
 	labels := make([]string, 0, len(d.Attributes)+1)
 	for _, key := range d.Attributes {
-		label := prometheusLabel(key)
+		label := PrometheusLabel(key)
 		if !validAttributeKey(key) || slices.Contains(labels, label) {
 			panic(fmt.Sprintf("metric: %s: invalid or duplicate attribute key %q", d.Name, key))
 		}
@@ -186,7 +186,7 @@ func (r *Registry) register(d Definition, kind Kind, number Number, observed boo
 	d.Attributes = slices.Clone(d.Attributes)
 	d.Buckets = slices.Clone(d.Buckets)
 	f := &family{def: d, kind: kind, number: number, observed: observed, series: make(map[string]*series)}
-	promName := prometheusName(d.Name, d.Unit, kind)
+	promName := PrometheusName(d.Name, d.Unit, kind)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, dup := r.families[d.Name]; dup {

@@ -18,22 +18,22 @@ import (
 // controlPlane is control-plane mode's half of the process (docs/specs/GATEWAY.md,
 // Control-plane mode): the control client, and the shared limiter it feeds.
 type controlPlane struct {
-	client  *control.Client
-	limiter *limits.Limiter
+	client   *control.Client
+	limiter  *limits.Limiter
+	bootWait time.Duration
+	logger   *slog.Logger
 }
 
-// controlPlaneDeps are what startControlPlane wires the control-plane half to.
+// controlPlaneDeps are what newControlPlane wires the control-plane half to.
 type controlPlaneDeps struct {
 	// opts are the client's options from the settings, with the process's own set
-	// (instance, applier, logger, start time, usage memory); startControlPlane sets
+	// (instance, applier, logger, start time, usage memory); newControlPlane sets
 	// the rest.
 	opts     control.Options
 	holder   *config.Holder
 	router   *routing.Router
 	registry *metric.Registry
 	ops      *metrics.Ops
-	// goBackground runs work in run's background until the drain is over.
-	goBackground func(work func(context.Context))
 }
 
 // bootStopped is a stop signal that ended the boot wait.
@@ -41,20 +41,14 @@ type bootStopped struct{ sig os.Signal }
 
 func (e bootStopped) Error() string { return "signal " + e.sig.String() + " during boot" }
 
-// startControlPlane builds the shared limiter and the control client, and boots: the
-// first config, from the control plane or else the seed; for a control-plane config,
-// the wait for the first totals (waitFirstTotals). No config from either is an error:
-// the process exits, and its supervisor restarts it with backoff. A stop signal during
-// the boot ends it with bootStopped: nothing is served and no usage exists yet, so run
-// returns at once instead of binding the listeners. Once booted, the client follows
-// the control plane in the background (run).
-func startControlPlane(ctx context.Context, stop <-chan os.Signal, deps controlPlaneDeps) (*controlPlane, error) {
-	cp := &controlPlane{}
-	logger := deps.opts.Logger
+// newControlPlane builds the shared limiter and the control client, and registers
+// their metrics on the registry, so every family exists before the boot.
+func newControlPlane(deps controlPlaneDeps) *controlPlane {
+	cp := &controlPlane{bootWait: deps.opts.BootWait, logger: deps.opts.Logger}
 	// The limiter reads the client's contact (the outage) and the client feeds the
 	// limiter totals and usage generations; cp.client is set before any request or
 	// scrape can read it.
-	cp.limiter = limits.NewShared(deps.holder, time.Now, func() limits.Contact { return cp.client.LimitsContact() }, logger)
+	cp.limiter = limits.NewShared(deps.holder, time.Now, func() limits.Contact { return cp.client.LimitsContact() }, cp.logger)
 	cp.limiter.ObserveSyncs(deps.ops.ObserveLimitsSync)
 	opts := deps.opts
 	opts.Serving = func() control.Serving {
@@ -72,28 +66,34 @@ func startControlPlane(ctx context.Context, stop <-chan os.Signal, deps controlP
 	// within the status minimum gap; depth changes in between wait for the regular
 	// report.
 	deps.router.OnServingChange(cp.client.ServingChanged)
+	return cp
+}
 
-	bootDeadline := time.Now().Add(opts.BootWait)
+// boot gets the first config, from the control plane or else the seed; for a
+// control-plane config, it waits for the first totals (waitFirstTotals). No config
+// from either is an error: the process exits, and its supervisor restarts it with
+// backoff. A stop signal during the boot ends it with bootStopped: nothing is served
+// and no usage exists yet, so run returns at once instead of binding the listeners.
+// Once booted, the client follows the control plane in goBackground's work (run).
+func (cp *controlPlane) boot(ctx context.Context, stop <-chan os.Signal, goBackground func(work func(context.Context))) error {
+	bootDeadline := time.Now().Add(cp.bootWait)
 	bootCtx, endBoot := stopOnSignal(ctx, stop, nil)
 	err := cp.client.Boot(bootCtx)
 	if err == nil {
 		// The client follows the control plane until the drain is over, so requests
 		// admitted during the grace period run on the newest config. It starts before
 		// the listeners: the first totals come on its stream.
-		deps.goBackground(cp.run)
+		goBackground(cp.run)
 		// A seed boot (no config hash) serves only free models: no budget waits for
 		// totals.
 		if _, fromControlPlane := cp.client.AppliedConfigHash(); fromControlPlane {
-			waitFirstTotals(bootCtx, cp.limiter, bootDeadline, logger)
+			waitFirstTotals(bootCtx, cp.limiter, bootDeadline, cp.logger)
 		}
 	}
 	if sig := endBoot(); sig != nil {
-		return nil, bootStopped{sig}
+		return bootStopped{sig}
 	}
-	if err != nil {
-		return nil, err
-	}
-	return cp, nil
+	return err
 }
 
 // run is the client's work with the control plane — the config stream, usage

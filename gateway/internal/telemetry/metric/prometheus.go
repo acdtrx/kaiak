@@ -30,12 +30,12 @@ var perUnitWords = map[string]string{
 	"s": "second", "m": "minute", "h": "hour", "d": "day", "w": "week", "mo": "month", "y": "year",
 }
 
-// prometheusName is the Prometheus name of a metric: the name's runs of characters
+// PrometheusName is the Prometheus name of a metric: the name's runs of characters
 // outside [a-zA-Z0-9:] become one '_' (none at either end); the unit's word is
 // appended unless the name already has it as a word — a unit in braces adds none, a
 // unit x/y adds x's word and per_<y's word>; a counter ends in _total, and a gauge
 // whose unit is 1 in _ratio (each moved to the end if the name has it elsewhere).
-func prometheusName(name, unit string, kind Kind) string {
+func PrometheusName(name, unit string, kind Kind) string {
 	words := strings.FieldsFunc(name, func(r rune) bool { return !prometheusNameChar(r) })
 	main, per := unitSuffixes(unit)
 	if slices.Contains(words, main) {
@@ -111,9 +111,9 @@ func prometheusNameChar(r rune) bool {
 	return 'a' <= r && r <= 'z' || 'A' <= r && r <= 'Z' || '0' <= r && r <= '9' || r == ':'
 }
 
-// prometheusLabel is the Prometheus label name of an attribute key: runs of
+// PrometheusLabel is the Prometheus label name of an attribute key: runs of
 // characters outside [a-zA-Z0-9] become one '_'.
-func prometheusLabel(key string) string {
+func PrometheusLabel(key string) string {
 	var b strings.Builder
 	underscore := false
 	for _, r := range key {
@@ -146,7 +146,7 @@ func WritePrometheus(w *bytes.Buffer, s Snapshot) {
 	families := make([]named, len(s.Families))
 	for i := range s.Families {
 		f := &s.Families[i]
-		families[i] = named{prometheusName(f.Name, f.Unit, f.Kind), f}
+		families[i] = named{PrometheusName(f.Name, f.Unit, f.Kind), f}
 	}
 	slices.SortFunc(families, func(a, b named) int { return strings.Compare(a.name, b.name) })
 	for _, n := range families {
@@ -174,7 +174,7 @@ func writeFamily(w *bytes.Buffer, name string, f *Family) {
 
 	labels := make([]string, len(f.Attributes))
 	for i, key := range f.Attributes {
-		labels[i] = prometheusLabel(key)
+		labels[i] = PrometheusLabel(key)
 	}
 	line := sampleLine{w: w, name: name, labels: labels}
 	for _, p := range f.Points {

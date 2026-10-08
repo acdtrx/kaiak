@@ -25,6 +25,7 @@ import (
 	"kaiak/internal/telemetry/metric"
 	"kaiak/internal/telemetry/otlp"
 	"kaiak/internal/telemetry/otlplog"
+	"kaiak/internal/telemetry/otlpmetric"
 )
 
 func main() {
@@ -63,32 +64,42 @@ func newLogger(format string, w io.Writer) (*slog.Logger, error) {
 
 // run loads the config and serves the API and admin listeners. In file mode it
 // reloads the config file on every value received from reload; in control-plane mode
-// the control plane's half boots the config (startControlPlane) — run returns its
+// the control plane's half boots the config (controlPlane.boot) — run returns its
 // error when there is none — then follows the control plane, sends usage and reports
 // status in the background until the drain is over. A value on stop, or a listener
 // failing, starts the drain (server.Drain.Run); a further value on stop hurries it,
-// the final log flush included. Cancelling ctx stops without waiting: the drain runs
-// hurried. Once the API has drained, run flushes usage to the control plane
-// (control-plane mode), stops the admin listener and returns. Its last line is
-// `kaiak stopped`, or `kaiak stopped with an error` with the error it returns. With
-// OTLP log export configured, every line from `kaiak starting` on also goes to the
-// collector, and the export's final flush is run's last act.
+// the final metric export and log flush included. Cancelling ctx stops without
+// waiting: the drain runs hurried. Once the API has drained, run flushes usage to the
+// control plane (control-plane mode), stops the admin listener and returns. With OTLP
+// metric export configured, the metrics are pushed from the config load on, and the
+// final export runs before run's last line, `kaiak stopped`, or `kaiak stopped with
+// an error` with the error it returns. With OTLP log export configured, every line
+// from `kaiak starting` on also goes to the collector, and the export's final flush
+// is run's last act.
 func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (string, bool),
 	reload, stop <-chan os.Signal) (err error) {
 	startedAt := time.Now()
-	// The export and the end of its final flush: the drain's deadline once a drain
-	// started. hurryCtx never ends before the drain starts; from then on it ends with a
-	// second stop signal or with ctx, and its watch runs through the final flush,
-	// which it cuts to its floor: endHurry ends the watch after the flush.
+	// The exporters, and the end of their work at exit: the drain's deadline once a
+	// drain started (exitBound). hurryCtx never ends before the drain starts; from then
+	// on it ends with a second stop signal or with ctx, and its watch runs through the
+	// final metric export and the final log flush, which it cuts to their floor:
+	// endHurry ends the watch after the flush. reason is what `kaiak stopped` names.
 	var logExport *otlplog.Exporter
-	var logFlushBy time.Time
+	var metricExport *otlpmetric.Exporter
+	var exitBy time.Time
+	var reason string
 	hurryCtx, endHurry := context.Background(), func() os.Signal { return nil }
 	defer func() {
+		if metricExport != nil {
+			finishExport(hurryCtx, metricExport, exitBy)
+		}
 		if err != nil {
 			logger.Error("kaiak stopped with an error", "exception.message", err)
+		} else {
+			logger.Info("kaiak stopped", "kaiak.reason", reason)
 		}
 		if logExport != nil {
-			finishLogExport(hurryCtx, logExport, logFlushBy)
+			finishExport(hurryCtx, logExport, exitBy)
 		}
 		endHurry()
 	}()
@@ -98,10 +109,11 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 	}
 	source := s.configSource()
 	reported := reportedVersion()
+	service := otlp.Service{Version: reported, InstanceID: s.instanceID}
 	if s.logExport != nil {
 		// Export problems go to the stderr logger alone: one exported would feed the
 		// problem it reports.
-		logExport = otlplog.New(s.logExport, otlp.Service{Version: reported, InstanceID: s.instanceID}, logger)
+		logExport = otlplog.New(s.logExport, service, logger)
 		logger = slog.New(logExport.Handler(logger.Handler()))
 		source = append(source, "kaiak.log_export.endpoint", s.logExport.EndpointHost())
 	}
@@ -122,14 +134,29 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 	}()
 
 	g := newGraph(s, reported, lookupEnv, logger, logExport)
+	var cp *controlPlane
+	if s.control != nil {
+		opts := *s.control
+		opts.Instance, opts.Applier, opts.Logger, opts.StartedAt = s.instanceID, g.applier, logger, startedAt
+		opts.UsageMemoryBytes = s.usageMemory
+		cp = newControlPlane(controlPlaneDeps{opts: opts, holder: g.holder, router: g.router, registry: g.registry,
+			ops: g.ops})
+	}
+	if s.metricExport != nil {
+		// Every family but the exporter's own count exists by now, and that one is
+		// registered next, an interval before the first collect: the first collect
+		// sees them all. Export problems are ordinary lines: the log export, when on,
+		// carries them.
+		metricExport = otlpmetric.New(s.metricExport, service, g.registry, logger)
+		metrics.RegisterMetricExport(g.registry, metricExport.Counts)
+	}
 	// The mode's setup: the first config, the limiter, where usage records go
 	// (control-plane mode: the client's batch sender, which tags each with its batch's
 	// generation) and what SIGHUP does.
-	var cp *controlPlane
 	var limiter *limits.Limiter
 	var batcher accounting.Batcher
 	var handleReloads func(context.Context)
-	if s.control == nil {
+	if cp == nil {
 		loader := config.NewFileLoader(s.configFile, g.applier)
 		if err := loader.Load(config.TriggerStartup); err != nil {
 			return err
@@ -138,13 +165,9 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 		limiter.ObserveSyncs(g.ops.ObserveLimitsSync)
 		handleReloads = func(ctx context.Context) { reloadOnSignal(ctx, reload, loader) }
 	} else {
-		opts := *s.control
-		opts.Instance, opts.Applier, opts.Logger, opts.StartedAt = s.instanceID, g.applier, logger, startedAt
-		opts.UsageMemoryBytes = s.usageMemory
-		cp, err = startControlPlane(ctx, stop, controlPlaneDeps{opts: opts, holder: g.holder, router: g.router,
-			registry: g.registry, ops: g.ops, goBackground: goBackground})
+		err = cp.boot(ctx, stop, goBackground)
 		if stopped, ok := errors.AsType[bootStopped](err); ok {
-			logger.Info("kaiak stopped", "kaiak.reason", stopped.Error())
+			reason = stopped.Error()
 			return nil
 		}
 		if err != nil {
@@ -157,7 +180,7 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 	// Usage records go to the batcher, then to the usage metrics. Local limits settle
 	// from the request's own records in a request finisher.
 	recorder := accounting.NewRecorder(accounting.RecorderOptions{Instance: s.instanceID, Batcher: batcher,
-		Metrics: metrics.NewUsageMetrics(g.registry, g.holder), Logger: logger})
+		Metrics: g.usage, Logger: logger})
 	drain := server.NewDrain()
 	apiHandler := server.NewAPI(g.holder, drain, server.NewBodyBudget(s.bodyMemory), g.providers, limiter, g.router,
 		g.missingEndpoints, recorder, g.ops, logger)
@@ -190,7 +213,6 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 	goBackground(handleReloads)
 
 	var cause error
-	var reason string
 	select {
 	case sig := <-stop:
 		reason = "signal " + sig.String()
@@ -205,7 +227,7 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 	// control-plane mode in-flight requests are cut the flush reserve before the
 	// timeout, so the records they settle still have time to reach the control plane.
 	drainDeadline := time.Now().Add(s.drain.Grace + s.drain.Timeout)
-	logFlushBy = drainDeadline
+	exitBy = drainDeadline
 	drainTimes := s.drain
 	if cp != nil {
 		drainTimes.Reserve = s.drainReserve
@@ -227,11 +249,7 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 	if cause == nil {
 		cause = <-failed
 	}
-	if cause != nil {
-		return cause
-	}
-	logger.Info("kaiak stopped", "kaiak.reason", reason)
-	return nil
+	return cause
 }
 
 // graph is the part of the dependency graph both modes share: what serves requests
@@ -242,6 +260,7 @@ type graph struct {
 	registry         *metric.Registry
 	router           *routing.Router
 	ops              *metrics.Ops
+	usage            *metrics.UsageMetrics
 	modelChecker     *provider.ModelChecker
 	missingEndpoints *server.MissingEndpoints
 	applier          *config.Applier
@@ -260,6 +279,7 @@ func newGraph(s settings, reported string, lookupEnv func(string) (string, bool)
 	circuits := metrics.NewCircuits(g.registry)
 	g.router = routing.New(routing.Options{Probe: g.providers.Probe, Observer: circuits, Logger: logger})
 	g.ops = metrics.NewOps(g.registry, g.router, circuits, g.holder)
+	g.usage = metrics.NewUsageMetrics(g.registry, g.holder)
 	g.modelChecker = provider.NewModelChecker(g.providers, logger)
 	// Every applied config sets the backend caps routing enforces and the backends
 	// whose connection pools and missing endpoints are kept, and has its deployments'
@@ -306,29 +326,46 @@ func stopOnSignal(ctx context.Context, stop <-chan os.Signal, onSignal func(os.S
 	}
 }
 
-// logExportFlushFloor is the least time the log export's final flush gets: the last
-// lines still go when the usage flush took the whole drain, or when the start failed.
-const logExportFlushFloor = time.Second
+// exitExportFloor is the least time the final metric export and the final log flush
+// each get: the last metrics and lines still go when the usage flush took the whole
+// drain, after a second stop signal, or when the start failed.
+const exitExportFloor = time.Second
 
-// finishLogExport is the log export's final flush, the process's last act
-// (docs/specs/GATEWAY.md, Observability → OTLP log export: at exit): what is queued is
-// sent until by, or until logExportFlushFloor from now when that is later. Once
-// hurry ends — a second stop signal, before the flush or during it — the floor
-// alone bounds it: a flush already past it ends at once. What is still queued at the
-// end is dropped and counted, and reported on stderr.
-func finishLogExport(hurry context.Context, e *otlplog.Exporter, by time.Time) {
-	// The floor first, which nothing cuts; then until by, unless hurried. A
-	// ForceFlush whose ctx ends leaves the sender running, so the second waits on the
-	// same work.
-	floorCtx, cancel := context.WithTimeout(context.Background(), logExportFlushFloor)
-	err := e.ForceFlush(floorCtx)
+// exporter is an OTLP exporter as run finishes it at exit.
+type exporter interface {
+	ForceFlush(ctx context.Context) error
+	Shutdown(ctx context.Context)
+}
+
+// finishExport is an exporter's last work (docs/specs/GATEWAY.md, Observability →
+// OTLP metric export and OTLP log export: at exit): the final export, or the final
+// flush of what is queued, within exitBound, then Shutdown, which counts and reports
+// what did not go.
+func finishExport(hurry context.Context, e exporter, by time.Time) {
+	ctx, cancel := exitBound(hurry, by)
+	_ = e.ForceFlush(ctx) // what did not go is Shutdown's to count and report
 	cancel()
-	if err != nil {
-		ctx, cancel := context.WithDeadline(hurry, by)
-		_ = e.ForceFlush(ctx) // what did not fit is Shutdown's to count
+	e.Shutdown(context.Background())
+}
+
+// exitBound is the context an export at exit runs within: it ends at by, or
+// exitExportFloor from now when that is later. Once hurry ends — a second stop
+// signal, before the export or during it — the floor alone bounds it: an export
+// already past it ends at once. The cancel function ends it and the watch on hurry.
+func exitBound(hurry context.Context, by time.Time) (context.Context, context.CancelFunc) {
+	floor, endFloor := context.WithTimeout(context.Background(), exitExportFloor)
+	until, endUntil := context.WithDeadline(hurry, by)
+	ctx, cancel := context.WithCancel(context.Background())
+	stopWatch := context.AfterFunc(floor, func() {
+		<-until.Done()
+		cancel()
+	})
+	return ctx, func() {
+		endUntil() // a watch already running returns at once
+		stopWatch()
+		endFloor()
 		cancel()
 	}
-	e.Shutdown(context.Background())
 }
 
 // adminShutdownTimeout bounds how long a probe or scrape still open at the end may

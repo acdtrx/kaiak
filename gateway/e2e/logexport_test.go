@@ -105,12 +105,12 @@ func canonical(t *testing.T, line map[string]any) string {
 	return string(data)
 }
 
-// otlpRecords returns the records of the exports the collector accepted (or
+// otlpRecords returns the records of the log exports the collector accepted (or
 // refused), in order, and checks each export's resource and scope.
 func otlpRecords(t *testing.T, c *fakeotlp.Collector, accepted bool, resource map[string]any) []fakeotlp.Record {
 	t.Helper()
 	var out []fakeotlp.Record
-	for _, r := range c.Received() {
+	for _, r := range logExports(c) {
 		if r.Status == 0 || (r.Status == http.StatusOK) != accepted {
 			continue
 		}
@@ -129,6 +129,18 @@ func otlpRecords(t *testing.T, c *fakeotlp.Collector, accepted bool, resource ma
 			t.Errorf("scope %q, want kaiak", name)
 		}
 		out = append(out, e.ResourceLogs[0].ScopeLogs[0].LogRecords...)
+	}
+	return out
+}
+
+// logExports are the log exports the collector received, in arrival order: with an
+// endpoint shared by both signals, metric exports arrive too.
+func logExports(c *fakeotlp.Collector) []fakeotlp.Received {
+	var out []fakeotlp.Received
+	for _, r := range c.Received() {
+		if len(r.Export.ResourceMetrics) == 0 {
+			out = append(out, r)
+		}
 	}
 	return out
 }
@@ -248,8 +260,13 @@ func TestLogExport(t *testing.T) {
 	_, annHash := newKey()
 	writeJSON(t, configFile, testConfig(backend.URL(), evalHash, annHash, ""))
 	const secret = "s3cret-otlp-header"
-	collector := fakeotlp.New(t, fakeotlp.AnswerStatus(func(_ int, r *http.Request) int {
-		if r.URL.Path != "/base/v1/logs" || r.Header.Get("Authorization") != "Bearer "+secret ||
+	var collector *fakeotlp.Collector
+	collector = fakeotlp.New(t, fakeotlp.AnswerStatus(func(n int, r *http.Request) int {
+		path := "/base/v1/logs"
+		if len(collector.Received()[n].Export.ResourceMetrics) > 0 {
+			path = "/base/v1/metrics" // the final metric export: the endpoint is shared
+		}
+		if r.URL.Path != path || r.Header.Get("Authorization") != "Bearer "+secret ||
 			r.Header.Get("Content-Type") != "application/json" {
 			t.Errorf("export to %s with Authorization %q, Content-Type %q", r.URL.Path,
 				r.Header.Get("Authorization"), r.Header.Get("Content-Type"))
@@ -378,8 +395,8 @@ func TestLogExportOff(t *testing.T) {
 				t.Errorf("kaiak starting names an endpoint with export off: %v", line)
 			}
 			g.stop(t)
-			if n := collector.Requests(); n != 0 {
-				t.Errorf("collector received %d exports with export off", n)
+			if n := len(logExports(collector)); n != 0 {
+				t.Errorf("collector received %d log exports with export off", n)
 			}
 		})
 	}
@@ -436,7 +453,7 @@ func TestLogExportRefusedBatch(t *testing.T) {
 // buildVersionOf is the service.version of the collector's first export.
 func buildVersionOf(t *testing.T, c *fakeotlp.Collector) string {
 	t.Helper()
-	exports := c.Received()
+	exports := logExports(c)
 	if len(exports) == 0 || len(exports[0].Export.ResourceLogs) == 0 {
 		t.Fatal("no export")
 	}
@@ -449,10 +466,11 @@ func buildVersionOf(t *testing.T, c *fakeotlp.Collector) string {
 	return ""
 }
 
-// A collector that never answers holds one export; at exit the final flush gives up
-// at its bound — the drain's deadline, at least 1 s — and the export in flight counts
-// as failed, which stderr reports. What is still queued is dropped and counted, and
-// reported too: the report at exit is never held back.
+// A collector that never answers holds one export; at exit the final metric export
+// (the endpoint is shared) and then the final flush each give up at their bound —
+// the drain's deadline, at least 1 s — and the exports in flight count as failed,
+// which stderr reports. What is still queued is dropped and counted, and reported
+// too: the report at exit is never held back.
 func TestLogExportStalledCollectorAtExit(t *testing.T) {
 	backend := fakebackend.New()
 	defer backend.Close()
@@ -482,7 +500,11 @@ func TestLogExportStalledCollectorAtExit(t *testing.T) {
 	g.signal(t, syscall.SIGTERM)
 	g.waitExit(t)
 	if took := time.Since(stopped); took > 5*time.Second {
-		t.Errorf("exit took %s with a stalled collector, want about 1 s", took)
+		t.Errorf("exit took %s with a stalled collector, want about 2 s: 1 s for the metrics, 1 s for the logs", took)
+	}
+	metricReport := g.logs.wait(t, "the metric failure report", msg("metric export failing"))
+	if metricReport["kaiak.metric_export.failed"].(float64) == 0 || !strings.Contains(fmt.Sprint(metricReport["exception.message"]), "cut short") {
+		t.Errorf("metric failure report %v: want the final export failed, cut short", metricReport)
 	}
 	report := g.logs.wait(t, "the failure report", msg("log export failing"))
 	if report["kaiak.log_export.failed"].(float64) == 0 || !strings.Contains(fmt.Sprint(report["exception.message"]), "cut short") {

@@ -82,7 +82,7 @@ func TestPrometheusName(t *testing.T) {
 		{"x", "s/", KindGauge, "x_seconds"},
 		{"x", "/s", KindGauge, "x_per_second"},
 	} {
-		if got := prometheusName(c.name, c.unit, c.kind); got != c.want {
+		if got := PrometheusName(c.name, c.unit, c.kind); got != c.want {
 			t.Errorf("%s [%s] %s: %q, want %q", c.name, c.unit, c.kind, got, c.want)
 		}
 	}
@@ -99,7 +99,7 @@ func TestPrometheusLabel(t *testing.T) {
 		"a__b":                      "a_b",
 		"trailing.":                 "trailing_",
 	} {
-		if got := prometheusLabel(key); got != want {
+		if got := PrometheusLabel(key); got != want {
 			t.Errorf("%s: %q, want %q", key, got, want)
 		}
 	}
