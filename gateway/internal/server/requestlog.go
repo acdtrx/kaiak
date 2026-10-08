@@ -101,13 +101,12 @@ func (a *API) logRequest(rq *request) {
 			cost += rec.CostNanoUSD
 		}
 		// gen_ai.usage.input_tokens is all input, as the GenAI convention means it:
-		// the input neither read from nor written to the cache, plus its two cache
-		// parts.
-		cached, cacheWrite := units[config.UnitTokensCached], units[config.UnitTokensCacheWrite]
+		// config.InputUnits, the input neither read from nor written to the cache plus
+		// its two cache parts.
 		attrs = append(attrs,
-			slog.Int64("gen_ai.usage.input_tokens", units[config.UnitTokensIn]+cached+cacheWrite),
-			slog.Int64("gen_ai.usage.cache_read.input_tokens", cached),
-			slog.Int64("gen_ai.usage.cache_write.input_tokens", cacheWrite),
+			slog.Int64("gen_ai.usage.input_tokens", units.Sum(config.InputUnits)),
+			slog.Int64("gen_ai.usage.cache_read.input_tokens", units[config.UnitTokensCached]),
+			slog.Int64("gen_ai.usage.cache_write.input_tokens", units[config.UnitTokensCacheWrite]),
 			slog.Int64("gen_ai.usage.output_tokens", units[config.UnitTokensOut]),
 			slog.Int64("gen_ai.usage.reasoning.output_tokens", units[config.UnitTokensReasoning]),
 			slog.Float64("kaiak.usage.cost_usd", float64(cost)/1e9),

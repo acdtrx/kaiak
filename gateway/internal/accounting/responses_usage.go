@@ -2,6 +2,8 @@ package accounting
 
 import (
 	"encoding/json"
+
+	"kaiak/internal/config"
 )
 
 // responsesUsage reads OpenAI Responses answers (docs/specs/GATEWAY.md, Accounting →
@@ -52,7 +54,13 @@ func (u *responsesUsage) parse(raw json.RawMessage) (Units, bool) {
 	if d := r.OutputTokensDetails; d != nil {
 		reasoning = min(max(d.ReasoningTokens, 0), output)
 	}
-	return tokenUnits(input-cached-written, cached, written, output, reasoning), true
+	return withEveryTokenUnit(Units{
+		config.UnitTokensIn:         input - cached - written,
+		config.UnitTokensCached:     cached,
+		config.UnitTokensCacheWrite: written,
+		config.UnitTokensOut:        output,
+		config.UnitTokensReasoning:  reasoning,
+	}), true
 }
 
 // responsesEvent is what the meter reads of one Responses stream event.

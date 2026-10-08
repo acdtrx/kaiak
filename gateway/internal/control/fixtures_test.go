@@ -255,3 +255,29 @@ func TestTotalsWindowTypesAreTheCountedLimitTypes(t *testing.T) {
 		t.Errorf("counted types %v, schema enum %v", counted, enum)
 	}
 }
+
+// The walker requires every token unit in a record, and the schema requires the same
+// units, in record order.
+func TestRecordUnitsAreTheTokenUnits(t *testing.T) {
+	var schema struct {
+		Properties struct {
+			Units struct {
+				Required   []string       `json:"required"`
+				Properties map[string]any `json:"properties"`
+			} `json:"units"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(fixturetest.Read(t, fixturetest.SchemaFile("usage-record.schema.json")), &schema); err != nil {
+		t.Fatal(err)
+	}
+	var units []string
+	for _, unit := range config.TokenUnits {
+		units = append(units, string(unit))
+	}
+	if required := schema.Properties.Units.Required; !slices.Equal(units, required) {
+		t.Errorf("token units %v, schema required units %v", units, required)
+	}
+	if fields := slices.Sorted(maps.Keys(schema.Properties.Units.Properties)); !slices.Equal(slices.Sorted(slices.Values(units)), fields) {
+		t.Errorf("token units %v, schema unit fields %v", units, fields)
+	}
+}

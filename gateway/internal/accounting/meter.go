@@ -2,6 +2,7 @@ package accounting
 
 import (
 	"encoding/json"
+	"math"
 	"sync/atomic"
 
 	"kaiak/internal/config"
@@ -9,17 +10,38 @@ import (
 )
 
 // Units maps usage units to amounts (docs/specs/CONTROL-PROTOCOL.md, Prices). Every
-// record from a token endpoint carries all five token units, zeros included.
+// record from a token endpoint carries every token unit (config.TokenUnits), zeros
+// included.
 type Units map[config.Unit]int64
 
-func tokenUnits(in, cached, cacheWrite, out, reasoning int64) Units {
-	return Units{
-		config.UnitTokensIn:         in,
-		config.UnitTokensCached:     cached,
-		config.UnitTokensCacheWrite: cacheWrite,
-		config.UnitTokensOut:        out,
-		config.UnitTokensReasoning:  reasoning,
+// withEveryTokenUnit is units with every token unit (config.TokenUnits) it leaves out
+// added at 0.
+func withEveryTokenUnit(units Units) Units {
+	for _, unit := range config.TokenUnits {
+		if _, ok := units[unit]; !ok {
+			units[unit] = 0
+		}
 	}
+	return units
+}
+
+// Sum is the total of units' amounts of set, saturating at math.MaxInt64 (amounts are
+// never negative).
+func (units Units) Sum(set []config.Unit) int64 {
+	var sum int64
+	for _, unit := range set {
+		sum = SaturatingAdd(sum, units[unit])
+	}
+	return sum
+}
+
+// SaturatingAdd is a + b for non-negative a and b, math.MaxInt64 when that overflows:
+// an amount never wraps.
+func SaturatingAdd(a, b int64) int64 {
+	if b > math.MaxInt64-a {
+		return math.MaxInt64
+	}
+	return a + b
 }
 
 // bytesPerToken is the estimation heuristic: about 4 bytes of text per token. There is
@@ -195,11 +217,11 @@ type Flags struct {
 //     from the generated content seen, and the record is flagged estimated.
 func (m *Meter) Settle(complete bool) (Units, Flags) {
 	if m.SentUnanswered() {
-		return tokenUnits(m.input, 0, 0, 0, 0), Flags{Estimated: true, Partial: true}
+		return withEveryTokenUnit(Units{config.UnitTokensIn: m.input}), Flags{Estimated: true, Partial: true}
 	}
 	flags := Flags{Partial: !complete || !m.answered}
 	if !m.answered || !m.succeeded() {
-		return tokenUnits(0, 0, 0, 0, 0), flags
+		return withEveryTokenUnit(Units{}), flags
 	}
 	if !m.stream && m.body != nil {
 		if raw, ok := m.body.member("usage"); ok {
@@ -214,7 +236,10 @@ func (m *Meter) Settle(complete bool) (Units, Flags) {
 		return units, flags
 	}
 	flags.Estimated = true
-	return tokenUnits(m.input, 0, 0, EstimateTokens(m.outputBytes()), 0), flags
+	return withEveryTokenUnit(Units{
+		config.UnitTokensIn:  m.input,
+		config.UnitTokensOut: EstimateTokens(m.outputBytes()),
+	}), flags
 }
 
 // outputBytes is the generated content seen: stream content, or the content member of

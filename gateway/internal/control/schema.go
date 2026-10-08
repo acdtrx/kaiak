@@ -25,12 +25,7 @@ var (
 // MaxBatchRecords is the most records one usage batch may hold.
 const MaxBatchRecords = 500
 
-var (
-	windowTypes = countedLimitTypes()
-	tokenUnits  = []config.Unit{
-		config.UnitTokensIn, config.UnitTokensCached, config.UnitTokensCacheWrite, config.UnitTokensOut, config.UnitTokensReasoning,
-	}
-)
+var windowTypes = countedLimitTypes()
 
 // countedLimitTypes is the totals' window types: the limit types the control plane
 // counts, in order.
@@ -82,8 +77,8 @@ func (w *walker) hex32() func(v any, path string) {
 }
 
 func (w *walker) usageRecord(v any, path string) {
-	units := make(map[string]schemacheck.Field, len(tokenUnits))
-	for _, unit := range tokenUnits {
+	units := make(map[string]schemacheck.Field, len(config.TokenUnits))
+	for _, unit := range config.TokenUnits {
 		units[string(unit)] = schemacheck.Field{Required: true, Check: w.count()}
 	}
 	w.Object(v, path, map[string]schemacheck.Field{

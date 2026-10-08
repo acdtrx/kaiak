@@ -2,6 +2,8 @@ package accounting
 
 import (
 	"encoding/json"
+
+	"kaiak/internal/config"
 )
 
 // messagesUsage reads Anthropic Messages responses (docs/specs/GATEWAY.md, Accounting
@@ -148,7 +150,12 @@ func (u *messagesUsage) reported() (Units, bool) {
 	if u.in == nil && u.out == nil {
 		return nil, false
 	}
-	return tokenUnits(nonNegative(u.in), nonNegative(u.cacheRead), nonNegative(u.cacheWrite), nonNegative(u.out), 0), u.outputFinal
+	return withEveryTokenUnit(Units{
+		config.UnitTokensIn:         nonNegative(u.in),
+		config.UnitTokensCached:     nonNegative(u.cacheRead),
+		config.UnitTokensCacheWrite: nonNegative(u.cacheWrite),
+		config.UnitTokensOut:        nonNegative(u.out),
+	}), u.outputFinal
 }
 
 func (u *messagesUsage) streamContentBytes() int64 { return u.contentBytes }

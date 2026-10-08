@@ -4,6 +4,7 @@ import (
 	"maps"
 	"testing"
 
+	"kaiak/internal/config"
 	"kaiak/internal/provider"
 )
 
@@ -46,46 +47,46 @@ func TestUsageMapping(t *testing.T) {
 		want  Units
 	}{
 		{"plain", provider.ChatCompletions, `{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}`,
-			tokenUnits(10, 0, 0, 5, 0)},
+			withEveryTokenUnit(Units{config.UnitTokensIn: 10, config.UnitTokensOut: 5})},
 		{"cached and reasoning", provider.ChatCompletions,
 			`{"prompt_tokens":100,"completion_tokens":50,"prompt_tokens_details":{"cached_tokens":64},` +
 				`"completion_tokens_details":{"reasoning_tokens":30}}`,
-			tokenUnits(36, 64, 0, 50, 30)},
+			withEveryTokenUnit(Units{config.UnitTokensIn: 36, config.UnitTokensCached: 64, config.UnitTokensOut: 50, config.UnitTokensReasoning: 30})},
 		{"null details", provider.ChatCompletions,
 			`{"prompt_tokens":8,"completion_tokens":2,"prompt_tokens_details":null,"completion_tokens_details":null}`,
-			tokenUnits(8, 0, 0, 2, 0)},
+			withEveryTokenUnit(Units{config.UnitTokensIn: 8, config.UnitTokensOut: 2})},
 		{"details without the counts", provider.ChatCompletions,
 			`{"prompt_tokens":8,"completion_tokens":2,"prompt_tokens_details":{"audio_tokens":0},"completion_tokens_details":{}}`,
-			tokenUnits(8, 0, 0, 2, 0)},
+			withEveryTokenUnit(Units{config.UnitTokensIn: 8, config.UnitTokensOut: 2})},
 		{"inconsistent details clamped", provider.ChatCompletions,
 			`{"prompt_tokens":8,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":20},` +
 				`"completion_tokens_details":{"reasoning_tokens":9}}`,
-			tokenUnits(0, 8, 0, 2, 2)},
+			withEveryTokenUnit(Units{config.UnitTokensCached: 8, config.UnitTokensOut: 2, config.UnitTokensReasoning: 2})},
 		{"written to the cache (Azure OpenAI's first call)", provider.ChatCompletions,
 			`{"prompt_tokens":2036,"completion_tokens":9,"prompt_tokens_details":{"cached_tokens":0,"cache_write_tokens":2033}}`,
-			tokenUnits(3, 0, 2033, 9, 0)},
+			withEveryTokenUnit(Units{config.UnitTokensIn: 3, config.UnitTokensCacheWrite: 2033, config.UnitTokensOut: 9})},
 		{"read and written", provider.ChatCompletions,
 			`{"prompt_tokens":3000,"completion_tokens":9,"prompt_tokens_details":{"cached_tokens":2033,"cache_write_tokens":900}}`,
-			tokenUnits(67, 2033, 900, 9, 0)},
+			withEveryTokenUnit(Units{config.UnitTokensIn: 67, config.UnitTokensCached: 2033, config.UnitTokensCacheWrite: 900, config.UnitTokensOut: 9})},
 		{"written, no cached count", provider.Completions,
 			`{"prompt_tokens":100,"completion_tokens":5,"prompt_tokens_details":{"cache_write_tokens":60}}`,
-			tokenUnits(40, 0, 60, 5, 0)},
+			withEveryTokenUnit(Units{config.UnitTokensIn: 40, config.UnitTokensCacheWrite: 60, config.UnitTokensOut: 5})},
 		{"written above the prompt: clamped to it", provider.ChatCompletions,
 			`{"prompt_tokens":8,"completion_tokens":2,"prompt_tokens_details":{"cache_write_tokens":20}}`,
-			tokenUnits(0, 0, 8, 2, 0)},
+			withEveryTokenUnit(Units{config.UnitTokensCacheWrite: 8, config.UnitTokensOut: 2})},
 		{"cached and written above the prompt: cached clamped first, written to the rest", provider.ChatCompletions,
 			`{"prompt_tokens":100,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":70,"cache_write_tokens":50}}`,
-			tokenUnits(0, 70, 30, 2, 0)},
+			withEveryTokenUnit(Units{config.UnitTokensCached: 70, config.UnitTokensCacheWrite: 30, config.UnitTokensOut: 2})},
 		{"cached above the prompt leaves nothing written", provider.ChatCompletions,
 			`{"prompt_tokens":100,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":150,"cache_write_tokens":50}}`,
-			tokenUnits(0, 100, 0, 2, 0)},
+			withEveryTokenUnit(Units{config.UnitTokensCached: 100, config.UnitTokensOut: 2})},
 		{"negative written count is 0", provider.ChatCompletions,
 			`{"prompt_tokens":100,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":10,"cache_write_tokens":-5}}`,
-			tokenUnits(90, 10, 0, 2, 0)},
-		{"completion only", provider.Completions, `{"completion_tokens":4}`, tokenUnits(0, 0, 0, 4, 0)},
+			withEveryTokenUnit(Units{config.UnitTokensIn: 90, config.UnitTokensCached: 10, config.UnitTokensOut: 2})},
+		{"completion only", provider.Completions, `{"completion_tokens":4}`, withEveryTokenUnit(Units{config.UnitTokensOut: 4})},
 		{"embeddings: prompt tokens only", provider.Embeddings,
 			`{"prompt_tokens":12,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":5,"cache_write_tokens":4}}`,
-			tokenUnits(12, 0, 0, 0, 0)},
+			withEveryTokenUnit(Units{config.UnitTokensIn: 12})},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -103,7 +104,7 @@ func TestStreamUsageComesFromTheLastReport(t *testing.T) {
 		`{"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2}}`,
 		`[DONE]`)
 	units, flags := m.Settle(true)
-	expect(t, units, flags, tokenUnits(5, 0, 0, 2, 0), Flags{})
+	expect(t, units, flags, withEveryTokenUnit(Units{config.UnitTokensIn: 5, config.UnitTokensOut: 2}), Flags{})
 }
 
 // A stream's usage chunk carries the cache counts as a body's usage does.
@@ -114,7 +115,7 @@ func TestStreamUsageCarriesInputWrittenToTheCache(t *testing.T) {
 			`"prompt_tokens_details":{"cached_tokens":0,"cache_write_tokens":2033}}}`,
 		`[DONE]`)
 	units, flags := m.Settle(true)
-	expect(t, units, flags, tokenUnits(3, 0, 2033, 9, 0), Flags{})
+	expect(t, units, flags, withEveryTokenUnit(Units{config.UnitTokensIn: 3, config.UnitTokensCacheWrite: 2033, config.UnitTokensOut: 9}), Flags{})
 }
 
 func TestMissingUsageIsEstimatedFromContent(t *testing.T) {
@@ -130,19 +131,19 @@ func TestMissingUsageIsEstimatedFromContent(t *testing.T) {
 			`[DONE]`)
 		// think 5 (counted once) + héllo 6 + f 1 + {"a":1} 7 + no 2 + xyz 3 = 24 bytes → 6.
 		units, flags := m.Settle(true)
-		expect(t, units, flags, tokenUnits(11, 0, 0, 6, 0), Flags{Estimated: true})
+		expect(t, units, flags, withEveryTokenUnit(Units{config.UnitTokensIn: 11, config.UnitTokensOut: 6}), Flags{Estimated: true})
 	})
 	t.Run("completions stream", func(t *testing.T) {
 		m := streamMeter(provider.Completions, requestBytes,
 			`{"choices":[{"text":"abcde","index":0}]}`, `{"choices":[{"text":"fgh","index":0}]}`)
 		units, flags := m.Settle(true)
-		expect(t, units, flags, tokenUnits(11, 0, 0, 2, 0), Flags{Estimated: true})
+		expect(t, units, flags, withEveryTokenUnit(Units{config.UnitTokensIn: 11, config.UnitTokensOut: 2}), Flags{Estimated: true})
 	})
 	t.Run("chat body", func(t *testing.T) {
 		body := `{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"twelve bytes"},` +
 			`"finish_reason":"stop"}]}`
 		units, flags := bodyMeter(provider.ChatCompletions, requestBytes, 200, body).Settle(true)
-		expect(t, units, flags, tokenUnits(11, 0, 0, 3, 0), Flags{Estimated: true})
+		expect(t, units, flags, withEveryTokenUnit(Units{config.UnitTokensIn: 11, config.UnitTokensOut: 3}), Flags{Estimated: true})
 	})
 	t.Run("choices over the kept size: their raw size counts", func(t *testing.T) {
 		m := NewMeter(provider.Completions, EstimateTokens(int64(requestBytes)))
@@ -151,17 +152,17 @@ func TestMissingUsageIsEstimatedFromContent(t *testing.T) {
 		m.Observe(provider.Event{Data: []byte(`{"choices":[{"text":"abcdefgh"}]}`)})
 		units, flags := m.Settle(true)
 		// [{"text":"abcdefgh"}] is 21 bytes → 6.
-		expect(t, units, flags, tokenUnits(11, 0, 0, 6, 0), Flags{Estimated: true})
+		expect(t, units, flags, withEveryTokenUnit(Units{config.UnitTokensIn: 11, config.UnitTokensOut: 6}), Flags{Estimated: true})
 	})
 	t.Run("embeddings generate nothing", func(t *testing.T) {
 		body := `{"object":"list","data":[{"embedding":[0.1,0.2]}]}`
 		units, flags := bodyMeter(provider.Embeddings, requestBytes, 200, body).Settle(true)
-		expect(t, units, flags, tokenUnits(11, 0, 0, 0, 0), Flags{Estimated: true})
+		expect(t, units, flags, withEveryTokenUnit(Units{config.UnitTokensIn: 11}), Flags{Estimated: true})
 	})
 	t.Run("malformed usage is no usage", func(t *testing.T) {
 		body := `{"choices":[{"text":"abcd"}],"usage":{"total_tokens":"many"}}`
 		units, flags := bodyMeter(provider.Completions, requestBytes, 200, body).Settle(true)
-		expect(t, units, flags, tokenUnits(11, 0, 0, 1, 0), Flags{Estimated: true})
+		expect(t, units, flags, withEveryTokenUnit(Units{config.UnitTokensIn: 11, config.UnitTokensOut: 1}), Flags{Estimated: true})
 	})
 }
 
@@ -170,26 +171,26 @@ func TestPartialUsage(t *testing.T) {
 		m := streamMeter(provider.ChatCompletions, 40,
 			`{"choices":[{"delta":{"content":"Hi"}}],"usage":{"prompt_tokens":5,"completion_tokens":1}}`)
 		units, flags := m.Settle(false)
-		expect(t, units, flags, tokenUnits(5, 0, 0, 1, 0), Flags{Partial: true})
+		expect(t, units, flags, withEveryTokenUnit(Units{config.UnitTokensIn: 5, config.UnitTokensOut: 1}), Flags{Partial: true})
 	})
 	t.Run("otherwise estimated from what was seen", func(t *testing.T) {
 		m := streamMeter(provider.ChatCompletions, 40, `{"choices":[{"delta":{"content":"Hello"}}]}`)
 		units, flags := m.Settle(false)
-		expect(t, units, flags, tokenUnits(10, 0, 0, 2, 0), Flags{Estimated: true, Partial: true})
+		expect(t, units, flags, withEveryTokenUnit(Units{config.UnitTokensIn: 10, config.UnitTokensOut: 2}), Flags{Estimated: true, Partial: true})
 	})
 	t.Run("a body cut short", func(t *testing.T) {
 		units, flags := bodyMeter(provider.ChatCompletions, 40, 200, `{"choices":[{"message":{"content":"abcdefgh`).Settle(false)
-		expect(t, units, flags, tokenUnits(10, 0, 0, 8, 0), Flags{Estimated: true, Partial: true})
+		expect(t, units, flags, withEveryTokenUnit(Units{config.UnitTokensIn: 10, config.UnitTokensOut: 8}), Flags{Estimated: true, Partial: true})
 	})
 }
 
 func TestNoAnswerOrErrorStatusCountsNothing(t *testing.T) {
 	units, flags := NewMeter(provider.ChatCompletions, 100).Settle(false)
-	expect(t, units, flags, tokenUnits(0, 0, 0, 0, 0), Flags{Partial: true})
+	expect(t, units, flags, withEveryTokenUnit(Units{}), Flags{Partial: true})
 
 	m := bodyMeter(provider.ChatCompletions, 400, 400, `{"error":{"message":"context too long"}}`)
 	units, flags = m.Settle(true)
-	expect(t, units, flags, tokenUnits(0, 0, 0, 0, 0), Flags{})
+	expect(t, units, flags, withEveryTokenUnit(Units{}), Flags{})
 }
 
 // D1: a request written to the backend in full that gets no answer — a first-event
@@ -203,20 +204,20 @@ func TestSentUnansweredCountsTheEstimatedInput(t *testing.T) {
 			t.Error("SentUnanswered false after Sent")
 		}
 		units, flags := m.Settle(false)
-		expect(t, units, flags, tokenUnits(101, 0, 0, 0, 0), Flags{Estimated: true, Partial: true})
+		expect(t, units, flags, withEveryTokenUnit(Units{config.UnitTokensIn: 101}), Flags{Estimated: true, Partial: true})
 	}
 
 	refused := NewMeter(provider.ChatCompletions, 101)
 	refused.Sent()
 	refused.Refused()
 	units, flags := refused.Settle(true)
-	expect(t, units, flags, tokenUnits(0, 0, 0, 0, 0), Flags{Partial: true})
+	expect(t, units, flags, withEveryTokenUnit(Units{}), Flags{Partial: true})
 
 	answered := NewMeter(provider.ChatCompletions, 101)
 	answered.Sent()
 	answered.Answered(503, false)
 	units, flags = answered.Settle(true)
-	expect(t, units, flags, tokenUnits(0, 0, 0, 0, 0), Flags{})
+	expect(t, units, flags, withEveryTokenUnit(Units{}), Flags{})
 }
 
 func TestEstimateTokens(t *testing.T) {

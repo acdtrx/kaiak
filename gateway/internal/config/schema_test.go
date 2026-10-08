@@ -1,8 +1,8 @@
 package config
 
 // The schema walker and the resolved snapshot against protocol/schema/config.schema.json
-// itself, for the facts both state: the backend types, the limit types, and the
-// defaults of omitted fields.
+// itself, for the facts both state: the backend types, the limit types, the price
+// units, and the defaults of omitted fields.
 
 import (
 	"encoding/json"
@@ -53,14 +53,15 @@ func TestBackendTypesAreTheSchemaEnum(t *testing.T) {
 	}
 }
 
-// Every LimitType constant of the package has a row of the limit-type table, and the
-// table has no other row.
-func TestEveryLimitTypeHasARow(t *testing.T) {
+// constants is the values of the package's (non-test) constants declared with type
+// typeName.
+func constants(t *testing.T, typeName string) []string {
+	t.Helper()
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var consts []LimitType
+	var consts []string
 	for _, name := range files {
 		if strings.HasSuffix(name, "_test.go") {
 			continue
@@ -76,7 +77,7 @@ func TestEveryLimitTypeHasARow(t *testing.T) {
 			}
 			for _, spec := range gen.Specs {
 				v := spec.(*ast.ValueSpec)
-				if typ, ok := v.Type.(*ast.Ident); !ok || typ.Name != "LimitType" {
+				if typ, ok := v.Type.(*ast.Ident); !ok || typ.Name != typeName {
 					continue
 				}
 				for _, value := range v.Values {
@@ -84,13 +85,23 @@ func TestEveryLimitTypeHasARow(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					consts = append(consts, LimitType(name))
+					consts = append(consts, name)
 				}
 			}
 		}
 	}
 	if len(consts) == 0 {
-		t.Fatal("no LimitType constants found")
+		t.Fatalf("no %s constants found", typeName)
+	}
+	return consts
+}
+
+// Every LimitType constant of the package has a row of the limit-type table, and the
+// table has no other row.
+func TestEveryLimitTypeHasARow(t *testing.T) {
+	var consts []LimitType
+	for _, name := range constants(t, "LimitType") {
+		consts = append(consts, LimitType(name))
 	}
 	types := LimitTypes()
 	for _, c := range consts {
@@ -143,6 +154,96 @@ func TestLimitTypesAreTheSchemaEnum(t *testing.T) {
 	}
 	if enum := schema.Defs.Limit.If.Properties.Type.Enum; !slices.Equal(integer, enum) {
 		t.Errorf("integer types: table %v, schema %v", integer, enum)
+	}
+}
+
+// The unit sets: TokenUnits is every Unit constant once; each other set is part of it;
+// the sets and the fallback are what docs/specs/CONTROL-PROTOCOL.md (Units and price
+// units, Tiered prices → Input size, Totals → used) and GATEWAY.md (Limits → Settle)
+// say.
+func TestUnitSets(t *testing.T) {
+	var consts []Unit
+	for _, name := range constants(t, "Unit") {
+		consts = append(consts, Unit(name))
+	}
+	if !slices.Equal(slices.Sorted(slices.Values(TokenUnits)), slices.Sorted(slices.Values(consts))) {
+		t.Errorf("TokenUnits %v, Unit constants %v", TokenUnits, consts)
+	}
+	for name, set := range map[string][]Unit{"PricedUnits": PricedUnits, "InputUnits": InputUnits, "CountedUnits": CountedUnits} {
+		for _, unit := range set {
+			if !slices.Contains(TokenUnits, unit) {
+				t.Errorf("%s: %q is not a token unit", name, unit)
+			}
+		}
+		if len(slices.Compact(slices.Sorted(slices.Values(set)))) != len(set) {
+			t.Errorf("%s %v names a unit twice", name, set)
+		}
+	}
+	// Recorded is not priced: tokens_reasoning is inside tokens_out.
+	if want := []Unit{UnitTokensIn, UnitTokensCached, UnitTokensCacheWrite, UnitTokensOut}; !slices.Equal(PricedUnits, want) {
+		t.Errorf("PricedUnits %v, want %v", PricedUnits, want)
+	}
+	// The input size: the backend's prompt tokens.
+	if want := []Unit{UnitTokensIn, UnitTokensCached, UnitTokensCacheWrite}; !slices.Equal(InputUnits, want) {
+		t.Errorf("InputUnits %v, want %v", InputUnits, want)
+	}
+	// Token limits and totals count the backend's load: input read from the cache does
+	// not count, reasoning is inside tokens_out.
+	if want := []Unit{UnitTokensIn, UnitTokensCacheWrite, UnitTokensOut}; !slices.Equal(CountedUnits, want) {
+		t.Errorf("CountedUnits %v, want %v", CountedUnits, want)
+	}
+	// An unpriced tokens_cached or tokens_cache_write is charged at tokens_in; an
+	// unpriced tokens_in or tokens_out costs 0. A fallback is a priced unit with a
+	// price of its own, and only a priced unit falls back.
+	if want := map[Unit]Unit{UnitTokensCached: UnitTokensIn, UnitTokensCacheWrite: UnitTokensIn}; !maps.Equal(PriceFallback, want) {
+		t.Errorf("PriceFallback %v, want %v", PriceFallback, want)
+	}
+	for unit, fallback := range PriceFallback {
+		if !slices.Contains(PricedUnits, unit) || !slices.Contains(PricedUnits, fallback) {
+			t.Errorf("fallback %q → %q: both must be priced units", unit, fallback)
+		}
+		if _, chained := PriceFallback[fallback]; chained {
+			t.Errorf("fallback %q → %q: the fallback falls back itself", unit, fallback)
+		}
+	}
+}
+
+// The walker admits the schema's price units: every priced unit, and only those, has
+// a price field.
+func TestPricedUnitsAreTheSchemaPriceUnits(t *testing.T) {
+	var schema struct {
+		Defs struct {
+			Model struct {
+				Properties struct {
+					Prices struct {
+						Items struct {
+							Properties struct {
+								Tiers struct {
+									Items struct {
+										Properties struct {
+											USDPerMillion struct {
+												Properties map[string]any `json:"properties"`
+											} `json:"usd_per_million"`
+										} `json:"properties"`
+									} `json:"items"`
+								} `json:"tiers"`
+							} `json:"properties"`
+						} `json:"items"`
+					} `json:"prices"`
+				} `json:"properties"`
+			} `json:"model"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(fixturetest.Read(t, fixturetest.SchemaFile("config.schema.json")), &schema); err != nil {
+		t.Fatal(err)
+	}
+	var priced []string
+	for _, unit := range PricedUnits {
+		priced = append(priced, string(unit))
+	}
+	fields := schema.Defs.Model.Properties.Prices.Items.Properties.Tiers.Items.Properties.USDPerMillion.Properties
+	if got := slices.Sorted(maps.Keys(fields)); !slices.Equal(slices.Sorted(slices.Values(priced)), got) {
+		t.Errorf("priced units %v, schema price fields %v", priced, got)
 	}
 }
 

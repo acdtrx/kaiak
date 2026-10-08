@@ -165,6 +165,29 @@ const (
 	UnitTokensReasoning  Unit = "tokens_reasoning"
 )
 
+// The unit sets, each a subset of TokenUnits. Recorded and priced stay distinct sets:
+// tokens_reasoning is recorded but never priced. Read-only.
+var (
+	// TokenUnits is every token unit, in record order: a usage record from a token
+	// endpoint carries them all, zeros included.
+	TokenUnits = []Unit{UnitTokensIn, UnitTokensCached, UnitTokensCacheWrite, UnitTokensOut, UnitTokensReasoning}
+	// PricedUnits are the units usd_per_million may name, in the order a cost sums
+	// them.
+	PricedUnits = []Unit{UnitTokensIn, UnitTokensCached, UnitTokensCacheWrite, UnitTokensOut}
+	// InputUnits add up to the backend's prompt tokens: the input size that picks a
+	// price tier, and gen_ai.usage.input_tokens.
+	InputUnits = []Unit{UnitTokensIn, UnitTokensCached, UnitTokensCacheWrite}
+	// CountedUnits are what token limits and the control plane's token totals count:
+	// the tokens that load the backend. Input read from the cache is left out (a
+	// prefix-cache hit costs the backend almost nothing); reasoning is inside
+	// tokens_out.
+	CountedUnits = []Unit{UnitTokensIn, UnitTokensCacheWrite, UnitTokensOut}
+	// PriceFallback maps a priced unit to the unit whose price it is charged at when a
+	// tier names no price of its own — cached or written input never costs less than
+	// plain input. A priced unit with neither costs 0.
+	PriceFallback = map[Unit]Unit{UnitTokensCached: UnitTokensIn, UnitTokensCacheWrite: UnitTokensIn}
+)
+
 // Snapshot is one validated config, resolved for serving: references are pointers,
 // defaults applied, each group's effective allowed models and limits derived along its
 // path.

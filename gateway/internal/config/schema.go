@@ -100,9 +100,6 @@ var (
 		string(BackendOpenAI), string(BackendAzureOpenAI), string(BackendAnthropic), string(BackendAzureAnthropic),
 	}
 	limitTypeNames = limitTypeEnum()
-	priceUnits     = []string{
-		string(UnitTokensIn), string(UnitTokensCached), string(UnitTokensCacheWrite), string(UnitTokensOut),
-	}
 )
 
 // limitTypeEnum is the limit type names: every limit type, in order.
@@ -268,9 +265,9 @@ func (c *schemaCheck) retrySettings(v any, path string) map[string]any {
 }
 
 func (c *schemaCheck) usdPerMillion(v any, path string) {
-	fields := make(map[string]schemacheck.Field, len(priceUnits))
-	for _, unit := range priceUnits {
-		fields[unit] = schemacheck.Field{Check: c.NumberAtLeast(0)}
+	fields := make(map[string]schemacheck.Field, len(PricedUnits))
+	for _, unit := range PricedUnits {
+		fields[string(unit)] = schemacheck.Field{Check: c.NumberAtLeast(0)}
 	}
 	m := c.Object(v, path, fields)
 	if m != nil && len(m) == 0 {

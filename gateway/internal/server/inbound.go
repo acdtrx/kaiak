@@ -305,14 +305,6 @@ func saturatingMul(a, b int64) int64 {
 	return a * b
 }
 
-// saturatingAdd is a + b for non-negative a and b, math.MaxInt64 when that overflows.
-func saturatingAdd(a, b int64) int64 {
-	if b > math.MaxInt64-a {
-		return math.MaxInt64
-	}
-	return a + b
-}
-
 // optionalField decodes object[key] into a T; nil when the key is absent or null.
 // param is the parameter's full name for the error.
 func optionalField[T any](object map[string]json.RawMessage, key, param, want string) (*T, *apiError) {

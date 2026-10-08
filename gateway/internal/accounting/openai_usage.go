@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 
+	"kaiak/internal/config"
 	"kaiak/internal/provider"
 )
 
@@ -105,7 +106,7 @@ func (u *openAIUsage) parse(raw json.RawMessage) (Units, bool) {
 	}
 	prompt := nonNegative(r.PromptTokens)
 	if u.endpoint == provider.Embeddings {
-		return tokenUnits(prompt, 0, 0, 0, 0), true
+		return withEveryTokenUnit(Units{config.UnitTokensIn: prompt}), true
 	}
 	completion := nonNegative(r.CompletionTokens)
 	var cached, written, reasoning int64
@@ -116,7 +117,13 @@ func (u *openAIUsage) parse(raw json.RawMessage) (Units, bool) {
 	if d := r.CompletionTokensDetails; d != nil {
 		reasoning = min(max(d.ReasoningTokens, 0), completion)
 	}
-	return tokenUnits(prompt-cached-written, cached, written, completion, reasoning), true
+	return withEveryTokenUnit(Units{
+		config.UnitTokensIn:         prompt - cached - written,
+		config.UnitTokensCached:     cached,
+		config.UnitTokensCacheWrite: written,
+		config.UnitTokensOut:        completion,
+		config.UnitTokensReasoning:  reasoning,
+	}), true
 }
 
 // generatedContent is where a choice carries generated text: a chat message (non-

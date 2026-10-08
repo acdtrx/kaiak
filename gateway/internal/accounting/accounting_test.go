@@ -63,7 +63,7 @@ func TestPriceInForce(t *testing.T) {
 }
 
 func TestCost(t *testing.T) {
-	u := tokenUnits(1000, 4000, 0, 500, 300)
+	u := Units{config.UnitTokensIn: 1000, config.UnitTokensCached: 4000, config.UnitTokensOut: 500, config.UnitTokensReasoning: 300}
 	cases := []struct {
 		name   string
 		prices []config.Price
@@ -112,7 +112,7 @@ func TestCostOfInputWrittenToTheCache(t *testing.T) {
 		{"written priced at 0", map[config.Unit]float64{config.UnitTokensIn: 2, config.UnitTokensCached: 0.2,
 			config.UnitTokensCacheWrite: 0, config.UnitTokensOut: 8}, 2_900_000},
 	}
-	u := tokenUnits(1000, 500, 2000, 100, 40)
+	u := Units{config.UnitTokensIn: 1000, config.UnitTokensCached: 500, config.UnitTokensCacheWrite: 2000, config.UnitTokensOut: 100, config.UnitTokensReasoning: 40}
 	for _, c := range cases {
 		if got := Cost([]config.Price{price("2025-01-01", c.usd)}, at, u); got != c.want {
 			t.Errorf("%s: cost %d nano-USD, want %d", c.name, got, c.want)
@@ -154,19 +154,21 @@ func TestTierFor(t *testing.T) {
 }
 
 func TestInputSize(t *testing.T) {
-	if got := inputSize(tokenUnits(1000, 4000, 2000, 500, 300)); got != 7000 {
+	u := Units{config.UnitTokensIn: 1000, config.UnitTokensCached: 4000, config.UnitTokensCacheWrite: 2000,
+		config.UnitTokensOut: 500, config.UnitTokensReasoning: 300}
+	if got := u.Sum(config.InputUnits); got != 7000 {
 		t.Errorf("input size %d, want tokens_in + tokens_cached + tokens_cache_write = 7000", got)
 	}
-	if got := inputSize(Units{}); got != 0 {
+	if got := (Units{}).Sum(config.InputUnits); got != 0 {
 		t.Errorf("no units: input size %d, want 0", got)
 	}
 	// Units are clamped to 2^53 − 1 only after pricing: the sum must not wrap.
 	for _, u := range []Units{
-		tokenUnits(math.MaxInt64, math.MaxInt64, 0, 0, 0),
-		tokenUnits(math.MaxInt64-1, 0, 2, 0, 0),
-		tokenUnits(0, math.MaxInt64, math.MaxInt64, 0, 0),
+		{config.UnitTokensIn: math.MaxInt64, config.UnitTokensCached: math.MaxInt64},
+		{config.UnitTokensIn: math.MaxInt64 - 1, config.UnitTokensCacheWrite: 2},
+		{config.UnitTokensCached: math.MaxInt64, config.UnitTokensCacheWrite: math.MaxInt64},
 	} {
-		if got := inputSize(u); got != math.MaxInt64 {
+		if got := u.Sum(config.InputUnits); got != math.MaxInt64 {
 			t.Errorf("huge units %v: input size %d, want %d", u, got, int64(math.MaxInt64))
 		}
 	}
@@ -199,34 +201,34 @@ func TestCostPicksTheTierByInputSize(t *testing.T) {
 		want   int64
 	}{
 		// 1000 × 20 = 20000 µ$.
-		{"input 0: the first tier", longContext, tokenUnits(0, 0, 0, 1000, 0), 20_000_000},
+		{"input 0: the first tier", longContext, Units{config.UnitTokensOut: 1000}, 20_000_000},
 		// 272000 × 4 + 1000 × 20 = 1108000 µ$.
-		{"exactly at the threshold: the lower tier", longContext, tokenUnits(272_000, 0, 0, 1000, 0), 1_108_000_000},
+		{"exactly at the threshold: the lower tier", longContext, Units{config.UnitTokensIn: 272_000, config.UnitTokensOut: 1000}, 1_108_000_000},
 		// 272001 × 8 + 1000 × 30 = 2206008 µ$: the whole record at the upper tier.
-		{"one token above: the upper tier", longContext, tokenUnits(272_001, 0, 0, 1000, 0), 2_206_008_000},
+		{"one token above: the upper tier", longContext, Units{config.UnitTokensIn: 272_001, config.UnitTokensOut: 1000}, 2_206_008_000},
 		// 72001 + 200000 cached = 272001 input: 72001 × 8 + 200000 × 0.8 + 1000 × 30
 		// = 766008 µ$.
-		{"cached input counts toward the size", longContext, tokenUnits(72_001, 200_000, 0, 1000, 0), 766_008_000},
+		{"cached input counts toward the size", longContext, Units{config.UnitTokensIn: 72_001, config.UnitTokensCached: 200_000, config.UnitTokensOut: 1000}, 766_008_000},
 		// The same input all uncached but below: 72001 × 4 + 1000 × 20 = 308004 µ$.
-		{"below the threshold without the cached input", longContext, tokenUnits(72_001, 0, 0, 1000, 0), 308_004_000},
+		{"below the threshold without the cached input", longContext, Units{config.UnitTokensIn: 72_001, config.UnitTokensOut: 1000}, 308_004_000},
 		// 72001 + 200000 written = 272001 input: 72001 × 8 + 200000 × 10 + 1000 × 30
 		// = 2606008 µ$.
-		{"written input counts toward the size", writePriced, tokenUnits(72_001, 0, 200_000, 1000, 0), 2_606_008_000},
+		{"written input counts toward the size", writePriced, Units{config.UnitTokensIn: 72_001, config.UnitTokensCacheWrite: 200_000, config.UnitTokensOut: 1000}, 2_606_008_000},
 		// 72000 + 100000 cached + 100000 written = 272000 input, exactly at the
 		// threshold: 72000 × 4 + 100000 × 0.4 + 100000 × 5 + 1000 × 20 = 848000 µ$.
 		{"read and written at the threshold: the lower tier", writePriced,
-			tokenUnits(72_000, 100_000, 100_000, 1000, 0), 848_000_000},
+			Units{config.UnitTokensIn: 72_000, config.UnitTokensCached: 100_000, config.UnitTokensCacheWrite: 100_000, config.UnitTokensOut: 1000}, 848_000_000},
 		// 72001 × 8 + 200000 × 8 (unpriced written: the upper tier's tokens_in) + 1000 × 30
 		// = 2206008 µ$.
 		{"upper tier without a write price: its tokens_in price", cachedUnpriced,
-			tokenUnits(72_001, 0, 200_000, 1000, 0), 2_206_008_000},
+			Units{config.UnitTokensIn: 72_001, config.UnitTokensCacheWrite: 200_000, config.UnitTokensOut: 1000}, 2_206_008_000},
 		// 72001 × 8 + 200000 × 8 + 1000 × 30 = 2206008 µ$.
 		{"upper tier without a cached price: its tokens_in price", cachedUnpriced,
-			tokenUnits(72_001, 200_000, 0, 1000, 0), 2_206_008_000},
+			Units{config.UnitTokensIn: 72_001, config.UnitTokensCached: 200_000, config.UnitTokensOut: 1000}, 2_206_008_000},
 		// Qwen-style brackets, tokens_in only: 32000 × 1, 32001 × 2, 128001 × 3.
-		{"brackets: first", []config.Price{brackets}, tokenUnits(32_000, 0, 0, 0, 0), 32_000_000},
-		{"brackets: second", []config.Price{brackets}, tokenUnits(32_001, 0, 0, 0, 0), 64_002_000},
-		{"brackets: third", []config.Price{brackets}, tokenUnits(128_001, 0, 0, 0, 0), 384_003_000},
+		{"brackets: first", []config.Price{brackets}, Units{config.UnitTokensIn: 32_000}, 32_000_000},
+		{"brackets: second", []config.Price{brackets}, Units{config.UnitTokensIn: 32_001}, 64_002_000},
+		{"brackets: third", []config.Price{brackets}, Units{config.UnitTokensIn: 128_001}, 384_003_000},
 	}
 	for _, c := range cases {
 		if got := Cost(c.prices, at, c.units); got != c.want {
@@ -262,8 +264,10 @@ func TestOneTierPricesAsTheFlatArithmetic(t *testing.T) {
 		config.UnitTokensCacheWrite: 1.5625, config.UnitTokensOut: 10}
 	prices := []config.Price{price("2025-01-01", usd)}
 	for _, u := range []Units{
-		tokenUnits(0, 0, 0, 0, 0), tokenUnits(7, 3, 5, 11, 2), tokenUnits(1_000_000, 250_000, 120_000, 40_000, 0),
-		tokenUnits(900_000_000, 0, 0, 1, 0),
+		{},
+		{config.UnitTokensIn: 7, config.UnitTokensCached: 3, config.UnitTokensCacheWrite: 5, config.UnitTokensOut: 11, config.UnitTokensReasoning: 2},
+		{config.UnitTokensIn: 1_000_000, config.UnitTokensCached: 250_000, config.UnitTokensCacheWrite: 120_000, config.UnitTokensOut: 40_000},
+		{config.UnitTokensIn: 900_000_000, config.UnitTokensOut: 1},
 	} {
 		flat := int64(math.Round(1000 * (float64(u[config.UnitTokensIn])*1.25 +
 			float64(u[config.UnitTokensCached])*0.125 + float64(u[config.UnitTokensCacheWrite])*1.5625 +
@@ -276,13 +280,13 @@ func TestOneTierPricesAsTheFlatArithmetic(t *testing.T) {
 
 func TestCostsAddUpWithoutDrift(t *testing.T) {
 	prices := []config.Price{price("2025-01-01", map[config.Unit]float64{config.UnitTokensIn: 0.1, config.UnitTokensOut: 0.3})}
-	one := Cost(prices, day("2025-07-01"), tokenUnits(7, 0, 0, 3, 0)) // 0.7 + 0.9 = 1.6 µ$
+	one := Cost(prices, day("2025-07-01"), Units{config.UnitTokensIn: 7, config.UnitTokensOut: 3}) // 0.7 + 0.9 = 1.6 µ$
 	if one != 1600 {
 		t.Fatalf("cost %d, want 1600", one)
 	}
 	var total int64
 	for range 1_000_000 {
-		total += Cost(prices, day("2025-07-01"), tokenUnits(7, 0, 0, 3, 0))
+		total += Cost(prices, day("2025-07-01"), Units{config.UnitTokensIn: 7, config.UnitTokensOut: 3})
 	}
 	if total != 1_600_000_000 {
 		t.Errorf("a million records total %d nano-USD, want exactly 1600000000", total)
@@ -394,9 +398,9 @@ func TestSettlementClampsUsageToTheProtocolBound(t *testing.T) {
 func TestCostSaturatesAtTheInt64Edge(t *testing.T) {
 	expensive := []config.Price{price("2025-01-01", map[config.Unit]float64{config.UnitTokensIn: 1000, config.UnitTokensOut: 1000})}
 	for _, units := range []Units{
-		tokenUnits(math.MaxInt64, 0, 0, 0, 0),
-		tokenUnits(0, 0, 0, math.MaxInt64, 0),
-		tokenUnits(1<<53, 0, 0, 1<<53, 0),
+		{config.UnitTokensIn: math.MaxInt64},
+		{config.UnitTokensOut: math.MaxInt64},
+		{config.UnitTokensIn: 1 << 53, config.UnitTokensOut: 1 << 53},
 	} {
 		if got := Cost(expensive, day("2025-07-01"), units); got != math.MaxInt64 {
 			t.Errorf("cost of %v: %d, want the int64 maximum", units, got)

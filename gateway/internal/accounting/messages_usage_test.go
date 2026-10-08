@@ -40,11 +40,11 @@ func TestMessagesUsage(t *testing.T) {
 		want         Units
 	}{
 		// vLLM repeats input_tokens in message_delta.
-		{"vllm", "messages-stream.sse", tokenUnits(62, 0, 0, 171, 0)},
-		{"vllm", "messages-stream-tool.sse", tokenUnits(315, 0, 0, 46, 0)},
+		{"vllm", "messages-stream.sse", withEveryTokenUnit(Units{config.UnitTokensIn: 62, config.UnitTokensOut: 171})},
+		{"vllm", "messages-stream-tool.sse", withEveryTokenUnit(Units{config.UnitTokensIn: 315, config.UnitTokensOut: 46})},
 		// llama-server sends only output_tokens there; cache reads come apart.
-		{"llama-server", "messages-stream.sse", tokenUnits(24, 0, 0, 104, 0)},
-		{"llama-server", "messages-stream-tool.sse", tokenUnits(277, 0, 0, 61, 0)},
+		{"llama-server", "messages-stream.sse", withEveryTokenUnit(Units{config.UnitTokensIn: 24, config.UnitTokensOut: 104})},
+		{"llama-server", "messages-stream-tool.sse", withEveryTokenUnit(Units{config.UnitTokensIn: 277, config.UnitTokensOut: 61})},
 	} {
 		t.Run(c.server+"/"+c.name, func(t *testing.T) {
 			m := recordedStreamMeter(t, provider.Messages, c.server, c.name)
@@ -64,13 +64,13 @@ func TestMessagesUsage(t *testing.T) {
 			`{"type":"message_delta","usage":{"output_tokens":12,"cache_read_input_tokens":null}}`,
 			`{"type":"message_stop"}`)
 		units, flags := m.Settle(true)
-		expect(t, units, flags, tokenUnits(5, 20, 7, 12, 0), Flags{})
+		expect(t, units, flags, withEveryTokenUnit(Units{config.UnitTokensIn: 5, config.UnitTokensCached: 20, config.UnitTokensCacheWrite: 7, config.UnitTokensOut: 12}), Flags{})
 	})
 	t.Run("body", func(t *testing.T) {
 		body := `{"id":"m","type":"message","content":[{"type":"text","text":"x"}],` +
 			`"usage":{"input_tokens":3,"cache_read_input_tokens":2,"output_tokens":4}}`
 		units, flags := bodyMeter(provider.Messages, 40, 200, body).Settle(true)
-		expect(t, units, flags, tokenUnits(3, 2, 0, 4, 0), Flags{})
+		expect(t, units, flags, withEveryTokenUnit(Units{config.UnitTokensIn: 3, config.UnitTokensCached: 2, config.UnitTokensOut: 4}), Flags{})
 	})
 }
 
@@ -90,14 +90,14 @@ func TestMessagesEstimatedOutput(t *testing.T) {
 			`{"type":"message_stop"}`)
 		// abcd 4 + {"a":1} 7 + héllo 6 = 17 bytes → 5.
 		units, flags := m.Settle(true)
-		expect(t, units, flags, tokenUnits(10, 0, 0, 5, 0), Flags{Estimated: true})
+		expect(t, units, flags, withEveryTokenUnit(Units{config.UnitTokensIn: 10, config.UnitTokensOut: 5}), Flags{Estimated: true})
 	})
 	t.Run("body", func(t *testing.T) {
 		body := `{"content":[{"type":"thinking","thinking":"abcd","signature":"zzzz"},{"type":"text","text":"efgh"},` +
 			`{"type":"tool_use","id":"t","name":"f","input":{"a":1}}]}`
 		// abcd 4 + efgh 4 + {"a":1} 7 = 15 bytes → 4.
 		units, flags := bodyMeter(provider.Messages, 40, 200, body).Settle(true)
-		expect(t, units, flags, tokenUnits(10, 0, 0, 4, 0), Flags{Estimated: true})
+		expect(t, units, flags, withEveryTokenUnit(Units{config.UnitTokensIn: 10, config.UnitTokensOut: 4}), Flags{Estimated: true})
 	})
 }
 
@@ -112,22 +112,22 @@ func TestMessagesProvisionalOutput(t *testing.T) {
 	text := `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"` + strings.Repeat("x", 16000) + `"}}`
 	t.Run("cut before message_delta", func(t *testing.T) {
 		units, flags := streamMeter(provider.Messages, 40, start, text).Settle(false)
-		expect(t, units, flags, tokenUnits(50, 20, 7, 4000, 0), Flags{Estimated: true, Partial: true})
+		expect(t, units, flags, withEveryTokenUnit(Units{config.UnitTokensIn: 50, config.UnitTokensCached: 20, config.UnitTokensCacheWrite: 7, config.UnitTokensOut: 4000}), Flags{Estimated: true, Partial: true})
 	})
 	t.Run("ended without message_delta usage", func(t *testing.T) {
 		units, flags := streamMeter(provider.Messages, 40, start, text,
 			`{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`, `{"type":"message_stop"}`).Settle(true)
-		expect(t, units, flags, tokenUnits(50, 20, 7, 4000, 0), Flags{Estimated: true})
+		expect(t, units, flags, withEveryTokenUnit(Units{config.UnitTokensIn: 50, config.UnitTokensCached: 20, config.UnitTokensCacheWrite: 7, config.UnitTokensOut: 4000}), Flags{Estimated: true})
 	})
 	t.Run("never below the provisional count", func(t *testing.T) {
 		units, flags := streamMeter(provider.Messages, 40,
 			`{"type":"message_start","message":{"usage":{"input_tokens":50,"output_tokens":3}}}`).Settle(false)
-		expect(t, units, flags, tokenUnits(50, 0, 0, 3, 0), Flags{Estimated: true, Partial: true})
+		expect(t, units, flags, withEveryTokenUnit(Units{config.UnitTokensIn: 50, config.UnitTokensOut: 3}), Flags{Estimated: true, Partial: true})
 	})
 	t.Run("message_delta's count is final", func(t *testing.T) {
 		units, flags := streamMeter(provider.Messages, 40, start, text,
 			`{"type":"message_delta","usage":{"output_tokens":3900}}`).Settle(false)
-		expect(t, units, flags, tokenUnits(50, 20, 7, 3900, 0), Flags{Partial: true})
+		expect(t, units, flags, withEveryTokenUnit(Units{config.UnitTokensIn: 50, config.UnitTokensCached: 20, config.UnitTokensCacheWrite: 7, config.UnitTokensOut: 3900}), Flags{Partial: true})
 	})
 }
 

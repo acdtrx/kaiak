@@ -2,10 +2,10 @@ package limits
 
 import (
 	"cmp"
-	"math"
 	"slices"
 	"time"
 
+	"kaiak/internal/accounting"
 	"kaiak/internal/config"
 )
 
@@ -185,25 +185,15 @@ func live(s int64, now time.Time) bool {
 func (w *window) usedAt(now time.Time) int64 {
 	if w.kind != SlidingMinute {
 		w.roll(now)
-		return saturatingAdd(w.used, w.pushed())
+		return accounting.SaturatingAdd(w.used, w.pushed())
 	}
 	var sum int64
 	for i := range minuteBuckets {
 		if live(w.m.sec[i], now) {
-			sum = saturatingAdd(sum, w.m.n[i])
+			sum = accounting.SaturatingAdd(sum, w.m.n[i])
 		}
 	}
 	return sum
-}
-
-// saturatingAdd is a + b for non-negative b, math.MaxInt64 when that overflows.
-// Counts never wrap: a wrapped count would read as room under every limit
-// (docs/specs/GATEWAY.md, Limits → Check and reserve).
-func saturatingAdd(a, b int64) int64 {
-	if b > math.MaxInt64-a {
-		return math.MaxInt64
-	}
-	return a + b
 }
 
 // fits reports whether need more fits under limit with used counted, in a form
@@ -217,12 +207,13 @@ func fits(used, need, limit int64) bool {
 
 // add counts amount (non-negative) at now; held marks a reservation, which settles
 // later. A shared window tags settled amounts with generation, the usage generation
-// they belong to. A count saturates at the int64 maximum; the hold records what was
-// actually added, so releasing it takes back exactly that.
+// they belong to. A count saturates at the int64 maximum — a wrapped count would read
+// as room under every limit (docs/specs/GATEWAY.md, Limits → Check and reserve); the
+// hold records what was actually added, so releasing it takes back exactly that.
 func (w *window) add(now time.Time, amount int64, held bool, generation uint64) hold {
 	if w.kind != SlidingMinute {
 		w.roll(now)
-		amount = saturatingAdd(w.used, amount) - w.used
+		amount = accounting.SaturatingAdd(w.used, amount) - w.used
 		w.used += amount
 		switch {
 		case held:
@@ -238,7 +229,7 @@ func (w *window) add(now time.Time, amount int64, held bool, generation uint64) 
 	if m.sec[i] != s {
 		m.sec[i], m.n[i], m.nHeld[i] = s, 0, 0
 	}
-	amount = saturatingAdd(m.n[i], amount) - m.n[i]
+	amount = accounting.SaturatingAdd(m.n[i], amount) - m.n[i]
 	m.n[i] += amount
 	if held {
 		m.nHeld[i] += amount
@@ -327,7 +318,8 @@ func (w *window) setBase(now, start time.Time, used int64) {
 // clampNegative sets a negative count back to 0 and reports whether there was one.
 // No count goes below 0 — every release takes back what its hold added, in the
 // incarnation or bucket it was added to — so one is a bug; clamped, it cannot turn
-// into a saturated "everything used" (saturatingAdd assumes non-negative counts).
+// into a saturated "everything used" (accounting.SaturatingAdd assumes non-negative
+// counts).
 func (w *window) clampNegative() bool {
 	negative := w.used < 0 || w.held < 0
 	w.used, w.held = max(w.used, 0), max(w.held, 0)
@@ -380,7 +372,7 @@ func (w *window) inFlight(now time.Time) int64 {
 	var sum int64
 	for i := range minuteBuckets {
 		if live(w.m.sec[i], now) {
-			sum = saturatingAdd(sum, w.m.nHeld[i])
+			sum = accounting.SaturatingAdd(sum, w.m.nHeld[i])
 		}
 	}
 	return sum

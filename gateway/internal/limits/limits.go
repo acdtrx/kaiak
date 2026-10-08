@@ -596,19 +596,13 @@ func (l *Limiter) checkCountLocked(c *counter) {
 	}
 }
 
-// amountOf is what rec counts on a token or cost counter: its cost, or the tokens that
-// load the backend — tokens_in + tokens_cache_write + tokens_out (reasoning is inside
-// tokens_out). Input read from the cache does not count: a prefix-cache hit costs the
-// backend almost nothing.
+// amountOf is what rec counts on a token or cost counter: its cost, or its
+// config.CountedUnits, the tokens that load the backend.
 func amountOf(m config.Measure, rec accounting.UsageRecord) int64 {
 	if m == config.MeasureCost {
 		return rec.CostNanoUSD
 	}
-	var tokens int64
-	for _, unit := range []config.Unit{config.UnitTokensIn, config.UnitTokensCacheWrite, config.UnitTokensOut} {
-		tokens = saturatingAdd(tokens, rec.Units[unit])
-	}
-	return tokens
+	return rec.Units.Sum(config.CountedUnits)
 }
 
 // Used is the count of group's ("" = global) counter of type typ, unsettled
