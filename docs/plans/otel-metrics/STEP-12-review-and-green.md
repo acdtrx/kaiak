@@ -1,6 +1,6 @@
 # Step 12 — review and green
 
-**Status:** not started
+**Status:** done (2026-10-08)
 
 ## Intent
 
@@ -27,6 +27,18 @@ The plan is checked by an independent review and closed out.
 - `scripts/check-all.sh` green 3× in a row. Suite recorded.
 
 ## Result
+
+- Independent review (Codex, a plain copy of the branch with `BRANCH.diff` against
+  `v0.11.6`): `docs/reviews/2026-10-08-otel-metrics/BRANCH-REVIEW-independent.md`,
+  with its Outcome. Two medium findings fixed (`0f2fb64`), one inherited limitation
+  accepted; the live checks' finding (the status code's type) fixed (`fa2d29a`).
+- `docs/BACKLOG.md`: OpenTelemetry export → Metrics marked built, Traces updated to
+  the dependency rule and the shared connection; new entry *Runtime and HTTP server
+  metrics*.
+- `docs/reviews/2026-10-07-structure/STRUCTURE.md` → Outcome: observability F3, F4,
+  F5, F8, the routing hint and F05/T12 marked done with their steps here (F10 was
+  already done by the structure plan's step 28).
+- `OVERVIEW.md` verification status filled in.
 
 
 ### Fixes

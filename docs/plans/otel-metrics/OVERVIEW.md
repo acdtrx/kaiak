@@ -299,4 +299,20 @@ acceptance criteria and commits at the step boundary.
   and the two copies have the same series names and labels.
 - `scripts/check-all.sh` green 3× in a row.
 
-**Verification status:** not started.
+**Verification status:** done (2026-10-08); every phase green.
+
+- [x] Unit: the translation rules (checked against Prometheus's `otlptranslator`
+  v1.0.0); every instrument kind; series at 0; each temporality, late series,
+  exact scaled-counter deltas; every setting and its malformed form; the delivery
+  rules in `otlp` (steps 2, 5, 8, 9).
+- [x] The spec's metric list compared both ways with a full scrape
+  (`metrics/spec_test.go`, steps 6–9).
+- [x] e2e: push and scrape agree family by family in file and control-plane mode;
+  nothing sent when off; the final export at exit; one endpoint for both signals;
+  delta end to end (step 10).
+- [x] Live: Collector 0.162.0 shows every family; Prometheus 3.15.0 ingests the push
+  and scrapes `/metrics` with the same 409 series, 62 names and label names; the
+  DGX live-test kit passes (step 11).
+- [x] Independent review: two findings fixed, one accepted
+  (`docs/reviews/2026-10-08-otel-metrics/`, step 12).
+- [x] `scripts/check-all.sh` green 3× in a row (step 12).

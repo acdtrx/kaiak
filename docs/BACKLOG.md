@@ -355,19 +355,26 @@ Group entries under headings as themes emerge.
     export); a collector can also still read stderr (OTel Collector `filelog`,
     Vector, Fluent Bit). Either path may drop lines under pressure: fine for
     outcomes, never for billing (usage records stay the record).
-  - *Metrics* — wanted (user, 2026-10-07): OTLP metrics export alongside
-    `/metrics`, the way the logs layer was added, with metric names and units
-    renamed to the OpenTelemetry semantic conventions where one exists (`kaiak.*`
-    for the rest). Trigger: the structure plan (`docs/plans/structure/`) is
-    merged — its attempt classification and limit-type/unit packages create the
-    label lists the metrics read.
+  - *Metrics* — built (2026-10-08, `docs/plans/otel-metrics/`): every metric in
+    OpenTelemetry's vocabulary, exported over OTLP/HTTP beside `/metrics`, which
+    writes the same metrics' Prometheus translation (`GATEWAY.md` → Observability:
+    Metric list, OTLP metric export).
   - *Traces* — new work. Confined test first: forward the W3C `traceparent` header
     to backends (vLLM can continue the trace) and log `trace_id` on the request line,
     linking client traces to gateway lines. Span export (per request, per attempt,
-    queue wait) needs OTLP: the OTel Go SDK is a third-party dependency (a dated
-    ruling in `TECH-STACK.md`), or a hand-written OTLP/HTTP exporter using its JSON
-    encoding.
-  Revisit trigger (traces; the logs layer is built, metrics are wanted): a question
+    queue wait) needs spans: the dependency rule allows the OTel Go trace SDK core
+    (`otel`, `sdk/trace` — four small third-party modules, no gRPC), with a span
+    exporter of our own on `internal/telemetry/otlp`; the SDK's OTLP exporters were
+    rejected (`TECH-STACK.md`, 2026-10-08).
+  Revisit trigger (traces; logs and metrics are built): a question
   about a request that the log line cannot answer, or a client team that traces its
   own calls and needs the gateway's part linked in.
 
+- **Runtime and HTTP server metrics** — the conventions' Go runtime (`go.memory.used`,
+  `go.goroutine.count`, `go.gc.*`, …) and process metrics (`process.cpu.time`,
+  `process.memory.usage`, …), and `http.server.active_requests` and the request and
+  response body-size histograms; kaiak emits none of them (the OTel metrics plan
+  left them out, 2026-10-08). Each would be a registered family read at collect, in
+  the conventions' names. Revisit trigger: an incident where memory, goroutines or
+  in-flight client requests could not be read from the existing metrics, or an
+  operator whose dashboards expect the standard runtime families.

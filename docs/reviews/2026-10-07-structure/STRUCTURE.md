@@ -516,7 +516,9 @@ The work ran as the plan [`docs/plans/structure/`](../../plans/structure/OVERVIE
 step's Result, not its plan. Outcomes: **done** (step, commit), **done in part** (which
 part, and where the rest went), **moved** (to the OTel metrics entry in
 `docs/BACKLOG.md` → OpenTelemetry export → Metrics), **not taken** (why), **left as is**
-(the review's own call), **investigate only**.
+(the review's own call), **investigate only**. The moved findings were then built by the
+OTel metrics plan ([`docs/plans/otel-metrics/`](../../plans/otel-metrics/OVERVIEW.md),
+2026-10-08, from `v0.11.6`); their rows below name its steps.
 
 ### Module findings
 
@@ -582,7 +584,7 @@ step took (or that the review left). Hints no step took are under
 | *hint:* `DeploymentID` built by hand | done in part | step 27, `eeca1d6`: `routing.IDOf` in main and server; `metrics`' two copies moved |
 | *hint:* live-gateway share in two modules | left as is | T5: with *Demand-weighted shares* or *Live count excludes draining gateways* |
 | *hint:* limiter pulls config, router is pushed | left as is | T6 |
-| *hint:* `limitScopeKinds`; two circuit-state enums in `servingStatus` | moved | label lists (observability F3) and T12 |
+| *hint:* `limitScopeKinds`; two circuit-state enums in `servingStatus` | done | OTel metrics steps 3–4, `5ed5565`, `b6ed33e` |
 | *bug note:* `endTrial` discards `dispatch()` | done | step 27, `eeca1d6`: the result feeds `changed` |
 
 #### gateway-observability
@@ -591,12 +593,12 @@ step took (or that the review left). Hints no step took are under
 |---|---|---|
 | F1 named unit sets | done | step 12, `78dd9a5`; the counted rule is pinned across halves by step 13, `0d36e50` |
 | F2 retry reasons = retryable outcomes | done | step 9, `2afc3f4` |
-| F3 closed label vocabularies | done in part | limit-type list: step 11, `101a2a7`; retry reasons: step 9, `2afc3f4`; the rest (batch results, drop reasons, load triggers, limit scopes, queue reasons, config results, the run-time guards and HELP copies) moved |
-| F4 key labels written twice | moved | OTel metrics entry |
-| F5 per-config gauges; circuits prepared from `main` | moved | OTel metrics entry (with T6's "`NewOps` takes the `Circuits`") |
+| F3 closed label vocabularies | done | limit-type list: step 11, `101a2a7`; retry reasons: step 9, `2afc3f4`; the rest (batch results, drop reasons, load triggers, limit scopes, queue reasons, config results, the run-time guards and HELP copies): OTel metrics step 3, `5ed5565` |
+| F4 key labels written twice | done | OTel metrics step 3, `5ed5565` |
+| F5 per-config gauges; circuits prepared from `main` | done | OTel metrics step 4, `b6ed33e`: routing zero-fills one picture; `NewOps` takes the `Circuits` |
 | F6 sink / fan-out leftovers | done | step 7, `596cc8a`: `RecorderOptions{Batcher, Metrics}`; GATEWAY.md "Where records go" |
 | F7 inclusive-token rule | done | step 28, `829b2e3` |
-| F8 build version in `ops.go` | moved | OTel metrics entry |
+| F8 build version in `ops.go` | done | OTel metrics step 3, `5ed5565` |
 | F9 merge provider and accounting stream readers | left as is | T4 |
 | F10 `LogExportCounts` mirror | done | step 28, `829b2e3`; `otlplog.Counts` went too |
 | *hint:* meter-refused codes in server | done | step 9, `2afc3f4`: `failureRules.refused` |
@@ -713,7 +715,7 @@ step took (or that the review left). Hints no step took are under
 | F02 shared provider mechanics | done in part | shared helpers = provider F2, step 20, `d951f5c`; one implementation for the OpenAI family rejected (Decision 1) |
 | F03 an attempt owns its result | done | = server S2, step 9, `2afc3f4` |
 | F04 endpoint metadata once | done | = server S3 and provider F6, step 22, `2c00828` |
-| F05 routing observation | moved | T12, OTel metrics entry |
+| F05 routing observation | done | T12: OTel metrics step 4, `b6ed33e` (`routing.Serving`) |
 | F06 housekeeping in the core | done | = control-core F1, step 24, `bd9e5ba` |
 | F07 one batch number | investigate only | not started; revisit when usage delivery next changes |
 | B01 missing-endpoint memory | done | step 7, `596cc8a`: `MissingEndpoints.Retain` on config apply |
