@@ -25,7 +25,6 @@
     },
     "state": {
       "enum": [
-        "starting",
         "ready",
         "draining"
       ]

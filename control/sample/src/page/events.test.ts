@@ -88,7 +88,7 @@ async function start(pushIntervalMs = 50, maxStreams?: number): Promise<Running>
   const controlPlane: StatusPageOptions["controlPlane"] = {
     currentConfig: core.currentConfig,
     gateways: core.gateways,
-    totals: core.totals,
+    readTotals: core.readTotals,
     recentRecords: core.recentRecords,
     onConfigPublished: counted(core.onConfigPublished),
     onTotalsChanged: counted(core.onTotalsChanged),

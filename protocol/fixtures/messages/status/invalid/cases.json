@@ -103,6 +103,6 @@
   },
   "state-unknown.json": {
     "kind": "schema",
-    "reason": "state is starting, ready or draining"
+    "reason": "state is ready or draining"
   }
 }

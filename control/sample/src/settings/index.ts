@@ -25,7 +25,7 @@ export interface Settings {
 
 export type Environment = Readonly<Record<string, string | undefined>>;
 
-export const DEFAULT_LISTEN = "127.0.0.1:8090";
+const DEFAULT_LISTEN = "127.0.0.1:8090";
 
 // Reads the settings from `env`. A relative config path resolves against INIT_CWD (the
 // directory npm was run from, so `npm run dev -w sample` from control/ takes paths as typed)

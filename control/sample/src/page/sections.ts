@@ -3,7 +3,7 @@
 // goes through `html`, which escapes it.
 
 import { resolveScopes } from "kaiak-control";
-import type { Config, ControlPlane, DeploymentStatus, GatewayStatus, GatewayView, Limit, PublishedConfig, ReceivedRecord, ResolvedScope, Totals } from "kaiak-control";
+import type { Config, ControlPlane, DeploymentStatus, GatewayStatus, GatewayView, Limit, PublishedConfig, ReceivedRecord, ResolvedScope, TotalsRead } from "kaiak-control";
 
 import type { ConfigFileState } from "../config-file/index.ts";
 
@@ -17,7 +17,7 @@ export const SECTION_IDS: readonly SectionId[] = ["gateways", "config", "totals"
 
 // What the sections read.
 export interface PageSources {
-  core: Pick<ControlPlane, "currentConfig" | "gateways" | "totals" | "recentRecords">;
+  core: Pick<ControlPlane, "currentConfig" | "gateways" | "readTotals" | "recentRecords">;
   configFile: () => ConfigFileState;
   // Milliseconds since the epoch.
   clock: () => number;
@@ -222,24 +222,17 @@ function counted(n: number, noun: string): string {
 
 // ---- Totals vs limits
 
-// The totals carry counted_through for the gateway reading them; the page reads them
-// under no gateway's name and ignores it.
-const PAGE_READER = "";
-
-const HOUR_MS = 3_600_000;
-
-async function renderTotals({ core, clock }: PageSources): Promise<Markup> {
+async function renderTotals({ core }: PageSources): Promise<Markup> {
   const heading = html`<h2>Totals vs limits</h2>`;
-  const [current, totals] = await Promise.all([core.currentConfig(), core.totals(PAGE_READER)]);
+  const [current, totals] = await Promise.all([core.currentConfig(), core.readTotals()]);
   if (!current) return html`${heading}<p class="muted">No config published yet.</p>`;
-  const now = clock();
   const used = usedByLimit(totals);
   const rows: Markup[] = [];
   for (const { group, path, limits } of resolveScopes(current.config)) {
     const label = group === undefined ? html`global` : groupPath(path);
-    for (const limit of limits) rows.push(limitRow(label, limit, used.get(limitKey(group, limit)), now));
+    for (const limit of limits) rows.push(limitRow(label, limit, used.get(limitKey(group, limit)), totals.windowStarts));
   }
-  const intro = html`<p class="muted">Current windows: tokens per UTC hour, dollars per UTC month, counted from every gateway's usage (${formatCount(totals.live_gateways)} live). Per-minute limits are enforced by each gateway on its share and not counted here.</p>`;
+  const intro = html`<p class="muted">Current windows: tokens per UTC hour, dollars per UTC month, counted from every gateway's usage (${formatCount(totals.liveGateways)} live). Per-minute limits are enforced by each gateway on its share and not counted here.</p>`;
   if (rows.length === 0) return html`${heading}${intro}<p class="muted">The config sets no limits.</p>`;
   return html`${heading}${intro}
 <div class="scroll"><table>
@@ -259,7 +252,7 @@ function limitKey(group: string | undefined, limit: Pick<Limit, "type">): string
 }
 
 // The totals list only windows with usage; limits missing here have used nothing yet.
-function usedByLimit(totals: Totals): Map<string, UsedWindow> {
+function usedByLimit(totals: TotalsRead): Map<string, UsedWindow> {
   const used = new Map<string, UsedWindow>();
   for (const window of totals.windows) {
     used.set(limitKey(window.group, window), { used: BigInt(window.used), windowStart: window.window_start });
@@ -267,7 +260,8 @@ function usedByLimit(totals: Totals): Map<string, UsedWindow> {
   return used;
 }
 
-function limitRow(label: Markup, limit: Limit, window: UsedWindow | undefined, now: number): Markup {
+// A limit with nothing used yet shows the current window, as the totals were read for it.
+function limitRow(label: Markup, limit: Limit, window: UsedWindow | undefined, windowStarts: TotalsRead["windowStarts"]): Markup {
   if (limit.type !== "tokens_per_hour" && limit.type !== "usd_per_month") {
     const unit = limit.type === "requests_per_minute" ? "requests" : "tokens";
     return html`<tr><td>${label}</td><td>${formatCount(limit.value)} ${unit} / min</td><td colspan="3" class="muted">per gateway share, not counted here</td></tr>`;
@@ -276,10 +270,10 @@ function limitRow(label: Markup, limit: Limit, window: UsedWindow | undefined, n
   const money = limit.type === "usd_per_month";
   const ceiling = money ? usdToNano(limit.value) : BigInt(limit.value);
   const format = (amount: bigint): string => (money ? formatNanoUsd(amount) : formatCount(amount));
-  const windowStart = window ? parseTimestamp(window.windowStart) : undefined;
-  const start = windowStart ?? (money ? monthStart(now) : Math.floor(now / HOUR_MS) * HOUR_MS);
+  const windowStart = window?.windowStart ?? windowStarts[limit.type];
+  const start = parseTimestamp(windowStart);
   return html`<tr><td>${label}</td><td>${format(ceiling)} ${money ? "/ month" : "tokens / hour"}</td>
-<td class="num">${format(used)}</td><td class="bar">${share(used, ceiling)}</td><td>${formatAbsolute(start)}</td></tr>`;
+<td class="num">${format(used)}</td><td class="bar">${share(used, ceiling)}</td><td>${start === undefined ? windowStart : formatAbsolute(start)}</td></tr>`;
 }
 
 function share(used: bigint, ceiling: bigint): Markup {
@@ -287,11 +281,6 @@ function share(used: bigint, ceiling: bigint): Markup {
   const hundredths = Number((used * 10_000n) / ceiling);
   const percent = hundredths / 100;
   return html`<meter min="0" max="100" low="75" high="90" optimum="0" value="${Math.min(percent, 100)}"></meter> <span class="num">${percent.toFixed(percent >= 10 ? 0 : 1)}%</span>`;
-}
-
-function monthStart(now: number): number {
-  const date = new Date(now);
-  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1);
 }
 
 // ---- Recent usage

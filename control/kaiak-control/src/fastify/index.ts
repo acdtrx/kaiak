@@ -146,8 +146,8 @@ function registerGatewayRoutes(routes: FastifyInstance, options: ControlProtocol
     return intake.ack;
   });
 
-  // Accepted before any config is published: a starting gateway reports with nothing
-  // applied.
+  // Accepted before any config is published: a gateway booted from its seed config
+  // reports with nothing applied.
   routes.post("/status", { bodyLimit: STATUS_BODY_LIMIT_BYTES }, async (request, reply) => {
     const instance = instanceOf(request);
     const intake = await controlPlane.acceptStatus(instance, request.body);

@@ -14,6 +14,10 @@ which review findings each step resolved.
   `fakeotlp`, the `kaiak-control` `listeners` and `test-support` subsystems); every spec
   section an earlier step touched reads true; no history-narrating comment was left in
   touched code.
+- **Upgrade notes:** `docs/DEPLOYMENT.md` → Upgrades gets one bullet for this plan's
+  host-visible changes: the `kaiak-control` API changes of decision 11 (`totals`,
+  `countedThrough`, store window starts, `BatchCursors.latest`, the sweep methods,
+  `configHash`, `libraryName`) and the status state `starting` no longer existing.
 - **Independent review:** the user's usual flow — a plain copy of the branch at
   `/tmp/kaiak` (no `docs/plans`, no `docs/reviews`), a Codex review against the plan's
   goal and constraints (behaviour preserved except decision 10; no metric, protocol,

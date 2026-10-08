@@ -17,7 +17,7 @@ import (
 // gateway only sends).
 
 var (
-	states      = []string{string(StateStarting), string(StateReady), string(StateDraining)}
+	states      = []string{string(StateReady), string(StateDraining)}
 	circuits    = []string{string(CircuitClosed), string(CircuitOpen), string(CircuitHalfOpen)}
 	codePattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 )

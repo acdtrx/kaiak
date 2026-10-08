@@ -276,8 +276,9 @@ Test tooling outside the binary:
 
 ## Control-plane packages
 
-- npm workspaces under `control/`: `kaiak-control` and `sample`. Each package exposes
-  one entry (`src/index.ts`, set by its `exports`).
+- npm workspaces under `control/`: `kaiak-control` and `sample`. `kaiak-control`
+  exposes one entry (`src/index.ts`, set by its `exports`); `sample` is an app, not a
+  library: no package entry, only its process entries (below).
 - Inside a package, a subsystem is a top-level folder under `src/`. Code outside a
   subsystem imports it only through its `index.ts`, and the import graph is acyclic —
   enforced by `control/scripts/check-boundaries.ts` in `npm run lint`.

@@ -749,7 +749,8 @@ func (s controlState) TotalsAppliedAt() (time.Time, bool) {
 // deployment of the applied config s (none while s is nil), every backend inFlight
 // counts requests on and every model queued counts waiting requests for (a reload may
 // have dropped them). A deployment's circuit is open or half-open, with its opening
-// time, as circuits has it; closed when circuits does not.
+// time, as circuits has it; closed when circuits does not. Its collections are
+// non-nil, as control.Serving requires.
 func servingStatus(inFlight, queued map[string]int, circuits map[routing.DeploymentID]routing.CircuitReport, s *config.Snapshot) control.Serving {
 	out := control.Serving{Backends: map[string]control.BackendStatus{}, Models: map[string]control.ModelStatus{}}
 	if s != nil {

@@ -2128,9 +2128,9 @@ own, and a client sending repeats is broken either way.
     per request. State: `ready` while a config is in force — from the control plane
     or the seed (settled 2026-09-25, N-P11: derived from the
     config in force, not from the control plane's, so a seed boot reports ready
-    with no applied config hash) — `draining` from the drain's start; `starting` (no
-    config in force) is never reported by the binary, which reports only after a
-    boot that found a config. The applied config is reported as its hash
+    with no applied config hash) — `draining` from the drain's start; there is no
+    `starting` (settled 2026-10-08): the binary reports only after a boot that found
+    a config. The applied config is reported as its hash
     (`applied_config_hash`; null with the seed — settled 2026-10-07).
     Backends (in flight, the configured cap as written — not this gateway's share —,
     deployments' circuits: `closed`, `open`, `half_open`) and models (queued) come

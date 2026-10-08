@@ -369,7 +369,8 @@ the `{ error, detail }` body, `error` being the stable code:
   budgets after a grace — a gateway that rejects a config keeps stale bases; keeping
   the last base of a limit the totals stop listing — it misses the other gateways'
   new spend for that limit.
-- **Status**: `state` is `starting`, `ready` or `draining`; `started_at` is when the
+- **Status**: `state` is `ready` or `draining` (settled 2026-10-08: no `starting` — a
+  gateway reports only after a boot that found a config); `started_at` is when the
   gateway process started; `applied_config_hash` is the `config_hash` of the applied
   config, `null` until a config from the control plane is applied — a gateway serving its seed config reports `ready` with `null` (settled
   2026-09-25: `ready` means a config is in force); `last_rejection` is
@@ -938,7 +939,7 @@ How the control plane takes `POST /v1/usage`, as `kaiak-control` implements it.
   such report a second — `GATEWAY.md`, Status minimum gap), and every 10 s (settled
   2026-09-24: a failed report is simply retried by the next one; nothing waits for
   it): instance ID, protocol version, state
-  (starting / ready / draining), start time, applied config hash, last rejection,
+  (ready / draining), start time, applied config hash, last rejection,
   in-flight counts and caps per backend, queued requests per model, circuit state
   per deployment (exact fields: Messages, Status).
 - A gateway silent for 30 s is dropped from the live set, and the live-gateway count
@@ -953,8 +954,8 @@ How the control plane takes `POST /v1/status`, as `kaiak-control` implements it.
   violation `400` with the rule's code (`timestamp-invalid`; the first one found,
   every issue in `detail`); the status's instance equal to the
   `Kaiak-Instance` header, else `400 instance-mismatch`. Accepted: `204`, no body.
-- **Accepted before any config is published**: a starting gateway reports with
-  nothing applied, and the live set must know it before its first batch.
+- **Accepted before any config is published**: a gateway booted from its seed config
+  reports with nothing applied, and the live set must know it before its first batch.
 - The latest status per instance is kept with its receipt time (the control plane's
   clock); a newer receipt replaces it whatever it says. The write is conditional on
   the record the status was judged against (settled 2026-10-06): a status another

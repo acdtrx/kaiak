@@ -78,9 +78,6 @@ func (a *Applier) Apply(trigger string, data []byte, attrs ...any) (*Snapshot, e
 	return snapshot, nil
 }
 
-// Loaded reports whether a config is in force.
-func (a *Applier) Loaded() bool { return a.holder.Loaded() }
-
 // Check validates data completely, as the apply path does before a swap — syntax,
 // schema, semantic rules and backend credentials (lookupEnv) — without applying it.
 func Check(data []byte, lookupEnv func(string) (string, bool)) (*Snapshot, error) {

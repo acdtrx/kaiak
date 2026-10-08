@@ -8,7 +8,7 @@
 // disagree with: the store decides which batches count.
 
 import { validateUsageBatch } from "../messages/index.ts";
-import type { BatchId, Totals, TotalsLimitType, TotalsWindow, UsageAck, UsageBatch } from "../messages/index.ts";
+import type { BatchId, TotalsLimitType, TotalsWindow, UsageAck, UsageBatch } from "../messages/index.ts";
 import type { BatchCursors, ControlPlaneStore, CurrentWindows, ReceivedRecord, StoreChange, WindowTotal } from "../storage/index.ts";
 
 import { batchAdditions } from "./aggregate.ts";
@@ -41,7 +41,8 @@ export type UsageIntake =
 export type TotalsChangedListener = () => void;
 
 // The totals at one store snapshot, for every gateway at once: each stream takes its
-// own instance's cursors (its counted_through) from it.
+// own instance's cursors (its counted_through) from it, and a host shows the windows
+// against its limits.
 export interface TotalsRead {
   // Every scope and type with usage in its current window, whatever the config.
   windows: TotalsWindow[];
@@ -56,9 +57,6 @@ export interface TotalsRead {
 export interface Usage {
   // Takes one usage batch from `instance` (the requester's checked instance ID).
   acceptUsageBatch(instance: string, doc: unknown): Promise<UsageIntake>;
-  // The complete totals of the current windows as the gateway `instance` gets them
-  // first on its stream (its counted_through).
-  totals(instance: string): Promise<Totals>;
   // The totals at one snapshot, for every gateway (TotalsRead).
   readTotals(): Promise<TotalsRead>;
   // The newest received records, newest first.
@@ -213,10 +211,6 @@ export function createUsage({ store, clock, recentRecordsSize, liveGateways, onL
       }
       return serialized(instance, () => countBatch(message));
     },
-    async totals(instance) {
-      const read = await readTotals();
-      return { live_gateways: read.liveGateways, counted_through: countedThrough(read, instance), windows: read.windows };
-    },
     readTotals,
     recentRecords: () => store.recentRecords(recentRecordsSize),
     onTotalsChanged(listener) {
@@ -230,13 +224,6 @@ export function createUsage({ store, clock, recentRecordsSize, liveGateways, onL
     dropPastWindows,
     takeChange,
   };
-}
-
-// A gateway's counted_through in a read: its instance's cursor of each epoch.
-export function countedThrough(read: TotalsRead, instance: string): Totals["counted_through"] {
-  return read.cursors
-    .filter((cursor) => cursor.instance === instance)
-    .map(({ epoch, sequence }) => ({ epoch, sequence }));
 }
 
 // The windows a totals message lists: every scope and type with usage in its current

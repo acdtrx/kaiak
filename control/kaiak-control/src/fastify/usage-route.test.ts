@@ -36,7 +36,7 @@ test("a batch is answered with its ack naming the batch only", async () => {
   const validation = validateUsageAck(ack);
   assert.ok(validation.ok, "the ack passes its schema");
   assert.deepEqual(ack, { batch: BATCH.batch });
-  assert.ok(((await controlPlane.totals("gw-1"))?.windows.length ?? 0) > 0, "the batch counted");
+  assert.ok((await controlPlane.readTotals()).windows.length > 0, "the batch counted");
 
   // The resend after a lost ack gets the same answer.
   const resent = await postUsage(base, BATCH);
@@ -50,7 +50,7 @@ test("a batch naming another instance than the header is refused", async () => {
   assert.equal(response.status, 400);
   const body = (await response.json()) as { error: string; detail: string };
   assert.equal(body.error, "instance-mismatch");
-  assert.deepEqual((await controlPlane.totals("gw-1"))?.windows, []);
+  assert.deepEqual((await controlPlane.readTotals()).windows, []);
 });
 
 test("invalid batches are refused with their codes", async () => {
@@ -79,7 +79,7 @@ test("a batch without the token is refused before intake", async () => {
   const { base, controlPlane } = await start();
   const response = await postUsage(base, BATCH, { ...HEADERS, authorization: "Bearer wrong" });
   assert.equal(response.status, 401);
-  assert.deepEqual((await controlPlane.totals("gw-1"))?.windows, []);
+  assert.deepEqual((await controlPlane.readTotals()).windows, []);
 });
 
 test("a full batch of 500 large records fits the body limit", async () => {

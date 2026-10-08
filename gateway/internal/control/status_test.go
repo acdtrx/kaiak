@@ -56,7 +56,7 @@ func TestFirstStatusReportsWhatTheGatewayRuns(t *testing.T) {
 			return Serving{
 				Backends: map[string]BackendStatus{
 					"local": {InFlight: 2, MaxInFlight: 4, Deployments: map[string]DeploymentStatus{"llama": {Circuit: CircuitClosed}}},
-					"gone":  {InFlight: 1},
+					"gone":  {InFlight: 1, Deployments: map[string]DeploymentStatus{}},
 				},
 				Models: map[string]ModelStatus{"llama": {Queued: 0}},
 			}
@@ -79,20 +79,6 @@ func TestFirstStatusReportsWhatTheGatewayRuns(t *testing.T) {
 	if s.StartedAt.Location() != time.UTC {
 		t.Errorf("started_at %v, want UTC", s.StartedAt)
 	}
-}
-
-func TestStatusIsStartingUntilAConfigIsApplied(t *testing.T) {
-	h := newHarness(t)
-	c := h.client(nil)
-	h.boot(c)
-	h.run(c)
-	if s := h.nextStatus(); s.State != StateStarting || s.AppliedConfigHash != nil || s.Backends == nil || s.Models == nil {
-		t.Errorf("status %+v, want starting with nothing applied", s)
-	}
-	hash := h.cp.Publish(configA(t))
-	h.statusUntil("state ready", func(s Status) bool {
-		return s.State == StateReady && s.AppliedConfigHash != nil && *s.AppliedConfigHash == hash
-	})
 }
 
 func TestStatusIsSentOnTheInterval(t *testing.T) {

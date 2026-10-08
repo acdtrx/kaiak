@@ -44,7 +44,7 @@ export interface ProtocolReplica {
   controlPlane: ControlPlane;
 }
 
-export const STARTUP_TRIGGER = "startup";
+const STARTUP_TRIGGER = "startup";
 
 // The store is in memory and serves one process: nothing survives a restart.
 const IN_MEMORY_WARNING =

@@ -40,7 +40,7 @@ export function runKeygen(args: readonly string[]): KeygenResult {
 }
 
 // The key's lines, then the config entry: one line of JSON, a member of `keys`.
-export function formatKey(created: CreatedKey, group: string): string {
+function formatKey(created: CreatedKey, group: string): string {
   const entry = `${JSON.stringify(created.id)}: ${JSON.stringify({ hash: created.hash, group })}`;
   return [
     `key:  ${created.key}`,

@@ -103,7 +103,6 @@ type UsageAck struct {
 type State string
 
 const (
-	StateStarting State = "starting"
 	StateReady    State = "ready"
 	StateDraining State = "draining"
 )

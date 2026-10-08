@@ -132,7 +132,7 @@ test("the core takes usage batches with its clock and reports totals listener fa
   assert.ok(intake.ok);
   // The ack names the batch only; the totals reach the gateway on its stream.
   assert.deepEqual(intake.ack, { batch: batch.batch });
-  assert.equal((await controlPlane.totals("gw-1"))?.live_gateways, 0);
+  assert.equal((await controlPlane.readTotals()).liveGateways, 0);
   assert.equal((await controlPlane.recentRecords()).length, 1);
   assert.deepEqual(events, ["totals-changed"]);
 });
@@ -155,11 +155,11 @@ test("the live set's size is the live-gateway count in totals", async () => {
   for (const instance of ["gw-1", "gw-2"]) {
     assert.ok((await controlPlane.acceptStatus(instance, { ...status, instance })).ok);
   }
-  assert.equal((await controlPlane.totals("gw-1"))?.live_gateways, 2);
+  assert.equal((await controlPlane.readTotals()).liveGateways, 2);
 
   now += 1_000;
   assert.deepEqual((await controlPlane.expireSilentGateways("manual")).expired, ["gw-1", "gw-2"]);
-  assert.equal((await controlPlane.totals("gw-1"))?.live_gateways, 0);
+  assert.equal((await controlPlane.readTotals()).liveGateways, 0);
   // Each status and each expiry is its own change to the gateway records.
   assert.deepEqual(events, ["gateways-changed", "gateways-changed", "gateways-changed", "gateways-changed"]);
 });
@@ -192,7 +192,7 @@ test("a gateway forgotten while silent keeps its last counted batch for the curs
   now += 8_001;
   const run = await controlPlane.expireSilentGateways("manual");
   assert.deepEqual(run.batchCursorsDropped, ["gw-1"]);
-  assert.deepEqual((await controlPlane.totals("gw-1")).counted_through, []);
+  assert.deepEqual((await controlPlane.readTotals()).cursors, []);
 });
 
 // Totals list every window with usage, whatever the current config limits, so a
@@ -207,7 +207,7 @@ test("totals keep listing a window the current config no longer limits", async (
   const dropped = configNumbered(2);
   dropped.global.limits = [];
   assert.ok((await cp.publishConfig(dropped)).ok);
-  const totals = await cp.totals(INSTANCE);
+  const totals = await cp.readTotals();
   assert.equal(totals.windows.find((window) => window.group === undefined && window.type === "usd_per_month")?.used, "100");
 });
 
@@ -344,7 +344,7 @@ describe("several cores over one store", () => {
       },
     ]);
   const usd = async (controlPlane: ControlPlane, group?: string): Promise<string | undefined> =>
-    (await controlPlane.totals("probe"))?.windows.find((w) => w.group === group && w.type === "usd_per_month")?.used;
+    (await controlPlane.readTotals()).windows.find((w) => w.group === group && w.type === "usd_per_month")?.used;
 
   test("every core starts: none holds the store alone", async () => {
     const store = createMemoryStore();
@@ -381,9 +381,9 @@ describe("several cores over one store", () => {
     const [a, b] = [core(store), core(store)];
     assert.ok((await a.publishConfig(full())).ok);
     assert.ok((await b.acceptUsageBatch("gw-1", carolBatch("gw-1", 1, 5))).ok);
-    const [ta, tb] = [await a.totals("gw-1"), await b.totals("gw-1")];
+    const [ta, tb] = [await a.readTotals(), await b.readTotals()];
     assert.deepEqual(ta, tb);
-    assert.deepEqual(ta.counted_through, [{ epoch: "e".repeat(32), sequence: 1 }]);
+    assert.deepEqual(ta.cursors, [{ instance: "gw-1", epoch: "e".repeat(32), sequence: 1 }]);
   });
 
   test("a publish through one core reaches the other core's listeners, and their totals follow", async () => {
@@ -471,13 +471,13 @@ describe("several cores over one store", () => {
     assert.ok((await replacement.acceptUsageBatch(INSTANCE, oneRecordBatch("b", 1, { tokens: 100, cost: 100 }))).ok);
     release.resolve();
     assert.ok((await old).ok);
-    const totals = await replacement.totals(INSTANCE);
+    const totals = await replacement.readTotals();
     assert.equal(totals.windows.find((window) => window.group === undefined && window.type === "tokens_per_hour")?.used, "200");
     assert.deepEqual(
-      [...totals.counted_through].sort((x, y) => (x.epoch < y.epoch ? -1 : 1)),
+      [...totals.cursors].sort((x, y) => (x.epoch < y.epoch ? -1 : 1)),
       [
-        { epoch: "a".repeat(32), sequence: 1 },
-        { epoch: "b".repeat(32), sequence: 1 },
+        { instance: INSTANCE, epoch: "a".repeat(32), sequence: 1 },
+        { instance: INSTANCE, epoch: "b".repeat(32), sequence: 1 },
       ],
     );
   });
@@ -676,13 +676,13 @@ describe("several cores over one store", () => {
     const stalled = held(store, "totalsSnapshot");
     const a = coreAtNow(stalled.store, { clock: () => now });
     const b = coreAtNow(store, { clock: () => now });
-    const pending = a.totals(INSTANCE);
+    const pending = a.readTotals();
     await stalled.entered;
     now = boundary + 1;
     assert.ok((await b.acceptUsageBatch(INSTANCE, oneRecordBatch("a", 1, { ...tiny, at: now }))).ok);
     stalled.release();
     const late = await pending;
-    assert.deepEqual(late, await b.totals(INSTANCE));
+    assert.deepEqual(late, await b.readTotals());
     assert.ok(
       late.windows.some((window) => window.type === "tokens_per_hour" && window.window_start === "2026-10-07T13:00:00Z"),
       "the batch's hour window is listed",

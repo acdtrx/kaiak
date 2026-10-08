@@ -12,7 +12,7 @@ import type { ControlPlaneStore, CurrentWindows, WindowTotal } from "../storage/
 import { usageRecord } from "../test-support/index.ts";
 
 import { createUsage } from "./index.ts";
-import type { Usage, UsageIntake, UsageOptions } from "./index.ts";
+import type { TotalsRead, Usage, UsageIntake, UsageOptions } from "./index.ts";
 
 const FIXTURES = path.resolve(import.meta.dirname, "../../../../protocol/fixtures");
 const INSTANCE = "gw-1";
@@ -122,10 +122,13 @@ function acked(intake: UsageIntake): Extract<UsageIntake, { ok: true }> {
   return intake;
 }
 
-async function currentTotals(usage: Usage): Promise<Totals> {
-  const totals = await usage.totals(INSTANCE);
-  assert.ok(validateTotals(totals).ok, "totals pass the totals schema and rules");
-  return { ...totals, windows: sorted(totals.windows) };
+// The totals at one snapshot, windows sorted. Its windows and live count, as a stream
+// sends them, pass the totals schema and rules.
+async function currentTotals(usage: Usage): Promise<TotalsRead> {
+  const read = await usage.readTotals();
+  const message: Totals = { live_gateways: read.liveGateways, counted_through: [], windows: read.windows };
+  assert.ok(validateTotals(message).ok, "totals pass the totals schema and rules");
+  return { ...read, windows: sorted(read.windows) };
 }
 
 // carol's hour window.
@@ -169,8 +172,9 @@ describe("aggregation", () => {
       used,
     });
     assert.deepEqual(totals, {
-      live_gateways: 0,
-      counted_through: [{ epoch: EPOCH_A, sequence: 1 }],
+      liveGateways: 0,
+      cursors: [{ instance: INSTANCE, epoch: EPOCH_A, sequence: 1 }],
+      windowStarts: { tokens_per_hour: HOUR_10, usd_per_month: SEPTEMBER },
       windows: sorted([
         hour(undefined, "5202"),
         month(undefined, "8532003"),
@@ -257,7 +261,12 @@ describe("aggregation", () => {
   test("with no config published, the totals list the batch's windows", async () => {
     const { usage, store } = await harness();
     assert.equal(await store.currentConfig(), undefined);
-    assert.deepEqual(await currentTotals(usage), { live_gateways: 0, counted_through: [], windows: [] });
+    assert.deepEqual(await currentTotals(usage), {
+      liveGateways: 0,
+      cursors: [],
+      windowStarts: { tokens_per_hour: HOUR_10, usd_per_month: SEPTEMBER },
+      windows: [],
+    });
     acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [record(["users", "carol"], "gpt-4.1-mini", [3, 0, 0, 0, 0], 4)])));
     assert.equal(await carolHourUsed(usage), "3");
   });
@@ -610,9 +619,9 @@ describe("counted_through", () => {
     assert.deepEqual(await currentTotals(a.usage), await currentTotals(b.usage));
   });
 
-  test("counted_through is the recipient instance's last counted batch of each epoch", async () => {
+  test("the cursors are each instance's last counted batch of each epoch", async () => {
     const { usage } = await harness();
-    assert.deepEqual((await currentTotals(usage)).counted_through, []);
+    assert.deepEqual((await currentTotals(usage)).cursors, []);
     acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 3, [oneTokenRecord()])));
     acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_B, 1, [oneTokenRecord()])));
     acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_B, 2, [oneTokenRecord()])));
@@ -620,16 +629,15 @@ describe("counted_through", () => {
     acked(
       await usage.acceptUsageBatch("gw-2", { batch: { instance: "gw-2", epoch: EPOCH_B, sequence: 7 }, records: [other] }),
     );
-    assert.deepEqual((await usage.totals("gw-2")).counted_through, [{ epoch: EPOCH_B, sequence: 7 }]);
-    const own = (await currentTotals(usage)).counted_through;
+    const keyOf = ({ instance, epoch }: { instance: string; epoch: string }): string => `${instance} ${epoch}`;
     assert.deepEqual(
-      [...own].sort((a, b) => (a.epoch < b.epoch ? -1 : 1)),
+      [...(await currentTotals(usage)).cursors].sort((a, b) => (keyOf(a) < keyOf(b) ? -1 : 1)),
       [
-        { epoch: EPOCH_A, sequence: 3 },
-        { epoch: EPOCH_B, sequence: 2 },
+        { instance: INSTANCE, epoch: EPOCH_A, sequence: 3 },
+        { instance: INSTANCE, epoch: EPOCH_B, sequence: 2 },
+        { instance: "gw-2", epoch: EPOCH_B, sequence: 7 },
       ],
     );
-    assert.deepEqual((await usage.totals("gw-3")).counted_through, []);
   });
 
   test("an ack names the batch it acknowledges and nothing else", async () => {

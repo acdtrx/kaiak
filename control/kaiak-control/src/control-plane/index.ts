@@ -60,7 +60,7 @@ export type DeliveryFailedListener = (error: unknown) => void;
 
 export interface ControlPlane
   extends Omit<ConfigPublishing, "takeChange">,
-    Pick<Usage, "acceptUsageBatch" | "totals" | "readTotals" | "recentRecords" | "onTotalsChanged">,
+    Pick<Usage, "acceptUsageBatch" | "readTotals" | "recentRecords" | "onTotalsChanged">,
     Omit<Gateways, "takeChange"> {
   // Checks a gateway request's token, protocol version and instance ID.
   checkGatewayRequest(headers: RequestHeaders): GatewayRequestCheck;
@@ -154,7 +154,6 @@ export function createControlPlane(options: ControlPlaneOptions): ControlPlane {
     onConfigPublished: configPublishing.onConfigPublished,
     onConfigRead: configPublishing.onConfigRead,
     acceptUsageBatch: usage.acceptUsageBatch,
-    totals: usage.totals,
     readTotals: usage.readTotals,
     recentRecords: usage.recentRecords,
     onTotalsChanged: usage.onTotalsChanged,

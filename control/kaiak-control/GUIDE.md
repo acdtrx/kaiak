@@ -591,7 +591,7 @@ The sample's `verify` command wraps it for a config file:
 | --- | --- |
 | The current config | `currentConfig()` → `{ config, text, hash, publishedAt }` (`text` is what the store keeps and the stream sends; `config` is it parsed) |
 | Gateways, health, what they run | `gateways()` → `{ instance, status, receivedAt, live, conflict? }[]`; `liveGateways()` |
-| Spend vs limits (current windows) | `totals("")` + `resolveScopes(config)`, matched by scope and type — below |
+| Spend vs limits (current windows) | `readTotals()` → `{ windows, liveGateways, windowStarts, cursors }` + `resolveScopes(config)`, matched by scope and type — below |
 | A group's path, effective limits and models | `resolveScopes(config)` → `{ group?, path, limits, allowed_models? }[]` — global first (no `group`, `path` `[]`), then every group in config order; `allowed_models` absent = every model |
 | Live usage feed | `recentRecords()` |
 | Push updates to browsers | `onConfigPublished`, `onTotalsChanged`, `onGatewaysChanged` (each returns an unsubscribe) |
@@ -600,14 +600,15 @@ Totals vs limits (as the sample's status page does, `control/sample/src/page/sec
 
 ```ts
 const current = await controlPlane.currentConfig();
-const totals = await controlPlane.totals(""); // "" = read under no gateway's name
+const totals = await controlPlane.readTotals();
 if (current) {
   const used = new Map(totals.windows.map((w) => [JSON.stringify([w.group ?? null, w.type]), BigInt(w.used)]));
   for (const { group, limits } of resolveScopes(current.config)) { // group undefined = global
     for (const limit of limits) {
       const spent = used.get(JSON.stringify([group ?? null, limit.type])) ?? 0n; // absent = nothing used
       // tokens_per_hour / usd_per_month only: per-minute limits are enforced on
-      // gateways and never counted here. USD amounts are nano-USD.
+      // gateways and never counted here. USD amounts are nano-USD. The window is
+      // totals.windowStarts[limit.type].
     }
   }
 }

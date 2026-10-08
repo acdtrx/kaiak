@@ -51,7 +51,7 @@ function setup(options: Partial<GatewaysOptions> = {}) {
 
 test("a status stores the latest report with its receipt time and joins the live set", async () => {
   const { gateways, changes, advance, now } = setup();
-  const first = await gateways.acceptStatus("gw-1", statusOf("gw-1", { state: "starting" }));
+  const first = await gateways.acceptStatus("gw-1", statusOf("gw-1", { applied_config_hash: null }));
   assert.deepEqual(first, { ok: true, joined: true, conflictStarted: false });
   advance(10_000);
   const second = await gateways.acceptStatus("gw-1", statusOf("gw-1"));

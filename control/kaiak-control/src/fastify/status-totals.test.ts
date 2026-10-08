@@ -63,6 +63,13 @@ async function nextConfigHash(stream: SseStream): Promise<string> {
   return (JSON.parse(item.data) as { config_hash: string }).config_hash;
 }
 
+// The complete totals a stream gets from a read of core now, with counted_through
+// as given.
+async function completeTotals(core: ControlPlane, counted_through: Totals["counted_through"]): Promise<Totals> {
+  const read = await core.readTotals();
+  return { live_gateways: read.liveGateways, counted_through, windows: read.windows };
+}
+
 // A batch from TEST_INSTANCE in epoch EPOCH: one record of group g at NOW, counting
 // tokens input tokens and cost nano-USD.
 function batchOf(sequence: number, tokens = 100, cost = 0): UsageBatch {
@@ -104,8 +111,8 @@ describe("POST /v1/status", { timeout: 10_000 }, () => {
   test("a status before any config is accepted", async () => {
     const controlPlane = newControlPlane();
     const app = await startApp(controlPlane);
-    const starting = { ...READY, state: "starting", applied_config_hash: null };
-    assert.equal((await postStatus(app, "gw-1", starting)).status, 204);
+    const seeded = { ...READY, applied_config_hash: null };
+    assert.equal((await postStatus(app, "gw-1", seeded)).status, 204);
     assert.equal(await controlPlane.liveGateways(), 1);
   });
 
@@ -195,7 +202,7 @@ describe("POST /v1/status", { timeout: 10_000 }, () => {
     const pushed = await nextTotals(stream);
     assert.deepEqual(pushed.counted_through, [{ epoch: "5d41402abc4b2a76b9719d911017c592", sequence: 18 }]);
     // The first totals listed no window, so the changes are every window.
-    assert.deepEqual(pushed, await coreA.totals("gw-1"));
+    assert.deepEqual(pushed, await completeTotals(coreA, [{ epoch: "5d41402abc4b2a76b9719d911017c592", sequence: 18 }]));
 
     // A status posted to B moves the live count A's stream reports.
     assert.equal((await postStatus(appB, "gw-2")).status, 204);
@@ -229,7 +236,7 @@ describe("totals on the stream", { timeout: 20_000 }, () => {
     assert.deepEqual(Object.keys((await response.json()) as object), ["batch"]);
     const pushed = await nextTotals(stream);
     assert.ok(pushed.windows.length > 0);
-    assert.deepEqual(pushed, await controlPlane.totals("gw-1"));
+    assert.deepEqual(pushed, await completeTotals(controlPlane, [{ epoch: "5d41402abc4b2a76b9719d911017c592", sequence: 18 }]));
     // The stream is gw-1's, and the batch was gw-1's: the push counts it.
     assert.deepEqual(pushed.counted_through, [{ epoch: "5d41402abc4b2a76b9719d911017c592", sequence: 18 }]);
   });
@@ -258,7 +265,11 @@ describe("totals on the stream", { timeout: 20_000 }, () => {
     await post(batchOf(100, ["users", "carol"]));
     const stream = await openStream(app.base);
     const first = await nextTotals(stream);
-    assert.deepEqual(first, await controlPlane.totals("gw-1"), "the first totals are complete");
+    assert.deepEqual(
+      first,
+      await completeTotals(controlPlane, [{ epoch: "5d41402abc4b2a76b9719d911017c592", sequence: 100 }]),
+      "the first totals are complete",
+    );
     assert.ok(first.windows.some((window) => window.group === "carol"));
 
     // A batch for bob changes global's, users' and bob's windows, never carol's.
@@ -290,7 +301,35 @@ describe("totals on the stream", { timeout: 20_000 }, () => {
     const next = totalsOf(await stream.nextEvent());
     assert.equal(next.live_gateways, 1);
     assert.deepEqual(next.windows, []);
-    assert.ok((await controlPlane.totals("gw-1")).windows.length > 0, "the windows are still counted");
+    assert.ok((await controlPlane.readTotals()).windows.length > 0, "the windows are still counted");
+  });
+
+  test("counted_through is the stream's instance's last counted batch of each epoch", async () => {
+    const controlPlane = newControlPlane({ clock: () => NOW });
+    await publishFixture(controlPlane, "minimal.json");
+    const app = await startApp(controlPlane);
+    const other = "b".repeat(32);
+    let records = 0;
+    const count = async (instance: string, epoch: string, sequence: number): Promise<void> => {
+      records += 1;
+      const record = { record_id: records.toString(16).padStart(32, "0"), gateway_instance: instance };
+      assert.ok((await controlPlane.acceptUsageBatch(instance, usageBatch({ instance, epoch, sequence }, [record]))).ok);
+    };
+    await count(TEST_INSTANCE, EPOCH, 3);
+    await count(TEST_INSTANCE, other, 1);
+    await count(TEST_INSTANCE, other, 2);
+    await count("gw-2", other, 7);
+    const pushedTo = async (instance: string): Promise<Totals["counted_through"]> =>
+      (await nextTotals(await openStream(app.base, instance))).counted_through;
+    assert.deepEqual(await pushedTo("gw-2"), [{ epoch: other, sequence: 7 }]);
+    assert.deepEqual(
+      [...(await pushedTo(TEST_INSTANCE))].sort((a, b) => (a.epoch < b.epoch ? -1 : 1)),
+      [
+        { epoch: EPOCH, sequence: 3 },
+        { epoch: other, sequence: 2 },
+      ],
+    );
+    assert.deepEqual(await pushedTo("gw-3"), []);
   });
 
   test("gateways joining and leaving push the live count", async () => {

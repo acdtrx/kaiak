@@ -8,7 +8,7 @@ import { afterEach, test } from "node:test";
 
 import Fastify from "fastify";
 import { PROTOCOL_VERSION } from "kaiak-control";
-import type { Config, GatewayView, PublishedConfig, ReceivedRecord, Totals, UsageRecord } from "kaiak-control";
+import type { Config, GatewayView, PublishedConfig, ReceivedRecord, TotalsRead, UsageRecord } from "kaiak-control";
 
 import type { ConfigFileState } from "../config-file/index.ts";
 
@@ -114,9 +114,10 @@ const GATEWAYS: GatewayView[] = [
 ];
 
 // Used amounts for three of the config's counted limits; the rest have used nothing.
-const TOTALS: Totals = {
-  live_gateways: 1,
-  counted_through: [],
+const TOTALS: TotalsRead = {
+  liveGateways: 1,
+  cursors: [],
+  windowStarts: { tokens_per_hour: "2026-09-24T10:00:00Z", usd_per_month: "2026-09-01T00:00:00Z" },
   windows: [
     { type: "usd_per_month", window_start: "2026-09-01T00:00:00Z", used: "1524000" },
     { group: "alice", type: "usd_per_month", window_start: "2026-09-01T00:00:00Z", used: "150000000000" },
@@ -144,7 +145,7 @@ function fakeCore(published: PublishedConfig | undefined): StatusPageOptions["co
   return {
     currentConfig: async () => published,
     gateways: async () => GATEWAYS,
-    totals: async () => TOTALS,
+    readTotals: async () => TOTALS,
     recentRecords: async () => (published ? fixtureRecords() : []),
     onConfigPublished: never,
     onTotalsChanged: never,

@@ -78,7 +78,7 @@ export interface UsageAck {
   batch: BatchId;
 }
 
-export type GatewayState = "starting" | "ready" | "draining";
+export type GatewayState = "ready" | "draining";
 
 export interface ConfigRejection {
   config_hash: string;

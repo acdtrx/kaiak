@@ -162,7 +162,7 @@ svg .band { stroke: none; }
 <section id="boot">
 <h2>Boot and steady state</h2>
 <figure>
-<svg viewBox="0 0 960 640" role="img" aria-label="Sequence: the gateway reports starting, opens the stream, receives the current config and applies it, receives totals, binds its listeners and reports ready; then configs, totals and heartbeats arrive on the stream while usage batches and statuses go out as POSTs.">
+<svg viewBox="0 0 960 640" role="img" aria-label="Sequence: the gateway opens the stream, receives the current config and applies it, receives totals, binds its listeners and reports ready; then configs, totals and heartbeats arrive on the stream while usage batches and statuses go out as POSTs.">
   <defs>
     <marker id="s-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker>
     <marker id="s-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-hot"/></marker>
@@ -175,8 +175,6 @@ svg .band { stroke: none; }
   <line x1="750" y1="50" x2="750" y2="630" class="edge-dash"/>
 
   <text x="20" y="80" class="la">BOOT</text>
-  <line x1="210" y1="84" x2="748" y2="84" class="edge" marker-end="url(#s-a)"/>
-  <text x="480" y="78" text-anchor="middle" class="l">POST /v1/status  state=starting, applied_config_hash=null</text>
 
   <line x1="210" y1="118" x2="748" y2="118" class="edge" marker-end="url(#s-a)"/>
   <text x="480" y="112" text-anchor="middle" class="l">GET /v1/stream  (retried with backoff up to the boot wait, 60 s)</text>
@@ -457,7 +455,7 @@ svg .band { stroke: none; }
 <section id="status">
 <h2>Status and the live set</h2>
 <ul>
-  <li>A status carries <code>state</code> (<code>starting</code>, <code>ready</code>, <code>draining</code>), <code>started_at</code>, the applied config's <code>config_hash</code>, <code>last_rejection</code> (by hash), per-backend in-flight counts and caps with each deployment's circuit, and per-model queue depth.</li>
+  <li>A status carries <code>state</code> (<code>ready</code>, <code>draining</code>), <code>started_at</code>, the applied config's <code>config_hash</code>, <code>last_rejection</code> (by hash), per-backend in-flight counts and caps with each deployment's circuit, and per-model queue depth.</li>
   <li>Sent at start, on every stream connect, on change (state, config, rejection, a queue becoming empty or non-empty, a circuit opening or closing — at most one such report a second) and every 10 s. A failed report is simply replaced by the next.</li>
   <li>A gateway joins the <strong>live set</strong> with its first status and leaves when silent for 30 s (sweep every 5 s). A draining gateway stays live until it goes quiet, since it still spends. The live count drives per-minute shares and cap splits, and is pushed again when it changes.</li>
   <li>Two processes under one instance name (a copied <code>KAIAK_INSTANCE_ID</code>) show as alternating <code>started_at</code> values and get a <code>conflict</code> flag in <code>gateways()</code>.</li>

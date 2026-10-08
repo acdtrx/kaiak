@@ -41,7 +41,7 @@ td.bar { white-space: nowrap; }
 meter { width: 120px; vertical-align: middle; }
 .tag { display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 12px; border: 1px solid currentColor; white-space: nowrap; }
 .ok, .state-ready { color: var(--ok); }
-.warn, .state-starting, .state-draining { color: var(--warn); }
+.warn, .state-draining { color: var(--warn); }
 .bad { color: var(--bad); }
 .error { border-left: 3px solid var(--bad); background: var(--tint); padding: 8px 12px; margin: 8px 0; }
 .notice { max-width: 1200px; margin: 0 auto 14px; border-left: 3px solid var(--warn); background: var(--tint); padding: 8px 12px; }

@@ -4,7 +4,6 @@
   "private": true,
   "license": "MIT",
   "type": "module",
-  "exports": "./src/index.ts",
   "scripts": {
     "dev": "KAIAK_LOG_FORMAT=${KAIAK_LOG_FORMAT:-text} node src/main.ts",
     "start": "node src/main.ts",

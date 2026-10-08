@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"net/http"
 	"sync"
 	"time"
@@ -156,16 +155,15 @@ func (c *Client) ReportStatus(ctx context.Context, trigger string) error {
 	return err
 }
 
-// currentStatus is the report as of now. Collections are non-nil: the schema refuses
-// null.
+// currentStatus is the report as of now. A config is in force from the control plane
+// or the seed (Run starts only after a boot that found one), so the state is ready
+// until the drain; the seed carries no hash. Collections are non-nil: the schema
+// refuses null.
 func (c *Client) currentStatus() Status {
 	r := c.status
 	s := Status{Instance: c.opts.Instance, ProtocolVersion: ProtocolVersion, StartedAt: r.startedAt,
-		Backends: map[string]BackendStatus{}, Models: map[string]ModelStatus{}}
+		State: StateReady, Backends: map[string]BackendStatus{}, Models: map[string]ModelStatus{}}
 	c.mu.Lock()
-	// A config is in force from the control plane or the seed; the seed carries no
-	// hash.
-	loaded := c.opts.Applier.Loaded()
 	if c.appliedHash != "" {
 		hash := c.appliedHash
 		s.AppliedConfigHash = &hash
@@ -176,31 +174,21 @@ func (c *Client) currentStatus() Status {
 	}
 	c.mu.Unlock()
 	r.mu.Lock()
-	draining := r.draining
-	r.mu.Unlock()
-	switch {
-	case draining:
+	if r.draining {
 		s.State = StateDraining
-	case loaded:
-		s.State = StateReady
-	default:
-		s.State = StateStarting
 	}
+	r.mu.Unlock()
 	if r.serving != nil {
 		serving := r.serving()
-		for id, b := range serving.Backends {
-			if b.Deployments == nil {
-				b.Deployments = map[string]DeploymentStatus{}
-			}
-			s.Backends[id] = b
-		}
-		maps.Copy(s.Models, serving.Models)
+		s.Backends, s.Models = serving.Backends, serving.Models
 	}
 	return s
 }
 
 // Serving is the routing state a status reports: backends (in flight, cap,
-// deployments' circuits) and models (queued requests), as Status carries them.
+// deployments' circuits) and models (queued requests), as Status carries them. Its
+// collections are non-nil, every backend's Deployments included: the status schema
+// refuses null.
 type Serving struct {
 	Backends map[string]BackendStatus
 	Models   map[string]ModelStatus
