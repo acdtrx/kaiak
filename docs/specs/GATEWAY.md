@@ -2977,6 +2977,10 @@ own, and a client sending repeats is broken either way.
     the series' creation when later — the same for every point of the stream, so a
     backend sees no reset while the process lives; in a delta stream the previous
     export's time, or the series' start for its first point. Gauges carry no start.
+    Attributes have the log export's types (OTLP log export: record mapping), so a
+    collector joining logs and metrics sees one type per attribute:
+    `http.response.status_code` is an `intValue`, every other attribute a
+    `stringValue`.
   - **Temporality** (`OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE`, the
     three choices the OpenTelemetry specification defines): `cumulative` (the
     default) — every sum and histogram cumulative; `delta` — counters and

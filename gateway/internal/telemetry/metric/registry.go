@@ -12,8 +12,10 @@ package metric
 
 import (
 	"fmt"
+	"maps"
 	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -47,22 +49,40 @@ const (
 // instrument name syntax (a letter, then letters, digits, '_', '.', '-' or '/', at
 // most 255); Unit is UCUM-style printable ASCII, at most 63, or empty; Attributes are
 // the attribute keys every point carries a value for (a letter, then letters, digits,
-// '_' or '.'), in the order recordings pass the values; Buckets are a histogram's
-// explicit bounds, increasing and finite (the last bucket, to +Inf, is implicit), and
-// only a histogram's.
+// '_' or '.'), in the order recordings pass the values; AttributeTypes types the
+// keys that are not strings; Buckets are a histogram's explicit bounds, increasing
+// and finite (the last bucket, to +Inf, is implicit), and only a histogram's.
 type Definition struct {
 	Name        string
 	Unit        string
 	Description string
 	Attributes  []string
-	Buckets     []float64
+	// AttributeTypes maps an attribute key, one of Attributes, to its type when the
+	// key's convention types it other than a string; a key not in it is a string.
+	AttributeTypes map[string]AttributeType
+	Buckets        []float64
 }
+
+// AttributeType is an attribute's type in the data model. Every value is recorded
+// and collected as a string — the Prometheus label it becomes — and its type says
+// how a reader that keeps types (OTLP) writes it.
+type AttributeType int
+
+const (
+	// StringAttribute is any string: the type of a key AttributeTypes leaves out.
+	StringAttribute AttributeType = iota
+	// IntAttribute is a 64-bit integer, recorded in its canonical decimal form
+	// (strconv.FormatInt's).
+	IntAttribute
+)
 
 // Registry holds instruments and collects them. An instrument's definition is fixed
 // when it is registered; every recording passes one value per attribute key, "" for
 // an attribute the point does not carry. Registering an invalid definition or one
 // whose name — OpenTelemetry's or its Prometheus translation — is taken, or recording
-// with the wrong number of attribute values, is a programming error and panics.
+// with the wrong number of attribute values or a value not of its key's type (checked
+// when a recorded value first makes a series, and at every observation), is a
+// programming error and panics.
 //
 // A recorded series is created on first use — or ahead of it, at 0, by Add(0) or
 // Prepare, so the first event shows as an increase — and lives as long as the
@@ -93,6 +113,8 @@ type family struct {
 	// such an instrument.
 	observed bool
 	cb       *callback
+	// ints are the positions of the IntAttribute keys in def.Attributes.
+	ints []int
 
 	mu     sync.RWMutex
 	series map[string]*series
@@ -170,6 +192,16 @@ func (r *Registry) register(d Definition, kind Kind, number Number, observed boo
 		}
 		labels = append(labels, label)
 	}
+	var ints []int
+	for key, typ := range d.AttributeTypes {
+		i := slices.Index(d.Attributes, key)
+		if i < 0 || typ != StringAttribute && typ != IntAttribute {
+			panic(fmt.Sprintf("metric: %s: attribute type %d for %q, not a known type of one of its attributes", d.Name, typ, key))
+		}
+		if typ == IntAttribute {
+			ints = append(ints, i)
+		}
+	}
 	if kind != KindHistogram && d.Buckets != nil {
 		panic(fmt.Sprintf("metric: %s: buckets on a %s", d.Name, kind))
 	}
@@ -184,8 +216,9 @@ func (r *Registry) register(d Definition, kind Kind, number Number, observed boo
 		}
 	}
 	d.Attributes = slices.Clone(d.Attributes)
+	d.AttributeTypes = maps.Clone(d.AttributeTypes)
 	d.Buckets = slices.Clone(d.Buckets)
-	f := &family{def: d, kind: kind, number: number, observed: observed, series: make(map[string]*series)}
+	f := &family{def: d, kind: kind, number: number, observed: observed, ints: ints, series: make(map[string]*series)}
 	promName := PrometheusName(d.Name, d.Unit, kind)
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -254,6 +287,7 @@ func (f *family) get(attrs []string) *series {
 	if ok {
 		return s
 	}
+	f.checkTypes(attrs)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if s, ok := f.series[key]; ok {
@@ -270,6 +304,22 @@ func (f *family) get(attrs []string) *series {
 func (f *family) checkAttrs(attrs []string) {
 	if len(attrs) != len(f.def.Attributes) {
 		panic(fmt.Sprintf("metric: %s: %d attribute values for attributes %v", f.def.Name, len(attrs), f.def.Attributes))
+	}
+	f.checkTypes(attrs)
+}
+
+// checkTypes panics on a value that is not of its key's type: an IntAttribute value
+// is "" (not carried) or an integer in its canonical decimal form, so its label and
+// its typed value say the same number.
+func (f *family) checkTypes(attrs []string) {
+	for _, i := range f.ints {
+		v := attrs[i]
+		if v == "" {
+			continue
+		}
+		if n, err := strconv.ParseInt(v, 10, 64); err != nil || strconv.FormatInt(n, 10) != v {
+			panic(fmt.Sprintf("metric: %s: %s value %q is not an integer", f.def.Name, f.def.Attributes[i], v))
+		}
 	}
 }
 

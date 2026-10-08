@@ -185,15 +185,27 @@ func writeString(b *bytes.Buffer, s string) error {
 }
 
 // encodePoint is one data point: its attributes (an empty value left out, as on
-// /metrics), its start (sums and histograms) and the collect's time, its value as
-// the family's Number says, or a histogram's count, sum, buckets and bounds.
+// /metrics; each as its key's type says), its start (sums and histograms) and the
+// collect's time, its value as the family's Number says, or a histogram's count,
+// sum, buckets and bounds.
 func encodePoint(s stream, p metric.Point, timeUnixNano string) ([]byte, error) {
 	f := s.family
 	var attrs []otlp.KeyValue
 	for i, v := range p.Attributes {
-		if v != "" {
-			attrs = append(attrs, otlp.KeyValue{Key: f.Attributes[i], Value: otlp.StringValue(v)})
+		if v == "" {
+			continue
 		}
+		key := f.Attributes[i]
+		value := otlp.StringValue(v)
+		if f.AttributeTypes[key] == metric.IntAttribute {
+			// The registry took only canonical integers for this key.
+			n, err := strconv.ParseInt(v, 10, 64)
+			if err != nil {
+				return nil, err
+			}
+			value = otlp.IntValue(n)
+		}
+		attrs = append(attrs, otlp.KeyValue{Key: key, Value: value})
 	}
 	start := ""
 	if s.temporality != temporalityNone && !p.StartTime.IsZero() {

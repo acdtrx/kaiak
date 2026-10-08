@@ -155,8 +155,10 @@ type gotMetric struct {
 }
 
 type gotPoint struct {
-	// Attributes are the point's attributes; nil when it carries none.
-	Attributes map[string]string
+	// Attributes are the point's attributes, an intValue as its decimal string; nil
+	// when it carries none. IntAttributes are the keys sent as intValue, sorted.
+	Attributes    map[string]string
+	IntAttributes []string
 	// Start and Time are Unix nanoseconds; 0 when absent.
 	Start, Time int64
 	// Int, Double: a sum's or gauge's value, IsInt saying which it was sent as.
@@ -224,8 +226,9 @@ func decodeMetric(t *testing.T, m fakeotlp.Metric) gotMetric {
 		set++
 		g.Kind, g.Temporality = metric.KindHistogram, m.Histogram.AggregationTemporality
 		for _, p := range m.Histogram.DataPoints {
-			gp := gotPoint{Attributes: attributes(t, p.Attributes), Start: nanos(t, p.StartTimeUnixNano), Time: nanos(t, p.TimeUnixNano),
+			gp := gotPoint{Start: nanos(t, p.StartTimeUnixNano), Time: nanos(t, p.TimeUnixNano),
 				Histogram: &gotHistogram{Bounds: p.ExplicitBounds, Count: uint64s(t, p.Count)[0]}}
+			gp.Attributes, gp.IntAttributes = attributes(t, p.Attributes)
 			if p.Sum == nil {
 				t.Fatalf("%s: a histogram point without its sum", m.Name)
 			}
@@ -241,7 +244,8 @@ func decodeMetric(t *testing.T, m fakeotlp.Metric) gotMetric {
 		t.Fatalf("%s: %d of sum, gauge and histogram set, want 1", m.Name, set)
 	}
 	for _, p := range numbers {
-		gp := gotPoint{Attributes: attributes(t, p.Attributes), Start: nanos(t, p.StartTimeUnixNano), Time: nanos(t, p.TimeUnixNano)}
+		gp := gotPoint{Start: nanos(t, p.StartTimeUnixNano), Time: nanos(t, p.TimeUnixNano)}
+		gp.Attributes, gp.IntAttributes = attributes(t, p.Attributes)
 		switch {
 		case p.AsInt != nil && p.AsDouble == nil:
 			gp.IsInt = true
@@ -260,19 +264,31 @@ func decodeMetric(t *testing.T, m fakeotlp.Metric) gotMetric {
 	return g
 }
 
-func attributes(t *testing.T, kvs []fakeotlp.KeyValue) map[string]string {
+// attributes reads string and int attributes: their values (an int as its decimal
+// string) and the keys sent as ints, sorted.
+func attributes(t *testing.T, kvs []fakeotlp.KeyValue) (values map[string]string, ints []string) {
 	t.Helper()
 	if len(kvs) == 0 {
-		return nil
+		return nil, nil
 	}
-	out := map[string]string{}
+	values = map[string]string{}
 	for _, kv := range kvs {
-		if kv.Value.StringValue == nil {
-			t.Fatalf("attribute %s is not a string", kv.Key)
+		switch v := kv.Value; {
+		case v.StringValue != nil && v.IntValue == nil:
+			values[kv.Key] = *v.StringValue
+		case v.IntValue != nil && v.StringValue == nil:
+			n, err := strconv.ParseInt(*v.IntValue, 10, 64)
+			if err != nil {
+				t.Fatalf("attribute %s: intValue %q: %v", kv.Key, *v.IntValue, err)
+			}
+			values[kv.Key] = strconv.FormatInt(n, 10)
+			ints = append(ints, kv.Key)
+		default:
+			t.Fatalf("attribute %s is neither a string nor an int", kv.Key)
 		}
-		out[kv.Key] = *kv.Value.StringValue
 	}
-	return out
+	slices.Sort(ints)
+	return values, ints
 }
 
 func nanos(t *testing.T, s string) int64 {
@@ -319,8 +335,12 @@ func want(snap metric.Snapshot, temporality func(metric.Family) int) map[string]
 						gp.Attributes = map[string]string{}
 					}
 					gp.Attributes[f.Attributes[i]] = v
+					if f.AttributeTypes[f.Attributes[i]] == metric.IntAttribute {
+						gp.IntAttributes = append(gp.IntAttributes, f.Attributes[i])
+					}
 				}
 			}
+			slices.Sort(gp.IntAttributes)
 			if f.Kind != metric.KindGauge {
 				gp.Start = p.StartTime.UnixNano()
 			}
@@ -399,9 +419,11 @@ func dump(v any) string {
 func everyKind() *metric.Registry {
 	reg := metric.NewRegistry()
 	requests := reg.Counter(metric.Definition{Name: "test.requests", Unit: "{request}", Description: "Requests served.",
-		Attributes: []string{"http.route", "error.type"}})
-	requests.Add(3, "/a", "")
-	requests.Inc("/a", "timeout")
+		Attributes:     []string{"http.route", "http.response.status_code", "error.type"},
+		AttributeTypes: map[string]metric.AttributeType{"http.response.status_code": metric.IntAttribute}})
+	requests.Add(3, "/a", "200", "")
+	requests.Inc("/a", "504", "timeout")
+	requests.Inc("/b", "", "client_closed")
 	cost := reg.ScaledCounter(metric.Definition{Name: "test.cost", Unit: "{USD}", Description: "Cost."}, 1e9)
 	cost.Add(1_500_000_000)
 	queue := reg.UpDownCounter(metric.Definition{Name: "test.queue.size", Unit: "{request}", Description: "Queued.",
@@ -448,8 +470,8 @@ func TestExportRoundTripsEveryFamily(t *testing.T) {
 	if ua := r.Header.Get("User-Agent"); ua != "kaiak/1.2.3" {
 		t.Errorf("User-Agent %q", ua)
 	}
-	res := attributes(t, r.Export.ResourceMetrics[0].Resource.Attributes)
-	if !reflect.DeepEqual(res, map[string]string{"service.name": "kaiak", "service.version": "1.2.3",
+	res, ints := attributes(t, r.Export.ResourceMetrics[0].Resource.Attributes)
+	if ints != nil || !reflect.DeepEqual(res, map[string]string{"service.name": "kaiak", "service.version": "1.2.3",
 		"service.instance.id": "gw-1", "deployment.environment.name": "test"}) {
 		t.Errorf("resource %v", res)
 	}
@@ -466,8 +488,46 @@ func TestExportRoundTripsEveryFamily(t *testing.T) {
 	if g := x.metrics["test.cost"]; g.Points[0].IsInt || g.Points[0].Double != 1.5 {
 		t.Errorf("cost %+v, want asDouble 1.5", g.Points[0])
 	}
-	if g := x.metrics["test.requests"]; !g.Points[0].IsInt || g.Points[0].Attributes["error.type"] != "" || len(g.Points[0].Attributes) != 1 {
+	if g := x.metrics["test.requests"]; !g.Points[0].IsInt || g.Points[0].Attributes["error.type"] != "" || len(g.Points[0].Attributes) != 2 {
 		t.Errorf("requests %+v, want asInt and the empty attribute left out", g.Points[0])
+	}
+}
+
+// An attribute typed int goes out as an intValue (a decimal string), as the log
+// export writes the same attribute; the others as stringValue; an empty one not at
+// all.
+func TestIntAttributeIsIntValue(t *testing.T) {
+	col := fakeotlp.New(t, nil)
+	h := newHarness(t, col, everyKind(), nil, options{})
+	h.flush(t)
+	var points []fakeotlp.NumberDataPoint
+	for _, m := range col.Next(t).Metrics() {
+		if m.Name == "test.requests" {
+			points = m.Sum.DataPoints
+		}
+	}
+	if len(points) != 3 {
+		t.Fatalf("test.requests: %d points, want 3", len(points))
+	}
+	type typed struct{ str, int *string }
+	byKey := func(p fakeotlp.NumberDataPoint) map[string]typed {
+		out := map[string]typed{}
+		for _, kv := range p.Attributes {
+			out[kv.Key] = typed{kv.Value.StringValue, kv.Value.IntValue}
+		}
+		return out
+	}
+	for i, wantCode := range []string{"200", "504"} {
+		code := byKey(points[i])["http.response.status_code"]
+		if code.str != nil || code.int == nil || *code.int != wantCode {
+			t.Errorf("point %d: status code %+v, want intValue %q", i, code, wantCode)
+		}
+		if route := byKey(points[i])["http.route"]; route.str == nil || route.int != nil || *route.str != "/a" {
+			t.Errorf("point %d: route %+v, want stringValue /a", i, route)
+		}
+	}
+	if _, ok := byKey(points[2])["http.response.status_code"]; ok {
+		t.Errorf("point 2 carries the empty status code: %+v", points[2].Attributes)
 	}
 }
 

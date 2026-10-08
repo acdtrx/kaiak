@@ -48,6 +48,51 @@ func TestRegistrationAndUseAreValidated(t *testing.T) {
 	expectPanic(t, "too many attribute values", func() { c.Inc("1", "2", "3") })
 }
 
+// An int-typed attribute key takes "" or a canonical decimal integer, checked when a
+// value first makes a series and at every observation; its values stay strings in
+// the collect.
+func TestAttributeTypesAreValidated(t *testing.T) {
+	reg := NewRegistry()
+	ints := map[string]AttributeType{"code": IntAttribute}
+	expectPanic(t, "type of a key not among the attributes", func() {
+		reg.Counter(Definition{Name: "t1", Attributes: []string{"a"}, AttributeTypes: ints})
+	})
+	expectPanic(t, "unknown type", func() {
+		reg.Counter(Definition{Name: "t2", Attributes: []string{"code"}, AttributeTypes: map[string]AttributeType{"code": 7}})
+	})
+	h := reg.Histogram(Definition{Name: "t3", Attributes: []string{"route", "code"}, AttributeTypes: ints, Buckets: []float64{1}})
+	h.Observe(0.5, "/a", "200")
+	h.Prepare("/a", "")
+	h.Prepare("/a", "-1")
+	for _, bad := range []string{"2xx", "+200", "0200", " 200", "1e3", "9223372036854775808"} {
+		expectPanic(t, "int value "+bad, func() { h.Observe(0.5, "/a", bad) })
+	}
+	h.Observe(0.5, "/a", "200") // an existing series is not checked again
+	strs := reg.Counter(Definition{Name: "t4", Attributes: []string{"code"}})
+	strs.Inc("2xx") // a string key takes any value
+
+	g := reg.ObservableGauge(Definition{Name: "t5", Attributes: []string{"code"}, AttributeTypes: ints})
+	value := "404"
+	reg.Callback(func(o *Observer) { g.Observe(o, 1, value) }, g)
+	for _, f := range reg.Collect().Families {
+		if f.Name != "t3" {
+			continue
+		}
+		if f.AttributeTypes["code"] != IntAttribute || f.AttributeTypes["route"] != StringAttribute {
+			t.Errorf("t3 attribute types %v, want code int, route string", f.AttributeTypes)
+		}
+		var got [][]string
+		for _, p := range f.Points {
+			got = append(got, p.Attributes)
+		}
+		if want := [][]string{{"/a", ""}, {"/a", "-1"}, {"/a", "200"}}; !slices.EqualFunc(got, want, slices.Equal) {
+			t.Errorf("t3 points %v, want %v", got, want)
+		}
+	}
+	value = "not found"
+	expectPanic(t, "int value observed", func() { reg.Collect() })
+}
+
 func TestCallbacksAreValidated(t *testing.T) {
 	reg := NewRegistry()
 	g := reg.ObservableGauge(Definition{Name: "g", Attributes: []string{"k"}})

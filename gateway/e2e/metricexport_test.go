@@ -198,6 +198,10 @@ func exportTime(t *testing.T, r fakeotlp.Received) time.Time {
 	return time.Unix(0, n)
 }
 
+// intAttributes are the metric attributes typed int, as the log export types them
+// (docs/specs/GATEWAY.md, OTLP metric export: data model); every other is a string.
+var intAttributes = map[string]bool{"http.response.status_code": true}
+
 // pushedExposition is a metric export as /metrics would write it: each metric under
 // its Prometheus name (the registry's own translation), each point's attributes as
 // labels, a histogram as cumulative buckets, sum and count. temporality is each
@@ -209,11 +213,18 @@ func pushedExposition(t *testing.T, r fakeotlp.Received) (e exposition, temporal
 	labelsOf := func(m string, attrs []fakeotlp.KeyValue) map[string]string {
 		labels := map[string]string{}
 		for _, kv := range attrs {
-			if kv.Value.StringValue == nil {
-				t.Errorf("%s: attribute %s is not a string", m, kv.Key)
-				continue
+			switch v := kv.Value; {
+			case intAttributes[kv.Key] && v.IntValue != nil && v.StringValue == nil:
+				n, err := strconv.ParseInt(*v.IntValue, 10, 64)
+				if err != nil {
+					t.Errorf("%s: attribute %s: intValue %q: %v", m, kv.Key, *v.IntValue, err)
+				}
+				labels[metric.PrometheusLabel(kv.Key)] = strconv.FormatInt(n, 10)
+			case !intAttributes[kv.Key] && v.StringValue != nil && v.IntValue == nil:
+				labels[metric.PrometheusLabel(kv.Key)] = *v.StringValue
+			default:
+				t.Errorf("%s: attribute %s is %+v, want an int %v", m, kv.Key, v, intAttributes[kv.Key])
 			}
-			labels[metric.PrometheusLabel(kv.Key)] = *kv.Value.StringValue
 		}
 		return labels
 	}

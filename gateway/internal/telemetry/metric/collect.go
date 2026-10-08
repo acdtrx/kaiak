@@ -113,7 +113,7 @@ type Snapshot struct {
 }
 
 // Family is one instrument and its points. Its Definition shares the registry's
-// slices: read-only.
+// slices and map: read-only.
 type Family struct {
 	Definition
 	Kind Kind
