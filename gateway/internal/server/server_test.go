@@ -559,8 +559,10 @@ func TestParseOwnedFieldsKeepsTheRawBody(t *testing.T) {
 	if err := parseOwnedFields(rq); err != nil {
 		t.Fatal(err)
 	}
-	if rq.model != "open" || !rq.inbound.Stream || rq.inbound.MaxTokens != nil ||
-		rq.inbound.MaxCompletionTokens == nil || *rq.inbound.MaxCompletionTokens != 64 || !rq.inbound.IncludeUsage {
+	// Chat's output-limit keys: max_completion_tokens, then max_tokens.
+	limits := rq.inbound.OutputLimits
+	if rq.model != "open" || !rq.inbound.Stream || len(limits) != 2 || limits[1] != nil ||
+		limits[0] == nil || *limits[0] != 64 || !rq.inbound.IncludeUsage {
 		t.Errorf("parsed %q %+v", rq.model, rq.inbound)
 	}
 	if string(rq.body) != body {

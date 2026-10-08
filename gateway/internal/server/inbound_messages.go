@@ -2,30 +2,16 @@ package server
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
-
-	"kaiak/internal/accounting"
 )
 
-// parseMessagesFields reads a Messages request's owned fields (docs/specs/GATEWAY.md,
-// Client API → owned fields): model; on /v1/messages also stream and max_tokens (the
-// output limit); and the tool fields, refusing a tool the backend would run on both
-// endpoints. Everything else — system, messages, thinking, tool_choice — is the
-// backend's and passes untouched.
+// parseMessagesFields reads a Messages request's own owned fields (docs/specs/GATEWAY.md,
+// Client API → owned fields), past those every format shares (parseOwnedFields): the
+// tool fields, refusing a tool the backend would run on both endpoints; the stored
+// files the messages refer to; and on /v1/messages thinking.budget_tokens. Everything
+// else — system, the rest of messages and thinking, tool_choice — is the backend's and
+// passes untouched.
 func parseMessagesFields(rq *request, top map[string]json.RawMessage) *apiError {
-	if !rq.endpoint.counts {
-		if apiErr := readModelAndStream(rq, top); apiErr != nil {
-			return apiErr
-		}
-		var apiErr *apiError
-		if rq.inbound.MaxTokens, apiErr = optionalField[int64](top, "max_tokens", "max_tokens", "an integer"); apiErr != nil {
-			return apiErr
-		}
-	} else if apiErr := readModel(rq, top); apiErr != nil {
-		return apiErr
-	}
-	rq.inbound.Sequences = 1
 	if apiErr := refuseMessagesHostedTools(top); apiErr != nil {
 		return apiErr
 	}
@@ -39,7 +25,6 @@ func parseMessagesFields(rq *request, top map[string]json.RawMessage) *apiError 
 		}
 		rq.inbound.ThinkingBudget = budget
 	}
-	rq.input = accounting.EstimateInput(rq.endpoint.api, rq.body)
 	return nil
 }
 
@@ -115,12 +100,12 @@ func thinkingBudget(raw json.RawMessage) (*int64, *apiError) {
 	if !startsWith(raw, '{') {
 		return nil, nil
 	}
-	thinking, repeats, ok := decodeMembersRepeats(raw)
+	thinking, ok, apiErr := objectMembers(raw, "thinking")
 	if !ok {
 		return nil, errInvalidType("thinking", "an object")
 	}
-	if len(repeats) > 0 {
-		return nil, errDuplicateMember("thinking." + repeats[0])
+	if apiErr != nil {
+		return nil, apiErr
 	}
 	typ, apiErr := optionalField[string](thinking, "type", "thinking.type", "a string")
 	if apiErr != nil || typ == nil || *typ != "enabled" {
@@ -138,46 +123,28 @@ const maxBlockNesting = 4
 // refuseStoredFiles refuses a Messages request referring to a file stored at the
 // backend (docs/specs/GATEWAY.md, Client API → stored objects): a block whose source
 // is of type file, or a block naming a file_id (a container upload), in any message's
-// content, a tool result's content or a content source's content. A block or source
-// naming a member twice is refused. A list of another shape is the backend's to judge.
-func refuseStoredFiles(messagesRaw json.RawMessage) *apiError {
-	var messages []json.RawMessage
-	if !startsWith(messagesRaw, '[') || json.Unmarshal(messagesRaw, &messages) != nil {
-		return nil
-	}
-	for i, message := range messages {
-		members, _, ok := decodeMembersRepeats(message)
-		if !ok {
-			continue
-		}
-		if apiErr := refuseStoredFileBlocks(members["content"], fmt.Sprintf("messages[%d].content", i), 1); apiErr != nil {
-			return apiErr
-		}
-	}
-	return nil
+// content, a tool result's content or a content source's content. A message, block or
+// source naming a member twice is refused. A list of another shape is the backend's to
+// judge.
+func refuseStoredFiles(messages json.RawMessage) *apiError {
+	return eachObject(messages, "messages", func(at string, message map[string]json.RawMessage) *apiError {
+		return refuseStoredFileBlocks(message["content"], at+".content", 1)
+	})
 }
 
 func refuseStoredFileBlocks(raw json.RawMessage, param string, nesting int) *apiError {
-	var blocks []json.RawMessage
-	if nesting > maxBlockNesting || !startsWith(raw, '[') || json.Unmarshal(raw, &blocks) != nil {
+	if nesting > maxBlockNesting {
 		return nil
 	}
-	for j, block := range blocks {
-		at := fmt.Sprintf("%s[%d]", param, j)
-		members, repeats, ok := decodeMembersRepeats(block)
-		if !ok {
-			continue
-		}
-		if len(repeats) > 0 {
-			return errDuplicateMember(at + "." + repeats[0])
-		}
-		if id, ok := members["file_id"]; ok && string(id) != "null" {
+	return eachObject(raw, param, func(at string, block map[string]json.RawMessage) *apiError {
+		if id, ok := block["file_id"]; ok && string(id) != "null" {
 			return errStoredObject(at + ".file_id")
 		}
-		if source, repeats, ok := decodeMembersRepeats(members["source"]); ok {
-			if len(repeats) > 0 {
-				return errDuplicateMember(at + ".source." + repeats[0])
-			}
+		source, ok, apiErr := objectMembers(block["source"], at+".source")
+		if apiErr != nil {
+			return apiErr
+		}
+		if ok {
 			var typ string
 			if json.Unmarshal(source["type"], &typ) == nil && typ == "file" {
 				return errStoredObject(at + ".source")
@@ -186,9 +153,6 @@ func refuseStoredFileBlocks(raw json.RawMessage, param string, nesting int) *api
 				return apiErr
 			}
 		}
-		if apiErr := refuseStoredFileBlocks(members["content"], at+".content", nesting+1); apiErr != nil {
-			return apiErr
-		}
-	}
-	return nil
+		return refuseStoredFileBlocks(block["content"], at+".content", nesting+1)
+	})
 }

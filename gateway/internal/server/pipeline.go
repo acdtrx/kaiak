@@ -41,8 +41,9 @@ type endpoint struct {
 	// still honors the older max_tokens. Completions and Messages have only
 	// max_tokens (Messages requires it, so a model with an output limit always sends
 	// one), Responses only max_output_tokens. Embeddings and the token-counting
-	// endpoints generate nothing.
-	outputLimitKeys []outputLimitKey
+	// endpoints generate nothing. The inbound stage reads these keys alone: another
+	// output-limit key the client sends is not the endpoint's and passes untouched.
+	outputLimitKeys []string
 	// anthropicOnHeader: the endpoint answers in Anthropic's shape when the request
 	// carries an anthropic-version header (answersAnthropic).
 	anthropicOnHeader bool
@@ -52,15 +53,15 @@ type endpoint struct {
 // row per provider.Endpoint the client API serves.
 var bodyEndpoints = []*endpoint{
 	{body: true, api: provider.ChatCompletions, name: "chat_completions", operation: "chat",
-		outputLimitKeys: []outputLimitKey{maxCompletionTokensKey, maxTokensKey}},
+		outputLimitKeys: []string{"max_completion_tokens", "max_tokens"}},
 	{body: true, api: provider.Completions, name: "completions", operation: "text_completion",
-		outputLimitKeys: []outputLimitKey{maxTokensKey}},
+		outputLimitKeys: []string{"max_tokens"}},
 	{body: true, api: provider.Embeddings, name: "embeddings", operation: "embeddings"},
 	{body: true, api: provider.Messages, name: "messages", operation: "chat",
-		outputLimitKeys: []outputLimitKey{maxTokensKey}},
+		outputLimitKeys: []string{"max_tokens"}},
 	{body: true, api: provider.MessagesCountTokens, name: "messages_count_tokens", counts: true},
 	{body: true, api: provider.Responses, name: "responses", operation: "chat",
-		outputLimitKeys: []outputLimitKey{maxOutputTokensKey}},
+		outputLimitKeys: []string{"max_output_tokens"}},
 	{body: true, api: provider.ResponsesInputTokens, name: "responses_input_tokens", counts: true},
 }
 

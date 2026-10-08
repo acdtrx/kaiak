@@ -80,8 +80,8 @@
 
   **Every member the gateway reads to enforce these rules is read once** (settled
   2026-10-06, [B] L1): a tools entry, a `tool_choice`, a shell's `environment`, an
-  input item, a content part, a Messages block or source naming any member twice is
-  refused (`400 duplicate_member`, `param` its path) — the gateway and the backend
+  input item, a content part, a Messages message (settled 2026-10-08), block or source
+  naming any member twice is refused (`400 duplicate_member`, `param` its path) — the gateway and the backend
   could read different occurrences, one of them unchecked.
 
   Clients that attach a hosted tool by default need it turned off (Codex:
@@ -136,7 +136,7 @@
   | Not `Bearer <key>`; unknown, disabled or expired key | 401 | `invalid_request_error` | `invalid_api_key` |
   | Unknown model, or model not allowed for the key | 404 | `invalid_request_error` | `model_not_found` |
   | Body is not a JSON object | 400 | `invalid_request_error` | `invalid_json` |
-  | The top-level object, or `stream_options`, names a member twice — or any member the gateway reads to enforce its rules: a tools entry, a `tool_choice`, a shell's `environment`, a Responses input item or part, a Messages block or source, `thinking`, a `cache_control` or its `ttl` on Anthropic types (`param` names it; Request pipeline → duplicate members; Client API → Hosted tools are refused) | 400 | `invalid_request_error` | `duplicate_member` |
+  | The top-level object, or `stream_options`, names a member twice — or any member the gateway reads to enforce its rules: a tools entry, a `tool_choice`, a shell's `environment`, a Responses input item or part, a Messages message, block or source, `thinking`, a `cache_control` or its `ttl` on Anthropic types (`param` names it; Request pipeline → duplicate members; Client API → Hosted tools are refused) | 400 | `invalid_request_error` | `duplicate_member` |
   | Body could not be read | 400 | `invalid_request_error` | `invalid_body` |
   | `model` missing or empty (`param: "model"`) | 400 | `invalid_request_error` | `missing_required_parameter` |
   | An owned field has the wrong type (`param` names it) | 400 | `invalid_request_error` | `invalid_type` |
@@ -180,8 +180,11 @@
   2026-09-25, L3).
   A `401` carries `WWW-Authenticate: Bearer`. **Owned fields**, per format, read by
   exact key; a `null` value counts as absent:
-  - OpenAI: `model`, `stream`, `max_tokens`, `max_completion_tokens`,
-    `stream_options.include_usage`, `n` and `best_of` (chat and completions),
+  - OpenAI: `model`, `stream`, `stream_options.include_usage`, the endpoint's
+    output-limit keys (`max_completion_tokens` and `max_tokens` on chat, `max_tokens`
+    on completions, none on embeddings: Limits → Output-limit keys; settled
+    2026-10-08: a key the endpoint does not take is not read, so its value is not
+    checked and it passes untouched), `n` and `best_of` (chat and completions),
     `prompt` (completions; only how many prompts it holds), `input` (embeddings;
     only how many inputs it holds).
   - Messages (settled 2026-10-06): `model`, `stream`, `max_tokens`,
@@ -352,7 +355,9 @@ gateway and the backend could read different occurrences, and editing every
 occurrence let 10 000 short `"model"` members become 10 000 long deployment names
 (43.6× the body, outside the body budget). With one member per name the provider's
 edited copy is at most the body plus one member per owned field. Repeats deeper in
-the body (inside `messages`, say) are the backend's business and pass untouched.
+the body, in an object the gateway does not read (a tool's `input_schema`, say), are
+the backend's business and pass untouched; the objects it reads to enforce its rules
+are held to the same rule (Client API → every member the gateway reads is read once).
 Rejected: collapsing repeats to one member — it rewrites bytes the gateway does not
 own, and a client sending repeats is broken either way.
 

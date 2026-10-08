@@ -360,6 +360,36 @@ func TestOutputLimitAboveTheContextIsRefused(t *testing.T) {
 	}
 }
 
+// An output-limit key that is not the endpoint's is not read: embeddings take none,
+// completions not max_completion_tokens (docs/specs/GATEWAY.md, Limits → Output-limit
+// keys). Whatever its value, it reaches the backend untouched.
+func TestOutputLimitKeysTheEndpointDoesNotTakePassUnchecked(t *testing.T) {
+	for _, c := range []struct{ name, path, body, key string }{
+		{"embeddings max_tokens", "/v1/embeddings", `{"model":"open","input":"a","max_tokens":"x"}`, "max_tokens"},
+		{"embeddings max_completion_tokens", "/v1/embeddings", `{"model":"open","input":"a","max_completion_tokens":"x"}`, "max_completion_tokens"},
+		{"completions max_completion_tokens", "/v1/completions", `{"model":"open","prompt":"a","max_completion_tokens":"x"}`, "max_completion_tokens"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			g := newTestGateway(t)
+			w := do(t, g.h, call{method: "POST", path: c.path, key: workloadKey, body: c.body})
+			if w.Code != http.StatusOK {
+				t.Fatalf("status %d: %s", w.Code, w.Body.String())
+			}
+			reqs := g.backend.Requests()
+			if len(reqs) != 1 {
+				t.Fatalf("backend got %d requests", len(reqs))
+			}
+			var sent map[string]json.RawMessage
+			if err := json.Unmarshal(reqs[0].Body, &sent); err != nil {
+				t.Fatal(err)
+			}
+			if got := string(sent[c.key]); got != `"x"` {
+				t.Errorf("backend got %s = %s, want \"x\"", c.key, got)
+			}
+		})
+	}
+}
+
 // The follow-up audit's N-M1 reproduction over HTTP: team tokens_per_hour 1000 with
 // 10 used, then max_tokens at the int64 maximum on a model with no output limit. A
 // wrapped sum would admit it and leave the counter negative, admitting everything

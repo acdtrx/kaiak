@@ -35,23 +35,23 @@ func applyModelParams(_ context.Context, rq *request) *apiError {
 		}
 	}
 	anySet := false
-	for _, k := range keys {
-		value := k.value(&rq.inbound)
+	for i, value := range rq.inbound.OutputLimits {
 		if value == nil {
 			continue
 		}
+		key := keys[i]
 		anySet = true
 		if *value < 0 {
-			return errOutputLimitNegative(k.name, *value)
+			return errOutputLimitNegative(key, *value)
 		}
 		if *value > model.ContextLength {
-			return errOutputLimitTooLarge(k.name, *value, model.ContextLength)
+			return errOutputLimitTooLarge(key, *value, model.ContextLength)
 		}
 		if limit := model.OutputLimit; limit != nil && *value > limit.Ceiling {
-			if apiErr := fitsThinkingBudget(rq, k.name, limit.Ceiling, "ceiling"); apiErr != nil {
+			if apiErr := fitsThinkingBudget(rq, key, limit.Ceiling, "ceiling"); apiErr != nil {
 				return apiErr
 			}
-			rq.params = append(rq.params, outputLimitParam(k.name, limit.Ceiling))
+			rq.params = append(rq.params, outputLimitParam(key, limit.Ceiling))
 			raise(limit.Ceiling)
 		} else {
 			raise(*value)
@@ -59,10 +59,10 @@ func applyModelParams(_ context.Context, rq *request) *apiError {
 	}
 	if limit := model.OutputLimit; limit != nil && !anySet {
 		n := injectedOutputLimit(limit.Default, model.ContextLength, rq.input.LargestPrompt)
-		if apiErr := fitsThinkingBudget(rq, keys[0].name, n, "default"); apiErr != nil {
+		if apiErr := fitsThinkingBudget(rq, keys[0], n, "default"); apiErr != nil {
 			return apiErr
 		}
-		rq.params = append(rq.params, outputLimitParam(keys[0].name, n))
+		rq.params = append(rq.params, outputLimitParam(keys[0], n))
 		raise(n)
 	}
 	rq.outputLimit = effective
@@ -99,19 +99,6 @@ func injectedOutputLimit(def, contextLength, input int64) int64 {
 	}
 	return min(def, max(contextLength-input, minInjectedOutputLimit))
 }
-
-// outputLimitKey is a request parameter capping the tokens a request generates
-// (endpoint.outputLimitKeys).
-type outputLimitKey struct {
-	name  string
-	value func(*inboundFields) *int64
-}
-
-var (
-	maxCompletionTokensKey = outputLimitKey{"max_completion_tokens", func(f *inboundFields) *int64 { return f.MaxCompletionTokens }}
-	maxTokensKey           = outputLimitKey{"max_tokens", func(f *inboundFields) *int64 { return f.MaxTokens }}
-	maxOutputTokensKey     = outputLimitKey{"max_output_tokens", func(f *inboundFields) *int64 { return f.MaxOutputTokens }}
-)
 
 func outputLimitParam(key string, n int64) provider.Param {
 	return provider.Param{Key: key, Value: strconv.AppendInt(nil, n, 10)}
