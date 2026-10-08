@@ -14,6 +14,7 @@
 package limits
 
 import (
+	"context"
 	"log/slog"
 	"math"
 	"sync"
@@ -65,8 +66,6 @@ type counterKey struct {
 func keyOf(group string, typ config.LimitType) counterKey {
 	return counterKey{group: group, typ: typ}
 }
-
-func (k counterKey) scope() Scope { return scopeOf(k.group) }
 
 // counter is one scope's window of one type. limited: the scope has a limit of the
 // type, max its value in the counter's unit (maxOf); a counter without one only
@@ -323,16 +322,17 @@ func (l *Limiter) newCounter(k counterKey) *counter {
 
 // identityAttrs are a limit's scope and group log fields: the group is absent for a
 // global limit, whose scope says global (docs/specs/GATEWAY.md, Observability → Logs).
-func identityAttrs(group string) []any {
+func identityAttrs(group string) []slog.Attr {
+	scope := slog.String("kaiak.limit.scope", string(scopeOf(group)))
 	if group == "" {
-		return []any{"kaiak.limit.scope", ScopeGlobal}
+		return []slog.Attr{scope}
 	}
-	return []any{"kaiak.limit.scope", ScopeGroup, "kaiak.limit.group", group}
+	return []slog.Attr{scope, slog.String("kaiak.limit.group", group)}
 }
 
-// LogValue is an amount in a limit's unit as the logs write it: requests and tokens as
+// logValue is an amount in a limit's unit as the logs write it: requests and tokens as
 // they are, nano-USD in dollars, as kaiak.usage.cost_usd.
-func LogValue(m config.Measure, v int64) any {
+func logValue(m config.Measure, v int64) any {
 	if m == config.MeasureCost {
 		return float64(v) / 1e9
 	}
@@ -446,7 +446,7 @@ func need(c *counter, tokens int64) int64 {
 
 // rejection is a refusal by c's limit, its identity and limits filled in.
 func (c *counter) rejection() *Rejection {
-	return &Rejection{Scope: c.key.scope(), Group: c.key.group, Type: c.key.typ, Measure: c.measure,
+	return &Rejection{Group: c.key.group, Type: c.key.typ, Measure: c.measure,
 		Limit: c.w.limit, Max: c.max}
 }
 
@@ -580,8 +580,8 @@ func (l *Limiter) addOwnLocked(c *counter, now time.Time, amount int64, generati
 // Callers hold l.mu.
 func (l *Limiter) checkCountLocked(c *counter) {
 	if c.w.clampNegative() {
-		l.logger.Error("limit counter went negative: clamped to 0", append(identityAttrs(c.key.group),
-			"kaiak.limit.type", c.key.typ)...)
+		l.logger.LogAttrs(context.Background(), slog.LevelError, "limit counter went negative: clamped to 0",
+			append(identityAttrs(c.key.group), slog.String("kaiak.limit.type", string(c.key.typ)))...)
 	}
 }
 

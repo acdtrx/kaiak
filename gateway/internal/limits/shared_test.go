@@ -515,7 +515,7 @@ func TestUnpricedModelsAreNeverRefusedForBudgets(t *testing.T) {
 	// Outage past the grace: priced m1 is unavailable, free m2 serves.
 	contact.set(false, c.t)
 	c.advance(2 * time.Minute)
-	if rej := refused(t, l, workload, 10); !rej.Unavailable || rej.Scope != ScopeGlobal {
+	if rej := refused(t, l, workload, 10); !rej.Unavailable || rej.Scope() != ScopeGlobal {
 		t.Errorf("m1 in outage: %+v, want unavailable by the global USD limit", rej)
 	}
 	admitN(t, l, workload.on("m2"), 1, 10)

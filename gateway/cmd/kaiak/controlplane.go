@@ -194,7 +194,7 @@ func servingStatus(inFlight, queued map[string]int, circuits map[routing.Deploym
 			out.Models[name] = control.ModelStatus{}
 			for _, d := range m.Deployments {
 				status := control.DeploymentStatus{Circuit: control.CircuitClosed}
-				if c, ok := circuits[routing.DeploymentID{Backend: d.Backend.ID, Model: d.Model}]; ok {
+				if c, ok := circuits[routing.IDOf(d)]; ok {
 					at := c.OpenedAt.UTC()
 					status = control.DeploymentStatus{Circuit: control.CircuitOpen, OpenedAt: &at}
 					if c.State == routing.CircuitHalfOpen {

@@ -177,7 +177,7 @@ func TestEveryScopeIsEnforced(t *testing.T) {
 			l := newClock("2026-09-24T10:00:00Z").limiter(holderOf(snapshot(t, c.doc)))
 			admitN(t, l, c.subject, 2, 10)
 			rej := refused(t, l, c.subject, 10)
-			if rej.Scope != c.scope || rej.Group != c.group || rej.Measure != config.MeasureRequests || rej.Limit != 2 || rej.Used != 2 {
+			if rej.Scope() != c.scope || rej.Group != c.group || rej.Measure != config.MeasureRequests || rej.Limit != 2 || rej.Used != 2 {
 				t.Errorf("rejection %+v, want scope %s %q, 2 of 2 used", rej, c.scope, c.group)
 			}
 		})
@@ -209,10 +209,10 @@ func TestEveryLimitOfAScopeCountsEveryModel(t *testing.T) {
 	admitN(t, l, workload, 1, 10)
 	admitN(t, l, workload.on("m2"), 1, 10)
 	if rej := refused(t, l, workload.on("m2"), 10); rej.Group != "t" {
-		t.Errorf("refused by %s, want the team limit counting m1 and m2 together", rej.Scope)
+		t.Errorf("refused by %s, want the team limit counting m1 and m2 together", rej.Scope())
 	}
 	if rej := refused(t, l, workload, 10); rej.Group != "t" {
-		t.Errorf("refused by %s, want the team limit on m1 too", rej.Scope)
+		t.Errorf("refused by %s, want the team limit on m1 too", rej.Scope())
 	}
 }
 
@@ -434,7 +434,7 @@ func TestHeadersNameTheTightestLimit(t *testing.T) {
 	rej := refused(t, l, workload, 100)
 	// Requests at t+0, t+10 (two): the first frees a slot at t+60, 50 s from now.
 	if rej.RetryAfter != 50*time.Second || rej.Group != "w" {
-		t.Errorf("retry after %v by %s, want 50s by the workload", rej.RetryAfter, rej.Scope)
+		t.Errorf("retry after %v by %s, want 50s by the workload", rej.RetryAfter, rej.Scope())
 	}
 	if rej.Headers.Requests.Remaining != 0 || rej.Headers.Tokens.Remaining != 400 {
 		t.Errorf("headers on refusal %+v %+v", rej.Headers.Requests, rej.Headers.Tokens)
@@ -475,7 +475,7 @@ func TestRetryAfterIsTheLongestWaitAmongRefusingLimits(t *testing.T) {
 			if want := 44*time.Minute + 50*time.Second; rej.RetryAfter != want {
 				t.Errorf("retry after %v, want %v (the hour limit's wait, not the minute's 50s)", rej.RetryAfter, want)
 			}
-			if rej.Scope != c.scope || rej.Group != c.id || rej.Type != config.LimitTokensPerHour {
+			if rej.Scope() != c.scope || rej.Group != c.id || rej.Type != config.LimitTokensPerHour {
 				t.Errorf("rejection %+v, want the hour limit of scope %s %q", rej, c.scope, c.id)
 			}
 		})
@@ -805,7 +805,7 @@ func TestEveryGroupOnThePathIsEnforced(t *testing.T) {
 	l := newClock("2026-09-24T10:00:00Z").limiter(holderOf(s))
 	admitN(t, l, prod, 2, 100)
 	rej := refused(t, l, prod, 100)
-	if rej.Scope != ScopeGroup || rej.Group != "rag-prod" || rej.Type != config.LimitRequestsPerMinute {
+	if rej.Scope() != ScopeGroup || rej.Group != "rag-prod" || rej.Type != config.LimitRequestsPerMinute {
 		t.Errorf("rejection %+v, want rag-prod's requests limit (from rag's child_defaults)", rej)
 	}
 	if got := used(t, l, "rag", config.LimitTokensPerMinute); got != 200 {

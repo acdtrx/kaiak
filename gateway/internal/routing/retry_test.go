@@ -10,14 +10,14 @@ import (
 func TestRetryNeverUsesARefusedDeployment(t *testing.T) {
 	r := New(Options{})
 	m := queuedModel("m", 10, time.Hour, backend("a", 0), backend("b", 0), backend("c", 0))
-	a, b, c := keyOf(m.Deployments[0]), keyOf(m.Deployments[1]), keyOf(m.Deployments[2])
+	a, b, c := IDOf(m.Deployments[0]), IDOf(m.Deployments[1]), IDOf(m.Deployments[2])
 	// Many times over, so turn-taking cannot hide a wrong choice.
 	for range 6 {
 		slot, _, err := r.Acquire(context.Background(), m, Avoid{Refused: []DeploymentID{a, c}})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := keyOf(slot.Deployment); got != b {
+		if got := IDOf(slot.Deployment); got != b {
 			t.Fatalf("chose %v, want %v", got, b)
 		}
 		slot.Release()
@@ -35,7 +35,7 @@ func TestRetryWithTheOthersOpenHasNoDeploymentLeft(t *testing.T) {
 	r := New(Options{})
 	m := queuedModel("m", 10, time.Hour, backend("a", 0), backend("b", 0))
 	r.Configure(circuitSnapshot(1, time.Hour, m))
-	a := keyOf(m.Deployments[0])
+	a := IDOf(m.Deployments[0])
 	fail(r, m.Deployments[1], 1)
 	_, wait, err := r.Acquire(context.Background(), m, Avoid{Refused: []DeploymentID{a}})
 	if !errors.Is(err, ErrNoHealthyDeployment) || wait.Queued {
@@ -46,13 +46,13 @@ func TestRetryWithTheOthersOpenHasNoDeploymentLeft(t *testing.T) {
 func TestQueuedRetryWaitsForItsDeploymentAndLetsOthersPass(t *testing.T) {
 	r := New(Options{})
 	m := queuedModel("m", 10, time.Hour, backend("a", 1), backend("b", 1))
-	a, b := keyOf(m.Deployments[0]), keyOf(m.Deployments[1])
+	a, b := IDOf(m.Deployments[0]), IDOf(m.Deployments[1])
 	holdA, releaseA := acquire(r, m)
 	holdB, releaseB := acquire(r, m)
-	if keyOf(holdA) == keyOf(holdB) {
+	if IDOf(holdA) == IDOf(holdB) {
 		t.Fatal("both slots on one deployment")
 	}
-	if keyOf(holdA) != a {
+	if IDOf(holdA) != a {
 		releaseA, releaseB = releaseB, releaseA
 	}
 
@@ -69,8 +69,8 @@ func TestQueuedRetryWaitsForItsDeploymentAndLetsOthersPass(t *testing.T) {
 	// a frees: the retry may not use it, so the request behind it gets it.
 	releaseA()
 	got := receive(t, other)
-	if got.err != nil || keyOf(got.slot.Deployment) != a {
-		t.Fatalf("request behind the retry: %v on %v, want a's slot", got.err, keyOf(got.slot.Deployment))
+	if got.err != nil || IDOf(got.slot.Deployment) != a {
+		t.Fatalf("request behind the retry: %v on %v, want a's slot", got.err, IDOf(got.slot.Deployment))
 	}
 	if !pending(retry) {
 		t.Fatal("the retry was served a's slot")
@@ -78,8 +78,8 @@ func TestQueuedRetryWaitsForItsDeploymentAndLetsOthersPass(t *testing.T) {
 	// b frees: the retry gets it.
 	releaseB()
 	res := receive(t, retry)
-	if res.err != nil || keyOf(res.slot.Deployment) != b || !res.wait.Queued {
-		t.Errorf("retry: %v on %v queued %v, want b after a wait", res.err, keyOf(res.slot.Deployment), res.wait.Queued)
+	if res.err != nil || IDOf(res.slot.Deployment) != b || !res.wait.Queued {
+		t.Errorf("retry: %v on %v queued %v, want b after a wait", res.err, IDOf(res.slot.Deployment), res.wait.Queued)
 	}
 	res.slot.Release()
 	got.slot.Release()

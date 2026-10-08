@@ -293,12 +293,12 @@ func errorEventKind(err error) provider.ErrorEventKind {
 // multiply its attempts — and, for a failure that belongs to the backend
 // (attemptRules), every deployment of m on its backend.
 func avoidAfter(avoid routing.Avoid, m *config.Model, at *attempt) routing.Avoid {
-	key := routing.DeploymentID{Backend: at.deployment.Backend.ID, Model: at.deployment.Model}
+	key := routing.IDOf(at.deployment)
 	avoid.Refused = append(avoid.Refused, key)
 	if attemptRules[at.retryReason].backendWide {
 		for _, d := range m.Deployments {
 			if d.Backend.ID == key.Backend {
-				avoid.Refused = append(avoid.Refused, routing.DeploymentID{Backend: d.Backend.ID, Model: d.Model})
+				avoid.Refused = append(avoid.Refused, routing.IDOf(d))
 			}
 		}
 	}

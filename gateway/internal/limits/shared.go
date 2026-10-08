@@ -1,6 +1,8 @@
 package limits
 
 import (
+	"context"
+	"log/slog"
 	"time"
 
 	"kaiak/internal/config"
@@ -133,10 +135,11 @@ func (l *Limiter) warnSmallSharesLocked() {
 			if group != nil && !group.AllowedModels.Allows(name) {
 				continue
 			}
-			l.logger.Warn("per-minute share below the model's default output: a request at the default is admitted only while this gateway's window is empty",
-				append(identityAttrs(c.key.group), "kaiak.model.name", name,
-					"kaiak.limit.configured", c.max, "kaiak.limit.live_gateways", l.live,
-					"kaiak.limit.enforced", c.w.limit, "kaiak.model.output_default", m.OutputLimit.Default)...)
+			l.logger.LogAttrs(context.Background(), slog.LevelWarn,
+				"per-minute share below the model's default output: a request at the default is admitted only while this gateway's window is empty",
+				append(identityAttrs(c.key.group), slog.String("kaiak.model.name", name),
+					slog.Int64("kaiak.limit.configured", c.max), slog.Int64("kaiak.limit.live_gateways", l.live),
+					slog.Int64("kaiak.limit.enforced", c.w.limit), slog.Int64("kaiak.model.output_default", m.OutputLimit.Default))...)
 		}
 	}
 }
@@ -155,8 +158,9 @@ func (l *Limiter) warnAheadLocked(w PushedWindow, now time.Time) {
 		return
 	}
 	l.aheadWarned = w.Start
-	l.logger.Warn("pushed window ahead of the gateway's clock", append(identityAttrs(w.Group),
-		"kaiak.limit.type", w.Type, "kaiak.limit.window_start", w.Start.UTC(), "kaiak.gateway_time", now.UTC())...)
+	l.logger.LogAttrs(context.Background(), slog.LevelWarn, "pushed window ahead of the gateway's clock",
+		append(identityAttrs(w.Group), slog.String("kaiak.limit.type", string(w.Type)),
+			slog.Time("kaiak.limit.window_start", w.Start.UTC()), slog.Time("kaiak.gateway_time", now.UTC()))...)
 }
 
 // retireCountedLocked drops the generations up to counted from the counters' own

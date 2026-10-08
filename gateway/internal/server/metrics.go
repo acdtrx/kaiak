@@ -31,7 +31,7 @@ func (a *API) observeRequest(rq *request) {
 		a.ops.CountRequestError(rq.identity.Group, rq.keyID, model, code)
 	}
 	if rej := rq.rejection; rej != nil && !rej.Unavailable {
-		a.ops.CountLimitRejection(string(rej.Scope), rej.Type)
+		a.ops.CountLimitRejection(string(rej.Scope()), rej.Type)
 	}
 	a.observeQueue(rq, model)
 	if len(rq.attempts) > 0 {

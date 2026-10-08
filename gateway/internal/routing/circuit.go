@@ -64,96 +64,82 @@ func (noObserver) CircuitChanged(DeploymentID, CircuitState) {}
 func (noObserver) Probed(string, bool)                       {}
 
 // report counts one request's outcome on d; trial is the half-open trial the
-// request carries, 0 for none. The threshold-th consecutive failure opens d's
-// circuit and starts its backend's prober. Outcomes on an open circuit change
-// nothing, except the trial's on a half-open one: its success closes the circuit,
-// its failure (a response timeout included) opens it again, a neutral outcome lets
-// another request try. A trial decided when its response started (ResponseStarted)
-// reports like any request. Deployments the applied config does not have (a request
-// still running under an older snapshot) are not tracked.
+// request carries, 0 for none.
 func (r *Router) report(d config.Deployment, trial uint64, o Outcome, reason string) {
-	key := keyOf(d)
 	r.mu.Lock()
+	ts, changed := r.reportLocked(IDOf(d), trial, o, reason)
+	r.mu.Unlock()
+	r.emit(ts, changed)
+}
+
+// reportLocked counts an outcome on key (report). The threshold-th consecutive
+// failure opens key's circuit and starts its backend's prober. Outcomes on an open
+// circuit change nothing, except the trial's on a half-open one: its success closes
+// the circuit, its failure (a response timeout included) opens it again, a neutral
+// outcome lets another request try. A trial decided when its response started
+// (ResponseStarted) reports like any request. Deployments the applied config does not
+// have (a request still running under an older snapshot) are not tracked. It returns
+// what emit reports. Called with r.mu held.
+func (r *Router) reportLocked(key DeploymentID, trial uint64, o Outcome, reason string) (ts []transition, changed bool) {
 	if !r.deployments[key] {
-		r.mu.Unlock()
-		return
+		return nil, false
 	}
 	c := r.circuits[key]
 	if c != nil && trial != 0 && c.trial == trial {
-		r.endTrial(key, c, o, reason)
-		return
+		return r.endTrial(key, c, o, reason)
 	}
 	if o == Neutral {
-		r.mu.Unlock()
-		return
+		return nil, false
 	}
 	if o == Success {
 		if c != nil && c.openedAt.IsZero() {
 			delete(r.circuits, key)
 		}
-		r.mu.Unlock()
-		return
+		return nil, false
 	}
 	if c == nil {
 		c = &circuit{}
 		r.circuits[key] = c
 	}
 	if !c.openedAt.IsZero() {
-		r.mu.Unlock()
-		return
+		return nil, false
 	}
 	if o == ResponseTimeout {
 		c.responseTimeouts++
 		if c.responseTimeouts < responseTimeoutsAsFailure {
-			r.mu.Unlock()
-			return
+			return nil, false
 		}
 	}
 	c.failures++
-	failures, threshold := c.failures, r.circuit.FailureThreshold
-	if failures < threshold {
-		r.mu.Unlock()
-		return
+	if c.failures < r.circuit.FailureThreshold {
+		return nil, false
 	}
 	c.openedAt = time.Now()
 	r.startProber(key.Backend)
-	r.mu.Unlock()
-
-	r.logger.Warn("circuit opened", "kaiak.backend.id", key.Backend, "kaiak.deployment.model", key.Model,
-		"kaiak.circuit.failures", failures, "kaiak.circuit.last_error", reason)
-	r.observer.CircuitChanged(key, CircuitOpen)
-	r.notify(true)
+	return []transition{{key: key, to: CircuitOpen,
+		attrs: []any{"kaiak.circuit.failures", c.failures, "kaiak.circuit.last_error", reason}}}, false
 }
 
-// endTrial applies the outcome o of the half-open circuit c's trial on key. Called
-// with r.mu held; it unlocks it.
-func (r *Router) endTrial(key DeploymentID, c *circuit, o Outcome, reason string) {
+// endTrial applies the outcome o of the half-open circuit c's trial on key and
+// returns what emit reports. Called with r.mu held.
+func (r *Router) endTrial(key DeploymentID, c *circuit, o Outcome, reason string) (ts []transition, changed bool) {
 	c.trial = 0
 	switch o {
 	case Neutral:
 		// Nothing learned: the deployment is eligible for the next trial.
-		changed := r.dispatch()
-		r.mu.Unlock()
-		r.notify(changed)
+		return nil, r.dispatch()
 	case Success:
 		openFor := time.Since(c.openedAt)
 		delete(r.circuits, key)
 		if !r.needsProber(key.Backend) {
 			r.stopProber(key.Backend)
 		}
-		r.dispatch()
-		r.mu.Unlock()
-		r.logger.Info("circuit closed", "kaiak.backend.id", key.Backend, "kaiak.deployment.model", key.Model,
-			"kaiak.trigger", "trial", logattr.Seconds("kaiak.circuit.open_duration", openFor))
-		r.observer.CircuitChanged(key, CircuitClosed)
-		r.notify(true)
+		return []transition{{key: key, to: CircuitClosed,
+			attrs: []any{"kaiak.trigger", "trial", logattr.Seconds("kaiak.circuit.open_duration", openFor)}}}, r.dispatch()
 	default:
 		r.reopen(c, key.Backend)
-		r.mu.Unlock()
-		r.logger.Warn("circuit opened", "kaiak.backend.id", key.Backend, "kaiak.deployment.model", key.Model,
-			"kaiak.circuit.trial", true, "kaiak.circuit.last_error", reason)
-		r.observer.CircuitChanged(key, CircuitOpen)
-		r.notify(true)
+		return []transition{{key: key, to: CircuitOpen,
+			attrs: []any{"kaiak.circuit.trial", true, "kaiak.circuit.last_error", reason}}}, false
 	}
 }
 
@@ -174,12 +160,45 @@ func (r *Router) responseStarted(d config.Deployment, trial uint64) {
 	if trial == 0 {
 		return
 	}
+	key := IDOf(d)
+	var ts []transition
+	var changed bool
 	r.mu.Lock()
-	if c := r.circuits[keyOf(d)]; c != nil && c.trial == trial {
-		r.endTrial(keyOf(d), c, Success, "")
-		return
+	if c := r.circuits[key]; c != nil && c.trial == trial {
+		ts, changed = r.endTrial(key, c, Success, "")
 	}
 	r.mu.Unlock()
+	r.emit(ts, changed)
+}
+
+// transition is one circuit's change of state, collected under r.mu and reported by
+// emit once it is released; attrs are its log line's attributes after the
+// deployment's.
+type transition struct {
+	key   DeploymentID
+	to    CircuitState
+	attrs []any
+}
+
+// emit reports circuit transitions, called without r.mu: each one's log line —
+// `circuit opened` (warn), `circuit half-open` or `circuit closed` (info) — and the
+// observer, then the serving change: changed (a queue became empty), or a circuit
+// that opened or closed (OnServingChange); half-opening alone is not one.
+func (r *Router) emit(ts []transition, changed bool) {
+	for _, t := range ts {
+		level, msg := slog.LevelInfo, "circuit half-open"
+		switch t.to {
+		case CircuitOpen:
+			level, msg = slog.LevelWarn, "circuit opened"
+		case CircuitClosed:
+			msg = "circuit closed"
+		}
+		r.logger.Log(context.Background(), level, msg,
+			append([]any{"kaiak.backend.id", t.key.Backend, "kaiak.deployment.model", t.key.Model}, t.attrs...)...)
+		r.observer.CircuitChanged(t.key, t.to)
+		changed = changed || t.to != CircuitHalfOpen
+	}
+	r.notify(changed)
 }
 
 // CircuitReport is a circuit that is not closed: open or half-open (State), and
@@ -350,11 +369,12 @@ func (r *Router) ProbeNow(ctx context.Context, backend, trigger string) error {
 
 	r.mu.Lock()
 	if err != nil {
-		var reopened []DeploymentID
+		var reopened []transition
 		for key, c := range r.circuits {
 			if key.Backend == backend && c.halfOpen {
 				r.reopen(c, backend)
-				reopened = append(reopened, key)
+				reopened = append(reopened, transition{key: key, to: CircuitOpen,
+					attrs: []any{"kaiak.trigger", trigger, "kaiak.circuit.last_error", "probe failed: " + err.Error()}})
 			}
 		}
 		r.probeFailures[backend]++
@@ -371,16 +391,11 @@ func (r *Router) ProbeNow(ctx context.Context, backend, trigger string) error {
 		}
 		r.logger.Log(context.Background(), level, "probe failed", "kaiak.backend.id", backend, "kaiak.trigger", trigger,
 			logattr.Seconds("kaiak.duration", duration), "exception.message", err.Error())
-		for _, key := range reopened {
-			r.logger.Warn("circuit opened", "kaiak.backend.id", key.Backend, "kaiak.deployment.model", key.Model,
-				"kaiak.trigger", trigger, "kaiak.circuit.last_error", "probe failed: "+err.Error())
-			r.observer.CircuitChanged(key, CircuitOpen)
-		}
-		r.notify(len(reopened) > 0)
+		r.emit(reopened, false)
 		return err
 	}
-	var halfOpened, unlisted []DeploymentID
-	var openFor []time.Duration
+	var halfOpened []transition
+	var unlisted []DeploymentID
 	for key, c := range r.circuits {
 		if key.Backend != backend || !c.probing() || c.openedAt.After(start) {
 			continue
@@ -394,8 +409,8 @@ func (r *Router) ProbeNow(ctx context.Context, backend, trigger string) error {
 			}
 			continue
 		}
-		halfOpened = append(halfOpened, key)
-		openFor = append(openFor, time.Since(c.openedAt))
+		halfOpened = append(halfOpened, transition{key: key, to: CircuitHalfOpen,
+			attrs: []any{"kaiak.trigger", trigger, logattr.Seconds("kaiak.circuit.open_duration", time.Since(c.openedAt))}})
 		c.halfOpen = true
 	}
 	if !r.hasOpenCircuit(backend) {
@@ -416,11 +431,6 @@ func (r *Router) ProbeNow(ctx context.Context, backend, trigger string) error {
 		r.logger.Warn("circuit kept open: the backend does not list the deployment's model", "kaiak.backend.id", key.Backend,
 			"kaiak.deployment.model", key.Model, "kaiak.trigger", trigger)
 	}
-	for i, key := range halfOpened {
-		r.logger.Info("circuit half-open", "kaiak.backend.id", key.Backend, "kaiak.deployment.model", key.Model,
-			"kaiak.trigger", trigger, logattr.Seconds("kaiak.circuit.open_duration", openFor[i]))
-		r.observer.CircuitChanged(key, CircuitHalfOpen)
-	}
-	r.notify(changed)
+	r.emit(halfOpened, changed)
 	return nil
 }

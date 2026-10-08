@@ -105,7 +105,7 @@ func fail(r *Router, d config.Deployment, n int) {
 }
 
 func isOpen(r *Router, d config.Deployment) bool {
-	_, ok := notClosed(r)[keyOf(d)]
+	_, ok := notClosed(r)[IDOf(d)]
 	return ok
 }
 
@@ -124,7 +124,7 @@ func TestCircuitOpensAtTheThresholdNotBefore(t *testing.T) {
 	}
 	before := time.Now()
 	fail(r, a, 1)
-	opened, ok := notClosed(r)[keyOf(a)]
+	opened, ok := notClosed(r)[IDOf(a)]
 	if !ok || opened.Before(before) {
 		t.Fatalf("circuits %v after the 3rd failure, want a open since the failure", notClosed(r))
 	}
@@ -516,7 +516,7 @@ func TestHalfOpenTrialFailureReopens(t *testing.T) {
 	trial.Report(Failure, "scripted")
 	trial.Release()
 	// One failure re-opens, whatever the threshold; no trial until a probe succeeds.
-	if opened, ok := notClosed(r)[keyOf(a)]; !ok || opened.Before(before) {
+	if opened, ok := notClosed(r)[IDOf(a)]; !ok || opened.Before(before) {
 		t.Fatalf("circuits %v after the trial failed, want a open since the failure", notClosed(r))
 	}
 	if _, _, err := r.Acquire(context.Background(), m, Avoid{}); !errors.Is(err, ErrNoHealthyDeployment) {
@@ -768,7 +768,7 @@ func TestResponseTimeoutsInARowCountAsFailures(t *testing.T) {
 	timeout(responseTimeoutsAsFailure - 1)
 	r.report(a, 0, Success, "")
 	timeout(responseTimeoutsAsFailure - 1)
-	if isOpen(r, a) || r.circuits[keyOf(a)].failures != 0 {
+	if isOpen(r, a) || r.circuits[IDOf(a)].failures != 0 {
 		t.Fatal("response timeouts below the run counted")
 	}
 	// Other outcomes between them do not break the run.

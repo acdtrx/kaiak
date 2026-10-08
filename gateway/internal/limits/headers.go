@@ -1,6 +1,7 @@
 package limits
 
 import (
+	"log/slog"
 	"slices"
 	"time"
 
@@ -10,9 +11,8 @@ import (
 // Rejection says why a request was refused: the limit that refused it (the one that
 // frees up last, when several do) and when it will have room.
 type Rejection struct {
-	// Scope is the kind of scope the limit belongs to; Group is its group's ID, "" for
-	// a global limit — for the operator's log only, never for the client.
-	Scope   Scope
+	// Group is the limit's group's ID, "" for a global limit — for the operator's log
+	// only, never for the client.
 	Group   string
 	Type    config.LimitType
 	Measure config.Measure
@@ -26,11 +26,34 @@ type Rejection struct {
 	// token limit blocked only by requests still running counts inFlightRetry.
 	RetryAfter time.Duration
 	Headers    Headers
-	// Unavailable: the request's priced model is covered by a USD limit (Scope, Type)
+	// Unavailable: the request's priced model is covered by a USD limit (Group, Type)
 	// whose spend is unknown — the control plane out of reach past the outage grace,
 	// or no totals yet since the start; Used, Requested, RetryAfter and Headers are not
 	// set.
 	Unavailable bool
+}
+
+// Scope is the kind of scope the refusing limit belongs to.
+func (r *Rejection) Scope() Scope { return scopeOf(r.Group) }
+
+// LogAttrs are the refusal's log fields: the limit's kind of scope and its group's ID
+// (absent for a global limit), its type, the value enforced (a per-minute limit's
+// share among the live gateways) and the value configured, what the window had used
+// (unknown for a budget refused as unavailable) and, for a token limit, what the
+// request asked for. Counts are in the limit's unit; USD limits are in dollars, as
+// kaiak.usage.cost_usd.
+func (r *Rejection) LogAttrs() []slog.Attr {
+	value := func(key string, v int64) slog.Attr { return slog.Any(key, logValue(r.Measure, v)) }
+	attrs := append(identityAttrs(r.Group), slog.String("kaiak.limit.type", string(r.Type)),
+		value("kaiak.limit.enforced", r.Limit), value("kaiak.limit.configured", r.Max))
+	if r.Unavailable {
+		return attrs
+	}
+	attrs = append(attrs, value("kaiak.limit.used", r.Used))
+	if r.Measure == config.MeasureTokens {
+		attrs = append(attrs, slog.Int64("kaiak.limit.requested", r.Requested))
+	}
+	return attrs
 }
 
 // Headers are the x-ratelimit-* values for requests and tokens, each from the

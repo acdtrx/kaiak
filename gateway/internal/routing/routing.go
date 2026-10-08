@@ -118,7 +118,8 @@ type DeploymentID struct {
 	Model   string
 }
 
-func keyOf(d config.Deployment) DeploymentID {
+// IDOf is d's identity across config snapshots.
+func IDOf(d config.Deployment) DeploymentID {
 	return DeploymentID{Backend: d.Backend.ID, Model: d.Model}
 }
 
@@ -224,7 +225,7 @@ func (r *Router) Configure(s *config.Snapshot) {
 	r.deployments = make(map[DeploymentID]bool)
 	for _, m := range s.Models {
 		for _, d := range m.Deployments {
-			r.deployments[keyOf(d)] = true
+			r.deployments[IDOf(d)] = true
 		}
 	}
 	changed := r.dropRemovedCircuits()
@@ -302,12 +303,13 @@ type Wait struct {
 // before its timeout. The Wait is reported whatever the result.
 func (r *Router) Acquire(ctx context.Context, m *config.Model, avoid Avoid) (Slot, Wait, error) {
 	r.mu.Lock()
-	if d, ok := r.choose(m, avoid); ok {
-		slot := r.slotFor(r.take(d))
+	best, usable := r.pick(m, avoid)
+	if best >= 0 {
+		slot := r.slotFor(r.takeTurn(m, best))
 		r.mu.Unlock()
 		return slot, Wait{}, nil
 	}
-	if !r.anyUsable(m, avoid) {
+	if !usable {
 		r.mu.Unlock()
 		return Slot{}, Wait{}, ErrNoHealthyDeployment
 	}
@@ -350,7 +352,7 @@ func (r *Router) Acquire(ctx context.Context, m *config.Model, avoid Avoid) (Slo
 		}
 		// The client left: the slot (and the trial it carries) goes to the next
 		// waiter.
-		changed = r.releaseLocked(keyOf(g.d), g.trial)
+		changed = r.releaseLocked(IDOf(g.d), g.trial)
 	} else {
 		changed = r.leave(w)
 	}
@@ -359,71 +361,62 @@ func (r *Router) Acquire(ctx context.Context, m *config.Model, avoid Avoid) (Slo
 	return Slot{}, Wait{Queued: true, Duration: time.Since(start)}, err
 }
 
-// choose picks m's deployment for an attempt now: among the deployments it may use
-// (usable) whose backend has a free slot, the fewest in flight, ties taking turns
-// from the model's next index. ok is false when none has a free slot.
-func (r *Router) choose(m *config.Model, avoid Avoid) (d config.Deployment, ok bool) {
+// pick decides, in one walk over m's deployments, where an attempt avoiding avoid
+// may go now. The deployments it may use are the eligible ones avoid does not
+// refuse — and, while one of those is not cooling down (warm), only the ones not
+// cooling down. usable reports whether there is any; best is the index in
+// m.Deployments of the one to take — among those whose backend has a free slot, the
+// fewest in flight, ties taking turns from the model's next index — or -1 when none
+// has a free slot. pick changes nothing: takeTurn takes the slot.
+func (r *Router) pick(m *config.Model, avoid Avoid) (best int, usable bool) {
 	n := len(m.Deployments)
 	start := r.next[m.Name] % n
-	best := -1
-	warm := r.anyWarm(m, avoid)
+	// The best free deployment among the warm ones and among the cooling ones, and
+	// whether any usable one is warm: the warm rule is resolved once the walk ends.
+	bestWarm, bestCooling := -1, -1
+	var warmLoad, coolingLoad int
+	warm := false
 	for i := range n {
-		candidate := (start + i) % n
-		cd := m.Deployments[candidate]
-		if !r.usable(cd, avoid, warm) || !r.hasFreeSlot(cd.Backend) {
+		at := (start + i) % n
+		d := m.Deployments[at]
+		key := IDOf(d)
+		if !r.eligible(key) || slices.Contains(avoid.Refused, key) {
 			continue
 		}
-		if best < 0 || r.inFlight[keyOf(cd)] < r.inFlight[keyOf(m.Deployments[best])] {
-			best = candidate
+		usable = true
+		cooling := r.cooldowns[key] != nil
+		warm = warm || !cooling
+		if !r.hasFreeSlot(d.Backend) {
+			continue
+		}
+		load := r.inFlight[key]
+		switch {
+		case cooling:
+			if bestCooling < 0 || load < coolingLoad {
+				bestCooling, coolingLoad = at, load
+			}
+		case bestWarm < 0 || load < warmLoad:
+			bestWarm, warmLoad = at, load
 		}
 	}
-	if best < 0 {
-		return config.Deployment{}, false
+	if warm {
+		return bestWarm, usable
 	}
-	r.next[m.Name] = best + 1
-	return m.Deployments[best], true
+	return bestCooling, usable
 }
 
-// eligible reports whether routing may send requests to d: its circuit is closed,
-// or half-open with no trial under way.
-func (r *Router) eligible(d config.Deployment) bool {
-	c, ok := r.circuits[keyOf(d)]
+// takeTurn takes a slot on m's deployment at index at (pick's best) and moves the
+// model's next turn past it.
+func (r *Router) takeTurn(m *config.Model, at int) grant {
+	r.next[m.Name] = at + 1
+	return r.take(m.Deployments[at])
+}
+
+// eligible reports whether routing may send requests to the deployment key: its
+// circuit is closed, or half-open with no trial under way.
+func (r *Router) eligible(key DeploymentID) bool {
+	c, ok := r.circuits[key]
 	return !ok || c.openedAt.IsZero() || (c.halfOpen && c.trial == 0)
-}
-
-// usable reports whether an attempt avoiding avoid may use d: d is eligible, not
-// refused, and — when warm (an eligible deployment of the model not refused is not
-// cooling down) — not cooling down itself.
-func (r *Router) usable(d config.Deployment, avoid Avoid, warm bool) bool {
-	key := keyOf(d)
-	if !r.eligible(d) || slices.Contains(avoid.Refused, key) {
-		return false
-	}
-	return !warm || r.cooldowns[key] == nil
-}
-
-// anyWarm reports whether one of m's eligible deployments that avoid does not
-// refuse is not cooling down.
-func (r *Router) anyWarm(m *config.Model, avoid Avoid) bool {
-	for _, d := range m.Deployments {
-		key := keyOf(d)
-		if r.eligible(d) && !slices.Contains(avoid.Refused, key) && r.cooldowns[key] == nil {
-			return true
-		}
-	}
-	return false
-}
-
-// anyUsable reports whether an attempt avoiding avoid may use one of m's
-// deployments.
-func (r *Router) anyUsable(m *config.Model, avoid Avoid) bool {
-	warm := r.anyWarm(m, avoid)
-	for _, d := range m.Deployments {
-		if r.usable(d, avoid, warm) {
-			return true
-		}
-	}
-	return false
 }
 
 // hasFreeSlot reports whether b may take one more request: its cap (the configured
@@ -476,7 +469,7 @@ func (r *Router) MaxInFlightByBackend() map[string]int64 {
 
 // take counts one request in flight on d; on a half-open circuit it is the trial.
 func (r *Router) take(d config.Deployment) grant {
-	key := keyOf(d)
+	key := IDOf(d)
 	r.inFlight[key]++
 	r.backendLoad[d.Backend.ID]++
 	g := grant{d: d}
@@ -489,7 +482,7 @@ func (r *Router) take(d config.Deployment) grant {
 
 // slotFor wraps a slot already counted.
 func (r *Router) slotFor(g grant) Slot {
-	key := keyOf(g.d)
+	key := IDOf(g.d)
 	var once sync.Once
 	return Slot{Deployment: g.d, release: func() { once.Do(func() { r.release(key, g.trial) }) },
 		report:    func(o Outcome, reason string) { r.report(g.d, g.trial, o, reason) },
@@ -532,41 +525,39 @@ func (r *Router) releaseLocked(key DeploymentID, trial uint64) (changed bool) {
 // changed reports a queue that became empty.
 //
 // Within a round, first attempts (which avoid nothing) of one model under one config
-// snapshot all get the same answer from canServe, so it is asked once per model
-// snapshot and round; retries, each with its own avoid set, are asked one by one. With every backend full the round then
-// walks each queue without re-checking the model's deployments per waiter.
+// snapshot all get the same answer from pick, so it is asked once per model snapshot
+// and round; retries, each with its own avoid set, are asked one by one. With every
+// backend full the round then walks each queue without re-checking the model's
+// deployments per waiter. Nothing changes between a round's picks and its grant, so
+// the winner takes the deployment its pick named.
 func (r *Router) dispatch() (changed bool) {
 	for {
 		var best *waiter
+		bestAt := -1
 		for _, q := range r.queues {
-			// firstServable caches canServe for first attempts of one config
-			// snapshot's model this round (servableModel): 0 unknown, 1 yes, 2 no. A
-			// queue holds waiters of several snapshots after a reload, whose
-			// deployments differ, so a waiter of another snapshot asks anew.
-			firstServable := 0
+			// firstServable caches pick's best for first attempts of one config
+			// snapshot's model this round (servableModel). A queue holds waiters of
+			// several snapshots after a reload, whose deployments differ, so a waiter
+			// of another snapshot asks anew.
+			firstServable := -1
 			var servableModel *config.Model
 			for e := q.Front(); e != nil; e = e.Next() {
 				w := e.Value.(*waiter)
 				if best != nil && w.arrival > best.arrival {
 					break
 				}
-				var ok bool
+				var at int
 				if w.avoid.firstAttempt() {
 					if w.model != servableModel {
-						firstServable, servableModel = 0, w.model
+						firstServable, _ = r.pick(w.model, w.avoid)
+						servableModel = w.model
 					}
-					if firstServable == 0 {
-						firstServable = 2
-						if r.canServe(w.model, w.avoid) {
-							firstServable = 1
-						}
-					}
-					ok = firstServable == 1
+					at = firstServable
 				} else {
-					ok = r.canServe(w.model, w.avoid)
+					at, _ = r.pick(w.model, w.avoid)
 				}
-				if ok {
-					best = w
+				if at >= 0 {
+					best, bestAt = w, at
 					break
 				}
 			}
@@ -574,23 +565,10 @@ func (r *Router) dispatch() (changed bool) {
 		if best == nil {
 			return changed
 		}
-		d, _ := r.choose(best.model, best.avoid)
-		g := r.take(d)
+		g := r.takeTurn(best.model, bestAt)
 		changed = r.leave(best) || changed
 		best.granted <- g
 	}
-}
-
-// canServe reports whether one of m's deployments an attempt avoiding avoid may use
-// has a free slot.
-func (r *Router) canServe(m *config.Model, avoid Avoid) bool {
-	warm := r.anyWarm(m, avoid)
-	for _, d := range m.Deployments {
-		if r.usable(d, avoid, warm) && r.hasFreeSlot(d.Backend) {
-			return true
-		}
-	}
-	return false
 }
 
 // leave takes w out of its queue. changed reports that the queue became empty.

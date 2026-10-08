@@ -10,7 +10,6 @@ import (
 	"kaiak/internal/accounting"
 	"kaiak/internal/clip"
 	"kaiak/internal/config"
-	"kaiak/internal/limits"
 	"kaiak/internal/logattr"
 	"kaiak/internal/provider"
 )
@@ -70,7 +69,7 @@ func (a *API) logRequest(rq *request) {
 		attrs = append(attrs, slog.String("error.type", code))
 	}
 	if rej := rq.rejection; rej != nil {
-		attrs = append(attrs, limitAttrs(rej)...)
+		attrs = append(attrs, rej.LogAttrs()...)
 	}
 	if !rq.firstContent.IsZero() {
 		attrs = append(attrs, logattr.SecondsMicro("kaiak.time_to_first_token", rq.ttft))
@@ -128,30 +127,6 @@ func methodAttrs(method string) []slog.Attr {
 	}
 	return []slog.Attr{slog.String("http.request.method", "_OTHER"),
 		slog.String("http.request.method_original", clip.String(method))}
-}
-
-// limitAttrs are a limit refusal's log fields: the limit's kind of scope (global or
-// group), its group's ID (absent for a global limit), its type, the value enforced (a
-// per-minute limit's share among the live gateways) and the value configured, what the
-// window had used (unknown for a budget refused as unavailable) and, for a token
-// limit, what the request asked for. Counts are in the limit's unit; USD limits are in
-// dollars, as kaiak.usage.cost_usd (limits.LogValue).
-func limitAttrs(rej *limits.Rejection) []slog.Attr {
-	value := func(key string, v int64) slog.Attr { return slog.Any(key, limits.LogValue(rej.Measure, v)) }
-	attrs := []slog.Attr{slog.String("kaiak.limit.scope", string(rej.Scope))}
-	if rej.Group != "" {
-		attrs = append(attrs, slog.String("kaiak.limit.group", rej.Group))
-	}
-	attrs = append(attrs, slog.String("kaiak.limit.type", string(rej.Type)), value("kaiak.limit.enforced", rej.Limit),
-		value("kaiak.limit.configured", rej.Max))
-	if rej.Unavailable {
-		return attrs
-	}
-	attrs = append(attrs, value("kaiak.limit.used", rej.Used))
-	if rej.Measure == config.MeasureTokens {
-		attrs = append(attrs, slog.Int64("kaiak.limit.requested", rej.Requested))
-	}
-	return attrs
 }
 
 // triedAttempts lists a request's attempts for the log line, in order, as

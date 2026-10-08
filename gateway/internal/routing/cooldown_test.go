@@ -12,7 +12,7 @@ func TestCoolingDeploymentIsSkipped(t *testing.T) {
 	r := New(Options{})
 	m := queuedModel("m", 10, time.Hour, backend("a", 0), backend("b", 0))
 	r.Configure(circuitSnapshot(5, time.Hour, m))
-	a, b := keyOf(m.Deployments[0]), keyOf(m.Deployments[1])
+	a, b := IDOf(m.Deployments[0]), IDOf(m.Deployments[1])
 	slot, _, err := r.Acquire(context.Background(), m, Avoid{Refused: []DeploymentID{b}})
 	if err != nil {
 		t.Fatal(err)
@@ -26,8 +26,8 @@ func TestCoolingDeploymentIsSkipped(t *testing.T) {
 	defer releaseHeld()
 	for range 4 {
 		d, release := acquire(r, m)
-		if keyOf(d) != b {
-			t.Fatalf("chose %v, want %v: a cools down", keyOf(d), b)
+		if IDOf(d) != b {
+			t.Fatalf("chose %v, want %v: a cools down", IDOf(d), b)
 		}
 		release()
 	}
@@ -40,12 +40,12 @@ func TestCoolingDeploymentIsUsedWhenNoOtherIsEligible(t *testing.T) {
 		r := New(Options{})
 		m := queuedModel("m", 10, time.Hour, backend("a", 0), backend("b", 0))
 		r.Configure(circuitSnapshot(5, time.Hour, m))
-		r.throttle(keyOf(m.Deployments[0]), time.Hour)
-		r.throttle(keyOf(m.Deployments[1]), time.Hour)
+		r.throttle(IDOf(m.Deployments[0]), time.Hour)
+		r.throttle(IDOf(m.Deployments[1]), time.Hour)
 		seen := map[DeploymentID]bool{}
 		for range 4 {
 			d, release := acquire(r, m)
-			seen[keyOf(d)] = true
+			seen[IDOf(d)] = true
 			release()
 		}
 		if len(seen) != 2 {
@@ -56,10 +56,10 @@ func TestCoolingDeploymentIsUsedWhenNoOtherIsEligible(t *testing.T) {
 		r := New(Options{})
 		m := queuedModel("m", 10, time.Hour, backend("a", 0), backend("b", 0))
 		r.Configure(circuitSnapshot(1, time.Hour, m))
-		r.throttle(keyOf(m.Deployments[0]), time.Hour)
+		r.throttle(IDOf(m.Deployments[0]), time.Hour)
 		fail(r, m.Deployments[1], 1)
-		if d, release := acquire(r, m); keyOf(d) != keyOf(m.Deployments[0]) {
-			t.Errorf("chose %v, want the cooling a", keyOf(d))
+		if d, release := acquire(r, m); IDOf(d) != IDOf(m.Deployments[0]) {
+			t.Errorf("chose %v, want the cooling a", IDOf(d))
 		} else {
 			release()
 		}
@@ -68,7 +68,7 @@ func TestCoolingDeploymentIsUsedWhenNoOtherIsEligible(t *testing.T) {
 		r := New(Options{})
 		m := queuedModel("m", 10, time.Hour, backend("a", 0))
 		r.Configure(circuitSnapshot(5, time.Hour, m))
-		r.throttle(keyOf(m.Deployments[0]), time.Hour)
+		r.throttle(IDOf(m.Deployments[0]), time.Hour)
 		_, release := acquire(r, m)
 		release()
 	})
@@ -80,7 +80,7 @@ func TestQueuedRequestGetsTheDeploymentWhoseCooldownEnds(t *testing.T) {
 	r := New(Options{})
 	m := queuedModel("m", 10, time.Hour, backend("a", 0), backend("b", 1))
 	r.Configure(circuitSnapshot(5, time.Hour, m))
-	a := keyOf(m.Deployments[0])
+	a := IDOf(m.Deployments[0])
 	held, _, err := r.Acquire(context.Background(), m, Avoid{Refused: []DeploymentID{a}})
 	if err != nil {
 		t.Fatal(err)
@@ -89,8 +89,8 @@ func TestQueuedRequestGetsTheDeploymentWhoseCooldownEnds(t *testing.T) {
 	r.throttle(a, 50*time.Millisecond)
 	queued := enqueue(t, r, context.Background(), "queued", m, 1)
 	got := receive(t, queued)
-	if got.err != nil || keyOf(got.slot.Deployment) != a || !got.wait.Queued {
-		t.Fatalf("queued request: %v on %v queued %v, want a once it cooled down", got.err, keyOf(got.slot.Deployment), got.wait.Queued)
+	if got.err != nil || IDOf(got.slot.Deployment) != a || !got.wait.Queued {
+		t.Fatalf("queued request: %v on %v queued %v, want a once it cooled down", got.err, IDOf(got.slot.Deployment), got.wait.Queued)
 	}
 	got.slot.Release()
 	if len(r.CoolingDown()) != 0 {
@@ -104,7 +104,7 @@ func TestWaitersGetACoolingDeploymentWhenTheLastOtherCoolsDown(t *testing.T) {
 	r := New(Options{})
 	m := queuedModel("m", 10, time.Hour, backend("a", 0), backend("b", 1))
 	r.Configure(circuitSnapshot(5, time.Hour, m))
-	a := keyOf(m.Deployments[0])
+	a := IDOf(m.Deployments[0])
 	held, _, err := r.Acquire(context.Background(), m, Avoid{Refused: []DeploymentID{a}})
 	if err != nil {
 		t.Fatal(err)
@@ -114,8 +114,8 @@ func TestWaitersGetACoolingDeploymentWhenTheLastOtherCoolsDown(t *testing.T) {
 	queued := enqueue(t, r, context.Background(), "queued", m, 1)
 	held.Throttled(time.Hour)
 	got := receive(t, queued)
-	if got.err != nil || keyOf(got.slot.Deployment) != a {
-		t.Fatalf("queued request: %v on %v, want a", got.err, keyOf(got.slot.Deployment))
+	if got.err != nil || IDOf(got.slot.Deployment) != a {
+		t.Fatalf("queued request: %v on %v, want a", got.err, IDOf(got.slot.Deployment))
 	}
 	got.slot.Release()
 }
@@ -127,8 +127,8 @@ func TestCooldownsFollowTheConfig(t *testing.T) {
 	m := queuedModel("m", 10, time.Hour, backend("a", 0), backend("b", 0))
 	gone := queuedModel("gone", 10, time.Hour, backend("c", 0))
 	r.Configure(circuitSnapshot(5, time.Hour, m))
-	r.throttle(keyOf(gone.Deployments[0]), time.Hour)
-	r.throttle(keyOf(m.Deployments[0]), time.Hour)
+	r.throttle(IDOf(gone.Deployments[0]), time.Hour)
+	r.throttle(IDOf(m.Deployments[0]), time.Hour)
 	if n := len(r.CoolingDown()); n != 1 {
 		t.Fatalf("cooling down %v, want a only", r.CoolingDown())
 	}
@@ -144,7 +144,7 @@ func TestLaterThrottleNeverShortensTheCooldown(t *testing.T) {
 	r := New(Options{})
 	m := queuedModel("m", 10, time.Hour, backend("a", 0), backend("b", 0))
 	r.Configure(circuitSnapshot(5, time.Hour, m))
-	a := keyOf(m.Deployments[0])
+	a := IDOf(m.Deployments[0])
 	r.throttle(a, time.Hour)
 	long := r.CoolingDown()[a]
 	r.throttle(a, time.Millisecond)
