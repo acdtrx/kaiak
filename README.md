@@ -53,10 +53,11 @@ from a clone, or serve `docs/` with GitHub Pages.
   name). Requests are load-balanced across deployments, retried on another deployment
   before the first byte, and kept away from failing deployments by a circuit breaker.
 - **Client APIs.** OpenAI's chat completions, completions and embeddings, Anthropic
-  Messages and OpenAI Responses (stateless), on one port with one key (`Authorization:
-  Bearer` or `x-api-key`). A request is passed through to a backend that speaks its
-  API — never translated — so the backend types behind a model decide which APIs
-  reach it (`docs/DEPLOYMENT.md` → Clients).
+  Messages, OpenAI Responses (stateless) and rerank (`/v1/rerank`, on vLLM and
+  llama-server), on one port with one key (`Authorization: Bearer` or `x-api-key`). A
+  request is passed through to a backend that speaks its API — never translated — so
+  the backend types behind a model decide which APIs reach it (`docs/DEPLOYMENT.md` →
+  Clients).
 - **Groups.** Who may use which models, and under which limits, is a tree of groups
   of any depth: team → project → env → workload, or whatever shape your organization
   has. A key belongs to one group. A request must pass the limits of every group on
@@ -96,9 +97,9 @@ stable).
    with priced models, a group tree (a team with a project split into prod and dev,
    another team, and a `users` group whose `child_defaults` give every person the
    same models and limits), and example limits. Replace the backend URLs and the
-   placeholder key hashes. A backend's `type` names its server — `vllm`, `llama-server`, `openai`,
-   `azure-openai`, `anthropic`, `azure-anthropic` (Claude in Microsoft Foundry), or
-   `openai-compatible` for any other OpenAI-format server
+   placeholder key hashes. A backend's `type` names its server — `vllm`,
+   `llama-server`, `openai`, `azure-openai`, `anthropic`, `azure-anthropic` (Claude in
+   Microsoft Foundry), or `openai-compatible` for any other OpenAI-format server
    (`docs/DEPLOYMENT.md` → Config for many hosts). Backend credentials are named by
    environment variable (`api_key_env`), never written in the file.
 

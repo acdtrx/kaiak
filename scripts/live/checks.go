@@ -62,9 +62,9 @@ const (
 )
 
 // checks runs every check the kind's backend type allows: the chat completions checks,
-// then the Messages and the Responses checks where it serves them, the refusal of
-// the APIs it does not, and the checks across APIs (output ceiling, rate limit,
-// metrics) through the first API it serves.
+// then the embeddings, rerank, Messages and Responses checks where it serves them, the
+// refusal of the APIs it does not, and the checks across APIs (output ceiling, rate
+// limit, metrics) through the first API it serves.
 func (r *run) checks() {
 	r.checkAuth()
 	r.checkModels()
@@ -82,6 +82,12 @@ func (r *run) checks() {
 	} else {
 		r.checkEmbeddings()
 		r.checkUsageLog("usage-log/embeddings", idEmbed, false)
+	}
+	switch {
+	case r.o.serves(epRerank):
+		r.rerankChecks()
+	case r.o.rerankBaseURL != "":
+		r.skip("rerank", r.o.kind+" serves no rerank: only vllm and llama-server do")
 	}
 	if r.o.serves(epMessages) {
 		r.messagesChecks()
@@ -166,8 +172,11 @@ func (r *run) checkModels() {
 	want := []string{modelCapped, modelChat, modelRPM}
 	if r.o.embeddingsModel != "" {
 		want = append(want, modelEmbed)
-		slices.Sort(want)
 	}
+	if r.o.reranker() {
+		want = append(want, modelRerank)
+	}
+	slices.Sort(want)
 	if !slices.Equal(ids, want) {
 		r.fail("models", "lists %v, want %v", ids, want)
 		return

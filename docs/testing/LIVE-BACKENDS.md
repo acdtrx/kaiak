@@ -3,7 +3,7 @@
 > The runbook for `scripts/live/`: run the built `kaiak` against a real vLLM,
 > llama-server, OpenAI, Azure OpenAI, Anthropic or Claude in Microsoft Foundry
 > backend and check it end to end, through every client API the backend serves (chat
-> completions, Anthropic Messages, OpenAI Responses). Opt-in — never needed for a
+> completions, Anthropic Messages, OpenAI Responses, rerank). Opt-in — never needed for a
 > green suite (`docs/TECH-STACK.md`, Testing). The kit's own self-test, against the
 > fake backend, runs in `scripts/check-gateway.sh`. Someone running it for the kaiak
 > team without knowing kaiak: start at **For a tester with access**.
@@ -16,8 +16,8 @@ One command per backend kind. The runner:
 2. generates a config for the backend — a fresh random client key and its hash, one
    backend of the type `-kind` names (two with `-base-url-2`: see Two vLLM
    processes, one model; one more with `-embeddings-base-url`: see Embeddings on a
-   server of their own), four public models on it (below), one group holding the
-   key;
+   server of their own; one more with `-rerank-base-url`: see Reranker on a server of
+   its own), the public models below, one group holding the key;
 3. starts `kaiak` on free loopback ports with JSON logs;
 4. runs the checks — through each client API the backend type serves (the table in
    `docs/specs/GATEWAY.md`, Providers → Endpoint support) — printing
@@ -36,10 +36,12 @@ model:
 | `live-capped` | output-limit ceiling check; ceiling `-ceiling` (default 16) |
 | `live-rpm` | limit check, sent with a second key whose group (`live-metered`) allows 1 request per minute: a limit counts every request of its group |
 | `live-embed` | embeddings, only with `-embeddings-model` — whatever the model's name on the backend (a path-style id too) |
+| `live-rerank` | rerank, only with `-rerank-base-url` on `vllm` or `llama-server` |
 
-Chat models are priced at `-price-in` / `-price-out` USD per million tokens (default
+Every model is priced at `-price-in` / `-price-out` USD per million tokens (default
 1 / 2 — placeholders, only so the cost path is exercised; `0` and `0` leave them
-unpriced and skip the cost checks).
+unpriced and skip the cost checks). With a reranker, the config also sets
+`global.max_rerank_documents` to 4, for the `rerank-cap` check.
 
 ## For a tester with access
 
@@ -149,7 +151,9 @@ default; each refusal names the parameter, so the fix is one setting:
 - Each run sends a few small requests per API the backend serves (one asks for a long
   story, cut at 16 tokens) and, with `-embeddings-model`, one embeddings request; a
   Messages backend also gets
-  the cache check's two requests of about 8,000 input tokens each. On a paid API a
+  the cache check's two requests of about 8,000 input tokens each. With
+  `-rerank-base-url`, a few small rerank requests and one carrying a 1 MB document,
+  which the reranker server refuses. On a paid API a
   run costs cents (Claude Haiku 4.5 at $1 / $5 per million tokens: under $0.05).
 
 ## Commands
@@ -172,6 +176,8 @@ go -C scripts/live run . -kind vllm \
 - No key by default: vLLM runs unauthenticated unless started with `--api-key`.
 - Embeddings usually live on a separate vLLM instance (a pooling model): add
   `-embeddings-base-url` (see Embeddings on a server of their own).
+- A reranker always does — one vLLM process serves one model: add
+  `-rerank-base-url` and `-rerank-model` (see Reranker on a server of its own).
 
 ### llama-server
 
@@ -189,6 +195,8 @@ go -C scripts/live run . -kind llama-server \
   `--api-key`.
 - Embeddings run on a llama-server of their own (started with `--embeddings`): add
   `-embeddings-base-url` (see Embeddings on a server of their own).
+- So does a reranker (started with `--reranking`): add `-rerank-base-url` and
+  `-rerank-model` (see Reranker on a server of its own).
 
 ### OpenAI
 
@@ -228,8 +236,8 @@ go -C scripts/live run . -kind anthropic \
 
 - `base-url` defaults to `https://api.anthropic.com/v1`.
 - The key goes in `x-api-key`; another variable name: `-api-key-env NAME`.
-- Claude serves only Messages: the chat, Responses and embeddings checks do not
-  run, and `endpoint-not-served` checks the gateway refuses them.
+- Claude serves only Messages: the chat, Responses, embeddings and rerank checks do
+  not run, and `endpoint-not-served` checks the gateway refuses them.
 
 ### Claude in Microsoft Foundry
 
@@ -277,6 +285,13 @@ layout with `Authorization: Bearer`, Azure OpenAI layout (`/openai/v1/`) with
 wrong path, so a config the kit generates wrongly fails here first. The fakes report
 3 of every 7 prompt tokens read from the cache, so the cache check passes there.
 
+For vLLM and llama-server a second fake plays the reranker server, with a bearer key
+(`-rerank-api-key-env`): it answers rerank in that server's shape and refuses a pair
+over 32,768 words with that server's `400`. Each fake lacks endpoints the way its
+server does: vLLM's reranker has no chat route and vLLM's chat model no rerank route
+(`404 {"detail":"Not Found"}`); llama-server's chat server answers rerank `501
+not_supported_error`, as one started without `--reranking` does.
+
 The self-test ends with a two-backend run: two fakes serving one model, each capped
 at one request (`-max-in-flight 1`), with the failover check — the runner stops the
 second fake and starts it again on its address itself — and a third fake as the
@@ -302,6 +317,13 @@ context length. `go -C scripts/live run . -h` lists them all.
 | `usage-log/stream-usg` | that stream counted exactly too |
 | `embeddings` | embeddings reach the backend; the answer names `live-embed`, has a vector and `prompt_tokens`; with `-embeddings-base-url`, its log line names backend `live-embeddings` |
 | `usage-log/embeddings` | embeddings usage counted exactly (input tokens, no output) |
+| `rerank` | vLLM and llama-server, with `-rerank-base-url`: a rerank request reaches the reranker server and returns a result per document — its `index` and `relevance_score` — under the **public** model name, with `usage` |
+| `rerank-relevance` | in that answer, the document about a lighthouse keeper scores above the one about bread dough, sent first — coarse: no score thresholds, which vary by model and template |
+| `usage-log/rerank` | its log line names the operation `rerank` and carries the server's own token count (not estimated, no output) and a cost |
+| `rerank-cap` | one document more than `global.max_rerank_documents` (4 here) is refused, `400 invalid_value` on `documents`, before routing |
+| `rerank-oversize` | a 1 MB document, longer than any reranker's context, is refused by the server with a `400` the gateway relays to the caller (vLLM: `BadRequestError`; llama-server: `exceed_context_size_error`) — not a `5xx`, which would count toward the circuit |
+| `chat-to-reranker` | vLLM: a chat request to `live-rerank` answers `502 upstream_endpoint_missing` (a reranker's vLLM has no chat route), the gateway warns once, and a rerank right after is served — the deployment stays in service. Skipped on llama-server, which serves every route whatever its flags |
+| `rerank-to-chat` | vLLM and llama-server, with or without a reranker: a rerank request to `live-chat` answers `502 upstream_endpoint_missing` (vLLM's chat model has no rerank route; llama-server started without `--reranking` answers `501`), the gateway warns once, and a chat right after is served |
 | `messages` | a Messages request **without `max_tokens`** (the API requires it; the gateway sets the output-limit default) returns text under the public model name, with `usage` |
 | `usage-log/messages` | its log line carries the backend's own token counts and a cost |
 | `messages-stream` | a Messages stream opens with `message_start` naming `live-chat`, streams text deltas and ends with `message_stop` — no error event, no `[DONE]` |
@@ -320,7 +342,7 @@ context length. `go -C scripts/live run . -h` lists them all.
 | `responses-stateful` | a request naming `previous_response_id` is refused, `400 stateful_responses_unsupported`, before routing — the gateway serves Responses stateless |
 | `responses-hosted-tool` | a hosted tool (`web_search`) is refused, `400 hosted_tool_unsupported`, before routing |
 | `service-tier` | OpenAI and Azure: a request asking for `service_tier: "priority"` runs on `default` (skipped when the answer does not report its tier) |
-| `endpoint-not-served` | every API the backend type does not serve (chat completions on Claude, Messages on OpenAI, `responses/input_tokens` on vLLM and Azure, …) is refused `400 endpoint_not_served`, in that API's error shape |
+| `endpoint-not-served` | every API the backend type does not serve (chat completions on Claude, Messages on OpenAI, `responses/input_tokens` on vLLM and Azure, rerank on the cloud APIs, …) is refused `400 endpoint_not_served`, in that API's error shape |
 | `output-ceiling` | a request for the model's whole context length in output tokens (`-context-length`; more is refused, `400 invalid_value`) is lowered to the ceiling: `completion_tokens` ≤ ceiling, `finish_reason: "length"`. vLLM and llama-server are asked through `max_tokens` (the gateway lowers the client's own key), OpenAI and Azure through `max_completion_tokens` (their reasoning models refuse `max_tokens`); Anthropic and Foundry through Messages' `max_tokens`, ending `stop_reason: "max_tokens"` |
 | `rate-limit` | the second `live-rpm` request in a minute (with the metered key) gets `429 rate_limit_exceeded` with `Retry-After` and `x-ratelimit-*-requests` headers — before reaching the backend (through Messages on Anthropic and Foundry, in Anthropic's shape: `rate_limit_error`) |
 | `metrics` | the admin `/metrics` shows the `live-chat` usage records, their output tokens (`gen_ai_client_inference_usage_output_tokens_total`) and cost, the rate-limit refusal, successful upstream attempts with their durations, no backend label on a usage series, and a request on each of the `messages` and `responses` routes the backend serves (`http_server_request_duration_seconds`, by `http_route`) |
@@ -444,6 +466,60 @@ or the llama-server embeddings instance, in place of the last two lines:
 input tokens from the server) are the checks that matter here; the chat and failover
 checks run as without it.
 
+## Reranker on a server of its own
+
+A reranker runs apart from the chat model: a vLLM process serves one model, and
+llama-server serves rerank only when started for it. `-rerank-base-url` (env
+`LIVE_RERANK_BASE_URL`) names that server and `-rerank-model` (env
+`LIVE_RERANK_MODEL`) the model's name on it; the generated config gets one more
+backend, `live-reranker`, of the run's `-kind`, and `live-rerank` deploys there. Only
+`vllm` and `llama-server` serve rerank: another kind given the flags says `SKIP
+rerank`.
+
+- `-rerank-model` is the name `curl <rerank-base-url>/models` lists.
+- No key by default; `-rerank-api-key-env NAME` if the server wants one.
+
+**Start the reranker** — Qwen3-Reranker; `docs/DEPLOYMENT.md` → Rerankers says why
+each flag is there. On vLLM (port 8004, sharing the GPU with the chat model):
+
+```sh
+# the score template, from the tag of the vLLM you run (here v0.31.0)
+curl -LO https://raw.githubusercontent.com/vllm-project/vllm/v0.31.0/examples/pooling/score/template/qwen3_reranker.jinja
+vllm serve Qwen/Qwen3-Reranker-8B --port 8004 --gpu-memory-utilization 0.25 \
+  --runner pooling \
+  --hf_overrides '{"architectures": ["Qwen3ForSequenceClassification"],"classifier_from_token": ["no", "yes"],"is_original_qwen3_reranker": true}' \
+  --chat-template qwen3_reranker.jinja
+# -rerank-model Qwen/Qwen3-Reranker-8B
+```
+
+On llama-server (port 8005), from a GGUF made by llama.cpp's converter, which writes
+the model's rerank prompt into the file:
+
+```sh
+python convert_hf_to_gguf.py <dir>/Qwen3-Reranker-0.6B --outfile qwen3-reranker-0.6b-f16.gguf
+llama-server -m qwen3-reranker-0.6b-f16.gguf --port 8005 --embedding --pooling rank --reranking -c 32768 -np 4
+# -rerank-model: the id curl …:8005/v1/models lists — the model file's path unless started with --alias
+```
+
+**Run the kit** with the chat server and the reranker:
+
+```sh
+go -C scripts/live run . -kind vllm \
+  -base-url http://gpu-host:8001/v1 \
+  -model qwen3.5-2b \
+  -rerank-base-url http://gpu-host:8004/v1 \
+  -rerank-model Qwen/Qwen3-Reranker-8B
+```
+
+For llama-server: `-kind llama-server`, its chat server's `-base-url` and `-model`,
+and the reranker's URL and model id.
+
+`PASS rerank`, `rerank-relevance`, `usage-log/rerank` (exact input tokens from the
+server) and `rerank-oversize` (the server refuses a pair longer than its context with a
+`400`) are the checks that matter for the reranker. `chat-to-reranker` (vLLM) and
+`rerank-to-chat` check the other side: a request to a server that lacks the endpoint
+answers `upstream_endpoint_missing` and leaves the deployment in service.
+
 ## Reading failures
 
 - A failed request prints the status, the body and the gateway's view from its log
@@ -457,9 +533,10 @@ checks run as without it.
   - `504 upstream_timeout` — nothing within `-request-timeout`; a cold vLLM loading
     the model can take longer — raise it.
   - `502 upstream_path_missing` — the backend answered `404` for a path it does not
-    have: a wrong `-base-url` (vLLM or OpenAI without `/v1`; for Azure, a path after
-    the resource endpoint). The gateway's log also warns `the backend has no models
-    list at its base_url` at startup.
+    have: a wrong `-base-url` (OpenAI without `/v1`; for Azure, a path after the
+    resource endpoint). The gateway's log also warns `the backend has no models list
+    at its base_url` at startup. On vLLM a wrong `-base-url` answers
+    `upstream_endpoint_missing` instead (below), with the same startup warning.
   - `502 upstream_model_missing` — the backend does not serve `-model` (for Azure,
     no deployment of that name).
   - `404` relayed from the backend — a `404` the gateway does not read as the
@@ -470,9 +547,24 @@ checks run as without it.
   not serve that API (Providers → Endpoint support) — the kit runs each API's
   checks only on the kinds that serve it, so this means the kit and the gateway
   disagree on the table.
-- `502 upstream_endpoint_missing` — the server answered `404` (vLLM: `405`) on an
-  endpoint its type serves: a server version older than the endpoint (vLLM before
-  its Messages or Responses support). Upgrade the server; chat keeps working.
+- `502 upstream_endpoint_missing` on a check other than `chat-to-reranker` and
+  `rerank-to-chat` — the server does not serve an endpoint its type serves: its
+  version predates it (vLLM before its Messages or Responses support), the model it
+  loaded leaves it out (vLLM creates its routes from the model: a chat model has no
+  rerank route, a reranker no chat route — check that `-base-url` and
+  `-rerank-base-url` are not swapped), or its flags do (llama-server started without
+  `--reranking` answers rerank `501`). On vLLM a wrong `-base-url` shows the same way,
+  with the startup warning `the backend has no models list at its base_url`. The
+  deployment keeps serving its other endpoints.
+- `rerank-relevance`: the server scored the irrelevant document higher — on vLLM the
+  score template (`--chat-template`) or the `--hf_overrides` is missing, on
+  llama-server the GGUF carries no rerank prompt (`docs/DEPLOYMENT.md` → Rerankers).
+- `rerank-oversize` with status `500` (llama-server): the server could not fit the
+  pair in one batch and failed instead of refusing it — a build before b11223, or a
+  reranker that is not a causal model; `docs/DEPLOYMENT.md` → Rerankers.
+- `rerank-to-chat` answering `200`: the chat model's server serves rerank —
+  llama-server started with `--reranking`, or a vLLM embedding model (which scores
+  rerank by similarity) given as `-model`.
 - `400 hosted_tool_unsupported`, `stateful_responses_unsupported`,
   `price_option_unsupported` on a check other than the one testing it: a
   `-messages-params` or `-responses-params` value asks for something the gateway

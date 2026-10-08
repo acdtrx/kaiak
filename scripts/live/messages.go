@@ -232,13 +232,17 @@ func (r *run) checkAnthropicModels() {
 		}
 		ids = append(ids, m.ID)
 	}
-	// The models whose deployments serve Messages: the chat models, and the embeddings
-	// model when it shares their backend.
+	// The models whose deployments serve Messages: the chat models, the embeddings
+	// model when it shares their backend, and the reranker, whose backend takes the
+	// run's kind.
 	want := []string{modelCapped, modelChat, modelRPM}
 	if r.o.embeddingsModel != "" && !r.o.embeddingsServer() {
 		want = append(want, modelEmbed)
-		slices.Sort(want)
 	}
+	if r.o.reranker() {
+		want = append(want, modelRerank)
+	}
+	slices.Sort(want)
 	switch {
 	case !slices.Equal(ids, want):
 		r.fail(name, "lists %v, want %v", ids, want)

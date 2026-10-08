@@ -236,10 +236,14 @@ func msg(message string, fields ...string) func(map[string]any) bool {
 }
 
 // runSelfTest runs every check against the fake backend standing in for each kind
-// (or only o.kind), then — when vllm is among them — the two-backend checks against
+// (or only o.kind) — with a second fake as the reranker server, with a key, where the
+// kind serves rerank — then, when vllm is among them, the two-backend checks against
 // two fakes, the failover check stopping and restarting the second: the kit's own
 // acceptance test, no real backend needed.
 func runSelfTest(ctx context.Context, o options) error {
+	// The reranker server is the self-test's own fake, whatever the flags or the
+	// environment name.
+	o.rerankBaseURL, o.rerankModel, o.rerankAPIKeyEnv = "", "", ""
 	kinds := allKinds
 	if o.kind != "" {
 		if _, ok := defaultAPIKeyEnv[o.kind]; !ok {
@@ -275,7 +279,8 @@ func runSelfTest(ctx context.Context, o options) error {
 		secret, _ := newKey()
 		auth := map[string]string{kindVLLM: "none", kindLlamaServer: "none", kindOpenAI: "bearer", kindAzure: "api-key",
 			kindAnthropic: "x-api-key", kindAzureAnthropic: "api-key"}[kind]
-		fake, root, err := startFake(ctx, fakeBin, "127.0.0.1:0", auth, secret, selfTestChatModel, selfTestEmbedModel)
+		fake, root, err := startFake(ctx, fakeBin, "127.0.0.1:0", auth, secret,
+			[]string{selfTestChatModel, selfTestEmbedModel}, fakeFlags(kind, false)...)
 		if err != nil {
 			return err
 		}
@@ -287,8 +292,23 @@ func runSelfTest(ctx context.Context, o options) error {
 		if k.apiKeyEnv != "" {
 			extraEnv = []string{k.apiKeyEnv + "=" + secret}
 		}
+		var reranker *exec.Cmd
+		if k.serves(epRerank) {
+			const rerankKeyEnv = "LIVE_SELF_TEST_RERANK_KEY"
+			rerankSecret, _ := newKey()
+			var rootRerank string
+			reranker, rootRerank, err = startFake(ctx, fakeBin, "127.0.0.1:0", "bearer", rerankSecret,
+				[]string{selfTestRerankModel}, fakeFlags(kind, true)...)
+			if err != nil {
+				stopFake(fake)
+				return err
+			}
+			k.rerankBaseURL, k.rerankModel, k.rerankAPIKeyEnv = rootRerank+"/v1", selfTestRerankModel, rerankKeyEnv
+			extraEnv = append(extraEnv, rerankKeyEnv+"="+rerankSecret)
+		}
 		err = runKind(ctx, k, ws, extraEnv)
 		stopFake(fake)
+		stopFake(reranker)
 		switch {
 		case errors.Is(err, errChecksFailed):
 			failed = append(failed, kind)
@@ -323,18 +343,19 @@ func selfTestTwoBackends(ctx context.Context, o options, ws *workspace, fakeBin 
 	o.maxInFlight, o.checkFailover = 1, true
 	o.failoverWait, o.failoverPace = startupLimit, 100*time.Millisecond
 
-	first, root, err := startFake(ctx, fakeBin, "127.0.0.1:0", "none", "", selfTestChatModel)
+	chat := []string{selfTestChatModel}
+	first, root, err := startFake(ctx, fakeBin, "127.0.0.1:0", "none", "", chat, fakeFlags(kindVLLM, false)...)
 	if err != nil {
 		return err
 	}
 	defer stopFake(first)
-	second, root2, err := startFake(ctx, fakeBin, "127.0.0.1:0", "none", "", selfTestChatModel)
+	second, root2, err := startFake(ctx, fakeBin, "127.0.0.1:0", "none", "", chat, fakeFlags(kindVLLM, false)...)
 	if err != nil {
 		return err
 	}
 	defer func() { stopFake(second) }()
 	embedSecret, _ := newKey()
-	embeddings, rootEmbed, err := startFake(ctx, fakeBin, "127.0.0.1:0", "bearer", embedSecret, selfTestEmbedPath)
+	embeddings, rootEmbed, err := startFake(ctx, fakeBin, "127.0.0.1:0", "bearer", embedSecret, []string{selfTestEmbedPath})
 	if err != nil {
 		return err
 	}
@@ -348,7 +369,7 @@ func selfTestTwoBackends(ctx context.Context, o options, ws *workspace, fakeBin 
 	}
 	o.startSecond = func() error {
 		var err error
-		second, _, err = startFake(ctx, fakeBin, strings.TrimPrefix(root2, "http://"), "none", "", selfTestChatModel)
+		second, _, err = startFake(ctx, fakeBin, strings.TrimPrefix(root2, "http://"), "none", "", chat, fakeFlags(kindVLLM, false)...)
 		return err
 	}
 	return runKind(ctx, o, ws, []string{embedKeyEnv + "=" + embedSecret})
@@ -367,8 +388,9 @@ func stopFake(cmd *exec.Cmd) {
 // The model names the self-test deploys; its fakes list them (the gateway's probe
 // requires a deployment's model in the backend's models list).
 const (
-	selfTestChatModel  = "fake-chat"
-	selfTestEmbedModel = "fake-embed"
+	selfTestChatModel   = "fake-chat"
+	selfTestEmbedModel  = "fake-embed"
+	selfTestRerankModel = "fake-rerank"
 	// selfTestEmbedPath is the embeddings server's model: a path, not a valid public
 	// name, so the kit must expose it under its own.
 	selfTestEmbedPath = "/models/fake-embed-q8_0.gguf"
@@ -378,11 +400,36 @@ const (
 // so the cache check sees a prefix cache answering.
 const selfTestCachedTokens = "3"
 
-// startFake runs the fake backend on addr (port 0: a free one), listing models, and
-// returns its root URL.
-func startFake(ctx context.Context, bin, addr, auth, key string, models ...string) (*exec.Cmd, string, error) {
-	cmd := exec.Command(bin, "-addr", addr, "-auth", auth, "-key", key, "-quiet",
-		"-cached-tokens", selfTestCachedTokens, "-models", strings.Join(models, ","))
+// selfTestRerankContext is the reranker fakes' context, in words: the oversize check's
+// document is longer.
+const selfTestRerankContext = "32768"
+
+// fakeFlags are the fake backend's flags playing kind's server for the run's chat
+// model, or with reranker for the reranker: rerank in that server's shape, and the
+// endpoints its model lacks answered as the server answers them — vLLM creates no
+// route for them, llama-server answers rerank with 501 unless started with
+// --reranking. Other kinds: none.
+func fakeFlags(kind string, reranker bool) []string {
+	switch {
+	case kind == kindVLLM && reranker:
+		return []string{"-rerank-shape", "vllm", "-rerank-context", selfTestRerankContext,
+			"-no-route", "chat/completions,completions,embeddings,messages,messages/count_tokens,responses"}
+	case kind == kindVLLM:
+		return []string{"-no-route", "rerank"}
+	case kind == kindLlamaServer && reranker:
+		return []string{"-rerank-shape", "llama-server", "-rerank-context", selfTestRerankContext}
+	case kind == kindLlamaServer:
+		return []string{"-not-supported", "rerank"}
+	}
+	return nil
+}
+
+// startFake runs the fake backend on addr (port 0: a free one), listing models, with
+// flags added, and returns its root URL.
+func startFake(ctx context.Context, bin, addr, auth, key string, models []string, flags ...string) (*exec.Cmd, string, error) {
+	args := append([]string{"-addr", addr, "-auth", auth, "-key", key, "-quiet",
+		"-cached-tokens", selfTestCachedTokens, "-models", strings.Join(models, ",")}, flags...)
+	cmd := exec.Command(bin, args...)
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, "", err

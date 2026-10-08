@@ -249,7 +249,7 @@ func (r *run) checkServiceTier() {
 }
 
 // checkNotServed: the APIs the kind's backend type does not serve are refused with
-// endpoint_not_served, each in its API's error shape.
+// endpoint_not_served, each in its API's error shape (rerank's is OpenAI's).
 func (r *run) checkNotServed() {
 	const name = "endpoint-not-served"
 	openAI := func(path string, body map[string]any) func() string {
@@ -286,6 +286,9 @@ func (r *run) checkNotServed() {
 	} else if !r.o.serves(epInputTokens) {
 		want = append(want, refusal{"/v1/responses/input_tokens",
 			openAI("/v1/responses/input_tokens", r.responsesBody(modelChat, false, nil))})
+	}
+	if !r.o.serves(epRerank) {
+		want = append(want, refusal{"/v1/rerank", openAI("/v1/rerank", rerankBody(modelChat, relevanceDocuments))})
 	}
 	if len(want) == 0 {
 		r.skip(name, r.o.kind+" serves every endpoint the kit checks")

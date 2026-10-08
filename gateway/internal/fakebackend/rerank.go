@@ -2,6 +2,7 @@ package fakebackend
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -36,8 +37,10 @@ type rerankResult struct {
 // the query's words it holds, so a relevant document outranks an irrelevant one; ties
 // keep the documents' order. documents that is not a list is one document, as vLLM
 // reads it, and a document that is not a string scores 0 (llama-server refuses both;
-// the fake answers them in either shape).
-func writeRerank(w http.ResponseWriter, shape RerankShape, top map[string]json.RawMessage, model string, usage Usage, omitUsage bool) {
+// the fake answers them in either shape). With context above 0, a request holding a
+// pair — the query and one document — of more words than context is refused 400 in
+// shape's error.
+func writeRerank(w http.ResponseWriter, shape RerankShape, context int, top map[string]json.RawMessage, model string, usage Usage, omitUsage bool) {
 	var query string
 	_ = json.Unmarshal(top["query"], &query)
 	var documents []json.RawMessage
@@ -45,6 +48,14 @@ func writeRerank(w http.ResponseWriter, shape RerankShape, top map[string]json.R
 		documents = []json.RawMessage{raw}
 	}
 	queryWords := words(query)
+	for _, raw := range documents {
+		var text string
+		_ = json.Unmarshal(raw, &text)
+		if n := len(queryWords) + len(words(text)); context > 0 && n > context {
+			writeJSON(w, http.StatusBadRequest, rerankContextError(shape, n, context))
+			return
+		}
+	}
 	results := []rerankResult{}
 	for i, raw := range documents {
 		result := rerankResult{Index: i}
@@ -95,6 +106,25 @@ func writeRerank(w http.ResponseWriter, shape RerankShape, top map[string]json.R
 		answer["usage"] = usageBody(usage, rerankPath)
 	}
 	writeJSON(w, http.StatusOK, answer)
+}
+
+// rerankContextError is the server's refusal of a pair of n tokens in a context of
+// context tokens. vLLM: a validation error (vllm/renderers/params.py, the token length
+// check) in its OpenAI-shaped error, type BadRequestError and the status as code
+// (vllm/entrypoints/serve/exception_handling/error_response.py). llama-server: its
+// exceed_context_size_error, which carries both counts (tools/server/server-context.cpp
+// on a pair longer than a slot's context; server-task.cpp, the error's to_json).
+func rerankContextError(shape RerankShape, n, context int) map[string]any {
+	if shape == LlamaServerRerank {
+		return map[string]any{"error": map[string]any{"code": http.StatusBadRequest,
+			"message": fmt.Sprintf("request (%d tokens) exceeds the available context size (%d tokens), try increasing it", n, context),
+			"type":    "exceed_context_size_error", "n_prompt_tokens": n, "n_ctx": context}}
+	}
+	return map[string]any{"error": map[string]any{
+		"message": fmt.Sprintf("This model's maximum context length is %d tokens. However, you requested 0 output tokens "+
+			"and your prompt contains %d input tokens, for a total of %d tokens. Please reduce the length of the input "+
+			"prompt or the number of requested output tokens.", context, n, n),
+		"type": "BadRequestError", "param": "input_tokens", "code": http.StatusBadRequest}}
 }
 
 // words are text's words, lowercased.

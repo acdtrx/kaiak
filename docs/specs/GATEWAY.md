@@ -1482,9 +1482,12 @@ own, and a client sending repeats is broken either way.
   the pair must fit the model's context, and the backend refuses a longer one with
   a `400` the caller can act on — vLLM above `--max-model-len` (unless the request
   sets `truncate_prompt_tokens`), llama-server above a slot's context
-  (`exceed_context_size_error`) when its physical batch (`-ub`) holds a slot's
-  context; with a smaller batch llama-server answers `500` instead, read as the
-  backend failing (`docs/DEPLOYMENT.md` gives the flags). The body cap
+  (`exceed_context_size_error`). llama-server answers so for a causal reranker such
+  as Qwen3-Reranker from build b11223, which prefills its pair in chunks; before that
+  build, and for an encoder reranker on any build, a pair must fit one physical
+  batch (`-ub`), and a longer one answers `500` instead, read as the backend failing
+  (`tools/server/server-context.cpp`, `can_split`, `master` at b11514;
+  `docs/DEPLOYMENT.md`, Rerankers). The body cap
   (`max_request_body_bytes`) bounds a request's total text. Rejected: a per-document
   size cap in the gateway — the backend's check is exact (the pair in tokens, its
   template included) and its refusal says what to change, where the gateway's would

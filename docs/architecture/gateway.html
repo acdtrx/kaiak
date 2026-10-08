@@ -96,7 +96,7 @@ svg .band { stroke: none; }
 <h2>At a glance</h2>
 <ul>
   <li><strong>One static Go binary.</strong> Minimal third-party code, each module a dated ruling; no external services. <code>gateway/cmd/kaiak</code> builds the dependency graph and owns shutdown; every subsystem is a package under <code>gateway/internal/</code>, and Go's <code>internal/</code> visibility plus its ban on import cycles keep the boundaries.</li>
-  <li><strong>Two listeners.</strong> API on <code>:8080</code> (three client APIs: OpenAI's chat completions, completions, embeddings and models; Anthropic Messages; OpenAI Responses, stateless — each passed through only to backends that speak it) and admin on <code>:9090</code> (<code>/healthz</code>, <code>/readyz</code>, <code>/metrics</code>). Only the API port faces clients.</li>
+  <li><strong>Two listeners.</strong> API on <code>:8080</code> (four client APIs: OpenAI's chat completions, completions, embeddings and models; Anthropic Messages; OpenAI Responses, stateless; rerank, served by vLLM and llama-server — each passed through only to backends that speak it) and admin on <code>:9090</code> (<code>/healthz</code>, <code>/readyz</code>, <code>/metrics</code>). Only the API port faces clients.</li>
   <li><strong>Two config modes.</strong> <em>File mode</em> (<code>KAIAK_CONFIG_FILE</code>, reload on SIGHUP, limits kept locally) or <em>control-plane mode</em> (<code>KAIAK_CONTROL_URL</code> + <code>KAIAK_CONTROL_TOKEN</code>, config pushed live, usage and status reported back). The second is covered in <a href="control-plane.html">the integration page</a>.</li>
   <li><strong>Stateless.</strong> It writes nothing to disk. Usage not yet delivered waits in memory; the drain delivers it. File mode is for local and development use: its counts start from zero at every start.</li>
   <li><strong>Two hard fences.</strong> Only <code>provider</code> opens connections to model backends; only <code>control</code> talks to the control plane.</li>
@@ -320,7 +320,7 @@ svg .band { stroke: none; }
 <ul>
   <li><strong>Admission</strong> — refuses during a drain and while no config is in force, before anything is read.</li>
   <li><strong>Auth</strong> — hashes the key (<code>Authorization: Bearer</code>, or <code>x-api-key</code> when that header is absent), looks up key ID and its group (with the group's path up the tree), then counts the request against the key's concurrency limit.</li>
-  <li><strong>Inbound</strong> — reads the body under the per-request cap and the gateway-wide body budget, parses only the fields the gateway owns in the endpoint's client API (OpenAI, Messages or Responses) and keeps the raw bytes for passthrough; refuses tools the backend would run and, on Responses, the stateful fields; then the model-access check and the model's output limit, under that API's own key. Models carry no request defaults: the backends apply their own.</li>
+  <li><strong>Inbound</strong> — reads the body under the per-request cap and the gateway-wide body budget, parses only the fields the gateway owns in the endpoint's client API (OpenAI, Messages, Responses or Rerank) and keeps the raw bytes for passthrough; refuses tools the backend would run and, on Responses, the stateful fields; then the model-access check and the model's output limit, under that API's own key. Models carry no request defaults: the backends apply their own.</li>
   <li><strong>Limits</strong> — checks every scope on the key's path (global › each ancestor group › the key's group) and reserves input estimate + output limit.</li>
   <li><strong>Routing</strong> — picks the deployment with the fewest requests in flight among those with a closed circuit and a free backend slot; otherwise waits in the model's FIFO queue.</li>
   <li><strong>Accounting</strong> — opens the attempt's meter; the relay feeds it every event.</li>
@@ -519,11 +519,12 @@ svg .band { stroke: none; }
   <text x="465" y="48" text-anchor="middle" class="l">events relayed to the client, in the client's format</text>
 
   <!-- clients -->
-  <rect x="10" y="110" width="90" height="80" rx="8" class="ext"/>
+  <rect x="10" y="110" width="90" height="95" rx="8" class="ext"/>
   <text x="55" y="133" text-anchor="middle" class="t">Clients</text>
   <text x="55" y="150" text-anchor="middle" class="s">OpenAI</text>
   <text x="55" y="165" text-anchor="middle" class="s">Messages</text>
   <text x="55" y="180" text-anchor="middle" class="s">Responses</text>
+  <text x="55" y="195" text-anchor="middle" class="s">Rerank</text>
 
   <!-- 1 inbound -->
   <rect x="120" y="110" width="110" height="70" rx="8" class="hot"/>
@@ -615,7 +616,7 @@ svg .band { stroke: none; }
     <tr>
       <td>① Inbound formats</td>
       <td>One row per endpoint in <code>server</code>'s endpoint table (its output-limit keys, names, token counting), keyed by the <code>provider.Endpoint</code> whose path and client API format <code>provider</code> holds; per format: <code>server/inbound*.go</code> (owned fields), the error shape, the input estimate and usage readers in <code>accounting</code>, the stream format (completeness, model rewriting) in <code>provider</code></td>
-      <td>OpenAI (chat completions, completions, embeddings, models); Anthropic Messages (<code>/v1/messages</code>, <code>count_tokens</code>, Anthropic-shaped models list); OpenAI Responses, stateless (<code>/v1/responses</code>, <code>input_tokens</code>)</td>
+      <td>OpenAI (chat completions, completions, embeddings, models); Anthropic Messages (<code>/v1/messages</code>, <code>count_tokens</code>, Anthropic-shaped models list); OpenAI Responses, stateless (<code>/v1/responses</code>, <code>input_tokens</code>); Rerank (<code>/v1/rerank</code>, Jina's shape)</td>
       <td>Translation between client APIs, so a model is reachable from an API its backends do not speak (backlog). Stateful Responses stays out: a conversation store does not belong in the gateway.</td>
       <td>Parser for the owned fields (model, stream, output limit), the input estimate, errors in that API's shape, the meter reading that format's usage, and when its stream is whole.</td>
     </tr>
@@ -675,7 +676,7 @@ svg .band { stroke: none; }
 <h3>Client API × backend: passthrough only</h3>
 <p>A client API can meet a backend that speaks it or one that does not. The rule deciding the work is <strong>passthrough first</strong> (principle 4): when both sides speak the same API, the request is forwarded with the few edits the gateway owns. kaiak builds only that case (settled 2026-10-06): a request reaches only the deployments whose backend type serves its endpoint, and a model with none answers <code>400 endpoint_not_served</code>. Translation between APIs loses backend-specific fields and stays in the backlog until a client must reach a model whose backends do not speak its API.</p>
 <figure>
-<svg viewBox="0 0 960 330" role="img" aria-label="Client API against backend type: passthrough where both speak the same API (OpenAI on self-hosted, OpenAI, Azure and generic servers; Messages on self-hosted and Anthropic backends; Responses on self-hosted, OpenAI and Azure backends); every other pair would need translation, which is in the backlog.">
+<svg viewBox="0 0 960 410" role="img" aria-label="Client API against backend type: passthrough where both speak the same API (OpenAI on self-hosted, OpenAI, Azure and generic servers; Messages on self-hosted and Anthropic backends; Responses on self-hosted, OpenAI and Azure backends; rerank on self-hosted backends); every other pair would need translation, which is in the backlog, except rerank, which the other backends do not serve.">
   <text x="10" y="30" class="s">CLIENT SPEAKS ↓ · BACKEND TYPE →</text>
   <text x="285" y="62" text-anchor="middle" class="t">vLLM · llama-server</text>
   <text x="433" y="62" text-anchor="middle" class="t">OpenAI · Azure</text>
@@ -733,8 +734,17 @@ svg .band { stroke: none; }
   <rect x="807" y="240" width="140" height="66" rx="8" class="frame"/>
   <text x="877" y="268" text-anchor="middle" class="l">translate</text>
   <text x="877" y="286" text-anchor="middle" class="s">backlog</text>
+  <text x="200" y="348" text-anchor="end" class="t">Rerank</text>
+  <text x="200" y="366" text-anchor="end" class="s">/v1/rerank</text>
+  <rect x="215" y="320" width="140" height="66" rx="8" class="hot"/>
+  <text x="285" y="348" text-anchor="middle" class="la">passthrough</text>
+  <text x="285" y="366" text-anchor="middle" class="s">built</text>
+  <text x="433" y="356" text-anchor="middle" class="s">not served</text>
+  <text x="581" y="356" text-anchor="middle" class="s">not served</text>
+  <text x="729" y="356" text-anchor="middle" class="s">not served</text>
+  <text x="877" y="356" text-anchor="middle" class="s">not served</text>
 </svg>
-<figcaption>The diagonal of same-API pairs is built; every other cell is translation, in <code>docs/BACKLOG.md</code> (Messages ⇄ Chat Completions, Responses ⇄ Chat Completions, Bedrock). Token counting follows the servers: <code>count_tokens</code> on self-hosted and Anthropic types, Responses <code>input_tokens</code> on llama-server and OpenAI only (<code>docs/specs/GATEWAY.md</code>, Providers → Endpoint support). A provider returns events in the client's format, so a translating provider would convert on both sides and the pipeline would stay the same.</figcaption>
+<figcaption>The diagonal of same-API pairs is built; every other cell is translation, in <code>docs/BACKLOG.md</code> (Messages ⇄ Chat Completions, Responses ⇄ Chat Completions, Bedrock). Token counting follows the servers: <code>count_tokens</code> on self-hosted and Anthropic types, Responses <code>input_tokens</code> on llama-server and OpenAI only (<code>docs/specs/GATEWAY.md</code>, Providers → Endpoint support). Rerank has nothing to translate to: OpenAI, Azure OpenAI, Anthropic and Foundry have no rerank API, and <code>openai-compatible</code> keeps OpenAI's three endpoints. A provider returns events in the client's format, so a translating provider would convert on both sides and the pipeline would stay the same.</figcaption>
 </figure>
 
 <h3>Deferred improvements</h3>

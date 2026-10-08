@@ -360,20 +360,20 @@ default builder), `KAIAK_IMAGE_REPO` (required: the registry and namespace, e.g.
 
 ## Clients
 
-- **Three client APIs on the one API port** (`GATEWAY.md` → Client API): OpenAI's
+- **Four client APIs on the one API port** (`GATEWAY.md` → Client API): OpenAI's
   chat completions, completions, embeddings and models; Anthropic Messages
   (`/v1/messages`, `/v1/messages/count_tokens`, and `/v1/models` in Anthropic's shape
   when the request carries `anthropic-version`); OpenAI Responses (`/v1/responses`,
-  `/v1/responses/input_tokens`). One key works on all of them, as
-  `Authorization: Bearer` or `x-api-key`.
+  `/v1/responses/input_tokens`); rerank (`/v1/rerank`; Rerankers, below). One key
+  works on all of them, as `Authorization: Bearer` or `x-api-key`.
 - **Passthrough only** (settled 2026-10-06): a request reaches only the deployments
   whose backend type serves its endpoint (`GATEWAY.md` → Providers: Endpoint
   support); a model with none answers `400 endpoint_not_served`. So a Claude model on
   `anthropic` or `azure-anthropic` is reachable through Messages only, an OpenAI or
   Azure OpenAI model through OpenAI's endpoints and Responses, a vLLM or
-  llama-server model through all three. `/v1/models` lists each model's
+  llama-server model through all four. `/v1/models` lists each model's
   `endpoints`. Responses `input_tokens` is served by `llama-server` and `openai`
-  only.
+  only, rerank by `vllm` and `llama-server` only.
 - **Responses is stateless**: every request goes out with `store: false`, and
   `previous_response_id`, `conversation` and `background` are refused — clients
   send the whole conversation each turn. **Tools a backend would run** (web search,
@@ -387,10 +387,19 @@ default builder), `KAIAK_IMAGE_REPO` (required: the registry and namespace, e.g.
     `wire_api = "responses"`; if its requests are refused naming `web_search`, set
     **`web_search = "disabled"`** — its default may attach a hosted search tool,
     which is refused (not yet checked live against a custom provider).
-- **An older server version** that lacks an endpoint its type serves (vLLM before
-  `/v1/messages`) answers `502 upstream_endpoint_missing`: the request fails over to
-  another backend of the model, and the deployment keeps serving its other
-  endpoints (no circuit failure). Upgrade the server.
+- **A server that does not serve an endpoint its type serves** answers `502
+  upstream_endpoint_missing`: the request fails over to another deployment of the
+  model, and the deployment keeps serving its other endpoints (no circuit failure;
+  the gateway leaves it out for that endpoint for a probe interval and warns `the
+  deployment's server does not serve an endpoint its type serves`). Three causes
+  (`GATEWAY.md` → Providers: An endpoint missing from a server): the server's
+  version (vLLM before `/v1/messages`: upgrade it); the model it loaded — vLLM
+  creates its routes from it, so a chat request sent to a reranker or embedding
+  model, or a rerank request to a chat model, finds none; or its flags —
+  llama-server not started with `--reranking` (or `--embeddings`) answers rerank (or
+  embeddings) `501`. **A wrong `base_url` on a `vllm` backend** shows the same way —
+  the config-apply warning `the backend has no models list at its base_url` and the
+  endpoint-missing warning on its requests — not as an open circuit.
 
 ## Config for many hosts
 
@@ -407,7 +416,7 @@ the document (a script, or the control plane) rather than editing it by hand.
   only its own type carries that server's rules — and **the type decides which client
   APIs reach the model** (Clients, below): `openai-compatible` serves OpenAI's chat,
   completions and embeddings only, so a vLLM or llama-server host listed under it
-  loses Messages and Responses. `openai`
+  loses Messages, Responses and rerank. `openai`
   and `azure-openai` require `api_key_env` and **force the standard service tier**: a
   client's `service_tier` becomes `"default"` and every chat and Responses request
   carries it, so requests are billed at the standard rates `prices` holds. `vllm`, `llama-server`
@@ -430,8 +439,10 @@ the document (a script, or the control plane) rather than editing it by hand.
   Cloud backends usually need no cap. **A slot is one HTTP request, not one
   sequence**: a completions request with a prompt list, or `n`/`best_of` above 1,
   generates several sequences in the one slot — up to
-  `global.max_sequences_per_request` (default 16), and an embeddings request carries
-  up to `global.max_embedding_inputs` (default 2048) inputs. Size `max_in_flight`
+  `global.max_sequences_per_request` (default 16), an embeddings request carries
+  up to `global.max_embedding_inputs` (default 2048) inputs, and a rerank request
+  up to `global.max_rerank_documents` (default 1000) documents, each scored with the
+  query. Size `max_in_flight`
   with that in mind (below `--max-num-seqs` when clients batch), and keep the
   backend's own batch limits in place — vLLM's `--max-num-seqs` and
   `--max-num-batched-tokens`, llama-server's `--parallel` and `--batch-size` — as the
@@ -475,11 +486,13 @@ the document (a script, or the control plane) rather than editing it by hand.
   divided by the cap is how many maximum-size bodies a pod holds at once.
 - **`global.max_n`** (default 8): the largest `n`/`best_of` a request may ask for;
   the token reservation multiplies by it, so keep it low.
-- **`global.max_sequences_per_request`** (default 16) and
-  **`global.max_embedding_inputs`** (default 2048, OpenAI's own limit): what one
-  request may make a backend generate or embed in its one slot (`n` or `best_of` ×
-  a completion's prompts; an embeddings request's inputs), past them `400
-  invalid_value`. Raise them only as far as the backends' own batch limits allow.
+- **`global.max_sequences_per_request`** (default 16),
+  **`global.max_embedding_inputs`** (default 2048, OpenAI's own limit) and
+  **`global.max_rerank_documents`** (default 1000, the most Cohere's rerank API
+  recommends): what one request may make a backend generate, embed or score in its
+  one slot (`n` or `best_of` × a completion's prompts; an embeddings request's
+  inputs; a rerank request's documents), past them `400 invalid_value`. Raise them
+  only as far as the backends' own batch limits allow.
 - **`global.max_concurrent_requests_per_key`** (default 16): the most requests one
   key may have open at once on one gateway, past it `429
   concurrency_limit_exceeded`. Per gateway, so N replicas allow N × it. Raise it
@@ -567,6 +580,92 @@ the document (a script, or the control plane) rather than editing it by hand.
   update does not signal it, and the distroless image has no `kill` to exec. Use a
   rollout, or a sidecar sharing the process namespace that sends SIGHUP. (The sample
   control plane watches its ConfigMap itself.)
+
+## Rerankers
+
+- **`POST /v1/rerank` reaches `vllm` and `llama-server` backends only** (`GATEWAY.md`
+  → Providers: Endpoint support): OpenAI, Azure OpenAI, Anthropic and Foundry have
+  no rerank API, and `openai-compatible` keeps OpenAI's three endpoints. The request
+  is Jina's shape (`model`, `query`, `documents`, `top_n`, plus each server's own
+  fields, passed through), and the answer is the server's own: vLLM's carries each
+  document back, llama-server's only its index and score.
+- **A reranker gets a backend of its own on vLLM**: one vLLM process serves one
+  model, and a reranker's serves only the pooling endpoints (rerank among them), no
+  chat — deploy it on a backend entry for that process, as for an embeddings model.
+  llama-server's router mode can run a reranker beside chat models behind one
+  `base_url`, each model in its own process with its own flags (a preset with
+  `--reranking` for the reranker): the gateway learns per deployment which one
+  serves rerank.
+- **Usage and price**: the server reports `usage.prompt_tokens` — every pair, its
+  prompt template included — recorded as `tokens_in`, with no output; price a
+  reranker by `tokens_in`, as an embeddings model. Token limits check an estimate
+  first: the body, plus the query once more for each document beyond the first,
+  without the template (about 70 tokens per pair for Qwen3-Reranker); the reported
+  usage settles it.
+- **No cap on a document's size**: the server scores each document with the query,
+  and refuses a pair longer than the model's context with a `400` the gateway
+  relays to the caller (vLLM above `--max-model-len`, llama-server above a slot's
+  context). `max_request_body_bytes` bounds a request's text, and
+  `max_rerank_documents` (Config for many hosts) its documents.
+- **Serving Qwen3-Reranker on vLLM** (vLLM's `docs/models/pooling_models/scoring.md`
+  and `examples/pooling/score/qwen3_reranker_online.py`, alike in 0.30.0, 0.31.0 and
+  `main` on 2026-10-09):
+
+  ```sh
+  vllm serve Qwen/Qwen3-Reranker-8B --runner pooling \
+    --hf_overrides '{"architectures": ["Qwen3ForSequenceClassification"],"classifier_from_token": ["no", "yes"],"is_original_qwen3_reranker": true}' \
+    --chat-template <path>/qwen3_reranker.jinja
+  ```
+
+  - `--hf_overrides` turns the original checkpoint — a language model answering
+    "yes" or "no" — into the one-label classifier vLLM's rerank runs. A converted
+    `*-seq-cls` checkpoint (`tomaarsen/Qwen3-Reranker-0.6B-seq-cls`) needs none.
+  - `--chat-template` is the score template, the prompt each pair is scored in:
+    `examples/pooling/score/template/qwen3_reranker.jinja` from vLLM's repository, at
+    the tag of the vLLM you run. Without it vLLM joins query and document with no
+    prompt, and scores are worse (vLLM logs a warning at start).
+  - A request's `instruction` (vLLM's field, passed through) replaces the template's
+    default task, "Given a web search query, retrieve relevant passages that answer
+    the query".
+  - A pair longer than `--max-model-len` answers `400 BadRequestError`; a client can
+    send `truncate_prompt_tokens` or `max_tokens_per_doc` to have vLLM cut it
+    instead.
+- **Serving Qwen3-Reranker on llama-server** (llama.cpp's `tools/server/README.md`,
+  `common/arg.cpp`, `conversion/qwen.py` and `tools/server/`, `master` at build
+  b11514, 2026-10-08):
+  - **The GGUF**: convert the checkpoint with llama.cpp's `convert_hf_to_gguf.py`,
+    which recognises Qwen3-Reranker (by its model card or name) and writes what
+    llama-server needs — rank pooling, the "yes"/"no" classifier head and the rerank
+    prompt (`tokenizer.chat_template.rerank`), which llama-server fills with each
+    query and document. Nothing else to do; the task is fixed at the default above,
+    and llama-server reads no `instruction`. A GGUF made elsewhere may lack the
+    prompt: llama-server then scores the query and document joined without it, and
+    scores are worse. Check with `gguf-dump <file> | grep chat_template.rerank`
+    (`pip install gguf`).
+  - **Start it** with `--embedding --pooling rank --reranking` (`--reranking` turns
+    the other two on itself):
+
+    ```sh
+    llama-server -m qwen3-reranker-8b-q8_0.gguf --embedding --pooling rank --reranking -c 32768 -np 4
+    ```
+
+    Without them, rerank answers `501` (Clients: an endpoint missing). Each
+    document is scored with the query in one slot, whose context is `-c` ÷ `-np`
+    (8192 here): a longer pair answers `400 exceed_context_size_error`, relayed to
+    the caller.
+  - **Build b11223 or later.** From that build llama-server prefills a causal
+    reranker's pair (Qwen3-Reranker's) in chunks, like any prompt. Before it — and on
+    any build for an encoder reranker (BERT-style, such as bge-reranker-v2-m3) — a
+    pair must fit one physical batch, `-ub` (default 512 tokens): a longer one
+    answers `500 server_error` (`input (N tokens) is too large to process. increase
+    the physical batch size`), which the gateway reads as the backend failing —
+    retried, and counted toward the circuit, so long documents can open it for every
+    client. For an encoder reranker set `-ub` and `-b` to at least a slot's context;
+    a pair longer than `-ub` still answers `500`.
+- **Before go-live, run the live kit** with the reranker
+  (`docs/testing/LIVE-BACKENDS.md`, Reranker on a server of its own): it checks the
+  answer, the relevance order, the usage, the oversize refusal and the
+  endpoint-missing answers on the real server.
 
 ## Azure OpenAI
 
@@ -932,7 +1031,7 @@ before priced models are refused. Scale the 300 with the grace if you change it.
 | Running a config the control plane moved off | ticket | `max(kaiak_control_config_rejected) == 1` | 15m | A gateway rejected the control plane's current config and runs an earlier one — its status `last_rejection` says which and why. It still enforces its own limits on the control plane's totals; it clears when the gateway applies a later config or receives the one it runs again. |
 | Circuit open | ticket | `max by (kaiak_backend_id, kaiak_deployment_model) (kaiak_circuit_state{kaiak_circuit_state="open"}) == 1` | 5m | A deployment is out of rotation, its backend failing the probe; the model's other deployments carry its load (none left: No healthy deployment pages). A half-open circuit (the backend answers its probe; the next request is the trial) reads 0 here and 1 on `kaiak_circuit_state="half_open"`: a recovered deployment with no traffic stays half-open indefinitely and must not alert. |
 | Circuit flapping | ticket | `max by (kaiak_backend_id, kaiak_deployment_model) (increase(kaiak_circuit_transitions_total{kaiak_circuit_state="open"}[30m])) > 3` | — | Probes half-open it and trials fail (the host answers its models list but cannot serve), or its models list comes and goes (a failed probe re-opens a half-open circuit). |
-| Wrong model, path or credential | ticket | `sum by (kaiak_backend_id, kaiak_deployment_model, kaiak_attempt_outcome) (increase(kaiak_upstream_attempts_total{kaiak_attempt_outcome=~"model_missing\|path_missing\|endpoint_missing\|auth_failed"}[10m])) > 0` | — | A host serves another model than the config says, its `base_url` leads to no endpoint (`path_missing`: typically the API version path left out; the gateway also warns `the backend has no models list at its base_url` when the config is applied), its server version lacks an endpoint its type serves (`endpoint_missing`: upgrade it), or it refuses the gateway's key. |
+| Wrong model, path or credential | ticket | `sum by (kaiak_backend_id, kaiak_deployment_model, kaiak_attempt_outcome) (increase(kaiak_upstream_attempts_total{kaiak_attempt_outcome=~"model_missing\|path_missing\|endpoint_missing\|auth_failed"}[10m])) > 0` | — | A host serves another model than the config says, its `base_url` leads to no endpoint (`path_missing`: typically the API version path left out; the gateway also warns `the backend has no models list at its base_url` when the config is applied), its server does not serve an endpoint its type serves (`endpoint_missing`: an older version, a model that leaves it out — a chat request to a vLLM reranker —, or a server not started for it — llama-server without `--reranking`; on `vllm` also a wrong `base_url`, with the same warning at config apply), or it refuses the gateway's key. |
 | Backend failure rate | ticket | `sum by (kaiak_backend_id) (rate(kaiak_upstream_attempts_total{kaiak_attempt_outcome=~"unavailable\|timeout\|server_error\|broke_off"}[5m])) / sum by (kaiak_backend_id) (rate(kaiak_upstream_attempts_total[5m])) > 0.05 and sum by (kaiak_backend_id) (rate(kaiak_upstream_attempts_total[5m])) > 0.1` | 5m | A struggling host, before its circuit opens. The second clause needs about 30 attempts in 5 minutes, so one failed request on a quiet backend is not a 50% rate. On an Azure backend, `broke_off` or `timeout` from reasoning models means their stream timeouts are too short (Azure OpenAI). |
 | Deployment often cooling down | ticket | `max by (kaiak_backend_id, kaiak_deployment_model) (avg_over_time(kaiak_deployment_cooling_down[30m])) > 0.25` | — | The deployment answered `429` often enough to spend a quarter of the last 30 minutes cooling down: its quota (Azure tokens or requests per minute) is too small for its share of the traffic. Raise the quota, or deploy the model in another resource or region and list it (Azure OpenAI: quota). Clients see it only when every deployment of the model cools at once (`kaiak_errors_total{kaiak_error_class="upstream_rate_limited"}`). |
 | Queue rejections | ticket | `sum by (gen_ai_request_model) (rate(kaiak_queue_rejections_total[10m])) / sum by (gen_ai_request_model) (rate(http_server_request_duration_seconds_count[10m])) > 0.01` | 10m | Over 1% of a model's requests refused by its queue (`error_type="queue_full"` or `queue_timeout`) for 10 minutes: capacity. Compare `kaiak_backend_active_requests` with `kaiak_backend_active_requests_limit` across replicas (uneven shares), and the backends' own load. A burst that clears within minutes does not alert. |
@@ -1193,6 +1292,28 @@ Boot).
   - **The dependency rule changed** (`docs/TECH-STACK.md`, Dependencies): minimal,
     maintained dependencies that are clearly worth their cost, in place of none at
     all. The gateway still has no third-party dependency: this release adds none.
+- **Next release** (unreleased; protocol 5 and config format 5 unchanged):
+  - **Rerank is new**: `POST /v1/rerank` on `vllm` and `llama-server` backends
+    (Rerankers), with the usage operation `rerank` (`gen_ai_operation_name` on the
+    usage metrics, `gen_ai.operation.name` on the request line).
+  - **`global.max_rerank_documents`** (default 1000) is new and optional. A gateway
+    older than this release rejects a config that sets it — a schema error,
+    reported like any rejection, its running config kept: upgrade every gateway
+    before setting it.
+  - **An endpoint missing from a server is read from the model it loaded and its
+    flags too** (Clients): on `vllm`, every endpoint's route-missing answer is the
+    endpoint missing — chat, completions and embeddings included — so a chat
+    request to a reranker no longer counts toward the circuit; llama-server's `501`
+    on embeddings or rerank (not started for them) reads the same way, where it was
+    a backend `5xx`. **A wrong `base_url` on a `vllm` backend no longer opens its
+    circuit**: it shows as the config-apply warning and as `endpoint_missing`
+    attempts (the Wrong model, path or credential alert), where it was
+    `path_missing`. A missing endpoint is remembered per deployment, not per
+    backend, and a retry may go to another deployment on the same backend.
+  - **The warning's text changed**: `the deployment's server does not serve an
+    endpoint its type serves` (with `kaiak.deployment.model` and `kaiak.endpoint`),
+    once per probe interval and deployment, replaces `the backend's server lacks an
+    endpoint its type serves: an older version?` — update log alerts matching it.
 
 ## Images
 

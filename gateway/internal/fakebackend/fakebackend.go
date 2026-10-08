@@ -3,8 +3,10 @@
 // counting, and the models list (the gateway's probe) under /v1/ (the OpenAI and Anthropic layout),
 // /openai/v1/ (Azure OpenAI's) and /anthropic/v1/ (Claude in Foundry's), and rerank
 // under /v1/ alone (vLLM's and llama-server's: neither Azure API has one), in vLLM's
-// answer shape or llama-server's (SetRerankShape); it answers as scripted by the test —
-// a path it has no route for too (SetNoRoute) — and records every request it receives.
+// answer shape or llama-server's (SetRerankShape), refusing a pair longer than its
+// context (SetRerankContext); it answers as scripted by the test — a path it has no
+// route for (SetNoRoute) and an endpoint it was not started for (SetNotSupported) too —
+// and records every request it receives.
 // Test tooling only: nothing in the gateway binary imports it; cmd/fakebackend runs it
 // as a process for the e2e test and the live-test kit.
 package fakebackend
@@ -171,12 +173,16 @@ type Backend struct {
 	modelsStatus   int
 	models         []string
 	modelsRequests []*Request
-	// rerankShape is the server whose rerank answer the backend sends.
-	rerankShape RerankShape
+	// rerankShape is the server whose rerank answer the backend sends; rerankContext
+	// is the most words a rerank pair may hold (0: no limit).
+	rerankShape   RerankShape
+	rerankContext int
 	// noRoute is the body of the 404 answering a path the backend has no route for
 	// ("": an OpenAI-shaped error); unrouted are the endpoints it has no route for.
 	noRoute  string
 	unrouted []string
+	// notSupported are the endpoints the backend answers 501 not_supported_error.
+	notSupported []string
 }
 
 // maxQueuedArrivals bounds requests queued for NextRequest; a test that never reads
@@ -269,6 +275,27 @@ func (b *Backend) SetNoRoute(body string, endpoints ...string) {
 	b.noRoute, b.unrouted = body, endpoints
 }
 
+// SetRerankContext scripts, from now on, the context a rerank pair must fit: the most
+// words a query and one document may hold together (0: no limit). A request with a
+// longer pair is refused 400 in its server's error (RerankShape), as both servers
+// refuse a pair longer than the model's context.
+func (b *Backend) SetRerankContext(words int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.rerankContext = words
+}
+
+// SetNotSupported scripts, from now on, the endpoints (paths below the version
+// prefix, as "rerank") the backend answers as llama-server answers one it was not
+// started for — embeddings without --embeddings, rerank without --reranking: 501, its
+// error type not_supported_error (tools/server/server-common.cpp,
+// format_error_response). The credential is checked first.
+func (b *Backend) SetNotSupported(endpoints ...string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.notSupported = endpoints
+}
+
 // ModelsRequests returns every request for the models list so far, in arrival
 // order. They are not in Requests or Arrivals.
 func (b *Backend) ModelsRequests() []*Request {
@@ -349,8 +376,8 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 	b.mu.Lock()
 	b.received = append(b.received, req)
 	reply := b.reply
-	rerankShape := b.rerankShape
-	noRoute, unrouted := b.noRoute, b.unrouted
+	rerankShape, rerankContext := b.rerankShape, b.rerankContext
+	noRoute, unrouted, notSupported := b.noRoute, b.unrouted, b.notSupported
 	if len(b.queued) > 0 {
 		reply = b.queued[0]
 		b.queued = b.queued[1:]
@@ -385,6 +412,12 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 
 	if reply.RequireHeader != "" && r.Header.Get(reply.RequireHeader) != reply.RequireValue {
 		writeJSON(w, http.StatusUnauthorized, errorAnswer("missing or wrong "+reply.RequireHeader+" header"))
+		return
+	}
+	if slices.Contains(notSupported, endpoint) {
+		writeJSON(w, http.StatusNotImplemented, map[string]any{"error": map[string]any{"code": http.StatusNotImplemented,
+			"message": "This server does not support " + endpoint + ". Start it with the flag that enables it",
+			"type":    "not_supported_error"}})
 		return
 	}
 	for name, value := range reply.Header {
@@ -481,7 +514,7 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 		b.writeEmbeddings(w, params.model, usage, reply.OmitUsage)
 	case endpoint == rerankPath:
 		// Neither server reads stream on rerank: the answer is a JSON body either way.
-		writeRerank(w, rerankShape, top, params.model, usage, reply.OmitUsage)
+		writeRerank(w, rerankShape, rerankContext, top, params.model, usage, reply.OmitUsage)
 	case params.stream:
 		b.writeStream(w, r, req, reply, endpoint, params.model, chunks, finish, usage, params.includeUsage && !reply.OmitUsage)
 	default:

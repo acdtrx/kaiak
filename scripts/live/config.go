@@ -19,15 +19,23 @@ const (
 	modelCapped = "live-capped" // output-limit ceiling -ceiling
 	modelRPM    = "live-rpm"    // the rate-limit checks' model, sent with the metered key
 	modelEmbed  = "live-embed"  // only with -embeddings-model (whatever its name on the backend)
+	modelRerank = "live-rerank" // only with -rerank-base-url on a kind serving rerank
 )
 
 // Backend IDs in the generated config: the -base-url backend, the -base-url-2
-// backend when there is one, and the -embeddings-base-url backend when there is one.
+// backend when there is one, the -embeddings-base-url backend and the
+// -rerank-base-url backend when there are.
 const (
 	backendFirst  = "live"
 	backendSecond = "live-2"
 	backendEmbed  = "live-embeddings"
+	backendRerank = "live-reranker"
 )
+
+// rerankDocumentsCap is global.max_rerank_documents with a reranker: above every
+// rerank request the checks send but the cap check's, so that one is refused before
+// the backend.
+const rerankDocumentsCap = 4
 
 // Circuit settings with two backends: a stopped backend is out of rotation after two
 // failed requests and probed every second, so the failover check runs in seconds.
@@ -37,10 +45,11 @@ const (
 )
 
 // buildConfig is the config document for one run: one backend (two with
-// -base-url-2, each deploying the chat models; a third with -embeddings-base-url,
-// deploying the embeddings model), the models above, and two groups with every model
-// allowed: live holds the checks' key (hash), live-metered the rate-limit checks' key
-// (meteredHash) under 1 request a minute — a limit counts every request of its group.
+// -base-url-2, each deploying the chat models; one more with -embeddings-base-url,
+// deploying the embeddings model, and with -rerank-base-url, deploying the reranker),
+// the models above, and two groups with every model allowed: live holds the checks'
+// key (hash), live-metered the rate-limit checks' key (meteredHash) under 1 request a
+// minute — a limit counts every request of its group.
 func buildConfig(o options, hash, meteredHash string) ([]byte, error) {
 	timeout := o.requestTimeout.Milliseconds()
 	backendOf := func(backendType, baseURL, apiKeyEnv string) map[string]any {
@@ -104,6 +113,19 @@ func buildConfig(o options, hash, meteredHash string) ([]byte, error) {
 			embed["prices"] = prices
 		}
 		models[modelEmbed] = embed
+	}
+	if o.reranker() {
+		backends[backendRerank] = backendOf(o.kind, o.rerankBaseURL, o.rerankAPIKeyEnv)
+		rerank := map[string]any{
+			"deployments": []any{map[string]any{"backend": backendRerank, "model": o.rerankModel}},
+			"metadata": map[string]any{"context_length": 8192,
+				"capabilities": map[string]any{"streaming": false, "tools": false, "vision": false, "reasoning": false}},
+		}
+		if prices != nil {
+			rerank["prices"] = prices
+		}
+		models[modelRerank] = rerank
+		global["max_rerank_documents"] = rerankDocumentsCap
 	}
 
 	return json.MarshalIndent(map[string]any{

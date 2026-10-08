@@ -8,9 +8,12 @@
 // run (load spread, the concurrency cap, and with -check-failover a failover the user
 // drives by stopping and restarting the second backend). With -embeddings-base-url
 // the embeddings model is served by a server of its own (openai-compatible), a third
-// backend in the config. -self-test runs every check against the fake backend
-// standing in for each kind, and the two-backend checks against two fakes, stopping
-// and restarting the second itself, with a third fake as the embeddings server.
+// backend in the config. With -rerank-base-url a reranker server of the run's kind
+// (vllm or llama-server) serves rerank, and the wrong-endpoint checks send each model
+// the endpoint its server lacks. -self-test runs every check against the fake backend
+// standing in for each kind (and a second fake as the reranker server where the kind
+// serves rerank), and the two-backend checks against two fakes, stopping and
+// restarting the second itself, with a third fake as the embeddings server.
 //
 // Standard library only, and a module of its own: nothing here is part of the
 // gateway. Runbook: docs/testing/LIVE-BACKENDS.md.
@@ -53,12 +56,17 @@ type options struct {
 	// embeddings model, authenticated by embeddingsAPIKeyEnv ("" = no key).
 	embeddingsBaseURL   string
 	embeddingsAPIKeyEnv string
-	apiKeyEnv           string
-	maxOutput           int
-	ceiling             int
-	contextLength       int
-	priceIn             float64
-	priceOut            float64
+	// rerankBaseURL, when set, is a reranker server of the run's kind serving
+	// rerankModel, authenticated by rerankAPIKeyEnv ("" = no key).
+	rerankBaseURL   string
+	rerankModel     string
+	rerankAPIKeyEnv string
+	apiKeyEnv       string
+	maxOutput       int
+	ceiling         int
+	contextLength   int
+	priceIn         float64
+	priceOut        float64
 	// chatParams are extra parameters added to every chat request the kit sends (the
 	// gateway sets none of its own); parsed from -chat-params by resolve.
 	chatParams    string
@@ -91,6 +99,10 @@ func (o options) twoBackends() bool { return o.baseURL2 != "" }
 // embeddingsServer: the embeddings model has a server of its own.
 func (o options) embeddingsServer() bool { return o.embeddingsBaseURL != "" }
 
+// reranker: a reranker server is given and the run's kind serves rerank — the
+// config deploys live-rerank there.
+func (o options) reranker() bool { return o.rerankBaseURL != "" && o.serves(epRerank) }
+
 // label names the run's files and gateway instance.
 func (o options) label() string {
 	if o.twoBackends() {
@@ -119,6 +131,9 @@ func main() {
 	flag.StringVar(&o.embeddingsModel, "embeddings-model", os.Getenv("LIVE_EMBEDDINGS_MODEL"), "embeddings model name on the backend, optional (env LIVE_EMBEDDINGS_MODEL)")
 	flag.StringVar(&o.embeddingsBaseURL, "embeddings-base-url", os.Getenv("LIVE_EMBEDDINGS_BASE_URL"), "a separate openai-compatible server for -embeddings-model (env LIVE_EMBEDDINGS_BASE_URL), e.g. http://host:8003/v1; default: -base-url serves it")
 	flag.StringVar(&o.embeddingsAPIKeyEnv, "embeddings-api-key-env", "", "with -embeddings-base-url: name of the environment variable holding that server's key (default: none)")
+	flag.StringVar(&o.rerankBaseURL, "rerank-base-url", os.Getenv("LIVE_RERANK_BASE_URL"), "a reranker server of the run's kind, vllm or llama-server, for -rerank-model (env LIVE_RERANK_BASE_URL), e.g. http://host:8004/v1: the rerank checks")
+	flag.StringVar(&o.rerankModel, "rerank-model", os.Getenv("LIVE_RERANK_MODEL"), "with -rerank-base-url: the reranker's model name on that server (env LIVE_RERANK_MODEL)")
+	flag.StringVar(&o.rerankAPIKeyEnv, "rerank-api-key-env", "", "with -rerank-base-url: name of the environment variable holding that server's key (default: none)")
 	flag.StringVar(&o.apiKeyEnv, "api-key-env", "-", "name of the environment variable holding the backend key (default: none for vllm and llama-server, OPENAI_API_KEY, AZURE_OPENAI_API_KEY, ANTHROPIC_API_KEY, ANTHROPIC_FOUNDRY_API_KEY)")
 	flag.IntVar(&o.maxOutput, "max-output", 1024, "output-limit default and ceiling of the chat model (raise it for reasoning models)")
 	flag.IntVar(&o.ceiling, "ceiling", 16, "output-limit ceiling of the model the ceiling check uses")
@@ -244,6 +259,20 @@ func resolve(o *options) error {
 			return fmt.Errorf("%s is not set: export the embeddings server's key there", o.embeddingsAPIKeyEnv)
 		}
 	}
+	if (o.rerankBaseURL == "") != (o.rerankModel == "") {
+		return errors.New("-rerank-base-url and -rerank-model go together: the reranker server and the model name on it")
+	}
+	if o.reranker() {
+		o.rerankBaseURL = normalizeBaseURL(o.kind, o.rerankBaseURL)
+	}
+	if o.rerankAPIKeyEnv != "" {
+		if o.rerankBaseURL == "" {
+			return errors.New("-rerank-api-key-env needs -rerank-base-url")
+		}
+		if os.Getenv(o.rerankAPIKeyEnv) == "" {
+			return fmt.Errorf("%s is not set: export the reranker server's key there", o.rerankAPIKeyEnv)
+		}
+	}
 	if o.model == "" {
 		return errors.New("no model: set -model or LIVE_MODEL (for Azure OpenAI and Foundry, the deployment name)")
 	}
@@ -295,6 +324,9 @@ func runKind(ctx context.Context, o options, ws *workspace, extraEnv []string) e
 		if o.embeddingsServer() {
 			fmt.Printf(" on %s", o.embeddingsBaseURL)
 		}
+	}
+	if o.reranker() {
+		fmt.Printf(", reranker %s on %s", o.rerankModel, o.rerankBaseURL)
 	}
 	fmt.Println()
 

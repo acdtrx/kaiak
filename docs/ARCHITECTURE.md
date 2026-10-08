@@ -24,7 +24,7 @@
 
 ```mermaid
 flowchart LR
-    client[Clients<br/>OpenAI chat/completions/embeddings,<br/>Anthropic Messages, OpenAI Responses] -->|requests, SSE streams| gw[kaiak gateway<br/>N replicas]
+    client[Clients<br/>OpenAI chat/completions/embeddings,<br/>Anthropic Messages, OpenAI Responses,<br/>rerank] -->|requests, SSE streams| gw[kaiak gateway<br/>N replicas]
     gw -->|passthrough: the same API<br/>at both ends| be[Backends<br/>vLLM, llama-server, SGLang,<br/>OpenAI, Azure OpenAI,<br/>Anthropic, Claude in Foundry]
     cp[Control plane<br/>kaiak-control] -->|SSE stream: current config,<br/>usage totals, live count| gw
     gw -->|usage records, status| cp
@@ -35,11 +35,12 @@ flowchart LR
 ```
 
 - Client → gateway → backend is the only request path. A request reaches only a
-  backend that speaks its client API natively (Anthropic Messages, OpenAI Responses or
-  OpenAI's chat, completions and embeddings): the gateway passes it through with the
-  edits it owns and never translates between APIs (settled 2026-10-06; translation is
-  in `docs/BACKLOG.md`). Each backend type fixes the endpoints it serves
-  (`docs/specs/GATEWAY.md`, Providers → Endpoint support).
+  backend that speaks its client API natively (Anthropic Messages, OpenAI Responses,
+  OpenAI's chat, completions and embeddings, or rerank — vLLM's and llama-server's):
+  the gateway passes it through with the edits it owns and never translates between
+  APIs (settled 2026-10-06; translation is in `docs/BACKLOG.md`). Each backend type
+  fixes the endpoints it serves (`docs/specs/GATEWAY.md`, Providers → Endpoint
+  support).
 - The control plane feeds the gateways config and receives usage and status in the
   background; a gateway with no control plane reachable keeps serving (file mode; in
   control-plane mode once booted, or from the seed config at boot) — except models
@@ -148,7 +149,7 @@ enforce the boundaries.
   client's format; `server` relays them to the client, and observers (accounting)
   read them on the way.
 - `accounting` — meters each attempt's response as it is relayed — reading usage as
-  each client API reports it (OpenAI, Messages, Responses) into the same units —, settles usage and
+  each client API reports it (OpenAI, Messages, Responses, Rerank) into the same units —, settles usage and
   cost into usage records (each naming the key's group path) — one per routed
   request, plus one per retried attempt whose request reached the backend and got
   no answer — clamps them to the
@@ -252,11 +253,14 @@ enforce the boundaries.
 - `fakebackend` — a test backend speaking OpenAI's chat, completions and embeddings,
   Anthropic Messages and OpenAI Responses (with recorded answers of real servers in
   `captures/` for tests that need their exact bytes), and rerank in vLLM's answer
-  shape or llama-server's, that can stream, stall, hang, cut,
-  fail (also for a scripted sequence of requests) and omit usage on demand, serves a
-  models list whose status the test sets, and records every request it receives; used by tests
-  only. `fakebackend/cmd/fakebackend` runs it as a process (listen address, behavior
-  profile, credential check) for scripts and the live-test kit's self-test.
+  shape or llama-server's (refusing a pair longer than its context in that server's
+  error), that can stream, stall, hang, cut, lack an endpoint as vLLM or llama-server
+  lacks one, fail (also for a scripted sequence of requests) and omit usage on demand,
+  serves a models list whose status the test sets, and records every request it
+  receives; used by tests only. `fakebackend/cmd/fakebackend` runs it as a process
+  (listen address, behavior profile, credential check, the server whose rerank
+  answers it plays and the endpoints that server lacks) for scripts and the live-test
+  kit's self-test.
 - `fakecontrol` — a control plane for tests: the stream of the current config the
   test publishes, the request checks, and scripted events, outages, restarts and
   protocol versions; takes usage batches (de-duplicated by batch ID as the protocol

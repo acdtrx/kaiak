@@ -5,7 +5,8 @@
 // /anthropic/v1/ (Claude in Foundry's), prints
 // "listening <url>" on stdout once it accepts connections, and stops on SIGINT or
 // SIGTERM. Answers honor max_completion_tokens / max_tokens (finish_reason "length"
-// when they cut the answer short).
+// when they cut the answer short). Rerank answers in vLLM's shape or llama-server's;
+// the server played can lack endpoints the way each server lacks them.
 package main
 
 import (
@@ -37,10 +38,21 @@ func main() {
 	cachedTokens := flag.Int("cached-tokens", 0, "report this many of the 7 prompt tokens as read from the cache (0-7)")
 	models := flag.String("models", strings.Join(fakebackend.DefaultModels, ","),
 		"comma-separated model IDs the models list lists (completions serve any model name)")
+	rerankShape := flag.String("rerank-shape", "vllm", "the server whose rerank answers and errors the backend sends: vllm, llama-server")
+	rerankContext := flag.Int("rerank-context", 0, "the most words a rerank query and one document may hold together; a longer pair is refused 400 in the server's error (0: no limit)")
+	noRoute := flag.String("no-route", "", `comma-separated endpoints (paths below /v1/, e.g. chat/completions) the server has no route for, answered as vLLM answers one: 404 {"detail":"Not Found"} (a vLLM reranker has no chat route, a vLLM chat model no rerank route)`)
+	notSupported := flag.String("not-supported", "", "comma-separated endpoints answered as llama-server answers one it was not started for: 501 not_supported_error (rerank without --reranking, embeddings without --embeddings)")
 	flag.Parse()
 
 	if *cachedTokens < 0 || *cachedTokens > 7 {
 		log.Fatalf("fakebackend: -cached-tokens %d: want 0 to 7", *cachedTokens)
+	}
+	if *rerankContext < 0 {
+		log.Fatalf("fakebackend: -rerank-context %d: want 0 or more", *rerankContext)
+	}
+	shape, ok := map[string]fakebackend.RerankShape{"vllm": fakebackend.VLLMRerank, "llama-server": fakebackend.LlamaServerRerank}[*rerankShape]
+	if !ok {
+		log.Fatalf("fakebackend: unknown -rerank-shape %q", *rerankShape)
 	}
 	reply := fakebackend.Reply{Chunks: words(answer), HonorMaxTokens: true, CachedTokens: *cachedTokens}
 	switch *profile {
@@ -70,6 +82,14 @@ func main() {
 	}
 	backend.SetReply(reply)
 	backend.SetModels(strings.Split(*models, ",")...)
+	backend.SetRerankShape(shape)
+	backend.SetRerankContext(*rerankContext)
+	if *noRoute != "" {
+		backend.SetNoRoute(`{"detail":"Not Found"}`, strings.Split(*noRoute, ",")...)
+	}
+	if *notSupported != "" {
+		backend.SetNotSupported(strings.Split(*notSupported, ",")...)
+	}
 	fmt.Println("listening", backend.URL())
 
 	stop := make(chan os.Signal, 1)
