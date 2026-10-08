@@ -309,16 +309,13 @@ type backendModule interface {
 	probe(ctx context.Context) (serves func(model string) bool, err error)
 }
 
-// backendKind is one backend type: the endpoints its server serves, whether it has
-// a models list, its GenAI provider name, and how its module is built over a
-// backend's connection pool and credential.
+// backendKind is one backend type: the endpoints its server serves, its GenAI
+// provider name, and how its module is built over a backend's connection pool and
+// credential.
 type backendKind struct {
 	// serves are the endpoints the type's server serves (docs/specs/GATEWAY.md,
 	// Providers → Endpoint support).
 	serves []Endpoint
-	// listsModels: the server has a models list the config-time model check can read
-	// (docs/specs/GATEWAY.md, Providers → Probe and model check for the new types).
-	listsModels bool
 	// providerName is gen_ai.provider.name for the type: the GenAI convention's
 	// well-known value where one fits, else "" — the self-hosted types have none, and
 	// kaiak.backend.type names every type. Claude in Foundry is Anthropic's service and
@@ -330,13 +327,13 @@ type backendKind struct {
 // kinds holds every backend type the config schema admits: the one place a type is
 // named.
 var kinds = map[config.BackendType]backendKind{
-	config.BackendOpenAI:           {serves: openAIEndpoints, listsModels: true, providerName: "openai", build: newOpenAI},
-	config.BackendAzureOpenAI:      {serves: azureOpenAIEndpoints, listsModels: true, providerName: "azure.ai.openai", build: newAzureOpenAI},
-	config.BackendVLLM:             {serves: vLLMEndpoints, listsModels: true, build: newVLLM},
-	config.BackendLlamaServer:      {serves: llamaServerEndpoints, listsModels: true, build: newLlamaServer},
-	config.BackendOpenAICompatible: {serves: openAICompatibleEndpoints, listsModels: true, build: newOpenAICompatible},
-	config.BackendAnthropic:        {serves: anthropicEndpoints, listsModels: true, providerName: "anthropic", build: newAnthropic},
-	config.BackendAzureAnthropic:   {serves: azureAnthropicEndpoints, listsModels: false, providerName: "anthropic", build: newAzureAnthropic},
+	config.BackendOpenAI:           {serves: openAIEndpoints, providerName: "openai", build: newOpenAI},
+	config.BackendAzureOpenAI:      {serves: azureOpenAIEndpoints, providerName: "azure.ai.openai", build: newAzureOpenAI},
+	config.BackendVLLM:             {serves: vLLMEndpoints, build: newVLLM},
+	config.BackendLlamaServer:      {serves: llamaServerEndpoints, build: newLlamaServer},
+	config.BackendOpenAICompatible: {serves: openAICompatibleEndpoints, build: newOpenAICompatible},
+	config.BackendAnthropic:        {serves: anthropicEndpoints, providerName: "anthropic", build: newAnthropic},
+	config.BackendAzureAnthropic:   {serves: azureAnthropicEndpoints, providerName: "anthropic", build: newAzureAnthropic},
 }
 
 // kindOf is type t's kind. The config schema admits only the types in kinds, so
@@ -354,12 +351,6 @@ func kindOf(t config.BackendType) backendKind {
 // Endpoint support).
 func Serves(t config.BackendType, e Endpoint) bool {
 	return slices.Contains(kindOf(t).serves, e)
-}
-
-// ListsModels reports whether backends of type t have a models list, which the
-// config-time model check reads; one without (azure-anthropic) is not checked.
-func ListsModels(t config.BackendType) bool {
-	return kindOf(t).listsModels
 }
 
 // ProviderName is gen_ai.provider.name for backends of type t; "" for a type with no
@@ -395,8 +386,10 @@ func (r *Registry) credential(b *config.Backend) string {
 // reliability): its module asks for its models list with the gateway's credential,
 // over b's connection pool, bounded by b's connect timeout plus probeReadTimeout. A
 // 2xx answer succeeds; serves reports whether a backend-side model name is served
-// there, as far as the backend's list says. The error may name the backend's address,
-// never the credential nor text the backend sent.
+// there, as far as the backend's list says, and is nil when the backend cannot tell
+// (its type has no list naming what requests carry): every name counts as served. The
+// error may name the backend's address, never the credential nor text the backend
+// sent.
 func (r *Registry) Probe(ctx context.Context, b *config.Backend) (serves func(model string) bool, err error) {
 	return r.module(b).probe(ctx)
 }

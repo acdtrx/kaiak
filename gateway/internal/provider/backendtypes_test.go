@@ -66,14 +66,16 @@ func TestBackendTypeFixtures(t *testing.T) {
 			b := &config.Backend{ID: "b", Type: config.BackendType(typ), BaseURL: fixture.BaseURL, ConnectTimeout: time.Second}
 			transport := &recordingTransport{}
 			module := kindOf(b.Type).build(b, &http.Client{Transport: transport}, fixture.Credential)
-			if _, err := module.probe(context.Background()); err != nil {
+			serves, err := module.probe(context.Background())
+			if err != nil {
 				t.Fatalf("probe: %v", err)
 			}
 
-			if ListsModels(b.Type) != (fixture.ModelsList != nil) {
-				t.Errorf("ListsModels = %v, the fixture says the type lists models: %v", ListsModels(b.Type), fixture.ModelsList != nil)
-			}
 			if fixture.ModelsList == nil {
+				// A type with no models list cannot tell which models it serves.
+				if serves != nil {
+					t.Error("the type has no models list, but the probe reports which models it serves")
+				}
 				if len(transport.requests) != 0 {
 					t.Errorf("the type has no models list, but the probe sent %d requests", len(transport.requests))
 				}

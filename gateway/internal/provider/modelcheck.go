@@ -1,4 +1,4 @@
-package routing
+package provider
 
 import (
 	"context"
@@ -17,23 +17,27 @@ const modelCheckParallel = 8
 // lists the deployment's model (docs/specs/GATEWAY.md, Providers: wrong model on a
 // host, wrong path to a host): one probe per backend, in the background, a warning
 // per deployment whose model is missing, per backend whose models list is not where
-// its base_url says and per backend that does not answer. A backend whose type has
-// no models list (azure-anthropic) is not probed: an info line says so. It never
-// delays or refuses a config; a newer config replaces one not yet checked.
+// its base_url says and per backend that does not answer. A backend whose probe
+// cannot tell which models it serves (the Azure types) gets an info line saying so.
+// It never delays or refuses a config; a newer config replaces one not yet checked.
 type ModelChecker struct {
-	probe       ProbeFunc
-	listsModels func(config.BackendType) bool
-	logger      *slog.Logger
+	// probe is Registry.Probe outside tests.
+	probe  func(ctx context.Context, b *config.Backend) (serves func(model string) bool, err error)
+	logger *slog.Logger
 
 	mu      sync.Mutex
 	pending *config.Snapshot
 	wake    chan struct{}
 }
 
-// NewModelChecker returns a checker probing with probe the backends whose type
-// listsModels says has a models list, and warning on logger.
-func NewModelChecker(probe ProbeFunc, listsModels func(config.BackendType) bool, logger *slog.Logger) *ModelChecker {
-	return &ModelChecker{probe: probe, listsModels: listsModels, logger: logger, wake: make(chan struct{}, 1)}
+// NewModelChecker returns a checker probing backends through r and warning on
+// logger.
+func NewModelChecker(r *Registry, logger *slog.Logger) *ModelChecker {
+	return newModelChecker(r.Probe, logger)
+}
+
+func newModelChecker(probe func(context.Context, *config.Backend) (func(string) bool, error), logger *slog.Logger) *ModelChecker {
+	return &ModelChecker{probe: probe, logger: logger, wake: make(chan struct{}, 1)}
 }
 
 // Check asks for s to be checked; it returns at once.
@@ -66,14 +70,6 @@ func (c *ModelChecker) Run(ctx context.Context) {
 	}
 }
 
-// pathMissing is a probe error saying the backend answered 404 for its models list
-// (provider.PathMissingError): the server is up, and the backend's base_url is most
-// likely wrong. BaseURLHint says what base_url should hold for the backend's type.
-type pathMissing interface {
-	error
-	BaseURLHint() string
-}
-
 // check probes every backend of s with deployments, at most modelCheckParallel at
 // once, and warns for each deployment whose model its backend does not list.
 func (c *ModelChecker) check(ctx context.Context, s *config.Snapshot) {
@@ -89,11 +85,6 @@ func (c *ModelChecker) check(ctx context.Context, s *config.Snapshot) {
 	var wg sync.WaitGroup
 	for id, names := range models {
 		b := s.Backends[id]
-		if !c.listsModels(b.Type) {
-			c.logger.Info("model check not available for this backend type", "kaiak.backend.id", id,
-				"kaiak.backend.type", string(b.Type))
-			continue
-		}
 		wg.Go(func() {
 			select {
 			case slots <- struct{}{}:
@@ -105,15 +96,20 @@ func (c *ModelChecker) check(ctx context.Context, s *config.Snapshot) {
 			if ctx.Err() != nil {
 				return
 			}
-			if pathErr, ok := errors.AsType[pathMissing](err); ok {
+			if pathErr, ok := errors.AsType[*pathMissingError](err); ok {
 				c.logger.Warn("the backend has no models list at its base_url", "kaiak.backend.id", id, "kaiak.backend.base_url", b.BaseURL,
-					"kaiak.backend.base_url_hint", pathErr.BaseURLHint())
+					"kaiak.backend.base_url_hint", pathErr.hint)
 				return
 			}
 			if err != nil {
 				// A warning: config apply is infrequent, and a backend out of reach
 				// then (often a mistyped host) is what the operator needs to see.
 				c.logger.Warn("model check skipped: the backend did not answer", "kaiak.backend.id", id, "exception.message", err.Error())
+				return
+			}
+			if serves == nil {
+				c.logger.Info("model check not available for this backend type", "kaiak.backend.id", id,
+					"kaiak.backend.type", string(b.Type))
 				return
 			}
 			slices.Sort(names)

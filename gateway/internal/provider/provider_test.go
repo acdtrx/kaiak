@@ -125,7 +125,7 @@ func TestProbeGetsTheModelsListWithTheBackendCredential(t *testing.T) {
 
 // The probe reads which models the backend lists (H8): a deployment is served only
 // when its backend-side model name is among them. Azure's list names models, not the
-// deployments requests use, so it is not checked.
+// deployments requests use, so its probe cannot tell.
 func TestProbeReportsTheListedModels(t *testing.T) {
 	fb := fakebackend.New()
 	defer fb.Close()
@@ -144,8 +144,8 @@ func TestProbeReportsTheListedModels(t *testing.T) {
 	}
 	azure := &config.Backend{ID: "azure", Type: config.BackendAzureOpenAI, BaseURL: fb.URL(), ConnectTimeout: time.Second}
 	serves, err = r.Probe(context.Background(), azure)
-	if err != nil || !serves("gpt-4o-deploy") {
-		t.Errorf("azure probe = %v, serves(deployment) %v; want every deployment served", err, err == nil && serves("gpt-4o-deploy"))
+	if err != nil || serves != nil {
+		t.Errorf("azure probe = %v, serves nil %v; want it unable to tell", err, serves == nil)
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

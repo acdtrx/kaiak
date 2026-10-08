@@ -146,7 +146,7 @@ func TestUnknownPathByModule(t *testing.T) {
 	}
 }
 
-// A models list answering 404 is a *PathMissingError carrying the module's hint for
+// A models list answering 404 is a *pathMissingError carrying the module's hint for
 // base_url (the config-apply check warns with it); other failures are not.
 func TestProbeOfAMissingModelsList(t *testing.T) {
 	fb := fakebackend.New()
@@ -157,16 +157,16 @@ func TestProbeOfAMissingModelsList(t *testing.T) {
 			b := m.backend(fb, true)
 			fb.SetModelsStatus(http.StatusNotFound)
 			_, err := r.Probe(context.Background(), b)
-			var perr *PathMissingError
-			if !errors.As(err, &perr) || perr.Backend != b.ID || perr.URL != fb.URL()+m.prefix+"models" {
-				t.Fatalf("probe of a 404 models list = %#v, want a PathMissingError for %s", err, b.BaseURL)
+			var perr *pathMissingError
+			if !errors.As(err, &perr) || perr.backend != b.ID || perr.url != fb.URL()+m.prefix+"models" {
+				t.Fatalf("probe of a 404 models list = %#v, want a pathMissingError for %s", err, b.BaseURL)
 			}
 			want := versionPathHint
 			if m.typ == config.BackendAzureOpenAI {
 				want = azurePathHint
 			}
-			if perr.BaseURLHint() != want {
-				t.Errorf("hint %q, want %q", perr.BaseURLHint(), want)
+			if perr.hint != want {
+				t.Errorf("hint %q, want %q", perr.hint, want)
 			}
 			if strings.Contains(err.Error(), testCredential) {
 				t.Errorf("error %q names the credential", err)
@@ -174,7 +174,7 @@ func TestProbeOfAMissingModelsList(t *testing.T) {
 
 			fb.SetModelsStatus(http.StatusServiceUnavailable)
 			if _, err := r.Probe(context.Background(), b); errors.As(err, &perr) {
-				t.Errorf("probe of a 503 models list = %v, want no PathMissingError", err)
+				t.Errorf("probe of a 503 models list = %v, want no pathMissingError", err)
 			}
 			fb.SetModelsStatus(0)
 		})

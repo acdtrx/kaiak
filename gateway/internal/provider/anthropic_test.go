@@ -359,8 +359,8 @@ func TestAnthropicTypesReadTheirBackendsAnswers(t *testing.T) {
 }
 
 // anthropic probes its models list (paged: one page of up to 1000) with its
-// credential and anthropic-version; azure-anthropic has none and sends nothing,
-// every name counting as served.
+// credential and anthropic-version; azure-anthropic has none, sends nothing and cannot
+// tell which models it serves.
 func TestAnthropicTypesProbe(t *testing.T) {
 	r := moduleRegistry()
 	s := newWireServer(t)
@@ -382,14 +382,11 @@ func TestAnthropicTypesProbe(t *testing.T) {
 
 	s = newWireServer(t)
 	serves, err = r.Probe(context.Background(), wireBackend(s, config.BackendAzureAnthropic))
-	if err != nil || !serves("anything") {
-		t.Errorf("azure-anthropic probe: %v, serves %v", err, serves != nil && serves("anything"))
+	if err != nil || serves != nil {
+		t.Errorf("azure-anthropic probe: %v, serves nil %v; want it unable to tell", err, serves == nil)
 	}
 	if n := len(s.requests()); n != 0 {
 		t.Errorf("azure-anthropic probe sent %d requests, want none", n)
-	}
-	if ListsModels(config.BackendAzureAnthropic) || !ListsModels(config.BackendAnthropic) {
-		t.Error("ListsModels: azure-anthropic must have none, anthropic one")
 	}
 }
 

@@ -812,9 +812,14 @@ own, and a client sending repeats is broken either way.
   `anthropic-version` (the list is paged, 20 by default; `data[].id`).
   `azure-anthropic` has no models list (Foundry offers no Models API): its probe
   always succeeds, so an open circuit turns half-open after each probe interval and
-  the half-open trial decides (Routing and reliability → Circuit mechanics), and the
-  config-time model check skips its backends with an info line, `model check not
-  available for this backend type`. A better check is in `docs/BACKLOG.md`.
+  the half-open trial decides (Routing and reliability → Circuit mechanics). A
+  backend whose probe cannot tell which models it serves — `azure-anthropic`, and
+  `azure-openai`, whose list names models, not deployments — gets an info line from
+  the config-time model check once its probe answered, `model check not available
+  for this backend type` (settled 2026-10-08: it covers `azure-openai` too, whose
+  check could warn about nothing and said nothing; an `azure-openai` models list
+  answering `404` still gets its warning, Wrong path to a host). A better check is in
+  `docs/BACKLOG.md`.
 - **Connections** (settled 2026-09-24): one connection pool per backend, kept across
   config reloads (a new pool only when the connect timeout changes), up to 256 idle
   connections per host so many concurrent streams reuse connections; HTTP/2 when the
@@ -2612,7 +2617,7 @@ own, and a client sending repeats is broken either way.
     | `kaiak.circuit.half_opened` | `circuits_half_open` | `probe succeeded`: circuits it made half-open |
     | `kaiak.backend.base_url`, `kaiak.backend.base_url_hint` | `base_url`, `hint` | `the backend has no models list at its base_url`: the URL and the suggested fix |
     | `kaiak.endpoint`, `kaiak.request.id` | — (added 2026-10-06) | `the backend's server lacks an endpoint its type serves: an older version?` (once per probe interval and backend; Providers → An endpoint missing from a server): the endpoint, by its metric name (`messages`, `responses`, …), and the request that found it — with `kaiak.backend.id` and `kaiak.deployment.model` |
-    | `kaiak.backend.type` | — (added 2026-10-06) | `model check not available for this backend type` (`azure-anthropic`, which has no models list): the type — with `kaiak.backend.id`; the request line's field of the same name (above) |
+    | `kaiak.backend.type` | — (added 2026-10-06) | `model check not available for this backend type` (`azure-anthropic` and `azure-openai`, whose probe cannot tell which models they serve): the type — with `kaiak.backend.id`; the request line's field of the same name (above) |
     | `kaiak.drain.grace`, `kaiak.drain.timeout`, `kaiak.drain.flush_reserve`, `kaiak.drain.cut_after` | `grace`, `timeout`, `flush_reserve`, `cut_after` (duration strings) | `draining`: the times in force, in seconds (Lifecycle → Draining) |
     | `kaiak.drain.in_flight` | `in_flight`; `requests` on `drain: cutting off in-flight requests` | Requests in flight |
     | `kaiak.drain.cut_off` | `cut_off` | `drained`: requests cut off |

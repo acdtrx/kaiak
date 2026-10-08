@@ -118,13 +118,11 @@ enforce the boundaries.
   `cmd/kaiak` runs until shutdown) calling the probe function it was given —
   `provider`'s models-list probe, so routing never talks to a backend itself.
   `ProbeNow` is the probe mechanism; the prober's timer is one trigger of it; a
-  successful probe (listing the deployment's model) makes a circuit half-open, and
-  the one trial request it admits closes it at its first data event or re-opens it
-  when it fails first; the prober keeps probing half-open circuits (a failed probe
-  re-opens them). Its `ModelChecker`
-  (goroutine run by `cmd/kaiak`) probes each applied config's backends once, off the
-  request path, and warns about deployments whose model is not listed.
-  `cmd/kaiak` hands it each applied config's caps and circuit setting, the
+  successful probe (listing the deployment's model, or unable to tell) makes a
+  circuit half-open, and the one trial request it admits closes it at its first data
+  event or re-opens it when it fails first; the prober keeps probing half-open
+  circuits (a failed probe re-opens them). `cmd/kaiak` hands it each applied
+  config's caps and circuit setting, the
   live-gateway count of each totals message (caps split among live gateways), wires its
   serving-change hook (queue empty/non-empty, circuit open/closed) to the status
   reporter, and its circuit events to `metrics` through an observer interface
@@ -135,7 +133,9 @@ enforce the boundaries.
   table of which endpoints each type serves, passthrough body edits per client API,
   when a stream is whole per format, per-backend connection pools, the circuit
   breaker's probe (`GET …/models`; none for azure-anthropic, which has no models
-  list); it reads backend streams with `sse`. It returns response events in the
+  list), and the `ModelChecker` (goroutine run by `cmd/kaiak`), which probes each
+  applied config's backends once, off the request path, and warns about deployments
+  whose model is not listed; it reads backend streams with `sse`. It returns response events in the
   client's format; `server` relays them to the client, and observers (accounting)
   read them on the way.
 - `accounting` — meters each attempt's response as it is relayed — reading usage as

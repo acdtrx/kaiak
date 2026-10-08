@@ -236,7 +236,7 @@ type graph struct {
 	registry         *metrics.Registry
 	router           *routing.Router
 	ops              *metrics.Ops
-	modelChecker     *routing.ModelChecker
+	modelChecker     *provider.ModelChecker
 	missingEndpoints *server.MissingEndpoints
 	applier          *config.Applier
 }
@@ -255,7 +255,7 @@ func newGraph(s settings, lookupEnv func(string) (string, bool), logger *slog.Lo
 	circuits := metrics.NewCircuits(g.registry)
 	g.router = routing.New(routing.Options{Probe: g.providers.Probe, Observer: circuits, Logger: logger})
 	g.ops = metrics.NewOps(g.registry, g.router, g.holder)
-	g.modelChecker = routing.NewModelChecker(g.providers.Probe, provider.ListsModels, logger)
+	g.modelChecker = provider.NewModelChecker(g.providers, logger)
 	// Every applied config sets the backend caps routing enforces and the backends
 	// whose connection pools and missing endpoints are kept, and has its deployments'
 	// models checked in the background.

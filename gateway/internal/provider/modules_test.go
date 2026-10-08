@@ -197,11 +197,14 @@ func TestModuleURLCredentialAndProbe(t *testing.T) {
 					t.Fatalf("probe requests %v, want one GET %smodels", probes, m.prefix)
 				}
 				checkHeaders("probe", probes[0].Header)
-				// Azure's list names models, not deployments: every name counts as served.
-				wantOther := m.typ == config.BackendAzureOpenAI
-				if !serves("backend-model") || serves("other-model") != wantOther {
-					t.Errorf("serves(listed) %v, serves(unlisted) %v, want true, %v",
-						serves("backend-model"), serves("other-model"), wantOther)
+				// Azure's list names models, not deployments: the probe cannot tell.
+				if m.typ == config.BackendAzureOpenAI {
+					if serves != nil {
+						t.Error("azure-openai probe reports which models it serves, want it unable to tell")
+					}
+				} else if !serves("backend-model") || serves("other-model") {
+					t.Errorf("serves(listed) %v, serves(unlisted) %v, want true, false",
+						serves("backend-model"), serves("other-model"))
 				}
 			})
 		}

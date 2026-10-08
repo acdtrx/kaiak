@@ -25,7 +25,7 @@ const maxProbeBody = 1 << 20
 
 // fetchModelsList asks backend b for its models list at url, with header (the
 // module's credential), bounded by b's connect timeout plus probeReadTimeout, and
-// returns the answer's body when the status is 2xx. A 404 is a *PathMissingError
+// returns the answer's body when the status is 2xx. A 404 is a *pathMissingError
 // carrying pathHint, the module's word on what base_url should hold. The error may
 // name the backend's address, never the credential nor text the backend sent: a
 // transport failure is named by its class (netfail).
@@ -50,7 +50,7 @@ func fetchModelsList(ctx context.Context, b *config.Backend, client *http.Client
 		return nil, fmt.Errorf("backend %s: read models list: %s", b.ID, netfail.Class(err))
 	}
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, &PathMissingError{Backend: b.ID, URL: url, Hint: pathHint}
+		return nil, &pathMissingError{backend: b.ID, url: url, hint: pathHint}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return nil, fmt.Errorf("backend %s: models list answered %d", b.ID, resp.StatusCode)
@@ -58,22 +58,19 @@ func fetchModelsList(ctx context.Context, b *config.Backend, client *http.Client
 	return body, nil
 }
 
-// PathMissingError is a probe's error when the backend answered 404 for its models
+// pathMissingError is a probe's error when the backend answered 404 for its models
 // list: the server is up, and the backend's base_url is most likely wrong.
-type PathMissingError struct {
-	Backend string
-	// URL is the models list's address; Hint says what the module expects base_url
+type pathMissingError struct {
+	backend string
+	// url is the models list's address; hint says what the module expects base_url
 	// to hold.
-	URL  string
-	Hint string
+	url  string
+	hint string
 }
 
-func (e *PathMissingError) Error() string {
-	return fmt.Sprintf("backend %s: models list answered 404 at %s", e.Backend, e.URL)
+func (e *pathMissingError) Error() string {
+	return fmt.Sprintf("backend %s: models list answered 404 at %s", e.backend, e.url)
 }
-
-// BaseURLHint says what the backend's base_url should hold.
-func (e *PathMissingError) BaseURLHint() string { return e.Hint }
 
 // versionPathHint is the base_url hint of the modules whose base_url is what an
 // OpenAI client would use (docs/specs/GATEWAY.md, Base URLs).

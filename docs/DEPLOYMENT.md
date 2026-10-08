@@ -599,7 +599,8 @@ the document (a script, or the control plane) rather than editing it by hand.
   set from Azure's documented behavior, not measured.
 - **Probes skip the model check** for Azure (its models list names models, not
   deployments): a successful probe half-opens the circuit, and the trial request
-  decides.
+  decides. The config-time model check says so in an info line; a models list that
+  answers `404` (a wrong `base_url`) still gets its warning.
 - **Quota**: a backend `429` does not count against the circuit; it fails over to
   another deployment of the model, and the deployment cools down for its
   `retry-after-ms`/`Retry-After` (at most 60 s, 5 s without either), taking no

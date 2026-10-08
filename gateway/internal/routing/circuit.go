@@ -325,10 +325,10 @@ var errUnknownBackend = errors.New("routing: unknown backend")
 // ProbeNow probes backend once — the probe mechanism; trigger names what invoked it
 // ("interval" for the prober's timer) for the log. A success makes every circuit of
 // the backend that was open when the probe started half-open — when the backend
-// lists the deployment's model; one it does not list stays open — and hands their
-// trial slots to waiting requests; half-open circuits stay half-open. A failure
-// keeps open circuits open and opens the half-open ones again: a backend whose
-// models list fails is not serving, whatever a trial would say. It returns the
+// lists the deployment's model or cannot tell; one it does not list stays open — and
+// hands their trial slots to waiting requests; half-open circuits stay half-open. A
+// failure keeps open circuits open and opens the half-open ones again: a backend
+// whose models list fails is not serving, whatever a trial would say. It returns the
 // probe's error; a probe cut short by ctx is neither counted nor logged.
 func (r *Router) ProbeNow(ctx context.Context, backend, trigger string) error {
 	r.mu.Lock()
@@ -385,7 +385,7 @@ func (r *Router) ProbeNow(ctx context.Context, backend, trigger string) error {
 		if key.Backend != backend || !c.probing() || c.openedAt.After(start) {
 			continue
 		}
-		if !serves(key.Model) {
+		if serves != nil && !serves(key.Model) {
 			// The first probe that finds the model missing says so; the repeats
 			// while the backend keeps serving another model do not.
 			if !c.unlisted {

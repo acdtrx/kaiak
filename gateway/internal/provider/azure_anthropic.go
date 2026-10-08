@@ -67,10 +67,10 @@ func (m *azureAnthropic) unknownPath(answer []byte) bool {
 	return ok && e.Message == "Resource not found"
 }
 
-// probe sends nothing: Foundry offers no models list, so every name counts as served
-// and an open circuit turns half-open after each probe interval, the half-open trial
-// deciding (docs/specs/GATEWAY.md, Providers → Probe and model check for the new
-// types).
+// probe sends nothing: Foundry offers no models list, so it cannot tell which models
+// it serves (serves is nil) and an open circuit turns half-open after each probe
+// interval, the half-open trial deciding (docs/specs/GATEWAY.md, Providers → Probe and
+// model check for the new types).
 func (m *azureAnthropic) probe(context.Context) (func(string) bool, error) {
-	return func(string) bool { return true }, nil
+	return nil, nil
 }

@@ -4,10 +4,7 @@ import (
 	"container/list"
 	"context"
 	"errors"
-	"fmt"
-	"log/slog"
 	"slices"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -678,128 +675,21 @@ func TestProbeKeepsUnlistedDeploymentsOpen(t *testing.T) {
 	awaitDone(t, call.ctx, "after the last circuit closed")
 }
 
-type logBuffer struct {
-	mu  sync.Mutex
-	buf []byte
-}
-
-func (b *logBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.buf = append(b.buf, p...)
-	return len(p), nil
-}
-
-func (b *logBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return string(b.buf)
-}
-
-// At config apply every backend is probed once, in the background, and each
-// deployment whose model it does not list is warned about (H8).
-// hintedError is a probe error for a models list answering 404 (provider's
-// PathMissingError): it says what base_url should hold.
-type hintedError struct{ hint string }
-
-func (e hintedError) Error() string       { return "models list answered 404" }
-func (e hintedError) BaseURLHint() string { return e.hint }
-
-func TestModelCheckWarnsPerMissingModel(t *testing.T) {
-	var logs logBuffer
-	logger := slog.New(slog.NewTextHandler(&logs, nil))
-	var mu sync.Mutex
-	probed := map[string]int{}
-	done := make(chan struct{}, 4)
-	c := NewModelChecker(func(_ context.Context, b *config.Backend) (func(string) bool, error) {
-		defer func() { done <- struct{}{} }()
-		mu.Lock()
-		probed[b.ID]++
-		mu.Unlock()
-		switch b.ID {
-		case "down":
-			return nil, errors.New("connection refused")
-		case "nopath":
-			return nil, fmt.Errorf("probe: %w", hintedError{"base_url should end in /v1"})
-		}
-		return func(model string) bool { return model != "wrong@x" }, nil
-	}, func(config.BackendType) bool { return true }, logger)
-	x, y, down := backend("x", 0), backend("y", 0), backend("down", 0)
-	nopath := &config.Backend{ID: "nopath", BaseURL: "http://vllm:8000"}
-	ctx, stop := context.WithCancel(context.Background())
-	stopped := make(chan struct{})
-	go func() {
-		c.Run(ctx)
-		close(stopped)
-	}()
-	c.Check(circuitSnapshot(1, time.Hour, queuedModel("right", 1, time.Hour, x, y), queuedModel("wrong", 1, time.Hour, x),
-		queuedModel("other", 1, time.Hour, down), queuedModel("lost", 1, time.Hour, nopath)))
-	for range 4 {
-		select {
-		case <-done:
-		case <-time.After(waitTimeout):
-			t.Fatal("model check did not probe every backend")
-		}
+// A probe that answers but cannot tell which models the backend serves (serves is
+// nil: the Azure types) half-opens the circuit, and the trial decides.
+func TestProbeThatCannotTellHalfOpens(t *testing.T) {
+	r := New(Options{Probe: func(context.Context, *config.Backend) (func(string) bool, error) { return nil, nil }})
+	m := queuedModel("m", 10, time.Hour, backend("a", 0))
+	r.Configure(circuitSnapshot(1, time.Hour, m))
+	fail(r, m.Deployments[0], 1)
+	if err := r.ProbeNow(context.Background(), "a", "manual"); err != nil {
+		t.Fatal(err)
 	}
-	stop()
-	<-stopped
-	out := logs.String()
-	if !strings.Contains(out, `msg="the backend does not list the deployment's model" kaiak.backend.id=x kaiak.deployment.model=wrong@x`) ||
-		strings.Count(out, "does not list") != 1 {
-		t.Errorf("log:\n%s\nwant one warning, for wrong@x", out)
+	trial, _, err := r.Acquire(context.Background(), m, Avoid{})
+	if err != nil {
+		t.Fatalf("after the probe = %v, want the trial", err)
 	}
-	if !strings.Contains(out, `level=WARN msg="model check skipped: the backend did not answer" kaiak.backend.id=down exception.message="connection refused"`) {
-		t.Errorf("log:\n%s\nwant the unreachable backend named", out)
-	}
-	// A models list answering 404: the backend is up and its base_url likely wrong.
-	if !strings.Contains(out, `level=WARN msg="the backend has no models list at its base_url" kaiak.backend.id=nopath kaiak.backend.base_url=http://vllm:8000 kaiak.backend.base_url_hint="base_url should end in /v1"`) ||
-		strings.Contains(out, "skipped: the backend did not answer\" kaiak.backend.id=nopath") {
-		t.Errorf("log:\n%s\nwant a warning naming nopath's base_url, with the hint", out)
-	}
-	if probed["x"] != 1 || probed["y"] != 1 || probed["down"] != 1 || probed["nopath"] != 1 {
-		t.Errorf("probes %v, want one per backend", probed)
-	}
-}
-
-// A backend whose type has no models list (azure-anthropic) is not probed at config
-// apply: an info line says the check is not available for it.
-func TestModelCheckSkipsTypesWithoutAModelsList(t *testing.T) {
-	var logs logBuffer
-	logger := slog.New(slog.NewTextHandler(&logs, nil))
-	probed := make(chan string, 4)
-	c := NewModelChecker(func(_ context.Context, b *config.Backend) (func(string) bool, error) {
-		probed <- b.ID
-		return func(string) bool { return true }, nil
-	}, func(t config.BackendType) bool { return t != config.BackendAzureAnthropic }, logger)
-	listed := backend("listed", 0)
-	foundry := backend("foundry", 0)
-	foundry.Type = config.BackendAzureAnthropic
-	ctx, stop := context.WithCancel(context.Background())
-	stopped := make(chan struct{})
-	go func() {
-		c.Run(ctx)
-		close(stopped)
-	}()
-	c.Check(circuitSnapshot(1, time.Hour, queuedModel("a", 1, time.Hour, listed), queuedModel("b", 1, time.Hour, foundry)))
-	select {
-	case id := <-probed:
-		if id != "listed" {
-			t.Errorf("probed %s", id)
-		}
-	case <-time.After(waitTimeout):
-		t.Fatal("model check did not probe the listed backend")
-	}
-	stop()
-	<-stopped
-	select {
-	case id := <-probed:
-		t.Errorf("probed %s too", id)
-	default:
-	}
-	if out := logs.String(); !strings.Contains(out,
-		`level=INFO msg="model check not available for this backend type" kaiak.backend.id=foundry kaiak.backend.type=azure-anthropic`) {
-		t.Errorf("log:\n%s\nwant the info line for foundry", out)
-	}
+	trial.Release()
 }
 
 // E4: a half-open trial is decided when its response starts: the circuit closes at
