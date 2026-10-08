@@ -212,3 +212,28 @@ text, so it is not ported.
 
 The review report is kept as
 `docs/reviews/2026-10-07-structure/BRANCH-REVIEW-independent.md`.
+
+### End-of-plan cleanup
+
+Four small items from STRUCTURE.md → Outcome → Not handled (moved there to their
+module tables as done); behaviour unchanged, no assertion weakened.
+
+- **gateway/server:** `ClearBodyDeadline` → `clearBodyDeadline` (in-package only);
+  `BodyBudget.InUse` → `inUse` (read only by `bodies_test.go`, package `server`).
+- **gateway/provider:** `upstreamBodyReader.held()` removed; `release_test.go` (package
+  `provider`) reads `r.data == nil` under `r.mu`, the same check the method made.
+- **gateway/control:** `batchRefusals` uses constants only: `codeUsageBatchInvalid`,
+  `codeInstanceMismatch`, `codeRequestInvalid` declared beside the message rule codes in
+  `control.go` (values unchanged).
+- **kaiak-control:** `files` excludes `src/store-contract/*-store.ts` and
+  `src/store-contract/lossy-channel.ts` (the negative-control stores and their lossy
+  channel, test-only). `npm pack --dry-run` from `control/kaiak-control/`: 40 files
+  (was 45), `src/store-contract/index.ts` the only store-contract file; it imports only
+  `node:*`, `../messages/index.ts` and `../storage/index.ts`.
+- Left as recorded: the Messages/Responses stored-file error codes, the per-format
+  seam, `keyedBackendTypes`, test SSE parsers and log-vocabulary matching.
+
+**Suite**: `scripts/check-all.sh` → exit 0, `all checks passed`: gofmt, vet,
+staticcheck 2026.2.1, race tests incl. `e2e` (108.7 s); live-test kit self-test for all
+seven setups; control `npm test` 629 tests, 628 pass, 0 fail, 1 skipped; lint and
+boundaries ok; cross-half e2e `ok kaiak/e2e 65.3s`.

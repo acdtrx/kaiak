@@ -264,13 +264,6 @@ func (r *upstreamBodyReader) Close() error {
 	return nil
 }
 
-// held reports whether the reader still holds body bytes.
-func (r *upstreamBodyReader) held() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.data != nil
-}
-
 // startsWith reports whether a JSON value, past leading whitespace, begins with c.
 func startsWith(raw []byte, c byte) bool {
 	raw = bytes.TrimLeft(raw, " \t\r\n")

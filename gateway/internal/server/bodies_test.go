@@ -62,7 +62,7 @@ func TestBodyBudgetRefusesARequestWhenSpent(t *testing.T) {
 	case <-time.After(waitTimeout):
 		t.Fatal("the first request never reached the backend")
 	}
-	if got := g.bodies.InUse(); got != 600 {
+	if got := g.bodies.inUse(); got != 600 {
 		t.Fatalf("budget in use %d while the first request waits upstream, want its 600 bytes", got)
 	}
 
@@ -79,7 +79,7 @@ func TestBodyBudgetRefusesARequestWhenSpent(t *testing.T) {
 
 	cancel()
 	waitIdle(t, g)
-	if got := g.bodies.InUse(); got != 0 {
+	if got := g.bodies.inUse(); got != 0 {
 		t.Fatalf("budget in use %d once every request ended, want 0", got)
 	}
 	g.backend.SetReply(fakebackend.Reply{})
@@ -87,7 +87,7 @@ func TestBodyBudgetRefusesARequestWhenSpent(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status %d once the budget is back, want 200: %s", w.Code, w.Body.String())
 	}
-	if got := g.bodies.InUse(); got != 0 {
+	if got := g.bodies.inUse(); got != 0 {
 		t.Errorf("budget in use %d after the request, want 0", got)
 	}
 }
@@ -113,7 +113,7 @@ func TestBodyIsReleasedOnceTheResponseRelays(t *testing.T) {
 			break
 		}
 	}
-	if got := g.bodies.InUse(); got != 0 {
+	if got := g.bodies.inUse(); got != 0 {
 		t.Errorf("budget in use %d while the stream relays, want 0: the body is still held", got)
 	}
 	close(pace)
@@ -132,7 +132,7 @@ func TestBodyOverTheWholeBudgetIsTooLarge(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "limit of 500 bytes") {
 		t.Errorf("message does not name the budget as the limit: %s", w.Body.String())
 	}
-	if got := g.bodies.InUse(); got != 0 {
+	if got := g.bodies.inUse(); got != 0 {
 		t.Errorf("budget in use %d, want 0", got)
 	}
 }
@@ -157,7 +157,7 @@ func TestBodyOfUnknownLengthTakesTheBudgetAsItArrives(t *testing.T) {
 	if w := send(paddedChat(t, "open", false, 600)); w.Code != http.StatusOK {
 		t.Fatalf("status %d, want 200: %s", w.Code, w.Body.String())
 	}
-	if got := g.bodies.InUse(); got != 0 {
+	if got := g.bodies.inUse(); got != 0 {
 		t.Fatalf("budget in use %d after the request, want 0", got)
 	}
 
@@ -168,14 +168,14 @@ func TestBodyOfUnknownLengthTakesTheBudgetAsItArrives(t *testing.T) {
 	}
 	w := send(paddedChat(t, "open", false, 600))
 	expectError(t, w, http.StatusServiceUnavailable, "server_busy")
-	if got := g.bodies.InUse(); got != 500 {
+	if got := g.bodies.inUse(); got != 500 {
 		t.Errorf("budget in use %d after the refusal, want the others' 500", got)
 	}
 	g.bodies.give(500)
 
 	w = send(paddedChat(t, "open", false, 1100))
 	expectError(t, w, http.StatusRequestEntityTooLarge, "request_too_large")
-	if got := g.bodies.InUse(); got != 0 {
+	if got := g.bodies.inUse(); got != 0 {
 		t.Errorf("budget in use %d after the refusal, want 0", got)
 	}
 }
@@ -237,7 +237,7 @@ func TestIdleDeclaredBodiesDoNotStarveOtherKeys(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("another key's request: status %d, want 200: %s", resp.StatusCode, victim)
 	}
-	if got := g.bodies.InUse(); got > perKey*bodyStep {
+	if got := g.bodies.inUse(); got > perKey*bodyStep {
 		t.Errorf("idle declared bodies hold %d bytes of the budget, want at most %d (one step each)", got, perKey*bodyStep)
 	}
 	held, _ := settled()

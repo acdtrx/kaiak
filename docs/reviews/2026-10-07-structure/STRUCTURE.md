@@ -507,3 +507,256 @@ and package 1.
 - **backend-verify duplicating the gateway's URL/header knowledge:** necessary across
   languages and processes. The fix is a shared fixture (T8), not sharing code.
 - **Provider/accounting stream-reader merge, shared JSON tokenizer:** see T4.
+
+## Outcome
+
+The work ran as the plan [`docs/plans/structure/`](../../plans/structure/OVERVIEW.md):
+29 steps in six phases, all on 2026-10-08, on branch `structure`, from the anchor tag
+`v0.11.1` ("before the structure plan"). Each "done" below was checked against the
+step's Result, not its plan. Outcomes: **done** (step, commit), **done in part** (which
+part, and where the rest went), **moved** (to the OTel metrics entry in
+`docs/BACKLOG.md` → OpenTelemetry export → Metrics), **not taken** (why), **left as is**
+(the review's own call), **investigate only**.
+
+### Module findings
+
+Every finding ID of the nine module reports appears once. Rows marked *small*, *hint* or
+*bug* are the reports' small items, cross-module hints and bugs noticed in passing that a
+step took (or that the review left). Hints no step took are under
+[Not handled](#not-handled).
+
+#### gateway-server
+
+| Finding | Outcome | Where |
+|---|---|---|
+| S1 one attempt classification | done | step 9, `2afc3f4`: `classifyAttempt` the one decoder; `attemptRules`, `failureRules`, `errorEventRules` |
+| S2 per-attempt state on the attempt | done | step 9, `2afc3f4`; fixes the stale error code |
+| S3 endpoint table | done | step 22, `2c00828`: one row per endpoint, body rows keyed by `provider.Endpoint`; no `generates` or `namesModel` field was needed |
+| S4 output-limit keys, one parse prologue | done | step 23, `69b2832`; embeddings and completions stop checking keys they ignore (Decision 6) |
+| S5 JSON-walk helpers | done | step 23, `69b2832`: `eachObject`, `eachObjectStrict`, `objectMembers`; fixes the repeated-member gap |
+| S6 error class set by the constructor | done | step 10, `8e03513` |
+| S7 attempts stage as a struct | done | step 10, `8e03513` |
+| S8 stage applicability declared once | done | step 10, `8e03513`: a three-value `stageScope`; new `endpoint_support` stage split from `model_access` |
+| S9 split `upstream.go` | done | step 10, `af6b7b6`: `attempts.go`, `relay.go`, `requestlog.go` |
+| *considered:* `listener.go`/`drain.go` package, `servingDeployments` + `exclude` | left as is | review's call |
+| *hint:* retry reasons in two lists | done | step 9, `2afc3f4`: `metrics.RetryableOutcomes` |
+| *hint:* `server.endpoint` mirrors `provider.Endpoint`; each path twice | done | step 22, `2c00828`: route = `/v1/` + provider path |
+| *hint:* busy status (429/529) in several places | done | step 9, `2afc3f4`: `provider.BusyStatus`, `StatusOverloaded` |
+| *summary:* `ClearBodyDeadline` (in-package only) and `BodyBudget.InUse` (tests only) exported | done | end of plan cleanup: `clearBodyDeadline`, `inUse` |
+
+#### gateway-provider
+
+| Finding | Outcome | Where |
+|---|---|---|
+| F1 one stream-format type per API | done | step 20, `d951f5c`: `streamFormat`; one JSON decode per event; request edits beside it |
+| F2 shared body-edit step and header helpers | done | step 20, `d951f5c`: `sendWire` runs the edits; `bearer`/`apiKey` helpers; `anthropic` keeps its own header |
+| F3 each module a value of one core struct | not taken | rejected by the user (Decision 1): modules stay full per-type providers |
+| F4 "cannot tell" said once | done | step 21, `835c59c`: `serves == nil`; `azure-openai` logs the info line |
+| F5 `wire.go` split | done | step 20, `d951f5c`: `send.go`, `response.go`, `notfound.go`, `probe.go`, family rule files; `deploymentFailure` |
+| F6 endpoint concept twice | done | step 22, `2c00828`: body endpoints are `provider.Endpoint`; path and format one row |
+| F7 shared JSON tokenizer | left as is | T4: hot path, unmeasured gain |
+| F8 SSE errors in the reader | done | step 20, `d951f5c` |
+| *hint:* `providerName` in server | done | step 20, `d951f5c`: `provider.ProviderName` |
+| *hint:* `ErrorEventKind` mapped in four server places | done | step 9, `2afc3f4`: `errorEventRules` |
+| *hint:* each stream event decoded 3–4 times | done in part | step 20 removed the `isUsageOnlyChunk` decode; merging with accounting's readers is observability F9 (left) |
+| *hint:* `PathMissingError` exported fields | done | step 21, `835c59c`: unexported `pathMissingError` |
+| *summary:* `upstreamBodyReader.held()` exists only for a test | done | end of plan cleanup: removed; `release_test.go` reads the reader's bytes under its lock, the same assertion |
+
+#### gateway-routing-limits
+
+| Finding | Outcome | Where |
+|---|---|---|
+| F1 limiter leftovers | done | step 6, `4288768`; `Usage`/`CounterUsage` became one exported `Used(group, typ)` rather than unexported, because server tests read counts |
+| F2 router `caps` | done | step 6, `4288768` |
+| F3 one eligibility walk | done | step 27, `eeca1d6`: `pick`; dispatch bench not slower |
+| F4 circuit transitions emitted once | done | step 27, `eeca1d6` |
+| F5 router "never configured" mode | done | step 6, `4288768`: `Configure` is the precondition |
+| F6 counters carry their max | done | step 18, `3a81745` |
+| F7 rejection log attrs from limits | done | step 27, `eeca1d6`: `(*Rejection).LogAttrs()` |
+| F8 one counter store | done | step 18, `3a81745`; one added test pins the retained branch |
+| F9 limit-type facts | done | step 11, `101a2a7` |
+| F10 outage decision in the client | not taken | out of scope: step 15's `LimitsContact()` removed the adapter; placement alone does not pay |
+| F11 model check in `provider` | done | step 21, `835c59c` |
+| *considered:* `previousWindow` trim | done | step 6, `4288768` |
+| *considered:* `window.go` per kind, `firstServable` cache, `Avoid`, `ProbeNow`, `minute` index | left as is | review's call |
+| *hint:* `DeploymentID` built by hand | done in part | step 27, `eeca1d6`: `routing.IDOf` in main and server; `metrics`' two copies moved |
+| *hint:* live-gateway share in two modules | left as is | T5: with *Demand-weighted shares* or *Live count excludes draining gateways* |
+| *hint:* limiter pulls config, router is pushed | left as is | T6 |
+| *hint:* `limitScopeKinds`; two circuit-state enums in `servingStatus` | moved | label lists (observability F3) and T12 |
+| *bug note:* `endTrial` discards `dispatch()` | done | step 27, `eeca1d6`: the result feeds `changed` |
+
+#### gateway-observability
+
+| Finding | Outcome | Where |
+|---|---|---|
+| F1 named unit sets | done | step 12, `78dd9a5`; the counted rule is pinned across halves by step 13, `0d36e50` |
+| F2 retry reasons = retryable outcomes | done | step 9, `2afc3f4` |
+| F3 closed label vocabularies | done in part | limit-type list: step 11, `101a2a7`; retry reasons: step 9, `2afc3f4`; the rest (batch results, drop reasons, load triggers, limit scopes, queue reasons, config results, the run-time guards and HELP copies) moved |
+| F4 key labels written twice | moved | OTel metrics entry |
+| F5 per-config gauges; circuits prepared from `main` | moved | OTel metrics entry (with T6's "`NewOps` takes the `Circuits`") |
+| F6 sink / fan-out leftovers | done | step 7, `596cc8a`: `RecorderOptions{Batcher, Metrics}`; GATEWAY.md "Where records go" |
+| F7 inclusive-token rule | done | step 28, `829b2e3` |
+| F8 build version in `ops.go` | moved | OTel metrics entry |
+| F9 merge provider and accounting stream readers | left as is | T4 |
+| F10 `LogExportCounts` mirror | done | step 28, `829b2e3`; `otlplog.Counts` went too |
+| *hint:* meter-refused codes in server | done | step 9, `2afc3f4`: `failureRules.refused` |
+| *hint:* `errorCodeClass`, a third code list | done | step 10, `8e03513` (S6) |
+| *hint:* saturating add written three times | done | step 12, `78dd9a5`: `accounting.SaturatingAdd` |
+| *hint:* counted-tokens sum in both halves | done | step 13, `0d36e50`: `protocol/fixtures/usage/` |
+| *hint:* `request.totalUsage()` | done | step 28, `829b2e3` |
+| *hint:* `UsageRecord.Generation` | left as is | "fine today"; tied to independent F07 |
+| *bugs:* sink doc drift; `scan.go` header | done | step 7, `596cc8a` |
+
+#### gateway-config
+
+| Finding | Outcome | Where |
+|---|---|---|
+| F1 one validation pipeline | done | step 14, `4385408`: `schemacheck.Validate` + `DecodeTyped`; `int64` integers |
+| F2 limit-type table | done | step 11, `101a2a7`; an unknown type now panics instead of reading as USD per month |
+| F3 unread resolved fields | done | step 7, `596cc8a` |
+| F4 one model metadata type | done | step 14, `4385408` (Decision 14) |
+| F5 `Load.Snapshot` | done | step 14, `4385408`: `onLoad func(Load)`; the limiter's pull model left (T6) |
+| *not findings:* walker vs JSON Schema, Go vs TS rules, `Holder`/`Applier`/`FileLoader` | left as is | review's call |
+| *hint:* `$defs` descriptions re-declared in `control` | done | step 14, `4385408`: `PublicModelNameWhat`, `TimestampWhat` |
+| *hint:* schema defaults untied | done | step 4, `c6e2f1e`: 18 defaults pinned |
+| *hint:* backend-type enum vs `provider.kinds` | done | step 4, `c6e2f1e` |
+| *hint:* unit lists | done | step 12, `78dd9a5` |
+| *hint:* `routing.New` reads config defaults | done | step 6, `4288768`: `New` no longer seeds a circuit setting |
+| *hint:* a config event parsed ~5 times | done in part | step 14 removed the third parse of the bytes; the rest stay |
+| *bugs:* `Limits[].Models`; `decodeTree` comment | done | step 7, `596cc8a` (the comment later left with `decodeDocument`, step 14) |
+
+#### gateway-control-main
+
+| Finding | Outcome | Where |
+|---|---|---|
+| F1 spool-era leftovers | done | step 6, `4288768` |
+| F2 control → limits adapters | done | step 15, `d2e967a`: `PushedWindow` carries the tags; `TotalsWindow`, `TotalsUpdate` and both adapters gone |
+| F3 hurry as a context | done | step 16, `a01351f`; the log flush uses two `Flush` calls instead of `context.AfterFunc` (no goroutine) |
+| F4 one stream per boot | not taken | step 17, `aefa3df` (user): the spike passed the suite, but the hand-off grew production Go by ~100 lines; two streams per boot, `firstOnly`, `waitFirstTotals` and `limits.FirstTotals` stay |
+| F5 status `starting` | done | step 8, `c64f7c1`, with the protocol trim (Decision 4) |
+| F6 `main.go` split | done | step 19, `01abf20`: `settings.go`, `controlplane.go`, `Client.Finish`; mode checked at 3 points; the totals wait stays in `controlplane.go` (F4) |
+| F7 outbound-only validators | done | step 7, `596cc8a`: moved into `_test.go` (Decision 5) |
+| *small:* two non-nil guards | done | step 8, `c64f7c1`: the guard stays in the producer |
+| *small:* log level by error class ×5 | done | step 19, `01abf20`: `failureLevel(err, refusals)` |
+| *small:* `durationMS` lacks `least` | done | step 19, `01abf20`; `otlplog`'s parser left (already "above 0", one caller) |
+| *hint:* `limits.firstTotals` | not taken | goes with F4 |
+| *hint:* token units and totals limit types in `control/schema.go` | done | steps 12 and 11 |
+| *hint:* config-event decoder checks only the envelope | left as is | CONTROL-PROTOCOL.md → Config event already says so |
+| *hint:* `batchRefusals` mixes constants and string literals for `kaiak-control`'s error codes | done | end of plan cleanup: the endpoint-level codes are constants beside the message rule codes (`control.go`); no cross-half error-code list or fixture added |
+| *bugs:* drifted test wiring; `runSealer` comment | done | step 15, `d2e967a`; step 6, `4288768` |
+
+#### control-core
+
+| Finding | Outcome | Where |
+|---|---|---|
+| F1 sweep in the core | done | step 24, `bd9e5ba`; the live count is composed in the core too |
+| F2 `totals(instance)` | done | step 8, `c64f7c1` |
+| F3 window starts by limit type | done | step 13, `0d36e50` |
+| F4 one listener helper | done | step 24, `bd9e5ba` |
+| F5 `BatchCursors.latest` | done | step 24, `bd9e5ba`: `lastBatches(instance)` |
+| F6 GUIDE.md trimmed | done | step 26, `55d4290` (Decision 3) |
+| F7 small items | done | step 24, `bd9e5ba`: `libraryName`, `configHash` (to `test-support`), one `IntakeError`, `protocol_version` type; window keys: step 13, `0d36e50` |
+| F8 stream ordering in the core | left as is | T9: one adapter |
+| *small:* `ALL_MODELS` twice | done | step 24, `bd9e5ba` |
+| *hint:* sample recomputes window starts; `countedThrough` duplicated | done | step 8, `c64f7c1` |
+| *hint:* protocol/format version literals in tests | done | step 5, `d0fa3f6` |
+| *hint:* `TotalsLimitType` vs `LimitType` | left as is | harmless; step 13 added `isCountedType` |
+| *clean:* promise-chain serializers, `schema/` copy, store triad | left as is | review's call |
+| *bug:* `stopExpirySweep` leaves `started` | done | step 24, `bd9e5ba` |
+| *hint:* the store-contract broken stores ship in the package | done | end of plan cleanup: `files` excludes `src/store-contract/*-store.ts` and `lossy-channel.ts`; `npm pack --dry-run` ships only `store-contract/index.ts` |
+
+#### control-edges-sample
+
+| Finding | Outcome | Where |
+|---|---|---|
+| F1 backend-verify type table | done | step 25, `4c3e458`: `TYPE_RULES`; `tsc` refuses a new type without a row |
+| F2 context-length and answer helpers | done | step 25, `4c3e458` |
+| F3 page totals | done in part | (a): step 8, `c64f7c1` (`readTotals`), the counted-type `if`: step 13; (b), a library-owned view: not taken (out of scope, one caller) |
+| F4 fastify test harness | done | step 5, `d0fa3f6` (in `test-support`) |
+| F5 sample package entry | done | step 8, `c64f7c1` |
+| F6 `errorBody` | done | step 24, `bd9e5ba` |
+| F7 stream sequencing in the core | left as is | T9 |
+| F8 two SSE writers | done in part | in-place fix: step 25, `4c3e458`; a shared writer (and the shared leading/trailing-run limiter): out of scope |
+| F9 verify CLI | done | step 25, `4c3e458`: `MODEL_CAPABILITIES` exported |
+| *hint:* window identity ×5 | done | step 13, `0d36e50` |
+| *hint:* backend type → URL and header in three places | done | step 4, `c6e2f1e`: `protocol/fixtures/backend-types/` |
+| *hint:* usage unit columns on the page | left as is | acceptable for a UI (report) |
+| *hint:* three identical error types | done | step 24, `bd9e5ba` |
+| *bug:* page feed write after `end()` | done | step 25, `4c3e458` |
+| *bug:* page config section O(k²) | left as is | already in the backlog (*Sample status page render time*) |
+
+#### test-scaffolding
+
+| Finding | Outcome | Where |
+|---|---|---|
+| F1 harness and drifted totals copy | done | (b) one builder: step 1, `4f82d28`; (a) the copy: step 15, `d2e967a` |
+| F2 e2e passthrough scenarios | done | step 3, `a529228` |
+| F3 fixture runners | done | step 4, `c6e2f1e`; the optional one-layout change not taken |
+| F4 kaiak-control test support | done | step 5, `d0fa3f6` |
+| F5 unguarded config anchors | done | step 1, `4f82d28`: `replaceOnce`, `g.apply`; the map-edit option not taken |
+| F6 e2e harness primitives | done | step 3, `a529228` |
+| F7 fake OTLP collectors | done | step 2, `a872351`: `internal/fakeotlp` |
+| F8 fakebackend `Reply` | done | step 2, `a872351` |
+| F9 captures | done | step 2, `a872351` |
+| F10 fakecontrol surface | done | step 2, `a872351`; its `protocolVersion` copy left, as the report says |
+| *hint:* `TotalsWindow`/`PushedWindow` mirror | done | step 15, `d2e967a` |
+| *hint:* key-hash rule copies | done | step 1, `4f82d28`: `auth.KeyHash`; `scripts/live` keeps its own |
+| *hint:* Azure base-URL rule restated | done in part | the e2e copies are one table (step 3); doc statements and `scripts/live` (own module) stay |
+| *hint:* `scripts/live` endpoint table; fakecontrol and `mergeWindows` restating rules | left as is | its self-test and the cross-half e2e catch drift |
+| *bug:* misplaced doc comments in `sample_test.go` | done | step 3, `a529228` |
+
+### Independent review
+
+| Finding | Outcome | Where |
+|---|---|---|
+| F01 one inclusive-token rule | done | = observability F7, step 28, `829b2e3` |
+| F02 shared provider mechanics | done in part | shared helpers = provider F2, step 20, `d951f5c`; one implementation for the OpenAI family rejected (Decision 1) |
+| F03 an attempt owns its result | done | = server S2, step 9, `2afc3f4` |
+| F04 endpoint metadata once | done | = server S3 and provider F6, step 22, `2c00828` |
+| F05 routing observation | moved | T12, OTel metrics entry |
+| F06 housekeeping in the core | done | = control-core F1, step 24, `bd9e5ba` |
+| F07 one batch number | investigate only | not started; revisit when usage delivery next changes |
+| B01 missing-endpoint memory | done | step 7, `596cc8a`: `MissingEndpoints.Retain` on config apply |
+
+The review's other "leave" items stay as they were: the hand-written schema walker, the
+`kaiak-control/schema/` copy, the hand-mirrored TS message types, the store interface
+triad, `otlplog`'s value type, and backend-verify restating the gateway's URL and header
+rules (now tied by the step-4 fixture).
+
+### Bugs and gaps
+
+| Item | Outcome | Step |
+|---|---|---|
+| A successful retry logs the failed attempt's error code | fixed; its test failed on the old code | step 9, `2afc3f4` |
+| Controlled-gateway tests never see complete totals | fixed: the tests use the real wiring; no existing test changed outcome; a new test pins the complete-totals reset | step 15, `d2e967a` |
+| Sample page feed writes after `end()` | fixed; four tests failed on the old code | step 25, `4c3e458` |
+| Messages message with a repeated member not refused | fixed: `400 duplicate_member`; its test failed on the old code | step 23, `69b2832` |
+| `limits.shape` reads any unnamed type as USD per month | fixed: `shape` gone; an unknown type panics | step 11, `101a2a7` |
+| `azure-openai` model check silent | fixed: logs the "cannot tell" info line | step 21, `835c59c` |
+| GATEWAY.md and ARCHITECTURE.md call the client a sink | fixed | step 7, `596cc8a` |
+| `stopExpirySweep()` leaves `started` set | gone with the method | step 24, `bd9e5ba` |
+| Missing-endpoint memory never forgets a removed backend | fixed: pruned on config apply | step 7, `596cc8a` |
+| *Found during the plan:* `Cost` may differ by 1 nano-USD between arm64 and amd64 builds (FMA) | backlog, not changed | step 12; `335bfb1` |
+
+**Branch review** ([`BRANCH-REVIEW-independent.md`](BRANCH-REVIEW-independent.md)): S1
+(a hurry after the drain deadline still sent the final status) fixed in `49bc950`, with a
+test that failed before; S2 (output-limit messages print plain digits, not `3e+06`) kept
+as intended: it matches `kaiak-control`'s message.
+
+### Not handled
+
+Hints in the reports that no step took and that the plan does not list as out of scope:
+
+- **server:** a stored-file reference is answered `stored_object_unsupported` on Messages
+  but `stateful_responses_unsupported` on Responses: a GATEWAY.md Client API question.
+  Also, `provider.Code` strings double as client error codes (an observation, no
+  proposal).
+- **provider:** per-format logic outside `provider` (accounting's meter and estimate,
+  server's format parsers and error shapes) has no single seam; step 22 made a new
+  *endpoint* one row, but a new *API format* still touches `provider`, `accounting` and
+  `server`.
+- **config:** "needs `api_key_env`" (`keyedBackendTypes`, `config/schema.go`) is a
+  per-type property outside provider's `backendKind` table.
+- **test-scaffolding:** ad-hoc SSE parsers in tests (e2e `events`, the sample's
+  `openPageStream`), and the log vocabulary matched separately in e2e, `scripts/live`
+  and `cmd/kaiak` tests.

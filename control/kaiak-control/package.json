@@ -12,6 +12,8 @@
     "src",
     "!src/**/*.test.ts",
     "!src/test-support",
+    "!src/store-contract/*-store.ts",
+    "!src/store-contract/lossy-channel.ts",
     "schema",
     "GUIDE.md"
   ],

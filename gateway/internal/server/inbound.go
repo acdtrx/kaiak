@@ -48,7 +48,7 @@ func readInbound(_ context.Context, rq *request, bodies *BodyBudget) *apiError {
 	}
 	// The body arrived within the body-read deadline (Listen); the rest of the
 	// request — queueing, a long stream — is not bounded by it.
-	ClearBodyDeadline(rq.w)
+	clearBodyDeadline(rq.w)
 	rq.body = body
 	return parseOwnedFields(rq)
 }

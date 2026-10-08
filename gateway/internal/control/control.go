@@ -22,3 +22,11 @@ const (
 	CodeRecordInstanceMismatch       = "record-instance-mismatch"
 	CodeRecordIDDuplicate            = "record-id-duplicate"
 )
+
+// Endpoint-level refusal codes kaiak-control answers (CONTROL-PROTOCOL.md, Request
+// checks) that the gateway acts on.
+const (
+	codeUsageBatchInvalid = "usage-batch-invalid"
+	codeInstanceMismatch  = "instance-mismatch"
+	codeRequestInvalid    = "request-invalid"
+)

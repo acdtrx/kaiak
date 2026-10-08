@@ -190,7 +190,7 @@ func (l *Listener) cut() {
 
 // withClientDeadlines applies the body-read and write deadlines to every request
 // handler serves. The body-read deadline is set as a request with a body is taken
-// and cleared once the handler read the body (ClearBodyDeadline): a read deadline
+// and cleared once the handler read the body (clearBodyDeadline): a read deadline
 // left on the connection would also end net/http's background read — which watches
 // for the client leaving — and cancel the request while a response streams. A
 // request without a body gets none, since that background read is already running.
@@ -213,10 +213,10 @@ func withClientDeadlines(handler http.Handler, timeouts ClientTimeouts) http.Han
 	})
 }
 
-// ClearBodyDeadline removes the body-read deadline once the handler has read the
+// clearBodyDeadline removes the body-read deadline once the handler has read the
 // request body in full. (net/http also clears it when it starts its background read
 // at the body's end; this does not rely on that.)
-func ClearBodyDeadline(w http.ResponseWriter) {
+func clearBodyDeadline(w http.ResponseWriter) {
 	_ = http.NewResponseController(w).SetReadDeadline(time.Time{})
 }
 

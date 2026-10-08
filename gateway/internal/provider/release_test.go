@@ -68,7 +68,13 @@ func TestSendKeepsNoRequestBodyOnceTheFirstEventIsIn(t *testing.T) {
 			t.Error("the edited body can still be replayed from the upstream request")
 		}
 	}
-	if r, ok := upstream.Body.(*upstreamBodyReader); !ok || r.held() {
+	r, ok := upstream.Body.(*upstreamBodyReader)
+	if ok {
+		r.mu.Lock()
+		ok = r.data == nil
+		r.mu.Unlock()
+	}
+	if !ok {
 		t.Errorf("the upstream request's body %T still holds the edited copy", upstream.Body)
 	}
 	runtime.KeepAlive(resp)

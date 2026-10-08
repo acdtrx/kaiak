@@ -75,12 +75,12 @@ const (
 // the protocol version, an unknown answer, a proxy's — is not the batch's fault and
 // is retried, so no billing data is dropped over a configuration problem.
 var batchRefusals = map[string]bool{
-	"usage-batch-invalid":       true,
+	codeUsageBatchInvalid:       true,
 	CodeRecordInstanceMismatch:  true,
 	CodeRecordIDDuplicate:       true,
 	config.CodeTimestampInvalid: true,
-	"instance-mismatch":         true,
-	"request-invalid":           true,
+	codeInstanceMismatch:        true,
+	codeRequestInvalid:          true,
 }
 
 // batchRefused reports whether e means the batch itself can never be accepted: one of

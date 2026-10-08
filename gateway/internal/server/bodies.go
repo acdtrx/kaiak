@@ -31,8 +31,8 @@ func NewBodyBudget(limit int64) *BodyBudget { return &BodyBudget{limit: limit} }
 // Limit is the budget's size: also the largest body any request may send.
 func (b *BodyBudget) Limit() int64 { return b.limit }
 
-// InUse is the bytes currently taken.
-func (b *BodyBudget) InUse() int64 {
+// inUse is the bytes currently taken.
+func (b *BodyBudget) inUse() int64 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.used
