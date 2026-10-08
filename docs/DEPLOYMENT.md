@@ -1011,7 +1011,7 @@ Boot).
       variant `limit-carried-over`;
     - exports `limitIdentity`, `validateConfigSnapshot` (now `validateConfigEvent`),
       `validateResync`, and the config-version types.
-- **After 0.11.1** (protocol 5 and config format 5 unchanged):
+- **0.11.5** (protocol 5 and config format 5 unchanged):
   - **Host apps on `kaiak-control`:**
     - the core: `totals(instance)` is gone — `readTotals()` is one snapshot for every
       gateway; `startExpirySweep()`/`stopExpirySweep()` are gone — `start()`/`stop()`
