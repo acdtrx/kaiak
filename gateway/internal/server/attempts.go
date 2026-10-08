@@ -52,8 +52,8 @@ type attempt struct {
 // attempt loop (docs/specs/GATEWAY.md, Request pipeline and Routing and reliability:
 // retries), with what every attempt goes through: the router's slots, the recorder
 // that settles usage, the providers that send upstream, the retry budget, the memory
-// of endpoints missing from backends' servers, and the logger for the warning a newly
-// missing endpoint raises.
+// of endpoints missing from deployments' servers, and the logger for the warning a
+// newly missing endpoint raises.
 type attempts struct {
 	router    *routing.Router
 	recorder  *accounting.Recorder
@@ -224,11 +224,12 @@ func (l *attempts) send(ctx context.Context, rq *request, at *attempt) (provider
 		if perr, ok := errors.AsType[*provider.Error](at.err); ok && failureRuleOf(perr).refused {
 			at.meter.Refused()
 			if perr.Code == provider.CodeEndpointMissing &&
-				l.missing.remember(at.deployment.Backend.ID, rq.endpoint.api, time.Now(), rq.snapshot.Circuit.ProbeInterval) {
-				// Not a circuit failure, so it shows here, once per interval: the
-				// operator upgrades the server; meanwhile routing leaves it out for the
-				// endpoint.
-				l.logger.Warn("the backend's server lacks an endpoint its type serves: an older version?",
+				l.missing.remember(at.deployment, rq.endpoint.api, time.Now(), rq.snapshot.Circuit.ProbeInterval) {
+				// Not a circuit failure, so it shows here, once per interval and
+				// deployment: the server's version, the model it loaded or its flags
+				// leave the endpoint out — on vllm, a wrong base_url too; meanwhile
+				// routing leaves the deployment out for the endpoint.
+				l.logger.Warn("the deployment's server does not serve an endpoint its type serves",
 					"kaiak.request.id", rq.id, "kaiak.backend.id", at.deployment.Backend.ID,
 					"kaiak.deployment.model", at.deployment.Model, "kaiak.endpoint", rq.endpoint.name)
 			}
@@ -249,11 +250,11 @@ func (l *attempts) send(ctx context.Context, rq *request, at *attempt) (provider
 // first-event timeout, a backend 5xx or a busy backend (a stream whose first event was
 // an error event among them, as the status its kind matches), the backend refusing
 // the gateway's credential (another backend has its own), the backend not serving the
-// deployment's model, and the backend's base_url or server leading to no endpoint
-// (another deployment does serve). Not retried: a response relayed from the backend (a
-// success, a caller's 4xx), a non-stream response timeout (the backend was working on
-// a long answer; another would take as long), the client gone, the drain's cut, a
-// gateway fault.
+// deployment's model, and the backend's base_url or the deployment's server leading to
+// no endpoint (another deployment does serve). Not retried: a response relayed from
+// the backend (a success, a caller's 4xx), a non-stream response timeout (the backend
+// was working on a long answer; another would take as long), the client gone, the
+// drain's cut, a gateway fault.
 func retryable(outcome metrics.AttemptOutcome) bool {
 	return slices.Contains(metrics.RetryableOutcomes, outcome)
 }
@@ -262,17 +263,17 @@ func retryable(outcome metrics.AttemptOutcome) bool {
 // attempts, and for its deployment:
 //   - backendWide: the failure belongs to the backend rather than the deployment, so
 //     the retries refuse all of the model's deployments on that backend — the
-//     gateway's credential refused (the same credential would be refused), its
-//     base_url leading to no endpoint and its server lacking the endpoint (every
-//     deployment on it uses the same). A missing model is the deployment's alone:
-//     another model on the same backend may be served.
+//     gateway's credential refused (the same credential would be refused) and its
+//     base_url leading to no endpoint (every deployment on it uses the same). A
+//     missing model and a missing endpoint are the deployment's alone: another model
+//     on the same backend may be served, and on a router-mode llama-server each model
+//     runs with its own flags.
 //   - throttle: the backend is busy, so the deployment cools down
 //     (docs/specs/GATEWAY.md, Routing and reliability: 429 cooldown).
 var attemptRules = map[metrics.AttemptOutcome]struct{ backendWide, throttle bool }{
-	metrics.AttemptAuthFailed:      {backendWide: true},
-	metrics.AttemptPathMissing:     {backendWide: true},
-	metrics.AttemptEndpointMissing: {backendWide: true},
-	metrics.AttemptRateLimited:     {throttle: true},
+	metrics.AttemptAuthFailed:  {backendWide: true},
+	metrics.AttemptPathMissing: {backendWide: true},
+	metrics.AttemptRateLimited: {throttle: true},
 }
 
 // errorEventKind is the kind of the error event an attempt's error carries — before
@@ -525,9 +526,9 @@ type failureRule struct {
 // would fail the same way), not serving the deployment's model, its base_url leading
 // to no endpoint. A non-stream response timeout is its own class, neutral but for a
 // half-open trial and a run of them (routing.ResponseTimeout); an endpoint missing
-// from the backend's server is neutral: the deployment serves its other endpoints. A
-// CodeErrorEvent is ruled by its event's kind (errorEventRules); a code without a rule
-// is a CodeUnavailable.
+// from the deployment's server is neutral: the deployment serves its other endpoints.
+// A CodeErrorEvent is ruled by its event's kind (errorEventRules); a code without a
+// rule is a CodeUnavailable.
 var failureRules = map[provider.Code]failureRule{
 	provider.CodeUnavailable: {metrics.AttemptUnavailable, routing.Failure, false,
 		upstreamAnswer(http.StatusBadGateway, provider.CodeUnavailable, metrics.ErrorUpstreamUnavailable,

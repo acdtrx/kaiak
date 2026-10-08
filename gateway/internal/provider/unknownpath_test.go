@@ -83,9 +83,11 @@ func readAll(resp Response) string {
 	}
 }
 
-// Per module: its server's unknown-path answer is upstream_path_missing, whose error
-// names the URL and not the backend's text; any other server's answer, a caller's
-// 404 and a missing model behave as they did — relayed whole, or
+// Per module, on chat: its server's unknown-path answer is upstream_path_missing — on
+// vllm upstream_endpoint_missing, since vllm has no core endpoints
+// (docs/specs/GATEWAY.md, Providers → An endpoint missing from a server) — whose
+// error names the URL and not the backend's text; any other server's answer, a
+// caller's 404 and a missing model behave as they did — relayed whole, or
 // upstream_model_missing, which is read first.
 func TestUnknownPathByModule(t *testing.T) {
 	srv, answer := notFoundServer(t)
@@ -95,13 +97,17 @@ func TestUnknownPathByModule(t *testing.T) {
 			b := &config.Backend{ID: "b", Type: m.typ, BaseURL: srv.URL + "/v1", APIKeyEnv: "KEY",
 				ConnectTimeout: time.Second, FirstEventTimeout: time.Minute, ResponseTimeout: time.Minute,
 				StallTimeout: time.Minute}
+			unknown := CodePathMissing
+			if m.typ == config.BackendVLLM {
+				unknown = CodeEndpointMissing
+			}
 			for name, body := range unknownPathAnswers {
 				answer(body)
 				resp, err := sendFor(r, b)
 				var perr *Error
 				switch isUnknown := slices.Contains(unknownPathOf[m.typ], name); {
-				case isUnknown && (!errors.As(err, &perr) || perr.Code != CodePathMissing):
-					t.Errorf("%s answer = %v, want upstream_path_missing", name, err)
+				case isUnknown && (!errors.As(err, &perr) || perr.Code != unknown):
+					t.Errorf("%s answer = %v, want %s", name, err, unknown)
 				case isUnknown && !strings.Contains(err.Error(), srv.URL+"/v1"):
 					t.Errorf("%s answer: error %q does not name the URL", name, err)
 				case isUnknown && body != "" && strings.Contains(err.Error(), strings.TrimSpace(body)):

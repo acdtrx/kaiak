@@ -132,8 +132,10 @@ func TestXAPIKeyAuthenticates(t *testing.T) {
 
 // A provider's refusal before sending is the caller's 400, named by the provider's
 // code and parameter, never retried, neutral for the circuit; an endpoint missing
-// from the backend's server is retried on other backends' deployments only, neutral
-// too (docs/specs/GATEWAY.md, Routing and reliability: retries, outcome classes).
+// from the deployment's server is retried on the model's other deployments — on the
+// same backend too: on a router-mode llama-server each model runs with its own flags
+// — neutral too (docs/specs/GATEWAY.md, Routing and reliability: retries, outcome
+// classes; Providers → An endpoint missing from a server).
 func TestRefusalAndEndpointMissingClassification(t *testing.T) {
 	refusal := &provider.RefusalError{Code: "price_option_unsupported", Param: "speed", Message: "no fast mode"}
 	at := &attempt{}
@@ -170,8 +172,8 @@ func TestRefusalAndEndpointMissingClassification(t *testing.T) {
 		for _, r := range avoid.Refused {
 			refused = refused || r == (routing.DeploymentID{Backend: d.Backend.ID, Model: d.Model})
 		}
-		if refused != (d.Backend == a) {
-			t.Errorf("deployment %s/%s refused %v, want every deployment on the backend refused", d.Backend.ID, d.Model, refused)
+		if refused != (d == m.Deployments[0]) {
+			t.Errorf("deployment %s/%s refused %v, want the one tried refused alone", d.Backend.ID, d.Model, refused)
 		}
 	}
 }

@@ -34,7 +34,7 @@ type API struct {
 
 // NewAPI returns the client API handler, admitting requests and counting them in
 // flight through drain, holding request bodies within bodies, checking limits through limiter, choosing deployments through
-// router (leaving out those on backends missing remembers lacking the endpoint),
+// router (leaving out those missing remembers not serving the endpoint),
 // sending requests upstream through providers and settling their usage through
 // recorder; every request is observed in ops. The
 // holder must hold a snapshot before the handler serves: the API listener starts only

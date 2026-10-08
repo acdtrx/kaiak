@@ -35,18 +35,23 @@ func (m *vLLM) header() http.Header {
 	return bearer(m.credential)
 }
 
-// Send implements Provider.
+// Send implements Provider. vllm has no core endpoints: vLLM creates its routes from
+// the loaded model's tasks — no chat route on a reranker or embedding server, no
+// embeddings or rerank route on a chat server — so its answer to a path it does not
+// have names the model, not the URL, on every endpoint: the endpoint missing, not a
+// wrong base_url (docs/specs/GATEWAY.md, Providers → An endpoint missing from a
+// server).
 func (m *vLLM) Send(ctx context.Context, req *Request) (Response, error) {
 	return sendWire(ctx, req, wireCall{
 		backend: m.backend, client: m.client, url: m.url(req.Endpoint.Path()), header: m.header(),
-		missingModel: missingModelNamedOrCoded("model_not_found"), unknownPath: m.unknownPath, core: openAICore(req.Endpoint),
+		missingModel: missingModelNamedOrCoded("model_not_found"), unknownPath: m.unknownPath,
 	})
 }
 
 // unknownPath: vLLM's web framework (FastAPI) answers a path it has no route for
 // with {"detail": "Not Found"}, and a POST to a route it has for another method only
-// with {"detail": "Method Not Allowed"} (a 405, read beyond the core endpoints); vLLM's
-// own 404s carry the OpenAI or the Anthropic error shape.
+// with {"detail": "Method Not Allowed"} (a 405); vLLM's own 404s carry the OpenAI or
+// the Anthropic error shape.
 func (m *vLLM) unknownPath(answer []byte) bool {
 	var a struct {
 		Detail *string `json:"detail"`

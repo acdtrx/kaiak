@@ -3,9 +3,10 @@
 // counting, and the models list (the gateway's probe) under /v1/ (the OpenAI and Anthropic layout),
 // /openai/v1/ (Azure OpenAI's) and /anthropic/v1/ (Claude in Foundry's), and rerank
 // under /v1/ alone (vLLM's and llama-server's: neither Azure API has one), in vLLM's
-// answer shape or llama-server's (SetRerankShape); it answers as scripted by the test,
-// and records every request it receives. Test tooling only: nothing in the gateway binary imports it;
-// cmd/fakebackend runs it as a process for the e2e test and the live-test kit.
+// answer shape or llama-server's (SetRerankShape); it answers as scripted by the test —
+// a path it has no route for too (SetNoRoute) — and records every request it receives.
+// Test tooling only: nothing in the gateway binary imports it; cmd/fakebackend runs it
+// as a process for the e2e test and the live-test kit.
 package fakebackend
 
 import (
@@ -16,6 +17,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -171,6 +173,10 @@ type Backend struct {
 	modelsRequests []*Request
 	// rerankShape is the server whose rerank answer the backend sends.
 	rerankShape RerankShape
+	// noRoute is the body of the 404 answering a path the backend has no route for
+	// ("": an OpenAI-shaped error); unrouted are the endpoints it has no route for.
+	noRoute  string
+	unrouted []string
 }
 
 // maxQueuedArrivals bounds requests queued for NextRequest; a test that never reads
@@ -250,6 +256,17 @@ func (b *Backend) SetRerankShape(shape RerankShape) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.rerankShape = shape
+}
+
+// SetNoRoute scripts, from now on, how the backend answers a path it has no route
+// for — a 404 with body, as its server's web framework answers one (vLLM's FastAPI:
+// {"detail":"Not Found"}; "" for the default, an OpenAI-shaped error) — and the
+// endpoints it has no route for (paths below the version prefix, as
+// "chat/completions"), as a vLLM server serving a reranker has no chat route.
+func (b *Backend) SetNoRoute(body string, endpoints ...string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.noRoute, b.unrouted = body, endpoints
 }
 
 // ModelsRequests returns every request for the models list so far, in arrival
@@ -333,6 +350,7 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 	b.received = append(b.received, req)
 	reply := b.reply
 	rerankShape := b.rerankShape
+	noRoute, unrouted := b.noRoute, b.unrouted
 	if len(b.queued) > 0 {
 		reply = b.queued[0]
 		b.queued = b.queued[1:]
@@ -349,8 +367,14 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 	default:
 		ok = false
 	}
-	if !ok || r.Method != http.MethodPost {
-		writeJSON(w, http.StatusNotFound, errorBody("unknown path "+r.URL.Path))
+	if !ok || r.Method != http.MethodPost || slices.Contains(unrouted, endpoint) {
+		if noRoute == "" {
+			writeJSON(w, http.StatusNotFound, errorBody("unknown path "+r.URL.Path))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, noRoute)
 		return
 	}
 	// A Messages endpoint answers its errors in Anthropic's shape.

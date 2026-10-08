@@ -271,7 +271,7 @@ func (g *testGateway) apply(t *testing.T, edit func(doc string) string) {
 	s := testSnapshotWith(t, g.backend.URL(), edit)
 	g.holder.Swap(s)
 	g.router.Configure(s)
-	g.missing.Retain(s.Backends)
+	g.missing.Retain(s.Models)
 }
 
 // testAPI returns the API handler over the test snapshot and a buffer of its log.

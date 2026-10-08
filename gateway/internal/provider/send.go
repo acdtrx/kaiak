@@ -20,8 +20,9 @@ import (
 // type: a module prepares the upstream request — URL, credential (bearer, apiKey or
 // its own header), its own body edits, the error codes that mean a missing model, its
 // server's answer to a path it does not have, whether the endpoint is one of its
-// type's core ones — and hands it to sendWire, which applies the edits every request
-// gets (passthroughBody); its probe reads the models list with fetchModelsList.
+// type's core ones, its server's answer that it was not started in the endpoint's
+// mode — and hands it to sendWire, which applies the edits every request gets
+// (passthroughBody); its probe reads the models list with fetchModelsList.
 
 // wireCall is one upstream request a backend module prepared.
 type wireCall struct {
@@ -34,17 +35,23 @@ type wireCall struct {
 	// edits are the module's own edits of the client's body, applied with the ones
 	// every request gets (passthroughBody).
 	edits []memberEdit
-	// missingModel reports whether a 404 answer (its first maxNotFoundBody bytes) says
+	// missingModel reports whether a 404 answer (its first maxPeekedAnswer bytes) says
 	// the deployment's backend-side model does not exist there.
 	missingModel func(answer []byte, model string) bool
-	// unknownPath reports whether a 404 answer (its first maxNotFoundBody bytes) is
-	// the server's answer to a path it does not have: the request reached the
-	// server but no endpoint.
+	// unknownPath reports whether a 404 answer — or beyond the core endpoints a 405 —
+	// (its first maxPeekedAnswer bytes) is the server's answer to a path it does not
+	// have: the request reached the server but no endpoint.
 	unknownPath func(answer []byte) bool
 	// core: the endpoint is one of the type's core endpoints, where a path the server
 	// does not have means a wrong base_url. On any other endpoint the type serves, it
-	// means the server's version predates the endpoint (CodeEndpointMissing).
+	// means the server does not serve the endpoint: its version, the model it loaded
+	// or the flags it started with leave it out (CodeEndpointMissing).
 	core bool
+	// modeMissing, when set, reports whether a 501 answer (its first maxPeekedAnswer
+	// bytes) says the server was not started in the mode the endpoint needs: the
+	// endpoint is missing from it (CodeEndpointMissing). Unset, a 501 is the backend's
+	// 5xx.
+	modeMissing func(answer []byte) bool
 }
 
 // sendWire sends call upstream for req and waits for the first event of the response,
@@ -171,21 +178,27 @@ func sendWire(ctx context.Context, req *Request, call wireCall) (Response, error
 
 // deploymentFailure is the error for an answer that is the deployment's failure rather
 // than the request's — its credential refused (401, 403), its model missing, no
-// endpoint at its path (a 404, or beyond the core endpoints a 405) — or nil for an
-// answer to relay. The start of a 404 or 405 answer is read for it, and put back
-// (readNotFound).
+// endpoint at its path (a 404, or beyond the core endpoints a 405), its server not
+// started in the endpoint's mode (a 501 the module reads so) — or nil for an answer
+// to relay. The start of a 404, 405 or 501 answer is read for it, and put back
+// (peekAnswer).
 func deploymentFailure(resp *http.Response, req *Request, call wireCall) *Error {
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return &Error{Code: CodeAuthFailed, Err: fmt.Errorf("backend %s answered %d", call.backend.ID, resp.StatusCode)}
-	}
+	switch status := resp.StatusCode; {
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		return &Error{Code: CodeAuthFailed, Err: fmt.Errorf("backend %s answered %d", call.backend.ID, status)}
+	case status == http.StatusNotImplemented && call.modeMissing != nil:
+		if answer, ok := peekAnswer(resp); ok && call.modeMissing(answer) {
+			return endpointMissing(call, status)
+		}
+		return nil
 	// A 405 is read too beyond the core endpoints: vLLM answers one where a POST
 	// lands on a route it has for another method only.
-	if resp.StatusCode != http.StatusNotFound && (resp.StatusCode != http.StatusMethodNotAllowed || call.core) {
+	case status != http.StatusNotFound && (status != http.StatusMethodNotAllowed || call.core):
 		return nil
 	}
 	// A missing model is read first: a server may answer it in the same shape as an
 	// unknown path.
-	switch answer, ok := readNotFound(resp); {
+	switch answer, ok := peekAnswer(resp); {
 	case ok && resp.StatusCode == http.StatusNotFound && call.missingModel(answer, req.Deployment.Model):
 		return &Error{Code: CodeModelMissing, Err: fmt.Errorf("backend %s answered 404: model %q does not exist there",
 			call.backend.ID, req.Deployment.Model)}
@@ -193,10 +206,17 @@ func deploymentFailure(resp *http.Response, req *Request, call wireCall) *Error 
 		return &Error{Code: CodePathMissing, Err: fmt.Errorf("backend %s answered 404: no endpoint at %s (check its base_url)",
 			call.backend.ID, call.url)}
 	case ok && call.unknownPath(answer):
-		return &Error{Code: CodeEndpointMissing, Err: fmt.Errorf("backend %s answered %d: its server has no %s endpoint (an older version?)",
-			call.backend.ID, resp.StatusCode, req.Endpoint.Path())}
+		return endpointMissing(call, resp.StatusCode)
 	}
 	return nil
+}
+
+// endpointMissing is the error for an answer of status saying the deployment's server
+// does not serve the endpoint its type serves. It names the URL: on a type without
+// core endpoints (vllm) a wrong base_url answers this way too.
+func endpointMissing(call wireCall, status int) *Error {
+	return &Error{Code: CodeEndpointMissing, Err: fmt.Errorf("backend %s answered %d: its server does not serve %s",
+		call.backend.ID, status, call.url)}
 }
 
 // maxPreambleBlocks bounds the comment and keep-alive blocks read ahead of a stream's

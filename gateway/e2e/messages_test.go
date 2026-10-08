@@ -157,8 +157,8 @@ func TestMessages(t *testing.T) {
 		if v := g.metric(t, `kaiak_circuit_state{kaiak_backend_id="old",kaiak_deployment_model="Qwen/Qwen3-8B",kaiak_circuit_state="open"}`); v != 0 {
 			t.Errorf("old's circuit open = %v, want closed", v)
 		}
-		g.logs.wait(t, "the endpoint-missing warning", msg("the backend's server lacks an endpoint its type serves: an older version?",
-			"kaiak.backend.id", "old"))
+		g.logs.wait(t, "the endpoint-missing warning", msg("the deployment's server does not serve an endpoint its type serves",
+			"kaiak.backend.id", "old", "kaiak.deployment.model", "Qwen/Qwen3-8B", "kaiak.endpoint", "messages"))
 	})
 
 	t.Run("Anthropic-shaped model list", func(t *testing.T) {

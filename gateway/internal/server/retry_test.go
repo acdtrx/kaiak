@@ -183,7 +183,9 @@ func TestAttemptRules(t *testing.T) {
 		{"credential refused", code(provider.CodeAuthFailed), 0, metrics.AttemptAuthFailed, true, true, false},
 		{"model missing", code(provider.CodeModelMissing), 0, metrics.AttemptModelMissing, true, false, false},
 		{"path missing", code(provider.CodePathMissing), 0, metrics.AttemptPathMissing, true, true, false},
-		{"endpoint missing", code(provider.CodeEndpointMissing), 0, metrics.AttemptEndpointMissing, true, true, false},
+		// A missing endpoint is the deployment's alone (GATEWAY.md, Providers → An
+		// endpoint missing from a server: remembered per deployment).
+		{"endpoint missing", code(provider.CodeEndpointMissing), 0, metrics.AttemptEndpointMissing, true, false, false},
 		{"failure event", event(provider.ErrorEventFailure), 0, metrics.AttemptServerError, true, false, false},
 		{"busy event", event(provider.ErrorEventBusy), 0, metrics.AttemptRateLimited, true, false, true},
 		{"caller event", event(provider.ErrorEventCaller), 0, metrics.AttemptClientError, false, false, false},

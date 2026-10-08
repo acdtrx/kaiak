@@ -281,14 +281,14 @@ func newGraph(s settings, reported string, lookupEnv func(string) (string, bool)
 	g.ops = metrics.NewOps(g.registry, g.router, circuits, g.holder)
 	g.usage = metrics.NewUsageMetrics(g.registry, g.holder)
 	g.modelChecker = provider.NewModelChecker(g.providers, logger)
-	// Every applied config sets the backend caps routing enforces and the backends
-	// whose connection pools and missing endpoints are kept, and has its deployments'
-	// models checked in the background.
+	// Every applied config sets the backend caps routing enforces, the backends whose
+	// connection pools are kept and the deployments whose missing endpoints are kept,
+	// and has its deployments' models checked in the background.
 	g.applier = config.NewApplier(g.holder, logger, lookupEnv, func(load config.Load) {
 		if applied := load.Snapshot; applied != nil {
 			g.router.Configure(applied)
 			g.providers.Retain(applied.Backends)
-			g.missingEndpoints.Retain(applied.Backends)
+			g.missingEndpoints.Retain(applied.Models)
 			g.modelChecker.Check(applied)
 			if bodyCap := applied.MaxRequestBodyBytes; bodyCap > s.bodyMemory {
 				logger.Warn("max_request_body_bytes exceeds the body budget: bodies above the budget are refused as too large",

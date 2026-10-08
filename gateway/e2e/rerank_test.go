@@ -6,11 +6,14 @@ package e2e
 // each a fake backend answering in its server's shape — with the model edit alone;
 // the answer comes back in that shape under the public model name; the usage settles
 // from the reported prompt tokens, priced on tokens_in, or is estimated and flagged
-// when the answer reports none; and the documents cap and a model with no
-// rerank-serving deployment are refused before any backend.
+// when the answer reports none; the documents cap and a model with no
+// rerank-serving deployment are refused before any backend; and a chat request to the
+// vllm reranker, whose server has no chat route, is answered as the endpoint missing,
+// neutral for the circuit.
 
 import (
 	"encoding/json"
+	"fmt"
 	"maps"
 	"net/http"
 	"path/filepath"
@@ -41,6 +44,10 @@ var rerankBackends = []rerankBackend{
 // rerankUnserved is the scenario's backend whose type does not serve rerank, on the
 // vllm row's fake backend, with the same reranker deployed.
 var rerankUnserved = scenarioBackend{name: "oc", typ: "openai-compatible", model: "rerank-oc", deployed: "Qwen/Qwen3-Reranker-0.6B"}
+
+// vllmRouteMissing is vLLM's answer to a path it has no route for — FastAPI's
+// (docs/specs/GATEWAY.md, Providers → Wrong path to a host).
+const vllmRouteMissing = `{"detail":"Not Found"}`
 
 // rerankPromptTokens is what the fake backends report; at the rerankers' $2 per
 // million input tokens it costs 80 µUSD.
@@ -102,6 +109,10 @@ func TestRerank(t *testing.T) {
 		fake.SetReply(fakebackend.Reply{Usage: &fakebackend.Usage{PromptTokens: rerankPromptTokens}})
 		fakes[b.name] = fake
 	}
+	// vl's server is a vLLM reranker: vLLM creates its routes from the loaded model's
+	// tasks, so it has none for the generating and embedding endpoints.
+	fakes["vl"].SetNoRoute(vllmRouteMissing, "chat/completions", "completions", "embeddings", "messages",
+		"messages/count_tokens", "responses")
 	received := func() int {
 		n := 0
 		for _, fake := range fakes {
@@ -187,6 +198,38 @@ func TestRerank(t *testing.T) {
 			}
 		})
 	}
+
+	// A chat request to the vllm reranker answers vLLM's route-missing 404: 502
+	// upstream_endpoint_missing without the backend's text, neutral for the circuit
+	// however many come — more than the failure threshold — with the endpoint-missing
+	// warning; the deployment serves rerank right after (docs/specs/GATEWAY.md,
+	// Providers → An endpoint missing from a server).
+	t.Run("vllm/chat to the reranker", func(t *testing.T) {
+		b := rerankBackends[0]
+		for i := range 6 {
+			r := g.post(t, "/v1/chat/completions", key, fmt.Sprintf("chat-to-reranker-%d", i), chatBody(b.model, false, nil))
+			if r.StatusCode != http.StatusBadGateway || openAIErrorCode(t, r) != "upstream_endpoint_missing" ||
+				strings.Contains(string(r.body), "Not Found") {
+				t.Fatalf("%d %s, want 502 upstream_endpoint_missing", r.StatusCode, r.body)
+			}
+		}
+		deployment := `kaiak_backend_id="vl",kaiak_deployment_model="` + b.deployed + `"`
+		if v := g.metric(t, `kaiak_circuit_state{`+deployment+`,kaiak_circuit_state="open"}`); v != 0 {
+			t.Errorf("vl's circuit open = %v, want closed", v)
+		}
+		if v := g.metric(t, `kaiak_upstream_attempts_total{`+deployment+`,kaiak_attempt_outcome="endpoint_missing"}`); v != 6 {
+			t.Errorf("endpoint_missing attempts = %v, want 6", v)
+		}
+		line := g.logs.wait(t, "the endpoint-missing warning",
+			msg("the deployment's server does not serve an endpoint its type serves", "kaiak.backend.id", "vl"))
+		if line["level"] != "WARN" || line["kaiak.deployment.model"] != b.deployed || line["kaiak.endpoint"] != "chat_completions" {
+			t.Errorf("warning %v, want WARN naming %s and chat_completions", line, b.deployed)
+		}
+		r := g.post(t, "/v1/rerank", key, "rerank-after-chat", rerankBody(t, b.model, rerankDocuments, nil))
+		if r.StatusCode != http.StatusOK || !strings.Contains(string(r.body), `"results"`) {
+			t.Errorf("rerank after the chat requests: %d %s, want 200 with results", r.StatusCode, r.body)
+		}
+	})
 
 	// An answer without usage settles the request's input estimate — the body, plus
 	// the query once more for each document beyond the first — flagged estimated,

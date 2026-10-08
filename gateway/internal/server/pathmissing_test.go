@@ -11,13 +11,13 @@ import (
 
 // pathModules are the backend types with their server's answer to a path it does not
 // have (docs/specs/GATEWAY.md, Providers: wrong path to a host); suffix is what the
-// type's base_url adds to the fake backend's address.
+// type's base_url adds to the fake backend's address. vllm has none: its answer reads
+// as the endpoint missing (TestVLLMRouteMissingIsTheEndpointMissing).
 var pathModules = []struct {
 	typ, suffix, answer string
 }{
 	{"openai", "/v1", `{"error":{"message":"Invalid URL (POST /chat/completions)","type":"invalid_request_error","param":null,"code":null}}`},
 	{"azure-openai", "", `{"error":{"code":"404","message":"Resource not found"}}`},
-	{"vllm", "/v1", `{"detail":"Not Found"}`},
 	{"llama-server", "/v1", `{"error":{"message":"File Not Found","type":"not_found_error","code":404}}`},
 	{"openai-compatible", "/v1", "404 page not found\n"},
 }
@@ -120,4 +120,61 @@ func TestUnknownPathRefusesTheBackendForTheRequest(t *testing.T) {
 	if want := `"kaiak.attempts":2,"kaiak.tried":"local/first:upstream_path_missing,local-b/second:200"`; !strings.Contains(logLine(t, g, "r"), want) {
 		t.Errorf("log line misses %s:\n%s", want, logLine(t, g, "r"))
 	}
+}
+
+// vllm has no core endpoints: vLLM creates its routes from the loaded model's tasks, so
+// its route-missing answer on chat — a reranker's, or a wrong base_url's — is the
+// endpoint missing, not a wrong path (docs/specs/GATEWAY.md, Providers → Wrong path to
+// a host, An endpoint missing from a server): retried on another deployment, neutral
+// for the circuit, no usage record of its own, counted as endpoint_missing; with no
+// deployment left the client gets 502 upstream_endpoint_missing without the backend's
+// text, and its record no usage.
+func TestVLLMRouteMissingIsTheEndpointMissing(t *testing.T) {
+	const answer = `{"detail":"Not Found"}`
+	t.Run("retried", func(t *testing.T) {
+		circuit := withGlobal(t, `"circuit": { "failure_threshold": 1, "probe_interval_ms": 3600000 }`)
+		g, other := newRetryGateway(t, "local", "local-b", func(doc string) string {
+			return circuit(localAs(t, "vllm", "/v1")(doc))
+		})
+		g.backend.QueueReplies(fakebackend.Reply{Status: http.StatusNotFound, Body: answer})
+		w := post(t, g, "r", `{"model":"retry"}`)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status %d, want 200 from the second deployment: %s", w.Code, w.Body.String())
+		}
+		if len(other.Requests()) != 1 {
+			t.Errorf("second deployment got %d requests, want 1", len(other.Requests()))
+		}
+		line := logLine(t, g, "r")
+		if want := `"kaiak.tried":"local/first:upstream_endpoint_missing,local-b/second:200"`; !strings.Contains(line, want) {
+			t.Errorf("log line misses %s:\n%s", want, line)
+		}
+		records := recordsOf(g, "r")
+		if len(records) != 1 || records[0].Deployment.Backend != "local-b" {
+			t.Errorf("records %+v, want the second deployment's alone", records)
+		}
+		if circuitOpen(g, "local", "first") {
+			t.Error("circuit of local/first open, want closed: the outcome is neutral")
+		}
+		expectMetricLines(t, scrape(g),
+			`kaiak_retries_total{gen_ai_request_model="retry",kaiak_backend_id="local",kaiak_attempt_outcome="endpoint_missing"} 1`,
+			`kaiak_upstream_attempts_total{kaiak_backend_id="local",kaiak_deployment_model="first",kaiak_attempt_outcome="endpoint_missing"} 1`)
+	})
+	t.Run("no deployment left", func(t *testing.T) {
+		g := newTestGateway(t)
+		g.apply(t, localAs(t, "vllm", "/v1"))
+		g.backend.SetReply(fakebackend.Reply{Status: http.StatusNotFound, Body: answer})
+		w := post(t, g, "r", `{"model":"open"}`)
+		expectError(t, w, http.StatusBadGateway, "upstream_endpoint_missing")
+		if strings.Contains(w.Body.String(), "Not Found") {
+			t.Errorf("the backend's answer reached the client: %s", w.Body.String())
+		}
+		if n := len(g.backend.Requests()); n != 1 {
+			t.Errorf("backend got %d requests, want 1", n)
+		}
+		records := recordsOf(g, "r")
+		if len(records) != 1 {
+			t.Fatalf("%d records, want the request's one", len(records))
+		}
+		expectUnits(t, records[0], units(0, 0, 0, 0, 0), false, true)
+	})
 }

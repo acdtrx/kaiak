@@ -6,25 +6,27 @@ import (
 
 	"kaiak/internal/config"
 	"kaiak/internal/provider"
+	"kaiak/internal/routing"
 )
 
-// MissingEndpoints remembers which backends' servers lack an endpoint their type
-// serves (an older version answering upstream_endpoint_missing), for one probe
-// interval each (docs/specs/GATEWAY.md, Providers → An endpoint missing from a
-// server): routing leaves their deployments out for that endpoint meanwhile, so a
-// server whose instant 404 makes it look least loaded does not draw the endpoint's
-// traffic — and the retries it would cost — while it serves its other endpoints as
-// before. Gateway-local and in memory, like circuits. An entry leaves when a request
+// MissingEndpoints remembers which deployments' servers do not serve an endpoint
+// their type serves (upstream_endpoint_missing), for one probe interval each
+// (docs/specs/GATEWAY.md, Providers → An endpoint missing from a server): routing
+// leaves them out for that endpoint meanwhile, so a deployment whose instant answer
+// makes it look least loaded does not draw the endpoint's traffic — and the retries it
+// would cost — while it serves its other endpoints as before. Per deployment, not per
+// backend: a router-mode llama-server runs each model with its own flags behind one
+// base_url. Gateway-local and in memory, like circuits. An entry leaves when a request
 // for its endpoint finds it expired, or when an applied config no longer has its
-// backend (Retain).
+// deployment (Retain).
 type MissingEndpoints struct {
 	mu    sync.Mutex
 	until map[missingEndpoint]time.Time
 }
 
 type missingEndpoint struct {
-	backend string
-	api     provider.Endpoint
+	deployment routing.DeploymentID
+	api        provider.Endpoint
 }
 
 // NewMissingEndpoints returns an empty memory.
@@ -32,39 +34,46 @@ func NewMissingEndpoints() *MissingEndpoints {
 	return &MissingEndpoints{until: make(map[missingEndpoint]time.Time)}
 }
 
-// Retain forgets every backend not in backends, the applied config's: no request
-// visits a removed backend's entries again, so nothing else would. A request still
-// running on an older config may remember a removed backend after this; the next
+// Retain forgets every deployment not in models, the applied config's: no request
+// visits a removed deployment's entries again, so nothing else would. A request still
+// running on an older config may remember a removed deployment after this; the next
 // applied config forgets it.
-func (m *MissingEndpoints) Retain(backends map[string]*config.Backend) {
+func (m *MissingEndpoints) Retain(models map[string]*config.Model) {
+	kept := make(map[routing.DeploymentID]bool)
+	for _, model := range models {
+		for _, d := range model.Deployments {
+			kept[routing.IDOf(d)] = true
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for key := range m.until {
-		if _, ok := backends[key.backend]; !ok {
+		if !kept[key.deployment] {
 			delete(m.until, key)
 		}
 	}
 }
 
-// remember records that backend's server lacks api until now+ttl, and reports whether
-// it was not already remembered — the one moment worth a warning per interval.
-func (m *MissingEndpoints) remember(backend string, api provider.Endpoint, now time.Time, ttl time.Duration) bool {
+// remember records that d's server does not serve api until now+ttl, and reports
+// whether it was not already remembered — the one moment worth a warning per interval.
+func (m *MissingEndpoints) remember(d config.Deployment, api provider.Endpoint, now time.Time, ttl time.Duration) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	key := missingEndpoint{backend, api}
+	key := missingEndpoint{routing.IDOf(d), api}
 	fresh := !now.Before(m.until[key])
 	m.until[key] = now.Add(ttl)
 	return fresh
 }
 
-// exclude is model as routing sees it for api at now: its deployments on backends
-// remembered as lacking api left out — model itself when there are none, and when
-// every deployment is on one (they are tried again: a server may have been upgraded).
+// exclude is model as routing sees it for api at now: its deployments remembered as
+// not serving api left out — model itself when there are none, and when every
+// deployment is (they are tried again: a server may have been upgraded, or restarted
+// with another model or other flags).
 func (m *MissingEndpoints) exclude(model *config.Model, api provider.Endpoint, now time.Time) *config.Model {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	lacks := func(d config.Deployment) bool {
-		key := missingEndpoint{d.Backend.ID, api}
+		key := missingEndpoint{routing.IDOf(d), api}
 		until, ok := m.until[key]
 		if ok && !now.Before(until) {
 			delete(m.until, key)

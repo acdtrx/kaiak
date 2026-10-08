@@ -66,7 +66,7 @@ const (
 	AttemptServerError  AttemptOutcome = "server_error"  // a backend 5xx
 	AttemptBrokeOff     AttemptOutcome = "broke_off"     // broken off, stalled or incomplete after the first event
 	// Neutral: they leave the circuit as it is.
-	AttemptEndpointMissing AttemptOutcome = "endpoint_missing" // the backend's server lacks an endpoint its type serves
+	AttemptEndpointMissing AttemptOutcome = "endpoint_missing" // the deployment's server does not serve an endpoint its type serves
 	AttemptResponseTimeout AttemptOutcome = "response_timeout" // a non-stream response timeout
 	AttemptRateLimited     AttemptOutcome = "rate_limited"     // a backend 429
 	AttemptClientError     AttemptOutcome = "client_error"     // another backend 4xx, or the provider's refusal before sending

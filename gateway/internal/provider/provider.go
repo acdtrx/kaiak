@@ -191,9 +191,11 @@ const (
 	// does not have, on one of its type's core endpoints — the backend's base_url is
 	// wrong (docs/specs/GATEWAY.md, Providers: wrong path to a host).
 	CodePathMissing Code = "upstream_path_missing"
-	// CodeEndpointMissing: the same answer on an endpoint beyond the type's core ones
-	// — the server's version predates the endpoint, which its other endpoints do not
-	// (docs/specs/GATEWAY.md, Providers: an endpoint missing from a server).
+	// CodeEndpointMissing: the server does not serve an endpoint its type serves — the
+	// same answer on an endpoint beyond the type's core ones (every endpoint on vllm),
+	// or llama-server's 501 on embeddings or rerank: its version, the model it loaded
+	// or the flags it started with leave the endpoint out, while its other endpoints
+	// serve (docs/specs/GATEWAY.md, Providers: an endpoint missing from a server).
 	CodeEndpointMissing Code = "upstream_endpoint_missing"
 	// CodeErrorEvent: a successful stream's first event was an error event (a
 	// Messages error event, a Responses error or response.failed) — the backend gave

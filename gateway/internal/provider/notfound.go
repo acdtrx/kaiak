@@ -9,19 +9,20 @@ import (
 	"strings"
 )
 
-// A 404 answer read for the deployment's failure: the readers of its error shapes,
-// the missing-model rules the modules choose from, and the whole-word match.
+// An error answer read for the deployment's failure: the readers of its error
+// shapes, the missing-model rules the modules choose from, and the whole-word match.
 
-// maxNotFoundBody is the most of a 404 answer read to tell the deployment's failure
-// (a missing model, an unknown path) from a caller's 404; error answers are small.
-const maxNotFoundBody = 64 << 10
+// maxPeekedAnswer is the most of a 404, 405 or 501 answer read to tell the
+// deployment's failure (a missing model, an unknown path, a missing endpoint) from an
+// answer to relay; error answers are small.
+const maxPeekedAnswer = 64 << 10
 
-// readNotFound reads the start of a 404 (or 405) answer, up to maxNotFoundBody bytes, and puts
-// what was read back in front of the body, so an answer that is the caller's is
+// peekAnswer reads the start of a 404, 405 or 501 answer, up to maxPeekedAnswer bytes,
+// and puts what was read back in front of the body, so an answer that is relayed is
 // relayed whole. ok is false when the read failed: such an answer is not the
 // deployment's, and the body returns the error again after what was read.
-func readNotFound(resp *http.Response) (answer []byte, ok bool) {
-	head, err := io.ReadAll(io.LimitReader(resp.Body, maxNotFoundBody))
+func peekAnswer(resp *http.Response) (answer []byte, ok bool) {
+	head, err := io.ReadAll(io.LimitReader(resp.Body, maxPeekedAnswer))
 	resp.Body = struct {
 		io.Reader
 		io.Closer
