@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"syscall"
@@ -231,7 +232,7 @@ func TestSignalTriggersReloadAndStopsWithContext(t *testing.T) {
 	registry := metrics.NewRegistry()
 	ops := metrics.NewOps(registry, routing.New(routing.Options{}), holder)
 	loader := config.NewFileLoader(path, config.NewApplier(holder, logger, envOf(nil), ops.ConfigLoaded))
-	if err := loader.Load("startup"); err != nil {
+	if err := loader.Load(config.TriggerStartup); err != nil {
 		t.Fatal(err)
 	}
 	running := holder.Current()
@@ -273,6 +274,25 @@ func TestSignalTriggersReloadAndStopsWithContext(t *testing.T) {
 	}
 	if strings.Contains(exposition.String(), "kaiak_config_last_applied_timestamp_seconds 0\n") {
 		t.Error("config applied timestamp not set")
+	}
+}
+
+func TestBuildVersion(t *testing.T) {
+	stamped := &debug.BuildInfo{Main: debug.Module{Version: "v0.0.0-20260925-abcdef"}}
+	for _, c := range []struct {
+		name, stamped string
+		info          *debug.BuildInfo
+		ok            bool
+		want          string
+	}{
+		{"link-time version wins", "0.6.0-3-gabc1234", stamped, true, "0.6.0-3-gabc1234"},
+		{"module version without a link-time one", "", stamped, true, "v0.0.0-20260925-abcdef"},
+		{"go run", "", &debug.BuildInfo{}, true, "(devel)"},
+		{"no build info", "", nil, false, "(devel)"},
+	} {
+		if got := buildVersion(c.stamped, c.info, c.ok); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
 	}
 }
 

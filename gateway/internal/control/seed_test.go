@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"kaiak/internal/config"
 )
 
 // withSeed gives a client the seed config seed.
@@ -25,7 +27,7 @@ func TestSeedConfigServesABootWithTheControlPlaneDown(t *testing.T) {
 	if err := h.boot(c); err != nil {
 		t.Fatalf("Boot with a seed config: %v", err)
 	}
-	h.wantLoad(load{TriggerSeed, true})
+	h.wantLoad(load{config.TriggerSeed, true})
 	if h.holder.Current().Models["large"] == nil {
 		t.Fatal("the seed config is not in the holder")
 	}
@@ -42,7 +44,7 @@ func TestSeedConfigServesABootWithTheControlPlaneDown(t *testing.T) {
 
 	h.run(c)
 	h.cp.SetDown(false)
-	h.wantLoad(load{TriggerControl, true})
+	h.wantLoad(load{config.TriggerControl, true})
 	if h.holder.Current().Models["llama"] == nil {
 		t.Fatal("the control plane's config did not replace the seed")
 	}
@@ -55,7 +57,7 @@ func TestSeedConfigIsIgnoredWhenTheControlPlaneAnswers(t *testing.T) {
 	if err := h.client(withSeed(configB(t))).Boot(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	h.wantLoad(load{TriggerControl, true})
+	h.wantLoad(load{config.TriggerControl, true})
 	h.noLoadPending()
 	if h.holder.Current().Models["llama"] == nil {
 		t.Fatal("the control plane's config is not in the holder")
@@ -69,7 +71,7 @@ func TestSeedConfigServesWhenTheControlPlaneHasNoConfig(t *testing.T) {
 	if err := h.client(withSeed(configB(t))).Boot(context.Background()); err != nil {
 		t.Fatalf("Boot with a seed and no config published: %v", err)
 	}
-	h.wantLoad(load{TriggerSeed, true})
+	h.wantLoad(load{config.TriggerSeed, true})
 }
 
 // errorControlPlane answers every request with status and code, speaking the
@@ -97,7 +99,7 @@ func TestSeedConfigServesWhenTheControlPlaneFails(t *testing.T) {
 	if err := h.client(func(o *Options) { withSeed(configB(t))(o); o.URL = u }).Boot(context.Background()); err != nil {
 		t.Fatalf("Boot with a seed and a failing control plane: %v", err)
 	}
-	h.wantLoad(load{TriggerSeed, true})
+	h.wantLoad(load{config.TriggerSeed, true})
 }
 
 // What the operator must fix — a refused token, a config the gateway rejects —
@@ -119,7 +121,7 @@ func TestSeedConfigIsNotUsedForAnOperatorError(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "was rejected") || !strings.Contains(err.Error(), "key-group-unknown") {
 			t.Fatalf("Boot error %v, want no config naming the rejection and its codes", err)
 		}
-		h.wantLoad(load{TriggerControl, false})
+		h.wantLoad(load{config.TriggerControl, false})
 		h.noLoadPending()
 	})
 }

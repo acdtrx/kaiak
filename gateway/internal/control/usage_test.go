@@ -50,7 +50,7 @@ func recordSize(t *testing.T, rec accounting.UsageRecord) int64 {
 
 // testObserver records what the sender reports to metrics.
 type testObserver struct {
-	results chan string
+	results chan BatchResult
 
 	mu sync.Mutex
 	// changed is closed and replaced on every depth report.
@@ -59,14 +59,14 @@ type testObserver struct {
 	records     int
 	memoryBytes int64
 	maxDepth    int
-	dropped     map[string]int
+	dropped     map[DropReason]int
 }
 
 func newTestObserver() *testObserver {
-	return &testObserver{results: make(chan string, 1000), changed: make(chan struct{}), dropped: map[string]int{}}
+	return &testObserver{results: make(chan BatchResult, 1000), changed: make(chan struct{}), dropped: map[DropReason]int{}}
 }
 
-func (o *testObserver) UsageRecordsDropped(reason string, records int) {
+func (o *testObserver) UsageRecordsDropped(reason DropReason, records int) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.dropped[reason] += records
@@ -75,7 +75,7 @@ func (o *testObserver) UsageRecordsDropped(reason string, records int) {
 }
 
 // waitDropped waits until records were dropped for reason.
-func (o *testObserver) waitDropped(t *testing.T, reason string, records int) {
+func (o *testObserver) waitDropped(t *testing.T, reason DropReason, records int) {
 	t.Helper()
 	timeout := time.After(testWaitLimit)
 	for {
@@ -93,7 +93,7 @@ func (o *testObserver) waitDropped(t *testing.T, reason string, records int) {
 	}
 }
 
-func (o *testObserver) UsageBatchSent(result string, _ time.Time) {
+func (o *testObserver) UsageBatchSent(result BatchResult, _ time.Time) {
 	select {
 	case o.results <- result:
 	default:
@@ -134,7 +134,7 @@ func (o *testObserver) depth() (batches, records, maxBatches int) {
 	return o.batches, o.records, o.maxDepth
 }
 
-func (o *testObserver) next(t *testing.T) string {
+func (o *testObserver) next(t *testing.T) BatchResult {
 	t.Helper()
 	select {
 	case r := <-o.results:
@@ -329,7 +329,7 @@ func TestLostAckIsResentAndCountedOnce(t *testing.T) {
 	if n := len(h.cp.CountedRecords()); n != 2 {
 		t.Errorf("%d records counted, want 2", n)
 	}
-	if got := []string{obs.next(t), obs.next(t)}; !slices.Equal(got, []string{BatchFailed, BatchAcked}) {
+	if got := []BatchResult{obs.next(t), obs.next(t)}; !slices.Equal(got, []BatchResult{BatchFailed, BatchAcked}) {
 		t.Errorf("results %v", got)
 	}
 }
@@ -348,7 +348,7 @@ func TestAckNamingAnotherBatchIsNotTaken(t *testing.T) {
 	if sent.Batch != resent.Batch || !slices.Equal(recordIDs(t, sent.Body), recordIDs(t, resent.Body)) {
 		t.Errorf("resent %+v, first sent %+v: want the same batch", resent.Batch, sent.Batch)
 	}
-	if got := []string{obs.next(t), obs.next(t)}; !slices.Equal(got, []string{BatchFailed, BatchAcked}) {
+	if got := []BatchResult{obs.next(t), obs.next(t)}; !slices.Equal(got, []BatchResult{BatchFailed, BatchAcked}) {
 		t.Errorf("results %v", got)
 	}
 	if n := len(h.cp.CountedRecords()); n != 1 {
@@ -369,7 +369,7 @@ func TestRefusedBatchIsDroppedAndTheNextSent(t *testing.T) {
 	c.Record(testRecord(2))
 	h.wantUsage(fakecontrol.OutcomeRefused, 1, 1)
 	h.wantUsage(fakecontrol.OutcomeCounted, 2, 1)
-	if got := []string{obs.next(t), obs.next(t)}; !slices.Equal(got, []string{BatchRejected, BatchAcked}) {
+	if got := []BatchResult{obs.next(t), obs.next(t)}; !slices.Equal(got, []BatchResult{BatchRejected, BatchAcked}) {
 		t.Errorf("results %v", got)
 	}
 	if n := len(h.cp.CountedRecords()); n != 1 {
@@ -394,7 +394,7 @@ func TestBatchRefusalCodeOnAnotherStatusIsRetried(t *testing.T) {
 			if refused.Batch != resent.Batch {
 				t.Errorf("resent %+v, refused %+v: want the same batch", resent.Batch, refused.Batch)
 			}
-			if got := []string{obs.next(t), obs.next(t)}; !slices.Equal(got, []string{BatchFailed, BatchAcked}) {
+			if got := []BatchResult{obs.next(t), obs.next(t)}; !slices.Equal(got, []BatchResult{BatchFailed, BatchAcked}) {
 				t.Errorf("results %v", got)
 			}
 		})

@@ -13,7 +13,32 @@ import (
 // the series. No backend: it would multiply every group's series by the backends
 // serving each model; the ops metrics carry the backend. A group's labels never
 // become metric labels.
-var usageLabels = []string{"key_group", "root_group", "key_id", "model", "status"}
+var usageLabels = append(append([]string(nil), keyLabelNames...), "model", "status")
+
+// keyLabelNames are the labels naming a request's key, first on every per-key metric:
+// the usage metrics and kaiak_request_errors_total.
+var keyLabelNames = []string{"key_group", "root_group", "key_id"}
+
+// keyLabels are the keyLabelNames values for the key keyID whose group's path
+// (top-level group first, the key's group last) is path: key_group the key's group,
+// root_group its top-level group, key_id the key ID. Without a key (path empty) all
+// three are empty. With the live config's key_id_label (group_label) off, key_id
+// (key_group) is empty, so new series carry no such label; root_group stays.
+func keyLabels(holder *config.Holder, path []string, keyID string) []string {
+	var group, root string
+	if n := len(path); n > 0 {
+		group, root = path[n-1], path[0]
+	}
+	if snap := holder.Current(); snap != nil {
+		if !snap.KeyIDLabel {
+			keyID = ""
+		}
+		if !snap.GroupLabel {
+			group = ""
+		}
+	}
+	return []string{group, root, keyID}
+}
 
 // UsageMetrics turns settled usage records into usage metrics (accounting.Metrics):
 // the record — settled once, by accounting — is its only input, and nothing reads the
@@ -52,30 +77,16 @@ func (s *UsageMetrics) RecordClamped() {
 // Record updates the counters for one record. It only touches memory, so it never
 // blocks the request goroutine it runs on.
 //
-// status is "partial" when the response stopped early (or never came), else
-// "complete". key_group is the key's group, root_group its top-level group (the
-// record's path, last and first). With key_id_label (group_label) off the key ID
-// (key_group) is left empty, so new series carry no such label — root_group stays; series already
-// written with one stay until restart (counters never go back).
+// The key labels come from the record's key ID and group path (keyLabels); series
+// already written with a label a switch now leaves out stay until restart (counters
+// never go back). status is "partial" when the response stopped early (or never
+// came), else "complete".
 func (s *UsageMetrics) Record(r accounting.UsageRecord) {
-	keyID := r.KeyID
-	var group, root string
-	if n := len(r.Groups); n > 0 {
-		group, root = r.Groups[n-1], r.Groups[0]
-	}
-	if snap := s.holder.Current(); snap != nil {
-		if !snap.KeyIDLabel {
-			keyID = ""
-		}
-		if !snap.GroupLabel {
-			group = ""
-		}
-	}
 	status := "complete"
 	if r.Partial {
 		status = "partial"
 	}
-	labels := []string{group, root, keyID, r.Model, status}
+	labels := append(keyLabels(s.holder, r.Groups, r.KeyID), r.Model, status)
 	s.records.Inc(labels...)
 	s.cost.Add(uint64(max(r.CostNanoUSD, 0)), labels...)
 	for unit, n := range r.Units {

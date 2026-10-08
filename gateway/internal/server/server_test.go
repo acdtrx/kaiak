@@ -249,6 +249,7 @@ func buildTestGateway(t *testing.T, opts testOptions) *testGateway {
 	}
 	providers := provider.NewRegistry(testLookupEnv)
 	reg := metrics.NewRegistry()
+	metrics.RegisterBuildInfo(reg, "(devel)")
 	usage := &recordedUsage{metrics: metrics.NewUsageMetrics(reg, holder), settled: make(chan accounting.UsageRecord, 64)}
 	router := routing.New(routing.Options{Probe: providers.Probe, Observer: metrics.NewCircuits(reg), Logger: logger})
 	router.Configure(holder.Current())

@@ -14,13 +14,43 @@ import (
 	"kaiak/internal/schemacheck"
 )
 
+// Trigger names what asked for a config load, in the log (kaiak.trigger) and the
+// metrics. Every source of config documents loads under its own trigger.
+type Trigger string
+
+const (
+	// TriggerStartup: the file loader's first load, at start (file mode).
+	TriggerStartup Trigger = "startup"
+	// TriggerSIGHUP: the file loader's reload on SIGHUP (file mode).
+	TriggerSIGHUP Trigger = "sighup"
+	// TriggerControl: a config from the control plane's config stream.
+	TriggerControl Trigger = "control"
+	// TriggerSeed: the seed config, applied when the control plane is unavailable at
+	// boot.
+	TriggerSeed Trigger = "seed"
+)
+
+// Triggers is every config load trigger.
+var Triggers = []Trigger{TriggerStartup, TriggerSIGHUP, TriggerControl, TriggerSeed}
+
+// LoadResult is what came of a config load.
+type LoadResult string
+
+const (
+	LoadApplied  LoadResult = "applied"
+	LoadRejected LoadResult = "rejected"
+)
+
+// LoadResults is every config load result.
+var LoadResults = []LoadResult{LoadApplied, LoadRejected}
+
 // Load is the notice of one config load, applied or rejected, that the Applier hands
 // its onLoad: the applied-config notification. Whatever follows the config in force —
 // routing's caps, connection pools, the model check, the ops metrics — takes an
 // applied config from Snapshot here.
 type Load struct {
 	// Trigger names what asked for the load; At is when the load ended.
-	Trigger string
+	Trigger Trigger
 	At      time.Time
 	// Snapshot is the config swapped in; nil when the load was rejected.
 	Snapshot *Snapshot
@@ -34,6 +64,14 @@ type Load struct {
 
 // Applied reports whether the load swapped its config in.
 func (l Load) Applied() bool { return l.Snapshot != nil }
+
+// Result is what came of the load: applied or rejected.
+func (l Load) Result() LoadResult {
+	if l.Applied() {
+		return LoadApplied
+	}
+	return LoadRejected
+}
 
 // Applier is the one path by which a config document becomes the live snapshot,
 // whatever its source (config file, control plane, seed config): validate it
@@ -60,7 +98,7 @@ func NewApplier(holder *Holder, logger *slog.Logger, lookupEnv func(string) (str
 // its issue codes and not applied; the running snapshot, if any, stays, and the error
 // is a *schemacheck.ValidationError. trigger names what asked for the load; attrs describe the
 // source (file, config hash) for both log lines.
-func (a *Applier) Apply(trigger string, data []byte, attrs ...any) (*Snapshot, error) {
+func (a *Applier) Apply(trigger Trigger, data []byte, attrs ...any) (*Snapshot, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -74,7 +112,7 @@ func (a *Applier) Apply(trigger string, data []byte, attrs ...any) (*Snapshot, e
 	}
 	a.holder.Swap(snapshot)
 	load := Load{Trigger: trigger, Snapshot: snapshot, Document: true, Bytes: len(data), Duration: time.Since(start)}
-	a.logger.Info("config applied", append(append([]any{"kaiak.trigger", trigger}, attrs...),
+	a.logger.Info("config applied", append(append([]any{"kaiak.trigger", string(trigger)}, attrs...),
 		"kaiak.config.backends", len(snapshot.Backends), "kaiak.config.models", len(snapshot.Models),
 		"kaiak.config.keys", len(snapshot.keysByHash), "kaiak.config.size", load.Bytes,
 		logattr.SecondsMicro("kaiak.duration", load.Duration))...)
@@ -97,7 +135,7 @@ func Check(data []byte, lookupEnv func(string) (string, bool)) (*Snapshot, error
 
 // Reject records a load that failed before there was a document to validate (the
 // file could not be read): logged and counted like a rejected config. It returns err.
-func (a *Applier) Reject(trigger string, err error, attrs ...any) error {
+func (a *Applier) Reject(trigger Trigger, err error, attrs ...any) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.reject(Load{Trigger: trigger}, err, attrs)
@@ -106,7 +144,7 @@ func (a *Applier) Reject(trigger string, err error, attrs ...any) error {
 
 // reject logs and counts a failed load. Callers hold a.mu.
 func (a *Applier) reject(load Load, err error, attrs []any) {
-	logAttrs := append(append([]any{"kaiak.trigger", load.Trigger}, attrs...), "exception.message", err)
+	logAttrs := append(append([]any{"kaiak.trigger", string(load.Trigger)}, attrs...), "exception.message", err)
 	if invalid, ok := errors.AsType[*schemacheck.ValidationError](err); ok {
 		logAttrs = append(logAttrs, "kaiak.config.issue_codes", invalid.Codes())
 	}
@@ -144,7 +182,7 @@ func NewFileLoader(path string, applier *Applier) *FileLoader {
 // Load reads the config file and applies it. A file that cannot be read or fails
 // validation is logged and not applied; the running snapshot, if any, stays. trigger
 // names what asked for the load, for the log.
-func (l *FileLoader) Load(trigger string) error {
+func (l *FileLoader) Load(trigger Trigger) error {
 	data, err := os.ReadFile(l.path)
 	if err != nil {
 		return fmt.Errorf("load config %s: %w", l.path, l.applier.Reject(trigger, err, "file.path", l.path))

@@ -163,7 +163,7 @@ func (u *usageSender) boundQueued() {
 	u.observeDropped(DroppedMemoryBound, dropped)
 }
 
-func (u *usageSender) observeDropped(reason string, records int) {
+func (u *usageSender) observeDropped(reason DropReason, records int) {
 	if u.observer != nil {
 		u.observer.UsageRecordsDropped(reason, records)
 	}

@@ -1,12 +1,10 @@
 package metrics
 
 import (
-	"runtime"
-	"runtime/debug"
-	"slices"
 	"time"
 
 	"kaiak/internal/config"
+	"kaiak/internal/limits"
 	"kaiak/internal/routing"
 )
 
@@ -93,25 +91,17 @@ var (
 	configWorkBuckets = []float64{0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30}
 )
 
-// Queue rejection reasons, the reason label of kaiak_queue_rejections_total.
+// QueueReason is why a model's queue refused a request, the reason label of
+// kaiak_queue_rejections_total. The server names it from the refusal's error code;
+// it lives here, as ErrorClass does, because the server imports metrics.
+type QueueReason string
+
 const (
-	QueueFull    = "full"
-	QueueTimeout = "timeout"
+	QueueFull    QueueReason = "full"    // the queue was full
+	QueueTimeout QueueReason = "timeout" // the wait for a slot timed out
 )
 
-var queueReasons = []string{QueueFull, QueueTimeout}
-
-// limitScopeKinds are the scope_kind label values of kaiak_limit_rejections_total:
-// the kinds of scope a limit belongs to (limits.Scope). Its type label values are
-// config.LimitTypes().
-var limitScopeKinds = []string{"global", "group"}
-
-// configTriggers and configResults are the label values of kaiak_config_loads_total:
-// the file loader's triggers and the control client's (control.Trigger*).
-var (
-	configTriggers = []string{"startup", "sighup", "control", "seed"}
-	configResults  = []string{"applied", "rejected"}
-)
+var queueReasons = []QueueReason{QueueFull, QueueTimeout}
 
 // Ops holds the gateway's operational metrics: how requests go, not whose usage they
 // are. The request pipeline feeds it; label values are endpoint names, public model
@@ -159,7 +149,7 @@ func NewOps(reg *Registry, router *routing.Router, holder *config.Holder) *Ops {
 			"Requests that ended in an error, by class.", "class"),
 		requestErrors: reg.Counter("kaiak_request_errors_total",
 			"Requests that ended in an error, refusals included, by key and error code.",
-			"key_group", "root_group", "key_id", "model", "code"),
+			append(append([]string(nil), keyLabelNames...), "model", "code")...),
 		limitRejections: reg.Counter("kaiak_limit_rejections_total",
 			"Requests a limit refused (rate_limit_exceeded, budget_exceeded), by the kind of scope the limit belongs to and its type.",
 			"scope_kind", "type"),
@@ -167,9 +157,9 @@ func NewOps(reg *Registry, router *routing.Router, holder *config.Holder) *Ops {
 			"Time requests waited in their model's queue before getting a slot.",
 			queueWaitBuckets, "model"),
 		queueRejections: reg.Counter("kaiak_queue_rejections_total",
-			"Requests refused by their model's queue, by reason (full, timeout).", "model", "reason"),
+			"Requests refused by their model's queue, by the reason for the refusal.", "model", "reason"),
 		retries: reg.Counter("kaiak_retries_total",
-			"Retries: attempts sent after an earlier attempt of the same request failed, by the backend of that attempt and its failure (unavailable, timeout, server_error, rate_limited, auth_failed, model_missing, path_missing, endpoint_missing).",
+			"Retries: attempts sent after an earlier attempt of the same request failed, by the backend of that attempt and the outcome that made it retryable.",
 			"model", "backend", "reason"),
 		attempts: reg.Histogram("kaiak_request_attempts",
 			"Attempts per routed request, the first included.", attemptBuckets, "model"),
@@ -180,7 +170,7 @@ func NewOps(reg *Registry, router *routing.Router, holder *config.Holder) *Ops {
 			"Duration of every upstream attempt, from its send to its end: the end of the relay, or its failure.",
 			durationBuckets, "backend"),
 		configLoads: reg.Counter("kaiak_config_loads_total",
-			"Config loads by trigger (startup, sighup, control, seed) and result (applied, rejected).", "trigger", "result"),
+			"Config loads, by what asked for the load and whether it was applied.", "trigger", "result"),
 		configApplied: reg.Gauge("kaiak_config_last_applied_timestamp_seconds",
 			"Unix time the running config was applied."),
 		configSize: reg.Gauge("kaiak_config_size_bytes",
@@ -198,15 +188,15 @@ func NewOps(reg *Registry, router *routing.Router, holder *config.Holder) *Ops {
 	for _, c := range errorClasses {
 		o.errors.Add(0, string(c))
 	}
-	for _, kind := range limitScopeKinds {
+	for _, scope := range limits.Scopes {
 		for _, typ := range config.LimitTypes() {
-			o.limitRejections.Add(0, kind, string(typ))
+			o.limitRejections.Add(0, string(scope), string(typ))
 		}
 	}
-	for _, trigger := range configTriggers {
-		for _, result := range configResults {
-			o.configLoads.Add(0, trigger, result)
-			o.configApply.Prepare(trigger, result)
+	for _, trigger := range config.Triggers {
+		for _, result := range config.LoadResults {
+			o.configLoads.Add(0, string(trigger), string(result))
+			o.configApply.Prepare(string(trigger), string(result))
 		}
 	}
 	o.limitsSync.Prepare()
@@ -296,7 +286,6 @@ func NewOps(reg *Registry, router *routing.Router, holder *config.Holder) *Ops {
 				emit(v, id.Backend, id.Model)
 			}
 		})
-	registerBuildInfo(reg)
 	return o
 }
 
@@ -345,36 +334,6 @@ func (c *Circuits) Probed(backend string, ok bool) {
 	c.probes.Inc(backend, result)
 }
 
-// version is the release the binary was built as, set only at link time by the image
-// build (-ldflags "-X kaiak/internal/metrics.version=<git describe>"). It is a build
-// constant: nothing assigns it at run time.
-var version string
-
-// registerBuildInfo registers kaiak_build_info: the build's version and the Go version.
-func registerBuildInfo(reg *Registry) {
-	reg.Gauge("kaiak_build_info", "Build information; the value is always 1.", "version", "go_version").
-		Set(1, Version(), runtime.Version())
-}
-
-// Version is the build version kaiak_build_info reports.
-func Version() string {
-	info, ok := debug.ReadBuildInfo()
-	return buildVersion(version, info, ok)
-}
-
-// buildVersion picks the version to report: the one stamped at link time, else the
-// module version Go recorded (a VCS pseudo-version for `go build` in a checkout),
-// else "(devel)" (`go run`, or a build with no version control).
-func buildVersion(stamped string, info *debug.BuildInfo, ok bool) string {
-	if stamped != "" {
-		return stamped
-	}
-	if ok && info.Main.Version != "" {
-		return info.Main.Version
-	}
-	return "(devel)"
-}
-
 // ObserveRequest records one finished client request. endpoint and model are "" when
 // unknown (an unknown path, a model the caller may not use): only names the config
 // declares become label values, so clients cannot mint series.
@@ -395,42 +354,27 @@ func (o *Ops) ObserveOutputRate(model, backend string, tokensPerSecond float64) 
 
 // CountRequestError counts one request that ended in an error by who sent it and how
 // it ended: group and keyID are the request's key (group nil and keyID empty without
-// a valid key), labelled as the usage metrics are — key_group, root_group, key_id,
-// following the live config's key_id_label and group_label — model only once it
+// a valid key), labelled as the usage metrics are (keyLabels), model only once it
 // passed the access check, and code the request log line's error.type, or the
 // kaiak.relay_end of a response broken off after it started. Series exist only once
 // counted: their number follows the keys that met an error, not the config.
 func (o *Ops) CountRequestError(group *config.Group, keyID, model, code string) {
-	var keyGroup, root string
+	var path []string
 	if group != nil {
-		keyGroup, root = group.ID, group.PathIDs[0]
+		path = group.PathIDs
 	}
-	if snap := o.holder.Current(); snap != nil {
-		if !snap.KeyIDLabel {
-			keyID = ""
-		}
-		if !snap.GroupLabel {
-			keyGroup = ""
-		}
-	}
-	o.requestErrors.Inc(keyGroup, root, keyID, model, code)
+	o.requestErrors.Inc(append(keyLabels(o.holder, path, keyID), model, code)...)
 }
 
 // CountError counts one request that ended in an error of class c.
 func (o *Ops) CountError(c ErrorClass) {
-	if !slices.Contains(errorClasses, c) {
-		panic("metrics: unknown error class " + string(c))
-	}
 	o.errors.Inc(string(c))
 }
 
 // CountLimitRejection counts one request refused by a limit of type typ belonging to
-// a scope of kind scopeKind (global, group).
-func (o *Ops) CountLimitRejection(scopeKind string, typ config.LimitType) {
-	if !slices.Contains(limitScopeKinds, scopeKind) || !slices.Contains(config.LimitTypes(), typ) {
-		panic("metrics: unknown limit " + scopeKind + " " + string(typ))
-	}
-	o.limitRejections.Inc(scopeKind, string(typ))
+// a scope of kind scope.
+func (o *Ops) CountLimitRejection(scope limits.Scope, typ config.LimitType) {
+	o.limitRejections.Inc(string(scope), string(typ))
 }
 
 // ObserveQueueWait records how long a request waited in model's queue before it got
@@ -439,27 +383,20 @@ func (o *Ops) ObserveQueueWait(model string, d time.Duration) {
 	o.queueWait.Observe(d.Seconds(), model)
 }
 
-// CountQueueRejection counts one request model's queue refused, for reason QueueFull
-// or QueueTimeout.
-func (o *Ops) CountQueueRejection(model, reason string) {
-	o.queueRejections.Inc(model, reason)
+// CountQueueRejection counts one request model's queue refused, for reason.
+func (o *Ops) CountQueueRejection(model string, reason QueueReason) {
+	o.queueRejections.Inc(model, string(reason))
 }
 
 // CountRetry counts one retry of a request to model, after an attempt on backend
 // that came to outcome, one of RetryableOutcomes.
 func (o *Ops) CountRetry(model, backend string, outcome AttemptOutcome) {
-	if !slices.Contains(RetryableOutcomes, outcome) {
-		panic("metrics: not a retryable outcome " + string(outcome))
-	}
 	o.retries.Inc(model, backend, string(outcome))
 }
 
 // ObserveUpstreamAttempt records one upstream attempt on a deployment (backend and
 // the model name there): its outcome and how long it took.
 func (o *Ops) ObserveUpstreamAttempt(backend, deploymentModel string, outcome AttemptOutcome, d time.Duration) {
-	if !slices.Contains(attemptOutcomes, outcome) {
-		panic("metrics: unknown attempt outcome " + string(outcome))
-	}
 	o.upstream.Inc(backend, deploymentModel, string(outcome))
 	o.upstreamTime.Observe(d.Seconds(), backend)
 }
@@ -477,17 +414,16 @@ func (o *Ops) ConnectionRefused() { o.refusedConns.Inc() }
 // result, its duration when there was a document, and for an applied config when and
 // its size. An applied config's series are created at 0.
 func (o *Ops) ConfigLoaded(l config.Load) {
-	result := "rejected"
 	if l.Applied() {
-		result = "applied"
 		o.configApplied.Set(float64(l.At.UnixMilli()) / 1000)
 		o.configSize.Set(float64(l.Bytes))
 		o.prepareSeries(l.Snapshot)
 	}
+	trigger, result := string(l.Trigger), string(l.Result())
 	if l.Document {
-		o.configApply.Observe(l.Duration.Seconds(), l.Trigger, result)
+		o.configApply.Observe(l.Duration.Seconds(), trigger, result)
 	}
-	o.configLoads.Inc(l.Trigger, result)
+	o.configLoads.Inc(trigger, result)
 }
 
 // ObserveLimitsSync records one limiter sync to a new config (a limits sync
@@ -506,7 +442,7 @@ func (o *Ops) ObserveLimitsSync(d time.Duration) {
 func (o *Ops) prepareSeries(s *config.Snapshot) {
 	for name, m := range s.Models {
 		for _, reason := range queueReasons {
-			o.queueRejections.Add(0, name, reason)
+			o.queueRejections.Add(0, name, string(reason))
 		}
 		o.queueWait.Prepare(name)
 		o.attempts.Prepare(name)

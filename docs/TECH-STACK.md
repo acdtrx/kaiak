@@ -118,7 +118,7 @@
 - **Container images** (settled 2026-09-25):
   - Gateway (`gateway/Dockerfile`, context `gateway/`): builder `golang:<go.mod
     version>` (the build script passes go.mod's `go` line), `go build -trimpath
-    -ldflags "-s -w -X kaiak/internal/metrics.version=<version>"`; final
+    -ldflags "-s -w -X main.version=<version>"`; final
     `gcr.io/distroless/static-debian13:nonroot` holding only `/kaiak`, `USER
     65532:65532`, ports 8080 and 9090, no config and no volume: the gateway writes
     nothing, so it runs on a read-only root filesystem (the smoke test runs it
@@ -131,7 +131,8 @@
   - **Version stamping** (settled 2026-09-25, N-O7): `kaiak.build.info`'s `service.version`
     reports the `git describe` version `scripts/build-images.sh` passes as the
     `VERSION` build argument, linked into a package-level `version` string in
-    `internal/metrics` with `-ldflags -X`; unstamped builds fall back to Go's module
+    `cmd/kaiak` (`main`, which passes it to the metrics and the OTLP resource) with
+    `-ldflags -X`; unstamped builds fall back to Go's module
     version (a VCS pseudo-version for `go build` in a checkout), else `(devel)`
     (`go run`). This does not break "no package-level mutable state": the linker
     sets the variable before the program starts and no code assigns it — a build

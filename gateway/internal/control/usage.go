@@ -35,12 +35,20 @@ const ackedRemembered = 10_000
 // usageTimeout bounds one POST /v1/usage.
 const usageTimeout = 30 * time.Second
 
-// Batch send results, as UsageObserver hears them.
+// BatchResult is what came of one usage batch send, as UsageObserver hears it.
+type BatchResult string
+
 const (
-	BatchAcked    = "acked"
-	BatchRejected = "rejected"
-	BatchFailed   = "failed"
+	// BatchAcked: the control plane acknowledged the batch.
+	BatchAcked BatchResult = "acked"
+	// BatchRejected: the control plane refused the batch, which is dropped.
+	BatchRejected BatchResult = "rejected"
+	// BatchFailed: the send failed; the batch is sent again.
+	BatchFailed BatchResult = "failed"
 )
+
+// BatchResults is every batch send result.
+var BatchResults = []BatchResult{BatchAcked, BatchRejected, BatchFailed}
 
 // UsageObserver is told how usage delivery goes, for metrics. Its methods are called
 // from the client's goroutines, and from Record's caller for the queue depth, and
@@ -48,26 +56,32 @@ const (
 type UsageObserver interface {
 	// UsageBatchSent reports one POST /v1/usage and its result (BatchAcked,
 	// BatchRejected, BatchFailed), at the time it ended.
-	UsageBatchSent(result string, at time.Time)
+	UsageBatchSent(result BatchResult, at time.Time)
 	// UsageQueueDepth reports the sealed batches not yet acknowledged, the records in
 	// them, and the encoded bytes of the queued ones, which count against
 	// Options.UsageMemoryBytes.
 	UsageQueueDepth(batches, records int, queuedBytes int64)
 	// UsageRecordsDropped reports records dropped before reaching the control
 	// plane, with the reason: DroppedInvalid or DroppedMemoryBound.
-	UsageRecordsDropped(reason string, records int)
+	UsageRecordsDropped(reason DropReason, records int)
 }
 
-// Reasons usage records are dropped, as UsageObserver hears them.
+// DropReason is why usage records are dropped before reaching the control plane, as
+// UsageObserver hears it.
+type DropReason string
+
 const (
 	// DroppedInvalid: the record fails the usage record's checks, so the control
 	// plane would refuse its whole batch; it is dropped alone.
-	DroppedInvalid = "invalid"
+	DroppedInvalid DropReason = "invalid"
 	// DroppedMemoryBound: the control plane left the queued batches unacknowledged
 	// until their records passed the bound (Options.UsageMemoryBytes), and the oldest
 	// were dropped.
-	DroppedMemoryBound = "memory_bound"
+	DroppedMemoryBound DropReason = "memory_bound"
 )
+
+// DropReasons is every reason usage records are dropped.
+var DropReasons = []DropReason{DroppedInvalid, DroppedMemoryBound}
 
 // batchRefusals are the error codes that mean the batch itself can never be accepted
 // (CONTROL-PROTOCOL.md, Usage intake and Request checks): it is dropped rather than
@@ -445,7 +459,7 @@ func (u *usageSender) sendOutstanding(ctx context.Context, b queuedBatch) {
 	}
 }
 
-func (u *usageSender) observe(result string) {
+func (u *usageSender) observe(result BatchResult) {
 	if u.observer != nil {
 		u.observer.UsageBatchSent(result, time.Now())
 	}

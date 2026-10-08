@@ -32,6 +32,9 @@ const (
 	ScopeGroup  Scope = "group"
 )
 
+// Scopes is every kind of scope a limit belongs to.
+var Scopes = []Scope{ScopeGlobal, ScopeGroup}
+
 // scopeOf is the kind of scope of a limit of group ("" = global).
 func scopeOf(group string) Scope {
 	if group == "" {

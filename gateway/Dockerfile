@@ -24,7 +24,7 @@ ARG TARGETOS TARGETARCH
 ARG VERSION=dev
 RUN --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -trimpath -ldflags "-s -w -X kaiak/internal/metrics.version=${VERSION}" \
+    go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
       -o /out/kaiak ./cmd/kaiak
 
 FROM --platform=$BUILDPLATFORM golang:${GO_VERSION} AS fakebackend-build

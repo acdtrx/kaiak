@@ -68,7 +68,7 @@ func TestApplierTellsOnLoadOfEveryLoad(t *testing.T) {
 	_ = applier.Reject("sighup", os.ErrNotExist, "file", "x.json")
 
 	type load struct {
-		trigger  string
+		trigger  Trigger
 		applied  bool
 		document bool
 		bytes    int

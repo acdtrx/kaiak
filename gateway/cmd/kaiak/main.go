@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"sync"
 	"syscall"
 	"time"
@@ -95,10 +96,11 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 		return err
 	}
 	source := s.configSource()
+	reported := reportedVersion()
 	if s.logExport != nil {
 		// Export problems go to the stderr logger alone: one exported would feed the
 		// problem it reports.
-		logExport = otlplog.New(s.logExport, otlp.Service{Version: metrics.Version(), InstanceID: s.instanceID}, logger)
+		logExport = otlplog.New(s.logExport, otlp.Service{Version: reported, InstanceID: s.instanceID}, logger)
 		logger = slog.New(logExport.Handler(logger.Handler()))
 		source = append(source, "kaiak.log_export.endpoint", s.logExport.EndpointHost())
 	}
@@ -115,7 +117,7 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 		background.Wait()
 	}()
 
-	g := newGraph(s, lookupEnv, logger, logExport)
+	g := newGraph(s, reported, lookupEnv, logger, logExport)
 	// The mode's setup: the first config, the limiter, where usage records go
 	// (control-plane mode: the client's batch sender, which tags each with its batch's
 	// generation) and what SIGHUP does.
@@ -125,7 +127,7 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 	var handleReloads func(context.Context)
 	if s.control == nil {
 		loader := config.NewFileLoader(s.configFile, g.applier)
-		if err := loader.Load("startup"); err != nil {
+		if err := loader.Load(config.TriggerStartup); err != nil {
 			return err
 		}
 		limiter = limits.New(g.holder, time.Now, logger)
@@ -241,11 +243,13 @@ type graph struct {
 	applier          *config.Applier
 }
 
-// newGraph builds the shared graph; logExport, when not nil, has its counts in the
-// metrics.
-func newGraph(s settings, lookupEnv func(string) (string, bool), logger *slog.Logger, logExport *otlplog.Exporter) *graph {
+// newGraph builds the shared graph; reported is the build version the metrics report
+// (reportedVersion), and logExport, when not nil, has its counts in the metrics.
+func newGraph(s settings, reported string, lookupEnv func(string) (string, bool), logger *slog.Logger,
+	logExport *otlplog.Exporter) *graph {
 	g := &graph{holder: &config.Holder{}, providers: provider.NewRegistry(lookupEnv), registry: metrics.NewRegistry(),
 		missingEndpoints: server.NewMissingEndpoints()}
+	metrics.RegisterBuildInfo(g.registry, reported)
 	if logExport != nil {
 		metrics.RegisterLogExport(g.registry, logExport.Counts)
 	}
@@ -337,7 +341,32 @@ func reloadOnSignal(ctx context.Context, reload <-chan os.Signal, loader *config
 		case <-ctx.Done():
 			return
 		case <-reload:
-			_ = loader.Load("sighup")
+			_ = loader.Load(config.TriggerSIGHUP)
 		}
 	}
+}
+
+// version is the release the binary was built as, set only at link time by the image
+// build (-ldflags "-X main.version=<git describe>"). It is a build constant: nothing
+// assigns it at run time.
+var version string
+
+// reportedVersion is the build version the gateway reports: kaiak_build_info, and the
+// OTLP resource's service.version and the export's User-Agent.
+func reportedVersion() string {
+	info, ok := debug.ReadBuildInfo()
+	return buildVersion(version, info, ok)
+}
+
+// buildVersion picks the version to report: the one stamped at link time, else the
+// module version Go recorded (a VCS pseudo-version for `go build` in a checkout),
+// else "(devel)" (`go run`, or a build with no version control).
+func buildVersion(stamped string, info *debug.BuildInfo, ok bool) string {
+	if stamped != "" {
+		return stamped
+	}
+	if ok && info.Main.Version != "" {
+		return info.Main.Version
+	}
+	return "(devel)"
 }

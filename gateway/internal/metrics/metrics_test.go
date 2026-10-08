@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http/httptest"
 	"runtime"
-	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -263,8 +262,6 @@ func TestOpsMetrics(t *testing.T) {
 	ops.CountRetry("m", "busy", "server_error")
 	ops.ObserveUpstreamAttempt("busy", "m", AttemptSuccess, 30*time.Millisecond)
 	ops.ObserveUpstreamAttempt("busy", "m", AttemptServerError, 2*time.Second)
-	expectPanic(t, "unknown attempt outcome", func() { ops.ObserveUpstreamAttempt("busy", "m", "nope", 0) })
-	expectPanic(t, "not a retryable outcome", func() { ops.CountRetry("m", "busy", AttemptSuccess) })
 	for _, outcome := range RetryableOutcomes {
 		if !slices.Contains(attemptOutcomes, outcome) {
 			t.Errorf("retryable outcome %s is no attempt outcome", outcome)
@@ -272,7 +269,6 @@ func TestOpsMetrics(t *testing.T) {
 	}
 	ops.ObserveAttempts("m", 2)
 	ops.ConfigLoaded(config.Load{Trigger: "startup", Snapshot: holder.Current(), At: time.UnixMilli(1_700_000_000_500)})
-	expectPanic(t, "unknown error class", func() { ops.CountError("nope") })
 
 	out := text(reg)
 	for _, want := range []string{
@@ -307,8 +303,14 @@ func TestOpsMetrics(t *testing.T) {
 	if strings.Contains(out, `kaiak_backend_max_in_flight{backend="idle"}`) {
 		t.Errorf("a backend without a cap has a max_in_flight series:\n%s", out)
 	}
-	if !strings.Contains(out, `kaiak_build_info{version="`) || !strings.Contains(out, `,go_version="go`) {
-		t.Errorf("build info missing:\n%s", out)
+}
+
+func TestBuildInfo(t *testing.T) {
+	reg := NewRegistry()
+	RegisterBuildInfo(reg, "0.6.0-3-gabc1234")
+	want := `kaiak_build_info{version="0.6.0-3-gabc1234",go_version="` + runtime.Version() + `"} 1`
+	if out := text(reg); !strings.Contains(out, want+"\n") {
+		t.Errorf("missing %q in:\n%s", want, out)
 	}
 }
 
@@ -362,25 +364,6 @@ func TestConfigLoadMetrics(t *testing.T) {
 	}
 }
 
-func TestBuildVersion(t *testing.T) {
-	stamped := &debug.BuildInfo{Main: debug.Module{Version: "v0.0.0-20260925-abcdef"}}
-	for _, c := range []struct {
-		name, stamped string
-		info          *debug.BuildInfo
-		ok            bool
-		want          string
-	}{
-		{"link-time version wins", "0.6.0-3-gabc1234", stamped, true, "0.6.0-3-gabc1234"},
-		{"module version without a link-time one", "", stamped, true, "v0.0.0-20260925-abcdef"},
-		{"go run", "", &debug.BuildInfo{}, true, "(devel)"},
-		{"no build info", "", nil, false, "(devel)"},
-	} {
-		if got := buildVersion(c.stamped, c.info, c.ok); got != c.want {
-			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
-		}
-	}
-}
-
 func TestUsageDeliveryMetrics(t *testing.T) {
 	reg := NewRegistry()
 	d := NewUsageDelivery(reg)
@@ -395,7 +378,6 @@ func TestUsageDeliveryMetrics(t *testing.T) {
 	d.UsageBatchSent(control.BatchAcked, time.UnixMilli(1_700_000_000_500))
 	d.UsageBatchSent(control.BatchRejected, time.UnixMilli(1_700_000_001_000))
 	d.UsageQueueDepth(3, 1200, 612_345)
-	expectPanic(t, "unknown batch result", func() { d.UsageBatchSent("lost", time.Now()) })
 	out := text(reg)
 	for _, want := range []string{
 		`kaiak_usage_batch_sends_total{result="acked"} 1`,

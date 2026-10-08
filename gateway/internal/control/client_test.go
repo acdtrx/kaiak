@@ -89,7 +89,7 @@ func (b *syncBuffer) String() string {
 }
 
 type load struct {
-	trigger string
+	trigger config.Trigger
 	applied bool
 }
 
@@ -261,7 +261,7 @@ func TestBootAppliesTheStreamsFirstConfigAndSendsTheProtocolHeaders(t *testing.T
 	if err := h.boot(c); err != nil {
 		t.Fatalf("Boot: %v", err)
 	}
-	h.wantLoad(load{TriggerControl, true})
+	h.wantLoad(load{config.TriggerControl, true})
 	wantApplied(t, c, hash)
 	if !h.holder.Loaded() || h.holder.Current().Models["llama"] == nil {
 		t.Fatal("config not in the holder")
@@ -297,7 +297,7 @@ func TestNoConfigPublishedThenOneArrives(t *testing.T) {
 	h.run(c)
 	h.nextStream() // Run's: open, waiting for a config
 	hash := h.cp.Publish(configA(t))
-	h.wantLoad(load{TriggerControl, true})
+	h.wantLoad(load{config.TriggerControl, true})
 	wantApplied(t, c, hash)
 }
 
@@ -306,13 +306,13 @@ func TestStreamAppliesUpdatesAndIgnoresHeartbeats(t *testing.T) {
 	h.cp.Publish(configA(t))
 	c := h.client(nil)
 	h.boot(c)
-	h.wantLoad(load{TriggerControl, true})
+	h.wantLoad(load{config.TriggerControl, true})
 	h.run(c)
 
 	st := h.nextStream() // its first config is the one booted: skipped
 	st.Comment("heartbeat")
 	hash := h.cp.Publish(configB(t))
-	h.wantLoad(load{TriggerControl, true})
+	h.wantLoad(load{config.TriggerControl, true})
 	wantApplied(t, c, hash)
 	if h.holder.Current().Models["large"] == nil {
 		t.Fatal("config B not in the holder")
@@ -336,17 +336,17 @@ func TestReconnectTakesTheCurrentConfig(t *testing.T) {
 	h.cp.Publish(configA(t))
 	c := h.client(nil)
 	h.boot(c)
-	h.wantLoad(load{TriggerControl, true})
+	h.wantLoad(load{config.TriggerControl, true})
 	h.run(c)
 
 	st := h.nextStream()
 	h.cp.Publish(configB(t))
-	h.wantLoad(load{TriggerControl, true})
+	h.wantLoad(load{config.TriggerControl, true})
 	st.Close()
 	h.nextStream()
 	h.noLoadPending() // B again: running
 	hash := h.cp.Publish(configA(t))
-	h.wantLoad(load{TriggerControl, true})
+	h.wantLoad(load{config.TriggerControl, true})
 	wantApplied(t, c, hash)
 	for _, r := range h.cp.Gets() {
 		if r.Path != "/v1/stream" || r.Query != "" {
@@ -364,13 +364,13 @@ func TestRestoredOlderConfigIsApplied(t *testing.T) {
 	h.cp.Publish(configB(t))
 	c := h.client(nil)
 	h.boot(c)
-	h.wantLoad(load{TriggerControl, true})
+	h.wantLoad(load{config.TriggerControl, true})
 	h.run(c)
 	h.nextStream()
 
 	h.cp.Restart()
 	h.cp.Publish(configA(t))
-	h.wantLoad(load{TriggerControl, true})
+	h.wantLoad(load{config.TriggerControl, true})
 	wantApplied(t, c, older)
 	if h.holder.Current().Models["llama"] == nil {
 		t.Fatal("the restored config is not in the holder")
@@ -384,19 +384,19 @@ func TestEveryConfigEventIsApplied(t *testing.T) {
 	a := h.cp.Publish(configA(t))
 	c := h.client(nil)
 	h.boot(c)
-	h.wantLoad(load{TriggerControl, true})
+	h.wantLoad(load{config.TriggerControl, true})
 	h.run(c)
 	st := h.nextStream()
 
 	st.SendConfig(configB(t))
-	h.wantLoad(load{TriggerControl, true})
+	h.wantLoad(load{config.TriggerControl, true})
 	st.SendConfig(configA(t))
-	h.wantLoad(load{TriggerControl, true})
+	h.wantLoad(load{config.TriggerControl, true})
 	wantApplied(t, c, a)
 	st.SendConfig(configA(t))
 	st.Comment("after")
 	h.cp.Publish(configB(t)) // a load to wait on: nothing came between
-	h.wantLoad(load{TriggerControl, true})
+	h.wantLoad(load{config.TriggerControl, true})
 	h.noLoadPending()
 }
 
@@ -405,13 +405,13 @@ func TestRejectedConfigIsKeptOutAndReported(t *testing.T) {
 	applied := h.cp.Publish(configA(t))
 	c := h.client(nil)
 	h.boot(c)
-	h.wantLoad(load{TriggerControl, true})
+	h.wantLoad(load{config.TriggerControl, true})
 	h.run(c)
 	st := h.nextStream()
 	running := h.holder.Current()
 
 	rejected := h.cp.Publish(configRejected(t))
-	h.wantLoad(load{TriggerControl, false})
+	h.wantLoad(load{config.TriggerControl, false})
 	if h.holder.Current() != running {
 		t.Fatal("a rejected config replaced the running one")
 	}
@@ -430,7 +430,7 @@ func TestRejectedConfigIsKeptOutAndReported(t *testing.T) {
 	st.Close()
 	h.nextStream()
 	h.cp.Publish(configB(t))
-	h.wantLoad(load{TriggerControl, true})
+	h.wantLoad(load{config.TriggerControl, true})
 	if r, ok := c.LastRejection(); ok {
 		t.Errorf("rejection %+v still reported after config B applied", r)
 	}
@@ -444,11 +444,11 @@ func TestRunningConfigReceivedAgainClearsTheRejection(t *testing.T) {
 	applied := h.cp.Publish(configA(t))
 	c := h.client(nil)
 	h.boot(c)
-	h.wantLoad(load{TriggerControl, true})
+	h.wantLoad(load{config.TriggerControl, true})
 	h.run(c)
 	h.nextStream()
 	h.cp.Publish(configRejected(t))
-	h.wantLoad(load{TriggerControl, false})
+	h.wantLoad(load{config.TriggerControl, false})
 	h.statusUntil("the rejection reported", func(s Status) bool { return s.LastRejection != nil })
 
 	h.cp.Publish(configA(t))
@@ -483,7 +483,7 @@ func TestClientFollowsTheControlPlaneFromNoConfig(t *testing.T) {
 	<-h.delayed // two failed retries while down
 	h.cp.Publish(configA(t))
 	h.cp.SetDown(false)
-	h.wantLoad(load{TriggerControl, true})
+	h.wantLoad(load{config.TriggerControl, true})
 	if !h.holder.Loaded() {
 		t.Fatal("holder not loaded after the control plane came up")
 	}
@@ -570,7 +570,7 @@ func TestBootRetriesUntilTheControlPlaneComesUp(t *testing.T) {
 			case <-time.After(testWaitLimit):
 				t.Fatal("Boot did not return once the control plane came up")
 			}
-			h.wantLoad(load{TriggerControl, true})
+			h.wantLoad(load{config.TriggerControl, true})
 			if _, ok := client.AppliedConfigHash(); !ok {
 				t.Fatal("no config applied")
 			}
@@ -599,7 +599,7 @@ func TestBootTakesAConfigPublishedWithinTheWait(t *testing.T) {
 	case <-time.After(testWaitLimit):
 		t.Fatal("Boot did not return once a config was published")
 	}
-	h.wantLoad(load{TriggerControl, true})
+	h.wantLoad(load{config.TriggerControl, true})
 	wantApplied(t, client, hash)
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -674,7 +674,7 @@ func TestReconnectDelaysGrowWhileDownAndResetAfterAHealthyStream(t *testing.T) {
 		o.HealthyAfter = time.Hour
 	})
 	h.boot(c)
-	h.wantLoad(load{TriggerControl, true})
+	h.wantLoad(load{config.TriggerControl, true})
 	h.cp.SetDown(true)
 	h.mu.Lock()
 	h.delayed = make(chan time.Duration, 100)
@@ -696,7 +696,7 @@ func TestReconnectDelaysGrowWhileDownAndResetAfterAHealthyStream(t *testing.T) {
 	h2.cp.Publish(configA(t))
 	c2 := h2.client(func(o *Options) { o.BackoffBase = 100 * time.Millisecond; o.HealthyAfter = time.Nanosecond })
 	h2.boot(c2)
-	h2.wantLoad(load{TriggerControl, true})
+	h2.wantLoad(load{config.TriggerControl, true})
 	h2.mu.Lock()
 	h2.delayed = make(chan time.Duration, 100)
 	h2.mu.Unlock()
@@ -715,7 +715,7 @@ func TestSilentStreamIsReconnected(t *testing.T) {
 	h.cp.Publish(configA(t))
 	c := h.client(func(o *Options) { o.IdleTimeout = 50 * time.Millisecond })
 	h.boot(c)
-	h.wantLoad(load{TriggerControl, true})
+	h.wantLoad(load{config.TriggerControl, true})
 	h.run(c)
 	first := h.nextStream()
 	// Nothing is sent: the client gives up on the stream and connects again.
@@ -818,7 +818,7 @@ func TestProtocolMismatchIsLoggedAsAnErrorAndRetried(t *testing.T) {
 	h.run(c)
 	<-h.delayed // retried and failed again, still waiting
 	h.cp.SetProtocol("5")
-	h.wantLoad(load{TriggerControl, true})
+	h.wantLoad(load{config.TriggerControl, true})
 	if n := len(h.cp.Gets()); n < 3 {
 		t.Errorf("%d requests, want the boot's stream and at least two retries", n)
 	}
@@ -829,7 +829,7 @@ func TestTotalsEventsReachTheConsumer(t *testing.T) {
 	h.cp.Publish(configA(t))
 	c := h.client(nil)
 	h.boot(c)
-	h.wantLoad(load{TriggerControl, true})
+	h.wantLoad(load{config.TriggerControl, true})
 	h.run(c)
 	h.nextStream()
 

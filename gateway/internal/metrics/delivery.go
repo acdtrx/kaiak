@@ -1,18 +1,10 @@
 package metrics
 
 import (
-	"slices"
 	"time"
+
+	"kaiak/internal/control"
 )
-
-// Batch send results (docs/specs/GATEWAY.md, Observability): the control plane
-// acknowledged the batch, refused it (dropped), or the send failed and is retried.
-var batchResults = []string{"acked", "rejected", "failed"}
-
-// dropReasons are why usage records are dropped before reaching the control plane: a
-// record failing the protocol's checks, dropped alone; the oldest queued records,
-// past the in-memory bound.
-var dropReasons = []string{"invalid", "memory_bound"}
 
 // UsageDelivery holds the metrics of usage delivery to the control plane
 // (control-plane mode only): batch sends by result, the queue's depth and the last
@@ -30,7 +22,7 @@ type UsageDelivery struct {
 func NewUsageDelivery(reg *Registry) *UsageDelivery {
 	d := &UsageDelivery{
 		sends: reg.Counter("kaiak_usage_batch_sends_total",
-			"Usage batches sent to the control plane, by result (acked, rejected, failed: retried).", "result"),
+			"Usage batches sent to the control plane, by the result of the send.", "result"),
 		lastAck: reg.Gauge("kaiak_usage_last_ack_timestamp_seconds",
 			"Unix time the control plane last acknowledged a usage batch."),
 		batchesQueued: reg.Gauge("kaiak_usage_queue_batches",
@@ -40,13 +32,13 @@ func NewUsageDelivery(reg *Registry) *UsageDelivery {
 		queuedBytes: reg.Gauge("kaiak_usage_queued_bytes",
 			"Encoded bytes of the unacknowledged usage records held in memory, bounded by KAIAK_USAGE_MEMORY_BYTES (every queued record)."),
 		dropped: reg.Counter("kaiak_usage_dropped_records_total",
-			"Usage records dropped before reaching the control plane, by reason (invalid: failed the record checks, dropped alone; memory_bound: over the in-memory bound).", "reason"),
+			"Usage records dropped before reaching the control plane, by the reason they were dropped.", "reason"),
 	}
-	for _, r := range batchResults {
-		d.sends.Add(0, r)
+	for _, r := range control.BatchResults {
+		d.sends.Add(0, string(r))
 	}
-	for _, r := range dropReasons {
-		d.dropped.Add(0, r)
+	for _, r := range control.DropReasons {
+		d.dropped.Add(0, string(r))
 	}
 	d.batchesQueued.Set(0)
 	d.recordsQueued.Set(0)
@@ -56,12 +48,9 @@ func NewUsageDelivery(reg *Registry) *UsageDelivery {
 
 // UsageBatchSent counts one batch send and its result; an acknowledgement also sets
 // the last-ack time.
-func (d *UsageDelivery) UsageBatchSent(result string, at time.Time) {
-	if !slices.Contains(batchResults, result) {
-		panic("metrics: unknown batch result " + result)
-	}
-	d.sends.Inc(result)
-	if result == "acked" {
+func (d *UsageDelivery) UsageBatchSent(result control.BatchResult, at time.Time) {
+	d.sends.Inc(string(result))
+	if result == control.BatchAcked {
 		d.lastAck.Set(float64(at.UnixMilli()) / 1000)
 	}
 }
@@ -75,9 +64,6 @@ func (d *UsageDelivery) UsageQueueDepth(batches, records int, queuedBytes int64)
 }
 
 // UsageRecordsDropped counts records dropped before reaching the control plane.
-func (d *UsageDelivery) UsageRecordsDropped(reason string, records int) {
-	if !slices.Contains(dropReasons, reason) {
-		panic("metrics: unknown drop reason " + reason)
-	}
-	d.dropped.Add(uint64(max(records, 0)), reason)
+func (d *UsageDelivery) UsageRecordsDropped(reason control.DropReason, records int) {
+	d.dropped.Add(uint64(max(records, 0)), string(reason))
 }

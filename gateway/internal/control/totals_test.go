@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"kaiak/internal/accounting"
+	"kaiak/internal/config"
 	"kaiak/internal/fakecontrol"
 	"kaiak/internal/limits"
 )
@@ -176,7 +177,7 @@ func TestContact(t *testing.T) {
 	h.cp.Publish(configA(t))
 	h.cp.SetDown(false)
 	h.run(c)
-	h.wantLoad(load{TriggerControl, true})
+	h.wantLoad(load{config.TriggerControl, true})
 	if _, last := c.Contact(); !last.After(created) {
 		t.Errorf("last contact %v, want the stream after %v", last, created)
 	}

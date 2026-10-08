@@ -28,13 +28,6 @@ import (
 // client fills through the config Applier like any other source, and settled usage
 // only joins a batch in memory (Record).
 
-// TriggerControl and TriggerSeed name the client's config loads in the log and in
-// kaiak_config_loads_total.
-const (
-	TriggerControl = "control"
-	TriggerSeed    = "seed"
-)
-
 // Defaults for Options left zero.
 const (
 	DefaultBootWait     = 60 * time.Second
@@ -376,7 +369,7 @@ func unavailable(err error) bool {
 func (c *Client) bootFromSeed() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, err := c.opts.Applier.Apply(TriggerSeed, c.opts.SeedConfig, "file.path", c.opts.SeedFile)
+	_, err := c.opts.Applier.Apply(config.TriggerSeed, c.opts.SeedConfig, "file.path", c.opts.SeedFile)
 	return err == nil
 }
 
@@ -481,7 +474,7 @@ func (c *Client) takeConfig(e ConfigEvent) {
 // force.
 func (c *Client) applyConfig(e ConfigEvent) bool {
 	c.mu.Lock()
-	_, err := c.opts.Applier.Apply(TriggerControl, e.Config, "kaiak.config.hash", e.ConfigHash)
+	_, err := c.opts.Applier.Apply(config.TriggerControl, e.Config, "kaiak.config.hash", e.ConfigHash)
 	if err != nil {
 		c.rejection = &Rejection{ConfigHash: e.ConfigHash, Codes: rejectionCodes(err)}
 		c.mu.Unlock()
