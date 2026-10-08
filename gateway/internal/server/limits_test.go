@@ -390,7 +390,7 @@ func TestOutputLimitKeysTheEndpointDoesNotTakePassUnchecked(t *testing.T) {
 	}
 }
 
-// The follow-up audit's N-M1 reproduction over HTTP: team tokens_per_hour 1000 with
+// N-M1 over HTTP: team tokens_per_hour 1000 with
 // 10 used, then max_tokens at the int64 maximum on a model with no output limit. A
 // wrapped sum would admit it and leave the counter negative, admitting everything
 // after it: it is refused, and the counter and the limit are untouched.

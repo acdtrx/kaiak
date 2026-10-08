@@ -148,7 +148,7 @@ func (c *Client) reportStatus(ctx context.Context, trigger string) error {
 	case err == nil:
 		c.logger.Debug("status report delivered", attrs...)
 	case ctx.Err() != nil:
-	case !wasFailing || failureLevel(err, refusalIsError) == slog.LevelError: // starting, or retrying cannot fix it
+	case !wasFailing || failureLevel(err, refusalIsError) == slog.LevelError: // the first failure, or one retrying cannot fix
 		c.logger.Warn("status report not delivered; retried with the next report", append(attrs, "exception.message", err)...)
 	default:
 		c.logger.Debug("status report not delivered", append(attrs, "exception.message", err)...)

@@ -474,7 +474,7 @@ func TestLogExportStalledCollectorAtExit(t *testing.T) {
 	}
 }
 
-// A collector that answers 307 to another server (the review's M1): the redirect is
+// A collector that answers 307 to another server: the redirect is
 // not followed — the other server receives nothing, neither the batch nor the
 // credential header — the batch counts failed, and stderr reports the status alone:
 // none of the answer's text, its Location, or the header's value.

@@ -145,7 +145,7 @@ func TestReliabilitySettings(t *testing.T) {
 	}
 }
 
-// The status reports the configured cap as written (N-P5): no saturation below the
+// The status reports the configured cap as written: no saturation below the
 // schema's 2^53 - 1.
 func TestHugeMaxInFlightIsKeptWhole(t *testing.T) {
 	s, err := Parse([]byte(minimalDoc(`{ "type": "openai-compatible", "base_url": "http://x/v1", "max_in_flight": 9007199254740991 }`)))

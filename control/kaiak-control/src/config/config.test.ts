@@ -40,7 +40,7 @@ describe("invalid config fixtures", () => {
   testInvalidFixtures(INVALID_DIR, validateConfig);
 });
 
-// The 2026-10-05 review's H1: the gateway's log exporter reads its collector's
+// The gateway's log exporter reads its collector's
 // credentials and addresses from OTEL_ variables, so no backend may name one as its
 // key — its value would be sent to the backend's URL, which the config author chooses.
 test("a backend's api_key_env cannot name a gateway OTEL_ variable", () => {
@@ -124,7 +124,7 @@ describe("group tree rules", () => {
     assert.deepEqual(issuesOf(cycle), [{ code: "group-cycle", path: "/groups/spare/parent" }, exceeded]);
   });
 
-  // 3M2 ([C] C6): groups without limits are counters all the same.
+  // Groups without limits are counters all the same.
   test("a config of groups without limits past the bound is refused", () => {
     const config = readJson(path.join(VALID_DIR, "minimal.json")) as { groups?: Record<string, unknown> };
     config.groups ??= {};

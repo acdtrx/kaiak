@@ -177,7 +177,7 @@ func TestRefusalAndEndpointMissingClassification(t *testing.T) {
 }
 
 // An error event is classified by what it names, as the HTTP status it matches would
-// be (docs/specs/GATEWAY.md, Providers: error events; the pre-merge review's M4):
+// be (docs/specs/GATEWAY.md, Providers: error events):
 // the backend failing is a 5xx — retried, a circuit failure; the backend busy
 // (overloaded, rate-limiting) a 429 — retried as rate-limited, neutral; the caller's
 // fault a 4xx — not retried, neutral. Anthropic's 529 is busy too. Before the first
@@ -244,8 +244,7 @@ func TestErrorEventsAndOverloadClassification(t *testing.T) {
 }
 
 // endpoint_not_served is decided before limits: a request its model can never answer
-// spends no request slot, and gets the answer that says what is wrong, not a 429
-// (the pre-merge review's L2).
+// spends no request slot, and gets the answer that says what is wrong, not a 429.
 func TestEndpointNotServedComesBeforeLimits(t *testing.T) {
 	g := newTestGateway(t)
 	withAnthropicModels(t, g, func(doc string) string {

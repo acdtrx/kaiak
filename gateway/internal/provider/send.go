@@ -207,8 +207,7 @@ const maxPreambleBlocks = 64
 // comment and keep-alive blocks before it (up to maxPreambleBlocks) are returned
 // apart, to be relayed ahead of it — so the first-event window (its timer, the retry
 // of an error event, the headers held back) lasts until the backend has said
-// something (docs/specs/GATEWAY.md, Providers: complete responses; the pre-merge
-// review's [B] M3).
+// something (docs/specs/GATEWAY.md, Providers: complete responses).
 func (r *upstreamResponse) readFirst() (preamble []Event, first Event, err error) {
 	for {
 		first, err = r.read()

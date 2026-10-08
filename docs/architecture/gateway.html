@@ -226,8 +226,8 @@ svg .band { stroke: none; }
     <tr><td><code>control</code></td><td>Boot (the stream's first config → seed), the config stream with reconnect (every config the control plane sends is applied, unless its hash is the running or last rejected one), totals from the stream only (a malformed totals event ends the stream), the usage batch sender (batches queued in memory, the drain delivering them), the status reporter, contact tracking (stream bytes only).</td></tr>
     <tr><td><code>metrics</code></td><td>Small registry (counters, gauges, fixed-bucket histograms) and Prometheus text exposition.</td></tr>
     <tr><td><code>otlplog</code></td><td>Optional OTLP log export (<code>OTEL_*</code> variables): an <code>slog</code> handler beside the stderr one queues a copy of every line; one sender posts OTLP/HTTP JSON batches with retries, drops the newest when its queue is full, and flushes at exit after usage. Its own problems go to stderr only. Not drawn: <code>cmd/kaiak</code> wraps the logger with it.</td></tr>
-    <tr><td><code>sse</code>, <code>clip</code>, <code>logattr</code>, <code>schemacheck</code></td><td>Shared parts: SSE reader (backend streams and the config stream), bounding client strings before they are logged, log durations in seconds, strict JSON and schema-mirroring checks.</td></tr>
-    <tr><td><code>fakebackend</code>, <code>fakecontrol</code></td><td>Test doubles only; used by unit tests and the e2e suite in <code>gateway/e2e</code>.</td></tr>
+    <tr><td><code>sse</code>, <code>netfail</code>, <code>clip</code>, <code>logattr</code>, <code>schemacheck</code></td><td>Shared parts: SSE reader (backend streams and the config stream), a failed exchange named by its class in the gateway's own words (never the remote party's text), bounding client strings before they are logged, log durations in seconds, the one validation pipeline every received document goes through (strict JSON, the schema walker, the typed decode).</td></tr>
+    <tr><td><code>fakebackend</code>, <code>fakecontrol</code>, <code>fakeotlp</code>, <code>fixturetest</code></td><td>Test tooling only: a backend, a control plane and an OTLP collector for the unit tests and the e2e suite in <code>gateway/e2e</code>, and the runner of the shared fixtures in <code>protocol/fixtures/</code>.</td></tr>
   </tbody>
 </table>
 </div>
@@ -367,7 +367,7 @@ svg .band { stroke: none; }
   <li><strong>Concurrency cap per backend</strong> (<code>max_in_flight</code>), split among live gateways in control-plane mode (cap ÷ live count, rounded up). A request that finds no free slot waits in its model's queue (default 100 deep, 30 s): full → <code>429 queue_full</code>, timed out → <code>429 queue_timeout</code>.</li>
   <li><strong>One dispatcher</strong> under routing's lock hands each freed slot to the longest-waiting request that can use it; a waiting request blocks on its own channel — no goroutine per waiter.</li>
   <li><strong>429 cooldown</strong>: a deployment that answered 429 is avoided for a while, and the request retries elsewhere.</li>
-  <li><strong>Model check</strong>: every applied config's backends are listed once in the background; a deployment whose model is not listed is logged as a warning.</li>
+  <li><strong>Model check</strong> (<code>provider</code>): every applied config's backends are listed once in the background; a deployment whose model is not listed is logged as a warning, and a backend whose probe cannot tell which models it serves (the Azure types) gets an info line.</li>
 </ul>
 </section>
 
@@ -612,7 +612,7 @@ svg .band { stroke: none; }
   <tbody>
     <tr>
       <td>① Inbound formats</td>
-      <td>Each endpoint's client API format: <code>server/inbound*.go</code> (owned fields per format), the error shape per format, the input estimate and usage readers in <code>accounting</code>, stream completeness and model rewriting in <code>provider</code></td>
+      <td>One row per endpoint in <code>server</code>'s endpoint table (its output-limit keys, names, token counting), keyed by the <code>provider.Endpoint</code> whose path and client API format <code>provider</code> holds; per format: <code>server/inbound*.go</code> (owned fields), the error shape, the input estimate and usage readers in <code>accounting</code>, the stream format (completeness, model rewriting) in <code>provider</code></td>
       <td>OpenAI (chat completions, completions, embeddings, models); Anthropic Messages (<code>/v1/messages</code>, <code>count_tokens</code>, Anthropic-shaped models list); OpenAI Responses, stateless (<code>/v1/responses</code>, <code>input_tokens</code>)</td>
       <td>Translation between client APIs, so a model is reachable from an API its backends do not speak (backlog). Stateful Responses stays out: a conversation store does not belong in the gateway.</td>
       <td>Parser for the owned fields (model, stream, output limit), the input estimate, errors in that API's shape, the meter reading that format's usage, and when its stream is whole.</td>
@@ -620,7 +620,7 @@ svg .band { stroke: none; }
     <tr>
       <td>② Pipeline stages</td>
       <td><code>server/pipeline.go</code>, <code>newPipeline</code>: an ordered list; "a new stage is a new entry"; finishers for anything that must run however a request ends</td>
-      <td>admission, auth, key concurrency, inbound, model access, model params, limits, attempts, models</td>
+      <td>admission, auth, key concurrency, inbound, model access, endpoint support, model params, limits, attempts, models — each stage naming the requests it applies to</td>
       <td>Response cache, guardrails (input/output), prompt templating, prompt/response logging</td>
       <td>Its position and what it reads or edits in the per-request struct. How it keeps the one-pipeline rule: for a cache, whether a hit is counted against limits and accounted is its first design question.</td>
     </tr>
@@ -768,7 +768,7 @@ svg .band { stroke: none; }
 </section>
 
 <footer>
-  Overview only — the contracts are in <code>docs/specs/GATEWAY.md</code> and <code>docs/specs/CONTROL-PROTOCOL.md</code>, the package-level detail in <code>docs/ARCHITECTURE.md</code>, operations in <code>docs/DEPLOYMENT.md</code>. Written 2026-09-26 against 0.6.0; describes the group tree with the 2026-09-27 review's fixes (after 0.7.1), tiered prices (2026-09-29), the cache-write unit (2026-10-02), OTLP log export (2026-10-05) and Messages and Responses passthrough with the Anthropic backend types (2026-10-06). Continue with <a href="control-plane.html">gateway ↔ control plane</a>.
+  Overview only — the contracts are in <code>docs/specs/GATEWAY.md</code> and <code>docs/specs/CONTROL-PROTOCOL.md</code>, the package-level detail in <code>docs/ARCHITECTURE.md</code>, operations in <code>docs/DEPLOYMENT.md</code>. Written 2026-09-26 against 0.6.0; describes the group tree with the 2026-09-27 review's fixes (after 0.7.1), tiered prices (2026-09-29), the cache-write unit (2026-10-02), OTLP log export (2026-10-05), Messages and Responses passthrough with the Anthropic backend types (2026-10-06), and the package graph after the 2026-10-08 structure work. Continue with <a href="control-plane.html">gateway ↔ control plane</a>.
 </footer>
 </main>
 </body>

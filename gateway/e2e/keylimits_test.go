@@ -144,7 +144,7 @@ func TestOutputLimitAboveTheContextIsRefused(t *testing.T) {
 	g.stop(t)
 }
 
-// A token limit blocked only by a request still running (the review's M4) answers the
+// A token limit blocked only by a request still running answers the
 // short fixed retry — Retry-After 2, x-ratelimit-reset-tokens 2s — instead of the
 // minute's slot expiry, and the same request is admitted once the running one has
 // settled (docs/specs/GATEWAY.md, Limits → Refusal).

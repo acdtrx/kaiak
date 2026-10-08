@@ -964,8 +964,7 @@ Boot).
     - the current config only, kept as its JSON **text** with its hash
       (`ConfigEntry { text, hash, publishedAt }`; `currentConfig()`,
       `publishConfig(entry, expectedHash)`, a conditional replace);
-    - batch cursors per (instance, epoch) (`lastBatches(instance)`, each with its
-      `countedAt`);
+    - batch cursors per (instance, epoch) (`lastBatch(instance, epoch)`);
     - `totalsSnapshot(current)` returns the windows and every instance's cursors from
       one consistent read — no config, live count or instance parameter;
     - conditional gateway writes on revisions that never repeat;
@@ -1012,6 +1011,29 @@ Boot).
       variant `limit-carried-over`;
     - exports `limitIdentity`, `validateConfigSnapshot` (now `validateConfigEvent`),
       `validateResync`, and the config-version types.
+- **After 0.11.1** (protocol 5 and config format 5 unchanged):
+  - **Host apps on `kaiak-control`:**
+    - the core: `totals(instance)` is gone — `readTotals()` is one snapshot for every
+      gateway; `startExpirySweep()`/`stopExpirySweep()` are gone — `start()`/`stop()`
+      run the sweep's timer; a bad `expirySweepIntervalMs` or `batchCursorRetentionMs`
+      throws `control-plane-option-invalid`;
+    - the store: `totalsSnapshot` and `dropPastWindowTotals` take `WindowStarts`, one
+      window start per counted limit type (`{ tokens_per_hour, usd_per_month }`), not
+      `{ hourStart, monthStart }`; `lastBatch(instance, epoch)` and `BatchCursors`
+      (`inEpoch`, `latest`) are gone — `lastBatches(instance)` returns each epoch's
+      `BatchCursor` (`{ batch, countedAt }`), and a refused `saveCountedBatch` carries
+      them. Port it with the contract tests (GUIDE §11);
+    - exports: `libraryName` is gone; `MODEL_CAPABILITIES`, `scopeTypeKey` and
+      `isCountedType` are new (GUIDE §7, §9);
+    - a status's `state` is `ready` or `draining`: `starting` is refused (no gateway
+      sends it).
+  - **Gateways:** a Messages message object naming a member twice is refused (`400
+    duplicate_member`); an output-limit key the endpoint does not take
+    (`max_completion_tokens` on completions, both keys on embeddings) passes
+    unchecked; an `azure-openai` backend gets the `model check not available for this
+    backend type` info line at each config apply; the request line's
+    `kaiak.upstream.error.*` fields describe the last attempt only (an earlier
+    attempt's failure shows in `kaiak.tried`).
 
 ## Images
 

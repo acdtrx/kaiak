@@ -207,7 +207,7 @@ func TestTimeToFirstTokenIsTheAnsweringAttempts(t *testing.T) {
 	}
 }
 
-// The independent review's finding 5: an attempt's outcome and duration are
+// An attempt's outcome and duration are
 // published as it ends, and a retry as it is sent — a failed first attempt is
 // visible while the retry still streams, as is the retry's time to first token —
 // and each exactly once, whether the request then completes or its client leaves.

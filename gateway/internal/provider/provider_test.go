@@ -433,7 +433,7 @@ func TestReservedVariablesAreNeverSentAsACredential(t *testing.T) {
 	}
 }
 
-// The 2026-10-05 review's H1: the log exporter's OTEL_ variables hold its collector
+// The log exporter's OTEL_ variables hold its collector
 // credentials (the headers) and addresses. A config naming one as a backend's
 // api_key_env is refused, and a backend naming one anyway — past a validation bug —
 // gets no credential: the value never reaches the backend the config author chose.

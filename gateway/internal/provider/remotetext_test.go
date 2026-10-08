@@ -15,7 +15,7 @@ import (
 	"kaiak/internal/config"
 )
 
-// The 2026-10-05 review's M5: Go's HTTP client quotes a header line it cannot parse in
+// Go's HTTP client quotes a header line it cannot parse in
 // its error, credentials included, and a provider's errors reach the model check's,
 // the circuit's and the request's log lines. They name the failure's class instead
 // (docs/specs/GATEWAY.md, Logs: no remote text) — for the probe, for a request's send,

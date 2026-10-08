@@ -82,8 +82,8 @@ func TestBackendTypes(t *testing.T) {
 	g.stop(t)
 }
 
-// A backend whose base_url misses the API version path (the 2026-09-30 review's O1):
-// its models list answers 404, and the check at config apply warns, naming the
+// A backend whose base_url misses the API version path (GATEWAY.md, Wrong path to a
+// host): its models list answers 404, and the check at config apply warns, naming the
 // backend, its base_url and what base_url should hold — the other backends, whose
 // lists answer, get no such warning.
 func TestWrongBaseURLIsWarnedAtApply(t *testing.T) {

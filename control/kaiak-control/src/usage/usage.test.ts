@@ -410,7 +410,7 @@ describe("windows by the control plane's clock", () => {
     );
   });
 
-  // D4 and [A]'s scenario: a workload using 60% of its hour limit through a 2-hour
+  // D4: a workload using 60% of its hour limit through a 2-hour
   // outage. After recovery its backlog counts in the hours it was settled in when
   // they are the current or previous hour, so the current hour is not charged with
   // both; usage older than the previous window counts in the current one.

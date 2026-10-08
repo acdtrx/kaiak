@@ -191,7 +191,7 @@ func TestContact(t *testing.T) {
 // A gateway process replaced under the same instance name (a new epoch) has its first
 // batch acknowledged while the old process's stalled write lands after it: the totals
 // then name both epochs, and the new process retires its own batch by its epoch's
-// entry, whatever the other's (AUDIT-2 2M2).
+// entry, whatever the other's.
 func TestEachEpochIsCoveredByItsOwnEntry(t *testing.T) {
 	const oldEpoch, newEpoch = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	u := &usageSender{acked: []ackedBatch{{id: BatchID{Epoch: newEpoch, Sequence: 1}, generation: 1}}}
@@ -265,7 +265,7 @@ func TestAcknowledgedBatchesAreBounded(t *testing.T) {
 
 // An acknowledged batch waits to be shown counted from its ack until totals cover it,
 // heartbeats and further acks notwithstanding: totals that stopped coming are an
-// outage once the grace passes (AUDIT-3 3H1, [G] G3-M1). A batch the totals applied
+// outage once the grace passes. A batch the totals applied
 // last already cover does not wait.
 func TestAnAcknowledgedBatchWaitsToBeShownCounted(t *testing.T) {
 	h := newHarness(t)
@@ -304,7 +304,7 @@ func TestAnAcknowledgedBatchWaitsToBeShownCounted(t *testing.T) {
 }
 
 // An ack is not contact: it brings no totals, so a stream that delivers nothing while
-// acks still come is an outage once the grace passes (AUDIT-2 2M6).
+// acks still come is an outage once the grace passes.
 func TestAnAckIsNotContact(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))

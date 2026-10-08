@@ -90,11 +90,15 @@ enforce the boundaries.
   (admission, in-flight count, the shutdown sequence `cmd/kaiak` triggers on
   SIGTERM/SIGINT) and the request pipeline: a fixed ordered list of stages over one
   per-request struct (admission → auth → key concurrency → inbound → model access →
-  model parameters → limits → attempts), plus the model endpoints' answers. Each
-  endpoint has a client API format; the format decides the owned fields the inbound
-  stage reads, the output-limit key, and the error shape of every answer the gateway
-  gives on that route. The attempts stage is
-  routing → accounting → provider run once per attempt: an attempt that failed before
+  endpoint support → model parameters → limits → attempts), plus the model endpoints'
+  answers; each stage names the requests it applies to (every request, the body
+  endpoints or the model endpoints). Each endpoint is one row of `server`'s endpoint
+  table; a body endpoint's identity is the `provider.Endpoint` it serves, whose path
+  and client API format are `provider`'s. The format decides the owned fields the
+  inbound stage reads and the error shape of every answer the gateway gives on that
+  route; the row holds the rest (its output-limit keys, its metric and operation
+  names, whether it only counts tokens). The attempts stage is routing → accounting →
+  provider run once per attempt: an attempt that failed before
   anything reached the client is retried — through all three again, the queue
   included — on another deployment when there is one; limits reserve once per client
   request and settle the sum of its attempts' records. Work that must happen however
@@ -158,9 +162,10 @@ enforce the boundaries.
   shares from the live-gateway count, the outage refusal for priced
   money-limited models (no stream contact, usage batches unanswered, or acknowledged
   batches no totals have shown counted, past the grace). Nothing outlives the
-  process. It imports nothing of `control`: its `Totals` and `Contact` are what the
-  control client hands it, and a totals message's windows decode straight into its
-  `PushedWindow`, which carries their JSON tags.
+  process. A refusal carries its client headers and its log fields. It imports
+  nothing of `control`: its `Totals` and `Contact` are what the control client hands
+  it, and a totals message's windows decode straight into its `PushedWindow`, which
+  carries their JSON tags.
 - `metrics` — a small registry (counters, gauges, fixed-bucket histograms, gauges and
   counters read at scrape time) and its Prometheus text exposition, served on the admin port; the
   ops metrics the `server` pipeline feeds when a request is over; the usage metrics
@@ -214,8 +219,9 @@ enforce the boundaries.
   plane (read by the limiter's outage check and the metrics). It imports `limits`
   for the limiter's input types (`Totals`, `PushedWindow`, `Contact`), as it imports
   `accounting` for the usage record: `cmd/kaiak` hands the client's totals and its
-  limits contact to the limiter as they come, with no conversion. `cmd/kaiak` wires the
-  usage flush and the final status into the drain; `metrics` gets the delivery
+  limits contact to the limiter as they come, with no conversion. The drain's last
+  step is the client's `Finish` (the usage flush, then the final status), which
+  `cmd/kaiak` calls; `metrics` gets the delivery
   metrics through an observer interface `control` defines, and the connection state
   through one `metrics` defines.
 - `fakebackend` — a test backend speaking OpenAI's chat, completions and embeddings,
@@ -239,7 +245,8 @@ enforce the boundaries.
 - `fixturetest` — the runner of the shared fixtures in `protocol/fixtures/`: where
   they are, the fixture listing, the `cases.json` rules (invalid and duplicate-member
   cases) and the valid and invalid runs over a decoder. `config` and `control` run
-  their fixtures through it. Tests only.
+  their fixtures through it; the other suites that read a shared fixture (`auth`,
+  `limits`, `provider`, `cmd/kaiak`) find it with it. Tests only.
 
 Test tooling outside the binary:
 
@@ -419,6 +426,12 @@ flowchart LR
     messages --> protocol
     messages --> schemas
     messages --> calendar
+    ts[test-support] --> config
+    ts --> cp
+    ts --> fastify
+    ts --> messages
+    ts --> protocol
+    ts --> storage
 ```
 
 - `sample` subsystems (the app wiring lives in its process entries, `src/main.ts`,

@@ -363,7 +363,7 @@ func TestTokenLimitRefusesAnOversizeRequest(t *testing.T) {
 	}
 }
 
-// The follow-up audit's N-M1 reproduction: a team with 1000 tokens per hour, 10
+// N-M1: a team with 1000 tokens per hour, 10
 // already used, and a request reserving the int64 maximum. A wrapped used + need
 // would admit it and leave the counter negative — admitting every later request
 // until it ended. It is refused as too large and the counter keeps its 10.
@@ -486,8 +486,8 @@ func TestRetryAfterIsTheLongestWaitAmongRefusingLimits(t *testing.T) {
 // were their reservations gone — answers a short fixed retry, in Retry-After and in
 // x-ratelimit-reset-tokens: reservations hold the full input estimate plus the output
 // limit, and requests settle at a fraction of it within seconds (docs/specs/GATEWAY.md,
-// Limits → Refusal). The 8th agent of the review's repro was told 59 s and admitted 3 s
-// later; the hour limit's 55m, 5 s later.
+// Limits → Refusal). The window's own expiry would tell such a client 59 s (the minute)
+// or 55 min (the hour) while it is admitted seconds later.
 func TestRefusalBlockedOnlyByRunningRequestsAnswersAShortRetry(t *testing.T) {
 	const shortRetry = 2 * time.Second // the spec's fixed value
 	for _, c := range []struct {
@@ -601,7 +601,7 @@ func TestReloadKeepsMatchingCounters(t *testing.T) {
 
 // A group deleted and created again under its ID within the window keeps its spend,
 // in both modes: its hour and month counts outlive the config that had them, own usage
-// and in-flight reservations included (AUDIT-3 3M1, [C] C3). Once their window has
+// and in-flight reservations included. Once their window has
 // ended, the counts of a deleted group are dropped.
 func TestARecreatedGroupKeepsItsSpend(t *testing.T) {
 	for _, shared := range []bool{false, true} {
@@ -649,8 +649,7 @@ func TestARecreatedGroupKeepsItsSpend(t *testing.T) {
 
 // A running request holds the counts of a group deleted under it, whatever their
 // window holds — a USD reservation holds nothing — so a reload in between drops none of
-// them, and the request's cost lands on the counts the group created again takes back
-// (AUDIT-4 D-H3, decision 36).
+// them, and the request's cost lands on the counts the group created again takes back.
 func TestARunningRequestHoldsTheCountsOfADeletedGroup(t *testing.T) {
 	for _, shared := range []bool{false, true} {
 		t.Run(fmt.Sprint("shared=", shared), func(t *testing.T) {
@@ -681,8 +680,7 @@ func TestARunningRequestHoldsTheCountsOfADeletedGroup(t *testing.T) {
 
 // A request's hold on a deleted group's counts outlives the hour: the roll-over clears
 // its tokens' reservation, and a reload in the new hour still keeps the counts it
-// holds, so the tokens it settles in the new hour count when the group comes back
-// (AUDIT-4 D-H3).
+// holds, so the tokens it settles in the new hour count when the group comes back.
 func TestARunningRequestHoldsADeletedGroupsCountsAcrossTheHour(t *testing.T) {
 	c := newClock("2026-10-07T12:59:59Z")
 	h := holderOf(snapshot(t, limitsDoc{extraGroup: "temporary"}))

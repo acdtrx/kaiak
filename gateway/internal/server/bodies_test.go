@@ -180,12 +180,12 @@ func TestBodyOfUnknownLengthTakesTheBudgetAsItArrives(t *testing.T) {
 	}
 }
 
-// N-S1, the follow-up audit's reproduction scaled down: connections of one valid key
-// declaring large bodies and sending nothing. They used to take the budget for the
-// whole declared length before a byte arrived — two filled it here, and every other
-// client got 503 server_busy until the body-read deadline. Now the key's
-// concurrency limit refuses them past 16, and those admitted hold at most one growth
-// step of the budget each: another key's request is served.
+// N-S1, scaled down: connections of one valid key declaring large bodies and sending
+// nothing. Taking the budget for the whole declared length before a byte arrived, two
+// would fill it here, and every other client would get 503 server_busy until the
+// body-read deadline. The key's concurrency limit refuses them past 16, and those
+// admitted hold at most one growth step of the budget each: another key's request is
+// served.
 func TestIdleDeclaredBodiesDoNotStarveOtherKeys(t *testing.T) {
 	const declared, attackers, perKey = 1 << 20, 20, 16
 	g := buildTestGateway(t, testOptions{bodyMemory: 2 * declared})

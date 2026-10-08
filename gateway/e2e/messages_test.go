@@ -150,7 +150,7 @@ func TestMessages(t *testing.T) {
 			g.settled(t, id)
 		}
 		// After its first 404 the old server is left out for the endpoint for a probe
-		// interval: one request, not one per client request (the pre-merge review's M3).
+		// interval: one request, not one per client request.
 		if n := len(old.Requests()); n != 1 {
 			t.Fatalf("the old server got %d requests, want 1", n)
 		}

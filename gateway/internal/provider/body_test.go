@@ -179,11 +179,10 @@ func TestStandardServiceTier(t *testing.T) {
 	}
 }
 
-// The independent audit's finding 2: every occurrence of a repeated owned key was
-// replaced, so 10 000 short "model" members became 10 000 long deployment names —
-// 43.6× the client's body. The inbound stage refuses a repeated top-level member; the
-// editor refuses one too, so the rewritten body never grows by more than one edit per
-// owned field.
+// Replacing every occurrence of a repeated owned key would let 10 000 short "model"
+// members become 10 000 long deployment names — 43.6× the client's body. The inbound
+// stage refuses a repeated top-level member; the editor refuses one too, so the
+// rewritten body never grows by more than one edit per owned field.
 func TestPassthroughRefusesARepeatedOwnedKey(t *testing.T) {
 	raw := []byte(`{` + strings.Repeat(`"model":"m",`, 10000) + `"messages":[]}`)
 	req := &Request{Body: raw, Deployment: config.Deployment{Model: strings.Repeat("x", 512)}}

@@ -63,7 +63,7 @@ func TestBootWaitsForAControlPlaneComingUp(t *testing.T) {
 	g.stop(t)
 }
 
-// D8, the independent review's reproduction: a fresh stateless gateway against a
+// D8: a fresh stateless gateway against a
 // control plane whose budget is spent, the totals that follow the stream's first
 // config held back. The gateway must not be ready before they arrive — ready, it
 // admitted the priced request as if nothing were spent — and once they arrive it

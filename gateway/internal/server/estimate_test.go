@@ -59,7 +59,7 @@ func injectedLimit(t *testing.T, g *testGateway, key string) int64 {
 	return n
 }
 
-// D1, [A]: a 450 KB inline photo on a 32k-context model counts as one image (1000
+// D1: a 450 KB inline photo on a 32k-context model counts as one image (1000
 // tokens), not ~115k text tokens: the injected default stays whole and the
 // reservation is the text around it plus 1000 plus the output limit.
 func TestInlineImageCountsAsOneMediaItem(t *testing.T) {
@@ -85,7 +85,7 @@ func TestInlineImageCountsAsOneMediaItem(t *testing.T) {
 	}
 }
 
-// D1, [B]: a 1.4 MB PNG under a 100k tokens/minute limit is admitted — its estimate is
+// D1: a 1.4 MB PNG under a 100k tokens/minute limit is admitted — its estimate is
 // one image, not 350k tokens of base64.
 func TestLargeInlineImageFitsATokenLimit(t *testing.T) {
 	g := newTestGateway(t)
@@ -99,7 +99,7 @@ func TestLargeInlineImageFitsATokenLimit(t *testing.T) {
 	}
 }
 
-// D2, [B]: a completion batch's default output is fitted to its largest prompt, not
+// D2: a completion batch's default output is fitted to its largest prompt, not
 // to the whole batch — 16 prompts of 12 KB each leave each sequence room for the
 // default of 16384 in a 32k context.
 func TestBatchDefaultOutputFitsThePrompt(t *testing.T) {

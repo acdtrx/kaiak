@@ -438,7 +438,7 @@ func TestRejectedConfigIsKeptOutAndReported(t *testing.T) {
 
 // The running config published again — the usual undo of a bad publish — is the
 // latest config received, and it runs: the rejection is cleared and a status report
-// says so, with nothing reloaded (AUDIT-2 2M10).
+// says so, with nothing reloaded.
 func TestRunningConfigReceivedAgainClearsTheRejection(t *testing.T) {
 	h := newHarness(t)
 	applied := h.cp.Publish(configA(t))
@@ -888,7 +888,7 @@ func TestLimitsTotalsCarryWindowsByGroupAndType(t *testing.T) {
 
 // A totals event that cannot be decoded ends the stream: each later totals event lists
 // only what changed since the one before, so the stream cannot go on without it. The
-// reconnect's first totals are complete (AUDIT-3 3H1, [C] C5).
+// reconnect's first totals are complete.
 func TestMalformedTotalsEndTheStream(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))

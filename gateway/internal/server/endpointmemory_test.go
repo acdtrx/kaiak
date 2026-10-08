@@ -24,7 +24,7 @@ func rememberedBackends(m *MissingEndpoints) []string {
 
 // An applied config that no longer has a backend forgets what the missing-endpoint
 // memory holds for it: no request visits a removed backend's entry again, so its
-// expiry would never remove it (the structure review's B01). A kept backend's entry
+// expiry would never remove it. A kept backend's entry
 // stays.
 func TestAppliedConfigForgetsARemovedBackendsMissingEndpoints(t *testing.T) {
 	g := newTestGateway(t)

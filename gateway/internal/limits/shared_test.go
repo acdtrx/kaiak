@@ -163,7 +163,7 @@ func TestPushedWindowRolloverMidBatch(t *testing.T) {
 	}
 }
 
-// N-M2, the reviewer's scenario: the control plane's clock steps 90 minutes ahead and
+// N-M2: the control plane's clock steps 90 minutes ahead and
 // pushes a 12:00 window while the gateway is in 10:00 — a warning, and the window
 // moves to 12:00 (the control plane's newest window leads). Its clock fixed, the
 // control plane pushes 10:00 again: that matches the gateway's own clock window, so
@@ -206,7 +206,7 @@ func TestEarlierPushedWindowMatchingTheGatewayClockIsTaken(t *testing.T) {
 	}
 }
 
-// D4, [A]'s scenario: a workload using 60% of its hour limit every hour through a
+// D4: a workload using 60% of its hour limit every hour through a
 // 2-hour outage. Uncounted usage stays in the window it was settled in — the control
 // plane counts it there too (its gateway_time window, current or previous) — so each
 // new hour starts from nothing of its own, and nothing is refused.
@@ -577,8 +577,7 @@ func TestShareNeverMakesARequestImpossible(t *testing.T) {
 }
 
 // The small-share warning names only models the limit's scope may use: a group allowed
-// only m2 (no default output) gets no warning about m1's ([G] L1 in the 2026-10-07
-// review).
+// only m2 (no default output) gets no warning about m1's.
 func TestShareWarningNamesOnlyModelsTheScopeMayUse(t *testing.T) {
 	c := newClock("2026-09-24T10:30:00Z")
 	var logs bytes.Buffer
@@ -691,7 +690,7 @@ func TestUsageWaitingPastTheGraceIsAnOutage(t *testing.T) {
 
 // Usage acknowledged but not shown counted past the grace is an outage, the stream
 // and its heartbeats notwithstanding: totals that stopped coming leave the bases
-// frozen, and each gateway would enforce only its own view (AUDIT-3 3H1). It is logged
+// frozen, and each gateway would enforce only its own view. It is logged
 // with its own reason.
 func TestUsageNotShownCountedPastTheGraceIsAnOutage(t *testing.T) {
 	c := newClock("2026-10-07T10:30:00Z")
@@ -718,8 +717,7 @@ func TestUsageNotShownCountedPastTheGraceIsAnOutage(t *testing.T) {
 
 // A changes-only stream never lists a window again once its hour or month is over:
 // the counts pushed windows of deleted scopes keep are dropped once the window has
-// ended, so a long-lived stream does not keep every scope it ever saw (AUDIT-3 3M1,
-// [C] C8).
+// ended, so a long-lived stream does not keep every scope it ever saw.
 func TestEndedPushedWindowsAreDropped(t *testing.T) {
 	c := newClock("2026-10-07T12:30:00Z")
 	l, _ := c.shared(holderOf(snapshot(t, limitsDoc{})))
@@ -781,11 +779,11 @@ func TestBootWithoutTheControlPlaneIsAnOutageAfterTheGrace(t *testing.T) {
 	}
 }
 
-// The independent audit's finding 7: a reservation made in a window that a pushed
-// future window then cleared must never be released against a later incarnation of
-// the window — even when a clock correction brings the same start back. Released
-// there, it subtracted a hold that no longer existed, and the negative count
-// saturated to "everything used": every request refused.
+// A reservation made in a window that a pushed future window then cleared must never
+// be released against a later incarnation of the window — even when a clock correction
+// brings the same start back. Released there, it would subtract a hold that no longer
+// exists, and the negative count would saturate to "everything used": every request
+// refused.
 func TestHoldOfAClearedWindowIsNeverReleasedAfterAClockCorrection(t *testing.T) {
 	c := newClock("2026-09-24T10:30:00Z")
 	l, _ := c.shared(holderOf(snapshot(t, limitsDoc{workload: hourLimit})))
@@ -845,7 +843,7 @@ func TestNoTotalsYetRefusesMoneyLimitedModels(t *testing.T) {
 // rejected that config) keeps the limit's spend: the totals list every scope with
 // usage whatever the config, and a later push that does not list the scope — it did
 // not change — leaves its base as it is, after the gateway's own usage was retired
-// into it (AUDIT-2 2H3).
+// into it.
 func TestALimitKeepsItsSpendWhateverTheControlPlanesConfig(t *testing.T) {
 	c := newClock("2026-10-07T12:30:00Z")
 	l, _ := c.shared(holderOf(snapshot(t, limitsDoc{workload: hourLimit})))
