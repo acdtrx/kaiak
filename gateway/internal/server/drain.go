@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"kaiak/internal/logattr"
+	"kaiak/internal/metrics"
 )
 
 // Drain phases (docs/specs/GATEWAY.md, Lifecycle).
@@ -181,7 +182,7 @@ func (d *Drain) finish(l *Listener, timeout time.Duration, hurry <-chan struct{}
 
 // errShuttingDown answers a request that arrives once the drain refuses new ones.
 func errShuttingDown() *apiError {
-	return &apiError{status: http.StatusServiceUnavailable, errType: typeServer, code: "server_shutting_down",
+	return &apiError{status: http.StatusServiceUnavailable, errType: typeServer, code: "server_shutting_down", class: metrics.ErrorShuttingDown,
 		message: "The gateway is shutting down; retry the request."}
 }
 
@@ -189,7 +190,7 @@ func errShuttingDown() *apiError {
 // binary binds its listeners only once a config is in force; the handler still
 // refuses rather than serve without one.
 func errConfigNotLoaded() *apiError {
-	return &apiError{status: http.StatusServiceUnavailable, errType: typeServer, code: "config_not_loaded",
+	return &apiError{status: http.StatusServiceUnavailable, errType: typeServer, code: "config_not_loaded", class: metrics.ErrorNotReady,
 		message: "The gateway has no config yet; retry the request."}
 }
 

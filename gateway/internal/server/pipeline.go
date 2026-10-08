@@ -211,11 +211,36 @@ type request struct {
 	abort bool
 }
 
-// stage is one pipeline step. A non-nil error ends the pipeline: it is written as the
-// response and no later stage runs.
+// stage is one pipeline step, run for the requests of its scope. A non-nil error ends
+// the pipeline: it is written as the response and no later stage runs.
 type stage struct {
-	name string
-	run  func(ctx context.Context, rq *request) *apiError
+	name  string
+	run   func(ctx context.Context, rq *request) *apiError
+	scope stageScope
+}
+
+// stageScope is the requests a stage runs for. Both kinds of request pass the one
+// pipeline: the stages they share run in the same order for both.
+type stageScope int
+
+const (
+	// everyRequest: the body endpoints and the model endpoints.
+	everyRequest stageScope = iota
+	// bodyRequests: the body endpoints only — the body, the routed attempts.
+	bodyRequests
+	// modelRequests: the model endpoints only, answered from the config.
+	modelRequests
+)
+
+// covers reports whether a stage of scope s runs for a request to ep.
+func (s stageScope) covers(ep endpoint) bool {
+	switch s {
+	case bodyRequests:
+		return ep.takesBody()
+	case modelRequests:
+		return !ep.takesBody()
+	}
+	return true
 }
 
 // finish runs the request's finishers. It is deferred by the request's handler, so it
@@ -226,33 +251,34 @@ func (rq *request) finish() {
 	}
 }
 
-// newPipeline returns the stages every client request passes, in order
-// (docs/specs/GATEWAY.md, Request pipeline). A new stage is a new entry here.
-// Admission comes first: a draining gateway, or one with no config, refuses before
-// reading anything. The per-key concurrency limit follows auth, before the body is
-// read: a key's idle connections declaring bodies count against it. The attempts stage is routing, accounting and provider run per
-// attempt — retries go through all three again — and answers the body endpoints; the
-// model endpoints reach the terminal stage. Accounting opens each attempt's meter
-// before its provider call because it must see the response as it is relayed, and
-// settles however the request ends (a finisher). Limits run after model_params
-// (they reserve the effective output limit) and before routing — once per client
-// request, whatever the attempts; their finisher is registered before the attempt
-// loop's, so it runs after settlement.
+// newPipeline returns the stages every client request passes, in order, each with
+// the requests it runs for (docs/specs/GATEWAY.md, Request pipeline). A new stage is
+// a new entry here. Admission comes first: a draining gateway, or one with no config,
+// refuses before reading anything. The per-key concurrency limit follows auth, before
+// the body is read: a key's idle connections declaring bodies count against it. The
+// model endpoints pass admission, auth, key concurrency and model access, then reach
+// their terminal stage. The attempts stage is routing, accounting and provider run per
+// attempt — retries go through all three again — and answers the body endpoints.
+// Accounting opens each attempt's meter before its provider call because it must see
+// the response as it is relayed, and settles however the request ends (a finisher).
+// Limits run after model_params (they reserve the effective output limit) and before
+// routing — once per client request, whatever the attempts; their finisher is
+// registered before the attempt loop's, so it runs after settlement.
 func newPipeline(drain *Drain, keys *keyInFlight, bodies *BodyBudget, providers *provider.Registry, limiter *limits.Limiter,
 	router *routing.Router, missing *MissingEndpoints, recorder *accounting.Recorder, logger *slog.Logger) []stage {
-	budget := newRetryBudget(time.Now)
+	loop := &attempts{router: router, recorder: recorder, providers: providers, budget: newRetryBudget(time.Now),
+		missing: missing, logger: logger}
 	return []stage{
-		{"admission", func(_ context.Context, rq *request) *apiError { return admit(drain, rq) }},
-		{"auth", authenticateKey},
-		{"key_concurrency", func(_ context.Context, rq *request) *apiError { return limitKeyConcurrency(rq, keys) }},
-		{"inbound", func(ctx context.Context, rq *request) *apiError { return readInbound(ctx, rq, bodies) }},
-		{"model_access", authorizeModel},
-		{"model_params", applyModelParams},
-		{"limits", func(_ context.Context, rq *request) *apiError { return checkLimits(rq, limiter) }},
-		{"attempts", func(ctx context.Context, rq *request) *apiError {
-			return sendAttempts(ctx, rq, router, recorder, providers, budget, missing, logger)
-		}},
-		{"models", answerModelEndpoint},
+		{"admission", func(_ context.Context, rq *request) *apiError { return admit(drain, rq) }, everyRequest},
+		{"auth", authenticateKey, everyRequest},
+		{"key_concurrency", func(_ context.Context, rq *request) *apiError { return limitKeyConcurrency(rq, keys) }, everyRequest},
+		{"inbound", func(ctx context.Context, rq *request) *apiError { return readInbound(ctx, rq, bodies) }, bodyRequests},
+		{"model_access", authorizeModel, everyRequest},
+		{"endpoint_support", findServingDeployments, bodyRequests},
+		{"model_params", applyModelParams, bodyRequests},
+		{"limits", func(_ context.Context, rq *request) *apiError { return checkLimits(rq, limiter) }, bodyRequests},
+		{"attempts", loop.run, bodyRequests},
+		{"models", answerModelEndpoint, modelRequests},
 	}
 }
 
@@ -270,9 +296,8 @@ func authenticateKey(_ context.Context, rq *request) *apiError {
 	return nil
 }
 
-// authorizeModel applies the one model-access check (auth.Identity.AuthorizeModel),
-// then, for a body request, finds the deployments that serve its endpoint. Later
-// stages may assume the model exists in the snapshot.
+// authorizeModel applies the one model-access check (auth.Identity.AuthorizeModel).
+// Later stages may assume the model exists in the snapshot.
 func authorizeModel(_ context.Context, rq *request) *apiError {
 	if !rq.endpoint.namesModel() {
 		return nil
@@ -281,12 +306,14 @@ func authorizeModel(_ context.Context, rq *request) *apiError {
 		return authError(err)
 	}
 	rq.modelAllowed = true
-	if !rq.endpoint.takesBody() {
-		return nil
-	}
-	// A model none of whose backends serves the endpoint can never answer: refused
-	// here, before limits spend anything on it (docs/specs/GATEWAY.md, Providers →
-	// Endpoint support).
+	return nil
+}
+
+// findServingDeployments finds the deployments of a body request's model that serve
+// its endpoint. A model none of whose backends serves the endpoint can never answer:
+// refused here, before limits spend anything on it (docs/specs/GATEWAY.md, Providers →
+// Endpoint support).
+func findServingDeployments(_ context.Context, rq *request) *apiError {
 	if rq.serving = servingDeployments(rq.snapshot.Models[rq.model], rq.endpoint); rq.serving == nil {
 		return errEndpointNotServed(rq.endpoint)
 	}

@@ -120,6 +120,9 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request, ep endpoint, pathMod
 	rq.endpoint = ep
 	rq.model = pathModel
 	for _, st := range a.stages {
+		if !st.scope.covers(ep) {
+			continue
+		}
 		if err := st.run(r.Context(), rq); err != nil {
 			rq.failure = err
 			writeError(rq.w, err, rq.errorShape())

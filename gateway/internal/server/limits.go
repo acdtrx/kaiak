@@ -10,6 +10,7 @@ import (
 	"kaiak/internal/accounting"
 	"kaiak/internal/config"
 	"kaiak/internal/limits"
+	"kaiak/internal/metrics"
 )
 
 // checkLimits checks a body request against every limit that applies to its scopes
@@ -24,9 +25,6 @@ import (
 // loop's, so it runs after settlement and reads the request's usage records — the
 // sum of its attempts'.
 func checkLimits(rq *request, limiter *limits.Limiter) *apiError {
-	if !rq.endpoint.takesBody() {
-		return nil
-	}
 	tokens := rq.input.Total
 	if rq.endpoint.counts() {
 		tokens = 0
@@ -84,7 +82,7 @@ func ceilSeconds(d time.Duration) int64 {
 // names the kind of scope ("group limit", "global limit"), never a group's ID or
 // labels: which group refused is the operator's to read in the log line.
 func errLimited(r *limits.Rejection) *apiError {
-	e := &apiError{status: http.StatusTooManyRequests, code: "rate_limit_exceeded"}
+	e := &apiError{status: http.StatusTooManyRequests, code: "rate_limit_exceeded", class: metrics.ErrorRateLimited}
 	retry := time.Duration(ceilSeconds(r.RetryAfter)) * time.Second
 	switch r.Measure {
 	case limits.MeasureRequests:
@@ -101,7 +99,7 @@ func errLimited(r *limits.Rejection) *apiError {
 		}
 	default:
 		e.errType = "budget"
-		e.code = "budget_exceeded"
+		e.code, e.class = "budget_exceeded", metrics.ErrorBudgetExceeded
 		e.message = fmt.Sprintf("Budget exhausted: %s limit of %s USD per month reached (used %s USD). Retry after %s.",
 			r.Scope, usd(r.Limit), usd(r.Used), retry)
 	}
@@ -115,7 +113,7 @@ func errLimited(r *limits.Rejection) *apiError {
 // (docs/specs/CONTROL-PROTOCOL.md, Control-plane outage). A platform condition, not the
 // caller's: 503, no Retry-After — nobody knows when the totals come.
 func errBudgetUnavailable(r *limits.Rejection) *apiError {
-	return &apiError{status: http.StatusServiceUnavailable, errType: typeServer, code: "budget_unavailable",
+	return &apiError{status: http.StatusServiceUnavailable, errType: typeServer, code: "budget_unavailable", class: metrics.ErrorBudgetUnavailable,
 		message: fmt.Sprintf("Budget unavailable: the model has a %s USD limit and its spend is not known "+
 			"(the budget service is unreachable or has not reported it yet); requests to it are refused until it is.", r.Scope)}
 }

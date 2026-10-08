@@ -9,6 +9,7 @@ import (
 
 	"kaiak/internal/auth"
 	"kaiak/internal/clip"
+	"kaiak/internal/metrics"
 	"kaiak/internal/provider"
 )
 
@@ -24,6 +25,9 @@ type apiError struct {
 	status  int
 	errType string
 	code    string
+	// class is the error class the error metrics count the answer under
+	// (docs/specs/GATEWAY.md, Observability: error classes).
+	class   metrics.ErrorClass
 	message string
 	// param names the request parameter at fault; "" is written as null.
 	param string
@@ -147,33 +151,33 @@ func authError(e *auth.Error) *apiError {
 	switch e.Code {
 	case auth.CodeModelNotFound:
 		return &apiError{status: http.StatusNotFound, errType: typeInvalidRequest,
-			code: "model_not_found", message: e.Message}
+			code: "model_not_found", class: metrics.ErrorNotFound, message: e.Message}
 	case auth.CodeMissingKey:
 		return &apiError{status: http.StatusUnauthorized, errType: typeInvalidRequest,
-			code: "missing_api_key", message: e.Message}
+			code: "missing_api_key", class: metrics.ErrorAuth, message: e.Message}
 	default:
 		return &apiError{status: http.StatusUnauthorized, errType: typeInvalidRequest,
-			code: "invalid_api_key", message: e.Message}
+			code: "invalid_api_key", class: metrics.ErrorAuth, message: e.Message}
 	}
 }
 
 func errUnknownURL(r *http.Request) *apiError {
-	return &apiError{status: http.StatusNotFound, errType: typeInvalidRequest, code: "unknown_url",
+	return &apiError{status: http.StatusNotFound, errType: typeInvalidRequest, code: "unknown_url", class: metrics.ErrorNotFound,
 		message: fmt.Sprintf("Invalid URL (%s %s)", clip.String(r.Method), clip.String(r.URL.Path))}
 }
 
 func errMethodNotAllowed(r *http.Request) *apiError {
 	return &apiError{status: http.StatusMethodNotAllowed, errType: typeInvalidRequest,
-		code: "method_not_allowed", message: fmt.Sprintf("Method %s is not allowed for %s", clip.String(r.Method), clip.String(r.URL.Path))}
+		code: "method_not_allowed", class: metrics.ErrorInvalidRequest, message: fmt.Sprintf("Method %s is not allowed for %s", clip.String(r.Method), clip.String(r.URL.Path))}
 }
 
 func errBodyTooLarge(limit int64) *apiError {
 	return &apiError{status: http.StatusRequestEntityTooLarge, errType: typeInvalidRequest,
-		code: "request_too_large", message: fmt.Sprintf("The request body exceeds the limit of %d bytes.", limit)}
+		code: "request_too_large", class: metrics.ErrorInvalidRequest, message: fmt.Sprintf("The request body exceeds the limit of %d bytes.", limit)}
 }
 
 func errInvalidJSON() *apiError {
-	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "invalid_json",
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "invalid_json", class: metrics.ErrorInvalidRequest,
 		message: "The request body is not a JSON object."}
 }
 
@@ -182,19 +186,19 @@ func errInvalidJSON() *apiError {
 // clipped: the client chose it.
 func errDuplicateMember(param string) *apiError {
 	param = clip.String(param)
-	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "duplicate_member",
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "duplicate_member", class: metrics.ErrorInvalidRequest,
 		param: param, message: fmt.Sprintf("'%s' appears more than once in the request body.", param)}
 }
 
 func errInvalidType(param, want string) *apiError {
-	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "invalid_type",
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "invalid_type", class: metrics.ErrorInvalidRequest,
 		param: param, message: fmt.Sprintf("Invalid type for '%s': expected %s.", param, want)}
 }
 
 // errNTooLarge refuses a request asking for more sequences per prompt than
 // global.max_n allows; param is n or best_of.
 func errNTooLarge(param string, maxN int64) *apiError {
-	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "n_too_large", param: param,
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "n_too_large", class: metrics.ErrorInvalidRequest, param: param,
 		message: fmt.Sprintf("'%s' is above the gateway's maximum of %d sequences per prompt.", param, maxN)}
 }
 
@@ -202,7 +206,7 @@ func errNTooLarge(param string, maxN int64) *apiError {
 // generate more sequences than global.max_sequences_per_request allows; param is the
 // prompt list, or n or best_of.
 func errTooManySequences(param string, sequences, limit int64) *apiError {
-	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "invalid_value", param: param,
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "invalid_value", class: metrics.ErrorInvalidRequest, param: param,
 		message: fmt.Sprintf("The request asks for %d generated sequences (n or best_of per prompt, times the prompts); the gateway's maximum is %d per request.",
 			sequences, limit)}
 }
@@ -210,7 +214,7 @@ func errTooManySequences(param string, sequences, limit int64) *apiError {
 // errTooManyInputs refuses an embeddings request carrying more inputs than
 // global.max_embedding_inputs allows.
 func errTooManyInputs(inputs, limit int64) *apiError {
-	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "invalid_value", param: "input",
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "invalid_value", class: metrics.ErrorInvalidRequest, param: "input",
 		message: fmt.Sprintf("'input' holds %d inputs; the gateway's maximum is %d per request.", inputs, limit)}
 }
 
@@ -218,7 +222,7 @@ func errTooManyInputs(inputs, limit int64) *apiError {
 // max_completion_tokens) above the model's context length, in OpenAI's code and
 // wording for the same refusal.
 func errOutputLimitTooLarge(param string, value, contextLength int64) *apiError {
-	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "invalid_value", param: param,
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "invalid_value", class: metrics.ErrorInvalidRequest, param: param,
 		message: fmt.Sprintf("%s is too large: %d. This model supports at most %d tokens (its context length), whereas you provided %d.",
 			param, value, contextLength, value)}
 }
@@ -227,7 +231,7 @@ func errOutputLimitTooLarge(param string, value, contextLength int64) *apiError 
 // gateway would set to the model's ceiling or default (which), n, at or below the
 // request's thinking budget.
 func errOutputLimitBelowThinking(param string, n int64, which string, budget int64) *apiError {
-	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "invalid_value", param: param,
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "invalid_value", class: metrics.ErrorInvalidRequest, param: param,
 		message: fmt.Sprintf("%s would be set to %d, this model's output-limit %s, which is not above thinking.budget_tokens (%d): "+
 			"send a smaller thinking budget, or ask the operator to raise the model's output-limit %s.", param, n, which, budget, which)}
 }
@@ -236,17 +240,17 @@ func errOutputLimitBelowThinking(param string, n int64, which string, budget int
 // max_completion_tokens) below 0, in OpenAI's wording for an integer below its
 // minimum.
 func errOutputLimitNegative(param string, value int64) *apiError {
-	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "invalid_value", param: param,
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "invalid_value", class: metrics.ErrorInvalidRequest, param: param,
 		message: fmt.Sprintf("Invalid '%s': integer below minimum value. Expected a value >= 0, but got %d instead.", param, value)}
 }
 
 func errMissingModel() *apiError {
 	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest,
-		code: "missing_required_parameter", param: "model", message: "Missing required parameter: 'model'."}
+		code: "missing_required_parameter", class: metrics.ErrorInvalidRequest, param: "model", message: "Missing required parameter: 'model'."}
 }
 
 func errReadBody() *apiError {
-	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "invalid_body",
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "invalid_body", class: metrics.ErrorInvalidRequest,
 		message: "The request body could not be read."}
 }
 
@@ -259,23 +263,23 @@ const statusClientClosed = 499
 const codeClientClosed = "client_closed"
 
 func errClientClosed() *apiError {
-	return &apiError{status: statusClientClosed, errType: typeInvalidRequest, code: codeClientClosed,
+	return &apiError{status: statusClientClosed, errType: typeInvalidRequest, code: codeClientClosed, class: metrics.ErrorClientClosed,
 		message: "The client closed the request."}
 }
 
 // upstreamAnswer is the answer to a failure to get a response from the backend
-// (failureRules): status, the provider's code and the gateway's message. Messages
-// never name the backend: its address is not the client's business.
-func upstreamAnswer(status int, code provider.Code, message string) func(*provider.Error) *apiError {
+// (failureRules): status, the provider's code, its error class and the gateway's
+// message. Messages never name the backend: its address is not the client's business.
+func upstreamAnswer(status int, code provider.Code, class metrics.ErrorClass, message string) func(*provider.Error) *apiError {
 	return func(*provider.Error) *apiError {
-		return &apiError{status: status, errType: typeServer, code: string(code), message: message}
+		return &apiError{status: status, errType: typeServer, code: string(code), class: class, message: message}
 	}
 }
 
 // errUpstreamFault answers a backend 5xx: the backend's status, the gateway's own
 // message (the backend's text is logged, not relayed).
 func errUpstreamFault(status int) *apiError {
-	return &apiError{status: status, errType: typeServer, code: "upstream_error",
+	return &apiError{status: status, errType: typeServer, code: "upstream_error", class: metrics.ErrorUpstreamError,
 		message: "The model backend failed to process the request."}
 }
 
@@ -284,7 +288,7 @@ func errUpstreamFault(status int) *apiError {
 // was overloaded or rate-limiting, under 503. Its own code, so clients and the
 // error metrics tell a busy backend from a failing one.
 func errUpstreamOverloaded(status int) *apiError {
-	return &apiError{status: status, errType: typeServer, code: "upstream_overloaded",
+	return &apiError{status: status, errType: typeServer, code: "upstream_overloaded", class: metrics.ErrorUpstreamRateLimited,
 		message: "The model backend is overloaded; retry later."}
 }
 
@@ -296,13 +300,13 @@ func errUpstreamRefused(code string) *apiError {
 	if code != "" {
 		message = fmt.Sprintf("The model backend refused the request (%s).", code)
 	}
-	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "upstream_refused", message: message}
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "upstream_refused", class: metrics.ErrorUpstreamClientError, message: message}
 }
 
 // errRefused answers a provider's refusal of the request before sending: the caller's
 // mistake, a 400 naming the parameter at fault.
 func errRefused(r *provider.RefusalError) *apiError {
-	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: r.Code, param: r.Param,
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: r.Code, class: metrics.ErrorInvalidRequest, param: r.Param,
 		message: r.Message}
 }
 
@@ -310,12 +314,12 @@ func errRefused(r *provider.RefusalError) *apiError {
 // a backend serving the endpoint (docs/specs/GATEWAY.md, Providers → Endpoint
 // support). The model passed the access check, so naming the endpoint leaks nothing.
 func errEndpointNotServed(ep endpoint) *apiError {
-	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "endpoint_not_served",
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "endpoint_not_served", class: metrics.ErrorInvalidRequest,
 		message: fmt.Sprintf("The model is not served on %s: none of its backends serves this API.", ep.path())}
 }
 
 func errInternal() *apiError {
-	return &apiError{status: http.StatusInternalServerError, errType: typeServer, code: "internal_error",
+	return &apiError{status: http.StatusInternalServerError, errType: typeServer, code: "internal_error", class: metrics.ErrorInternal,
 		message: "The gateway failed to process the request."}
 }
 
@@ -324,7 +328,7 @@ func errInternal() *apiError {
 // the caller's rate — hence server_error; the caller adds Retry-After: 1, as a slot
 // may free any moment.
 func errQueueFull() *apiError {
-	return &apiError{status: http.StatusTooManyRequests, errType: typeServer, code: "queue_full",
+	return &apiError{status: http.StatusTooManyRequests, errType: typeServer, code: "queue_full", class: metrics.ErrorQueueRejected,
 		message: "The model's backends are at capacity and its queue is full; retry the request."}
 }
 
@@ -333,7 +337,7 @@ func errQueueFull() *apiError {
 // own doing, like a rate limit: OpenAI's 429 with type "requests"; the caller adds
 // Retry-After: 1, as a slot frees when any of the key's requests ends.
 func errConcurrencyLimited(limit int64) *apiError {
-	return &apiError{status: http.StatusTooManyRequests, errType: "requests", code: "concurrency_limit_exceeded",
+	return &apiError{status: http.StatusTooManyRequests, errType: "requests", code: "concurrency_limit_exceeded", class: metrics.ErrorRateLimited,
 		message: fmt.Sprintf("Concurrency limit reached: this key has %d requests in flight, the most allowed per gateway; retry once one of them completes.", limit)}
 }
 
@@ -341,14 +345,14 @@ func errConcurrencyLimited(limit int64) *apiError {
 // bodies of the requests in flight fill the memory set aside for them. The caller
 // adds Retry-After: 1, as bodies are released all the time.
 func errServerBusy() *apiError {
-	return &apiError{status: http.StatusServiceUnavailable, errType: typeServer, code: "server_busy",
+	return &apiError{status: http.StatusServiceUnavailable, errType: typeServer, code: "server_busy", class: metrics.ErrorServerBusy,
 		message: "The gateway is holding as many request bodies as its memory allows; retry the request."}
 }
 
 // errNoHealthyDeployment answers a request for a model whose every deployment has
 // its circuit open: the backends are failing, the gateway is probing them.
 func errNoHealthyDeployment() *apiError {
-	return &apiError{status: http.StatusServiceUnavailable, errType: typeServer, code: "no_healthy_deployment",
+	return &apiError{status: http.StatusServiceUnavailable, errType: typeServer, code: "no_healthy_deployment", class: metrics.ErrorNoHealthyDeployment,
 		message: "No backend serving the model is healthy right now; retry the request later."}
 }
 
@@ -356,7 +360,7 @@ func errNoHealthyDeployment() *apiError {
 // getting a slot. No Retry-After: the gateway has no estimate better than the wait
 // that just ran out.
 func errQueueTimeout(timeout time.Duration) *apiError {
-	return &apiError{status: http.StatusTooManyRequests, errType: typeServer, code: "queue_timeout",
+	return &apiError{status: http.StatusTooManyRequests, errType: typeServer, code: "queue_timeout", class: metrics.ErrorQueueRejected,
 		message: fmt.Sprintf("The model's backends stayed at capacity for the queue timeout of %s; retry the request.", timeout)}
 }
 
@@ -364,7 +368,7 @@ func errQueueTimeout(timeout time.Duration) *apiError {
 // Client API → hosted tools are refused); param names its type's position, and the
 // message names the type, clipped: the client wrote it.
 func errHostedTool(param, toolType string) *apiError {
-	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "hosted_tool_unsupported", param: param,
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "hosted_tool_unsupported", class: metrics.ErrorInvalidRequest, param: param,
 		message: fmt.Sprintf("'%s' is %q, a tool the backend runs itself; the gateway serves only tools the client runs.",
 			param, clip.String(toolType))}
 }
@@ -373,7 +377,7 @@ func errHostedTool(param, toolType string) *apiError {
 // requests (docs/specs/GATEWAY.md, Client API → Responses is stateless); param names
 // the field.
 func errStatefulResponses(param string) *apiError {
-	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "stateful_responses_unsupported", param: param,
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "stateful_responses_unsupported", class: metrics.ErrorInvalidRequest, param: param,
 		message: fmt.Sprintf("'%s' relies on state kept between requests; the gateway serves Responses stateless: send the whole conversation in input.", param)}
 }
 
@@ -382,20 +386,20 @@ func errStatefulResponses(param string) *apiError {
 // stateless): the gateway stores nothing and has no upload endpoint, so such an ID
 // can only name another application's object in the shared provider account.
 func errStoredObjectResponses(param string) *apiError {
-	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "stateful_responses_unsupported", param: param,
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "stateful_responses_unsupported", class: metrics.ErrorInvalidRequest, param: param,
 		message: fmt.Sprintf("'%s' refers to an object stored at the backend; the gateway serves Responses stateless: send the content itself.", param)}
 }
 
 // errStoredObject refuses a Messages request referring to a file stored at the
 // backend (docs/specs/GATEWAY.md, Client API → stored objects), for the same reason.
 func errStoredObject(param string) *apiError {
-	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "stored_object_unsupported", param: param,
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "stored_object_unsupported", class: metrics.ErrorInvalidRequest, param: param,
 		message: fmt.Sprintf("'%s' refers to a file stored at the backend; the gateway serves no stored files: send the content itself.", param)}
 }
 
 // errHostedMember refuses a request member that hands the backend tools to run itself
 // (Messages mcp_servers and container).
 func errHostedMember(param string) *apiError {
-	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "hosted_tool_unsupported", param: param,
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "hosted_tool_unsupported", class: metrics.ErrorInvalidRequest, param: param,
 		message: fmt.Sprintf("'%s' asks the backend to run tools itself; the gateway serves only tools the client runs.", param)}
 }

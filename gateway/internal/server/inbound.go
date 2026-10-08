@@ -38,13 +38,8 @@ type inboundFields struct {
 // readInbound parses a body endpoint's request: the raw body, capped by the snapshot's
 // max_request_body_bytes and by the whole body budget (a larger body could never be
 // held), and the owned fields. The body holds its share of the budget until it is
-// dropped (releaseBody, also a finisher). The model endpoints carry no body; their
-// model comes from the route.
+// dropped (releaseBody, also a finisher).
 func readInbound(_ context.Context, rq *request, bodies *BodyBudget) *apiError {
-	if !rq.endpoint.takesBody() {
-		return nil
-	}
-
 	limit := min(rq.snapshot.MaxRequestBodyBytes, bodies.Limit())
 	if rq.r.ContentLength > limit {
 		return errBodyTooLarge(limit)

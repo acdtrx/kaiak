@@ -2,6 +2,9 @@ package server
 
 import (
 	"bytes"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,10 +15,14 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"kaiak/internal/auth"
 	"kaiak/internal/config"
 	"kaiak/internal/fakebackend"
+	"kaiak/internal/limits"
 	"kaiak/internal/metrics"
+	"kaiak/internal/provider"
 )
 
 func (g *testGateway) metricsText() string {
@@ -524,7 +531,8 @@ func TestRelayedBackendErrorsAreClassedByWhoseProblemTheyAre(t *testing.T) {
 }
 
 func TestEveryErrorCodeHasItsClass(t *testing.T) {
-	// The Client API error table (docs/specs/GATEWAY.md), code by code.
+	// The Client API error table (docs/specs/GATEWAY.md), code by code, with the class
+	// Observability → error classes gives it.
 	want := map[string]metrics.ErrorClass{
 		"missing_api_key": metrics.ErrorAuth, "invalid_api_key": metrics.ErrorAuth,
 		"model_not_found": metrics.ErrorNotFound, "unknown_url": metrics.ErrorNotFound,
@@ -549,18 +557,159 @@ func TestEveryErrorCodeHasItsClass(t *testing.T) {
 		"no_healthy_deployment": metrics.ErrorNoHealthyDeployment, "server_busy": metrics.ErrorServerBusy,
 		"server_shutting_down": metrics.ErrorShuttingDown, "config_not_loaded": metrics.ErrorNotReady,
 	}
-	for code, class := range want {
-		if got := errorCodeClass(code); got != class {
-			t.Errorf("%s: class %s, want %s", code, got, class)
+	// Every answer the gateway builds carries its code's class.
+	answered := map[string]bool{}
+	for _, a := range errorAnswers() {
+		class, ok := want[a.err.code]
+		switch {
+		case !ok:
+			t.Errorf("%s answers %s, which is not in the Client API table", a.constructor, a.err.code)
+		case a.err.class != class:
+			t.Errorf("%s answers %s with class %q, want %s", a.constructor, a.err.code, a.err.class, class)
 		}
+		answered[a.err.code] = true
 	}
-	// The map above covers the table exactly: a code added to the table without a
-	// class fails here, not in production as class="internal".
-	for _, code := range clientAPIErrorCodes(t) {
+	// The map above covers the table exactly, and every code in it is answered.
+	table := clientAPIErrorCodes(t)
+	for _, code := range table {
 		if _, ok := want[code]; !ok {
 			t.Errorf("%s is in the Client API table but not checked here", code)
 		}
+		if !answered[code] {
+			t.Errorf("%s is in the Client API table but no answer in errorAnswers has it", code)
+		}
 	}
+	for code := range want {
+		if !slices.Contains(table, code) {
+			t.Errorf("%s is checked here but not in the Client API table", code)
+		}
+	}
+	// errorAnswers lists every function that builds an answer.
+	listed := map[string]bool{}
+	for _, a := range errorAnswers() {
+		listed[a.constructor] = true
+	}
+	for _, name := range apiErrorConstructors(t) {
+		if !listed[name] {
+			t.Errorf("%s builds an apiError but errorAnswers does not list its answers", name)
+		}
+	}
+}
+
+// errorAnswers are the gateway's error answers, built as the pipeline builds them: each
+// constructor once per code it can answer with.
+func errorAnswers() []struct {
+	constructor string
+	err         *apiError
+} {
+	type answer = struct {
+		constructor string
+		err         *apiError
+	}
+	r := httptest.NewRequest(http.MethodGet, "/v1/unknown", nil)
+	answers := []answer{
+		{"authError", authError(&auth.Error{Code: auth.CodeModelNotFound})},
+		{"authError", authError(&auth.Error{Code: auth.CodeMissingKey})},
+		{"authError", authError(&auth.Error{Code: auth.CodeUnknownKey})},
+		{"errUnknownURL", errUnknownURL(r)},
+		{"errMethodNotAllowed", errMethodNotAllowed(r)},
+		{"errBodyTooLarge", errBodyTooLarge(1)},
+		{"errInvalidJSON", errInvalidJSON()},
+		{"errDuplicateMember", errDuplicateMember("model")},
+		{"errInvalidType", errInvalidType("stream", "a boolean")},
+		{"errNTooLarge", errNTooLarge("n", 1)},
+		{"errTooManySequences", errTooManySequences("n", 2, 1)},
+		{"errTooManyInputs", errTooManyInputs(2, 1)},
+		{"errOutputLimitTooLarge", errOutputLimitTooLarge("max_tokens", 2, 1)},
+		{"errOutputLimitBelowThinking", errOutputLimitBelowThinking("max_tokens", 1, "default", 2)},
+		{"errOutputLimitNegative", errOutputLimitNegative("max_tokens", -1)},
+		{"errMissingModel", errMissingModel()},
+		{"errReadBody", errReadBody()},
+		{"errClientClosed", errClientClosed()},
+		{"errUpstreamFault", errUpstreamFault(http.StatusInternalServerError)},
+		{"errUpstreamOverloaded", errUpstreamOverloaded(provider.StatusOverloaded)},
+		{"errUpstreamRefused", errUpstreamRefused("invalid_prompt")},
+		// Every provider refusal is the caller's mistake, whatever its code.
+		{"errRefused", errRefused(&provider.RefusalError{Code: "price_option_unsupported"})},
+		{"errRefused", errRefused(&provider.RefusalError{Code: "duplicate_member"})},
+		{"errEndpointNotServed", errEndpointNotServed(endpointChatCompletions)},
+		{"errInternal", errInternal()},
+		{"errQueueFull", errQueueFull()},
+		{"errConcurrencyLimited", errConcurrencyLimited(1)},
+		{"errServerBusy", errServerBusy()},
+		{"errNoHealthyDeployment", errNoHealthyDeployment()},
+		{"errQueueTimeout", errQueueTimeout(time.Second)},
+		{"errHostedTool", errHostedTool("tools[0].type", "web_search")},
+		{"errStatefulResponses", errStatefulResponses("conversation")},
+		{"errStoredObjectResponses", errStoredObjectResponses("input[0].file_id")},
+		{"errStoredObject", errStoredObject("messages[0].content[0].source.file_id")},
+		{"errHostedMember", errHostedMember("mcp_servers")},
+		{"errShuttingDown", errShuttingDown()},
+		{"errConfigNotLoaded", errConfigNotLoaded()},
+		{"errLimited", errLimited(&limits.Rejection{Measure: limits.MeasureRequests})},
+		{"errLimited", errLimited(&limits.Rejection{Measure: limits.MeasureTokens})},
+		{"errLimited", errLimited(&limits.Rejection{Measure: limits.MeasureCost})},
+		{"errBudgetUnavailable", errBudgetUnavailable(&limits.Rejection{})},
+	}
+	// The answers to a failure to get a response, by provider code and by the kind of a
+	// first event that was an error event.
+	for code, rule := range failureRules {
+		answers = append(answers, answer{"upstreamAnswer", rule.answer(&provider.Error{Code: code})})
+	}
+	for kind, rule := range errorEventRules {
+		answers = append(answers, answer{"errorEventRules", rule.answer(&provider.Error{Code: provider.CodeErrorEvent,
+			Event: &provider.ErrorEvent{Kind: kind, Code: []byte(`"invalid_prompt"`)}})})
+	}
+	return answers
+}
+
+// apiErrorConstructors are the functions of the package that build an apiError.
+func apiErrorConstructors(t *testing.T) []string {
+	t.Helper()
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	fset := token.NewFileSet()
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// A function, or a package-level variable (a rule table's answer), is named by
+		// its declaration.
+		for _, decl := range f.Decls {
+			name := ""
+			switch d := decl.(type) {
+			case *ast.FuncDecl:
+				name = d.Name.Name
+			case *ast.GenDecl:
+				if spec, ok := d.Specs[0].(*ast.ValueSpec); ok && d.Tok == token.VAR {
+					name = spec.Names[0].Name
+				}
+			}
+			if name == "" {
+				continue
+			}
+			ast.Inspect(decl, func(n ast.Node) bool {
+				if lit, ok := n.(*ast.CompositeLit); ok {
+					if id, ok := lit.Type.(*ast.Ident); ok && id.Name == "apiError" {
+						names = append(names, name)
+						return false
+					}
+				}
+				return true
+			})
+		}
+	}
+	if len(names) < 30 {
+		t.Fatalf("found %d functions building an apiError: %v", len(names), names)
+	}
+	return names
 }
 
 // clientAPIErrorCodes reads the code column of the Client API error table in

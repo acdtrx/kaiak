@@ -170,9 +170,8 @@ func answerAnthropicModels(rq *request) *apiError {
 	return nil
 }
 
-// answerModelEndpoint is the terminal stage for the model endpoints; the body
-// endpoints never reach it (the provider stage answers them). model_access has
-// checked a named model exists and is allowed.
+// answerModelEndpoint is the model endpoints' terminal stage (modelRequests).
+// model_access has checked a named model exists and is allowed.
 func answerModelEndpoint(_ context.Context, rq *request) *apiError {
 	if (rq.endpoint == endpointListModels || rq.endpoint == endpointGetModel) && wantsAnthropicModels(rq.r) {
 		return answerAnthropicModels(rq)

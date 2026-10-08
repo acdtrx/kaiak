@@ -49,28 +49,37 @@ type attempt struct {
 	released, settled bool
 }
 
-// sendAttempts is the pipeline's routing, accounting and provider stages, run as one
+// attempts is the pipeline's routing, accounting and provider stages, run as one
 // attempt loop (docs/specs/GATEWAY.md, Request pipeline and Routing and reliability:
-// retries): each attempt takes a slot (routing: the eligible deployment with the
-// fewest in flight, else a wait in the model's queue), opens its meter (accounting)
-// and sends upstream (provider). An attempt that failed before anything reached the
-// client is retried while the model's max_attempts allow and its outcome is retryable;
-// the attempt that answers — or the last one — is relayed or answered with its
-// error. A request refused before its first attempt has a slot never reaches
-// accounting: no usage record; the limits finisher releases its reservation. Only the
-// model's deployments whose backend serves the endpoint take part (rq.serving); a
-// model with none was refused at model access (docs/specs/GATEWAY.md, Providers →
-// Endpoint support).
-// model_access has checked the model exists in the snapshot.
-func sendAttempts(ctx context.Context, rq *request, router *routing.Router, recorder *accounting.Recorder,
-	providers *provider.Registry, budget *retryBudget, missing *MissingEndpoints, logger *slog.Logger) *apiError {
-	if !rq.endpoint.takesBody() {
-		return nil
-	}
-	m := missing.exclude(rq.serving, rq.endpoint, time.Now())
+// retries), with what every attempt goes through: the router's slots, the recorder
+// that settles usage, the providers that send upstream, the retry budget, the memory
+// of endpoints missing from backends' servers, and the logger for the warning a newly
+// missing endpoint raises.
+type attempts struct {
+	router    *routing.Router
+	recorder  *accounting.Recorder
+	providers *provider.Registry
+	budget    *retryBudget
+	missing   *MissingEndpoints
+	logger    *slog.Logger
+}
+
+// run is the attempts stage: each attempt takes a slot (routing: the eligible
+// deployment with the fewest in flight, else a wait in the model's queue), opens its
+// meter (accounting) and sends upstream (provider). An attempt that failed before
+// anything reached the client is retried while the model's max_attempts allow and its
+// outcome is retryable; the attempt that answers — or the last one — is relayed or
+// answered with its error. A request refused before its first attempt has a slot
+// never reaches accounting: no usage record; the limits finisher releases its
+// reservation. Only the model's deployments whose backend serves the endpoint take
+// part (rq.serving); a model with none was refused before (docs/specs/GATEWAY.md,
+// Providers → Endpoint support). model_access has checked the model exists in the
+// snapshot.
+func (l *attempts) run(ctx context.Context, rq *request) *apiError {
+	m := l.missing.exclude(rq.serving, rq.endpoint, time.Now())
 	// However the request ends, its last attempt settles, tells the circuit breaker
 	// and frees its slot.
-	rq.finishers = append(rq.finishers, func() { rq.endAttempt(recorder) })
+	rq.finishers = append(rq.finishers, func() { l.end(rq) })
 	var avoid routing.Avoid
 	for {
 		prev := rq.lastAttempt()
@@ -79,7 +88,7 @@ func sendAttempts(ctx context.Context, rq *request, router *routing.Router, reco
 			// further attempt.
 			return canceledAnswer(ctx)
 		}
-		slot, wait, err := router.Acquire(ctx, m, avoid)
+		slot, wait, err := l.router.Acquire(ctx, m, avoid)
 		rq.queueWait.Queued = rq.queueWait.Queued || wait.Queued
 		rq.queueWait.Duration += wait.Duration
 		if err != nil && prev == nil {
@@ -90,7 +99,7 @@ func sendAttempts(ctx context.Context, rq *request, router *routing.Router, reco
 		}
 		if prev != nil {
 			prev.dropResponse()
-			rq.settleAttempt(prev, recorder)
+			l.settle(rq, prev)
 			// The retry is sent: counted now, not when the request is over.
 			rq.ops.CountRetry(rq.model, prev.deployment.Backend.ID, prev.retryReason)
 		}
@@ -100,11 +109,11 @@ func sendAttempts(ctx context.Context, rq *request, router *routing.Router, reco
 		rq.attempts = append(rq.attempts, at)
 
 		if prev == nil {
-			budget.attempt(rq.model)
+			l.budget.attempt(rq.model)
 		} else {
-			budget.retry(rq.model)
+			l.budget.retry(rq.model)
 		}
-		resp, failure := sendAttempt(ctx, rq, at, providers, missing, logger)
+		resp, failure := l.send(ctx, rq, at)
 		at.failure = failure
 		// Nothing of the attempt is relayed yet.
 		outcome, _, _ := classifyAttempt(at, "")
@@ -116,7 +125,7 @@ func sendAttempts(ctx context.Context, rq *request, router *routing.Router, reco
 			slot.Throttled(cooldown)
 		}
 		retry := retryable(outcome) && len(rq.attempts) < m.MaxAttempts
-		if retry && !budget.allowRetry(rq.model) {
+		if retry && !l.budget.allowRetry(rq.model) {
 			retry = false
 			rq.retryRefusal = "retry_budget"
 		}
@@ -195,13 +204,12 @@ func serves(d config.Deployment, ep endpoint) bool {
 	return provider.Serves(d.Backend.Type, providerEndpoint(ep))
 }
 
-// sendAttempt sends the request to attempt at's deployment and waits for the first
-// event. A failure before any response is returned as the answer it would get. The
-// attempt's meter hears when the request was written in full (it counts the input of
-// an attempt that then gets no answer), and how the backend answered.
-func sendAttempt(ctx context.Context, rq *request, at *attempt, providers *provider.Registry, missing *MissingEndpoints,
-	logger *slog.Logger) (provider.Response, *apiError) {
-	resp, err := providers.For(at.deployment.Backend).Send(ctx, &provider.Request{
+// send sends the request to attempt at's deployment and waits for the first event. A
+// failure before any response is returned as the answer it would get. The attempt's
+// meter hears when the request was written in full (it counts the input of an attempt
+// that then gets no answer), and how the backend answered.
+func (l *attempts) send(ctx context.Context, rq *request, at *attempt) (provider.Response, *apiError) {
+	resp, err := l.providers.For(at.deployment.Backend).Send(ctx, &provider.Request{
 		Endpoint:     providerEndpoint(rq.endpoint),
 		Deployment:   at.deployment,
 		Body:         rq.body,
@@ -217,11 +225,11 @@ func sendAttempt(ctx context.Context, rq *request, at *attempt, providers *provi
 		if perr, ok := errors.AsType[*provider.Error](at.err); ok && failureRuleOf(perr).refused {
 			at.meter.Refused()
 			if perr.Code == provider.CodeEndpointMissing &&
-				missing.remember(at.deployment.Backend.ID, rq.endpoint, time.Now(), rq.snapshot.Circuit.ProbeInterval) {
+				l.missing.remember(at.deployment.Backend.ID, rq.endpoint, time.Now(), rq.snapshot.Circuit.ProbeInterval) {
 				// Not a circuit failure, so it shows here, once per interval: the
 				// operator upgrades the server; meanwhile routing leaves it out for the
 				// endpoint.
-				logger.Warn("the backend's server lacks an endpoint its type serves: an older version?",
+				l.logger.Warn("the backend's server lacks an endpoint its type serves: an older version?",
 					"kaiak.request.id", rq.id, "kaiak.backend.id", at.deployment.Backend.ID,
 					"kaiak.deployment.model", at.deployment.Model, "kaiak.endpoint", rq.endpoint.name())
 			}
@@ -401,14 +409,14 @@ func (rq *request) releaseAttempt(at *attempt) {
 	at.slot.Release()
 }
 
-// settleAttempt settles an attempt's usage (docs/specs/GATEWAY.md, Usage across
+// settle settles attempt at's usage (docs/specs/GATEWAY.md, Usage across
 // attempts), once. A retried attempt has a record only when its request reached the
 // backend in full and got no answer (the first-event timeout, a connection lost after
 // sending): estimated input, no output, estimated and partial. The request's last
 // attempt always has one, as every routed request settles — except on a
 // token-counting endpoint, where nothing is generated or billed and no attempt has a
 // record. rq.usage is the latest record.
-func (rq *request) settleAttempt(at *attempt, recorder *accounting.Recorder) {
+func (l *attempts) settle(rq *request, at *attempt) {
 	if at.settled {
 		return
 	}
@@ -416,7 +424,7 @@ func (rq *request) settleAttempt(at *attempt, recorder *accounting.Recorder) {
 	if rq.endpoint.counts() || (at.retryReason != "" && !at.meter.SentUnanswered()) {
 		return
 	}
-	rec := recorder.Settle(accounting.Request{
+	rec := l.recorder.Settle(accounting.Request{
 		RequestID:  rq.id,
 		KeyID:      rq.identity.KeyID,
 		Groups:     rq.identity.Group.PathIDs,
@@ -428,18 +436,18 @@ func (rq *request) settleAttempt(at *attempt, recorder *accounting.Recorder) {
 	rq.usage = &rec
 }
 
-// endAttempt ends the request's last attempt once the request is over, however it
-// ended: a held response is closed, its usage settled, the circuit breaker told and
-// its slot freed. The last attempt is never retried, even one a retry was decided
-// for (the retry found no slot, or the client left first).
-func (rq *request) endAttempt(recorder *accounting.Recorder) {
+// end ends the request's last attempt once the request is over, however it ended: a
+// held response is closed, its usage settled, the circuit breaker told and its slot
+// freed. The last attempt is never retried, even one a retry was decided for (the
+// retry found no slot, or the client left first).
+func (l *attempts) end(rq *request) {
 	at := rq.lastAttempt()
 	if at == nil {
 		return
 	}
 	at.retryReason = ""
 	at.dropResponse()
-	rq.settleAttempt(at, recorder)
+	l.settle(rq, at)
 	rq.releaseAttempt(at)
 }
 
@@ -520,19 +528,26 @@ type failureRule struct {
 // is a CodeUnavailable.
 var failureRules = map[provider.Code]failureRule{
 	provider.CodeUnavailable: {metrics.AttemptUnavailable, routing.Failure, false,
-		upstreamAnswer(http.StatusBadGateway, provider.CodeUnavailable, "The model backend could not be reached.")},
+		upstreamAnswer(http.StatusBadGateway, provider.CodeUnavailable, metrics.ErrorUpstreamUnavailable,
+			"The model backend could not be reached.")},
 	provider.CodeTimeout: {metrics.AttemptTimeout, routing.Failure, false,
-		upstreamAnswer(http.StatusGatewayTimeout, provider.CodeTimeout, "The model backend did not respond in time.")},
+		upstreamAnswer(http.StatusGatewayTimeout, provider.CodeTimeout, metrics.ErrorUpstreamTimeout,
+			"The model backend did not respond in time.")},
 	provider.CodeResponseTimeout: {metrics.AttemptResponseTimeout, routing.ResponseTimeout, false,
-		upstreamAnswer(http.StatusGatewayTimeout, provider.CodeTimeout, "The model backend did not respond in time.")},
+		upstreamAnswer(http.StatusGatewayTimeout, provider.CodeTimeout, metrics.ErrorUpstreamTimeout,
+			"The model backend did not respond in time.")},
 	provider.CodeAuthFailed: {metrics.AttemptAuthFailed, routing.Failure, true,
-		upstreamAnswer(http.StatusBadGateway, provider.CodeAuthFailed, "The model backend refused the gateway's credentials.")},
+		upstreamAnswer(http.StatusBadGateway, provider.CodeAuthFailed, metrics.ErrorUpstreamError,
+			"The model backend refused the gateway's credentials.")},
 	provider.CodeModelMissing: {metrics.AttemptModelMissing, routing.Failure, true,
-		upstreamAnswer(http.StatusBadGateway, provider.CodeModelMissing, "The model backend does not serve the model.")},
+		upstreamAnswer(http.StatusBadGateway, provider.CodeModelMissing, metrics.ErrorUpstreamError,
+			"The model backend does not serve the model.")},
 	provider.CodePathMissing: {metrics.AttemptPathMissing, routing.Failure, true,
-		upstreamAnswer(http.StatusBadGateway, provider.CodePathMissing, "The model backend's address is misconfigured.")},
+		upstreamAnswer(http.StatusBadGateway, provider.CodePathMissing, metrics.ErrorUpstreamError,
+			"The model backend's address is misconfigured.")},
 	provider.CodeEndpointMissing: {metrics.AttemptEndpointMissing, routing.Neutral, true,
-		upstreamAnswer(http.StatusBadGateway, provider.CodeEndpointMissing, "The model backend's server does not have this endpoint.")},
+		upstreamAnswer(http.StatusBadGateway, provider.CodeEndpointMissing, metrics.ErrorUpstreamError,
+			"The model backend's server does not have this endpoint.")},
 }
 
 // errorEventRules are what an error event says, by its kind, read as the HTTP status

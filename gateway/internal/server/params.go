@@ -23,9 +23,6 @@ import (
 //     set above the ceiling is lowered to the ceiling — each key the client set is
 //     checked on its own.
 func applyModelParams(_ context.Context, rq *request) *apiError {
-	if !rq.endpoint.takesBody() {
-		return nil
-	}
 	model := rq.snapshot.Models[rq.model]
 	keys := outputLimitKeys(rq.endpoint)
 	if len(keys) == 0 {
