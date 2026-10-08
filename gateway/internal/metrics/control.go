@@ -1,6 +1,10 @@
 package metrics
 
-import "time"
+import (
+	"time"
+
+	"kaiak/internal/telemetry/metric"
+)
 
 // ControlState is the control-plane connection as the metrics read it
 // (control-plane mode only).
@@ -20,33 +24,28 @@ type ControlState interface {
 }
 
 // RegisterControlState registers the control-plane connection gauges on reg, read
-// from s at each scrape.
-func RegisterControlState(reg *Registry, s ControlState) {
-	reg.GaugeFunc("kaiak_control_connected",
-		"1 while a config stream to the control plane is open, else 0.", nil,
-		func(emit func(float64, ...string)) {
-			connected, _ := s.Contact()
-			emit(boolValue(connected))
-		})
-	reg.GaugeFunc("kaiak_control_last_contact_timestamp_seconds",
-		"Unix time of the last contact with the control plane: stream bytes, heartbeats included; the process start before any.", nil,
-		func(emit func(float64, ...string)) {
-			_, last := s.Contact()
-			emit(float64(last.UnixMilli()) / 1000)
-		})
-	reg.GaugeFunc("kaiak_control_totals_applied_timestamp_seconds",
-		"Unix time the control plane's usage totals were last applied (a totals event); absent before any.", nil,
-		func(emit func(float64, ...string)) {
-			if at, ok := s.TotalsAppliedAt(); ok {
-				emit(float64(at.UnixMilli()) / 1000)
-			}
-		})
-	reg.GaugeFunc("kaiak_control_outage",
-		"1 while the control plane has been out of reach past the outage grace (money-limited models refused), else 0.", nil,
-		func(emit func(float64, ...string)) { emit(boolValue(s.Outage())) })
-	reg.GaugeFunc("kaiak_control_config_rejected",
-		"1 while the latest config received from the control plane was rejected (the status report's last_rejection is set) and an earlier config stays in force, else 0.", nil,
-		func(emit func(float64, ...string)) { emit(boolValue(s.ConfigRejected())) })
+// together from s at each collect.
+func RegisterControlState(reg *metric.Registry, s ControlState) {
+	connected := reg.ObservableGauge(metric.Definition{Name: "kaiak.control.connected",
+		Description: "1 while a config stream to the control plane is open, else 0."})
+	lastContact := reg.ObservableGauge(metric.Definition{Name: "kaiak.control.last_contact_timestamp", Unit: "s",
+		Description: "Unix time of the last contact with the control plane: stream bytes, heartbeats included; the process start before any."})
+	totalsApplied := reg.ObservableGauge(metric.Definition{Name: "kaiak.control.totals_applied_timestamp", Unit: "s",
+		Description: "Unix time the control plane's usage totals were last applied (a totals event); absent before any."})
+	outage := reg.ObservableGauge(metric.Definition{Name: "kaiak.control.outage",
+		Description: "1 while the control plane has been out of reach past the outage grace (money-limited models refused), else 0."})
+	configRejected := reg.ObservableGauge(metric.Definition{Name: "kaiak.control.config_rejected",
+		Description: "1 while the latest config received from the control plane was rejected (the status report's last_rejection is set) and an earlier config stays in force, else 0."})
+	reg.Callback(func(o *metric.Observer) {
+		isConnected, last := s.Contact()
+		connected.Observe(o, boolValue(isConnected))
+		lastContact.Observe(o, float64(last.UnixMilli())/1000)
+		if at, ok := s.TotalsAppliedAt(); ok {
+			totalsApplied.Observe(o, float64(at.UnixMilli())/1000)
+		}
+		outage.Observe(o, boolValue(s.Outage()))
+		configRejected.Observe(o, boolValue(s.ConfigRejected()))
+	}, connected, lastContact, totalsApplied, outage, configRejected)
 }
 
 func boolValue(b bool) float64 {

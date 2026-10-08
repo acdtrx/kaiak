@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"kaiak/internal/metrics"
+	"kaiak/internal/telemetry/metric"
 )
 
 // With a metrics token set, /metrics answers only a request bearing it; the
@@ -42,7 +42,7 @@ func TestMetricsTokenGuardsMetricsOnly(t *testing.T) {
 		}
 	}
 	// No token set: /metrics is open.
-	open := NewAdmin(g.holder, NewDrain(), metrics.NewRegistry(), "")
+	open := NewAdmin(g.holder, NewDrain(), metric.NewRegistry(), "")
 	w := httptest.NewRecorder()
 	open.ServeHTTP(w, httptest.NewRequest("GET", "/metrics", nil))
 	if w.Code != http.StatusOK {

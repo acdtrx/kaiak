@@ -23,11 +23,12 @@ import (
 	"kaiak/internal/limits"
 	"kaiak/internal/metrics"
 	"kaiak/internal/provider"
+	"kaiak/internal/telemetry/metric"
 )
 
 func (g *testGateway) metricsText() string {
 	var buf bytes.Buffer
-	g.metrics.WriteText(&buf)
+	metric.WritePrometheus(&buf, g.metrics.Collect())
 	return buf.String()
 }
 
@@ -127,7 +128,7 @@ func TestStreamMetricsTimeToFirstTokenAndDecodeRate(t *testing.T) {
 	// Only the stream is timed: a non-stream answer has no first token to see.
 	expectMetricLines(t, g.metricsText(),
 		`kaiak_time_to_first_token_seconds_count{model="open",backend="local"} 1`,
-		`kaiak_output_tokens_per_second_count{model="open",backend="local"} 1`,
+		`kaiak_output_token_rate_per_second_count{model="open",backend="local"} 1`,
 		`kaiak_request_duration_seconds_count{endpoint="chat_completions",model="open",status_class="2xx"} 2`,
 	)
 }
@@ -270,7 +271,7 @@ func TestMetricsServedOnAdminOnlyAndWellFormed(t *testing.T) {
 	}
 	validateExposition(t, string(body))
 	for _, family := range []string{"kaiak_build_info", "kaiak_request_duration_seconds", "kaiak_time_to_first_token_seconds",
-		"kaiak_output_tokens_per_second", "kaiak_errors_total", "kaiak_backend_in_flight_requests",
+		"kaiak_output_token_rate_per_second", "kaiak_errors_total", "kaiak_backend_in_flight_requests",
 		"kaiak_config_loads_total", "kaiak_config_last_applied_timestamp_seconds", "kaiak_usage_records_total",
 		"kaiak_usage_tokens_total", "kaiak_usage_cost_usd_total", "kaiak_backend_max_in_flight", "kaiak_queued_requests",
 		"kaiak_queue_wait_seconds", "kaiak_queue_rejections_total", "kaiak_retries_total", "kaiak_request_attempts",

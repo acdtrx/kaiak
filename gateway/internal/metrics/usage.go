@@ -3,6 +3,7 @@ package metrics
 import (
 	"kaiak/internal/accounting"
 	"kaiak/internal/config"
+	"kaiak/internal/telemetry/metric"
 )
 
 // usageLabels label every usage metric: the key's group, its top-level group, key ID,
@@ -45,25 +46,27 @@ func keyLabels(holder *config.Holder, path []string, keyID string) []string {
 // metrics back into a record (docs/kaiak.md, principle 7).
 type UsageMetrics struct {
 	holder  *config.Holder
-	records *CounterVec
-	tokens  *CounterVec
-	cost    *CounterVec
-	clamped *CounterVec
+	records *metric.Counter
+	tokens  *metric.Counter
+	cost    *metric.Counter
+	clamped *metric.Counter
 }
 
 // NewUsageMetrics registers the usage metrics on reg. The key_id and key_group labels
 // follow the live config's global.metrics.key_id_label and group_label at each record.
-func NewUsageMetrics(reg *Registry, holder *config.Holder) *UsageMetrics {
+func NewUsageMetrics(reg *metric.Registry, holder *config.Holder) *UsageMetrics {
 	s := &UsageMetrics{
 		holder: holder,
-		records: reg.Counter("kaiak_usage_records_total",
-			"Usage records settled: one per routed request, plus one per retried attempt whose request reached the backend and got no answer.", usageLabels...),
-		tokens: reg.Counter("kaiak_usage_tokens_total",
-			"Tokens by usage unit, as settled by accounting.", append(append([]string(nil), usageLabels...), "unit")...),
-		cost: reg.ScaledCounter("kaiak_usage_cost_usd_total",
-			"Estimated cost in US dollars, from the model's price table.", 1e9, usageLabels...),
-		clamped: reg.Counter("kaiak_usage_clamped_records_total",
-			"Usage records whose units or cost exceeded 2^53-1 (the protocol's bound) and were clamped to it."),
+		records: reg.Counter(metric.Definition{Name: "kaiak.usage.records", Unit: "{record}",
+			Description: "Usage records settled: one per routed request, plus one per retried attempt whose request reached the backend and got no answer.",
+			Attributes:  usageLabels}),
+		tokens: reg.Counter(metric.Definition{Name: "kaiak.usage.tokens", Unit: "{token}",
+			Description: "Tokens by usage unit, as settled by accounting.",
+			Attributes:  append(append([]string(nil), usageLabels...), "unit")}),
+		cost: reg.ScaledCounter(metric.Definition{Name: "kaiak.usage.cost_usd", Unit: "{USD}",
+			Description: "Estimated cost in US dollars, from the model's price table.", Attributes: usageLabels}, 1e9),
+		clamped: reg.Counter(metric.Definition{Name: "kaiak.usage.clamped_records", Unit: "{record}",
+			Description: "Usage records whose units or cost exceeded 2^53-1 (the protocol's bound) and were clamped to it."}),
 	}
 	s.clamped.Add(0)
 	return s

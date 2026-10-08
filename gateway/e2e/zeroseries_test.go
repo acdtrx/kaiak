@@ -51,7 +51,7 @@ func TestSeriesStartAtZero(t *testing.T) {
 		}
 		want(fmt.Sprintf(`kaiak_upstream_attempt_duration_seconds_count{backend=%q}`, backend), 0)
 		want(fmt.Sprintf(`kaiak_time_to_first_token_seconds_count{model=%q,backend=%q}`, model, backend), 0)
-		want(fmt.Sprintf(`kaiak_output_tokens_per_second_count{model=%q,backend=%q}`, model, backend), 0)
+		want(fmt.Sprintf(`kaiak_output_token_rate_per_second_count{model=%q,backend=%q}`, model, backend), 0)
 	}
 	modelSeries := func(model string) {
 		t.Helper()

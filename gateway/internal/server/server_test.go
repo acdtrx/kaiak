@@ -21,6 +21,7 @@ import (
 	"kaiak/internal/metrics"
 	"kaiak/internal/provider"
 	"kaiak/internal/routing"
+	"kaiak/internal/telemetry/metric"
 )
 
 const (
@@ -161,7 +162,7 @@ type testGateway struct {
 	limiter *limits.Limiter
 	missing *MissingEndpoints
 	usage   *recordedUsage
-	metrics *metrics.Registry
+	metrics *metric.Registry
 	drain   *Drain
 	bodies  *BodyBudget
 }
@@ -248,7 +249,7 @@ func buildTestGateway(t *testing.T, opts testOptions) *testGateway {
 		bodies = NewBodyBudget(opts.bodyMemory)
 	}
 	providers := provider.NewRegistry(testLookupEnv)
-	reg := metrics.NewRegistry()
+	reg := metric.NewRegistry()
 	metrics.RegisterBuildInfo(reg, "(devel)")
 	usage := &recordedUsage{metrics: metrics.NewUsageMetrics(reg, holder), settled: make(chan accounting.UsageRecord, 64)}
 	circuits := metrics.NewCircuits(reg)
@@ -670,7 +671,7 @@ func TestUnknownPathsAndMethods(t *testing.T) {
 
 func TestAdmin(t *testing.T) {
 	holder := &config.Holder{}
-	h := NewAdmin(holder, NewDrain(), metrics.NewRegistry(), "")
+	h := NewAdmin(holder, NewDrain(), metric.NewRegistry(), "")
 	get := func(path string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
@@ -695,7 +696,7 @@ func TestAdmin(t *testing.T) {
 }
 
 func TestListenerServesAndStops(t *testing.T) {
-	l, err := Listen("admin", "127.0.0.1:0", NewAdmin(&config.Holder{}, NewDrain(), metrics.NewRegistry(), ""), DefaultClientTimeouts, slog.New(slog.DiscardHandler))
+	l, err := Listen("admin", "127.0.0.1:0", NewAdmin(&config.Holder{}, NewDrain(), metric.NewRegistry(), ""), DefaultClientTimeouts, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}

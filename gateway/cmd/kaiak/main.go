@@ -22,6 +22,7 @@ import (
 	"kaiak/internal/provider"
 	"kaiak/internal/routing"
 	"kaiak/internal/server"
+	"kaiak/internal/telemetry/metric"
 	"kaiak/internal/telemetry/otlp"
 	"kaiak/internal/telemetry/otlplog"
 )
@@ -235,7 +236,7 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 type graph struct {
 	holder           *config.Holder
 	providers        *provider.Registry
-	registry         *metrics.Registry
+	registry         *metric.Registry
 	router           *routing.Router
 	ops              *metrics.Ops
 	modelChecker     *provider.ModelChecker
@@ -247,7 +248,7 @@ type graph struct {
 // (reportedVersion), and logExport, when not nil, has its counts in the metrics.
 func newGraph(s settings, reported string, lookupEnv func(string) (string, bool), logger *slog.Logger,
 	logExport *otlplog.Exporter) *graph {
-	g := &graph{holder: &config.Holder{}, providers: provider.NewRegistry(lookupEnv), registry: metrics.NewRegistry(),
+	g := &graph{holder: &config.Holder{}, providers: provider.NewRegistry(lookupEnv), registry: metric.NewRegistry(),
 		missingEndpoints: server.NewMissingEndpoints()}
 	metrics.RegisterBuildInfo(g.registry, reported)
 	if logExport != nil {

@@ -133,7 +133,7 @@ func logLine(t *testing.T, g *testGateway, id string) string {
 // scrape returns the metrics exposition.
 func scrape(g *testGateway) string {
 	w := httptest.NewRecorder()
-	g.metrics.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/metrics", nil))
+	scrapeHandler(g.metrics).ServeHTTP(w, httptest.NewRequest("GET", "/metrics", nil))
 	return w.Body.String()
 }
 

@@ -343,7 +343,7 @@ func TestDrainCutsTheReserveBeforeTheTimeout(t *testing.T) {
 func errorsCounted(t *testing.T, g *testGateway, class string) string {
 	t.Helper()
 	w := httptest.NewRecorder()
-	g.metrics.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/metrics", nil))
+	scrapeHandler(g.metrics).ServeHTTP(w, httptest.NewRequest("GET", "/metrics", nil))
 	prefix := `kaiak_errors_total{class="` + class + `"} `
 	for line := range strings.SplitSeq(w.Body.String(), "\n") {
 		if v, ok := strings.CutPrefix(line, prefix); ok {

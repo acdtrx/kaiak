@@ -20,6 +20,7 @@ import (
 	"kaiak/internal/fixturetest"
 	"kaiak/internal/metrics"
 	"kaiak/internal/routing"
+	"kaiak/internal/telemetry/metric"
 )
 
 var minimalFixture = fixturetest.Dir("config", "valid", "minimal.json")
@@ -229,7 +230,7 @@ func TestSignalTriggersReloadAndStopsWithContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	holder := &config.Holder{}
-	registry := metrics.NewRegistry()
+	registry := metric.NewRegistry()
 	ops := metrics.NewOps(registry, routing.New(routing.Options{}), metrics.NewCircuits(registry), holder)
 	loader := config.NewFileLoader(path, config.NewApplier(holder, logger, envOf(nil), ops.ConfigLoaded))
 	if err := loader.Load(config.TriggerStartup); err != nil {
@@ -263,7 +264,7 @@ func TestSignalTriggersReloadAndStopsWithContext(t *testing.T) {
 		t.Errorf("reload not logged as a kept config:\n%s", out)
 	}
 	var exposition bytes.Buffer
-	registry.WriteText(&exposition)
+	metric.WritePrometheus(&exposition, registry.Collect())
 	for _, want := range []string{
 		`kaiak_config_loads_total{trigger="startup",result="applied"} 1`,
 		`kaiak_config_loads_total{trigger="sighup",result="rejected"} 2`,

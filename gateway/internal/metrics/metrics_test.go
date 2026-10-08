@@ -3,12 +3,9 @@ package metrics
 import (
 	"bytes"
 	"context"
-	"fmt"
-	"net/http/httptest"
 	"runtime"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -16,184 +13,19 @@ import (
 	"kaiak/internal/config"
 	"kaiak/internal/control"
 	"kaiak/internal/routing"
+	"kaiak/internal/telemetry/metric"
 )
 
-func text(r *Registry) string {
+func text(r *metric.Registry) string {
 	var buf bytes.Buffer
-	r.WriteText(&buf)
+	metric.WritePrometheus(&buf, r.Collect())
 	return buf.String()
-}
-
-func TestExpositionGolden(t *testing.T) {
-	reg := NewRegistry()
-	requests := reg.Counter("test_requests_total", "Requests.\nSecond line with \\ backslash.", "path", "code")
-	requests.Add(3, `/a"b`, "200")
-	requests.Inc("line\nbreak\\", "500")
-	requests.Add(0, "", "404") // an empty value leaves its label out
-	reg.ScaledCounter("test_cost_usd_total", "Cost.", 1e9).Add(1_500_000_000)
-	temperature := reg.Gauge("test_temperature", "Temp.", "room")
-	temperature.Set(-1.5, "b")
-	temperature.Set(21, "a")
-	latency := reg.Histogram("test_latency_seconds", "Latency.", []float64{0.25, 1}, "op")
-	latency.Observe(0.125, "read")
-	latency.Observe(0.25, "read") // le is inclusive
-	latency.Observe(3, "read")
-	reg.GaugeFunc("test_in_flight", "In flight.", []string{"backend"}, func(emit func(float64, ...string)) {
-		emit(2, "y")
-		emit(0, "x")
-	})
-
-	want := `# HELP test_cost_usd_total Cost.
-# TYPE test_cost_usd_total counter
-test_cost_usd_total 1.5
-# HELP test_in_flight In flight.
-# TYPE test_in_flight gauge
-test_in_flight{backend="x"} 0
-test_in_flight{backend="y"} 2
-# HELP test_latency_seconds Latency.
-# TYPE test_latency_seconds histogram
-test_latency_seconds_bucket{op="read",le="0.25"} 2
-test_latency_seconds_bucket{op="read",le="1"} 2
-test_latency_seconds_bucket{op="read",le="+Inf"} 3
-test_latency_seconds_sum{op="read"} 3.375
-test_latency_seconds_count{op="read"} 3
-# HELP test_requests_total Requests.\nSecond line with \\ backslash.
-# TYPE test_requests_total counter
-test_requests_total{code="404"} 0
-test_requests_total{path="/a\"b",code="200"} 3
-test_requests_total{path="line\nbreak\\",code="500"} 1
-# HELP test_temperature Temp.
-# TYPE test_temperature gauge
-test_temperature{room="a"} 21
-test_temperature{room="b"} -1.5
-`
-	if got := text(reg); got != want {
-		t.Errorf("exposition:\n%s\nwant:\n%s", got, want)
-	}
-	if got := text(reg); got != want {
-		t.Error("a second write differs: output is not deterministic")
-	}
-}
-
-func TestHandlerContentType(t *testing.T) {
-	reg := NewRegistry()
-	reg.Counter("x_total", "X.").Inc()
-	w := httptest.NewRecorder()
-	reg.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/metrics", nil))
-	if got := w.Header().Get("Content-Type"); got != "text/plain; version=0.0.4; charset=utf-8" {
-		t.Errorf("Content-Type %q", got)
-	}
-	if w.Body.String() != "# HELP x_total X.\n# TYPE x_total counter\nx_total 1\n" {
-		t.Errorf("body %q", w.Body.String())
-	}
-}
-
-func expectPanic(t *testing.T, what string, f func()) {
-	t.Helper()
-	defer func() {
-		if recover() == nil {
-			t.Errorf("%s: no panic", what)
-		}
-	}()
-	f()
-}
-
-func TestRegistrationAndUseAreValidated(t *testing.T) {
-	reg := NewRegistry()
-	c := reg.Counter("ok_total", "Ok.", "a", "b")
-	expectPanic(t, "duplicate name", func() { reg.Counter("ok_total", "Again.") })
-	expectPanic(t, "invalid metric name", func() { reg.Counter("9lives", "Bad.") })
-	expectPanic(t, "invalid label name", func() { reg.Counter("x_total", "Bad.", "bad-label") })
-	expectPanic(t, "reserved label name", func() { reg.Counter("y_total", "Bad.", "__name") })
-	expectPanic(t, "duplicate label name", func() { reg.Counter("z_total", "Bad.", "a", "a") })
-	expectPanic(t, "le on a histogram", func() { reg.Histogram("h1", "Bad.", []float64{1}, "le") })
-	expectPanic(t, "unsorted buckets", func() { reg.Histogram("h2", "Bad.", []float64{2, 1}) })
-	expectPanic(t, "too few label values", func() { c.Inc("only-one") })
-	expectPanic(t, "too many label values", func() { c.Inc("1", "2", "3") })
-}
-
-// Gauge families read together are read once per write, each written in its place
-// by name, and an emit with the wrong number of label values panics.
-func TestGaugeFuncsReadOncePerWrite(t *testing.T) {
-	reg := NewRegistry()
-	reg.Gauge("m_middle", "Between.").Set(5)
-	reads := 0
-	reg.GaugeFuncs([]GaugeDesc{{"z_last", "Last.", []string{"k"}}, {"a_first", "First.", nil}},
-		func(emit []func(float64, ...string)) {
-			reads++
-			emit[0](float64(reads), "x")
-			emit[1](float64(reads))
-		})
-	want := `# HELP a_first First.
-# TYPE a_first gauge
-a_first 1
-# HELP m_middle Between.
-# TYPE m_middle gauge
-m_middle 5
-# HELP z_last Last.
-# TYPE z_last gauge
-z_last{k="x"} 1
-`
-	if got := text(reg); got != want || reads != 1 {
-		t.Errorf("%d reads, got:\n%s\nwant:\n%s", reads, got, want)
-	}
-	if got := text(reg); !strings.Contains(got, "a_first 2\n") || !strings.Contains(got, `z_last{k="x"} 2`+"\n") || reads != 2 {
-		t.Errorf("second write, %d reads:\n%s", reads, got)
-	}
-
-	bad := NewRegistry()
-	bad.GaugeFuncs([]GaugeDesc{{"g", "G.", []string{"k"}}}, func(emit []func(float64, ...string)) { emit[0](1) })
-	expectPanic(t, "too few label values emitted", func() { text(bad) })
-}
-
-func TestConcurrentUpdatesAndWrites(t *testing.T) {
-	reg := NewRegistry()
-	c := reg.Counter("c_total", "C.", "worker")
-	h := reg.Histogram("h_seconds", "H.", []float64{1, 10}, "worker")
-	g := reg.Gauge("g", "G.", "worker")
-	const workers, perWorker = 8, 1000
-	var wg sync.WaitGroup
-	stop := make(chan struct{})
-	var scrapes sync.WaitGroup
-	scrapes.Go(func() {
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-				_ = text(reg)
-			}
-		}
-	})
-	for i := range workers {
-		label := fmt.Sprint(i % 2) // two workers share each series
-		wg.Go(func() {
-			for range perWorker {
-				c.Inc(label)
-				h.Observe(2, label)
-				g.Set(1, label)
-			}
-		})
-	}
-	wg.Wait()
-	close(stop)
-	scrapes.Wait()
-	out := text(reg)
-	for _, want := range []string{
-		`c_total{worker="0"} 4000`, `c_total{worker="1"} 4000`,
-		`h_seconds_bucket{worker="0",le="1"} 0`, `h_seconds_bucket{worker="0",le="10"} 4000`,
-		`h_seconds_sum{worker="1"} 8000`, `h_seconds_count{worker="1"} 4000`,
-	} {
-		if !strings.Contains(out, want+"\n") {
-			t.Errorf("missing %q in:\n%s", want, out)
-		}
-	}
 }
 
 func TestUsageMetricsCountsRecords(t *testing.T) {
 	holder := &config.Holder{}
 	holder.Swap(&config.Snapshot{KeyIDLabel: true, GroupLabel: true})
-	reg := NewRegistry()
+	reg := metric.NewRegistry()
 	usage := NewUsageMetrics(reg, holder)
 	units := accounting.Units{config.UnitTokensIn: 60, config.UnitTokensCached: 40,
 		config.UnitTokensCacheWrite: 30, config.UnitTokensOut: 10, config.UnitTokensReasoning: 4}
@@ -281,7 +113,7 @@ func TestOpsMetrics(t *testing.T) {
 	for router.Serving(nil).Models["m"].Queued != 1 {
 		runtime.Gosched()
 	}
-	reg := NewRegistry()
+	reg := metric.NewRegistry()
 	ops := NewOps(reg, router, NewCircuits(reg), holder)
 	if out := text(reg); !strings.Contains(out, "kaiak_connections_refused_total 0\n") {
 		t.Errorf("refused connections not exposed at 0:\n%s", out)
@@ -340,7 +172,7 @@ func TestOpsMetrics(t *testing.T) {
 }
 
 func TestBuildInfo(t *testing.T) {
-	reg := NewRegistry()
+	reg := metric.NewRegistry()
 	RegisterBuildInfo(reg, "0.6.0-3-gabc1234")
 	want := `kaiak_build_info{version="0.6.0-3-gabc1234",go_version="` + runtime.Version() + `"} 1`
 	if out := text(reg); !strings.Contains(out, want+"\n") {
@@ -350,7 +182,7 @@ func TestBuildInfo(t *testing.T) {
 
 func TestConfigLoadMetrics(t *testing.T) {
 	holder := &config.Holder{}
-	reg := NewRegistry()
+	reg := metric.NewRegistry()
 	ops := NewOps(reg, routing.New(routing.Options{}), NewCircuits(reg), holder)
 	out := text(reg)
 	for _, want := range []string{
@@ -399,7 +231,7 @@ func TestConfigLoadMetrics(t *testing.T) {
 }
 
 func TestUsageDeliveryMetrics(t *testing.T) {
-	reg := NewRegistry()
+	reg := metric.NewRegistry()
 	d := NewUsageDelivery(reg)
 	if out := text(reg); !strings.Contains(out, "kaiak_usage_queue_batches 0\n") ||
 		!strings.Contains(out, "kaiak_usage_queued_bytes 0\n") ||
@@ -429,7 +261,7 @@ func TestUsageDeliveryMetrics(t *testing.T) {
 }
 
 func TestLogExportMetrics(t *testing.T) {
-	reg := NewRegistry()
+	reg := metric.NewRegistry()
 	var exported, failed, dropped uint64
 	RegisterLogExport(reg, func() (uint64, uint64, uint64) { return exported, failed, dropped })
 	want := `# HELP kaiak_log_export_records_total Log records exported over OTLP, by outcome (exported: accepted by the collector; failed: in a batch given up; dropped: never sent, a full queue or still queued at exit).
@@ -467,7 +299,7 @@ func (s *fakeControlState) TotalsAppliedAt() (time.Time, bool) {
 }
 
 func TestControlStateMetrics(t *testing.T) {
-	reg := NewRegistry()
+	reg := metric.NewRegistry()
 	s := &fakeControlState{last: time.UnixMilli(1_700_000_000_250)}
 	RegisterControlState(reg, s)
 	check := func(want ...string) {
@@ -505,7 +337,7 @@ func TestCircuitSampleOncePerDeployment(t *testing.T) {
 	holder.Swap(s)
 	router := routing.New(routing.Options{})
 	router.Configure(s)
-	reg := NewRegistry()
+	reg := metric.NewRegistry()
 	NewOps(reg, router, NewCircuits(reg), holder)
 	count := func(value string) int {
 		return strings.Count(text(reg), `kaiak_circuit_open{backend="local",deployment_model="llama"} `+value+"\n")
@@ -549,7 +381,7 @@ func TestRoutingGauges(t *testing.T) {
 		Backends: map[string]*config.Backend{"a": a, "b": b, "c": c, "d": d},
 		Models:   map[string]*config.Model{"chat": chat, "alias": alias, "embed": embed, "opened": opened, "queued": queued}}
 
-	reg := NewRegistry()
+	reg := metric.NewRegistry()
 	circuits := NewCircuits(reg)
 	router := routing.New(routing.Options{Observer: circuits,
 		Probe: func(context.Context, *config.Backend) (func(string) bool, error) { return nil, nil }})

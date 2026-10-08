@@ -12,6 +12,7 @@ import (
 	"kaiak/internal/logattr"
 	"kaiak/internal/metrics"
 	"kaiak/internal/routing"
+	"kaiak/internal/telemetry/metric"
 )
 
 // controlPlane is control-plane mode's half of the process (docs/specs/GATEWAY.md,
@@ -29,7 +30,7 @@ type controlPlaneDeps struct {
 	opts     control.Options
 	holder   *config.Holder
 	router   *routing.Router
-	registry *metrics.Registry
+	registry *metric.Registry
 	ops      *metrics.Ops
 	// goBackground runs work in run's background until the drain is over.
 	goBackground func(work func(context.Context))

@@ -1,24 +1,25 @@
 package server
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/subtle"
 	"io"
 	"net/http"
 
 	"kaiak/internal/config"
-	"kaiak/internal/metrics"
+	"kaiak/internal/telemetry/metric"
 )
 
 // NewAdmin returns the admin handler: /healthz (the process is up), /readyz (it
 // should receive traffic: a config is loaded and drain has not begun) and /metrics
-// (reg in the Prometheus text format). It never serves the client API, and the API
-// listener never serves these. With metricsToken set, /metrics answers only
+// (a collect of reg in the Prometheus text format). It never serves the client API,
+// and the API listener never serves these. With metricsToken set, /metrics answers only
 // requests bearing it (Authorization: Bearer); the probes stay open, as kubelets
 // send no credentials.
-func NewAdmin(holder *config.Holder, drain *Drain, reg *metrics.Registry, metricsToken string) http.Handler {
+func NewAdmin(holder *config.Holder, drain *Drain, reg *metric.Registry, metricsToken string) http.Handler {
 	mux := http.NewServeMux()
-	var scrape http.Handler = reg.Handler()
+	var scrape http.Handler = scrapeHandler(reg)
 	if metricsToken != "" {
 		scrape = requireBearer(metricsToken, scrape)
 	}
@@ -34,6 +35,16 @@ func NewAdmin(holder *config.Holder, drain *Drain, reg *metrics.Registry, metric
 		writePlain(w, http.StatusOK, "ready")
 	})
 	return mux
+}
+
+// scrapeHandler serves one collect of reg in the Prometheus text format.
+func scrapeHandler(reg *metric.Registry) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		var buf bytes.Buffer
+		metric.WritePrometheus(&buf, reg.Collect())
+		w.Header().Set("Content-Type", metric.PrometheusContentType)
+		_, _ = w.Write(buf.Bytes()) // a failed write means the scraper left
+	})
 }
 
 // requireBearer passes to next only requests whose Authorization header is
