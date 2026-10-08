@@ -312,21 +312,20 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 	reload, stop <-chan os.Signal) (err error) {
 	startedAt := time.Now()
 	// The export and the end of its final flush: the drain's deadline once a drain
-	// started. hurry is closed by a second stop signal (or ctx's end); its watch
-	// runs from the drain's start through the final flush, which it cuts to its
-	// floor, and endSignalWatch ends it after the flush.
+	// started. hurryCtx never ends before the drain starts; from then on it ends with a
+	// second stop signal or with ctx, and its watch runs through the final flush,
+	// which it cuts to its floor: endHurry ends the watch after the flush.
 	var logExport *otlplog.Exporter
 	var logFlushBy time.Time
-	var hurry chan struct{}
-	endSignalWatch := func() {}
+	hurryCtx, endHurry := context.Background(), func() os.Signal { return nil }
 	defer func() {
 		if err != nil {
 			logger.Error("kaiak stopped with an error", "exception.message", err)
 		}
 		if logExport != nil {
-			finishLogExport(logExport, logFlushBy, hurry)
+			finishLogExport(hurryCtx, logExport, logFlushBy)
 		}
-		endSignalWatch()
+		endHurry()
 	}()
 	s, err := readSettings(lookupEnv)
 	if err != nil {
@@ -425,7 +424,7 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 		bootDeadline := time.Now().Add(s.control.bootWait)
 		// A stop signal during the boot wait ends it: nothing is served and no usage
 		// exists yet, so run returns at once instead of binding the listeners.
-		bootCtx, endBoot := stopOnSignal(ctx, stop)
+		bootCtx, endBoot := stopOnSignal(ctx, stop, nil)
 		err := client.Boot(bootCtx)
 		if err == nil {
 			// The client follows the control plane until the drain is over, so
@@ -513,31 +512,13 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 		drainTimes.Reserve = s.drainReserve
 		client.SetDraining()
 	}
-	// hurry is closed by a second stop signal, or at once when ctx is cancelled.
-	hurry = make(chan struct{})
-	if ctx.Err() != nil {
-		close(hurry)
-	} else {
-		endWatch := make(chan struct{})
-		var watch sync.WaitGroup
-		watch.Go(func() {
-			select {
-			case sig := <-stop:
-				logger.Warn("second stop signal: skipping the remaining drain", "kaiak.signal", sig.String())
-			case <-ctx.Done():
-			case <-endWatch:
-				return
-			}
-			close(hurry)
-		})
-		endSignalWatch = func() {
-			close(endWatch)
-			watch.Wait()
-		}
-	}
-	drain.Run(api, drainTimes, hurry, logger)
+	// Hurried, the drain skips what is left of its waits, and the usage flush ends.
+	hurryCtx, endHurry = stopOnSignal(ctx, stop, func(sig os.Signal) {
+		logger.Warn("second stop signal: skipping the remaining drain", "kaiak.signal", sig.String())
+	})
+	drain.Run(api, drainTimes, hurryCtx.Done(), logger)
 	if client != nil {
-		finishWithControlPlane(client, drainDeadline, hurry)
+		finishWithControlPlane(hurryCtx, client, drainDeadline)
 	}
 	stopBackground()
 	background.Wait()
@@ -554,10 +535,11 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 	return nil
 }
 
-// stopOnSignal returns a context that ends with ctx or at the first value on stop,
-// and the function that ends the watch: it returns the signal taken from stop, nil
-// when none was — stop is then left for the caller's later reads.
-func stopOnSignal(ctx context.Context, stop <-chan os.Signal) (context.Context, func() os.Signal) {
+// stopOnSignal returns a context that ends with ctx or at the first value on stop —
+// onSignal, when not nil, is called with that value before the context ends — and the
+// function that ends the watch: it returns the signal taken from stop, nil when none
+// was — stop is then left for the caller's later reads.
+func stopOnSignal(ctx context.Context, stop <-chan os.Signal, onSignal func(os.Signal)) (context.Context, func() os.Signal) {
 	watched, cancel := context.WithCancel(ctx)
 	var sig os.Signal
 	done := make(chan struct{})
@@ -565,6 +547,9 @@ func stopOnSignal(ctx context.Context, stop <-chan os.Signal) (context.Context, 
 		defer close(done)
 		select {
 		case sig = <-stop:
+			if onSignal != nil {
+				onSignal(sig)
+			}
 			cancel()
 		case <-watched.Done():
 		}
@@ -615,29 +600,14 @@ const finalStatusTimeout = 2 * time.Second
 // finishWithControlPlane is the control-plane part of the drain's last step
 // (docs/specs/GATEWAY.md, Lifecycle), run once the drained requests' records are
 // settled and before the client stops: the usage flush — the filling batch sealed,
-// queued batches sent until acknowledged, the drain's deadline or a hurry — then a
-// final draining status. What is not delivered is lost with the process.
-func finishWithControlPlane(client *control.Client, deadline time.Time, hurry <-chan struct{}) {
-	ctx, cancel := context.WithDeadline(context.Background(), deadline)
-	defer cancel()
-	var watch sync.WaitGroup
-	watch.Go(func() {
-		select {
-		case <-hurry:
-			cancel()
-		case <-ctx.Done():
-		}
-	})
+// queued batches sent until acknowledged, the drain's deadline or hurry's end — then,
+// unless hurried, a final draining status. What is not delivered is lost with the
+// process.
+func finishWithControlPlane(hurry context.Context, client *control.Client, deadline time.Time) {
+	ctx, cancel := context.WithDeadline(hurry, deadline)
 	client.FlushUsage(ctx, "drain")
-	hurried := false
-	select {
-	case <-hurry:
-		hurried = true
-	default:
-	}
 	cancel()
-	watch.Wait()
-	if hurried {
+	if hurry.Err() != nil {
 		return
 	}
 	statusCtx, cancelStatus := context.WithTimeout(context.Background(), finalStatusTimeout)
@@ -652,41 +622,21 @@ const logExportFlushFloor = time.Second
 // finishLogExport is the log export's final flush, the process's last act
 // (docs/specs/GATEWAY.md, Observability → OTLP log export: at exit): what is queued is
 // sent until by, or until logExportFlushFloor from now when that is later. Once
-// hurry is closed — a second stop signal, before the flush or during it — the
-// floor alone bounds it: a flush already past it ends at once. A nil hurry (no
-// drain started) never closes. What is still queued at the end is dropped and
-// counted, and reported on stderr.
-func finishLogExport(e *otlplog.Exporter, by time.Time, hurry <-chan struct{}) {
-	floor := time.Now().Add(logExportFlushFloor)
-	ctx, cancel := context.WithDeadline(context.Background(), later(by, floor))
-	defer cancel()
-	floorCtx, cancelFloor := context.WithDeadline(context.Background(), floor)
-	defer cancelFloor()
-	var watch sync.WaitGroup
-	watch.Go(func() {
-		select {
-		case <-hurry:
-		case <-ctx.Done():
-			return
-		}
-		select {
-		case <-floorCtx.Done():
-			cancel()
-		case <-ctx.Done():
-		}
-	})
-	_ = e.Flush(ctx) // what did not fit is Close's to count
+// hurry ends — a second stop signal, before the flush or during it — the floor
+// alone bounds it: a flush already past it ends at once. What is still queued at the
+// end is dropped and counted, and reported on stderr.
+func finishLogExport(hurry context.Context, e *otlplog.Exporter, by time.Time) {
+	// The floor first, which nothing cuts; then until by, unless hurried. A Flush
+	// whose ctx ends leaves the sender running, so the second waits on the same work.
+	floorCtx, cancel := context.WithTimeout(context.Background(), logExportFlushFloor)
+	err := e.Flush(floorCtx)
 	cancel()
-	watch.Wait()
-	e.Close()
-}
-
-// later is the later of a and b.
-func later(a, b time.Time) time.Time {
-	if a.After(b) {
-		return a
+	if err != nil {
+		ctx, cancel := context.WithDeadline(hurry, by)
+		_ = e.Flush(ctx) // what did not fit is Close's to count
+		cancel()
 	}
-	return b
+	e.Close()
 }
 
 // adminShutdownTimeout bounds how long a probe or scrape still open at the end may
