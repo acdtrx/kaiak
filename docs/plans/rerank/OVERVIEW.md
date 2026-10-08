@@ -21,9 +21,9 @@ circuit for everyone.
   API; `openai-compatible` keeps OpenAI's three endpoints.
 - **Every pipeline stage learns the endpoint:** owned fields, a cap on documents per
   request, the input estimate, usage reading, the operation name on logs and metrics.
-- **Both halves:** a new config field, `global.max_rerank_documents` — config format 6,
-  protocol 6 — in the contract docs, schemas, fixtures, `kaiak-control` types and
-  validation, and the sample.
+- **Both halves:** a new optional config field, `global.max_rerank_documents`, in the
+  contract docs, schemas, fixtures, `kaiak-control` types and validation, and the
+  sample. No version bump (decision 16).
 - **Wrong-endpoint answers** (phase 2): a self-hosted server's answer that its model
   does not serve the endpoint reads as the endpoint missing — neutral for the circuit
   — instead of a wrong `base_url` or a backend failure.
@@ -118,12 +118,14 @@ Made while planning (confirm in review):
       - Its `501 not_supported_error` on embeddings or rerank means the server was not
         started in that mode (`--embeddings`, `--reranking`). It reads as the endpoint
         missing.
-      - Step 1 lists llama-server's other `501`s on the endpoints kaiak serves and
-        decides each. A chat request with audio to a model without audio answers
-        `501` too: that one is the caller's, not a missing endpoint.
+      - Step 1 listed llama-server's `501`s: on kaiak's endpoints there are only
+        these two. A chat request carrying media its model lacks answers `500`, not
+        `501` (b9917 to b11513) — recorded under the existing backlog entry for
+        llama-server's client errors answered `500`, out of this plan.
     - **What is remembered:** a missing endpoint is remembered per deployment, not
-      per backend. llama-server's router mode runs several models with their own
-      flags behind one backend. Step 1 confirms this.
+      per backend, and a request's retries refuse only that deployment.
+      llama-server's router mode runs several models with their own flags behind one
+      backend (step 1 confirmed).
     - **A wrong `base_url` on a `vllm` backend** stops counting toward the circuit. It
       still shows in two ways:
       - the config-apply warning when the models list answers `404`;
@@ -140,9 +142,13 @@ Made while planning (confirm in review):
       - Start it with `--embedding --pooling rank --reranking`.
       - Set `-ub` and `-b` to at least a slot's context. Otherwise a long pair answers
         `500` (read as the backend failing) instead of `400 exceed_context_size_error`.
-16. **Versions:**
-    - config `format_version` 6 and protocol 6, for `max_rerank_documents`;
-    - usage records unchanged: no new unit, and the operation is not on the wire.
+16. **No version bump** (changed at step 1 review, 2026-10-08): config format and
+    protocol stay 5. `max_rerank_documents` is optional and additive, the case the
+    settled "Types bump no version" rule covers (`CONTROL-PROTOCOL.md`, 2026-10-01):
+    every current config stays valid, an older gateway rejects a config carrying the
+    field with a schema error the control plane sees like any rejection, and no
+    protocol message changes. Usage records are unchanged: no new unit, and the
+    operation is not on the wire.
 
 ## Constraints
 
@@ -189,18 +195,17 @@ the ff merge.
 
 Steps are implemented by subagents (the same model as the main session), one step per
 brief. The main session reviews each against its acceptance criteria and commits at
-the step boundary. The branch merges after step 8. Releasing is the user's call:
-protocol 6 means the gateway and the control plane upgrade together.
+the step boundary. The branch merges after step 8. Releasing is the user's call. A
+gateway older than the release refuses a config that sets `max_rerank_documents`, so
+upgrade gateways before setting it.
 
 ## Phases and steps
 
 - **Phase 1 — Rerank** (steps 1–4). Green at the end: `/v1/rerank` works end to end
-  against the fakes, on both halves at format and protocol 6.
-  1. `STEP-1-contract.md` — research recorded, specs, schema, fixtures, versions,
-     backlog.
-  2. `STEP-2-kaiak-control.md` — the field, versions, the sample.
-  3. `STEP-3-gateway-rerank.md` — the endpoint through every stage, the field,
-     versions.
+  against the fakes, with the new field on both halves.
+  1. `STEP-1-contract.md` — research recorded, specs, schema, fixtures, backlog.
+  2. `STEP-2-kaiak-control.md` — the field, the sample.
+  3. `STEP-3-gateway-rerank.md` — the endpoint through every stage, the field.
   4. `STEP-4-e2e.md` — the fake backend's rerank, gateway e2e, cross-half e2e.
 - **Phase 2 — Wrong-endpoint answers** (step 5). Green at the end.
   5. `STEP-5-wrong-endpoint.md`
@@ -210,9 +215,9 @@ protocol 6 means the gateway and the control plane upgrade together.
   8. `STEP-8-live-run.md` — waits for the DGX.
 
 Expected reds inside phase 1:
-- After step 1, both halves fail the new fixtures and the version checks.
+- After step 1, both halves fail the fixtures that carry the new field, and
+  `kaiak-control`'s schema copy differs from `protocol/schema/`.
 - Step 2 clears `kaiak-control`'s, and step 3 the gateway's.
-- The cross-half e2e stays red until both halves speak protocol 6 (step 3).
 
 ## Verification
 

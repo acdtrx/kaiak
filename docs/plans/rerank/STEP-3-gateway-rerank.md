@@ -4,9 +4,9 @@
 
 ## Intent
 
-The gateway serves `POST /v1/rerank` through every stage, at config format 6 and
-protocol 6. The new endpoint is one row in each table that names endpoints. Behaviour
-on the existing endpoints is unchanged.
+The gateway serves `POST /v1/rerank` through every stage and reads
+`global.max_rerank_documents`. The new endpoint is one row in each table that names
+endpoints. Behaviour on the existing endpoints is unchanged.
 
 ## Files likely touched
 
@@ -32,9 +32,7 @@ on the existing endpoints is unchanged.
     output, and no generated content to estimate (decision 11).
 - `gateway/internal/config/`:
   - `max_rerank_documents`: schema check, document field, and snapshot value with
-    default 1000;
-  - format 6.
-- `gateway/internal/control/`: protocol 6.
+    default 1000.
 - Tests beside each change. Server tests run on a `vllm`- or `llama-server`-typed fake
   backend: the existing fakes are `openai-compatible`, which does not serve rerank.
 
@@ -61,8 +59,7 @@ on the existing endpoints is unchanged.
   - the log line and the usage metrics carry operation `rerank`.
 - A model whose deployments are all on types without rerank answers
   `400 endpoint_not_served`.
-- The suite is green on the gateway's side: `scripts/check-gateway.sh`, and
-  `scripts/check-all.sh` with the cross-half e2e back to green.
+- The suite is green: `scripts/check-gateway.sh` and `scripts/check-all.sh`.
 
 ## Result
 

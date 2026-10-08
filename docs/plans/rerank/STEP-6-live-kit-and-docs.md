@@ -42,10 +42,13 @@ Live runs stay manual. Only `-self-test` runs in `scripts/check-gateway.sh`.
     and `-b` at least a slot's context;
   - one backend per reranker server;
   - `max_rerank_documents`;
-  - the upgrade note for format and protocol 6;
+  - the upgrade note: upgrade gateways before setting `max_rerank_documents`;
+  - the two places that still say a missing endpoint means an older server
+    ("upgrade it"), now that it also means a model without the endpoint;
   - the wrong-`base_url` signal on `vllm` now being warnings.
 - `README.md`, `docs/ARCHITECTURE.md`, `docs/architecture/gateway.html`: the endpoint
   lists.
+- `scripts/live/config.go`, if it writes a config the new field belongs in.
 
 ## Decisions made during planning
 
