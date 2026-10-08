@@ -10,12 +10,8 @@ Rerank is proven end to end against the fakes:
 
 ## Files likely touched
 
-- `gateway/internal/fakebackend/`:
-  - the `rerank` path, answering vLLM's shape (`id`, `model`, `usage`, sorted
-    `results` with `document`);
-  - a llama-server-shaped answer (`object`, `usage`, `results` without `document`),
-    selectable;
-  - `OmitUsage` honoured, as for embeddings.
+- `gateway/internal/fakebackend/`: a llama-server-shaped rerank answer (`object`,
+  `usage`, `results` without `document`), selectable beside step 3's vLLM shape.
 - `gateway/e2e/`:
   - rerank on a `vllm`-typed and a `llama-server`-typed backend: answer relayed with
     the public model name, usage record with `tokens_in` and its cost, and the log

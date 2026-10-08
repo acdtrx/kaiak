@@ -33,6 +33,9 @@ endpoints. Behaviour on the existing endpoints is unchanged.
 - `gateway/internal/config/`:
   - `max_rerank_documents`: schema check, document field, and snapshot value with
     default 1000.
+- `gateway/internal/fakebackend/`: the `rerank` path answering vLLM's shape (`id`,
+  `model`, `usage`, sorted `results` with `document`), `OmitUsage` honoured — the
+  server tests run through the fake backend. Step 4 adds llama-server's shape.
 - Tests beside each change. Server tests run on a `vllm`- or `llama-server`-typed fake
   backend: the existing fakes are `openai-compatible`, which does not serve rerank.
 
