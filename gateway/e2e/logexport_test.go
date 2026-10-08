@@ -24,7 +24,7 @@ import (
 	"time"
 
 	"kaiak/internal/fakebackend"
-	"kaiak/internal/fakeotlp"
+	"kaiak/internal/telemetry/fakeotlp"
 )
 
 // plainValue is the value as the JSON log line holds it once decoded: numbers are

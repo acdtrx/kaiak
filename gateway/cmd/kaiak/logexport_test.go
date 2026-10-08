@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"kaiak/internal/fakeotlp"
+	"kaiak/internal/telemetry/fakeotlp"
 )
 
 func TestLogExportSettings(t *testing.T) {

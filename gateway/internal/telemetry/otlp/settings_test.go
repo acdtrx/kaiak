@@ -1,4 +1,4 @@
-package otlplog
+package otlp
 
 import (
 	"fmt"
@@ -17,7 +17,7 @@ func envOf(vars map[string]string) func(string) (string, bool) {
 
 func mustSettings(t *testing.T, vars map[string]string) *Settings {
 	t.Helper()
-	s, err := ReadSettings(envOf(vars))
+	s, err := ReadSettings(Logs, envOf(vars))
 	if err != nil {
 		t.Fatalf("ReadSettings: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestExportOnOrOff(t *testing.T) {
 		{"SDK disabled false keeps it on", map[string]string{"OTEL_SDK_DISABLED": "False", general: "http://c:4318"}, "http://c:4318/v1/logs"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s, err := ReadSettings(envOf(tc.vars))
+			s, err := ReadSettings(Logs, envOf(tc.vars))
 			if err != nil {
 				t.Fatalf("ReadSettings: %v", err)
 			}
@@ -178,7 +178,7 @@ func TestSettingsRefuseMalformedValues(t *testing.T) {
 		{"resource attribute badly encoded", map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": on, "OTEL_RESOURCE_ATTRIBUTES": "a=%g1"}, "OTEL_RESOURCE_ATTRIBUTES: entry 1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s, err := ReadSettings(envOf(tc.vars))
+			s, err := ReadSettings(Logs, envOf(tc.vars))
 			if err == nil {
 				t.Fatalf("ReadSettings = %v, want an error", s)
 			}
@@ -219,4 +219,82 @@ func TestEndpointHost(t *testing.T) {
 			t.Errorf("EndpointHost(%s) = %s, want %s", endpoint, got, want)
 		}
 	}
+}
+
+// Each signal reads its own variables, the general ones shared: one general
+// endpoint turns on every signal at its own path, and a signal's exporter variable
+// opts that signal alone out.
+func TestSettingsPerSignal(t *testing.T) {
+	const general = "OTEL_EXPORTER_OTLP_ENDPOINT"
+	for _, tc := range []struct {
+		name string
+		vars map[string]string
+		// logs and metrics are the URLs posted to; "" means that signal is off.
+		logs, metrics string
+	}{
+		{"general endpoint: each signal's path", map[string]string{general: "http://c:4318"}, "http://c:4318/v1/logs", "http://c:4318/v1/metrics"},
+		{"metrics endpoint, as is", map[string]string{general: "http://c:4318", "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": "http://m:4318/custom"}, "http://c:4318/v1/logs", "http://m:4318/custom"},
+		{"metrics exporter with no endpoint: the default", map[string]string{"OTEL_METRICS_EXPORTER": "otlp"}, "", "http://localhost:4318/v1/metrics"},
+		{"metrics none opts metrics out", map[string]string{general: "http://c:4318", "OTEL_METRICS_EXPORTER": "none"}, "http://c:4318/v1/logs", ""},
+		{"logs none opts logs out", map[string]string{general: "http://c:4318", "OTEL_LOGS_EXPORTER": "none"}, "", "http://c:4318/v1/metrics"},
+		{"SDK disabled: both off", map[string]string{general: "http://c:4318", "OTEL_SDK_DISABLED": "true"}, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for sig, want := range map[Signal]string{Logs: tc.logs, Metrics: tc.metrics} {
+				s, err := ReadSettings(sig, envOf(tc.vars))
+				if err != nil {
+					t.Fatalf("%s: ReadSettings: %v", sig, err)
+				}
+				switch {
+				case want == "" && s != nil:
+					t.Errorf("%s: export on to %s, want off", sig, s.endpoint)
+				case want != "" && s == nil:
+					t.Errorf("%s: export off, want on to %s", sig, want)
+				case s != nil && s.endpoint.String() != want:
+					t.Errorf("%s: endpoint %s, want %s", sig, s.endpoint, want)
+				}
+			}
+		})
+	}
+
+	t.Run("the signal's variables win for metrics", func(t *testing.T) {
+		s, err := ReadSettings(Metrics, envOf(map[string]string{general: "http://c:4318",
+			"OTEL_EXPORTER_OTLP_TIMEOUT": "3000", "OTEL_EXPORTER_OTLP_METRICS_TIMEOUT": "2500",
+			"OTEL_EXPORTER_OTLP_HEADERS": "x-general=1", "OTEL_EXPORTER_OTLP_METRICS_HEADERS": "x-metrics=2",
+			"OTEL_EXPORTER_OTLP_LOGS_TIMEOUT": "1", "OTEL_EXPORTER_OTLP_LOGS_HEADERS": "x-logs=3",
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := []header{{"X-Metrics", "2"}}; s.timeout != 2500*time.Millisecond || fmt.Sprint(s.headers) != fmt.Sprint(want) {
+			t.Fatalf("timeout %s, headers %v; want 2.5s, %v", s.timeout, s.headers, want)
+		}
+	})
+
+	for _, tc := range []struct{ name, variable, value, want string }{
+		{"metrics exporter unknown", "OTEL_METRICS_EXPORTER", "prometheus", `OTEL_METRICS_EXPORTER="prometheus": want otlp or none`},
+		{"metrics endpoint not http", "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "ftp://c", "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: want an absolute"},
+		{"metrics protocol grpc", "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", "grpc", `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL="grpc": only http/json`},
+		{"metrics timeout zero", "OTEL_EXPORTER_OTLP_METRICS_TIMEOUT", "0", `OTEL_EXPORTER_OTLP_METRICS_TIMEOUT="0"`},
+		{"metrics headers malformed", "OTEL_EXPORTER_OTLP_METRICS_HEADERS", "bad key=s3cr3t", "OTEL_EXPORTER_OTLP_METRICS_HEADERS: entry 1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vars := map[string]string{general: "http://c:4318", tc.variable: tc.value}
+			if _, err := ReadSettings(Metrics, envOf(vars)); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("metrics: error %v, want it to hold %q", err, tc.want)
+			}
+			if _, err := ReadSettings(Logs, envOf(vars)); err != nil {
+				t.Fatalf("logs: error %v, want none: the variable is the metrics signal's", err)
+			}
+		})
+	}
+}
+
+func TestUnknownSignalPanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("ReadSettings with an unknown signal did not panic")
+		}
+	}()
+	_, _ = ReadSettings(Signal("traces"), envOf(nil))
 }

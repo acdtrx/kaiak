@@ -18,10 +18,11 @@ import (
 	"kaiak/internal/config"
 	"kaiak/internal/limits"
 	"kaiak/internal/metrics"
-	"kaiak/internal/otlplog"
 	"kaiak/internal/provider"
 	"kaiak/internal/routing"
 	"kaiak/internal/server"
+	"kaiak/internal/telemetry/otlp"
+	"kaiak/internal/telemetry/otlplog"
 )
 
 func main() {
@@ -97,8 +98,7 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 	if s.logExport != nil {
 		// Export problems go to the stderr logger alone: one exported would feed the
 		// problem it reports.
-		logExport = otlplog.New(s.logExport, otlplog.Resource{ServiceVersion: metrics.Version(), InstanceID: s.instanceID},
-			logger)
+		logExport = otlplog.New(s.logExport, otlp.Service{Version: metrics.Version(), InstanceID: s.instanceID}, logger)
 		logger = slog.New(logExport.Handler(logger.Handler()))
 		source = append(source, "kaiak.log_export.endpoint", s.logExport.EndpointHost())
 	}
@@ -310,17 +310,18 @@ const logExportFlushFloor = time.Second
 // alone bounds it: a flush already past it ends at once. What is still queued at the
 // end is dropped and counted, and reported on stderr.
 func finishLogExport(hurry context.Context, e *otlplog.Exporter, by time.Time) {
-	// The floor first, which nothing cuts; then until by, unless hurried. A Flush
-	// whose ctx ends leaves the sender running, so the second waits on the same work.
+	// The floor first, which nothing cuts; then until by, unless hurried. A
+	// ForceFlush whose ctx ends leaves the sender running, so the second waits on the
+	// same work.
 	floorCtx, cancel := context.WithTimeout(context.Background(), logExportFlushFloor)
-	err := e.Flush(floorCtx)
+	err := e.ForceFlush(floorCtx)
 	cancel()
 	if err != nil {
 		ctx, cancel := context.WithDeadline(hurry, by)
-		_ = e.Flush(ctx) // what did not fit is Close's to count
+		_ = e.ForceFlush(ctx) // what did not fit is Shutdown's to count
 		cancel()
 	}
-	e.Close()
+	e.Shutdown(context.Background())
 }
 
 // adminShutdownTimeout bounds how long a probe or scrape still open at the end may

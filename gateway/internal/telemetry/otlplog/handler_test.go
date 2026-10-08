@@ -12,6 +12,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"kaiak/internal/telemetry/otlp"
 )
 
 // idleExporter is an exporter that never sends on its own (no tick, no full batch
@@ -25,9 +27,9 @@ func idleExporter(t *testing.T, vars map[string]string) *Exporter {
 		vars["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] = "http://127.0.0.1:1/v1/logs"
 	}
 	s := mustSettings(t, vars)
-	e := newExporter(s, Resource{ServiceVersion: "1.2.3", InstanceID: "gw-1"},
+	e := newExporter(s, otlp.Service{Version: "1.2.3", InstanceID: "gw-1"},
 		slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil)), options{tick: make(chan time.Time)})
-	t.Cleanup(e.Close)
+	t.Cleanup(func() { e.Shutdown(context.Background()) })
 	return e
 }
 
@@ -223,7 +225,7 @@ func TestEncodedBatchMatchesFixture(t *testing.T) {
 		}
 	}
 
-	got, err := encodeBatch(e.resource, queued(e))
+	got, err := encodeBatch(e.client.Resource(), queued(e))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,15 +248,6 @@ func decodeJSON(t *testing.T, b []byte) any {
 		t.Fatalf("decode %s: %v", b, err)
 	}
 	return v
-}
-
-func TestDoubleSpecialValues(t *testing.T) {
-	for f, want := range map[float64]string{math.Inf(1): `"Infinity"`, math.Inf(-1): `"-Infinity"`, 1e21: `1e+21`, 0.5: `0.5`} {
-		got, err := json.Marshal(double(f))
-		if err != nil || string(got) != want {
-			t.Errorf("double(%v) = %s, %v; want %s", f, got, err, want)
-		}
-	}
 }
 
 // discard is an enabled next handler that writes nothing (slog.DiscardHandler is

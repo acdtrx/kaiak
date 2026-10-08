@@ -11,8 +11,8 @@ import (
 
 	"kaiak/internal/config"
 	"kaiak/internal/control"
-	"kaiak/internal/otlplog"
 	"kaiak/internal/server"
+	"kaiak/internal/telemetry/otlp"
 )
 
 // settings is the process configuration read from the environment
@@ -45,7 +45,7 @@ type settings struct {
 	// metricsToken is the bearer token /metrics requires; "" leaves it open.
 	metricsToken string
 	// logExport is where log records also go over OTLP; nil when export is off.
-	logExport *otlplog.Settings
+	logExport *otlp.Settings
 }
 
 // Default listen addresses: the API port and the admin port.
@@ -126,7 +126,7 @@ func readSettings(lookupEnv func(string) (string, bool)) (settings, error) {
 		}
 	}
 	s.metricsToken, _ = lookupEnv("KAIAK_METRICS_TOKEN")
-	if s.logExport, err = otlplog.ReadSettings(lookupEnv); err != nil {
+	if s.logExport, err = otlp.ReadSettings(otlp.Logs, lookupEnv); err != nil {
 		return s, err
 	}
 	s.instanceID, _ = lookupEnv("KAIAK_INSTANCE_ID")

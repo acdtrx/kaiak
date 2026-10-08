@@ -1,4 +1,4 @@
-package otlplog
+package otlp
 
 import (
 	"fmt"
@@ -11,10 +11,12 @@ import (
 	"time"
 )
 
-// Settings are the export settings read from the standard OTEL_* environment
-// variables (docs/specs/GATEWAY.md, Configuration sources: OTLP log export). The
-// headers can carry credentials: no method prints them.
+// Settings are one signal's export settings read from the standard OTEL_*
+// environment variables (docs/specs/GATEWAY.md, Configuration sources: OTLP export),
+// with the resource every signal shares. The headers can carry credentials: no
+// method prints them.
 type Settings struct {
+	signal   Signal
 	endpoint *url.URL
 	headers  []header
 	timeout  time.Duration
@@ -29,19 +31,24 @@ type header struct{ name, value string }
 
 type resourceAttr struct{ key, value string }
 
-// The specification's defaults: a collector beside the gateway, 10 s per batch.
+// The specification's defaults: a collector beside the gateway, 10 s per export.
 const (
-	defaultEndpoint    = "http://localhost:4318/v1/logs"
+	defaultHost        = "http://localhost:4318"
 	defaultTimeout     = 10 * time.Second
 	defaultServiceName = "kaiak"
 )
 
-// ReadSettings reads the export settings from the environment through lookupEnv. It
-// returns nil when export is off: no endpoint and no OTEL_LOGS_EXPORTER=otlp, or
-// OTEL_LOGS_EXPORTER=none, or OTEL_SDK_DISABLED=true. An empty variable counts as
-// unset, as the OpenTelemetry specification has it. A malformed value is an error
-// naming the variable; an error about headers never holds their values.
-func ReadSettings(lookupEnv func(string) (string, bool)) (*Settings, error) {
+// ReadSettings reads sig's export settings from the environment through lookupEnv.
+// It returns nil when the signal's export is off: no endpoint and no
+// OTEL_<SIGNAL>_EXPORTER=otlp, or OTEL_<SIGNAL>_EXPORTER=none, or
+// OTEL_SDK_DISABLED=true. For each setting the signal's variable wins over the
+// general one. An empty variable counts as unset, as the OpenTelemetry
+// specification has it. A malformed value is an error naming the variable; an error
+// about headers never holds their values. The resource (OTEL_SERVICE_NAME,
+// OTEL_RESOURCE_ATTRIBUTES) is read the same way for every signal, and only when
+// the signal's export is on.
+func ReadSettings(sig Signal, lookupEnv func(string) (string, bool)) (*Settings, error) {
+	names := sig.info().variables
 	get := func(name string) string {
 		v, _ := lookupEnv(name)
 		return v
@@ -54,17 +61,17 @@ func ReadSettings(lookupEnv func(string) (string, bool)) (*Settings, error) {
 	default:
 		return nil, fmt.Errorf("OTEL_SDK_DISABLED=%q: want true or false", v)
 	}
-	exporter := get("OTEL_LOGS_EXPORTER")
+	exporter := get(names.exporter)
 	switch strings.ToLower(exporter) {
 	case "", "otlp", "none":
 	default:
-		return nil, fmt.Errorf("OTEL_LOGS_EXPORTER=%q: want otlp or none", exporter)
+		return nil, fmt.Errorf("%s=%q: want otlp or none", names.exporter, exporter)
 	}
 	if disabled || strings.EqualFold(exporter, "none") {
 		return nil, nil
 	}
 
-	endpoint, err := readEndpoint(get)
+	endpoint, err := readEndpoint(sig, get)
 	if err != nil {
 		return nil, err
 	}
@@ -72,11 +79,12 @@ func ReadSettings(lookupEnv func(string) (string, bool)) (*Settings, error) {
 		if !strings.EqualFold(exporter, "otlp") {
 			return nil, nil
 		}
-		endpoint, _ = url.Parse(defaultEndpoint)
+		endpoint, _ = url.Parse(defaultHost)
+		endpoint = endpoint.JoinPath(sig.info().path)
 	}
-	s := &Settings{endpoint: endpoint, timeout: defaultTimeout}
+	s := &Settings{signal: sig, endpoint: endpoint, timeout: defaultTimeout}
 
-	if name, v := first(get, "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL", "OTEL_EXPORTER_OTLP_PROTOCOL"); v != "" {
+	if name, v := first(get, names.protocol, "OTEL_EXPORTER_OTLP_PROTOCOL"); v != "" {
 		switch strings.ToLower(v) {
 		case "http/json":
 		case "grpc", "http/protobuf":
@@ -85,12 +93,12 @@ func ReadSettings(lookupEnv func(string) (string, bool)) (*Settings, error) {
 			return nil, fmt.Errorf("%s=%q: want http/json", name, v)
 		}
 	}
-	if name, v := first(get, "OTEL_EXPORTER_OTLP_LOGS_HEADERS", "OTEL_EXPORTER_OTLP_HEADERS"); v != "" {
+	if name, v := first(get, names.headers, "OTEL_EXPORTER_OTLP_HEADERS"); v != "" {
 		if s.headers, err = parseHeaders(name, v); err != nil {
 			return nil, err
 		}
 	}
-	if name, v := first(get, "OTEL_EXPORTER_OTLP_LOGS_TIMEOUT", "OTEL_EXPORTER_OTLP_TIMEOUT"); v != "" {
+	if name, v := first(get, names.timeout, "OTEL_EXPORTER_OTLP_TIMEOUT"); v != "" {
 		ms, err := strconv.ParseInt(v, 10, 64)
 		if err != nil || ms <= 0 || ms > math.MaxInt64/int64(time.Millisecond) {
 			return nil, fmt.Errorf("%s=%q: want a whole number of milliseconds above 0", name, v)
@@ -98,33 +106,44 @@ func ReadSettings(lookupEnv func(string) (string, bool)) (*Settings, error) {
 		s.timeout = time.Duration(ms) * time.Millisecond
 	}
 
+	if s.serviceName, s.resource, err = readResource(get); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// readResource reads the resource's settings, the same for every signal: the
+// service name (OTEL_SERVICE_NAME, else a service.name in OTEL_RESOURCE_ATTRIBUTES,
+// else kaiak) and the other attributes of OTEL_RESOURCE_ATTRIBUTES but the two the
+// gateway sets itself.
+func readResource(get func(string) string) (serviceName string, attrs []resourceAttr, err error) {
 	var fromAttributes string
 	if v := get("OTEL_RESOURCE_ATTRIBUTES"); v != "" {
-		attrs, err := parseResourceAttributes(v)
+		all, err := parseResourceAttributes(v)
 		if err != nil {
-			return nil, err
+			return "", nil, err
 		}
-		for _, a := range attrs {
+		for _, a := range all {
 			switch a.key {
 			case "service.name":
 				fromAttributes = a.value
 			case "service.version", "service.instance.id":
 			default:
-				s.resource = append(s.resource, a)
+				attrs = append(attrs, a)
 			}
 		}
 	}
-	s.serviceName = defaultServiceName
+	serviceName = defaultServiceName
 	if v := get("OTEL_SERVICE_NAME"); v != "" {
-		s.serviceName = v
+		serviceName = v
 	} else if fromAttributes != "" {
-		s.serviceName = fromAttributes
+		serviceName = fromAttributes
 	}
-	return s, nil
+	return serviceName, attrs, nil
 }
 
 // EndpointHost is the endpoint's host:port, the port filled in from the scheme when
-// the URL has none — what the gateway may log about where records go.
+// the URL has none — what the gateway may log about where the signal goes.
 func (s *Settings) EndpointHost() string {
 	port := s.endpoint.Port()
 	if port == "" {
@@ -139,8 +158,8 @@ func (s *Settings) EndpointHost() string {
 // String describes the settings without the headers, so that printing them by
 // mistake cannot leak a credential.
 func (s *Settings) String() string {
-	return fmt.Sprintf("otlplog.Settings{endpoint: %s, headers: %d, timeout: %s}",
-		s.endpoint.Redacted(), len(s.headers), s.timeout)
+	return fmt.Sprintf("otlp.Settings{signal: %s, endpoint: %s, headers: %d, timeout: %s}",
+		s.signal, s.endpoint.Redacted(), len(s.headers), s.timeout)
 }
 
 // first returns the first of names whose value is set, with that value; the last
@@ -154,11 +173,13 @@ func first(get func(string) string, names ...string) (name, value string) {
 	return name, ""
 }
 
-// readEndpoint reads the logs endpoint: the LOGS variable as is, else the general
-// one with v1/logs joined to its path; nil when neither is set.
-func readEndpoint(get func(string) string) (*url.URL, error) {
-	if v := get("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"); v != "" {
-		return parseEndpoint("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", v)
+// readEndpoint reads the signal's endpoint: the signal's variable as is, else the
+// general one with the signal's path (v1/logs, v1/metrics) joined to its path; nil
+// when neither is set.
+func readEndpoint(sig Signal, get func(string) string) (*url.URL, error) {
+	own := sig.info().variables.endpoint
+	if v := get(own); v != "" {
+		return parseEndpoint(own, v)
 	}
 	v := get("OTEL_EXPORTER_OTLP_ENDPOINT")
 	if v == "" {
@@ -168,7 +189,7 @@ func readEndpoint(get func(string) string) (*url.URL, error) {
 	if err != nil {
 		return nil, err
 	}
-	return u.JoinPath("v1/logs"), nil
+	return u.JoinPath(sig.info().path), nil
 }
 
 // parseEndpoint parses an absolute http:// or https:// URL. The error leaves the

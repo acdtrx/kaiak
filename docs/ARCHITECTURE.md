@@ -201,6 +201,11 @@ enforce the boundaries.
     model, and the Prometheus text writer with the name translation;
   - `telemetry/otlpmetric` — the periodic metric exporter: collects the registry on
     an interval, applies the temporality and posts through `otlp`.
+  - `telemetry/fakeotlp` — an OpenTelemetry collector for tests: takes OTLP/HTTP
+    JSON log exports, answers each as the test scripts, and keeps every export
+    decoded with its own types — not `otlplog`'s — so reading them checks the
+    encoder. Tests only (the tree's own, `cmd/kaiak`'s and the e2e suite's); in the
+    tree so that the tree's tests use no kaiak fixture.
 
   `cmd/kaiak` wraps the process logger with the log exporter when log export is on
   (giving it a stderr-only logger for its own problem reports: no feedback loop),
@@ -258,9 +263,6 @@ enforce the boundaries.
   `counted_through`, optionally pushed on every change; records every
   request. Tests only; it imports nothing from the gateway, so `control`'s own tests
   use it.
-- `fakeotlp` — an OpenTelemetry collector for tests: takes OTLP/HTTP JSON log
-  exports, answers each as the test scripts, and keeps every export decoded with its
-  own types — not `otlplog`'s — so reading them checks the encoder. Tests only.
 - `fixturetest` — the runner of the shared fixtures in `protocol/fixtures/`: where
   they are, the fixture listing, the `cases.json` rules (invalid and duplicate-member
   cases) and the valid and invalid runs over a decoder. `config` and `control` run
