@@ -225,4 +225,14 @@ gateway checks passed
 all checks passed
 ```
 
-Live check: pending (main session).
+**Live check** (main session, 2026-10-08; phase 5 ends here). The DGX was not swapped:
+the kit ran against what was serving, ordinary requests only; embeddings on
+`llama-embed.local:11435` (`/models/qwen3-embedding-0.6b-q8_0.gguf`).
+
+- `vllm`, vLLM with `unsloth/Qwen3.8-27B-NVFP4` on `dgx.local:11434` (`-max-output 4096`,
+  thinking off through `-*-params`): **29 passed, 0 failed, 1 skipped**
+  (`messages-cache`: the server reported no cache read).
+- `llama-server`, `unsloth/Qwen3.8-Flash-Next-GGUF:UD-Q4_K_XL` on `dgx.local:11434`
+  (the user had switched the DGX to it; `-max-output 4096`): **29 passed, 0 failed,
+  2 skipped** (`messages-cache` as above; `endpoint-not-served`: llama-server serves
+  every endpoint the kit checks)..
