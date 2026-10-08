@@ -12,6 +12,7 @@ import (
 	"kaiak/internal/config"
 	"kaiak/internal/limits"
 	"kaiak/internal/logattr"
+	"kaiak/internal/provider"
 )
 
 // logRequest writes the one log line per request, in the log vocabulary
@@ -50,7 +51,7 @@ func (a *API) logRequest(rq *request) {
 	if b := at.deployment.Backend; b != nil {
 		attrs = append(attrs, slog.String("kaiak.backend.id", b.ID),
 			slog.String("kaiak.backend.type", string(b.Type)))
-		if name := providerName(b.Type); name != "" {
+		if name := provider.ProviderName(b.Type); name != "" {
 			attrs = append(attrs, slog.String("gen_ai.provider.name", name))
 		}
 		attrs = append(attrs, slog.String("kaiak.deployment.model", at.deployment.Model),
@@ -127,22 +128,6 @@ func methodAttrs(method string) []slog.Attr {
 	}
 	return []slog.Attr{slog.String("http.request.method", "_OTHER"),
 		slog.String("http.request.method_original", clip.String(method))}
-}
-
-// providerName is gen_ai.provider.name for a backend type: the GenAI convention's
-// well-known value where one fits, else "" — the self-hosted types have none, and
-// kaiak.backend.type names every type. Claude in Foundry is Anthropic's service and
-// API on Azure, and no Azure value names it, so it is anthropic too.
-func providerName(t config.BackendType) string {
-	switch t {
-	case config.BackendOpenAI:
-		return "openai"
-	case config.BackendAzureOpenAI:
-		return "azure.ai.openai"
-	case config.BackendAnthropic, config.BackendAzureAnthropic:
-		return "anthropic"
-	}
-	return ""
 }
 
 // limitAttrs are a limit refusal's log fields: the limit's kind of scope (global or

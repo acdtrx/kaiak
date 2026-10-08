@@ -29,13 +29,13 @@ func TestErrorEventKinds(t *testing.T) {
 		{FormatResponses, `{"type":"response.failed","response":{"error":{"code":"server_error","message":"x"}}}`, ErrorEventFailure},
 		{FormatResponses, `{"type":"error","code":null}`, ErrorEventFailure},
 	} {
-		got := newStreamEnd(c.format).observe([]byte(c.payload))
+		got := newStreamFormat(c.format).observe([]byte(c.payload)).errorEvent
 		if got == nil || got.Kind != c.want {
 			t.Errorf("%s: %+v, want kind %d", c.payload, got, c.want)
 		}
 	}
 	for _, payload := range []string{`{"type":"message_stop"}`, `{"type":"response.completed"}`, `not json`} {
-		if got := newStreamEnd(FormatResponses).observe([]byte(payload)); got != nil {
+		if got := newStreamFormat(FormatResponses).observe([]byte(payload)).errorEvent; got != nil {
 			t.Errorf("%s: %+v, want no error event", payload, got)
 		}
 	}
@@ -60,8 +60,8 @@ func TestRelayedErrorEventCarriesTheGatewaysMessage(t *testing.T) {
 		{FormatResponses, "error", `{"type":"error","message":"a","message":"b"}`,
 			[]string{`"server_error"`, errorEventMessage}, []string{`"a"`, `"b"`}},
 	} {
-		r := &upstreamResponse{ending: newStreamEnd(c.format), publicModel: publicModel}
-		r.ending.observe([]byte(c.data)) // as readEvent does, before relaying the block
+		r := &upstreamResponse{format: newStreamFormat(c.format), publicModel: publicModel}
+		r.format.observe([]byte(c.data)) // as readEvent does, before relaying the block
 		raw := "event: " + c.event + "\ndata: " + c.data + "\n\n"
 		out := string(r.relayedErrorEvent(sse.Block{Raw: []byte(raw), Data: []byte(c.data), HasData: true, Event: c.event}))
 		if !strings.HasPrefix(out, "event: "+c.event+"\ndata: ") || !strings.HasSuffix(out, "\n\n") {

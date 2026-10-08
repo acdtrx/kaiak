@@ -8,6 +8,8 @@ import (
 	"bytes"
 	"errors"
 	"io"
+
+	"kaiak/internal/netfail"
 )
 
 // Block is one block of a server-sent event stream: the lines up to and including
@@ -58,7 +60,12 @@ var (
 	ErrTooLarge = errors.New("event stream block exceeds the size limit")
 )
 
-// Next returns the next block; io.EOF when the stream ends between blocks.
+// Next returns the next block; io.EOF when the stream ends between blocks,
+// ErrTruncated or ErrTooLarge when the stream breaks its format. A failure of the
+// underlying stream — the connection's — is returned as its class (netfail): Go builds
+// some of those errors from the bytes the remote party sent (a trailer line it cannot
+// parse is quoted whole), and the error reaches log lines (docs/specs/GATEWAY.md,
+// Logs: no remote text).
 func (s *Reader) Next() (Block, error) {
 	var block Block
 	var data bytes.Buffer
@@ -67,8 +74,11 @@ func (s *Reader) Next() (Block, error) {
 		raw, content, terminated, err := s.readLine(s.maxBlock - len(block.Raw))
 		lineStart := len(block.Raw)
 		block.Raw = append(block.Raw, raw...)
-		if err != nil {
+		if errors.Is(err, ErrTooLarge) {
 			return block, err
+		}
+		if err != nil {
+			return block, errors.New(netfail.Class(err))
 		}
 		if !terminated {
 			// End of stream.

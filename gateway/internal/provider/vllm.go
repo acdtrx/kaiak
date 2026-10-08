@@ -32,22 +32,14 @@ func (m *vLLM) url(path string) string { return m.backend.BaseURL + "/" + path }
 // header carries the credential (vLLM's --api-key) as a bearer token; a backend
 // without one gets none.
 func (m *vLLM) header() http.Header {
-	h := make(http.Header)
-	if m.credential != "" {
-		h.Set("Authorization", "Bearer "+m.credential)
-	}
-	return h
+	return bearer(m.credential)
 }
 
 // Send implements Provider.
 func (m *vLLM) Send(ctx context.Context, req *Request) (Response, error) {
-	body, stripUsage, err := passthroughBody(req)
-	if err != nil {
-		return nil, editError(err)
-	}
 	return sendWire(ctx, req, wireCall{
 		backend: m.backend, client: m.client, url: m.url(req.Endpoint.path()), header: m.header(),
-		body: body, stripUsage: stripUsage, missingModel: missingModelNamedOrCoded("model_not_found"), unknownPath: m.unknownPath, core: openAICore(req.Endpoint),
+		missingModel: missingModelNamedOrCoded("model_not_found"), unknownPath: m.unknownPath, core: openAICore(req.Endpoint),
 	})
 }
 

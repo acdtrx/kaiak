@@ -30,23 +30,15 @@ func (m *azureOpenAI) url(path string) string { return m.backend.BaseURL + "/ope
 
 // header carries the credential as Azure's api-key header.
 func (m *azureOpenAI) header() http.Header {
-	h := make(http.Header)
-	if m.credential != "" {
-		h.Set("Api-Key", m.credential)
-	}
-	return h
+	return apiKey(m.credential)
 }
 
 // Send implements Provider. A missing deployment is DeploymentNotFound; the v1 API
 // being OpenAI's shape, model_not_found is read as the same.
 func (m *azureOpenAI) Send(ctx context.Context, req *Request) (Response, error) {
-	body, stripUsage, err := passthroughBody(req, standardServiceTier(req.Endpoint))
-	if err != nil {
-		return nil, editError(err)
-	}
 	return sendWire(ctx, req, wireCall{
 		backend: m.backend, client: m.client, url: m.url(req.Endpoint.path()), header: m.header(),
-		body: body, stripUsage: stripUsage, missingModel: missingModelCoded("DeploymentNotFound", "model_not_found"), unknownPath: m.unknownPath, core: openAICore(req.Endpoint),
+		edits: []memberEdit{standardServiceTier(req.Endpoint)}, missingModel: missingModelCoded("DeploymentNotFound", "model_not_found"), unknownPath: m.unknownPath, core: openAICore(req.Endpoint),
 	})
 }
 

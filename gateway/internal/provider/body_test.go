@@ -179,24 +179,6 @@ func TestStandardServiceTier(t *testing.T) {
 	}
 }
 
-func TestIsUsageOnlyChunk(t *testing.T) {
-	cases := map[string]bool{
-		`{"id":"1","choices":[],"usage":{"prompt_tokens":1}}`:             true,
-		`{"id":"1","choices":[{"delta":{}}],"usage":{"prompt_tokens":1}}`: false,
-		`{"id":"1","choices":[{"delta":{"content":"x"}}],"usage":null}`:   false,
-		`{"id":"1","choices":[]}`:                                         false,
-		`{"id":"1","Choices":[],"usage":{"prompt_tokens":1}}`:             false,
-		`{"id":"1","choices":null,"usage":{"prompt_tokens":1}}`:           false,
-		`[DONE]`: false,
-		`{"id":"1","choices":[],"usage":{"prompt_tokens":1},"extra":{"a":[1]}}`: true,
-	}
-	for payload, want := range cases {
-		if got := isUsageOnlyChunk([]byte(payload)); got != want {
-			t.Errorf("%s: got %v, want %v", payload, got, want)
-		}
-	}
-}
-
 // The independent audit's finding 2: every occurrence of a repeated owned key was
 // replaced, so 10 000 short "model" members became 10 000 long deployment names —
 // 43.6× the client's body. The inbound stage refuses a repeated top-level member; the

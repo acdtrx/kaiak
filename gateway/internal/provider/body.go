@@ -152,23 +152,41 @@ func setIncludeUsage(current []byte) ([]byte, error) {
 	return editObject(current, setValue("include_usage", []byte("true")))
 }
 
-// isUsageOnlyChunk reports whether an SSE data payload is the final chunk a backend
-// sends for stream_options.include_usage: a JSON object with an empty "choices" array
-// and a non-null "usage". Keys are matched exactly.
-func isUsageOnlyChunk(payload []byte) bool {
-	var chunk map[string]json.RawMessage
-	if err := json.Unmarshal(payload, &chunk); err != nil {
-		return false
+// passthroughBody applies the gateway's owned edits to the client's body: the model
+// name becomes the deployment's, the module's own edits (extra) and the pipeline's
+// parameters are set, then the format's (streamFormat.requestEdits). stripUsage is
+// true when a format edit asked for the usage-only chunk the client did not, so it
+// must not reach the client.
+func passthroughBody(req *Request, extra ...memberEdit) (body []byte, stripUsage bool, err error) {
+	model, _ := json.Marshal(req.Deployment.Model) // a string always encodes
+	edits := append([]memberEdit{setValue("model", model)}, extra...)
+	for _, p := range req.Params {
+		edits = append(edits, setValue(p.Key, p.Value))
 	}
-	usage, ok := chunk["usage"]
-	if !ok || string(usage) == "null" {
-		return false
-	}
-	var choices []json.RawMessage
-	if err := json.Unmarshal(chunk["choices"], &choices); err != nil {
-		return false
-	}
-	return choices != nil && len(choices) == 0
+	formatEdits, stripUsage := newStreamFormat(req.Endpoint.Format()).requestEdits(req)
+	body, err = editObject(req.Body, append(edits, formatEdits...)...)
+	return body, stripUsage, err
+}
+
+// standardServiceTier is the edit that keeps a request on standard processing, for
+// the modules whose backends bill by tier (openai.go, azure_openai.go;
+// docs/specs/GATEWAY.md, Providers → Service tier): prices are standard-tier rates,
+// and a priority request is billed about twice what its record would say. A chat
+// completions or Responses request always carries service_tier "default" — an absent
+// tier means "auto", which follows the deployment's or project's own setting. On
+// completions and embeddings a client's tier becomes "default" and an absent one
+// stays absent: OpenAI refuses parameters an endpoint does not define. Responses
+// token counting is left as the client sent it: nothing is generated or billed there.
+func standardServiceTier(e Endpoint) memberEdit {
+	return memberEdit{key: "service_tier", set: func(current []byte) ([]byte, error) {
+		switch {
+		case e == ResponsesInputTokens:
+			return current, nil
+		case current == nil && e != ChatCompletions && e != Responses:
+			return nil, nil
+		}
+		return []byte(`"default"`), nil
+	}}
 }
 
 // upstreamBody is the edited request body an upstream request sends. The transport

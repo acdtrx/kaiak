@@ -31,22 +31,14 @@ func (m *openAI) url(path string) string { return m.backend.BaseURL + "/" + path
 // header carries the credential as a bearer token. The schema requires api_key_env;
 // a credential the registry withholds (Registry.credential) sends no header.
 func (m *openAI) header() http.Header {
-	h := make(http.Header)
-	if m.credential != "" {
-		h.Set("Authorization", "Bearer "+m.credential)
-	}
-	return h
+	return bearer(m.credential)
 }
 
 // Send implements Provider.
 func (m *openAI) Send(ctx context.Context, req *Request) (Response, error) {
-	body, stripUsage, err := passthroughBody(req, standardServiceTier(req.Endpoint))
-	if err != nil {
-		return nil, editError(err)
-	}
 	return sendWire(ctx, req, wireCall{
 		backend: m.backend, client: m.client, url: m.url(req.Endpoint.path()), header: m.header(),
-		body: body, stripUsage: stripUsage, missingModel: missingModelCoded("model_not_found"), unknownPath: m.unknownPath, core: openAICore(req.Endpoint),
+		edits: []memberEdit{standardServiceTier(req.Endpoint)}, missingModel: missingModelCoded("model_not_found"), unknownPath: m.unknownPath, core: openAICore(req.Endpoint),
 	})
 }
 

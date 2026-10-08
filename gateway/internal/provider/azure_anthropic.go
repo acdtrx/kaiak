@@ -30,10 +30,7 @@ func (m *azureAnthropic) url(path string) string { return m.backend.BaseURL + "/
 
 // header carries the credential as Azure's api-key header, and the API version.
 func (m *azureAnthropic) header() http.Header {
-	h := make(http.Header)
-	if m.credential != "" {
-		h.Set("Api-Key", m.credential)
-	}
+	h := apiKey(m.credential)
 	h.Set("Anthropic-Version", anthropicVersion)
 	return h
 }
@@ -49,13 +46,9 @@ func (m *azureAnthropic) Send(ctx context.Context, req *Request) (Response, erro
 			return nil, err
 		}
 	}
-	body, stripUsage, err := passthroughBody(req)
-	if err != nil {
-		return nil, editError(err)
-	}
 	return sendWire(ctx, req, wireCall{
 		backend: m.backend, client: m.client, url: m.url(req.Endpoint.path()), header: m.header(),
-		body: body, stripUsage: stripUsage, missingModel: azureAnthropicModelMissing, unknownPath: m.unknownPath,
+		missingModel: azureAnthropicModelMissing, unknownPath: m.unknownPath,
 		core: req.Endpoint == Messages,
 	})
 }

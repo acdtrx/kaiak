@@ -104,7 +104,7 @@ func TestUnknownEventsKeepTheirNestedModel(t *testing.T) {
 }
 
 func TestChunkModelRewriteKeepsTheEventFraming(t *testing.T) {
-	r := &upstreamResponse{publicModel: []byte(`"pub"`), ending: &openAIStreamEnd{}}
+	r := &upstreamResponse{publicModel: []byte(`"pub"`), format: &openAIStream{}}
 	for _, c := range []struct{ in, want string }{
 		{"data: {\"id\":1,\"model\":\"back\"}\n\n", "data: {\"id\":1,\"model\":\"pub\"}\n\n"},
 		{"event: x\r\ndata:{\"model\":\r\ndata:  \"back\",\"a\":1}\r\nid: 3\r\n\r\n",

@@ -32,22 +32,14 @@ func (m *openAICompatible) url(path string) string { return m.backend.BaseURL + 
 
 // header carries the credential as a bearer token; a backend without one gets none.
 func (m *openAICompatible) header() http.Header {
-	h := make(http.Header)
-	if m.credential != "" {
-		h.Set("Authorization", "Bearer "+m.credential)
-	}
-	return h
+	return bearer(m.credential)
 }
 
 // Send implements Provider.
 func (m *openAICompatible) Send(ctx context.Context, req *Request) (Response, error) {
-	body, stripUsage, err := passthroughBody(req)
-	if err != nil {
-		return nil, editError(err)
-	}
 	return sendWire(ctx, req, wireCall{
 		backend: m.backend, client: m.client, url: m.url(req.Endpoint.path()), header: m.header(),
-		body: body, stripUsage: stripUsage, missingModel: missingModelNamedOrCoded("model_not_found"), unknownPath: m.unknownPath, core: openAICore(req.Endpoint),
+		missingModel: missingModelNamedOrCoded("model_not_found"), unknownPath: m.unknownPath, core: openAICore(req.Endpoint),
 	})
 }
 

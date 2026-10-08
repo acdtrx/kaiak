@@ -2,7 +2,9 @@ package sse
 
 import (
 	"errors"
+	"fmt"
 	"io"
+	"net/textproto"
 	"strings"
 	"testing"
 )
@@ -129,3 +131,20 @@ func TestReaderNamesEventsAndIDs(t *testing.T) {
 		}
 	}
 }
+
+// A failure of the underlying stream comes back as its class, never Go's text, which
+// can quote what the remote party sent; the format's own failures stay as they are.
+func TestReaderWordsAConnectionFailureByItsClass(t *testing.T) {
+	broken := fmt.Errorf("read: %w", textproto.ProtocolError(`malformed chunked encoding: "Bearer secret"`))
+	r := NewReader(io.MultiReader(strings.NewReader("data: a\n\ndata: b"), failingReader{broken}), testMaxBlock)
+	if b, err := r.Next(); err != nil || string(b.Data) != "a" {
+		t.Fatalf("first block %q, %v", b.Data, err)
+	}
+	if _, err := r.Next(); err == nil || err.Error() != "malformed response" {
+		t.Errorf("error %v, want its class", err)
+	}
+}
+
+type failingReader struct{ err error }
+
+func (f failingReader) Read([]byte) (int, error) { return 0, f.err }

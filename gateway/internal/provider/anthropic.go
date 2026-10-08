@@ -23,10 +23,6 @@ func newAnthropic(b *config.Backend, client *http.Client, credential string) bac
 	return &anthropic{backend: b, client: client, credential: credential}
 }
 
-// anthropicVersion is the anthropic-version header both Anthropic types send: the
-// API's one version (docs/specs/GATEWAY.md, Base URLs).
-const anthropicVersion = "2023-06-01"
-
 // url joins the base URL, which already ends in the API version path
 // (docs/specs/GATEWAY.md, Base URLs), and the endpoint path.
 func (m *anthropic) url(path string) string { return m.backend.BaseURL + "/" + path }
@@ -57,13 +53,9 @@ func (m *anthropic) Send(ctx context.Context, req *Request) (Response, error) {
 		}
 		edits = append(edits, setValue("service_tier", []byte(`"standard_only"`)))
 	}
-	body, stripUsage, err := passthroughBody(req, edits...)
-	if err != nil {
-		return nil, editError(err)
-	}
 	return sendWire(ctx, req, wireCall{
 		backend: m.backend, client: m.client, url: m.url(req.Endpoint.path()), header: m.header(),
-		body: body, stripUsage: stripUsage, missingModel: anthropicModelMissing, unknownPath: m.unknownPath,
+		edits: edits, missingModel: anthropicModelMissing, unknownPath: m.unknownPath,
 		core: req.Endpoint == Messages,
 	})
 }

@@ -173,8 +173,8 @@ enforce the boundaries.
 - `netfail` — names a failed exchange's class (timed out, connection refused, TLS
   failure, malformed response, …) in the gateway's own words, so a log line
   reporting a transport failure never carries the bytes Go quoted from the remote
-  party (`docs/specs/GATEWAY.md`, Logs: no remote text); `provider`, `control` and
-  `otlplog` use it.
+  party (`docs/specs/GATEWAY.md`, Logs: no remote text); `sse`, `provider`, `control`
+  and `otlplog` use it.
 - `otlplog` — OTLP log export: reads the `OTEL_*` settings, and its `slog` handler
   hands every record to the stderr handler and queues a copy; one sender goroutine
   posts the queue as OTLP/HTTP JSON batches with retries, dropping the newest when
@@ -184,8 +184,9 @@ enforce the boundaries.
   into `metrics` (`kaiak_log_export_records_total`) and runs its final flush as the
   process's last act.
 - `sse` — the server-sent events reader (WHATWG format): splits a stream into blocks
-  with their raw bytes, data, event name and ID, bounded in size. The provider relays
-  backend streams with it; `control` follows the config stream with it.
+  with their raw bytes, data, event name and ID, bounded in size; a failure of the
+  stream under it comes back by its class (`netfail`). The provider relays backend
+  streams with it; `control` follows the config stream with it.
 - `schemacheck` — the one validation pipeline every received document goes through
   (syntax, repeated members, the document's schema walker, then the strict typed
   decode) and its one rejection error (issues with codes and paths); the parts every

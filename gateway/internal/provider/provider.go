@@ -301,7 +301,7 @@ func NewRegistry(lookupEnv func(string) (string, bool)) *Registry {
 }
 
 // backendModule is one backend type's provider: what that type does differently
-// lives in its module, which builds on the wire core (wire.go) for what the types
+// lives in its module, which builds on the wire core (send.go) for what the types
 // share.
 type backendModule interface {
 	Provider
@@ -310,8 +310,8 @@ type backendModule interface {
 }
 
 // backendKind is one backend type: the endpoints its server serves, whether it has
-// a models list, and how its module is built over a backend's connection pool and
-// credential.
+// a models list, its GenAI provider name, and how its module is built over a
+// backend's connection pool and credential.
 type backendKind struct {
 	// serves are the endpoints the type's server serves (docs/specs/GATEWAY.md,
 	// Providers → Endpoint support).
@@ -319,19 +319,24 @@ type backendKind struct {
 	// listsModels: the server has a models list the config-time model check can read
 	// (docs/specs/GATEWAY.md, Providers → Probe and model check for the new types).
 	listsModels bool
-	build       func(b *config.Backend, client *http.Client, credential string) backendModule
+	// providerName is gen_ai.provider.name for the type: the GenAI convention's
+	// well-known value where one fits, else "" — the self-hosted types have none, and
+	// kaiak.backend.type names every type. Claude in Foundry is Anthropic's service and
+	// API on Azure, and no Azure value names it, so it is anthropic too.
+	providerName string
+	build        func(b *config.Backend, client *http.Client, credential string) backendModule
 }
 
 // kinds holds every backend type the config schema admits: the one place a type is
 // named.
 var kinds = map[config.BackendType]backendKind{
-	config.BackendOpenAI:           {serves: openAIEndpoints, listsModels: true, build: newOpenAI},
-	config.BackendAzureOpenAI:      {serves: azureOpenAIEndpoints, listsModels: true, build: newAzureOpenAI},
+	config.BackendOpenAI:           {serves: openAIEndpoints, listsModels: true, providerName: "openai", build: newOpenAI},
+	config.BackendAzureOpenAI:      {serves: azureOpenAIEndpoints, listsModels: true, providerName: "azure.ai.openai", build: newAzureOpenAI},
 	config.BackendVLLM:             {serves: vLLMEndpoints, listsModels: true, build: newVLLM},
 	config.BackendLlamaServer:      {serves: llamaServerEndpoints, listsModels: true, build: newLlamaServer},
 	config.BackendOpenAICompatible: {serves: openAICompatibleEndpoints, listsModels: true, build: newOpenAICompatible},
-	config.BackendAnthropic:        {serves: anthropicEndpoints, listsModels: true, build: newAnthropic},
-	config.BackendAzureAnthropic:   {serves: azureAnthropicEndpoints, listsModels: false, build: newAzureAnthropic},
+	config.BackendAnthropic:        {serves: anthropicEndpoints, listsModels: true, providerName: "anthropic", build: newAnthropic},
+	config.BackendAzureAnthropic:   {serves: azureAnthropicEndpoints, listsModels: false, providerName: "anthropic", build: newAzureAnthropic},
 }
 
 // kindOf is type t's kind. The config schema admits only the types in kinds, so
@@ -355,6 +360,12 @@ func Serves(t config.BackendType, e Endpoint) bool {
 // config-time model check reads; one without (azure-anthropic) is not checked.
 func ListsModels(t config.BackendType) bool {
 	return kindOf(t).listsModels
+}
+
+// ProviderName is gen_ai.provider.name for backends of type t; "" for a type with no
+// well-known value.
+func ProviderName(t config.BackendType) string {
+	return kindOf(t).providerName
 }
 
 // For returns the provider for backend b: its type's module.
