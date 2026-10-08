@@ -136,35 +136,35 @@ func TestXAPIKeyAuthenticates(t *testing.T) {
 // too (docs/specs/GATEWAY.md, Routing and reliability: retries, outcome classes).
 func TestRefusalAndEndpointMissingClassification(t *testing.T) {
 	refusal := &provider.RefusalError{Code: "price_option_unsupported", Param: "speed", Message: "no fast mode"}
-	rq := &request{}
-	failure := upstreamFailure(context.Background(), rq, refusal)
+	at := &attempt{}
+	failure := upstreamFailure(context.Background(), at, refusal)
 	if failure.status != http.StatusBadRequest || failure.code != "price_option_unsupported" || failure.param != "speed" ||
 		failure.errType != typeInvalidRequest {
 		t.Errorf("refusal answered %+v", failure)
 	}
-	if reason := retryReason(rq); reason != "" {
+	if reason := retriedFor(at); reason != "" {
 		t.Errorf("refusal retried for %q", reason)
 	}
-	if outcome, class, _ := classifyAttempt(rq); outcome != metrics.AttemptClientError || class != routing.Neutral {
+	if outcome, class, _ := classifyAttempt(at, ""); outcome != metrics.AttemptClientError || class != routing.Neutral {
 		t.Errorf("refusal classified %s, %v", outcome, class)
 	}
 
 	missing := &provider.Error{Code: provider.CodeEndpointMissing, Err: errors.New("no messages endpoint")}
-	rq = &request{}
-	failure = upstreamFailure(context.Background(), rq, missing)
+	at = &attempt{}
+	failure = upstreamFailure(context.Background(), at, missing)
 	if failure.status != http.StatusBadGateway || failure.code != "upstream_endpoint_missing" {
 		t.Errorf("endpoint missing answered %+v", failure)
 	}
-	if reason := retryReason(rq); reason != retryEndpointMissing {
+	if reason := retriedFor(at); reason != metrics.AttemptEndpointMissing {
 		t.Errorf("endpoint missing retry reason %q", reason)
 	}
-	if outcome, class, _ := classifyAttempt(rq); outcome != metrics.AttemptEndpointMissing || class != routing.Neutral {
+	if outcome, class, _ := classifyAttempt(at, ""); outcome != metrics.AttemptEndpointMissing || class != routing.Neutral {
 		t.Errorf("endpoint missing classified %s, %v", outcome, class)
 	}
 	a := &config.Backend{ID: "a"}
 	b := &config.Backend{ID: "b"}
 	m := &config.Model{Deployments: []config.Deployment{{Backend: a, Model: "x"}, {Backend: a, Model: "y"}, {Backend: b, Model: "x"}}}
-	avoid := avoidAfter(routing.Avoid{}, m, &attempt{deployment: m.Deployments[0], retryReason: retryEndpointMissing})
+	avoid := avoidAfter(routing.Avoid{}, m, &attempt{deployment: m.Deployments[0], retryReason: metrics.AttemptEndpointMissing})
 	for _, d := range m.Deployments {
 		refused := false
 		for _, r := range avoid.Refused {
@@ -185,28 +185,29 @@ func TestRefusalAndEndpointMissingClassification(t *testing.T) {
 // only its classification follows the kind.
 func TestErrorEventsAndOverloadClassification(t *testing.T) {
 	for _, c := range []struct {
-		name               string
-		kind               provider.ErrorEventKind
-		code               string
-		status             int
-		answerCode, reason string
-		outcome            metrics.AttemptOutcome
-		class              routing.Outcome
-		midOutcome         metrics.AttemptOutcome
-		midClass           routing.Outcome
-		midError           metrics.ErrorClass
+		name       string
+		kind       provider.ErrorEventKind
+		code       string
+		status     int
+		answerCode string
+		reason     metrics.AttemptOutcome
+		outcome    metrics.AttemptOutcome
+		class      routing.Outcome
+		midOutcome metrics.AttemptOutcome
+		midClass   routing.Outcome
+		midError   metrics.ErrorClass
 	}{
-		{"failure", provider.ErrorEventFailure, `"server_error"`, http.StatusBadGateway, "upstream_error", retryServerError,
+		{"failure", provider.ErrorEventFailure, `"server_error"`, http.StatusBadGateway, "upstream_error", metrics.AttemptServerError,
 			metrics.AttemptServerError, routing.Failure, metrics.AttemptBrokeOff, routing.Failure, metrics.ErrorUpstreamError},
-		{"busy", provider.ErrorEventBusy, `"overloaded_error"`, http.StatusServiceUnavailable, "upstream_overloaded", retryRateLimited,
+		{"busy", provider.ErrorEventBusy, `"overloaded_error"`, http.StatusServiceUnavailable, "upstream_overloaded", metrics.AttemptRateLimited,
 			metrics.AttemptRateLimited, routing.Neutral, metrics.AttemptRateLimited, routing.Neutral, metrics.ErrorUpstreamRateLimited},
 		{"caller", provider.ErrorEventCaller, `"failed_to_download_image"`, http.StatusBadRequest, "upstream_refused", "",
 			metrics.AttemptClientError, routing.Neutral, metrics.AttemptClientError, routing.Neutral, metrics.ErrorUpstreamClientError},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			event := &provider.ErrorEvent{Kind: c.kind, Code: json.RawMessage(c.code)}
-			rq := &request{}
-			failure := upstreamFailure(context.Background(), rq,
+			at := &attempt{}
+			failure := upstreamFailure(context.Background(), at,
 				&provider.Error{Code: provider.CodeErrorEvent, Event: event, Err: errors.New("error event first")})
 			if failure.status != c.status || failure.code != c.answerCode {
 				t.Errorf("first event answered %d %s, want %d %s", failure.status, failure.code, c.status, c.answerCode)
@@ -214,16 +215,17 @@ func TestErrorEventsAndOverloadClassification(t *testing.T) {
 			if c.kind == provider.ErrorEventCaller && !strings.Contains(failure.message, "failed_to_download_image") {
 				t.Errorf("refusal message %q does not name the backend's code", failure.message)
 			}
-			if reason := retryReason(rq); reason != c.reason {
+			if reason := retriedFor(at); reason != c.reason {
 				t.Errorf("first event retry reason %q, want %q", reason, c.reason)
 			}
-			if outcome, class, _ := classifyAttempt(rq); outcome != c.outcome || class != c.class {
+			if outcome, class, _ := classifyAttempt(at, ""); outcome != c.outcome || class != c.class {
 				t.Errorf("first event classified %s, %v; want %s, %v", outcome, class, c.outcome, c.class)
 			}
 
-			mid := &request{w: &statusWriter{ResponseWriter: httptest.NewRecorder()}, upstreamStatus: http.StatusOK,
-				relayEnd: relayUpstreamIncomplete, upstreamErr: &provider.ErrorEventEnd{Event: event}}
-			if outcome, class, _ := classifyAttempt(mid); outcome != c.midOutcome || class != c.midClass {
+			midAttempt := &attempt{status: http.StatusOK, err: &provider.ErrorEventEnd{Event: event}}
+			mid := &request{w: &statusWriter{ResponseWriter: httptest.NewRecorder()}, relayEnd: relayUpstreamIncomplete,
+				attempts: []*attempt{midAttempt}}
+			if outcome, class, _ := classifyAttempt(midAttempt, mid.relayEnd); outcome != c.midOutcome || class != c.midClass {
 				t.Errorf("mid-stream classified %s, %v; want %s, %v", outcome, class, c.midOutcome, c.midClass)
 			}
 			if class, _ := errorClass(mid); class != c.midError {
@@ -232,11 +234,11 @@ func TestErrorEventsAndOverloadClassification(t *testing.T) {
 		})
 	}
 
-	overloaded := &request{upstreamStatus: 529}
-	if reason := retryReason(overloaded); reason != retryRateLimited {
-		t.Errorf("529 retry reason %q, want %q", reason, retryRateLimited)
+	overloaded := &attempt{status: 529}
+	if reason := retriedFor(overloaded); reason != metrics.AttemptRateLimited {
+		t.Errorf("529 retry reason %q, want %q", reason, metrics.AttemptRateLimited)
 	}
-	if outcome, class, _ := classifyAttempt(overloaded); outcome != metrics.AttemptRateLimited || class != routing.Neutral {
+	if outcome, class, _ := classifyAttempt(overloaded, ""); outcome != metrics.AttemptRateLimited || class != routing.Neutral {
 		t.Errorf("529 classified %s, %v", outcome, class)
 	}
 }

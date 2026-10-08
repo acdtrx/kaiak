@@ -69,6 +69,12 @@ var attemptOutcomes = []AttemptOutcome{AttemptSuccess, AttemptUnavailable, Attem
 	AttemptModelMissing, AttemptPathMissing, AttemptServerError, AttemptBrokeOff, AttemptEndpointMissing,
 	AttemptResponseTimeout, AttemptRateLimited, AttemptClientError, AttemptCanceled, AttemptInternal}
 
+// RetryableOutcomes are the outcomes after which an attempt that relayed nothing may
+// be retried (docs/specs/GATEWAY.md, Routing and reliability: retries): the reason
+// label values of kaiak_retries_total.
+var RetryableOutcomes = []AttemptOutcome{AttemptUnavailable, AttemptTimeout, AttemptServerError, AttemptRateLimited,
+	AttemptAuthFailed, AttemptModelMissing, AttemptPathMissing, AttemptEndpointMissing}
+
 // Bucket bounds. Durations span quick refusals to a long generation (longer ones,
 // up to the default 30 min response timeout, fall in +Inf); decode rates span a busy CPU backend to a
 // fast GPU.
@@ -94,11 +100,6 @@ const (
 )
 
 var queueReasons = []string{QueueFull, QueueTimeout}
-
-// retryReasons are the reason label values of kaiak_retries_total: the request
-// pipeline's retry reasons (docs/specs/GATEWAY.md, Routing and reliability: retries).
-var retryReasons = []string{"unavailable", "timeout", "server_error", "rate_limited", "auth_failed", "model_missing",
-	"path_missing", "endpoint_missing"}
 
 // limitScopeKinds are the scope_kind label values of kaiak_limit_rejections_total:
 // the kinds of scope a limit belongs to (limits.Scope).
@@ -448,12 +449,12 @@ func (o *Ops) CountQueueRejection(model, reason string) {
 }
 
 // CountRetry counts one retry of a request to model, after an attempt on backend
-// that failed for reason.
-func (o *Ops) CountRetry(model, backend, reason string) {
-	if !slices.Contains(retryReasons, reason) {
-		panic("metrics: unknown retry reason " + reason)
+// that came to outcome, one of RetryableOutcomes.
+func (o *Ops) CountRetry(model, backend string, outcome AttemptOutcome) {
+	if !slices.Contains(RetryableOutcomes, outcome) {
+		panic("metrics: not a retryable outcome " + string(outcome))
 	}
-	o.retries.Inc(model, backend, reason)
+	o.retries.Inc(model, backend, string(outcome))
 }
 
 // ObserveUpstreamAttempt records one upstream attempt on a deployment (backend and
@@ -520,8 +521,8 @@ func (o *Ops) prepareSeries(s *config.Snapshot) {
 				o.upstream.Add(0, d.Backend.ID, d.Model, string(outcome))
 			}
 			o.upstreamTime.Prepare(d.Backend.ID)
-			for _, reason := range retryReasons {
-				o.retries.Add(0, name, d.Backend.ID, reason)
+			for _, outcome := range RetryableOutcomes {
+				o.retries.Add(0, name, d.Backend.ID, string(outcome))
 			}
 			o.firstToken.Prepare(name, d.Backend.ID)
 			o.tokenRate.Prepare(name, d.Backend.ID)

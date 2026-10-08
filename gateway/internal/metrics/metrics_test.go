@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -263,6 +264,12 @@ func TestOpsMetrics(t *testing.T) {
 	ops.ObserveUpstreamAttempt("busy", "m", AttemptSuccess, 30*time.Millisecond)
 	ops.ObserveUpstreamAttempt("busy", "m", AttemptServerError, 2*time.Second)
 	expectPanic(t, "unknown attempt outcome", func() { ops.ObserveUpstreamAttempt("busy", "m", "nope", 0) })
+	expectPanic(t, "not a retryable outcome", func() { ops.CountRetry("m", "busy", AttemptSuccess) })
+	for _, outcome := range RetryableOutcomes {
+		if !slices.Contains(attemptOutcomes, outcome) {
+			t.Errorf("retryable outcome %s is no attempt outcome", outcome)
+		}
+	}
 	ops.ObserveAttempts("m", 2)
 	ops.ConfigLoaded(config.Load{Trigger: "startup", Applied: true, At: time.UnixMilli(1_700_000_000_500)})
 	expectPanic(t, "unknown error class", func() { ops.CountError("nope") })

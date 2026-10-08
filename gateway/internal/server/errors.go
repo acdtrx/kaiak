@@ -77,16 +77,13 @@ func anthropicErrorType(status int) string {
 		return "request_too_large"
 	case status == http.StatusTooManyRequests:
 		return "rate_limit_error"
-	case status == http.StatusServiceUnavailable || status == statusOverloaded:
+	case status == http.StatusServiceUnavailable || status == provider.StatusOverloaded:
 		return "overloaded_error"
 	case status >= 500:
 		return "api_error"
 	}
 	return typeInvalidRequest
 }
-
-// statusOverloaded is Anthropic's status for an overloaded API.
-const statusOverloaded = 529
 
 // errorShapeOf is the error shape of a request r to ep: Anthropic's on the Messages
 // endpoints, and on the model list and entry when the request carries an
@@ -266,38 +263,13 @@ func errClientClosed() *apiError {
 		message: "The client closed the request."}
 }
 
-// errUpstream answers a failure to get a response from the backend. Messages never
-// name the backend: its address is not the client's business.
-func errUpstream(perr *provider.Error) *apiError {
-	switch code := perr.Code; code {
-	case provider.CodeTimeout, provider.CodeResponseTimeout:
-		return &apiError{status: http.StatusGatewayTimeout, errType: typeServer, code: string(provider.CodeTimeout),
-			message: "The model backend did not respond in time."}
-	case provider.CodeAuthFailed:
-		return &apiError{status: http.StatusBadGateway, errType: typeServer, code: string(code),
-			message: "The model backend refused the gateway's credentials."}
-	case provider.CodeModelMissing:
-		return &apiError{status: http.StatusBadGateway, errType: typeServer, code: string(code),
-			message: "The model backend does not serve the model."}
-	case provider.CodePathMissing:
-		return &apiError{status: http.StatusBadGateway, errType: typeServer, code: string(code),
-			message: "The model backend's address is misconfigured."}
-	case provider.CodeEndpointMissing:
-		return &apiError{status: http.StatusBadGateway, errType: typeServer, code: string(code),
-			message: "The model backend's server does not have this endpoint."}
-	case provider.CodeErrorEvent:
-		// The backend gave up before its answer started: answered as the HTTP status
-		// the event's kind matches (docs/specs/GATEWAY.md, Providers: error events).
-		switch perr.Event.Kind {
-		case provider.ErrorEventBusy:
-			return errUpstreamOverloaded(http.StatusServiceUnavailable)
-		case provider.ErrorEventCaller:
-			return errUpstreamRefused(backendIdentifier(perr.Event.Code))
-		}
-		return errUpstreamFault(http.StatusBadGateway)
+// upstreamAnswer is the answer to a failure to get a response from the backend
+// (failureRules): status, the provider's code and the gateway's message. Messages
+// never name the backend: its address is not the client's business.
+func upstreamAnswer(status int, code provider.Code, message string) func(*provider.Error) *apiError {
+	return func(*provider.Error) *apiError {
+		return &apiError{status: status, errType: typeServer, code: string(code), message: message}
 	}
-	return &apiError{status: http.StatusBadGateway, errType: typeServer, code: string(provider.CodeUnavailable),
-		message: "The model backend could not be reached."}
 }
 
 // errUpstreamFault answers a backend 5xx: the backend's status, the gateway's own

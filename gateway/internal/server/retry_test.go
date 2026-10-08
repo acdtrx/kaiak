@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +16,8 @@ import (
 	"kaiak/internal/accounting"
 	"kaiak/internal/config"
 	"kaiak/internal/fakebackend"
+	"kaiak/internal/metrics"
+	"kaiak/internal/provider"
 	"kaiak/internal/routing"
 )
 
@@ -140,6 +144,105 @@ func TestRetrySucceedsOnTheOtherDeployment(t *testing.T) {
 				`kaiak_request_attempts_bucket{model="retry",le="2"} 1`)
 		})
 	}
+}
+
+// retriedFor is what attempt at, ended before anything was relayed, is retried for:
+// its outcome when retryable, else "".
+func retriedFor(at *attempt) metrics.AttemptOutcome {
+	outcome, _, _ := classifyAttempt(at, "")
+	if retryable(outcome) {
+		return outcome
+	}
+	return ""
+}
+
+// What an attempt's end before anything is relayed decides, over every way it ends:
+// its outcome, and from the outcome whether it is retried, whether its retries avoid
+// its whole backend and whether its deployment cools down (docs/specs/GATEWAY.md,
+// Routing and reliability: retries, outcome classes, 429 cooldown).
+func TestAttemptRules(t *testing.T) {
+	event := func(kind provider.ErrorEventKind) error {
+		return &provider.Error{Code: provider.CodeErrorEvent, Err: errors.New("error event first"),
+			Event: &provider.ErrorEvent{Kind: kind, Code: json.RawMessage(`"x"`)}}
+	}
+	code := func(c provider.Code) error { return &provider.Error{Code: c, Err: errors.New("failed")} }
+	for _, c := range []struct {
+		name                         string
+		err                          error // the provider's failure; nil with status for an answer
+		status                       int
+		outcome                      metrics.AttemptOutcome
+		retry, backendWide, throttle bool
+	}{
+		{"refusal", &provider.RefusalError{Code: "price_option_unsupported"}, 0, metrics.AttemptClientError, false, false, false},
+		{"canceled", nil, 0, metrics.AttemptCanceled, false, false, false},
+		{"gateway fault", errors.New("cannot build"), 0, metrics.AttemptInternal, false, false, false},
+		{"unavailable", code(provider.CodeUnavailable), 0, metrics.AttemptUnavailable, true, false, false},
+		{"unknown code", code("upstream_new"), 0, metrics.AttemptUnavailable, true, false, false},
+		{"first-event timeout", code(provider.CodeTimeout), 0, metrics.AttemptTimeout, true, false, false},
+		{"response timeout", code(provider.CodeResponseTimeout), 0, metrics.AttemptResponseTimeout, false, false, false},
+		{"credential refused", code(provider.CodeAuthFailed), 0, metrics.AttemptAuthFailed, true, true, false},
+		{"model missing", code(provider.CodeModelMissing), 0, metrics.AttemptModelMissing, true, false, false},
+		{"path missing", code(provider.CodePathMissing), 0, metrics.AttemptPathMissing, true, true, false},
+		{"endpoint missing", code(provider.CodeEndpointMissing), 0, metrics.AttemptEndpointMissing, true, true, false},
+		{"failure event", event(provider.ErrorEventFailure), 0, metrics.AttemptServerError, true, false, false},
+		{"busy event", event(provider.ErrorEventBusy), 0, metrics.AttemptRateLimited, true, false, true},
+		{"caller event", event(provider.ErrorEventCaller), 0, metrics.AttemptClientError, false, false, false},
+		{"200", nil, http.StatusOK, metrics.AttemptSuccess, false, false, false},
+		{"400", nil, http.StatusBadRequest, metrics.AttemptClientError, false, false, false},
+		{"404", nil, http.StatusNotFound, metrics.AttemptClientError, false, false, false},
+		{"429", nil, http.StatusTooManyRequests, metrics.AttemptRateLimited, true, false, true},
+		{"500", nil, http.StatusInternalServerError, metrics.AttemptServerError, true, false, false},
+		{"503", nil, http.StatusServiceUnavailable, metrics.AttemptServerError, true, false, false},
+		{"529", nil, 529, metrics.AttemptRateLimited, true, false, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			at := &attempt{status: c.status}
+			if c.err != nil {
+				upstreamFailure(context.Background(), at, c.err)
+			}
+			outcome, _, _ := classifyAttempt(at, "")
+			if outcome != c.outcome {
+				t.Errorf("classified %s, want %s", outcome, c.outcome)
+			}
+			want := metrics.AttemptOutcome("")
+			if c.retry {
+				want = c.outcome
+			}
+			if got := retriedFor(at); got != want {
+				t.Errorf("retry reason %q, want %q", got, want)
+			}
+			if rule := attemptRules[outcome]; rule.backendWide != c.backendWide || rule.throttle != c.throttle {
+				t.Errorf("rule %+v, want backend-wide %v, throttle %v", rule, c.backendWide, c.throttle)
+			}
+		})
+	}
+}
+
+// The request line's upstream error code and type are the answering attempt's: a
+// first attempt ended by a busy error event names a code, and the retry that answers
+// 200 names none — the line carries no code from the retried attempt.
+func TestRetriedAttemptsErrorCodeIsNotLogged(t *testing.T) {
+	g := newTestGateway(t)
+	other := fakebackend.New()
+	t.Cleanup(other.Close)
+	withMessagesModels(t, g, func(doc string) string {
+		doc = replaceOnce(t, doc, `"backends": {`, `"backends": {
+    "vl-b": { "type": "vllm", "base_url": "`+other.URL()+`/v1" },`)
+		return replaceOnce(t, doc, `[{ "backend": "vl", "model": "msg-back" }]`,
+			`[{ "backend": "vl", "model": "msg-back" }, { "backend": "vl-b", "model": "msg-back" }]`)
+	})
+	g.backend.QueueReplies(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 0, Kind: fakebackend.ErrorEvent}})
+	w := do(t, g.h, call{method: "POST", path: "/v1/messages", key: workloadKey,
+		body:   `{"model":"msg","max_tokens":32,"stream":true,"messages":[]}`,
+		header: map[string]string{"X-Request-Id": "r"}})
+	if w.Code != http.StatusOK || len(other.Requests()) != 1 {
+		t.Fatalf("status %d, second deployment got %d requests; want 200 from the second: %s",
+			w.Code, len(other.Requests()), w.Body.String())
+	}
+	fields := logFields(t, g, "r")
+	expectFields(t, fields, map[string]any{"kaiak.tried": "vl/msg-back:upstream_overloaded,vl-b/msg-back:200"},
+		"error.type", "kaiak.upstream.error.code", "kaiak.upstream.error.type", "kaiak.upstream.error.message")
+	expectMetricLines(t, scrape(g), `kaiak_retries_total{model="msg",backend="vl",reason="rate_limited"} 1`)
 }
 
 func TestTimedOutAttemptIsRecordedAndLimitsSettleTheSum(t *testing.T) {

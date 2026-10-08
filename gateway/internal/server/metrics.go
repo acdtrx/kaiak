@@ -1,7 +1,6 @@
 package server
 
 import (
-	"net/http"
 	"time"
 
 	"kaiak/internal/config"
@@ -37,7 +36,7 @@ func (a *API) observeRequest(rq *request) {
 	if rq.firstContent.IsZero() {
 		return
 	}
-	backend := rq.deployment.Backend.ID
+	backend := rq.answeringAttempt().deployment.Backend.ID
 	// Decode speed: the tokens after the first over the time after the first, for
 	// streams that ran to their end.
 	if rq.relayEnd != "" || rq.usage == nil {
@@ -77,15 +76,15 @@ func errorClass(rq *request) (metrics.ErrorClass, bool) {
 	if rq.failure != nil {
 		return errorCodeClass(rq.failure.code), true
 	}
+	at := rq.answeringAttempt()
 	switch rq.relayEnd {
 	case relayClientClosed:
 		return metrics.ErrorClientClosed, true
 	case relayUpstreamIncomplete:
-		switch errorEventKind(rq.upstreamErr) {
-		case provider.ErrorEventBusy:
-			return metrics.ErrorUpstreamRateLimited, true
-		case provider.ErrorEventCaller:
-			return metrics.ErrorUpstreamClientError, true
+		// An error event ending the stream is classed by its kind; a stream ended
+		// incomplete without one is the backend's error.
+		if rule, ok := errorEventRules[errorEventKind(at.err)]; ok {
+			return rule.class, true
 		}
 		return metrics.ErrorUpstreamError, true
 	case relayUpstreamFailed, relayUpstreamStalled:
@@ -95,7 +94,7 @@ func errorClass(rq *request) (metrics.ErrorClass, bool) {
 	case relayShutdown:
 		return metrics.ErrorShuttingDown, true
 	}
-	if rq.deployment.Backend != nil && rq.w.status >= 400 {
+	if at.deployment.Backend != nil && rq.w.status >= 400 {
 		return relayedStatusClass(rq.w.status), true
 	}
 	return "", false
@@ -109,7 +108,7 @@ func errorCode(rq *request) string {
 	switch {
 	case rq.failure != nil:
 		return rq.failure.code
-	case rq.deployment.Backend != nil && rq.w.status >= 400:
+	case rq.answeringAttempt().deployment.Backend != nil && rq.w.status >= 400:
 		return string(relayedStatusClass(rq.w.status))
 	}
 	return ""
@@ -117,13 +116,13 @@ func errorCode(rq *request) string {
 
 // relayedStatusClass classifies a backend error status relayed to the client, by
 // whose problem it is. A 4xx is the caller's (context too long, a bad parameter):
-// the platform cannot fix it. A 429 is the backend's capacity or quota — the caller
-// did nothing wrong — and gets its own class, apart from the gateway's own limits
-// (rate_limited) and from backend faults (5xx). Backend 401/403 never get here: they
-// answer upstream_auth_failed.
+// the platform cannot fix it. A busy status (provider.BusyStatus) is the backend's
+// capacity or quota — the caller did nothing wrong — and gets its own class, apart
+// from the gateway's own limits (rate_limited) and from backend faults (5xx). Backend
+// 401/403 never get here: they answer upstream_auth_failed.
 func relayedStatusClass(status int) metrics.ErrorClass {
 	switch {
-	case status == http.StatusTooManyRequests:
+	case provider.BusyStatus(status):
 		return metrics.ErrorUpstreamRateLimited
 	case status < 500:
 		return metrics.ErrorUpstreamClientError

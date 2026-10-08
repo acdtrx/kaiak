@@ -186,13 +186,16 @@ func (a *API) logRequest(rq *request) {
 	if op := rq.endpoint.operationName(); op != "" {
 		attrs = append(attrs, slog.String("gen_ai.operation.name", op))
 	}
-	if b := rq.deployment.Backend; b != nil {
+	// The upstream fields are the answering attempt's: an attempt that was retried
+	// shows only in kaiak.tried.
+	at := rq.answeringAttempt()
+	if b := at.deployment.Backend; b != nil {
 		attrs = append(attrs, slog.String("kaiak.backend.id", b.ID),
 			slog.String("kaiak.backend.type", string(b.Type)))
 		if name := providerName(b.Type); name != "" {
 			attrs = append(attrs, slog.String("gen_ai.provider.name", name))
 		}
-		attrs = append(attrs, slog.String("kaiak.deployment.model", rq.deployment.Model),
+		attrs = append(attrs, slog.String("kaiak.deployment.model", at.deployment.Model),
 			slog.Int("kaiak.attempts", len(rq.attempts)))
 	}
 	if len(rq.attempts) > 1 {
@@ -216,14 +219,14 @@ func (a *API) logRequest(rq *request) {
 	if rq.relayEnd != "" {
 		attrs = append(attrs, slog.String("kaiak.relay_end", rq.relayEnd))
 	}
-	if rq.upstreamErr != nil {
-		attrs = append(attrs, slog.String("kaiak.upstream.error.message", rq.upstreamErr.Error()))
+	if at.err != nil {
+		attrs = append(attrs, slog.String("kaiak.upstream.error.message", at.err.Error()))
 	}
-	if rq.upstreamErrorCode != "" {
-		attrs = append(attrs, slog.String("kaiak.upstream.error.code", rq.upstreamErrorCode))
+	if at.errorCode != "" {
+		attrs = append(attrs, slog.String("kaiak.upstream.error.code", at.errorCode))
 	}
-	if rq.upstreamErrorType != "" {
-		attrs = append(attrs, slog.String("kaiak.upstream.error.type", rq.upstreamErrorType))
+	if at.errorType != "" {
+		attrs = append(attrs, slog.String("kaiak.upstream.error.type", at.errorType))
 	}
 	if rq.authFailure != "" {
 		attrs = append(attrs, slog.String("kaiak.auth.failure", string(rq.authFailure)))
@@ -318,12 +321,7 @@ func triedAttempts(rq *request) string {
 		if i > 0 {
 			b.WriteByte(',')
 		}
-		outcome := at.outcome
-		if outcome == "" {
-			// The answering attempt: set only for attempts a retry was decided for.
-			outcome = attemptOutcome(rq, rq.failure)
-		}
-		b.WriteString(at.deployment.Backend.ID + "/" + at.deployment.Model + ":" + outcome)
+		b.WriteString(at.deployment.Backend.ID + "/" + at.deployment.Model + ":" + attemptOutcome(at))
 	}
 	return b.String()
 }

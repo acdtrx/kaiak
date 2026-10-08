@@ -233,6 +233,16 @@ const (
 	ErrorEventCaller
 )
 
+// StatusOverloaded is Anthropic's status for an overloaded API (overloaded_error).
+const StatusOverloaded = 529
+
+// BusyStatus reports whether a backend status says busy rather than broken, as
+// ErrorEventBusy does of an error event: a 429, or Anthropic's 529 (docs/specs/GATEWAY.md,
+// Routing and reliability: outcome classes).
+func BusyStatus(status int) bool {
+	return status == http.StatusTooManyRequests || status == StatusOverloaded
+}
+
 // ErrorEvent is an error event a successful stream carried: its kind, and its code
 // as the backend sent it (raw JSON, for the caller to take only as an identifier).
 type ErrorEvent struct {

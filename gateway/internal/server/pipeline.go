@@ -171,14 +171,12 @@ type request struct {
 	outputLimit *int64
 
 	// Set by the attempt loop (routing, accounting, provider) for the body endpoints:
-	// every attempt, the latest last; the latest attempt's deployment and the meter
-	// its relay feeds; what the model's queue did for the request over all its
+	// every attempt, the latest last — each with its deployment, its meter and the
+	// backend's answer; what the model's queue did for the request over all its
 	// attempts (queued at least once, the waits summed); why a retry got no slot, if
 	// one did not ("queue_full", "queue_timeout", "no_deployment_left"), or why a
 	// retry was not sent ("retry_budget").
 	attempts     []*attempt
-	deployment   config.Deployment
-	meter        *accounting.Meter
 	queueWait    routing.Wait
 	retryRefusal string
 	// records are the request's usage records, one per attempt that has one; usage is
@@ -198,16 +196,6 @@ type request struct {
 	rejection   *limits.Rejection
 	authFailure auth.Code
 	keyID       string
-	// upstreamErr is the latest attempt's provider failure, or the error that broke
-	// off a relayed response. It may name backend addresses, never credentials.
-	upstreamErr error
-	// upstreamErrorCode and upstreamErrorType are the error code and type a backend
-	// error answer's body names (backendErrorFields) — a relayed 4xx, a 5xx answered
-	// by the gateway: logged, never its message.
-	upstreamErrorCode, upstreamErrorType string
-	// upstreamStatus is the latest attempt's backend response status; 0 when the
-	// backend gave no response.
-	upstreamStatus int
 	// firstContent is when a relayed stream carried its first generated content;
 	// ttft is the time from the answering attempt's send to it; relayDone is when the
 	// relay stopped. Zero when it did not happen.
