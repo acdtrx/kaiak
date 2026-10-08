@@ -150,6 +150,14 @@ Group entries under headings as themes emerge.
   Revisit trigger: one model is served from deployment types or regions with
   different prices, and the difference matters for budgets. (parked by the user
   2026-09-29, recorded 2026-10-06.)
+- **Cost identical across CPU architectures** — `accounting.Cost` multiplies units by
+  per-unit prices and rounds once per record; the Go compiler fuses multiply-add on
+  arm64 but not on amd64, so the same record can cost 1 nano-USD more or less at a
+  rounding boundary depending on the build (found in the 2026-10-08 structure work, in
+  both the old and the new code). Fixing it means explicit per-product rounding, which
+  moves arm64 results. Revisit trigger: gateways of both architectures serve one
+  deployment and a 1 nano-USD difference matters, or a test compares costs across
+  architectures.
 
 ## Pipeline stages
 
