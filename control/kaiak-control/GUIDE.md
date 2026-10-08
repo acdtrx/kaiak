@@ -2,26 +2,17 @@
 
 > For a coding agent (or a person) building the real kaiak control plane — the app with
 > the UI — in its own repository, on this library. Read it top to bottom before writing
-> code. Written 2026-09-26 against kaiak 0.6.0; brought to the group tree (config
-> format 2, protocol version 2) on 2026-09-27; to tiered prices (config format 3,
-> protocol version 3) on 2026-09-29; to a backend type per server (formats unchanged)
-> on 2026-10-01; to the cache-write unit (config format 4, protocol version 4) on
-> 2026-10-02; to Messages and Responses passthrough — the Anthropic backend types, no
-> model defaults (config format 5, protocol version 5) — on 2026-10-06; to several
-> control-plane processes over one store and limits without model sets (same formats)
-> on 2026-10-06; to a broadcast-only control plane — the current config by hash, no
-> config versions — and the pre-merge review's store contract (batch cursors per
-> epoch, revisions that never repeat, the catch-up) on 2026-10-07; to the second
-> review's (no store sequence, totals of every scope sent complete then as changes,
-> `counted_through` per epoch, the config kept as text) on 2026-10-07; to the third
-> review's (a stream's first totals read after it connects, reads after a notification
-> on the primary, the restore procedure, counters bounded by what a config allocates)
-> on 2026-10-07.
+> code. It matches config format 5 and protocol version 5.
 >
 > Background, in this order: `docs/architecture/control-plane.html` (how gateways and a
 > control plane work together, with diagrams), `docs/specs/CONTROL-PROTOCOL.md` (the
 > contract, authoritative), `control/sample/` (a complete, minimal host app — the
 > reference for everything below).
+>
+> Paths: `src/…` and `schema/…` are in this package; every other path is in the kaiak
+> repository. `CONTROL-PROTOCOL.md`, `GATEWAY.md` and `BACKEND-VERIFY.md` are in its
+> `docs/specs/`, which the package does not ship; references name their sections
+> (`CONTROL-PROTOCOL.md` → Config → Prices).
 
 ## 1. The division of labor
 
@@ -144,16 +135,17 @@ await app.listen({ host: "0.0.0.0", port: 8090 });
   `deliveryRetryDelaysMs` (100, 200, 400, 800, 1600: retries of a failed read of the
   current config). Defaults match the gateway's timings; change them only with a
   reason.
-- The core reports what the host should see through `onDeliveryFailed`: the current
-  config could not be read after a change, retries included. The Fastify plugin logs
-  it and ends its streams, so gateways reconnect and read the current state; a host
-  serving streams some other way does the same, ordering what it sends on each stream
-  by when the read was issued (`readConfig` / `onConfigRead` carry that place, and the
-  plugin's totals are one `readTotals` per push for every stream), and starting each
-  stream's totals from a `readTotals` issued after the stream connected — never an
-  earlier read, which can be older than what another process already sent that
-  gateway. `stop()` releases the core's store subscription;
-  `start()` takes it again and catches up on what changed meanwhile.
+- **Serving streams without the plugin.** The stream rules — what goes out on connect,
+  in which order, the totals, slow readers, a config that cannot be read — are
+  `CONTROL-PROTOCOL.md` → Config stream, and the Fastify plugin implements them
+  (`src/fastify/`). A host serving streams some other way follows the same rules with
+  the core's reads: `readConfig()` and `onConfigRead()` (each read carries its place in
+  the order this process issued them), `readTotals()`, and `onDeliveryFailed()` (the
+  current config could not be read after a change, retries included — the plugin logs
+  it and ends its streams, so gateways reconnect). Read that spec section and the
+  plugin before writing one.
+- `stop()` releases the core's store subscription; `start()` takes it again and
+  catches up on what changed meanwhile.
 - Several cores over one store are several `createControlPlane({ store })` calls —
   one per process in a real deployment (§2, rule 1). The sample shows the shape inside
   one process: `KAIAK_SAMPLE_PROTOCOL_PORTS` adds protocol replicas, each a core and a
@@ -162,13 +154,17 @@ await app.listen({ host: "0.0.0.0", port: 8090 });
 
 ## 5. Implementing the store
 
-`ControlPlaneStore` (`src/storage/types.ts`) is the only thing you must implement.
-Every method is async. `createMemoryStore()` (`src/storage/memory.ts`) is the
-reference implementation — read it first, then mirror its behavior method by method.
-The contract is also a test suite, `storeContractTests` from
-`kaiak-control/store-contract` (§11): run it against your store.
+`ControlPlaneStore` is the only thing you must implement. Every method is async.
 
-The store is where control-plane processes agree. Every write that changes what
+- **The contract**: `src/storage/types.ts` — the comment on each method and type says
+  what it must hold. The guarantees across processes are `CONTROL-PROTOCOL.md` →
+  Control-plane processes.
+- **The reference**: `createMemoryStore()` (`src/storage/memory.ts`). Read it first,
+  then mirror its behavior method by method.
+- **The check**: `storeContractTests` from `kaiak-control/store-contract` (§11). Run
+  it against your store.
+
+In short, the store is where control-plane processes agree. Every write that changes what
 gateways are sent — a publish, a counted batch, a change to the live set — is
 **conditional** on what the core read, so two processes never both win; a refused
 write changes nothing and the core decides again. The windows and the batch cursors are
@@ -176,7 +172,10 @@ read in **one snapshot**. Every change, by any process, reaches every process th
 `subscribe()` — with a **catch-up** whenever the store's change channel comes back from
 a disconnect. The store keeps **no order of its own**: each core orders what it sends
 on a stream by when it issued each read, so nothing the store returns needs to arrive
-in order. Two things it must hold that are easy to miss with a database:
+in order.
+
+The rest of this section is how that maps onto a database. Two things that are easy
+to miss:
 
 - **A read after a notification sees the change.** A core that hears of a publish
   reads the current config, of a gateway change the gateway records, of a counted
@@ -191,16 +190,27 @@ Several processes need their clocks kept in step: NTP-synchronized, within a sec
 Each core picks the current hour and month from its own clock, and the expiry sweep
 compares its clock with receipt times other processes wrote.
 
-| Methods | Contract to hold |
-| --- | --- |
-| `currentConfig()`, `publishConfig(entry, expectedHash)` | One current config: `{ text, hash, publishedAt }` — `text` is the config's JSON exactly as the core wrote it, and is returned **unchanged**, byte for byte (the hash is over it). A publish **replaces** it **only while the current config's hash is still `expectedHash`** (`undefined` = none published yet) — the config the core checked the parents rule against. Otherwise write nothing and return `{ saved: false, current }`. The store keeps no earlier configs; config history is your app's. A publish never depends on usage. |
-| `lastBatches(instance)`, `saveCountedBatch(counted, expectedLast, keepRecords)` | The exactly-once guarantee. A cursor per **(instance, epoch)**: `lastBatches` returns the instance's cursors, `{ batch, countedAt }` — its last counted batch of each epoch and when it was counted, in no particular order. `saveCountedBatch` writes the batch as its epoch's last, adds every `additions` entry to the window totals and appends `records` — **all in one transaction, and only if the instance's last batch in the batch's epoch still equals `expectedLast`** (`undefined` = none yet in that epoch). Otherwise write nothing and return `{ saved: false, cursors }`, the instance's cursors as `lastBatches` returns them. One cursor per instance is not enough: a write stalled on an earlier epoch would read a newer epoch's batch as a new epoch's start and count again. |
-| `totalsSnapshot(current)` | The current windows (each type's window starting at `current[type]`) and **every** instance's cursors, one per (instance, epoch), **read in one snapshot** (`REPEATABLE READ`, or one statement). The windows then hold exactly the batches the cursors name. Reading the cursors in a statement of its own is the classic mistake: the contract tests are likely to catch it, not certain — against a real database it shows only when a batch commits between the two statements. |
-| `dropPastWindowTotals(oldest)` | Windows starting before `oldest[type]` *may* be dropped; keeping them for reporting is allowed — the core only reads current windows. Not announced. |
-| `recentRecords(limit)` | Newest first: the reverse of the order they were saved, a batch's records saved in batch order — so records with equal receipt times still come back in a defined order (keep an insertion-order column). |
-| `gateway`, `gateways`, `saveGateway(record, expectedRevision)`, `forgetGateways([{ instance, revision }])` | Latest status per instance with a `revision` that **never repeats for the instance**, a forgotten and recreated one included, and across a restore (below) — take it from a store-wide counter or sequence (gaps are fine), never from the record itself. Each write and each forget only if the stored record is still at the revision the core read. Every write notifies `gateways-changed` (with `liveChanged` false when the live set stays as it was). Forgetting a gateway keeps its batch cursors. |
-| `dropBatchCursorsCountedBefore(cutoff)` | Drop each (instance, epoch) cursor counted before `cutoff`, return the instances that lost one. |
-| `subscribe(listener)` | Every change **any process** makes — `config-published` (with the new hash), `batch-counted`, `gateways-changed` — after its write, in the store's order, to every subscriber of every process. For a database: a notification channel (Postgres `LISTEN`/`NOTIFY` sent in the writing transaction, Redis pub/sub). A channel drops what is sent while it is down, so **every time it reconnects, announce `{ type: "catch-up" }`** to every subscriber, once the channel listens again: the core rereads the current config, the totals and the live set. The core does not poll. |
+Per method:
+
+- **Batch cursors: one per (instance, epoch)** (`lastBatches`, `saveCountedBatch`),
+  never one per instance: a write stalled on an earlier epoch would read a newer
+  epoch's batch as a new epoch's start and count again.
+- **`totalsSnapshot` is one snapshot**: one `REPEATABLE READ` transaction, or one
+  statement. Reading the cursors in a statement of their own is the classic mistake:
+  the contract tests are likely to catch it, not certain — against a real database it
+  shows only when a batch commits between the two statements.
+- **Gateway revisions come from a store-wide sequence** (gaps are fine), never from
+  the record itself (`revision + 1`): a gateway forgotten and recreated, or a store
+  restored (below), would hand out a revision again.
+- **`recentRecords` needs an insertion-order column**: records with equal receipt
+  times still come back in a defined order.
+- **`dropPastWindowTotals` may keep past windows** for your reports: the core only
+  reads current windows.
+- **The change channel** behind `subscribe`: Postgres `LISTEN`/`NOTIFY` sent in the
+  writing transaction, or Redis pub/sub. A channel drops what is sent while it is
+  down, so every time it reconnects, announce `{ type: "catch-up" }` to every
+  subscriber once it listens again. The core does not poll: a change the channel
+  missed reaches nobody until that catch-up.
 
 Representation notes:
 
@@ -221,8 +231,9 @@ Representation notes:
   parser), or the contract tests' equality checks fail on `"1"` against `1`.
 - **Store the config as text** (`text`), never as `jsonb`: `jsonb` does not keep member
   order, and the text sent must stay the text hashed. The core has already validated
-  it. Gateway records returned must not share mutable state with what callers hold
-  (the memory store `structuredClone`s).
+  it.
+- **Return copies.** Gateway records returned must not share mutable state with what
+  callers hold (the memory store `structuredClone`s).
 
 A sketch, not a prescription (Postgres):
 
@@ -312,9 +323,9 @@ order. When that connection drops, open a new one, `LISTEN` on it, and only then
 announce a `catch-up` to the subscribers, so their reads see everything committed
 while the channel was down.
 
-A store restored from a backup, or failed over to a standby that was behind, is simply
-the current state: the cores read it and send its config and totals like any other.
-**Restore it this way:**
+**Restoring the store.** A store restored from a backup, or failed over to a standby
+that was behind, is simply the current state: the cores read it and send its config
+and totals like any other. Restore it this way:
 
 1. Stop every control-plane process.
 2. Restore.
@@ -334,68 +345,56 @@ The core keeps only what enforcement needs: current hour/month totals and the la
 `recentRecordsSize` records (a live view, not a history). **For billing, reports and
 audit, persist records in `saveCountedBatch`**: `counted.records` holds every record of
 a batch counted *now*, so a table written in that same transaction is your usage
-ledger. Insert its records **idempotently by `record_id`** (`on conflict (record_id) do
-nothing`): within the batch cursor retention (7 days) a resent batch is never passed
-again, but a gateway resending a batch after the retention has it counted again in the
-enforcement windows (Usage intake → Batch cursor retention) — a plain insert would then
-fail the whole transaction on the duplicate key, every retry the same, and block that
-gateway's usage for good. With the idempotent insert the ledger never charges a record
-twice. `keepRecords` only bounds what `recentRecords` must return; your ledger table
-can keep everything.
+ledger.
 
-What a record carries (`UsageRecord`, `protocol/schema/usage-record.schema.json`):
-record and request IDs, gateway instance, key ID, `groups` (the key's group path,
-top-level first, 1–8 IDs, as the gateway's config had it), public model, deployment (backend + backend model), units (`tokens_in`,
-`tokens_cached`, `tokens_cache_write`, `tokens_out`, `tokens_reasoning`), `cost_nano_usd`, flags `estimated`
-and `partial`, `gateway_time`. Raw units travel beside the cost, so you can re-price.
+- Insert its records **idempotently by `record_id`** (`on conflict (record_id) do
+  nothing`). Within the batch cursor retention (7 days) a resent batch is never passed
+  again, but a gateway resending a batch after the retention has it counted again in
+  the enforcement windows (`CONTROL-PROTOCOL.md` → Status intake → Batch cursor
+  retention). A plain insert would then fail the whole transaction on the duplicate
+  key, every retry the same, and block that gateway's usage for good. With the
+  idempotent insert the ledger never charges a record twice.
+- `keepRecords` only bounds what `recentRecords` must return; your ledger table can
+  keep everything.
+
+What a record carries (`UsageRecord`, `schema/usage-record.schema.json`): record and
+request IDs, gateway instance, key ID, `groups` (the key's group path, top-level
+first, 1–8 IDs, as the gateway's config had it), public model, deployment (backend +
+backend model), units (`tokens_in`, `tokens_cached`, `tokens_cache_write`,
+`tokens_out`, `tokens_reasoning`), `cost_nano_usd`, flags `estimated` and `partial`,
+`gateway_time`. Raw units travel beside the cost, so you can re-price.
 
 ## 7. Publishing config
 
-The config document is the one format everything shares:
-`schema/config.schema.json` in the package, `examples/config.json` in the kaiak repo,
-field meanings in `docs/specs/CONTROL-PROTOCOL.md` → Config. Top level:
-`format_version: 5`, `global`, `backends`, `models`, `keys`, and optional `groups` —
-each collection an object keyed by ID.
+The config document is the one format everything shares: `schema/config.schema.json`
+in the package, `examples/config.json` in the kaiak repo, field meanings in
+`CONTROL-PROTOCOL.md` → Config. Top level: `format_version: 5`, `global`, `backends`,
+`models`, `keys`, and optional `groups` — each collection an object keyed by ID.
 
-**Backend types** (`CONTROL-PROTOCOL.md` → Config → Backend types; what each does:
-`GATEWAY.md` → Providers): a backend's `type` names its server and picks the
-gateway's module for it. `BACKEND_TYPES` lists them, for a form's choices.
+**Backends and models: what a UI must know.** The rules are `CONTROL-PROTOCOL.md` →
+Config → Backend types, and `GATEWAY.md` → Providers (each type's behavior, Endpoint
+support, Base URLs) and → Model metadata.
 
-- `openai` (OpenAI's API) and `azure-openai` (Azure's `/openai/v1/` API) require
-  `api_key_env` and **force the standard service tier** (Prices, below).
-- `vllm`, `llama-server` (llama.cpp) and `openai-compatible` — any other server
-  speaking the OpenAI format (SGLang, …) — pass the client's `service_tier` untouched.
-- `anthropic` (Anthropic's API) and `azure-anthropic` (Claude in Microsoft Foundry)
-  require `api_key_env` and **keep requests at the standard price**: options billed
-  above it are refused (Prices, below).
-- **A type decides which client APIs reach a model** (`GATEWAY.md` → Providers →
-  Endpoint support). The gateway passes each request through to a backend speaking
-  the same API and translates nothing, so a model is reachable through the APIs its
-  deployments' types serve: OpenAI's chat, completions and embeddings on every type
-  but the Anthropic ones; Anthropic Messages on `vllm`, `llama-server`, `anthropic`
-  and `azure-anthropic`; OpenAI Responses on `vllm`, `llama-server`, `openai` and
-  `azure-openai`. A Claude model is Messages-only; `openai-compatible` serves
-  OpenAI's three only. Model entries on the gateway list their `endpoints`.
-- **Choosing a type**: the server's own type whenever it has one;
-  `openai-compatible` only for a server without one. The backend answers the same
-  under either, but only its own type gets that server's rules: an OpenAI backend
-  left as `openai-compatible` runs on the tier its clients ask for, and priority
-  bills about twice the prices config holds. `verifyBackend` notes a vLLM or
-  llama-server answer under another type (§8).
-- `base_url` is what an OpenAI client would use, `/v1` included
-  (`https://api.openai.com/v1`, `http://vllm:8000/v1`) — for `anthropic`, what an
-  Anthropic client would use with `/v1` (`https://api.anthropic.com/v1`); for
-  `azure-openai` and `azure-anthropic` it is the resource endpoint
-  (`https://<resource>.openai.azure.com`, `https://<resource>.services.ai.azure.com`).
-  No type has a default.
-
-**Models carry no defaults** (`GATEWAY.md` → Model metadata): request parameters
-such as temperature or a chat template's switches are the backends' to set — the
-gateway applies none, and the config has no field for them. `metadata`
-(`context_length`, `capabilities`, `reasoning_efforts`) is information for clients;
-`output_limit` is the one request parameter a model's config sets, because limits
-reserve it (the gateway's own passthrough edits — model name, standard tier, `store:
-false` — are `GATEWAY.md`'s, Providers). Suggested settings your UI shows people are your app's data, outside config.
+- A backend's `type` names its server and picks the gateway's module for it;
+  `BACKEND_TYPES` lists them, for a form's choices. Offer the server's own type
+  whenever it has one, and `openai-compatible` only for a server without one: the
+  backend answers the same under either, but only its own type gets that server's
+  rules — an OpenAI backend left as `openai-compatible` runs on the service tier its
+  clients ask for, and priority bills about twice the prices config holds.
+  `verifyBackend` notes a vLLM or llama-server answer under another type (§8).
+- The type decides which client APIs reach a model: the gateway passes each request
+  through to a backend speaking the same API and translates nothing, so a model gets
+  the endpoints its deployments' types serve (a Claude model is Messages-only).
+- `openai`, `azure-openai`, `anthropic` and `azure-anthropic` require `api_key_env`.
+  What `base_url` holds depends on the type, and no type has a default: the
+  descriptions of `type` and `base_url` in `schema/config.schema.json` give each
+  type's form, with examples — use them as a form's help text.
+- A model's `metadata` (`context_length`, `capabilities` — `MODEL_CAPABILITIES` lists
+  those config requires — and `reasoning_efforts`) is information for clients;
+  `output_limit` is the one request parameter a model's config sets, because limits
+  reserve it. The gateway applies no other request defaults (temperature, a chat
+  template's switches) and config has no field for them: suggested settings your UI
+  shows people are your app's data, outside config.
 
 **The group tree** (`CONTROL-PROTOCOL.md` → Config → The group tree): each group is
 `{ parent?, labels?, allowed_models?, limits?, child_defaults? }`; no `parent` = a
@@ -418,12 +417,10 @@ edit which group or mint keys in it is your app's business, never config.
 - **Counters are bounded**: every gateway keeps an hour and a month counter for
   global and every group, limited or not, plus one counter per effective per-minute
   limit (its own merged with its parent's `child_defaults.limits`); a config may
-  allocate at most **50 000** (`counters-exceeded`, reported once at path `""`) —
-  so at most about 25 000 groups, fewer with per-minute limits. A per-minute counter
-  is about 1.4 KB and an hour or month one a few hundred bytes, so the bound keeps
-  counter memory under about 70 MB per gateway. Defaults multiply: D default
-  per-minute limits on a group with N children are D × N. Before offering "a default
-  limit for everyone" in a UI, check what it costs across the children.
+  allocate at most **50 000** (`counters-exceeded`) — so at most about 25 000 groups,
+  fewer with per-minute limits. Defaults multiply: D default per-minute limits on a
+  group with N children are D × N. Before offering "a default limit for everyone" in
+  a UI, check what it costs across the children.
 - A group's **parent never changes**. To move a group, delete it and create a new
   one (a new ID, or the same ID in a later publish).
 - **A group ID used again resumes its window's spend**: windows are keyed by the ID,
@@ -436,73 +433,55 @@ edit which group or mint keys in it is your app's business, never config.
   mid-window starts with the window's usage so far**, and one removed and added back
   shows everything counted meanwhile.
 
-**Prices** (`CONTROL-PROTOCOL.md` → Config → Prices, Tiered prices, Units and price
-units): a model's `prices` is a list of `{ effective_from, tiers }` in increasing date
-order; the gateway prices each request with the entry in force on its UTC date, and
-a model without `prices` is free (no USD limit refuses it). Keep old entries when a
-price changes — add a new one dated from the change — so records re-priced later
-use the price of their day.
+**Prices: what a UI must know.** The rules are `CONTROL-PROTOCOL.md` → Config →
+Prices, Tiered prices, and Units and price units; how each backend type keeps
+requests at standard prices is `GATEWAY.md` → Providers → Service tier, and Standard
+price on Anthropic types.
 
-- **Tiers** carry the rates: `tiers` lists 1 to 8 `{ above_input_tokens,
-  usd_per_million }`, the first at 0 and each later one higher. A request is priced
-  whole — input, cached input, input written to the cache and output — at the last
-  tier whose `above_input_tokens` is below its input size (`tokens_in` +
-  `tokens_cached` + `tokens_cache_write`, the backend's prompt tokens). A model
-  without long-context pricing has one tier at 0; one billed at about twice the
-  rates above 272k input tokens has a second tier at 272000. Each tier lists all its
-  own prices: nothing is inherited from the tier below.
-- Four units take a price: `tokens_in` (plain input), `tokens_cached` (input read
-  from the cache), `tokens_cache_write` (input written to the cache — Azure OpenAI
-  bills it above plain input, gpt-5.6 and later at 1.25× the input rate) and
-  `tokens_out` (all output, reasoning included). `tokens_reasoning` is never
-  priced — it is inside `tokens_out`. A tier without `tokens_cached` or
-  `tokens_cache_write` charges that input at the tier's `tokens_in` price: cached
-  input is never free, written input never cheaper than plain input. A backend
-  that does not report cache writes records 0 written, so pricing the unit for it
-  changes nothing.
-- **Prices are standard-tier rates.** On `openai` and `azure-openai` backends the
-  gateway keeps every request on standard processing: a client's `service_tier`
-  becomes `"default"`, and every chat and Responses request carries it even when the
-  client sent none, since the default (`auto`) follows the Azure deployment's or OpenAI
-  project's setting, which may be Priority (`GATEWAY.md` → Providers → Service
-  tier). Priority, flex and batch rates never apply there. On `anthropic` and
-  `azure-anthropic` the gateway refuses fast mode (`speed`), a non-global
-  `inference_geo` and 1-hour cache writes, and `anthropic` sends every request with
-  `service_tier: "standard_only"` (`GATEWAY.md` → Providers → Standard price on
-  Anthropic types): price Claude models at their standard rates, 5-minute cache
-  writes as `tokens_cache_write`. The self-hosted types pass the client's
-  `service_tier` untouched — no tier is billed there.
+- A model's `prices` is a dated list; a model without one is free (no USD limit
+  refuses it). When a price changes, add an entry dated from the change and keep the
+  old ones, so records re-priced later use the price of their day.
+- Each entry's `tiers` hold per-million USD rates for `tokens_in`, `tokens_cached`,
+  `tokens_cache_write` and `tokens_out` — one tier at 0, plus one per long-context
+  threshold the provider bills at. Each tier lists all its own prices, nothing is
+  inherited from the tier below, and a cache unit a tier leaves out is charged at
+  that tier's `tokens_in`.
+- Enter standard-tier rates: the gateway keeps `openai`, `azure-openai`, `anthropic`
+  and `azure-anthropic` requests at standard prices, and the self-hosted types bill
+  no tier.
 - **Azure deployment types price differently**: Data Zone (EU/US) is about 10%
   above Global for the same model. Price a model at the rate of the deployment type
   its deployments use.
-- **Importing a price list is your app's job.** LiteLLM publishes one
-  (`model_prices_and_context_window.json` in the BerriAI/litellm repository, keys
-  such as `azure/gpt-5`, `azure/eu/gpt-5`); its per-token USD fields map to
-  per-million prices as: `input_cost_per_token` × 10⁶ → `tokens_in`,
-  `cache_read_input_token_cost` × 10⁶ → `tokens_cached`,
-  `cache_creation_input_token_cost` × 10⁶ → `tokens_cache_write`,
-  `output_cost_per_token` × 10⁶ → `tokens_out`, all in the tier at 0. A field ending
-  in `_above_<N>k_tokens` is a long-context rate and goes to the tier at N × 1000:
-  `input_cost_per_token_above_272k_tokens` → the 272000 tier's `tokens_in`, and the
-  same for `cache_read_input_token_cost_…`, `cache_creation_input_token_cost_…` and
-  `output_cost_per_token_…`. A tier prices every unit itself, so when the list gives
-  no long-context rate for `tokens_in` or `tokens_out`, copy that unit from the tier
-  at 0 (leaving `tokens_out` out would make its output free). Copy nothing else: a
-  cache unit with no long-context rate stays out of the tier, and is charged at
-  that tier's own `tokens_in` (`CONTROL-PROTOCOL.md`, Config → Units and price
-  units). Copied, the tier at 0's cache-write rate would price long-context writes
-  below the tier's plain input; the fallback errs high instead. The other fields
-  are not priced by kaiak: the
-  `_priority`, `_flex`, `_batches` and `_ultrafast` variants (service tiers the
-  gateway never uses), `cache_creation_input_token_cost_above_1hr` and its
-  `_above_1hr_above_<N>k_tokens` variants (a one-hour cache lifetime, not a
-  long-context rate: kaiak counts writes as one unit, as Azure reports them), audio,
-  image and per-second rates (endpoints the gateway does not serve), and
-  `search_context_cost_per_query` (a per-search fee). Azure deployment names are
-  yours, so the mapping from a model to its LiteLLM key is a setting in your app, not
-  something to guess from names. The list carries no dates and is community-kept:
-  add an entry dated today only when a price changed, and let a person review it
-  before publishing.
+
+**Importing a price list is your app's job.** LiteLLM publishes one
+(`model_prices_and_context_window.json` in the BerriAI/litellm repository, keys such
+as `azure/gpt-5`, `azure/eu/gpt-5`).
+
+- Its per-token USD fields map to per-million prices, all in the tier at 0:
+  `input_cost_per_token` × 10⁶ → `tokens_in`, `cache_read_input_token_cost` × 10⁶ →
+  `tokens_cached`, `cache_creation_input_token_cost` × 10⁶ → `tokens_cache_write`,
+  `output_cost_per_token` × 10⁶ → `tokens_out`.
+- A field ending in `_above_<N>k_tokens` is a long-context rate and goes to the tier
+  at N × 1000: `input_cost_per_token_above_272k_tokens` → the 272000 tier's
+  `tokens_in`, and the same for `cache_read_input_token_cost_…`,
+  `cache_creation_input_token_cost_…` and `output_cost_per_token_…`.
+- A tier prices every unit itself, so when the list gives no long-context rate for
+  `tokens_in` or `tokens_out`, copy that unit from the tier at 0 (leaving `tokens_out`
+  out would make its output free). Copy nothing else: a cache unit with no
+  long-context rate stays out of the tier, and is charged at that tier's own
+  `tokens_in`. Copied, the tier at 0's cache-write rate would price long-context
+  writes below the tier's plain input; the fallback errs high instead.
+- The other fields are not priced by kaiak: the `_priority`, `_flex`, `_batches` and
+  `_ultrafast` variants (service tiers the gateway never uses),
+  `cache_creation_input_token_cost_above_1hr` and its `_above_1hr_above_<N>k_tokens`
+  variants (a one-hour cache lifetime, not a long-context rate: kaiak counts writes
+  as one unit, as Azure reports them), audio, image and per-second rates (endpoints
+  the gateway does not serve), and `search_context_cost_per_query` (a per-search
+  fee).
+- Azure deployment names are yours, so the mapping from a model to its LiteLLM key is
+  a setting in your app, not something to guess from names.
+- The list carries no dates and is community-kept: add an entry dated today only when
+  a price changed, and let a person review it before publishing.
 
 Typical flow for a UI edit:
 
@@ -511,7 +490,7 @@ Typical flow for a UI edit:
 2. Call `validateConfig(doc)` for immediate form feedback; each issue has `code`,
    `message` and a JSON Pointer `path`. Stable codes (`key-group-unknown`,
    `group-cycle`, `limit-duplicate`, `output-limit-above-context`, …) are listed in
-   the spec.
+   `CONTROL-PROTOCOL.md` → Config → Semantic rules.
 3. Call `controlPlane.publishConfig(doc)`: `{ ok: true, published: { config, text, hash, publishedAt } }`
    or `{ ok: false, issues }` (nothing published, the current config stays). Validation
    runs again inside; step 2 is for UX only. Publishing also compares with the current
@@ -527,8 +506,8 @@ Typical flow for a UI edit:
 
 Keys: `createKey(id)` — `id` matches `^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$` (throws
 `key-id-invalid` otherwise); `isConfigId(id)` checks that shape, the same for key and
-group IDs — check a group ID before minting a key for it. Add `{ hash, group }` under `keys[id]` — any group,
-leaf or not — and publish. Revoking a key = removing it, or setting `disabled: true`
+group IDs — check a group ID before minting a key for it. Add `{ hash, group }` under
+`keys[id]` — any group, leaf or not — and publish. Revoking a key = removing it, or setting `disabled: true`
 or an `expires_at`, and publishing. Keys have no limits of their own: a request
 passes the limits of its key's group, every ancestor and global, and its usage
 counts toward each of them.
@@ -537,7 +516,7 @@ counts toward each of them.
 
 Model metadata is declared in config: the gateway serves what config says and asks
 backends nothing. `verifyBackend` fills the declaration in for you. The contract,
-field by field, is `docs/specs/BACKEND-VERIFY.md`.
+field by field, is `BACKEND-VERIFY.md`.
 
 - **When**: when an operator adds a backend, and when they add a model (a deployment's
   backend-side name) — the moment your form is about to write a `base_url` or a
@@ -552,8 +531,8 @@ field by field, is `docs/specs/BACKEND-VERIFY.md`.
     `message` and the `notes` are for people.
   - `server`: `vllm`, `llama-server` or `unknown` (OpenAI, Azure, Anthropic, anything
     else — only reachability, the credential and the listed ids are checked there;
-    for `anthropic` also `context_length`, from the list's `max_input_tokens`). Recognized
-    from the answer, whatever `type` was given; a `vllm` or `llama-server` under
+    for `anthropic` also `context_length`, from the list's `max_input_tokens`).
+    Recognized from the answer, whatever `type` was given; a `vllm` or `llama-server` under
     another type adds a note naming the type to use — show it before the operator
     saves the backend.
   - `models[]`: every listed model, with what the server reports (`context_length`;
@@ -563,9 +542,10 @@ field by field, is `docs/specs/BACKEND-VERIFY.md`.
     their config names.
 - **`metadata` is partial.** Merge it into the model's `metadata`, then have the
   operator complete the rest: `capabilities.streaming` always, every capability not
-  reported (`MODEL_CAPABILITIES` lists those config requires), `reasoning_efforts`. A value the backend does not report is absent, never
-  guessed — do not default it in your form either; leave it for the operator to
-  decide, and publishing refuses the config until they do.
+  reported (`MODEL_CAPABILITIES` lists those config requires), `reasoning_efforts`.
+  A value the backend does not report is absent, never guessed — do not default it in
+  your form either; leave it for the operator to decide, and publishing refuses the
+  config until they do.
 - **Hints stay out of `metadata`.** `tools` and `reasoning` from llama-server are read
   from its chat template's capabilities and can be wrong (an embedding model reports
   `tools: true`); they are in `models[]` with `hint: true`. Prefill a form from them
@@ -637,20 +617,20 @@ if (current) {
 - **Body limits** are set by the plugin (usage 2 MiB, status 64 KiB); a proxy limit
   below that breaks usage delivery.
 - **Restarts** are safe with a durable store: gateways keep serving, hold usage,
-  reconnect and get the current config and totals again. Priced models under a USD limit are
-  refused by gateways only after the outage passes `global.control_outage_grace_ms`
-  (15 min default) — keep restarts well below it.
+  reconnect and get the current config and totals again. Priced models under a USD
+  limit are refused by gateways only after the outage passes
+  `global.control_outage_grace_ms` (15 min default) — keep restarts well below it.
 - **Replicas** (with a store that holds the contract across processes, §5): run them
   behind any load balancer, no stickiness needed. A gateway whose replica goes away
   reconnects to another and gets the current config and totals from it. **Rolling
-  updates** are fine: old and new processes run side
-  by side over the store. With the in-memory store, run one process.
+  updates** are fine: old and new processes run side by side over the store. With the
+  in-memory store, run one process.
 - Token holders can report usage and status under any instance name (one shared token
   by design); treat `KAIAK_CONTROL_TOKEN` like a provider key.
 - Logging: Fastify's pino. JSON in production; for development, `pino-pretty` with
   `translateTime: 'SYS:HH:MM:ss.l'`, `singleLine: true`,
   `ignore: 'pid,hostname,reqId,req.host,req.remoteAddress,req.remotePort'`
-  (the sample's `src/logging/`).
+  (the sample's `control/sample/src/logging/`).
 
 ## 11. Testing
 
@@ -667,14 +647,17 @@ if (current) {
   listening connection down, runs `whileDown` (writes the channel then misses), and
   lets it come back — and the suite checks the catch-up reaches every subscriber. A
   store whose channel can drop changes must pass it; only one that cannot (the
-  in-memory store) may leave it out. The suite runs in this repo against the memory
-  store behind a lossy channel (`src/store-contract/lossy-channel.ts`), and against
-  deliberately broken stores — a cursor read outside the snapshot, a channel that
-  comes back without a catch-up, a catch-up told to one subscriber only, a publish
-  announced before its write is visible (`src/store-contract/negative-control.test.ts`):
-  it must fail each, exactly at the tests naming the broken guarantee, and does. Then drive the core with your store — the kaiak-control tests
-  (`src/**/**.test.ts`) show how to call `acceptUsageBatch`, `acceptStatus` and
-  `publishConfig` directly without HTTP, two cores over one store included.
+  in-memory store) may leave it out.
+- The kaiak repo runs the suite against the memory store behind a lossy channel
+  (`src/store-contract/lossy-channel.ts`), and against deliberately broken stores — a
+  cursor read outside the snapshot, a channel that comes back without a catch-up, a
+  catch-up told to one subscriber only, a publish announced before its write is
+  visible (`control/kaiak-control/src/store-contract/negative-control.test.ts`): it
+  must fail each, exactly at the tests naming the broken guarantee, and does.
+- Then drive the core with your store. The kaiak-control tests in the kaiak repo
+  (`control/kaiak-control/src/**/*.test.ts`; the package does not ship them) show how
+  to call `acceptUsageBatch`, `acceptStatus` and `publishConfig` directly without
+  HTTP, two cores over one store included.
 - Validate against the shared fixtures in the kaiak repo's `protocol/fixtures/` (valid
   and invalid configs and messages, with `cases.json` naming each expected code).
 - End to end: run a real `kaiak` binary (or the gateway image) against your app with a
