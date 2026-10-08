@@ -26,8 +26,9 @@ type endpoint struct {
 	path string
 	// operation is the endpoint's gen_ai.operation.name on the log line and on its
 	// usage records (the usage metrics' label): the GenAI convention's well-known
-	// value — a chat operation in any of its APIs is "chat" — and "" for the model and
-	// token-counting endpoints, which have none and settle no usage record.
+	// value — a chat operation in any of its APIs is "chat" — or kaiak's own where none
+	// applies ("rerank"), and "" for the model and token-counting endpoints, which have
+	// none and settle no usage record.
 	operation string
 	// body: the endpoint is a POST carrying a JSON request body in api's format,
 	// passed through to a backend serving api; its route is api's path under /v1/
@@ -44,9 +45,10 @@ type endpoint struct {
 	// OpenAI's and Azure's reasoning models require (they refuse max_tokens) — and
 	// still honors the older max_tokens. Completions and Messages have only
 	// max_tokens (Messages requires it, so a model with an output limit always sends
-	// one), Responses only max_output_tokens. Embeddings and the token-counting
-	// endpoints generate nothing. The inbound stage reads these keys alone: another
-	// output-limit key the client sends is not the endpoint's and passes untouched.
+	// one), Responses only max_output_tokens. Embeddings, rerank and the
+	// token-counting endpoints generate nothing. The inbound stage reads these keys
+	// alone: another output-limit key the client sends is not the endpoint's and
+	// passes untouched.
 	outputLimitKeys []string
 	// anthropicOnHeader: the endpoint answers in Anthropic's shape when the request
 	// carries an anthropic-version header (answersAnthropic).
@@ -67,6 +69,7 @@ var bodyEndpoints = []*endpoint{
 	{body: true, api: provider.Responses, name: "responses", operation: "chat",
 		outputLimitKeys: []string{"max_output_tokens"}},
 	{body: true, api: provider.ResponsesInputTokens, name: "responses_input_tokens", counts: true},
+	{body: true, api: provider.Rerank, name: "rerank", operation: "rerank"},
 }
 
 // The model endpoints, answered from the config. The model list and entry answer in

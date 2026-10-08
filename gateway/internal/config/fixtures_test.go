@@ -66,6 +66,30 @@ func TestBackendsRequiringAPIKeyEnv(t *testing.T) {
 	}
 }
 
+// The batch caps' zero fixtures are refused by their bound, at their field — not as
+// an unknown field: TestInvalidFixtures sees only the schema code, which both reasons
+// share.
+func TestBatchCapsRefuseZero(t *testing.T) {
+	for file, field := range map[string]string{
+		"max-sequences-per-request-zero.json": "max_sequences_per_request",
+		"max-embedding-inputs-zero.json":      "max_embedding_inputs",
+		"max-rerank-documents-zero.json":      "max_rerank_documents",
+	} {
+		t.Run(file, func(t *testing.T) {
+			_, err := Parse(fixturetest.Read(t, filepath.Join(fixturesDir, "invalid", file)))
+			var invalid *schemacheck.ValidationError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("want a *schemacheck.ValidationError, got %v", err)
+			}
+			want := "/global/" + field
+			if len(invalid.Issues) != 1 || invalid.Issues[0].Path != want ||
+				!strings.HasPrefix(invalid.Issues[0].Message, "must be between 1 and") {
+				t.Errorf("issues %v, want one at %s refusing 0 by the field's bound", invalid.Issues, want)
+			}
+		})
+	}
+}
+
 // The config fixtures of protocol/fixtures/duplicate-members (the message ones run in
 // the control package): each is refused with duplicate-member at its path, before any
 // decoder reads it.

@@ -44,6 +44,14 @@ func SaturatingAdd(a, b int64) int64 {
 	return a + b
 }
 
+// SaturatingMul is a × b for non-negative a and b, math.MaxInt64 when that overflows.
+func SaturatingMul(a, b int64) int64 {
+	if a != 0 && b > math.MaxInt64/a {
+		return math.MaxInt64
+	}
+	return a * b
+}
+
 // bytesPerToken is the estimation heuristic: about 4 bytes of text per token. There is
 // no tokenizer — that would need a dependency, and per-model vocabularies.
 const bytesPerToken = 4
@@ -98,7 +106,8 @@ type Meter struct {
 type usageReader interface {
 	// streamEvent reads one stream event's payload as the backend sent it.
 	streamEvent(payload []byte)
-	// contentMember is the non-stream body member holding the generated content.
+	// contentMember is the non-stream body member holding the generated content; ""
+	// for a format that generates none.
 	contentMember() string
 	// bodyUsage reads a non-stream body's usage member.
 	bodyUsage(raw json.RawMessage)
@@ -121,6 +130,8 @@ func NewMeter(ep provider.Endpoint, input int64) *Meter {
 		reader = &messagesUsage{}
 	case provider.FormatResponses:
 		reader = &responsesUsage{}
+	case provider.FormatRerank:
+		reader = &rerankUsage{}
 	default:
 		reader = &openAIUsage{endpoint: ep}
 	}
@@ -134,7 +145,11 @@ func (m *Meter) Answered(status int, stream bool) {
 	m.status = status
 	m.stream = stream
 	if !stream && m.succeeded() {
-		m.body = newMemberScanner(map[string]int{"usage": maxUsageBytes, m.reader.contentMember(): maxContentBytes})
+		keep := map[string]int{"usage": maxUsageBytes}
+		if member := m.reader.contentMember(); member != "" {
+			keep[member] = maxContentBytes
+		}
+		m.body = newMemberScanner(keep)
 	}
 }
 

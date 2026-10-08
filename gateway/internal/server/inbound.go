@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 
 	"kaiak/internal/accounting"
 	"kaiak/internal/config"
@@ -55,13 +54,15 @@ func readInbound(_ context.Context, rq *request, bodies *BodyBudget) *apiError {
 
 // parseOwnedFields reads the owned fields of the request's format by exact key
 // (docs/specs/GATEWAY.md, Client API → owned fields): the ones every format shares —
-// model; stream, except on the token-counting endpoints; the endpoint's output-limit
-// keys — then the format's own, then the input estimate. encoding/json matches struct
-// fields case-insensitively, which would read "Model" as model while the backend sees
-// an unknown field; the top-level object is therefore decoded as a map. A null value
-// counts as absent, as it does for OpenAI. A top-level member named twice is refused
-// (docs/specs/GATEWAY.md, Request pipeline): the gateway and the backend could read
-// different occurrences, and the provider edits each owned member once.
+// model; stream, except on the token-counting endpoints and in the rerank format,
+// which has none (a rerank request's stream passes untouched, and the request is never
+// a stream); the endpoint's output-limit keys — then the format's own, then the input
+// estimate. encoding/json matches struct fields case-insensitively, which would read
+// "Model" as model while the backend sees an unknown field; the top-level object is
+// therefore decoded as a map. A null value counts as absent, as it does for OpenAI. A
+// top-level member named twice is refused (docs/specs/GATEWAY.md, Request pipeline):
+// the gateway and the backend could read different occurrences, and the provider
+// edits each owned member once.
 func parseOwnedFields(rq *request) *apiError {
 	top, ok, apiErr := objectMembers(rq.body, "")
 	if !ok {
@@ -73,7 +74,7 @@ func parseOwnedFields(rq *request) *apiError {
 	if apiErr = readModel(rq, top); apiErr != nil {
 		return apiErr
 	}
-	if !rq.endpoint.counts {
+	if !rq.endpoint.counts && rq.endpoint.api.Format() != provider.FormatRerank {
 		var stream *bool
 		if stream, apiErr = optionalField[bool](top, "stream", "stream", "a boolean"); apiErr != nil {
 			return apiErr
@@ -94,6 +95,8 @@ func parseOwnedFields(rq *request) *apiError {
 		apiErr = parseMessagesFields(rq, top)
 	case provider.FormatResponses:
 		apiErr = parseResponsesFields(rq, top)
+	case provider.FormatRerank:
+		apiErr = parseRerankFields(rq, top)
 	default:
 		// The endpoint table routes only the formats the inbound stage reads.
 		panic("server: no inbound parser for the endpoint's format")
@@ -135,6 +138,30 @@ func parseOpenAIFields(rq *request, top map[string]json.RawMessage) *apiError {
 		rq.inbound.IncludeUsage = includeUsage != nil && *includeUsage
 	}
 	return nil
+}
+
+// parseRerankFields reads a rerank request's own owned field (docs/specs/GATEWAY.md,
+// Client API → owned fields): how many documents it holds, refused above
+// max_rerank_documents. Its query is read by the input estimate alone; everything
+// else — top_n, return_documents, instruction, stream, … — is the backend's and passes
+// untouched.
+func parseRerankFields(rq *request, top map[string]json.RawMessage) *apiError {
+	if documents := rerankDocuments(top["documents"]); documents > rq.snapshot.MaxRerankDocuments {
+		return errTooManyDocuments(documents, rq.snapshot.MaxRerankDocuments)
+	}
+	return nil
+}
+
+// rerankDocuments is how many documents a rerank request's documents holds: one per
+// element of a list; any other value — a string, a multimodal object — counts as one,
+// and the backend judges its shape. A document list holds no token IDs, unlike an
+// embeddings input (promptCount).
+func rerankDocuments(raw json.RawMessage) int64 {
+	var list []json.RawMessage
+	if !startsWith(raw, '[') || json.Unmarshal(raw, &list) != nil {
+		return 1
+	}
+	return int64(len(list))
 }
 
 // refuseHostedTools refuses a tool list (raw, the request member param) holding a
@@ -286,7 +313,7 @@ func sequences(api provider.Endpoint, top map[string]json.RawMessage, s *config.
 	if api == provider.Completions {
 		prompts = promptCount(top["prompt"])
 	}
-	total := saturatingMul(perPrompt, prompts)
+	total := accounting.SaturatingMul(perPrompt, prompts)
 	if total > s.MaxSequencesPerRequest {
 		// The parameter at fault: the prompt list when there is one, else what
 		// multiplies the single prompt.
@@ -315,14 +342,6 @@ func promptCount(raw json.RawMessage) int64 {
 		return int64(len(list))
 	}
 	return 1
-}
-
-// saturatingMul is a × b for non-negative a and b, math.MaxInt64 when that overflows.
-func saturatingMul(a, b int64) int64 {
-	if a != 0 && b > math.MaxInt64/a {
-		return math.MaxInt64
-	}
-	return a * b
 }
 
 // optionalField decodes object[key] into a T; nil when the key is absent or null.

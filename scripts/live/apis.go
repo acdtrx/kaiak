@@ -14,11 +14,12 @@ const (
 	epCountTokens = "messages_count_tokens"
 	epResponses   = "responses"
 	epInputTokens = "responses_input_tokens"
+	epRerank      = "rerank"
 )
 
 var kindEndpoints = map[string][]string{
-	kindVLLM:           {epChat, epCompletions, epEmbeddings, epMessages, epCountTokens, epResponses},
-	kindLlamaServer:    {epChat, epCompletions, epEmbeddings, epMessages, epCountTokens, epResponses, epInputTokens},
+	kindVLLM:           {epChat, epCompletions, epEmbeddings, epMessages, epCountTokens, epResponses, epRerank},
+	kindLlamaServer:    {epChat, epCompletions, epEmbeddings, epMessages, epCountTokens, epResponses, epInputTokens, epRerank},
 	kindOpenAI:         {epChat, epCompletions, epEmbeddings, epResponses, epInputTokens},
 	kindAzure:          {epChat, epCompletions, epEmbeddings, epResponses},
 	kindAnthropic:      {epMessages, epCountTokens},

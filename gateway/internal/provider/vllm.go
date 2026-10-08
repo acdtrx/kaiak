@@ -17,9 +17,9 @@ type vLLM struct {
 }
 
 // vLLMEndpoints: vLLM serves the OpenAI endpoints, Messages with its token counting,
-// and Responses — not responses/input_tokens (not in 0.30.0: a POST there lands on
-// GET /v1/responses/{id} and answers 405).
-var vLLMEndpoints = []Endpoint{ChatCompletions, Completions, Embeddings, Messages, MessagesCountTokens, Responses}
+// Responses — not responses/input_tokens (not in 0.30.0: a POST there lands on
+// GET /v1/responses/{id} and answers 405) — and rerank.
+var vLLMEndpoints = []Endpoint{ChatCompletions, Completions, Embeddings, Messages, MessagesCountTokens, Responses, Rerank}
 
 func newVLLM(b *config.Backend, client *http.Client, credential string) backendModule {
 	return &vLLM{backend: b, client: client, credential: credential}

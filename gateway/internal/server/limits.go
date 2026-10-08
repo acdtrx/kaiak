@@ -30,7 +30,7 @@ func checkLimits(rq *request, limiter *limits.Limiter) *apiError {
 		tokens = 0
 	}
 	if rq.outputLimit != nil {
-		tokens = accounting.SaturatingAdd(tokens, saturatingMul(*rq.outputLimit, rq.inbound.Sequences))
+		tokens = accounting.SaturatingAdd(tokens, accounting.SaturatingMul(*rq.outputLimit, rq.inbound.Sequences))
 	}
 	tokens = min(tokens, accounting.MaxAmount)
 	// Billability comes from the request's own snapshot and arrival, as its cost

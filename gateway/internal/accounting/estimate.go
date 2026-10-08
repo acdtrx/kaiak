@@ -46,6 +46,9 @@ const maxEstimateDepth = 10000
 //   - in a Responses request, an input_image or input_file content part counts
 //     InlineMediaTokens whatever it carries (data URL, URL or file ID).
 //
+// A rerank request's total adds its query's own estimate once more for each document
+// beyond the first: the backend scores every document paired with the query.
+//
 // One pass over the body, bounded by its size. A body that does not scan (the parse
 // before this refuses those) is estimated by its size alone.
 func EstimateInput(ep provider.Endpoint, body []byte) InputEstimate {
@@ -59,6 +62,10 @@ func EstimateInput(ep provider.Endpoint, body []byte) InputEstimate {
 	// rest is the body outside a completion's prompts.
 	rest := part{text: int64(len(body))}
 	var prompts []part
+	// query is a rerank request's query, estimated on its own; documents how many
+	// documents the request holds.
+	var query part
+	var documents int64
 	for s.dec.More() {
 		name, err := s.dec.Token()
 		if err != nil {
@@ -74,6 +81,24 @@ func EstimateInput(ep provider.Endpoint, body []byte) InputEstimate {
 				rest.text -= p.span
 			}
 			prompts = append(prompts, list...)
+			continue
+		}
+		if ep == provider.Rerank && key == "query" {
+			start := s.dec.InputOffset()
+			var q part
+			if _, ok := s.value(key, "", roleNone, false, 1, &q); !ok {
+				return fallback
+			}
+			query = s.measured(start, q)
+			rest.text += query.text - query.span
+			rest.fixed += query.fixed
+			continue
+		}
+		if ep == provider.Rerank && key == "documents" {
+			var ok bool
+			if documents, ok = s.documentList(&rest); !ok {
+				return fallback
+			}
 			continue
 		}
 		tokenIDs := ep == provider.Embeddings && key == "input"
@@ -95,8 +120,12 @@ func EstimateInput(ep provider.Endpoint, body []byte) InputEstimate {
 			largest = p
 		}
 	}
+	total := all.tokens()
+	if documents > 1 {
+		total = SaturatingAdd(total, SaturatingMul(documents-1, query.tokens()))
+	}
 	return InputEstimate{
-		Total:         all.tokens(),
+		Total:         total,
 		LargestPrompt: part{text: rest.text + largest.text, fixed: rest.fixed + largest.fixed}.tokens(),
 	}
 }
@@ -173,6 +202,28 @@ func (s *inputScan) promptList() ([]part, bool) {
 		return []part{s.measured(start, one)}, true
 	}
 	return elems, true
+}
+
+// documentList scans a rerank request's documents into p and returns how many it
+// holds, as the cap counts them: one per element of a list, one for any other value.
+func (s *inputScan) documentList(p *part) (int64, bool) {
+	start := s.dec.InputOffset()
+	tok, err := s.dec.Token()
+	if err != nil {
+		return 0, false
+	}
+	if tok != json.Delim('[') {
+		return 1, s.handle(tok, s.dec.InputOffset()-start, "documents", "", roleNone, false, 1, p)
+	}
+	var n int64
+	for s.dec.More() {
+		if _, ok := s.value("documents", "", roleNone, false, 2, p); !ok {
+			return 0, false
+		}
+		n++
+	}
+	_, err = s.dec.Token()
+	return n, err == nil
 }
 
 // scanRole is where a value sits in a Messages or Responses body: media count as

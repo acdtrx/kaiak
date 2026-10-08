@@ -19,6 +19,7 @@ var endpointColumns = map[string][]Endpoint{
 	"messages_count_tokens":         {MessagesCountTokens},
 	"responses":                     {Responses},
 	"responses_input_tokens":        {ResponsesInputTokens},
+	"rerank":                        {Rerank},
 }
 
 // Each type serves exactly what the spec's endpoint support table says, and the
@@ -80,6 +81,8 @@ func TestEndpointMissingFromAServer(t *testing.T) {
 		{config.BackendVLLM, Messages, http.StatusNotFound, unknownPathAnswers["vllm"]},
 		{config.BackendVLLM, Responses, http.StatusMethodNotAllowed, `{"detail":"Method Not Allowed"}`},
 		{config.BackendLlamaServer, MessagesCountTokens, http.StatusNotFound, unknownPathAnswers["llama-server"]},
+		{config.BackendVLLM, Rerank, http.StatusNotFound, unknownPathAnswers["vllm"]},
+		{config.BackendLlamaServer, Rerank, http.StatusNotFound, unknownPathAnswers["llama-server"]},
 		{config.BackendOpenAI, Responses, http.StatusNotFound,
 			`{"error":{"message":"Invalid URL (POST /v1/responses)","type":"invalid_request_error","param":null,"code":null}}`},
 		{config.BackendAzureOpenAI, Responses, http.StatusNotFound, unknownPathAnswers["azure-openai"]},
@@ -115,11 +118,13 @@ func TestEndpointMissingFromAServer(t *testing.T) {
 
 // Messages and Responses always report usage: a stream to them gets no
 // stream_options edit, and nothing is hidden from the client. A Responses request gets
-// store: false and nothing else.
+// store: false and nothing else. Rerank has no stream: its stream member passes
+// untouched, and the model is its one edit.
 func TestNoUsageEditOutsideTheOpenAIFormat(t *testing.T) {
 	for e, want := range map[Endpoint]string{
 		Messages:  `{"model":"m","stream":true}`,
 		Responses: `{"model":"m","stream":true,"store":false}`,
+		Rerank:    `{"model":"m","stream":true}`,
 	} {
 		body, stripUsage, err := passthroughBody(&Request{Endpoint: e, Stream: true,
 			Deployment: config.Deployment{Model: "m"}, Body: []byte(`{"model":"pub","stream":true}`)})

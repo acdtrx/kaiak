@@ -458,10 +458,12 @@ func TestNegativeOutputLimitIsRefused(t *testing.T) {
 // 10 000 prompts under max_n 8 would be one request — one backend slot, 10 000
 // generation jobs. The sequences a request generates are
 // capped by global.max_sequences_per_request, an embeddings request's inputs by
-// global.max_embedding_inputs.
+// global.max_embedding_inputs, a rerank request's documents by
+// global.max_rerank_documents — one per element of a list, numbers included: a
+// document list holds no token IDs.
 func TestBatchSizeIsCappedPerRequest(t *testing.T) {
 	snapshot := &config.Snapshot{MaxN: 8, MaxSequencesPerRequest: config.DefaultMaxSequencesPerRequest,
-		MaxEmbeddingInputs: config.DefaultMaxEmbeddingInputs}
+		MaxEmbeddingInputs: config.DefaultMaxEmbeddingInputs, MaxRerankDocuments: config.DefaultMaxRerankDocuments}
 	for _, c := range []struct {
 		name  string
 		ep    *endpoint
@@ -477,6 +479,10 @@ func TestBatchSizeIsCappedPerRequest(t *testing.T) {
 		{"2049 embedding inputs", bodyEndpoint(provider.Embeddings), `{"model":"m","input":[` + strings.Repeat(`"x",`, 2048) + `"x"]}`, "input"},
 		{"2049 token-ID embedding inputs", bodyEndpoint(provider.Embeddings), `{"model":"m","input":[` + strings.Repeat(`[1],`, 2048) + `[1]]}`, "input"},
 		{"one token-ID list is one input", bodyEndpoint(provider.Embeddings), `{"model":"m","input":[` + strings.Repeat(`1,`, 4000) + `1]}`, ""},
+		{"1000 rerank documents", bodyEndpoint(provider.Rerank), `{"model":"m","query":"q","documents":[` + strings.Repeat(`"x",`, 999) + `"x"]}`, ""},
+		{"1001 rerank documents", bodyEndpoint(provider.Rerank), `{"model":"m","query":"q","documents":[` + strings.Repeat(`"x",`, 1000) + `"x"]}`, "documents"},
+		{"1001 numbers are 1001 documents", bodyEndpoint(provider.Rerank), `{"model":"m","query":"q","documents":[` + strings.Repeat(`1,`, 1000) + `1]}`, "documents"},
+		{"documents that are not a list are one", bodyEndpoint(provider.Rerank), `{"model":"m","query":"q","documents":"x"}`, ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			rq := &request{endpoint: c.ep, snapshot: snapshot, body: []byte(c.body)}

@@ -16,8 +16,10 @@ type llamaServer struct {
 	credential string
 }
 
-// llamaServerEndpoints: llama-server serves every endpoint (build b9917).
-var llamaServerEndpoints = []Endpoint{ChatCompletions, Completions, Embeddings, Messages, MessagesCountTokens, Responses, ResponsesInputTokens}
+// llamaServerEndpoints: llama-server serves every endpoint (build b9917; rerank on
+// b11513).
+var llamaServerEndpoints = []Endpoint{ChatCompletions, Completions, Embeddings, Messages, MessagesCountTokens, Responses,
+	ResponsesInputTokens, Rerank}
 
 func newLlamaServer(b *config.Backend, client *http.Client, credential string) backendModule {
 	return &llamaServer{backend: b, client: client, credential: credential}

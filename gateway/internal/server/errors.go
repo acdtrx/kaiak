@@ -213,6 +213,13 @@ func errTooManyInputs(inputs, limit int64) *apiError {
 		message: fmt.Sprintf("'input' holds %d inputs; the gateway's maximum is %d per request.", inputs, limit)}
 }
 
+// errTooManyDocuments refuses a rerank request carrying more documents than
+// global.max_rerank_documents allows.
+func errTooManyDocuments(documents, limit int64) *apiError {
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "invalid_value", class: metrics.ErrorInvalidRequest, param: "documents",
+		message: fmt.Sprintf("'documents' holds %d documents; the gateway's maximum is %d per request.", documents, limit)}
+}
+
 // errOutputLimitTooLarge refuses an output limit (param: max_tokens or
 // max_completion_tokens) above the model's context length, in OpenAI's code and
 // wording for the same refusal.

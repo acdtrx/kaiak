@@ -10,8 +10,8 @@ import (
 // JSON bytes as they pass, tracking just enough structure — nesting, strings,
 // top-level keys — to keep the raw bytes of the top-level members the meter names:
 // "usage" and the response format's content member ("choices" for OpenAI, "content"
-// for Messages, "output" for Responses). Values are read from where each format puts
-// them, never searched for by what they look like.
+// for Messages, "output" for Responses; a rerank answer generates none). Values are
+// read from where each format puts them, never searched for by what they look like.
 
 // maxScanKey bounds the bytes of a top-level key kept for comparison: the keys wanted
 // are short, so a longer key cannot match even with every character escaped.

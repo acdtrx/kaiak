@@ -698,6 +698,7 @@ func errorAnswers() []struct {
 		{"errNTooLarge", errNTooLarge("n", 1)},
 		{"errTooManySequences", errTooManySequences("n", 2, 1)},
 		{"errTooManyInputs", errTooManyInputs(2, 1)},
+		{"errTooManyDocuments", errTooManyDocuments(2, 1)},
 		{"errOutputLimitTooLarge", errOutputLimitTooLarge("max_tokens", 2, 1)},
 		{"errOutputLimitBelowThinking", errOutputLimitBelowThinking("max_tokens", 1, "default", 2)},
 		{"errOutputLimitNegative", errOutputLimitNegative("max_tokens", -1)},

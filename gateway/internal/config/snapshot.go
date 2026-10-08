@@ -27,7 +27,10 @@ const (
 	// two prompts, or 16 single-sequence prompts.
 	DefaultMaxSequencesPerRequest = 16
 	// DefaultMaxEmbeddingInputs is OpenAI's own limit on an embeddings request's inputs.
-	DefaultMaxEmbeddingInputs  = 2048
+	DefaultMaxEmbeddingInputs = 2048
+	// DefaultMaxRerankDocuments is the most documents Cohere's rerank API reference
+	// recommends sending in one request.
+	DefaultMaxRerankDocuments  = 1000
 	DefaultMaxConcurrentPerKey = 16
 	DefaultQueueSize           = 100
 	DefaultQueueTimeout        = 30 * time.Second
@@ -208,6 +211,8 @@ type Snapshot struct {
 	MaxSequencesPerRequest int64
 	// MaxEmbeddingInputs is the most inputs one embeddings request may carry.
 	MaxEmbeddingInputs int64
+	// MaxRerankDocuments is the most documents one rerank request may carry.
+	MaxRerankDocuments int64
 	// MaxConcurrentRequestsPerKey is the most requests one key may have in flight on
 	// this gateway at once.
 	MaxConcurrentRequestsPerKey int64
@@ -396,6 +401,7 @@ func resolve(doc *document) *Snapshot {
 		MaxN:                        valueOr(doc.Global.MaxN, DefaultMaxN),
 		MaxSequencesPerRequest:      valueOr(doc.Global.MaxSequences, DefaultMaxSequencesPerRequest),
 		MaxEmbeddingInputs:          valueOr(doc.Global.MaxEmbeddingInputs, DefaultMaxEmbeddingInputs),
+		MaxRerankDocuments:          valueOr(doc.Global.MaxRerankDocuments, DefaultMaxRerankDocuments),
 		MaxConcurrentRequestsPerKey: valueOr(doc.Global.MaxConcurrentPerKey, DefaultMaxConcurrentPerKey),
 		Circuit:                     Circuit{FailureThreshold: DefaultFailureThreshold, ProbeInterval: DefaultProbeInterval},
 		GlobalLimits:                resolveLimits(doc.Global.Limits),

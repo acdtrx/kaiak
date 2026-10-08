@@ -1,7 +1,8 @@
 // Package fakebackend is a model server for tests. It serves chat completions,
 // completions, embeddings, Anthropic Messages and OpenAI Responses with their token
 // counting, and the models list (the gateway's probe) under /v1/ (the OpenAI and Anthropic layout),
-// /openai/v1/ (Azure OpenAI's) and /anthropic/v1/ (Claude in Foundry's), answers as
+// /openai/v1/ (Azure OpenAI's) and /anthropic/v1/ (Claude in Foundry's), and rerank
+// under /v1/ alone (vLLM's and llama-server's: neither Azure API has one), answers as
 // scripted by the test, and records every request it receives. Test tooling only: nothing in the gateway binary imports it;
 // cmd/fakebackend runs it as a process for the e2e test and the live-test kit.
 package fakebackend
@@ -268,6 +269,7 @@ const (
 	countTokensPath = "messages/count_tokens"
 	responsesPath   = "responses"
 	inputTokensPath = "responses/input_tokens"
+	rerankPath      = "rerank"
 	modelsPath      = "models"
 )
 
@@ -330,6 +332,8 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	switch endpoint {
 	case chatPath, completionPath, embeddingPath, messagesPath, countTokensPath, responsesPath, inputTokensPath:
+	case rerankPath:
+		ok = strings.HasPrefix(r.URL.Path, "/v1/")
 	default:
 		ok = false
 	}
@@ -439,6 +443,9 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 		writeMessage(w, params.model, strings.Join(chunks, ""), finish == "length", usage, reply.OmitUsage)
 	case endpoint == embeddingPath:
 		b.writeEmbeddings(w, params.model, usage, reply.OmitUsage)
+	case endpoint == rerankPath:
+		// Neither server reads stream on rerank: the answer is a JSON body either way.
+		writeRerank(w, top, params.model, usage, reply.OmitUsage)
 	case params.stream:
 		b.writeStream(w, r, req, reply, endpoint, params.model, chunks, finish, usage, params.includeUsage && !reply.OmitUsage)
 	default:
@@ -659,7 +666,7 @@ func textChunk(endpoint, model, text string, first bool, finish *string, withUsa
 }
 
 func usageBody(u Usage, endpoint string) map[string]any {
-	if endpoint == embeddingPath {
+	if endpoint == embeddingPath || endpoint == rerankPath {
 		return map[string]any{"prompt_tokens": u.PromptTokens, "total_tokens": u.PromptTokens}
 	}
 	body := map[string]any{"prompt_tokens": u.PromptTokens, "completion_tokens": u.CompletionTokens,

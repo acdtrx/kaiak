@@ -262,6 +262,7 @@ func TestSchemaDefaultsAreResolved(t *testing.T) {
 		"/$defs/global/properties/max_n":                                func(s *Snapshot) any { return s.MaxN },
 		"/$defs/global/properties/max_sequences_per_request":            func(s *Snapshot) any { return s.MaxSequencesPerRequest },
 		"/$defs/global/properties/max_embedding_inputs":                 func(s *Snapshot) any { return s.MaxEmbeddingInputs },
+		"/$defs/global/properties/max_rerank_documents":                 func(s *Snapshot) any { return s.MaxRerankDocuments },
 		"/$defs/global/properties/max_concurrent_requests_per_key":      func(s *Snapshot) any { return s.MaxConcurrentRequestsPerKey },
 		"/$defs/global/properties/circuit/properties/failure_threshold": func(s *Snapshot) any { return s.Circuit.FailureThreshold },
 		"/$defs/global/properties/circuit/properties/probe_interval_ms": func(s *Snapshot) any { return ms(s.Circuit.ProbeInterval) },

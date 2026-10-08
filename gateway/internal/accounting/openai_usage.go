@@ -82,21 +82,15 @@ type usageReport struct {
 
 // parse maps a usage object onto the units: prompt_tokens includes the cache and
 // completion_tokens the reasoning (inclusiveUnits). Embeddings count prompt tokens
-// only. A null, missing or malformed usage, or one with neither token count, is no
-// report.
+// only (promptOnlyUnits). A null, missing or malformed usage, or one with neither
+// token count, is no report.
 func (u *openAIUsage) parse(raw json.RawMessage) (Units, bool) {
-	if len(raw) == 0 || raw[0] != '{' {
-		return nil, false
-	}
-	var r usageReport
-	if json.Unmarshal(raw, &r) != nil {
-		return nil, false
-	}
 	if u.endpoint == provider.Embeddings {
-		if r.PromptTokens == nil && r.CompletionTokens == nil {
-			return nil, false
-		}
-		return withEveryTokenUnit(Units{config.UnitTokensIn: nonNegative(r.PromptTokens)}), true
+		return promptOnlyUnits(raw)
+	}
+	r, ok := decodeUsageReport(raw)
+	if !ok {
+		return nil, false
 	}
 	var cached, written, reasoning int64
 	if d := r.PromptTokensDetails; d != nil {
@@ -106,6 +100,28 @@ func (u *openAIUsage) parse(raw json.RawMessage) (Units, bool) {
 		reasoning = d.ReasoningTokens
 	}
 	return inclusiveUnits(r.PromptTokens, r.CompletionTokens, cached, written, reasoning)
+}
+
+// decodeUsageReport decodes an OpenAI-shaped usage object; ok is false for a null,
+// missing or malformed one.
+func decodeUsageReport(raw json.RawMessage) (usageReport, bool) {
+	var r usageReport
+	if len(raw) == 0 || raw[0] != '{' || json.Unmarshal(raw, &r) != nil {
+		return usageReport{}, false
+	}
+	return r, true
+}
+
+// promptOnlyUnits maps the OpenAI-shaped usage object of an answer that generates
+// nothing — embeddings, rerank (docs/specs/GATEWAY.md, Accounting) — onto the units:
+// prompt_tokens as tokens_in, every other unit 0. A null, missing or malformed usage,
+// or one with neither prompt_tokens nor completion_tokens, is no report.
+func promptOnlyUnits(raw json.RawMessage) (Units, bool) {
+	r, ok := decodeUsageReport(raw)
+	if !ok || (r.PromptTokens == nil && r.CompletionTokens == nil) {
+		return nil, false
+	}
+	return withEveryTokenUnit(Units{config.UnitTokensIn: nonNegative(r.PromptTokens)}), true
 }
 
 // generatedContent is where a choice carries generated text: a chat message (non-

@@ -94,9 +94,9 @@ func TestDefaultsAppliedForOmittedFields(t *testing.T) {
 	if s.MaxN != 8 {
 		t.Errorf("MaxN = %d, want the default 8", s.MaxN)
 	}
-	if s.MaxSequencesPerRequest != 16 || s.MaxEmbeddingInputs != 2048 {
-		t.Errorf("MaxSequencesPerRequest = %d, MaxEmbeddingInputs = %d, want the defaults 16 and 2048",
-			s.MaxSequencesPerRequest, s.MaxEmbeddingInputs)
+	if s.MaxSequencesPerRequest != 16 || s.MaxEmbeddingInputs != 2048 || s.MaxRerankDocuments != 1000 {
+		t.Errorf("MaxSequencesPerRequest = %d, MaxEmbeddingInputs = %d, MaxRerankDocuments = %d, want the defaults 16, 2048 and 1000",
+			s.MaxSequencesPerRequest, s.MaxEmbeddingInputs, s.MaxRerankDocuments)
 	}
 	if s.MaxConcurrentRequestsPerKey != 16 {
 		t.Errorf("MaxConcurrentRequestsPerKey = %d, want the default 16", s.MaxConcurrentRequestsPerKey)
@@ -168,9 +168,9 @@ func TestExplicitValuesOverrideDefaults(t *testing.T) {
 	if s.MaxN != 4 {
 		t.Errorf("MaxN = %d, want 4", s.MaxN)
 	}
-	if s.MaxSequencesPerRequest != 32 || s.MaxEmbeddingInputs != 512 {
-		t.Errorf("MaxSequencesPerRequest = %d, MaxEmbeddingInputs = %d, want 32 and 512",
-			s.MaxSequencesPerRequest, s.MaxEmbeddingInputs)
+	if s.MaxSequencesPerRequest != 32 || s.MaxEmbeddingInputs != 512 || s.MaxRerankDocuments != 250 {
+		t.Errorf("MaxSequencesPerRequest = %d, MaxEmbeddingInputs = %d, MaxRerankDocuments = %d, want 32, 512 and 250",
+			s.MaxSequencesPerRequest, s.MaxEmbeddingInputs, s.MaxRerankDocuments)
 	}
 	if s.MaxConcurrentRequestsPerKey != 32 {
 		t.Errorf("MaxConcurrentRequestsPerKey = %d, want 32", s.MaxConcurrentRequestsPerKey)

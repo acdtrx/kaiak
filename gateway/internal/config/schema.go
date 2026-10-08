@@ -147,6 +147,7 @@ func (c *schemaCheck) global(v any, path string) {
 		"max_n":                           {Check: c.IntegerAtLeast(1)},
 		"max_sequences_per_request":       {Check: c.IntegerAtLeast(1)},
 		"max_embedding_inputs":            {Check: c.IntegerAtLeast(1)},
+		"max_rerank_documents":            {Check: c.IntegerAtLeast(1)},
 		"max_concurrent_requests_per_key": {Check: c.IntegerAtLeast(1)},
 		"queue":                           {Check: func(v any, path string) { c.queueSettings(v, path) }},
 		"retries":                         {Check: func(v any, path string) { c.retrySettings(v, path) }},

@@ -398,7 +398,7 @@ func TestAnthropicShapedModelList(t *testing.T) {
 		t.Errorf("list %s", w.Body.String())
 	}
 	for _, want := range []string{`"display_name":"msg"`, `"created_at":"1970-01-01T00:00:00Z"`, `"context_length":8192`,
-		`"endpoints":["chat_completions","completions","embeddings","messages","messages_count_tokens","responses"]`} {
+		`"endpoints":["chat_completions","completions","embeddings","messages","messages_count_tokens","rerank","responses"]`} {
 		if !strings.Contains(w.Body.String(), want) {
 			t.Errorf("list lacks %s: %s", want, w.Body.String())
 		}
