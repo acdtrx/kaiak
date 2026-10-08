@@ -157,3 +157,58 @@ step's Result.
 ==> cross-half e2e: ok kaiak/e2e 66s
 all checks passed
 ```
+
+## Result (part 2: review fixes)
+
+### S1 — a hurry after the drain's deadline still sent the final status
+
+**Mechanism**: `controlPlane.finish` folded the hurry context and the drain deadline
+into one child context and passed it to `control.Client.Finish`, which skipped the
+final status only on `errors.Is(ctx.Err(), context.Canceled)`. Once the child's
+deadline passed, its `Err()` stays `DeadlineExceeded` even when the parent hurry is
+cancelled afterwards — so a second stop signal after the deadline but before the flush
+returned still sent the final draining status (up to `finalStatusTimeout`, 2 s),
+against `docs/specs/GATEWAY.md` (Lifecycle → Draining: a hurried drain skips it).
+
+**Before** — `TestHurryAfterTheDrainDeadlineSkipsTheFinalStatus`
+(`gateway/cmd/kaiak/controlplane_test.go`: deadline already past, the hurry cancelled
+from the logger as `usage flushed` is logged, a fake transport counting `/v1/status`
+requests), on the unfixed code:
+
+```
+--- FAIL: TestHurryAfterTheDrainDeadlineSkipsTheFinalStatus (0.00s)
+    controlplane_test.go:111: 1 final status reports after the hurry, want none
+FAIL
+FAIL	kaiak/cmd/kaiak	0.425s
+```
+
+**Fix**: `Client.Finish(hurry context.Context, deadline time.Time)` keeps the two
+apart: the flush runs on `context.WithDeadline(hurry, deadline)`; after it,
+`hurry.Err() != nil` skips the final status, whenever the hurry ended; a flush cut by
+the deadline alone still sends it, on its own `finalStatusTimeout`. `controlPlane.finish`
+passes both through. `TestFinishFlushesThenReportsDrainingUnlessHurried` changes only
+its two call sites (`Finish(hurried, now+1h)`, `Finish(context.Background(), now)`);
+its assertions are unchanged.
+
+**Suite**:
+- `go test -race -count=5 ./cmd/kaiak/ ./internal/control/` → `ok kaiak/cmd/kaiak 10.3s`,
+  `ok kaiak/internal/control 38.3s`; the new test,
+  `TestFinishFlushesThenReportsDrainingUnlessHurried`, `TestStopSignalDrains`,
+  `TestSecondStopSignalSkipsTheRemainingDrain`, `TestSecondSignalCutsTheFinalLogFlush`
+  pass.
+- `scripts/check-gateway.sh` → exit 0: gofmt, vet, staticcheck 2026.2.1; race tests
+  ok for every package incl. `e2e` (106 s); live-test kit lint and self-test passed for
+  all seven setups; `gateway checks passed`.
+
+### S2
+
+**Kept as an intended change** (main session, 2026-10-08). The two output-limit
+rejection messages print integers in plain digits (`default 3000000 is above ceiling
+2000000`) where 0.11.1 printed exponent form for values of a million or more
+(`3e+06`), since step 14 decodes those fields as `int64`. Codes and paths are
+unchanged, and `kaiak-control`, which validates the same configs, already printed
+plain digits: the two halves now give one message. The reviewer's test pinned the old
+text, so it is not ported.
+
+The review report is kept as
+`docs/reviews/2026-10-07-structure/BRANCH-REVIEW-independent.md`.

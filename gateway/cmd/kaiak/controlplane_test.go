@@ -1,7 +1,14 @@
 package main
 
 import (
+	"context"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/url"
 	"os"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -65,3 +72,63 @@ func TestServingStatusCoversTheAppliedConfig(t *testing.T) {
 		t.Errorf("before a config: %+v, want empty collections", none)
 	}
 }
+
+// A second stop signal that comes after the drain's deadline, while the usage flush
+// is ending, still skips the final draining status (docs/specs/GATEWAY.md,
+// Lifecycle → Draining): the hurry is cancelled as the flush logs its end, with the
+// deadline already past.
+func TestHurryAfterTheDrainDeadlineSkipsTheFinalStatus(t *testing.T) {
+	hurry, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var flushed atomic.Bool
+	logger := slog.New(onMessage{msg: "usage flushed", do: func() {
+		flushed.Store(true)
+		cancel()
+	}})
+	u, err := url.Parse("http://control.invalid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var statusRequests atomic.Int64
+	client := control.New(control.Options{
+		URL: u, Token: "test-token", Instance: "test-instance", Logger: logger,
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.Path != "/v1/status" {
+				t.Errorf("unexpected request: %s", req.URL.Path)
+			}
+			statusRequests.Add(1)
+			return &http.Response{StatusCode: http.StatusNoContent, Header: http.Header{},
+				Body: io.NopCloser(strings.NewReader(""))}, nil
+		})},
+	})
+	client.SetDraining()
+	cp := &controlPlane{client: client}
+	cp.finish(hurry, time.Now().Add(-time.Second))
+	if !flushed.Load() || hurry.Err() == nil {
+		t.Fatal("the drain was not hurried at the end of its usage flush")
+	}
+	if n := statusRequests.Load(); n != 0 {
+		t.Errorf("%d final status reports after the hurry, want none", n)
+	}
+}
+
+// onMessage is a log handler that runs do when a record with message msg is logged,
+// and drops every record.
+type onMessage struct {
+	msg string
+	do  func()
+}
+
+func (h onMessage) Enabled(context.Context, slog.Level) bool { return true }
+func (h onMessage) Handle(_ context.Context, r slog.Record) error {
+	if r.Message == h.msg {
+		h.do()
+	}
+	return nil
+}
+func (h onMessage) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h onMessage) WithGroup(string) slog.Handler      { return h }
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

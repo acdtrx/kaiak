@@ -107,11 +107,9 @@ func (cp *controlPlane) beforeDrain() { cp.client.SetDraining() }
 // finish is the control-plane part of the drain's last step (control.Client.Finish),
 // run once the drained requests' records are settled and before the background work
 // stops: the usage flush until deadline, the drain's end, or until hurry ends; then,
-// unless hurried, the final draining status.
+// unless hurry has ended by then, the final draining status.
 func (cp *controlPlane) finish(hurry context.Context, deadline time.Time) {
-	ctx, cancel := context.WithDeadline(hurry, deadline)
-	defer cancel()
-	cp.client.Finish(ctx)
+	cp.client.Finish(hurry, deadline)
 }
 
 // waitFirstTotals holds the listeners back — the gateway is not ready — until the first

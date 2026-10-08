@@ -123,8 +123,8 @@ func TestStatusFollowsRejectionsAndTheDrain(t *testing.T) {
 }
 
 // The drain's last step flushes the usage, then sends a final draining status —
-// unless the drain was hurried (ctx cancelled); a flush that ran to its deadline
-// still reports.
+// unless the drain was hurried (its hurry context ended); a flush that ran to its
+// deadline still reports.
 func TestFinishFlushesThenReportsDrainingUnlessHurried(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))
@@ -136,13 +136,11 @@ func TestFinishFlushesThenReportsDrainingUnlessHurried(t *testing.T) {
 
 	hurried, cancel := context.WithCancel(context.Background())
 	cancel()
-	c.Finish(hurried)
+	c.Finish(hurried, time.Now().Add(time.Hour))
 	if n := len(h.cp.Statuses()); n != 0 {
 		t.Errorf("%d status reports after a hurried finish, want none", n)
 	}
-	past, cancelPast := context.WithDeadline(context.Background(), time.Now())
-	defer cancelPast()
-	c.Finish(past)
+	c.Finish(context.Background(), time.Now())
 	if s := h.nextStatus(); s.State != StateDraining {
 		t.Errorf("final report state %s, want draining", s.State)
 	}

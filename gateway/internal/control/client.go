@@ -399,13 +399,15 @@ const finalStatusTimeout = 2 * time.Second
 // Finish is the client's part of the drain's last step (docs/specs/GATEWAY.md,
 // Lifecycle), called once the drained requests' records are settled and while Run
 // still runs: the usage flush — the filling batch sealed, queued batches sent until
-// acknowledged, or until ctx ends — then a final draining status, bounded by
-// finalStatusTimeout, unless ctx was cancelled: a cancelled ctx is a hurried drain,
-// while one past its deadline still sends the status. What is not delivered is lost
-// with the process.
-func (c *Client) Finish(ctx context.Context) {
-	c.flushUsage(ctx, "drain")
-	if errors.Is(ctx.Err(), context.Canceled) {
+// acknowledged, or until deadline or the end of hurry — then a final draining status,
+// bounded by finalStatusTimeout, unless hurry has ended: an ended hurry is a hurried
+// drain, whenever it ended, while a flush cut by deadline alone still sends the
+// status. What is not delivered is lost with the process.
+func (c *Client) Finish(hurry context.Context, deadline time.Time) {
+	flushCtx, endFlush := context.WithDeadline(hurry, deadline)
+	c.flushUsage(flushCtx, "drain")
+	endFlush()
+	if hurry.Err() != nil {
 		return
 	}
 	statusCtx, cancel := context.WithTimeout(context.Background(), finalStatusTimeout)
