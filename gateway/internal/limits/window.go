@@ -5,6 +5,8 @@ import (
 	"math"
 	"slices"
 	"time"
+
+	"kaiak/internal/config"
 )
 
 // Kind is a limit window's shape (docs/specs/GATEWAY.md, Limits).
@@ -18,6 +20,19 @@ const (
 	// UTCMonth counts the current calendar month, UTC.
 	UTCMonth
 )
+
+// kindOf is the window kind that counts over w.
+func kindOf(w config.Window) Kind {
+	switch w {
+	case config.WindowMinute:
+		return SlidingMinute
+	case config.WindowHour:
+		return UTCHour
+	case config.WindowMonth:
+		return UTCMonth
+	}
+	panic("limits: unknown window " + string(w))
+}
 
 const minuteBuckets = 60
 

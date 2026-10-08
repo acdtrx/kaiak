@@ -39,35 +39,12 @@ func scopeOf(group string) Scope {
 	return ScopeGroup
 }
 
-// Measure is what a limit counts.
-type Measure int
-
-const (
-	MeasureRequests Measure = iota
-	MeasureTokens
-	// MeasureCost counts nano-USD, accounting's cost unit.
-	MeasureCost
-)
-
-// shape is the window kind and measure of a limit type.
-func shape(t config.LimitType) (Kind, Measure) {
-	switch t {
-	case config.LimitRequestsPerMinute:
-		return SlidingMinute, MeasureRequests
-	case config.LimitTokensPerMinute:
-		return SlidingMinute, MeasureTokens
-	case config.LimitTokensPerHour:
-		return UTCHour, MeasureTokens
-	}
-	return UTCMonth, MeasureCost
-}
-
 // effectiveLimit converts a configured limit value into the counter's integer unit:
 // requests and tokens as they are (the schema makes them integers), USD in
 // nano-dollars.
 func effectiveLimit(l config.Limit) int64 {
 	v := l.Value
-	if _, m := shape(l.Type); m == MeasureCost {
+	if l.Type.Measure() == config.MeasureCost {
 		v = math.Round(v * 1e9)
 	}
 	if v >= math.MaxInt64 {
@@ -90,21 +67,18 @@ func keyOf(group string, typ config.LimitType) counterKey {
 	return counterKey{group: group, typ: typ}
 }
 
-// countedTypes are the types every scope is counted in, limited or not: the hour and
-// month windows. Per-minute windows are local shares, kept only for their limits.
-var countedTypes = []config.LimitType{config.LimitTokensPerHour, config.LimitUSDPerMonth}
-
 func (k counterKey) scope() Scope { return scopeOf(k.group) }
 
 // counter is one scope's window of one type. limited: the scope has a limit of the
 // type, limit; a counter without one only counts, and never refuses. refs counts the
 // running requests holding a reservation on it, of any amount: a retained counter
-// stays while one does, whatever its window holds.
+// stays while one does, whatever its window holds. measure is its type's: a cost
+// counter counts nano-USD, accounting's cost unit.
 type counter struct {
 	key     counterKey
 	limited bool
 	limit   config.Limit
-	measure Measure
+	measure config.Measure
 	w       *window
 	refs    int
 }
@@ -251,8 +225,11 @@ func (l *Limiter) sync() {
 		defer func() { l.observeSync(time.Since(start)) }()
 	}
 	next := make(map[counterKey]*counter, len(l.counters))
+	// Every scope is counted in each counted type, limited or not; the per-minute
+	// types are local shares, kept only for their limits.
+	types := config.LimitTypes()
 	build := func(group string, limits []config.Limit) []*counter {
-		out := make([]*counter, 0, len(countedTypes)+len(limits))
+		out := make([]*counter, 0, len(types)+len(limits))
 		take := func(typ config.LimitType) *counter {
 			k := keyOf(group, typ)
 			c, ok := l.counters[k]
@@ -268,8 +245,10 @@ func (l *Limiter) sync() {
 			out = append(out, c)
 			return c
 		}
-		for _, typ := range countedTypes {
-			take(typ)
+		for _, typ := range types {
+			if typ.Counted() {
+				take(typ)
+			}
 		}
 		for _, lim := range limits {
 			c, ok := next[keyOf(group, lim.Type)]
@@ -288,12 +267,12 @@ func (l *Limiter) sync() {
 	l.minute = l.minute[:0]
 	for _, c := range next {
 		l.applyLimit(c)
-		if c.w.kind == SlidingMinute {
+		if !c.key.typ.Counted() {
 			l.minute = append(l.minute, c)
 		}
 	}
 	for k, c := range l.counters {
-		if _, kept := next[k]; !kept && c.w.kind != SlidingMinute {
+		if _, kept := next[k]; !kept && k.typ.Counted() {
 			c.limited, c.limit = false, config.Limit{Type: k.typ}
 			l.retained[k] = c
 		}
@@ -341,9 +320,8 @@ func (l *Limiter) housekeepLocked(now time.Time) {
 // newCounter is the counter of a scope and type no existing counter has: it starts
 // empty (docs/specs/GATEWAY.md, Limits → Config reload). Callers hold l.mu.
 func (l *Limiter) newCounter(k counterKey) *counter {
-	kind, measure := shape(k.typ)
-	c := &counter{key: k, measure: measure, w: newWindow(kind, 0)}
-	c.w.shared = l.shared() && kind != SlidingMinute
+	c := &counter{key: k, measure: k.typ.Measure(), w: newWindow(kindOf(k.typ.Window()), 0)}
+	c.w.shared = l.shared() && k.typ.Counted()
 	return c
 }
 
@@ -358,8 +336,8 @@ func identityAttrs(group string) []any {
 
 // LogValue is an amount in a limit's unit as the logs write it: requests and tokens as
 // they are, nano-USD in dollars, as kaiak.usage.cost_usd.
-func LogValue(m Measure, v int64) any {
-	if m == MeasureCost {
+func LogValue(m config.Measure, v int64) any {
+	if m == config.MeasureCost {
 		return float64(v) / 1e9
 	}
 	return v
@@ -377,7 +355,7 @@ func (l *Limiter) applyLimit(c *counter) {
 		c.w.limit = limit
 		return
 	}
-	if c.w.kind == SlidingMinute {
+	if !c.key.typ.Counted() {
 		c.w.limit = share(limit, l.live)
 		return
 	}
@@ -397,7 +375,7 @@ func (c *counter) admits(now time.Time, need int64) bool {
 	if c.w.admits(now, need) {
 		return true
 	}
-	return c.w.kind == SlidingMinute && need > c.w.limit && need <= effectiveLimit(c.limit) && c.w.usedAt(now) == 0
+	return !c.key.typ.Counted() && need > c.w.limit && need <= effectiveLimit(c.limit) && c.w.usedAt(now) == 0
 }
 
 // inFlightRetry is what a token limit blocked only by requests still running counts
@@ -411,7 +389,7 @@ const inFlightRetry = 2 * time.Second
 // in-flight reservations gone — a token limit only: a request limit keeps counting the
 // request once it settles.
 func (c *counter) blockedByRunning(now time.Time, need int64) bool {
-	if c.measure != MeasureTokens {
+	if c.measure != config.MeasureTokens {
 		return false
 	}
 	held := c.w.inFlight(now)
@@ -422,7 +400,7 @@ func (c *counter) blockedByRunning(now time.Time, need int64) bool {
 	if fits(settled, need, c.w.limit) {
 		return true
 	}
-	return c.w.kind == SlidingMinute && need > c.w.limit && need <= effectiveLimit(c.limit) && settled == 0
+	return !c.key.typ.Counted() && need > c.w.limit && need <= effectiveLimit(c.limit) && settled == 0
 }
 
 // share is a per-minute limit's share among live gateways: rounded down, never below
@@ -459,7 +437,7 @@ func (l *Limiter) applicable(s Subject) []*counter {
 	var out []*counter
 	add := func(cs []*counter) {
 		for _, c := range cs {
-			if (s.Priced || c.measure != MeasureCost) && (!s.RequestsOnly || c.measure == MeasureRequests) {
+			if (s.Priced || c.measure != config.MeasureCost) && (!s.RequestsOnly || c.measure == config.MeasureRequests) {
 				out = append(out, c)
 			}
 		}
@@ -476,9 +454,9 @@ func (l *Limiter) applicable(s Subject) []*counter {
 // below its limit).
 func need(c *counter, tokens int64) int64 {
 	switch c.measure {
-	case MeasureRequests:
+	case config.MeasureRequests:
 		return 1
-	case MeasureTokens:
+	case config.MeasureTokens:
 		return tokens
 	}
 	return 0
@@ -514,7 +492,7 @@ func (l *Limiter) Reserve(s Subject, tokens int64) (*Reservation, *Rejection) {
 	// The outage first: deciding it on every request is what logs its start and end.
 	if l.outageLocked(now) || l.noTotalsLocked() {
 		for _, c := range counters {
-			if c.limited && c.measure == MeasureCost {
+			if c.limited && c.measure == config.MeasureCost {
 				return nil, &Rejection{Scope: c.key.scope(), Group: c.key.group, Type: c.limit.Type, Measure: c.measure,
 					Limit: c.w.limit, Max: effectiveLimit(c.limit), Unavailable: true}
 			}
@@ -584,7 +562,7 @@ func (l *Limiter) Settle(r *Reservation, recs ...accounting.UsageRecord) {
 	now := l.now()
 	for _, hc := range r.holds {
 		hc.c.refs--
-		if hc.c.measure == MeasureRequests {
+		if hc.c.measure == config.MeasureRequests {
 			hc.c.w.keep(now, hc.h)
 			l.checkCountLocked(hc.c)
 			continue
@@ -622,8 +600,8 @@ func (l *Limiter) checkCountLocked(c *counter) {
 // load the backend — tokens_in + tokens_cache_write + tokens_out (reasoning is inside
 // tokens_out). Input read from the cache does not count: a prefix-cache hit costs the
 // backend almost nothing.
-func amountOf(m Measure, rec accounting.UsageRecord) int64 {
-	if m == MeasureCost {
+func amountOf(m config.Measure, rec accounting.UsageRecord) int64 {
+	if m == config.MeasureCost {
 		return rec.CostNanoUSD
 	}
 	var tokens int64

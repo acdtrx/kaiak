@@ -217,17 +217,23 @@ func (c *semanticCheck) counters() {
 	}
 }
 
-// countCounters counts the counters a config allocates without building them: an hour
-// and a month counter for global and every group, limited or not, and one per
-// effective per-minute limit — a group's own per-minute types, plus each type its
-// parent's child_defaults give that it has no own limit of. Only the direct parent is
-// read, so the count holds whatever tree() finds; a group whose parent has no entry
-// counts its own limits alone.
+// countCounters counts the counters a config allocates without building them: one per
+// counted limit type (the hour and month counts) for global and every group, limited
+// or not, and one per effective per-minute limit — a group's own per-minute types,
+// plus each type its parent's child_defaults give that it has no own limit of. Only
+// the direct parent is read, so the count holds whatever tree() finds; a group whose
+// parent has no entry counts its own limits alone.
 func countCounters(doc *document) int {
+	perScope := 0
+	for _, t := range LimitTypes() {
+		if t.Counted() {
+			perScope++
+		}
+	}
 	perMinute := func(limits []limitDoc) map[string]bool {
 		types := map[string]bool{}
 		for _, l := range limits {
-			if l.Type == string(LimitRequestsPerMinute) || l.Type == string(LimitTokensPerMinute) {
+			if !LimitType(l.Type).Counted() {
 				types[l.Type] = true
 			}
 		}
@@ -235,10 +241,10 @@ func countCounters(doc *document) int {
 	}
 	// defaults is each parent's child_defaults per-minute types, built once.
 	defaults := map[string]map[string]bool{}
-	total := 2 + len(perMinute(doc.Global.Limits))
+	total := perScope + len(perMinute(doc.Global.Limits))
 	for _, group := range doc.Groups {
 		own := perMinute(group.Limits)
-		total += 2 + len(own)
+		total += perScope + len(own)
 		parent, ok := doc.Groups[group.Parent]
 		if !ok || parent.ChildDefaults == nil {
 			continue

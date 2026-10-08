@@ -99,17 +99,20 @@ var (
 	keyedBackendTypes = []string{
 		string(BackendOpenAI), string(BackendAzureOpenAI), string(BackendAnthropic), string(BackendAzureAnthropic),
 	}
-	limitTypes = []string{
-		string(LimitRequestsPerMinute), string(LimitTokensPerMinute), string(LimitTokensPerHour), string(LimitUSDPerMonth),
-	}
-	// Limit types whose value counts requests or tokens, so it must be an integer.
-	countLimitTypes = []string{
-		string(LimitRequestsPerMinute), string(LimitTokensPerMinute), string(LimitTokensPerHour),
-	}
-	priceUnits = []string{
+	limitTypeNames = limitTypeEnum()
+	priceUnits     = []string{
 		string(UnitTokensIn), string(UnitTokensCached), string(UnitTokensCacheWrite), string(UnitTokensOut),
 	}
 )
+
+// limitTypeEnum is the limit type names: every limit type, in order.
+func limitTypeEnum() []string {
+	var names []string
+	for _, t := range LimitTypes() {
+		names = append(names, string(t))
+	}
+	return names
+}
 
 // checkSchema validates the generic JSON tree against the config schema.
 func checkSchema(tree any) []Issue {
@@ -348,7 +351,7 @@ func (c *schemaCheck) limits(v any, path string) {
 
 func (c *schemaCheck) limit(v any, path string) {
 	m := c.Object(v, path, map[string]schemacheck.Field{
-		"type":  {Required: true, Check: c.Enum(limitTypes)},
+		"type":  {Required: true, Check: c.Enum(limitTypeNames)},
 		"value": {Required: true, Check: c.NumberBetween(0, schemacheck.MaxSafeInteger)},
 	})
 	if m == nil {
@@ -356,7 +359,9 @@ func (c *schemaCheck) limit(v any, path string) {
 	}
 	limitType, _ := m["type"].(string)
 	value, isNumber := m["value"].(json.Number)
-	if isNumber && slices.Contains(countLimitTypes, limitType) && !schemacheck.IsInteger(schemacheck.NumberValue(value)) {
+	// A value counting requests or tokens must be an integer.
+	if isNumber && slices.Contains(limitTypeNames, limitType) && LimitType(limitType).Measure() != MeasureCost &&
+		!schemacheck.IsInteger(schemacheck.NumberValue(value)) {
 		c.Fail(schemacheck.Pointer(path, "value"), "must be an integer for "+limitType)
 	}
 }

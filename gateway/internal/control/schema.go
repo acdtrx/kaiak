@@ -2,6 +2,7 @@ package control
 
 import (
 	"regexp"
+	"slices"
 
 	"kaiak/internal/config"
 	"kaiak/internal/schemacheck"
@@ -25,12 +26,23 @@ var (
 const MaxBatchRecords = 500
 
 var (
-	// Limit types whose windows the control plane counts; per-minute limits stay local.
-	totalsLimitTypes = []string{string(config.LimitTokensPerHour), string(config.LimitUSDPerMonth)}
-	tokenUnits       = []config.Unit{
+	windowTypes = countedLimitTypes()
+	tokenUnits  = []config.Unit{
 		config.UnitTokensIn, config.UnitTokensCached, config.UnitTokensCacheWrite, config.UnitTokensOut, config.UnitTokensReasoning,
 	}
 )
+
+// countedLimitTypes is the totals' window types: the limit types the control plane
+// counts, in order.
+func countedLimitTypes() []string {
+	var names []string
+	for _, t := range config.LimitTypes() {
+		if t.Counted() {
+			names = append(names, string(t))
+		}
+	}
+	return names
+}
 
 const (
 	publicModelNameWhat = `a model name not ending in "/props"`
@@ -125,7 +137,7 @@ func (w *walker) totals(v any, path string) {
 func (w *walker) totalsWindow(v any, path string) {
 	m := w.Object(v, path, map[string]schemacheck.Field{
 		"group":        {Check: w.id()},
-		"type":         {Required: true, Check: w.Enum(totalsLimitTypes)},
+		"type":         {Required: true, Check: w.Enum(windowTypes)},
 		"window_start": {Required: true, Check: w.timestamp()},
 		"used":         {Required: true, Check: w.StringMatching(amountPattern, "a string of at most 18 decimal digits, no leading zeros")},
 	})
@@ -133,18 +145,21 @@ func (w *walker) totalsWindow(v any, path string) {
 		return
 	}
 	start, isString := m["window_start"].(string)
-	if !isString {
+	typ, _ := m["type"].(string)
+	if !isString || !slices.Contains(windowTypes, typ) {
 		return
 	}
-	switch m["type"] {
-	case string(config.LimitTokensPerHour):
+	switch window := config.LimitType(typ).Window(); window {
+	case config.WindowHour:
 		if !hourStartPattern.MatchString(start) {
 			w.Fail(schemacheck.Pointer(path, "window_start"), "must be the top of an hour")
 		}
-	case string(config.LimitUSDPerMonth):
+	case config.WindowMonth:
 		if !monthStartPattern.MatchString(start) {
 			w.Fail(schemacheck.Pointer(path, "window_start"), "must be the first of a month at midnight")
 		}
+	default:
+		panic("control: no window start shape for " + string(window))
 	}
 }
 

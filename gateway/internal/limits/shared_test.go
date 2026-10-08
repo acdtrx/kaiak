@@ -84,7 +84,7 @@ func TestSharedWindowsCountPushedTotalsPlusOwnUsage(t *testing.T) {
 	if got := used(t, l, "w", config.LimitTokensPerHour); got != 650 {
 		t.Errorf("hour used %d, want 600 pushed + 50 own", got)
 	}
-	if rej := refused(t, l, workload, 10); rej.Group != "t" || rej.Measure != MeasureCost {
+	if rej := refused(t, l, workload, 10); rej.Group != "t" || rej.Measure != config.MeasureCost {
 		t.Errorf("rejection %+v, want the team's USD limit", rej)
 	}
 	// m2 is unpriced: no budget counts it.
@@ -448,7 +448,7 @@ func TestTotalsApplyWhateverTheConfig(t *testing.T) {
 	hour := func() int64 { return used(t, l, "w", config.LimitTokensPerHour) }
 	spent := pushedWindow("t", config.LimitUSDPerMonth, "2026-09-01T00:00:00Z", 1_100_000_000)
 	l.TakeTotals(Totals{Windows: []PushedWindow{spent}}, 0)
-	if rej := refused(t, l, workload, 10); rej.Measure != MeasureCost || rej.Unavailable {
+	if rej := refused(t, l, workload, 10); rej.Measure != config.MeasureCost || rej.Unavailable {
 		t.Fatalf("rejection %+v, want the spent budget", rej)
 	}
 	// A request on m2 (unpriced: no budget refuses it) is recorded in batch 1.
@@ -467,7 +467,7 @@ func TestTotalsApplyWhateverTheConfig(t *testing.T) {
 		t.Errorf("workload hour used %d, want the pushed 10 and batch 1 retired", got)
 	}
 	c.advance(time.Minute + time.Millisecond)
-	if rej := refused(t, l, workload, 10); rej.Measure != MeasureCost || rej.Unavailable {
+	if rej := refused(t, l, workload, 10); rej.Measure != config.MeasureCost || rej.Unavailable {
 		t.Errorf("rejection %+v past the grace, want the spent budget", rej)
 	}
 
@@ -500,7 +500,7 @@ func TestUnpricedModelsAreNeverRefusedForBudgets(t *testing.T) {
 	l.TakeTotals(Totals{Windows: []PushedWindow{
 		pushedWindow("", config.LimitUSDPerMonth, "2026-09-01T00:00:00Z", 1_000_000_000),
 	}}, 0)
-	if rej := refused(t, l, workload, 10); rej.Unavailable || rej.Measure != MeasureCost {
+	if rej := refused(t, l, workload, 10); rej.Unavailable || rej.Measure != config.MeasureCost {
 		t.Errorf("m1 with the budget spent: %+v, want the USD limit refusing", rej)
 	}
 	res := admitN(t, l, workload.on("m2"), 1, 10)[0]
@@ -725,7 +725,7 @@ func TestEditedLimitKeepsTheSpend(t *testing.T) {
 		pushedWindow("t", config.LimitUSDPerMonth, "2026-09-01T00:00:00Z", 900_000_000),
 	}}, 0)
 	l.Settle(admitN(t, l, workload, 1, 10)[0], inGeneration(1, record(10, 0, 0, 0, 0, 100_000_000)))
-	if rej := refused(t, l, workload, 10); rej.Measure != MeasureCost {
+	if rej := refused(t, l, workload, 10); rej.Measure != config.MeasureCost {
 		t.Fatalf("rejection %+v, want the spent USD limit", rej)
 	}
 
@@ -801,7 +801,7 @@ func TestNoTotalsYetRefusesMoneyLimitedModels(t *testing.T) {
 	// is spent, so budget_exceeded.
 	spent := pushedWindow("t", config.LimitUSDPerMonth, "2026-09-01T00:00:00Z", 1_000_000_000)
 	l.TakeTotals(Totals{Windows: []PushedWindow{spent}}, 0)
-	if rej := refused(t, l, workload, 10); rej.Unavailable || rej.Measure != MeasureCost {
+	if rej := refused(t, l, workload, 10); rej.Unavailable || rej.Measure != config.MeasureCost {
 		t.Fatalf("rejection %+v after the totals, want the spent budget", rej)
 	}
 	select {

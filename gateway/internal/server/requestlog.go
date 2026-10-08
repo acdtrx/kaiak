@@ -164,7 +164,7 @@ func limitAttrs(rej *limits.Rejection) []slog.Attr {
 		return attrs
 	}
 	attrs = append(attrs, value("kaiak.limit.used", rej.Used))
-	if rej.Measure == limits.MeasureTokens {
+	if rej.Measure == config.MeasureTokens {
 		attrs = append(attrs, slog.Int64("kaiak.limit.requested", rej.Requested))
 	}
 	return attrs

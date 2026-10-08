@@ -7,6 +7,7 @@ import (
 	"maps"
 	"math"
 	"slices"
+	"strconv"
 	"time"
 
 	"kaiak/internal/schemacheck"
@@ -74,6 +75,79 @@ const (
 	LimitTokensPerHour     LimitType = "tokens_per_hour"
 	LimitUSDPerMonth       LimitType = "usd_per_month"
 )
+
+// Window is the span a limit type counts over; its value names the span in client
+// messages ("per minute").
+type Window string
+
+const (
+	// WindowMinute is the last 60 seconds, sliding.
+	WindowMinute Window = "minute"
+	// WindowHour is the current clock hour, UTC.
+	WindowHour Window = "hour"
+	// WindowMonth is the current calendar month, UTC.
+	WindowMonth Window = "month"
+)
+
+// Measure is what a limit type counts.
+type Measure int
+
+const (
+	MeasureRequests Measure = iota
+	MeasureTokens
+	// MeasureCost counts USD.
+	MeasureCost
+)
+
+// limitTypeRow is what a limit type is: the window it counts over, what it counts, and
+// whether the control plane counts it.
+type limitTypeRow struct {
+	typ     LimitType
+	window  Window
+	measure Measure
+	counted bool
+}
+
+// limitTypeTable is every limit type, in the schema's order (docs/specs/GATEWAY.md,
+// Limits). A counted type is counted for every scope, limited or not, and in
+// control-plane mode its totals come from the control plane; the others are local
+// per-minute shares, counted only for the limits that have them.
+var limitTypeTable = []limitTypeRow{
+	{LimitRequestsPerMinute, WindowMinute, MeasureRequests, false},
+	{LimitTokensPerMinute, WindowMinute, MeasureTokens, false},
+	{LimitTokensPerHour, WindowHour, MeasureTokens, true},
+	{LimitUSDPerMonth, WindowMonth, MeasureCost, true},
+}
+
+// LimitTypes is every limit type, in the schema's order.
+func LimitTypes() []LimitType {
+	out := make([]LimitType, len(limitTypeTable))
+	for i, row := range limitTypeTable {
+		out[i] = row.typ
+	}
+	return out
+}
+
+// row is t's row of the limit-type table. Only valid types get past the schema, so an
+// unknown one is a programming error.
+func (t LimitType) row() limitTypeRow {
+	for _, row := range limitTypeTable {
+		if row.typ == t {
+			return row
+		}
+	}
+	panic("config: unknown limit type " + strconv.Quote(string(t)))
+}
+
+// Window is the span t counts over.
+func (t LimitType) Window() Window { return t.row().window }
+
+// Measure is what t counts.
+func (t LimitType) Measure() Measure { return t.row().measure }
+
+// Counted reports whether the control plane counts t; every scope keeps a count of
+// it, limited or not.
+func (t LimitType) Counted() bool { return t.row().counted }
 
 // Unit is a usage unit: what usage records, prices and limits count
 // (docs/specs/CONTROL-PROTOCOL.md, Prices). The token units priced are disjoint:

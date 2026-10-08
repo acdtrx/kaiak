@@ -99,8 +99,7 @@ func (l *Limiter) TakeTotals(t Totals, counted uint64) {
 // long-lived stream would keep every scope it ever saw. Callers hold l.mu.
 func (l *Limiter) prunePushedLocked(now time.Time) {
 	for k, w := range l.pushed {
-		kind, _ := shape(k.typ)
-		if w.Start.Before(windowStart(kind, now)) {
+		if w.Start.Before(windowStart(kindOf(k.typ.Window()), now)) {
 			delete(l.pushed, k)
 		}
 	}
@@ -118,7 +117,7 @@ func (l *Limiter) warnSmallSharesLocked() {
 	}
 	l.sharesChecked.snapshot, l.sharesChecked.live = l.applied, l.live
 	for _, c := range l.counters {
-		if c.limit.Type != config.LimitTokensPerMinute || c.w.limit >= effectiveLimit(c.limit) {
+		if c.key.typ.Counted() || c.measure != config.MeasureTokens || c.w.limit >= effectiveLimit(c.limit) {
 			continue
 		}
 		group := l.applied.Groups[c.key.group]

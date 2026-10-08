@@ -286,12 +286,12 @@ func TestOutputMultiplicityReservationSaturates(t *testing.T) {
 // room; only one above the full limit is too large (M7).
 func TestTooLargeMeansAboveTheFullLimit(t *testing.T) {
 	share := errLimited(&limits.Rejection{Scope: limits.ScopeGroup, Group: "research", Type: config.LimitTokensPerMinute,
-		Measure: limits.MeasureTokens, Limit: 15000, Max: 60000, Used: 16484, Requested: 16484, RetryAfter: 30 * time.Second})
+		Measure: config.MeasureTokens, Limit: 15000, Max: 60000, Used: 16484, Requested: 16484, RetryAfter: 30 * time.Second})
 	if strings.Contains(share.message, "too large") || !strings.Contains(share.message, "limit of 15000 tokens per minute") {
 		t.Errorf("above the share: %q", share.message)
 	}
 	full := errLimited(&limits.Rejection{Scope: limits.ScopeGroup, Group: "research", Type: config.LimitTokensPerMinute,
-		Measure: limits.MeasureTokens, Limit: 15000, Max: 60000, Requested: 60001})
+		Measure: config.MeasureTokens, Limit: 15000, Max: 60000, Requested: 60001})
 	if !strings.Contains(full.message, "Request too large") || !strings.Contains(full.message, "limit is 60000 tokens") {
 		t.Errorf("above the full limit: %q", full.message)
 	}

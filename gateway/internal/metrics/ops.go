@@ -102,12 +102,9 @@ const (
 var queueReasons = []string{QueueFull, QueueTimeout}
 
 // limitScopeKinds are the scope_kind label values of kaiak_limit_rejections_total:
-// the kinds of scope a limit belongs to (limits.Scope).
+// the kinds of scope a limit belongs to (limits.Scope). Its type label values are
+// config.LimitTypes().
 var limitScopeKinds = []string{"global", "group"}
-
-// limitTypes are its type label values: every limit type the config declares.
-var limitTypes = []config.LimitType{config.LimitRequestsPerMinute, config.LimitTokensPerMinute,
-	config.LimitTokensPerHour, config.LimitUSDPerMonth}
 
 // configTriggers and configResults are the label values of kaiak_config_loads_total:
 // the file loader's triggers and the control client's (control.Trigger*).
@@ -202,7 +199,7 @@ func NewOps(reg *Registry, router *routing.Router, holder *config.Holder) *Ops {
 		o.errors.Add(0, string(c))
 	}
 	for _, kind := range limitScopeKinds {
-		for _, typ := range limitTypes {
+		for _, typ := range config.LimitTypes() {
 			o.limitRejections.Add(0, kind, string(typ))
 		}
 	}
@@ -430,7 +427,7 @@ func (o *Ops) CountError(c ErrorClass) {
 // CountLimitRejection counts one request refused by a limit of type typ belonging to
 // a scope of kind scopeKind (global, group).
 func (o *Ops) CountLimitRejection(scopeKind string, typ config.LimitType) {
-	if !slices.Contains(limitScopeKinds, scopeKind) || !slices.Contains(limitTypes, typ) {
+	if !slices.Contains(limitScopeKinds, scopeKind) || !slices.Contains(config.LimitTypes(), typ) {
 		panic("metrics: unknown limit " + scopeKind + " " + string(typ))
 	}
 	o.limitRejections.Inc(scopeKind, string(typ))

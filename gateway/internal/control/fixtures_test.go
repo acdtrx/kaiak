@@ -224,3 +224,34 @@ func TestDuplicateMemberFixtures(t *testing.T) {
 		})
 	}
 }
+
+// The totals' window types are the limit types the control plane counts: the
+// walker's enum and totals.schema.json's both, in the table's order.
+func TestTotalsWindowTypesAreTheCountedLimitTypes(t *testing.T) {
+	var schema struct {
+		Defs struct {
+			Window struct {
+				Properties struct {
+					Type struct {
+						Enum []string `json:"enum"`
+					} `json:"type"`
+				} `json:"properties"`
+			} `json:"window"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(fixturetest.Read(t, fixturetest.SchemaFile("totals.schema.json")), &schema); err != nil {
+		t.Fatal(err)
+	}
+	var counted []string
+	for _, typ := range config.LimitTypes() {
+		if typ.Counted() {
+			counted = append(counted, string(typ))
+		}
+	}
+	if !slices.Equal(windowTypes, counted) {
+		t.Errorf("walker %v, counted types %v", windowTypes, counted)
+	}
+	if enum := schema.Defs.Window.Properties.Type.Enum; !slices.Equal(counted, enum) {
+		t.Errorf("counted types %v, schema enum %v", counted, enum)
+	}
+}

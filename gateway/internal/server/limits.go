@@ -85,23 +85,23 @@ func errLimited(r *limits.Rejection) *apiError {
 	e := &apiError{status: http.StatusTooManyRequests, code: "rate_limit_exceeded", class: metrics.ErrorRateLimited}
 	retry := time.Duration(ceilSeconds(r.RetryAfter)) * time.Second
 	switch r.Measure {
-	case limits.MeasureRequests:
+	case config.MeasureRequests:
 		e.errType = "requests"
-		e.message = fmt.Sprintf("Rate limit reached: %s limit of %d requests per minute (used %d). Retry after %s.",
-			r.Scope, r.Limit, r.Used, retry)
-	case limits.MeasureTokens:
+		e.message = fmt.Sprintf("Rate limit reached: %s limit of %d requests per %s (used %d). Retry after %s.",
+			r.Scope, r.Limit, r.Type.Window(), r.Used, retry)
+	case config.MeasureTokens:
 		e.errType = "tokens"
 		e.message = fmt.Sprintf("Rate limit reached: %s limit of %d tokens per %s (used %d, requested %d). Retry after %s.",
-			r.Scope, r.Limit, tokenWindow(r), r.Used, r.Requested, retry)
+			r.Scope, r.Limit, r.Type.Window(), r.Used, r.Requested, retry)
 		if r.Requested > r.Max {
 			e.message = fmt.Sprintf("Request too large: it needs %d tokens (input estimate plus output limit per sequence) and the %s limit is %d tokens per %s.",
-				r.Requested, r.Scope, r.Max, tokenWindow(r))
+				r.Requested, r.Scope, r.Max, r.Type.Window())
 		}
 	default:
 		e.errType = "budget"
 		e.code, e.class = "budget_exceeded", metrics.ErrorBudgetExceeded
-		e.message = fmt.Sprintf("Budget exhausted: %s limit of %s USD per month reached (used %s USD). Retry after %s.",
-			r.Scope, usd(r.Limit), usd(r.Used), retry)
+		e.message = fmt.Sprintf("Budget exhausted: %s limit of %s USD per %s reached (used %s USD). Retry after %s.",
+			r.Scope, usd(r.Limit), r.Type.Window(), usd(r.Used), retry)
 	}
 	return e
 }
@@ -116,13 +116,6 @@ func errBudgetUnavailable(r *limits.Rejection) *apiError {
 	return &apiError{status: http.StatusServiceUnavailable, errType: typeServer, code: "budget_unavailable", class: metrics.ErrorBudgetUnavailable,
 		message: fmt.Sprintf("Budget unavailable: the model has a %s USD limit and its spend is not known "+
 			"(the budget service is unreachable or has not reported it yet); requests to it are refused until it is.", r.Scope)}
-}
-
-func tokenWindow(r *limits.Rejection) string {
-	if r.Type == config.LimitTokensPerHour {
-		return "hour"
-	}
-	return "minute"
 }
 
 // usd writes nano-USD as dollars, with as many digits as the amount needs.

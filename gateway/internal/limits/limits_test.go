@@ -177,7 +177,7 @@ func TestEveryScopeIsEnforced(t *testing.T) {
 			l := newClock("2026-09-24T10:00:00Z").limiter(holderOf(snapshot(t, c.doc)))
 			admitN(t, l, c.subject, 2, 10)
 			rej := refused(t, l, c.subject, 10)
-			if rej.Scope != c.scope || rej.Group != c.group || rej.Measure != MeasureRequests || rej.Limit != 2 || rej.Used != 2 {
+			if rej.Scope != c.scope || rej.Group != c.group || rej.Measure != config.MeasureRequests || rej.Limit != 2 || rej.Used != 2 {
 				t.Errorf("rejection %+v, want scope %s %q, 2 of 2 used", rej, c.scope, c.group)
 			}
 		})
@@ -358,7 +358,7 @@ func TestTokenLimitRefusesAnOversizeRequest(t *testing.T) {
 	l := newClock("2026-09-24T10:00:00Z").limiter(holderOf(snapshot(t, limitsDoc{
 		workload: `[{ "type": "tokens_per_minute", "value": 1000 }]`})))
 	rej := refused(t, l, workload, 1001)
-	if rej.Measure != MeasureTokens || rej.Requested != 1001 || rej.Used != 0 {
+	if rej.Measure != config.MeasureTokens || rej.Requested != 1001 || rej.Used != 0 {
 		t.Errorf("rejection %+v", rej)
 	}
 }
@@ -376,7 +376,7 @@ func TestAHugeReservationCannotWrapTheCounter(t *testing.T) {
 			l.Settle(res, record(10, 0, 0, 0, 0, 0))
 
 			rej := refused(t, l, workload, math.MaxInt64)
-			if rej.Measure != MeasureTokens || rej.Requested != math.MaxInt64 || rej.Requested <= rej.Max {
+			if rej.Measure != config.MeasureTokens || rej.Requested != math.MaxInt64 || rej.Requested <= rej.Max {
 				t.Errorf("rejection %+v, want a request too large for the limit", rej)
 			}
 			if got := used(t, l, "t", typ); got != 10 {
@@ -400,7 +400,7 @@ func TestCostLimitRefusesOnceTheBudgetIsSpent(t *testing.T) {
 	// …and the budget refuses once the settled cost reaches it (overshoot allowed).
 	l.Settle(first[1], record(1, 0, 0, 1, 0, 1500))
 	rej := refused(t, l, workload, 10)
-	if rej.Measure != MeasureCost || rej.Group != "t" || rej.Limit != 2000 || rej.Used != 3000 {
+	if rej.Measure != config.MeasureCost || rej.Group != "t" || rej.Limit != 2000 || rej.Used != 3000 {
 		t.Errorf("rejection %+v", rej)
 	}
 	if want := at("2026-10-01T00:00:00Z").Sub(c.now()); rej.RetryAfter != want {

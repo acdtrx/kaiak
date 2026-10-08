@@ -646,9 +646,9 @@ func errorAnswers() []struct {
 		{"errHostedMember", errHostedMember("mcp_servers")},
 		{"errShuttingDown", errShuttingDown()},
 		{"errConfigNotLoaded", errConfigNotLoaded()},
-		{"errLimited", errLimited(&limits.Rejection{Measure: limits.MeasureRequests})},
-		{"errLimited", errLimited(&limits.Rejection{Measure: limits.MeasureTokens})},
-		{"errLimited", errLimited(&limits.Rejection{Measure: limits.MeasureCost})},
+		{"errLimited", errLimited(&limits.Rejection{Type: config.LimitRequestsPerMinute, Measure: config.MeasureRequests})},
+		{"errLimited", errLimited(&limits.Rejection{Type: config.LimitTokensPerMinute, Measure: config.MeasureTokens})},
+		{"errLimited", errLimited(&limits.Rejection{Type: config.LimitUSDPerMonth, Measure: config.MeasureCost})},
 		{"errBudgetUnavailable", errBudgetUnavailable(&limits.Rejection{})},
 	}
 	// The answers to a failure to get a response, by provider code and by the kind of a

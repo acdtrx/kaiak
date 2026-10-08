@@ -1,15 +1,21 @@
 package config
 
 // The schema walker and the resolved snapshot against protocol/schema/config.schema.json
-// itself, for the facts both state: the backend types, and the defaults of omitted
-// fields.
+// itself, for the facts both state: the backend types, the limit types, and the
+// defaults of omitted fields.
 
 import (
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"maps"
+	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,6 +50,99 @@ func TestBackendTypesAreTheSchemaEnum(t *testing.T) {
 	}
 	if enum := schema.Defs.Backend.Properties.Type.Enum; !slices.Equal(backendTypes, enum) {
 		t.Errorf("walker %v, schema enum %v", backendTypes, enum)
+	}
+}
+
+// Every LimitType constant of the package has a row of the limit-type table, and the
+// table has no other row.
+func TestEveryLimitTypeHasARow(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var consts []LimitType
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, decl := range f.Decls {
+			gen, ok := decl.(*ast.GenDecl)
+			if !ok || gen.Tok != token.CONST {
+				continue
+			}
+			for _, spec := range gen.Specs {
+				v := spec.(*ast.ValueSpec)
+				if typ, ok := v.Type.(*ast.Ident); !ok || typ.Name != "LimitType" {
+					continue
+				}
+				for _, value := range v.Values {
+					name, err := strconv.Unquote(value.(*ast.BasicLit).Value)
+					if err != nil {
+						t.Fatal(err)
+					}
+					consts = append(consts, LimitType(name))
+				}
+			}
+		}
+	}
+	if len(consts) == 0 {
+		t.Fatal("no LimitType constants found")
+	}
+	types := LimitTypes()
+	for _, c := range consts {
+		if !slices.Contains(types, c) {
+			t.Errorf("limit type %q has no row", c)
+		}
+	}
+	if len(types) != len(consts) {
+		t.Errorf("table rows %v, constants %v", types, consts)
+	}
+}
+
+// The walker admits the schema's limit types, in the table's order, and requires an
+// integer value for the same types the schema does: every type that does not count
+// cost.
+func TestLimitTypesAreTheSchemaEnum(t *testing.T) {
+	var schema struct {
+		Defs struct {
+			Limit struct {
+				Properties struct {
+					Type struct {
+						Enum []string `json:"enum"`
+					} `json:"type"`
+				} `json:"properties"`
+				If struct {
+					Properties struct {
+						Type struct {
+							Enum []string `json:"enum"`
+						} `json:"type"`
+					} `json:"properties"`
+				} `json:"if"`
+			} `json:"limit"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(fixturetest.Read(t, fixturetest.SchemaFile("config.schema.json")), &schema); err != nil {
+		t.Fatal(err)
+	}
+	var all, integer []string
+	for _, typ := range LimitTypes() {
+		all = append(all, string(typ))
+		if typ.Measure() != MeasureCost {
+			integer = append(integer, string(typ))
+		}
+	}
+	if !slices.Equal(limitTypeNames, all) {
+		t.Errorf("walker %v, table %v", limitTypeNames, all)
+	}
+	if enum := schema.Defs.Limit.Properties.Type.Enum; !slices.Equal(all, enum) {
+		t.Errorf("table %v, schema enum %v", all, enum)
+	}
+	if enum := schema.Defs.Limit.If.Properties.Type.Enum; !slices.Equal(integer, enum) {
+		t.Errorf("integer types: table %v, schema %v", integer, enum)
 	}
 }
 

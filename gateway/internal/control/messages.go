@@ -54,8 +54,8 @@ type TotalsWindow struct {
 	// Group is the group the limit belongs to; "" for a global limit.
 	Group string           `json:"group,omitempty"`
 	Type  config.LimitType `json:"type"`
-	// WindowStart is the top of the hour (tokens_per_hour) or the first of the month
-	// (usd_per_month), UTC, by the control plane's clock.
+	// WindowStart is the start of the type's window (the top of an hour, the first of a
+	// month), UTC, by the control plane's clock.
 	WindowStart time.Time `json:"window_start"`
 	// Used counts tokens (tokens_in + tokens_cache_write + tokens_out; cache reads do
 	// not count) or nano-USD. It travels as a string of digits: a JavaScript number is exact only

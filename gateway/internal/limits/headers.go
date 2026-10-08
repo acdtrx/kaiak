@@ -15,7 +15,7 @@ type Rejection struct {
 	Scope   Scope
 	Group   string
 	Type    config.LimitType
-	Measure Measure
+	Measure config.Measure
 	// Limit, Used and Requested are in the limit's unit (requests, tokens, nano-USD).
 	// Limit is what this gateway enforces — a per-minute window's share in
 	// control-plane mode; Max is the limit's full value, which a request above can
@@ -60,9 +60,9 @@ func headersFor(counters []*counter, now time.Time, running []*counter) Headers 
 		}
 		var slot **HeaderValues
 		switch c.measure {
-		case MeasureRequests:
+		case config.MeasureRequests:
 			slot = &h.Requests
-		case MeasureTokens:
+		case config.MeasureTokens:
 			slot = &h.Tokens
 		default:
 			continue
