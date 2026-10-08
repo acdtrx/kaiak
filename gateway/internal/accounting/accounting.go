@@ -48,8 +48,8 @@ type UsageRecord struct {
 	// plane shows its batch counted.
 	Generation uint64 `json:"-"`
 	// Operation is the request's gen_ai.operation.name, from its endpoint: chat,
-	// text_completion or embeddings. Never sent: the protocol has no field for it; the
-	// usage metrics label the record with it.
+	// text_completion, embeddings or rerank. Never sent: the protocol has no field
+	// for it; the usage metrics label the record with it.
 	Operation string `json:"-"`
 }
 

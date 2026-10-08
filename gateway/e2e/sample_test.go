@@ -41,6 +41,9 @@ func TestAcrossHalves(t *testing.T) {
 
 	backend := fakebackend.New()
 	defer backend.Close()
+	// The reranker is deployed on the llama-server backend ls: rerank answers in
+	// llama-server's shape.
+	backend.SetRerankShape(fakebackend.LlamaServerRerank)
 	// Answers every request with a 400 and no usage: requests routed to it spend
 	// nothing, so they show a gateway's budget decision without changing any total.
 	refuser := fakebackend.New()
@@ -105,6 +108,15 @@ func TestAcrossHalves(t *testing.T) {
 	allCounted := func(t *testing.T, limit time.Duration) {
 		t.Helper()
 		sample.totals.wait(t, fmt.Sprintf("the hourly token total at %d", tokens.total()), limit, tokens.counted)
+	}
+	// researchSpent is what the priced answers to the first sample cost, in nano-USD:
+	// the team research's monthly USD total, which that sample must show.
+	var researchSpent int64
+	spentCounted := func(t *testing.T, what string) {
+		t.Helper()
+		sample.totals.wait(t, fmt.Sprintf("%s: research's USD total at %d", what, researchSpent), waitLimit, func(tot control.Totals) bool {
+			return used(tot, "research", config.LimitUSDPerMonth) == researchSpent
+		})
 	}
 
 	t.Run("the per-minute limit is split between the two gateways", func(t *testing.T) {
@@ -242,6 +254,52 @@ func TestAcrossHalves(t *testing.T) {
 		allCounted(t, waitLimit)
 	})
 
+	t.Run("a rerank answer settles at the sample with its cost; the sample's documents cap reaches the gateways", func(t *testing.T) {
+		// 40 prompt tokens at $1 per million: 40000 nano-USD, counted toward the team
+		// research — below its $0.0001 budget.
+		backend.SetReply(fakebackend.Reply{Usage: &fakebackend.Usage{PromptTokens: 40}})
+		defer backend.SetReply(fakebackend.Reply{})
+		r := a.post(t, "/v1/rerank", evalKey, "xh-rerank", map[string]any{"model": "reranker",
+			"query": "what does a panda eat", "documents": []string{"the sky is blue", "a panda eats bamboo"}})
+		served(t, "rerank on gw-a", r)
+		var answer struct {
+			Model   string `json:"model"`
+			Object  string `json:"object"`
+			Results []struct {
+				Index int `json:"index"`
+			} `json:"results"`
+		}
+		if err := json.Unmarshal(r.body, &answer); err != nil || answer.Model != "reranker" || answer.Object != "list" ||
+			len(answer.Results) != 2 || answer.Results[0].Index != 1 {
+			t.Errorf("answer %s (%v): want llama-server's, the panda document first, under the public name", r.body, err)
+		}
+		record := proxy.waitRecord(t, "xh-rerank", waitLimit)
+		want := accounting.Units{config.UnitTokensIn: 40, config.UnitTokensCached: 0, config.UnitTokensCacheWrite: 0,
+			config.UnitTokensOut: 0, config.UnitTokensReasoning: 0}
+		if !maps.Equal(record.Units, want) || record.Model != "reranker" || record.Deployment.Backend != "ls" ||
+			record.CostNanoUSD != 40_000 || record.Estimated || record.Partial {
+			t.Errorf("record %+v, want units %v on ls costing 40000 nano-USD, reported", record, want)
+		}
+		researchSpent += record.CostNanoUSD
+		spentCounted(t, "the rerank's cost counted")
+		allCounted(t, waitLimit)
+
+		// The sample's global.max_rerank_documents, 2, is the gateways' cap: a third
+		// document is refused before any backend.
+		before := len(backend.Requests())
+		for name, g := range map[string]*gateway{"gw-a": a, "gw-b": b} {
+			r := g.post(t, "/v1/rerank", evalKey, "", map[string]any{"model": "reranker", "query": "q",
+				"documents": []string{"a", "b", "c"}})
+			e, _ := r.json(t)["error"].(map[string]any)
+			if r.StatusCode != http.StatusBadRequest || e["code"] != "invalid_value" || e["param"] != "documents" {
+				t.Errorf("%s, 3 documents: %d %s, want 400 invalid_value on documents", name, r.StatusCode, r.body)
+			}
+		}
+		if n := len(backend.Requests()) - before; n != 0 {
+			t.Errorf("the backend got %d requests for refused ones", n)
+		}
+	})
+
 	t.Run("a group's budget spent through one gateway is enforced on the other", func(t *testing.T) {
 		if r := chat(t, b, "priced-probe"); r.StatusCode != http.StatusBadRequest {
 			t.Fatalf("probe on gw-b before the spend: %d %s, want the backend's 400", r.StatusCode, r.body)
@@ -249,9 +307,8 @@ func TestAcrossHalves(t *testing.T) {
 		served(t, "priced on gw-a", chat(t, a, "priced")) // one answer is past the $0.0001 budget
 		// 7 tokens in at $10 and 4 out at $20 per million: 150000 nano-USD, counted
 		// toward the team research, an ancestor of the key's group.
-		sample.totals.wait(t, "the spend counted", waitLimit, func(tot control.Totals) bool {
-			return used(tot, "research", config.LimitUSDPerMonth) == 150_000
-		})
+		researchSpent += 150_000
+		spentCounted(t, "the spend counted")
 		pollUntil(t, "gw-b refusing the budget's models", waitLimit, func() bool {
 			r := chat(t, b, "priced-probe")
 			switch {
@@ -403,9 +460,10 @@ func TestAcrossHalves(t *testing.T) {
 // global hourly token limit (its total shows on the sample's totals), a per-minute
 // limit of 1000 on eval beside metered's 2, and a 1 s outage grace; the
 // working backend again as a llama-server, serving the "agent" model over Messages and
-// Responses; for the reliability status, a backend refusing connections (the
-// "down" model; a circuit opens on its first failure) and one taking one request at
-// a time (the "held" model).
+// Responses, and the "reranker", priced at $1 per million input tokens, under a
+// global.max_rerank_documents of 2; for the reliability status, a backend refusing
+// connections (the "down" model; a circuit opens on its first failure) and one taking
+// one request at a time (the "held" model).
 func crossHalfConfig(backendURL, refuserURL, downURL, cappedURL, evalHash, annHash string) map[string]any {
 	cfg := testConfig(backendURL, evalHash, annHash, "")
 	backends := cfg["backends"].(map[string]any)
@@ -424,7 +482,15 @@ func crossHalfConfig(backendURL, refuserURL, downURL, cappedURL, evalHash, annHa
 		m["deployments"] = []any{map[string]any{"backend": backend, "model": backendChatModel}}
 		models[name] = m
 	}
+	models["reranker"] = map[string]any{
+		"deployments": []any{map[string]any{"backend": "ls", "model": "qwen3-reranker-0.6b-q8_0.gguf"}},
+		"metadata": map[string]any{"context_length": 8192,
+			"capabilities": map[string]any{"streaming": false, "tools": false, "vision": false, "reasoning": false}},
+		"prices": []any{map[string]any{"effective_from": "2026-01-01", "tiers": []any{map[string]any{
+			"above_input_tokens": 0, "usd_per_million": map[string]any{"tokens_in": 1, "tokens_out": 0}}}}},
+	}
 	global := cfg["global"].(map[string]any)
+	global["max_rerank_documents"] = 2
 	global["control_outage_grace_ms"] = 1000
 	global["circuit"] = map[string]any{"failure_threshold": 1}
 	global["limits"] = []any{map[string]any{"type": "tokens_per_hour", "value": 1_000_000_000}}

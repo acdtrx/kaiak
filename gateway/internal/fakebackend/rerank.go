@@ -8,23 +8,36 @@ import (
 	"unicode"
 )
 
-// Rerank answers, shaped as vLLM answers them (vllm/entrypoints/pooling/scoring/
-// protocol.py, RerankResponse): an id, the model, usage with prompt tokens only, and
-// one result per document — its index, the document and its relevance score — sorted
-// by score, cut to top_n.
+// RerankShape is the server whose rerank answer the backend sends. Both answer the
+// model, usage with prompt tokens only and one result per document — its index and
+// relevance score — sorted by score.
+type RerankShape int
 
-// rerankResult is one document's result.
+const (
+	// VLLMRerank is vLLM's answer (vllm/entrypoints/pooling/scoring/protocol.py,
+	// RerankResponse): an id, and each result's document — its text, or its
+	// multimodal parts. A top_n above 0 cuts the results to that many; 0 keeps them
+	// all.
+	VLLMRerank RerankShape = iota
+	// LlamaServerRerank is llama-server's (tools/server/server-common.cpp,
+	// format_response_rerank, master at b11513): object "list", no id, no document.
+	// A top_n cuts the results to that many, 0 to none; without one, all are kept.
+	LlamaServerRerank
+)
+
+// rerankResult is one document's result; Document is nil in llama-server's shape.
 type rerankResult struct {
 	Index          int            `json:"index"`
-	Document       map[string]any `json:"document"`
+	Document       map[string]any `json:"document,omitempty"`
 	RelevanceScore float64        `json:"relevance_score"`
 }
 
-// writeRerank answers a rerank request. A document's score is the share of the
-// query's words it holds, so a relevant document outranks an irrelevant one; ties keep
-// the documents' order. documents that is not a list is one document, as vLLM reads
-// it; a top_n above 0 cuts the results to that many.
-func writeRerank(w http.ResponseWriter, top map[string]json.RawMessage, model string, usage Usage, omitUsage bool) {
+// writeRerank answers a rerank request in shape. A document's score is the share of
+// the query's words it holds, so a relevant document outranks an irrelevant one; ties
+// keep the documents' order. documents that is not a list is one document, as vLLM
+// reads it, and a document that is not a string scores 0 (llama-server refuses both;
+// the fake answers them in either shape).
+func writeRerank(w http.ResponseWriter, shape RerankShape, top map[string]json.RawMessage, model string, usage Usage, omitUsage bool) {
 	var query string
 	_ = json.Unmarshal(top["query"], &query)
 	var documents []json.RawMessage
@@ -37,11 +50,15 @@ func writeRerank(w http.ResponseWriter, top map[string]json.RawMessage, model st
 		result := rerankResult{Index: i}
 		var text string
 		if json.Unmarshal(raw, &text) != nil {
-			result.Document = map[string]any{"multi_modal": raw}
+			if shape == VLLMRerank {
+				result.Document = map[string]any{"multi_modal": raw}
+			}
 			results = append(results, result)
 			continue
 		}
-		result.Document = map[string]any{"text": text}
+		if shape == VLLMRerank {
+			result.Document = map[string]any{"text": text}
+		}
 		if len(queryWords) > 0 {
 			held := words(text)
 			n := 0
@@ -63,11 +80,17 @@ func writeRerank(w http.ResponseWriter, top map[string]json.RawMessage, model st
 		}
 		return 0
 	})
-	var topN int
-	if json.Unmarshal(top["top_n"], &topN) == nil && topN > 0 && topN < len(results) {
-		results = results[:topN]
+	var topN *int
+	_ = json.Unmarshal(top["top_n"], &topN)
+	if topN != nil && *topN >= 0 && *topN < len(results) && (*topN > 0 || shape == LlamaServerRerank) {
+		results = results[:*topN]
 	}
-	answer := map[string]any{"id": "rerank-fake-1", "model": model, "results": results}
+	answer := map[string]any{"model": model, "results": results}
+	if shape == LlamaServerRerank {
+		answer["object"] = "list"
+	} else {
+		answer["id"] = "rerank-fake-1"
+	}
 	if !omitUsage {
 		answer["usage"] = usageBody(usage, rerankPath)
 	}

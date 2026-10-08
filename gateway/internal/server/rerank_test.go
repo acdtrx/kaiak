@@ -46,13 +46,17 @@ func withRerankModels(t *testing.T, g *testGateway) {
 // the usage metrics and /v1/rerank as the route (docs/specs/GATEWAY.md, Client API →
 // owned fields; Accounting → rerank usage; Observability).
 func TestRerankThroughThePipeline(t *testing.T) {
-	for _, c := range []struct{ model, backendType, backendModel string }{
-		{"reranker", "vllm", "reranker-back"},
-		{"reranker-ls", "llama-server", "reranker-ls-back"},
+	for _, c := range []struct {
+		model, backendType, backendModel string
+		shape                            fakebackend.RerankShape
+	}{
+		{"reranker", "vllm", "reranker-back", fakebackend.VLLMRerank},
+		{"reranker-ls", "llama-server", "reranker-ls-back", fakebackend.LlamaServerRerank},
 	} {
 		t.Run(c.backendType, func(t *testing.T) {
 			g := newTestGateway(t)
 			withRerankModels(t, g)
+			g.backend.SetRerankShape(c.shape)
 			g.backend.SetReply(fakebackend.Reply{Usage: &fakebackend.Usage{PromptTokens: 40}})
 			body := `{"model":"` + c.model + `", "query":"what is a panda","documents":["the sky is blue","a panda is a bear"],` +
 				`"top_n":1,"stream":"yes","return_documents":true}`

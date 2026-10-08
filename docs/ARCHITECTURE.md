@@ -251,7 +251,8 @@ enforce the boundaries.
   through one `metrics` defines.
 - `fakebackend` — a test backend speaking OpenAI's chat, completions and embeddings,
   Anthropic Messages and OpenAI Responses (with recorded answers of real servers in
-  `captures/` for tests that need their exact bytes), that can stream, stall, hang, cut,
+  `captures/` for tests that need their exact bytes), and rerank in vLLM's answer
+  shape or llama-server's, that can stream, stall, hang, cut,
   fail (also for a scripted sequence of requests) and omit usage on demand, serves a
   models list whose status the test sets, and records every request it receives; used by tests
   only. `fakebackend/cmd/fakebackend` runs it as a process (listen address, behavior

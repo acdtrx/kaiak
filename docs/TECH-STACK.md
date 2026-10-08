@@ -172,10 +172,11 @@
   pushes and releases use the runner's `docker` and `gh` directly — no third-party
   actions. `actionlint` checks the workflows (run with `go run`, never in `go.mod`).
 - **Testing**: `go test -race`; `net/http/httptest` for servers; an in-repo **fake
-  backend** speaking the OpenAI API, Messages and Responses that can stream, stall,
-  fail, hang, send error events and omit usage on demand — the tool for retries, fallbacks, circuit breaking, draining and accounting
-  tests. Integration runs against a real llama-server/vLLM are opt-in, never required
-  for green.
+  backend** speaking the OpenAI API, Messages, Responses and rerank (in vLLM's answer
+  shape or llama-server's) that can stream, stall, fail, hang, send error events and
+  omit usage on demand — the tool for retries, fallbacks, circuit breaking, draining
+  and accounting tests. Integration runs against a real llama-server/vLLM are opt-in,
+  never required for green.
 - **Cross-half e2e** (settled 2026-09-24): `TestAcrossHalves` in `gateway/e2e`
   behind the build tag `crosshalf` — the Go harness (building `kaiak`, log waits, the
   in-process fake backend) drives the real sample control plane as a Node process.

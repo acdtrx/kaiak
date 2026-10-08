@@ -627,10 +627,13 @@ own, and a client sending repeats is broken either way.
 - **Rerank answers are relayed as the backend sends them** (settled 2026-10-08): a
   JSON body, never a stream, its top-level `model` rewritten (Response model name,
   above) and complete once its top-level value closed (Complete responses, below).
-  Both servers send `model`, `usage` and `results` — each result with the document's
-  `index` and its `relevance_score`, sorted by score, cut to `top_n`. vLLM adds an
-  `id` and each result's `document` (its text, or its multimodal parts);
-  llama-server adds `object: "list"` and no document. Rejected: one shape for both
+  An event stream answering a rerank request is no rerank answer (settled
+  2026-10-08): it never completes, so once relayed it ends `upstream_incomplete`, a
+  backend failure (Complete responses, below). Both servers send `model`, `usage`
+  and `results` — each result with the document's `index` and its
+  `relevance_score`, sorted by score, cut to `top_n`. vLLM adds an `id` and each
+  result's `document` (its text, or its multimodal parts); llama-server adds
+  `object: "list"` and no document. Rejected: one shape for both
   servers — translating answers, which the gateway does not do (Client API → Client
   APIs), and the client would lose what its server sends.
 - **The first event of a stream is its first data event** (settled 2026-10-06, the

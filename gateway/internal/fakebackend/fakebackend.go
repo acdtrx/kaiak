@@ -2,8 +2,9 @@
 // completions, embeddings, Anthropic Messages and OpenAI Responses with their token
 // counting, and the models list (the gateway's probe) under /v1/ (the OpenAI and Anthropic layout),
 // /openai/v1/ (Azure OpenAI's) and /anthropic/v1/ (Claude in Foundry's), and rerank
-// under /v1/ alone (vLLM's and llama-server's: neither Azure API has one), answers as
-// scripted by the test, and records every request it receives. Test tooling only: nothing in the gateway binary imports it;
+// under /v1/ alone (vLLM's and llama-server's: neither Azure API has one), in vLLM's
+// answer shape or llama-server's (SetRerankShape); it answers as scripted by the test,
+// and records every request it receives. Test tooling only: nothing in the gateway binary imports it;
 // cmd/fakebackend runs it as a process for the e2e test and the live-test kit.
 package fakebackend
 
@@ -168,6 +169,8 @@ type Backend struct {
 	modelsStatus   int
 	models         []string
 	modelsRequests []*Request
+	// rerankShape is the server whose rerank answer the backend sends.
+	rerankShape RerankShape
 }
 
 // maxQueuedArrivals bounds requests queued for NextRequest; a test that never reads
@@ -239,6 +242,14 @@ func (b *Backend) SetModelsStatus(status int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.modelsStatus = status
+}
+
+// SetRerankShape scripts which server's rerank answer the backend sends from now on
+// (the zero value: vLLM's).
+func (b *Backend) SetRerankShape(shape RerankShape) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.rerankShape = shape
 }
 
 // ModelsRequests returns every request for the models list so far, in arrival
@@ -321,6 +332,7 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 	b.mu.Lock()
 	b.received = append(b.received, req)
 	reply := b.reply
+	rerankShape := b.rerankShape
 	if len(b.queued) > 0 {
 		reply = b.queued[0]
 		b.queued = b.queued[1:]
@@ -445,7 +457,7 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 		b.writeEmbeddings(w, params.model, usage, reply.OmitUsage)
 	case endpoint == rerankPath:
 		// Neither server reads stream on rerank: the answer is a JSON body either way.
-		writeRerank(w, top, params.model, usage, reply.OmitUsage)
+		writeRerank(w, rerankShape, top, params.model, usage, reply.OmitUsage)
 	case params.stream:
 		b.writeStream(w, r, req, reply, endpoint, params.model, chunks, finish, usage, params.includeUsage && !reply.OmitUsage)
 	default:
