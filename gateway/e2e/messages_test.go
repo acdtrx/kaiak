@@ -154,7 +154,7 @@ func TestMessages(t *testing.T) {
 		if n := len(old.Requests()); n != 1 {
 			t.Fatalf("the old server got %d requests, want 1", n)
 		}
-		if v := g.metric(t, `kaiak_circuit_open{backend="old",deployment_model="Qwen/Qwen3-8B"}`); v != 0 {
+		if v := g.metric(t, `kaiak_circuit_state{kaiak_backend_id="old",kaiak_deployment_model="Qwen/Qwen3-8B",kaiak_circuit_state="open"}`); v != 0 {
 			t.Errorf("old's circuit open = %v, want closed", v)
 		}
 		g.logs.wait(t, "the endpoint-missing warning", msg("the backend's server lacks an endpoint its type serves: an older version?",

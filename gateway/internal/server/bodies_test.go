@@ -75,7 +75,7 @@ func TestBodyBudgetRefusesARequestWhenSpent(t *testing.T) {
 		t.Errorf("backend got %d requests, want only the first", n)
 	}
 	// Platform-side, and its own remedy (memory, not backend capacity): its own class.
-	expectMetricLines(t, g.metricsText(), `kaiak_errors_total{class="server_busy"} 1`)
+	expectMetricLines(t, g.metricsText(), `kaiak_errors_total{kaiak_error_class="server_busy"} 1`)
 
 	cancel()
 	waitIdle(t, g)

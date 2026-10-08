@@ -8,23 +8,23 @@ import (
 
 // usageLabels label every usage metric: the key's group, its top-level group, key ID,
 // model and status. One fixed label set whatever the tree's depth: intermediate
-// levels are not labels. The key's group is key_group, not group: Prometheus scrape
-// configs commonly set a target label named group, which would rename this one to
-// exported_group. An empty value (key_group or key ID switched off) is absent from
-// the series. No backend: it would multiply every group's series by the backends
-// serving each model; the ops metrics carry the backend. A group's labels never
-// become metric labels.
-var usageLabels = append(append([]string(nil), keyLabelNames...), "model", "status")
+// levels are not labels. An empty value (the key's group or key ID switched off) is
+// absent from the series. No backend: it would multiply every group's series by the
+// backends serving each model; the ops metrics carry the backend. A group's labels
+// never become metric labels.
+var usageLabels = append(append([]string(nil), keyAttributes...), "model", "status")
 
-// keyLabelNames are the labels naming a request's key, first on every per-key metric:
-// the usage metrics and kaiak_request_errors_total.
-var keyLabelNames = []string{"key_group", "root_group", "key_id"}
+// keyAttributes are the attributes naming a request's key, first on every per-key
+// metric: the usage metrics and kaiak.request.errors. The key's group is
+// kaiak.key.group, never a bare group: Prometheus scrape configs commonly set a
+// target label named group, which would rename this one to exported_group.
+var keyAttributes = []string{"kaiak.key.group", "kaiak.key.root_group", "kaiak.key.id"}
 
-// keyLabels are the keyLabelNames values for the key keyID whose group's path
-// (top-level group first, the key's group last) is path: key_group the key's group,
-// root_group its top-level group, key_id the key ID. Without a key (path empty) all
-// three are empty. With the live config's key_id_label (group_label) off, key_id
-// (key_group) is empty, so new series carry no such label; root_group stays.
+// keyLabels are the keyAttributes values for the key keyID whose group's path
+// (top-level group first, the key's group last) is path: the key's group, its
+// top-level group, the key ID. Without a key (path empty) all three are empty. With
+// the live config's key_id_label (group_label) off, the key ID (the key's group) is
+// empty, so new series carry no such attribute; the top-level group stays.
 func keyLabels(holder *config.Holder, path []string, keyID string) []string {
 	var group, root string
 	if n := len(path); n > 0 {
@@ -52,8 +52,9 @@ type UsageMetrics struct {
 	clamped *metric.Counter
 }
 
-// NewUsageMetrics registers the usage metrics on reg. The key_id and key_group labels
-// follow the live config's global.metrics.key_id_label and group_label at each record.
+// NewUsageMetrics registers the usage metrics on reg. The kaiak.key.id and
+// kaiak.key.group attributes follow the live config's global.metrics.key_id_label
+// and group_label at each record.
 func NewUsageMetrics(reg *metric.Registry, holder *config.Holder) *UsageMetrics {
 	s := &UsageMetrics{
 		holder: holder,

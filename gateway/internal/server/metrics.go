@@ -10,25 +10,33 @@ import (
 
 // observeRequest feeds the ops metrics once a request is over (after settlement, so
 // the settled output tokens are known); each attempt was observed as it ended, and
-// the time to first token as it came. Label values are only names the config
-// declares: the model once it passed the access check, the backend once routed.
+// the time to first token as it came. Attribute values are only fixed vocabularies
+// and names the config declares: the route once the path matched one, the model
+// once it passed the access check, the backend once routed.
 func (a *API) observeRequest(rq *request) {
 	model := ""
 	if rq.modelAllowed {
 		model = rq.model
 	}
-	endpoint := ""
+	route := ""
 	if rq.endpoint != nil {
-		endpoint = rq.endpoint.name
+		route = rq.endpoint.route()
 	}
-	a.ops.ObserveRequest(endpoint, model, rq.w.status, time.Since(rq.start))
-	if class, ok := errorClass(rq); ok {
-		a.ops.CountError(class)
-		code := errorCode(rq)
-		if code == "" {
-			code = rq.relayEnd
+	// error.type: the request line's, or how a response broken off after it started
+	// ended — on the request duration and kaiak.request.errors alike.
+	class, failed := errorClass(rq)
+	errorType := ""
+	if failed {
+		errorType = errorCode(rq)
+		if errorType == "" {
+			errorType = rq.relayEnd
 		}
-		a.ops.CountRequestError(rq.identity.Group, rq.keyID, model, code)
+	}
+	status, _ := statusSent(rq)
+	a.ops.ObserveRequest(knownMethod(rq.r.Method), route, status, errorType, model, time.Since(rq.start))
+	if failed {
+		a.ops.CountError(class)
+		a.ops.CountRequestError(rq.identity.Group, rq.keyID, model, errorType)
 	}
 	if rej := rq.rejection; rej != nil && !rej.Unavailable {
 		a.ops.CountLimitRejection(rej.Scope(), rej.Type)

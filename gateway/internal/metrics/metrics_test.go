@@ -14,6 +14,7 @@ import (
 	"kaiak/internal/control"
 	"kaiak/internal/routing"
 	"kaiak/internal/telemetry/metric"
+	"kaiak/internal/telemetry/otlplog"
 )
 
 func text(r *metric.Registry) string {
@@ -34,13 +35,13 @@ func TestUsageMetricsCountsRecords(t *testing.T) {
 		Units: units, CostNanoUSD: 120_000}
 	usage.Record(rec)
 	usage.Record(rec)
-	// A key on a top-level group: that group is its own root_group.
+	// A key on a top-level group: that group is its own top-level group.
 	topLevel := accounting.UsageRecord{KeyID: "k-ann", Groups: []string{"ann"}, Model: "open",
 		Deployment: accounting.Deployment{Backend: "local", Model: "open"}, Units: units, Partial: true}
 	usage.Record(topLevel)
 
 	out := text(reg)
-	wl := `key_group="eval",root_group="research",key_id="k-eval",model="pair",status="complete"`
+	wl := `kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",model="pair",status="complete"`
 	for _, want := range []string{
 		`kaiak_usage_records_total{` + wl + `} 2`,
 		`kaiak_usage_tokens_total{` + wl + `,unit="tokens_in"} 120`,
@@ -49,8 +50,8 @@ func TestUsageMetricsCountsRecords(t *testing.T) {
 		`kaiak_usage_tokens_total{` + wl + `,unit="tokens_out"} 20`,
 		`kaiak_usage_tokens_total{` + wl + `,unit="tokens_reasoning"} 8`,
 		`kaiak_usage_cost_usd_total{` + wl + `} 0.00024`,
-		`kaiak_usage_records_total{key_group="ann",root_group="ann",key_id="k-ann",model="open",status="partial"} 1`,
-		`kaiak_usage_cost_usd_total{key_group="ann",root_group="ann",key_id="k-ann",model="open",status="partial"} 0`,
+		`kaiak_usage_records_total{kaiak_key_group="ann",kaiak_key_root_group="ann",kaiak_key_id="k-ann",model="open",status="partial"} 1`,
+		`kaiak_usage_cost_usd_total{kaiak_key_group="ann",kaiak_key_root_group="ann",kaiak_key_id="k-ann",model="open",status="partial"} 0`,
 	} {
 		if !strings.Contains(out, want+"\n") {
 			t.Errorf("missing %q in:\n%s", want, out)
@@ -61,21 +62,21 @@ func TestUsageMetricsCountsRecords(t *testing.T) {
 		t.Errorf("an intermediate group labels a series:\n%s", out)
 	}
 
-	// Switched off: new records carry no key_id label.
+	// Switched off: new records carry no kaiak.key.id.
 	holder.Swap(&config.Snapshot{KeyIDLabel: false, GroupLabel: true})
 	usage.Record(topLevel)
 	out = text(reg)
-	if want := `kaiak_usage_records_total{key_group="ann",root_group="ann",model="open",status="partial"} 1`; !strings.Contains(out, want+"\n") {
+	if want := `kaiak_usage_records_total{kaiak_key_group="ann",kaiak_key_root_group="ann",model="open",status="partial"} 1`; !strings.Contains(out, want+"\n") {
 		t.Errorf("missing %q in:\n%s", want, out)
 	}
 
-	// group_label switched off: new records carry no key_group label; root_group
-	// stays; series written before stay.
+	// group_label switched off: new records carry no kaiak.key.group;
+	// kaiak.key.root_group stays; series written before stay.
 	holder.Swap(&config.Snapshot{KeyIDLabel: true, GroupLabel: false})
 	usage.Record(rec)
 	out = text(reg)
 	for _, want := range []string{
-		`kaiak_usage_records_total{root_group="research",key_id="k-eval",model="pair",status="complete"} 1`,
+		`kaiak_usage_records_total{kaiak_key_root_group="research",kaiak_key_id="k-eval",model="pair",status="complete"} 1`,
 		`kaiak_usage_records_total{` + wl + `} 2`,
 	} {
 		if !strings.Contains(out, want+"\n") {
@@ -83,7 +84,7 @@ func TestUsageMetricsCountsRecords(t *testing.T) {
 		}
 	}
 	// No usage series is labeled by backend: backends multiply every group's series.
-	if strings.Contains(out, "kaiak_usage_records_total{") && strings.Contains(out, `backend="local"`) {
+	if strings.Contains(out, "kaiak_usage_records_total{") && strings.Contains(out, `kaiak_backend_id="local"`) {
 		t.Errorf("a usage series carries the backend:\n%s", out)
 	}
 }
@@ -120,8 +121,10 @@ func TestOpsMetrics(t *testing.T) {
 	}
 	ops.ConnectionRefused()
 	ops.ConnectionRefused()
-	ops.ObserveRequest("chat_completions", "m", 429, 20*time.Millisecond)
-	ops.ObserveRequest("", "", 404, time.Millisecond)
+	ops.ObserveRequest("POST", "/v1/chat/completions", 429, "rate_limit_exceeded", "m", 20*time.Millisecond)
+	ops.ObserveRequest("GET", "", 404, "unknown_url", "", time.Millisecond)
+	// A client that left before any answer: no status.
+	ops.ObserveRequest("POST", "/v1/chat/completions", 0, "client_closed", "m", time.Millisecond)
 	ops.CountError(ErrorRateLimited)
 	ops.ObserveQueueWait("m", 40*time.Millisecond)
 	ops.CountQueueRejection("m", QueueTimeout)
@@ -138,27 +141,29 @@ func TestOpsMetrics(t *testing.T) {
 
 	out := text(reg)
 	for _, want := range []string{
-		`kaiak_backend_in_flight_requests{backend="busy"} 1`,
-		`kaiak_backend_in_flight_requests{backend="idle"} 0`,
-		`kaiak_backend_max_in_flight{backend="busy"} 1`,
-		`kaiak_queued_requests{model="m"} 1`,
-		`kaiak_queued_requests{model="quiet"} 0`,
-		`kaiak_queue_wait_seconds_bucket{model="m",le="0.05"} 1`,
-		`kaiak_queue_rejections_total{model="m",reason="timeout"} 1`,
-		`kaiak_errors_total{class="queue_rejected"} 0`,
-		`kaiak_retries_total{model="m",backend="busy",reason="server_error"} 1`,
-		`kaiak_upstream_attempts_total{backend="busy",deployment_model="m",outcome="success"} 1`,
-		`kaiak_upstream_attempts_total{backend="busy",deployment_model="m",outcome="server_error"} 1`,
-		`kaiak_upstream_attempt_duration_seconds_bucket{backend="busy",le="0.05"} 1`,
-		`kaiak_upstream_attempt_duration_seconds_bucket{backend="busy",le="2.5"} 2`,
-		`kaiak_upstream_attempt_duration_seconds_count{backend="busy"} 2`,
-		`kaiak_request_attempts_bucket{model="m",le="1"} 0`,
-		`kaiak_request_attempts_bucket{model="m",le="2"} 1`,
-		`kaiak_request_duration_seconds_bucket{endpoint="chat_completions",model="m",status_class="4xx",le="0.025"} 1`,
-		`kaiak_request_duration_seconds_count{status_class="4xx"} 1`,
-		`kaiak_errors_total{class="rate_limited"} 1`,
-		`kaiak_errors_total{class="internal"} 0`,
-		`kaiak_config_loads_total{trigger="startup",result="applied"} 1`,
+		`kaiak_backend_active_requests{kaiak_backend_id="busy"} 1`,
+		`kaiak_backend_active_requests{kaiak_backend_id="idle"} 0`,
+		`kaiak_backend_active_requests_limit{kaiak_backend_id="busy"} 1`,
+		`kaiak_queue_size{gen_ai_request_model="m"} 1`,
+		`kaiak_queue_size{gen_ai_request_model="quiet"} 0`,
+		`kaiak_queue_wait_duration_seconds_bucket{gen_ai_request_model="m",le="0.05"} 1`,
+		`kaiak_queue_rejections_total{gen_ai_request_model="m",error_type="queue_timeout"} 1`,
+		`kaiak_queue_rejections_total{gen_ai_request_model="m",error_type="queue_full"} 0`,
+		`kaiak_errors_total{kaiak_error_class="queue_rejected"} 0`,
+		`kaiak_retries_total{gen_ai_request_model="m",kaiak_backend_id="busy",kaiak_attempt_outcome="server_error"} 1`,
+		`kaiak_upstream_attempts_total{kaiak_backend_id="busy",kaiak_deployment_model="m",kaiak_attempt_outcome="success"} 1`,
+		`kaiak_upstream_attempts_total{kaiak_backend_id="busy",kaiak_deployment_model="m",kaiak_attempt_outcome="server_error"} 1`,
+		`kaiak_upstream_attempt_duration_seconds_bucket{kaiak_backend_id="busy",le="0.05"} 1`,
+		`kaiak_upstream_attempt_duration_seconds_bucket{kaiak_backend_id="busy",le="2.5"} 2`,
+		`kaiak_upstream_attempt_duration_seconds_count{kaiak_backend_id="busy"} 2`,
+		`kaiak_request_attempts_bucket{gen_ai_request_model="m",le="1"} 0`,
+		`kaiak_request_attempts_bucket{gen_ai_request_model="m",le="2"} 1`,
+		`http_server_request_duration_seconds_bucket{http_request_method="POST",url_scheme="http",http_route="/v1/chat/completions",http_response_status_code="429",error_type="rate_limit_exceeded",gen_ai_request_model="m",le="0.025"} 1`,
+		`http_server_request_duration_seconds_count{http_request_method="GET",url_scheme="http",http_response_status_code="404",error_type="unknown_url"} 1`,
+		`http_server_request_duration_seconds_count{http_request_method="POST",url_scheme="http",http_route="/v1/chat/completions",error_type="client_closed",gen_ai_request_model="m"} 1`,
+		`kaiak_errors_total{kaiak_error_class="rate_limited"} 1`,
+		`kaiak_errors_total{kaiak_error_class="internal"} 0`,
+		`kaiak_config_loads_total{kaiak_trigger="startup",kaiak_config_result="applied"} 1`,
 		`kaiak_config_last_applied_timestamp_seconds 1.7000000005e+09`,
 		`kaiak_connections_refused_total 2`,
 	} {
@@ -166,15 +171,15 @@ func TestOpsMetrics(t *testing.T) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, `kaiak_backend_max_in_flight{backend="idle"}`) {
-		t.Errorf("a backend without a cap has a max_in_flight series:\n%s", out)
+	if strings.Contains(out, `kaiak_backend_active_requests_limit{kaiak_backend_id="idle"}`) {
+		t.Errorf("a backend without a cap has an active-requests limit:\n%s", out)
 	}
 }
 
 func TestBuildInfo(t *testing.T) {
 	reg := metric.NewRegistry()
 	RegisterBuildInfo(reg, "0.6.0-3-gabc1234")
-	want := `kaiak_build_info{version="0.6.0-3-gabc1234",go_version="` + runtime.Version() + `"} 1`
+	want := `kaiak_build_info{service_version="0.6.0-3-gabc1234",process_runtime_version="` + runtime.Version() + `"} 1`
 	if out := text(reg); !strings.Contains(out, want+"\n") {
 		t.Errorf("missing %q in:\n%s", want, out)
 	}
@@ -186,8 +191,8 @@ func TestConfigLoadMetrics(t *testing.T) {
 	ops := NewOps(reg, routing.New(routing.Options{}), NewCircuits(reg), holder)
 	out := text(reg)
 	for _, want := range []string{
-		`kaiak_config_apply_duration_seconds_count{trigger="startup",result="applied"} 0`,
-		`kaiak_config_apply_duration_seconds_count{trigger="seed",result="rejected"} 0`,
+		`kaiak_config_apply_duration_seconds_count{kaiak_trigger="startup",kaiak_config_result="applied"} 0`,
+		`kaiak_config_apply_duration_seconds_count{kaiak_trigger="seed",kaiak_config_result="rejected"} 0`,
 		`kaiak_limits_sync_duration_seconds_count 0`,
 	} {
 		if !strings.Contains(out, want+"\n") {
@@ -211,15 +216,15 @@ func TestConfigLoadMetrics(t *testing.T) {
 	for _, want := range []string{
 		// A rejected document leaves the size of the one in force.
 		`kaiak_config_size_bytes 2048`,
-		`kaiak_config_apply_duration_seconds_bucket{trigger="startup",result="applied",le="0.0005"} 0`,
-		`kaiak_config_apply_duration_seconds_bucket{trigger="startup",result="applied",le="0.001"} 1`,
-		`kaiak_config_apply_duration_seconds_count{trigger="startup",result="applied"} 1`,
-		`kaiak_config_apply_duration_seconds_bucket{trigger="sighup",result="rejected",le="0.025"} 0`,
-		`kaiak_config_apply_duration_seconds_bucket{trigger="sighup",result="rejected",le="0.05"} 1`,
+		`kaiak_config_apply_duration_seconds_bucket{kaiak_trigger="startup",kaiak_config_result="applied",le="0.0005"} 0`,
+		`kaiak_config_apply_duration_seconds_bucket{kaiak_trigger="startup",kaiak_config_result="applied",le="0.001"} 1`,
+		`kaiak_config_apply_duration_seconds_count{kaiak_trigger="startup",kaiak_config_result="applied"} 1`,
+		`kaiak_config_apply_duration_seconds_bucket{kaiak_trigger="sighup",kaiak_config_result="rejected",le="0.025"} 0`,
+		`kaiak_config_apply_duration_seconds_bucket{kaiak_trigger="sighup",kaiak_config_result="rejected",le="0.05"} 1`,
 		// The unreadable file is a load, counted, but no document was timed.
-		`kaiak_config_apply_duration_seconds_count{trigger="sighup",result="rejected"} 1`,
-		`kaiak_config_loads_total{trigger="sighup",result="rejected"} 2`,
-		`kaiak_config_apply_duration_seconds_count{trigger="sighup",result="applied"} 0`,
+		`kaiak_config_apply_duration_seconds_count{kaiak_trigger="sighup",kaiak_config_result="rejected"} 1`,
+		`kaiak_config_loads_total{kaiak_trigger="sighup",kaiak_config_result="rejected"} 2`,
+		`kaiak_config_apply_duration_seconds_count{kaiak_trigger="sighup",kaiak_config_result="applied"} 0`,
 		`kaiak_limits_sync_duration_seconds_bucket{le="2.5"} 0`,
 		`kaiak_limits_sync_duration_seconds_bucket{le="5"} 1`,
 		`kaiak_limits_sync_duration_seconds_count 1`,
@@ -234,8 +239,9 @@ func TestUsageDeliveryMetrics(t *testing.T) {
 	reg := metric.NewRegistry()
 	d := NewUsageDelivery(reg)
 	if out := text(reg); !strings.Contains(out, "kaiak_usage_queue_batches 0\n") ||
-		!strings.Contains(out, "kaiak_usage_queued_bytes 0\n") ||
-		!strings.Contains(out, `kaiak_usage_batch_sends_total{result="rejected"} 0`+"\n") ||
+		!strings.Contains(out, "kaiak_usage_queue_size_bytes 0\n") ||
+		!strings.Contains(out, `kaiak_usage_batch_sends_total{kaiak_usage_batch_result="rejected"} 0`+"\n") ||
+		!strings.Contains(out, `kaiak_usage_dropped_records_total{kaiak_usage_drop_reason="memory_bound"} 0`+"\n") ||
 		strings.Contains(out, "kaiak_usage_last_ack_timestamp_seconds 0") {
 		t.Errorf("initial exposition:\n%s", out)
 	}
@@ -246,13 +252,13 @@ func TestUsageDeliveryMetrics(t *testing.T) {
 	d.UsageQueueDepth(3, 1200, 612_345)
 	out := text(reg)
 	for _, want := range []string{
-		`kaiak_usage_batch_sends_total{result="acked"} 1`,
-		`kaiak_usage_batch_sends_total{result="rejected"} 1`,
-		`kaiak_usage_batch_sends_total{result="failed"} 1`,
+		`kaiak_usage_batch_sends_total{kaiak_usage_batch_result="acked"} 1`,
+		`kaiak_usage_batch_sends_total{kaiak_usage_batch_result="rejected"} 1`,
+		`kaiak_usage_batch_sends_total{kaiak_usage_batch_result="failed"} 1`,
 		`kaiak_usage_last_ack_timestamp_seconds 1.7000000005e+09`,
 		`kaiak_usage_queue_batches 3`,
 		`kaiak_usage_queue_records 1200`,
-		`kaiak_usage_queued_bytes 612345`,
+		`kaiak_usage_queue_size_bytes 612345`,
 	} {
 		if !strings.Contains(out, want+"\n") {
 			t.Errorf("missing %q in:\n%s", want, out)
@@ -262,28 +268,44 @@ func TestUsageDeliveryMetrics(t *testing.T) {
 
 func TestLogExportMetrics(t *testing.T) {
 	reg := metric.NewRegistry()
-	var exported, failed, dropped uint64
-	RegisterLogExport(reg, func() (uint64, uint64, uint64) { return exported, failed, dropped })
-	want := `# HELP kaiak_log_export_records_total Log records exported over OTLP, by outcome (exported: accepted by the collector; failed: in a batch given up; dropped: never sent, a full queue or still queued at exit).
-# TYPE kaiak_log_export_records_total counter
-kaiak_log_export_records_total{outcome="dropped"} 0
-kaiak_log_export_records_total{outcome="exported"} 0
-kaiak_log_export_records_total{outcome="failed"} 0
+	var counts otlplog.Counts
+	RegisterLogExport(reg, func() otlplog.Counts { return counts })
+	const (
+		processor = `otel_component_type="batching_log_processor",otel_component_name="batching_log_processor/0"`
+		exporter  = `otel_component_type="otlp_http_json_log_exporter",otel_component_name="otlp_http_json_log_exporter/0"`
+	)
+	// At startup: the accepted series and the queue's three, at 0; no failure series.
+	want := `otel_sdk_exporter_log_exported_total{` + exporter + `} 0
+otel_sdk_processor_log_processed_total{` + processor + `} 0
+otel_sdk_processor_log_processed_total{` + processor + `,error_type="queue_full"} 0
+otel_sdk_processor_log_processed_total{` + processor + `,error_type="shutdown"} 0
 `
-	if got := text(reg); got != want {
+	if got := samples(text(reg)); got != want {
 		t.Errorf("at startup:\n%s\nwant:\n%s", got, want)
 	}
-	exported, failed, dropped = 1024, 3, 7
-	out := text(reg)
-	for _, line := range []string{
-		`kaiak_log_export_records_total{outcome="exported"} 1024`,
-		`kaiak_log_export_records_total{outcome="failed"} 3`,
-		`kaiak_log_export_records_total{outcome="dropped"} 7`,
-	} {
-		if !strings.Contains(out, line+"\n") {
-			t.Errorf("missing %q in:\n%s", line, out)
+	counts = otlplog.Counts{Handed: 1030, QueueFull: 5, Shutdown: 2, Exported: 1024,
+		Failed: map[string]uint64{"503": 4, "rejected": 2}}
+	want = `otel_sdk_exporter_log_exported_total{` + exporter + `} 1024
+otel_sdk_exporter_log_exported_total{` + exporter + `,error_type="503"} 4
+otel_sdk_exporter_log_exported_total{` + exporter + `,error_type="rejected"} 2
+otel_sdk_processor_log_processed_total{` + processor + `} 1030
+otel_sdk_processor_log_processed_total{` + processor + `,error_type="queue_full"} 5
+otel_sdk_processor_log_processed_total{` + processor + `,error_type="shutdown"} 2
+`
+	if got := samples(text(reg)); got != want {
+		t.Errorf("counted:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// samples are the sample lines of a scrape, without HELP and TYPE.
+func samples(scrape string) string {
+	var b strings.Builder
+	for line := range strings.Lines(scrape) {
+		if !strings.HasPrefix(line, "#") {
+			b.WriteString(line)
 		}
 	}
+	return b.String()
 }
 
 type fakeControlState struct {
@@ -340,7 +362,7 @@ func TestCircuitSampleOncePerDeployment(t *testing.T) {
 	reg := metric.NewRegistry()
 	NewOps(reg, router, NewCircuits(reg), holder)
 	count := func(value string) int {
-		return strings.Count(text(reg), `kaiak_circuit_open{backend="local",deployment_model="llama"} `+value+"\n")
+		return strings.Count(text(reg), `kaiak_circuit_state{kaiak_backend_id="local",kaiak_deployment_model="llama",kaiak_circuit_state="open"} `+value+"\n")
 	}
 	if n := count("0"); n != 1 {
 		t.Errorf("closed: %d samples, want 1", n)
@@ -359,7 +381,8 @@ func TestCircuitSampleOncePerDeployment(t *testing.T) {
 // The routing gauges of one scrape, read from routing's picture against the live
 // config: every backend, model and deployment of it, the backend and model a reload
 // dropped while requests still ran on one and waited for the other, backend shares,
-// and open, half-open and cooling deployments — a deployment two models share once.
+// and closed, open, half-open and cooling deployments — a deployment two models share
+// once.
 func TestRoutingGauges(t *testing.T) {
 	a := &config.Backend{ID: "a", MaxInFlight: 4}
 	b := &config.Backend{ID: "b"}
@@ -449,37 +472,41 @@ func TestRoutingGauges(t *testing.T) {
 	defer acquire(chat).Release()
 	defer acquire(alias).Release()
 
-	want := `kaiak_backend_in_flight_requests{backend="a"} 2
-kaiak_backend_in_flight_requests{backend="b"} 0
-kaiak_backend_in_flight_requests{backend="c"} 0
-kaiak_backend_in_flight_requests{backend="d"} 1
-kaiak_backend_in_flight_requests{backend="gone"} 1
-kaiak_backend_max_in_flight{backend="a"} 4
-kaiak_backend_max_in_flight{backend="c"} 2
-kaiak_backend_max_in_flight{backend="d"} 1
-kaiak_circuit_half_open{backend="a",deployment_model="x"} 0
-kaiak_circuit_half_open{backend="b",deployment_model="o"} 0
-kaiak_circuit_half_open{backend="c",deployment_model="e"} 1
-kaiak_circuit_half_open{backend="d",deployment_model="q"} 0
-kaiak_circuit_open{backend="a",deployment_model="x"} 0
-kaiak_circuit_open{backend="b",deployment_model="o"} 1
-kaiak_circuit_open{backend="c",deployment_model="e"} 0
-kaiak_circuit_open{backend="d",deployment_model="q"} 0
-kaiak_deployment_cooling_down{backend="a",deployment_model="x"} 1
-kaiak_deployment_cooling_down{backend="b",deployment_model="o"} 0
-kaiak_deployment_cooling_down{backend="c",deployment_model="e"} 0
-kaiak_deployment_cooling_down{backend="d",deployment_model="q"} 0
-kaiak_queued_requests{model="alias"} 0
-kaiak_queued_requests{model="chat"} 0
-kaiak_queued_requests{model="embed"} 0
-kaiak_queued_requests{model="old"} 1
-kaiak_queued_requests{model="opened"} 0
-kaiak_queued_requests{model="queued"} 1
+	want := `kaiak_backend_active_requests{kaiak_backend_id="a"} 2
+kaiak_backend_active_requests{kaiak_backend_id="b"} 0
+kaiak_backend_active_requests{kaiak_backend_id="c"} 0
+kaiak_backend_active_requests{kaiak_backend_id="d"} 1
+kaiak_backend_active_requests{kaiak_backend_id="gone"} 1
+kaiak_backend_active_requests_limit{kaiak_backend_id="a"} 4
+kaiak_backend_active_requests_limit{kaiak_backend_id="c"} 2
+kaiak_backend_active_requests_limit{kaiak_backend_id="d"} 1
+kaiak_circuit_state{kaiak_backend_id="a",kaiak_deployment_model="x",kaiak_circuit_state="closed"} 1
+kaiak_circuit_state{kaiak_backend_id="a",kaiak_deployment_model="x",kaiak_circuit_state="half_open"} 0
+kaiak_circuit_state{kaiak_backend_id="a",kaiak_deployment_model="x",kaiak_circuit_state="open"} 0
+kaiak_circuit_state{kaiak_backend_id="b",kaiak_deployment_model="o",kaiak_circuit_state="closed"} 0
+kaiak_circuit_state{kaiak_backend_id="b",kaiak_deployment_model="o",kaiak_circuit_state="half_open"} 0
+kaiak_circuit_state{kaiak_backend_id="b",kaiak_deployment_model="o",kaiak_circuit_state="open"} 1
+kaiak_circuit_state{kaiak_backend_id="c",kaiak_deployment_model="e",kaiak_circuit_state="closed"} 0
+kaiak_circuit_state{kaiak_backend_id="c",kaiak_deployment_model="e",kaiak_circuit_state="half_open"} 1
+kaiak_circuit_state{kaiak_backend_id="c",kaiak_deployment_model="e",kaiak_circuit_state="open"} 0
+kaiak_circuit_state{kaiak_backend_id="d",kaiak_deployment_model="q",kaiak_circuit_state="closed"} 1
+kaiak_circuit_state{kaiak_backend_id="d",kaiak_deployment_model="q",kaiak_circuit_state="half_open"} 0
+kaiak_circuit_state{kaiak_backend_id="d",kaiak_deployment_model="q",kaiak_circuit_state="open"} 0
+kaiak_deployment_cooling_down{kaiak_backend_id="a",kaiak_deployment_model="x"} 1
+kaiak_deployment_cooling_down{kaiak_backend_id="b",kaiak_deployment_model="o"} 0
+kaiak_deployment_cooling_down{kaiak_backend_id="c",kaiak_deployment_model="e"} 0
+kaiak_deployment_cooling_down{kaiak_backend_id="d",kaiak_deployment_model="q"} 0
+kaiak_queue_size{gen_ai_request_model="alias"} 0
+kaiak_queue_size{gen_ai_request_model="chat"} 0
+kaiak_queue_size{gen_ai_request_model="embed"} 0
+kaiak_queue_size{gen_ai_request_model="old"} 1
+kaiak_queue_size{gen_ai_request_model="opened"} 0
+kaiak_queue_size{gen_ai_request_model="queued"} 1
 `
 	var got strings.Builder
 	for line := range strings.Lines(text(reg)) {
-		for _, family := range []string{"kaiak_backend_in_flight_requests", "kaiak_backend_max_in_flight",
-			"kaiak_circuit_half_open", "kaiak_circuit_open", "kaiak_deployment_cooling_down", "kaiak_queued_requests"} {
+		for _, family := range []string{"kaiak_backend_active_requests", "kaiak_backend_active_requests_limit",
+			"kaiak_circuit_state", "kaiak_deployment_cooling_down", "kaiak_queue_size"} {
 			if strings.HasPrefix(line, family+"{") {
 				got.WriteString(line)
 			}

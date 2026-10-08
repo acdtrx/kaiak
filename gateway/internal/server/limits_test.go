@@ -182,7 +182,7 @@ func TestOutageRefusesMoneyLimitedModels(t *testing.T) {
 	if w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey, body: chatBody}); w.Code != http.StatusOK {
 		t.Errorf("model without a USD limit: status %d: %s", w.Code, w.Body.String())
 	}
-	expectMetricLines(t, g.metricsText(), `kaiak_errors_total{class="budget_unavailable"} 1`)
+	expectMetricLines(t, g.metricsText(), `kaiak_errors_total{kaiak_error_class="budget_unavailable"} 1`)
 }
 
 func TestModelEndpointsAreNotLimited(t *testing.T) {
@@ -337,7 +337,7 @@ func TestOutputLimitAboveTheContextIsRefused(t *testing.T) {
 				if n := len(g.backend.Requests()); n != 0 {
 					t.Errorf("backend got %d requests, want none", n)
 				}
-				expectMetricLines(t, g.metricsText(), `kaiak_errors_total{class="invalid_request"} 1`)
+				expectMetricLines(t, g.metricsText(), `kaiak_errors_total{kaiak_error_class="invalid_request"} 1`)
 				return
 			}
 			if w.Code != http.StatusOK {

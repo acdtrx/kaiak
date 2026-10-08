@@ -71,24 +71,26 @@ func TestOpsAndUsageMetricsMoveWithRequests(t *testing.T) {
 		t.Fatalf("%d usage records, want 3 (pair, down, open)", len(records))
 	}
 	pair := records[0]
-	wl := `key_group="eval",root_group="research",key_id="k-eval",model="pair",status="complete"`
+	wl := `kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",model="pair",status="complete"`
 	usageLine := func(name, labels string, value int64) string {
 		return name + "{" + labels + "} " + strconv.FormatInt(value, 10)
 	}
 	text := g.metricsText()
 	expectMetricLines(t, text,
-		`kaiak_request_duration_seconds_count{endpoint="chat_completions",model="pair",status_class="2xx"} 1`,
-		`kaiak_request_duration_seconds_count{endpoint="chat_completions",model="pair",status_class="4xx"} 1`,
-		`kaiak_request_duration_seconds_count{endpoint="chat_completions",model="down",status_class="5xx"} 1`,
-		`kaiak_request_duration_seconds_count{endpoint="chat_completions",model="open",status_class="5xx"} 1`,
-		// A model the caller may not use (or that does not exist) is never a label value.
-		`kaiak_request_duration_seconds_count{endpoint="chat_completions",status_class="4xx"} 1`,
-		`kaiak_request_duration_seconds_count{status_class="4xx"} 1`,
-		`kaiak_errors_total{class="rate_limited"} 1`,
-		`kaiak_errors_total{class="upstream_unavailable"} 1`,
-		`kaiak_errors_total{class="upstream_error"} 1`,
-		`kaiak_errors_total{class="not_found"} 2`,
-		`kaiak_errors_total{class="auth"} 0`,
+		`http_server_request_duration_seconds_count{http_request_method="POST",url_scheme="http",http_route="/v1/chat/completions",http_response_status_code="200",gen_ai_request_model="pair"} 1`,
+		`http_server_request_duration_seconds_count{http_request_method="POST",url_scheme="http",http_route="/v1/chat/completions",http_response_status_code="429",error_type="rate_limit_exceeded",gen_ai_request_model="pair"} 1`,
+		`http_server_request_duration_seconds_count{http_request_method="POST",url_scheme="http",http_route="/v1/chat/completions",http_response_status_code="502",error_type="upstream_unavailable",gen_ai_request_model="down"} 1`,
+		// A relayed backend error status: its class is the error type.
+		`http_server_request_duration_seconds_count{http_request_method="POST",url_scheme="http",http_route="/v1/chat/completions",http_response_status_code="500",error_type="upstream_error",gen_ai_request_model="open"} 1`,
+		// A model the caller may not use (or that does not exist) is never an attribute
+		// value, nor is a path no route matched.
+		`http_server_request_duration_seconds_count{http_request_method="POST",url_scheme="http",http_route="/v1/chat/completions",http_response_status_code="404",error_type="model_not_found"} 1`,
+		`http_server_request_duration_seconds_count{http_request_method="GET",url_scheme="http",http_response_status_code="404",error_type="unknown_url"} 1`,
+		`kaiak_errors_total{kaiak_error_class="rate_limited"} 1`,
+		`kaiak_errors_total{kaiak_error_class="upstream_unavailable"} 1`,
+		`kaiak_errors_total{kaiak_error_class="upstream_error"} 1`,
+		`kaiak_errors_total{kaiak_error_class="not_found"} 2`,
+		`kaiak_errors_total{kaiak_error_class="auth"} 0`,
 		// Usage metrics carry the record's own numbers.
 		usageLine("kaiak_usage_records_total", wl, 1),
 		usageLine("kaiak_usage_tokens_total", wl+`,unit="tokens_in"`, pair.Units[config.UnitTokensIn]),
@@ -97,9 +99,9 @@ func TestOpsAndUsageMetricsMoveWithRequests(t *testing.T) {
 		usageLine("kaiak_usage_tokens_total", wl+`,unit="tokens_out"`, pair.Units[config.UnitTokensOut]),
 		usageLine("kaiak_usage_tokens_total", wl+`,unit="tokens_reasoning"`, pair.Units[config.UnitTokensReasoning]),
 		`kaiak_usage_cost_usd_total{`+wl+`} `+strconv.FormatFloat(float64(pair.CostNanoUSD)/1e9, 'g', -1, 64),
-		`kaiak_usage_records_total{key_group="eval",root_group="research",key_id="k-eval",model="down",status="partial"} 1`,
-		`kaiak_usage_records_total{key_group="ann",root_group="users",key_id="k-ann",model="open",status="complete"} 1`,
-		`kaiak_backend_in_flight_requests{backend="local"} 0`,
+		`kaiak_usage_records_total{kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",model="down",status="partial"} 1`,
+		`kaiak_usage_records_total{kaiak_key_group="ann",kaiak_key_root_group="users",kaiak_key_id="k-ann",model="open",status="complete"} 1`,
+		`kaiak_backend_active_requests{kaiak_backend_id="local"} 0`,
 	)
 	if pair.CostNanoUSD != 120_000 || pair.Units[config.UnitTokensIn] != 40 || pair.Units[config.UnitTokensCacheWrite] != 20 {
 		t.Errorf("unexpected record %+v", pair)
@@ -127,10 +129,42 @@ func TestStreamMetricsTimeToFirstTokenAndDecodeRate(t *testing.T) {
 	}
 	// Only the stream is timed: a non-stream answer has no first token to see.
 	expectMetricLines(t, g.metricsText(),
-		`kaiak_time_to_first_token_seconds_count{model="open",backend="local"} 1`,
-		`kaiak_output_token_rate_per_second_count{model="open",backend="local"} 1`,
-		`kaiak_request_duration_seconds_count{endpoint="chat_completions",model="open",status_class="2xx"} 2`,
+		`kaiak_time_to_first_token_seconds_count{gen_ai_request_model="open",kaiak_backend_id="local"} 1`,
+		`kaiak_output_token_rate_per_second_count{gen_ai_request_model="open",kaiak_backend_id="local"} 1`,
+		`http_server_request_duration_seconds_count{http_request_method="POST",url_scheme="http",http_route="/v1/chat/completions",http_response_status_code="200",gen_ai_request_model="open"} 2`,
 	)
+}
+
+// The request duration names the route as the client API documents it — never the
+// path — and the method only as the HTTP convention knows it.
+func TestRequestDurationRoutesAndMethods(t *testing.T) {
+	g := newTestGateway(t)
+	for _, c := range []call{
+		{method: "GET", path: "/v1/models", key: userKey},
+		{method: "GET", path: "/v1/models/open", key: userKey},
+		{method: "GET", path: "/v1/models/open/props", key: userKey},
+		{method: "POST", path: "/v1/embeddings", key: userKey, body: `{"model":"open","input":"x"}`},
+		{method: "BREW", path: "/v1/chat/completions", key: userKey},
+		{method: "GET", path: "/v1/elsewhere", key: userKey},
+	} {
+		do(t, g.h, c)
+	}
+	const scheme = `url_scheme="http"`
+	text := g.metricsText()
+	expectMetricLines(t, text,
+		`http_server_request_duration_seconds_count{http_request_method="GET",`+scheme+`,http_route="/v1/models",http_response_status_code="200"} 1`,
+		`http_server_request_duration_seconds_count{http_request_method="GET",`+scheme+`,http_route="/v1/models/{model}",http_response_status_code="200",gen_ai_request_model="open"} 1`,
+		`http_server_request_duration_seconds_count{http_request_method="GET",`+scheme+`,http_route="/v1/models/{model}/props",http_response_status_code="200",gen_ai_request_model="open"} 1`,
+		`http_server_request_duration_seconds_count{http_request_method="POST",`+scheme+`,http_route="/v1/embeddings",http_response_status_code="200",gen_ai_request_model="open"} 1`,
+		// A refused method matched no route; the method as sent is never a value.
+		`http_server_request_duration_seconds_count{http_request_method="_OTHER",`+scheme+`,http_response_status_code="405",error_type="method_not_allowed"} 1`,
+		`http_server_request_duration_seconds_count{http_request_method="GET",`+scheme+`,http_response_status_code="404",error_type="unknown_url"} 1`,
+	)
+	for _, leak := range []string{"BREW", "/v1/elsewhere", "/v1/models/open"} {
+		if strings.Contains(text, leak) {
+			t.Errorf("%q, sent by the client, became an attribute value", leak)
+		}
+	}
 }
 
 // Every request that ended in an error is counted by its key, model and the log
@@ -155,12 +189,12 @@ func TestRequestErrorsByKeyAndCode(t *testing.T) {
 
 	text := g.metricsText()
 	expectMetricLines(t, text,
-		`kaiak_request_errors_total{key_group="eval",root_group="research",key_id="k-eval",model="pair",code="rate_limit_exceeded"} 2`,
-		`kaiak_request_errors_total{key_group="ann",root_group="users",key_id="k-ann",code="model_not_found"} 1`,
-		`kaiak_request_errors_total{code="invalid_api_key"} 1`,
-		`kaiak_request_errors_total{code="unknown_url"} 1`,
+		`kaiak_request_errors_total{kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",gen_ai_request_model="pair",error_type="rate_limit_exceeded"} 2`,
+		`kaiak_request_errors_total{kaiak_key_group="ann",kaiak_key_root_group="users",kaiak_key_id="k-ann",error_type="model_not_found"} 1`,
+		`kaiak_request_errors_total{error_type="invalid_api_key"} 1`,
+		`kaiak_request_errors_total{error_type="unknown_url"} 1`,
 	)
-	if strings.Contains(text, `model="nope-model"`) {
+	if strings.Contains(text, `gen_ai_request_model="nope-model"`) {
 		t.Errorf("a model name the config does not grant is a label:\n%s", text)
 	}
 	if n := strings.Count(text, "kaiak_request_errors_total{"); n != 4 {
@@ -181,7 +215,7 @@ func TestRequestErrorsFollowTheLabelSwitches(t *testing.T) {
 		t.Fatalf("status %d", w.Code)
 	}
 	expectMetricLines(t, g.metricsText(),
-		`kaiak_request_errors_total{root_group="users",model="open",code="upstream_error"} 1`)
+		`kaiak_request_errors_total{kaiak_key_root_group="users",gen_ai_request_model="open",error_type="upstream_error"} 1`)
 }
 
 func TestKeyIDLabelSwitchedOff(t *testing.T) {
@@ -194,9 +228,9 @@ func TestKeyIDLabelSwitchedOff(t *testing.T) {
 		t.Fatalf("status %d", w.Code)
 	}
 	text := g.metricsText()
-	expectMetricLines(t, text, `kaiak_usage_records_total{key_group="ann",root_group="users",model="open",status="complete"} 1`)
-	if strings.Contains(text, "key_id=") {
-		t.Errorf("key_id label present while switched off:\n%s", text)
+	expectMetricLines(t, text, `kaiak_usage_records_total{kaiak_key_group="ann",kaiak_key_root_group="users",model="open",status="complete"} 1`)
+	if strings.Contains(text, "kaiak_key_id=") {
+		t.Errorf("kaiak_key_id label present while switched off:\n%s", text)
 	}
 	if r := onlyRecord(t, g); r.KeyID != "k-ann" {
 		t.Errorf("the usage record lost its key ID: %+v", r)
@@ -215,9 +249,9 @@ func TestGroupLabelSwitchedOff(t *testing.T) {
 		t.Fatalf("status %d", w.Code)
 	}
 	text := g.metricsText()
-	expectMetricLines(t, text, `kaiak_usage_records_total{root_group="users",key_id="k-ann",model="open",status="complete"} 1`)
-	if strings.Contains(text, `key_group=`) {
-		t.Errorf("key_group label present while switched off:\n%s", text)
+	expectMetricLines(t, text, `kaiak_usage_records_total{kaiak_key_root_group="users",kaiak_key_id="k-ann",model="open",status="complete"} 1`)
+	if strings.Contains(text, `kaiak_key_group=`) {
+		t.Errorf("kaiak_key_group label present while switched off:\n%s", text)
 	}
 	if r := onlyRecord(t, g); !slices.Equal(r.Groups, []string{"users", "ann"}) {
 		t.Errorf("the usage record lost its groups: %+v", r)
@@ -270,12 +304,12 @@ func TestMetricsServedOnAdminOnlyAndWellFormed(t *testing.T) {
 		t.Errorf("Content-Type %q", ct)
 	}
 	validateExposition(t, string(body))
-	for _, family := range []string{"kaiak_build_info", "kaiak_request_duration_seconds", "kaiak_time_to_first_token_seconds",
-		"kaiak_output_token_rate_per_second", "kaiak_errors_total", "kaiak_backend_in_flight_requests",
+	for _, family := range []string{"kaiak_build_info", "http_server_request_duration_seconds", "kaiak_time_to_first_token_seconds",
+		"kaiak_output_token_rate_per_second", "kaiak_errors_total", "kaiak_backend_active_requests",
 		"kaiak_config_loads_total", "kaiak_config_last_applied_timestamp_seconds", "kaiak_usage_records_total",
-		"kaiak_usage_tokens_total", "kaiak_usage_cost_usd_total", "kaiak_backend_max_in_flight", "kaiak_queued_requests",
-		"kaiak_queue_wait_seconds", "kaiak_queue_rejections_total", "kaiak_retries_total", "kaiak_request_attempts",
-		"kaiak_circuit_open", "kaiak_circuit_half_open", "kaiak_circuit_transitions_total", "kaiak_probes_total",
+		"kaiak_usage_tokens_total", "kaiak_usage_cost_usd_total", "kaiak_backend_active_requests_limit", "kaiak_queue_size",
+		"kaiak_queue_wait_duration_seconds", "kaiak_queue_rejections_total", "kaiak_retries_total", "kaiak_request_attempts",
+		"kaiak_circuit_state", "kaiak_deployment_cooling_down", "kaiak_circuit_transitions_total", "kaiak_probes_total",
 		"kaiak_upstream_attempts_total", "kaiak_upstream_attempt_duration_seconds"} {
 		if !strings.Contains(string(body), "# TYPE "+family+" ") {
 			t.Errorf("family %s missing", family)
@@ -322,9 +356,9 @@ func TestMetricsUnderConcurrentRequests(t *testing.T) {
 	text := g.metricsText()
 	validateExposition(t, text)
 	expectMetricLines(t, text,
-		`kaiak_usage_records_total{key_group="ann",root_group="users",key_id="k-ann",model="open",status="complete"} 24`,
-		`kaiak_request_duration_seconds_count{endpoint="chat_completions",model="open",status_class="2xx"} 24`,
-		`kaiak_time_to_first_token_seconds_count{model="open",backend="local"} 12`,
+		`kaiak_usage_records_total{kaiak_key_group="ann",kaiak_key_root_group="users",kaiak_key_id="k-ann",model="open",status="complete"} 24`,
+		`http_server_request_duration_seconds_count{http_request_method="POST",url_scheme="http",http_route="/v1/chat/completions",http_response_status_code="200",gen_ai_request_model="open"} 24`,
+		`kaiak_time_to_first_token_seconds_count{gen_ai_request_model="open",kaiak_backend_id="local"} 12`,
 	)
 }
 
@@ -523,11 +557,11 @@ func TestRelayedBackendErrorsAreClassedByWhoseProblemTheyAre(t *testing.T) {
 		}
 	}
 	expectMetricLines(t, g.metricsText(),
-		`kaiak_errors_total{class="upstream_client_error"} 2`,
-		`kaiak_errors_total{class="upstream_rate_limited"} 1`,
-		`kaiak_errors_total{class="upstream_error"} 2`,
+		`kaiak_errors_total{kaiak_error_class="upstream_client_error"} 2`,
+		`kaiak_errors_total{kaiak_error_class="upstream_rate_limited"} 1`,
+		`kaiak_errors_total{kaiak_error_class="upstream_error"} 2`,
 		// The gateway's own limits refused nothing.
-		`kaiak_errors_total{class="rate_limited"} 0`,
+		`kaiak_errors_total{kaiak_error_class="rate_limited"} 0`,
 	)
 }
 

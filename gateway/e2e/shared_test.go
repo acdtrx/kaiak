@@ -64,7 +64,7 @@ func TestSharedLimitsAcrossGateways(t *testing.T) {
 	t.Run("the backend cap is split between the live gateways", func(t *testing.T) {
 		// max_in_flight 4, two live gateways: 2 each.
 		for _, g := range []*gateway{a, b} {
-			g.waitMetric(t, "the enforced cap", `kaiak_backend_max_in_flight{backend="fake"}`,
+			g.waitMetric(t, "the enforced cap", `kaiak_backend_active_requests_limit{kaiak_backend_id="fake"}`,
 				func(v float64) bool { return v == 2 })
 		}
 	})
@@ -90,7 +90,7 @@ func TestSharedLimitsAcrossGateways(t *testing.T) {
 		// them, marks the totals that carry them: gw-b's cap share doubles once it has
 		// applied such totals.
 		cp.SetLiveGateways(1)
-		b.waitMetric(t, "gw-b taking the pushed windows", `kaiak_backend_max_in_flight{backend="fake"}`,
+		b.waitMetric(t, "gw-b taking the pushed windows", `kaiak_backend_active_requests_limit{kaiak_backend_id="fake"}`,
 			func(v float64) bool { return v == 4 })
 		r := b.post(t, "/v1/chat/completions", budgetKey, "", chatBody("priced", false, nil))
 		if r.StatusCode != http.StatusTooManyRequests || r.errorCode(t) != "budget_exceeded" {
@@ -101,7 +101,7 @@ func TestSharedLimitsAcrossGateways(t *testing.T) {
 		}
 		cp.SetLiveGateways(2)
 		for _, g := range []*gateway{a, b} {
-			g.waitMetric(t, "two live gateways again", `kaiak_backend_max_in_flight{backend="fake"}`,
+			g.waitMetric(t, "two live gateways again", `kaiak_backend_active_requests_limit{kaiak_backend_id="fake"}`,
 				func(v float64) bool { return v == 2 })
 		}
 	})
@@ -120,7 +120,7 @@ func TestSharedLimitsAcrossGateways(t *testing.T) {
 		if r := a.post(t, "/v1/chat/completions", evalKey, "", chatBody("priced", false, nil)); r.StatusCode != http.StatusOK {
 			t.Fatalf("priced model outside every USD limit in the outage: %d %s", r.StatusCode, r.body)
 		}
-		if got := a.metric(t, `kaiak_errors_total{class="budget_unavailable"}`); got != 1 {
+		if got := a.metric(t, `kaiak_errors_total{kaiak_error_class="budget_unavailable"}`); got != 1 {
 			t.Errorf("budget_unavailable errors = %v, want 1", got)
 		}
 	})
@@ -183,7 +183,7 @@ func TestRejectedConfigKeepsBudgetsEnforcedFromStreamTotals(t *testing.T) {
 		t.Helper()
 		cp.SetLiveGateways(live)
 		for _, g := range []*gateway{a, b} {
-			g.waitMetric(t, "the live count", `kaiak_backend_max_in_flight{backend="fake"}`,
+			g.waitMetric(t, "the live count", `kaiak_backend_active_requests_limit{kaiak_backend_id="fake"}`,
 				func(v float64) bool { return v == float64(4/live) })
 		}
 	}
@@ -218,7 +218,7 @@ func TestRejectedConfigKeepsBudgetsEnforcedFromStreamTotals(t *testing.T) {
 	hashV2 := publish(v2)
 	a.logs.wait(t, "gw-a applying v2", msg("config applied", "kaiak.trigger", "control", "kaiak.config.hash", hashV2))
 	b.logs.wait(t, "gw-b rejecting v2", msg("config rejected", "kaiak.trigger", "control", "kaiak.config.hash", hashV2))
-	if got := b.metric(t, `kaiak_config_loads_total{trigger="control",result="rejected"}`); got != 1 {
+	if got := b.metric(t, `kaiak_config_loads_total{kaiak_trigger="control",kaiak_config_result="rejected"}`); got != 1 {
 		t.Errorf("gw-b's rejected control loads = %v, want 1", got)
 	}
 

@@ -276,7 +276,7 @@ Group entries under headings as themes emerge.
   reading slowly holds its backend slot for response size ÷ read rate (the stall
   timer pauses while writing to the client, by design — the time is not the
   backend's) (N-S7). Revisit trigger: slots held by slow readers show up as queueing
-  (`kaiak_backend_in_flight_requests` at the cap while the backends are idle).
+  (`kaiak_backend_active_requests` at the cap while the backends are idle).
 - **Removed backends' connection pools** — a request still running under an older
   config (or a probe of a backend a reload dropped) can re-create a removed
   backend's pool until the next config apply prunes it again (the earlier audit's

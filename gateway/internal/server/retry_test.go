@@ -139,9 +139,9 @@ func TestRetrySucceedsOnTheOtherDeployment(t *testing.T) {
 				t.Errorf("team tokens %d, want the settled %d", got, want)
 			}
 			expectMetricLines(t, scrape(g),
-				`kaiak_retries_total{model="retry",backend="`+c.first+`",reason="`+c.reason+`"} 1`,
-				`kaiak_request_attempts_bucket{model="retry",le="1"} 0`,
-				`kaiak_request_attempts_bucket{model="retry",le="2"} 1`)
+				`kaiak_retries_total{gen_ai_request_model="retry",kaiak_backend_id="`+c.first+`",kaiak_attempt_outcome="`+c.reason+`"} 1`,
+				`kaiak_request_attempts_bucket{gen_ai_request_model="retry",le="1"} 0`,
+				`kaiak_request_attempts_bucket{gen_ai_request_model="retry",le="2"} 1`)
 		})
 	}
 }
@@ -242,7 +242,7 @@ func TestRetriedAttemptsErrorCodeIsNotLogged(t *testing.T) {
 	fields := logFields(t, g, "r")
 	expectFields(t, fields, map[string]any{"kaiak.tried": "vl/msg-back:upstream_overloaded,vl-b/msg-back:200"},
 		"error.type", "kaiak.upstream.error.code", "kaiak.upstream.error.type", "kaiak.upstream.error.message")
-	expectMetricLines(t, scrape(g), `kaiak_retries_total{model="msg",backend="vl",reason="rate_limited"} 1`)
+	expectMetricLines(t, scrape(g), `kaiak_retries_total{gen_ai_request_model="msg",kaiak_backend_id="vl",kaiak_attempt_outcome="rate_limited"} 1`)
 }
 
 func TestTimedOutAttemptIsRecordedAndLimitsSettleTheSum(t *testing.T) {
@@ -287,9 +287,9 @@ func TestTimedOutAttemptIsRecordedAndLimitsSettleTheSum(t *testing.T) {
 		t.Errorf("log line: %s", line)
 	}
 	expectMetricLines(t, scrape(g),
-		`kaiak_usage_records_total{key_group="eval",root_group="research",key_id="k-eval",model="retry",status="partial"} 1`,
-		`kaiak_usage_records_total{key_group="eval",root_group="research",key_id="k-eval",model="retry",status="complete"} 1`,
-		`kaiak_request_duration_seconds_count{endpoint="chat_completions",model="retry",status_class="2xx"} 1`)
+		`kaiak_usage_records_total{kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",model="retry",status="partial"} 1`,
+		`kaiak_usage_records_total{kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",model="retry",status="complete"} 1`,
+		`http_server_request_duration_seconds_count{http_request_method="POST",url_scheme="http",http_route="/v1/chat/completions",http_response_status_code="200",gen_ai_request_model="retry"} 1`)
 }
 
 // Retries are failover only: a single-deployment model answers the attempt's
@@ -314,7 +314,7 @@ func TestSingleDeploymentIsNotRetried(t *testing.T) {
 	if records := recordsOf(g, "down"); len(records) != 1 || !records[0].Partial {
 		t.Errorf("records %+v, want one partial", records)
 	}
-	expectMetricLines(t, scrape(g), `kaiak_retries_total{model="open",backend="local",reason="server_error"} 0`)
+	expectMetricLines(t, scrape(g), `kaiak_retries_total{gen_ai_request_model="open",kaiak_backend_id="local",kaiak_attempt_outcome="server_error"} 0`)
 }
 
 func TestAllAttemptsFailingAnswerTheLastError(t *testing.T) {
@@ -335,8 +335,8 @@ func TestAllAttemptsFailingAnswerTheLastError(t *testing.T) {
 		!strings.Contains(line, `"kaiak.upstream.error.type":"server_error"`) || strings.Contains(line, "disk full") {
 		t.Errorf("log line: %s", line)
 	}
-	expectMetricLines(t, scrape(g), `kaiak_retries_total{model="retry",backend="local",reason="server_error"} 1`,
-		`kaiak_errors_total{class="upstream_error"} 1`)
+	expectMetricLines(t, scrape(g), `kaiak_retries_total{gen_ai_request_model="retry",kaiak_backend_id="local",kaiak_attempt_outcome="server_error"} 1`,
+		`kaiak_errors_total{kaiak_error_class="upstream_error"} 1`)
 }
 
 func TestNotRetried(t *testing.T) {
@@ -378,7 +378,7 @@ func TestNotRetried(t *testing.T) {
 		if n := len(g.backend.Requests()); n != 1 {
 			t.Errorf("backend got %d requests, want 1 (the deployment is refused for the request)", n)
 		}
-		expectMetricLines(t, scrape(g), `kaiak_errors_total{class="upstream_error"} 1`)
+		expectMetricLines(t, scrape(g), `kaiak_errors_total{kaiak_error_class="upstream_error"} 1`)
 	})
 	t.Run("a 404 that does not name the model", func(t *testing.T) {
 		g := newTestGateway(t)
@@ -545,7 +545,7 @@ func TestRetryQueuesForACappedBackend(t *testing.T) {
 		if !strings.Contains(line, `"kaiak.attempts":2,"kaiak.tried":"local-b/first:500,local/second:200","kaiak.queue.wait_duration":`) {
 			t.Errorf("log line: %s", line)
 		}
-		expectMetricLines(t, scrape(g), `kaiak_queue_wait_seconds_count{model="retry"} 1`)
+		expectMetricLines(t, scrape(g), `kaiak_queue_wait_duration_seconds_count{gen_ai_request_model="retry"} 1`)
 		if n := inFlight(g); len(n) != 0 {
 			t.Errorf("in flight %v, want none", n)
 		}
@@ -598,7 +598,7 @@ func TestRetryQueuesForACappedBackend(t *testing.T) {
 		if line := logLine(t, g, "r"); !strings.Contains(line, `"kaiak.retry_refused":"queue_timeout"`) {
 			t.Errorf("log line: %s", line)
 		}
-		expectMetricLines(t, scrape(g), `kaiak_queue_rejections_total{model="retry",reason="timeout"} 1`)
+		expectMetricLines(t, scrape(g), `kaiak_queue_rejections_total{gen_ai_request_model="retry",error_type="queue_timeout"} 1`)
 	})
 }
 

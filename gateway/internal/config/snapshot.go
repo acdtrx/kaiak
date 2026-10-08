@@ -194,7 +194,7 @@ var (
 type Snapshot struct {
 	MaxRequestBodyBytes int64
 	// KeyIDLabel: label usage metrics with the key ID; GroupLabel: with the key's
-	// group, key_group (the top-level group labels them either way).
+	// group, kaiak.key.group (the top-level group labels them either way).
 	KeyIDLabel bool
 	GroupLabel bool
 	// ControlOutageGrace: in control-plane mode, how long models covered by a USD

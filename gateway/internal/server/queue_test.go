@@ -215,11 +215,11 @@ func TestCappedBackendQueuesInOrderAndRefusesWhenFull(t *testing.T) {
 	}
 	out := scrape(g)
 	for _, want := range []string{
-		`kaiak_queue_rejections_total{model="open",reason="full"} 1`,
-		`kaiak_queue_wait_seconds_count{model="open"} 2`,
-		`kaiak_errors_total{class="queue_rejected"} 1`,
-		`kaiak_queued_requests{model="open"} 0`,
-		`kaiak_backend_max_in_flight{backend="local"} 1`,
+		`kaiak_queue_rejections_total{gen_ai_request_model="open",error_type="queue_full"} 1`,
+		`kaiak_queue_wait_duration_seconds_count{gen_ai_request_model="open"} 2`,
+		`kaiak_errors_total{kaiak_error_class="queue_rejected"} 1`,
+		`kaiak_queue_size{gen_ai_request_model="open"} 0`,
+		`kaiak_backend_active_requests_limit{kaiak_backend_id="local"} 1`,
 	} {
 		if !strings.Contains(out, want+"\n") {
 			t.Errorf("metrics miss %s", want)
@@ -270,9 +270,9 @@ func TestQueueTimeoutAndNoQueue(t *testing.T) {
 	}
 	out := scrape(g)
 	for _, want := range []string{
-		`kaiak_queue_rejections_total{model="secret",reason="timeout"} 1`,
-		`kaiak_queue_rejections_total{model="Org/open-7b",reason="full"} 1`,
-		`kaiak_errors_total{class="queue_rejected"} 2`,
+		`kaiak_queue_rejections_total{gen_ai_request_model="secret",error_type="queue_timeout"} 1`,
+		`kaiak_queue_rejections_total{gen_ai_request_model="Org/open-7b",error_type="queue_full"} 1`,
+		`kaiak_errors_total{kaiak_error_class="queue_rejected"} 2`,
 	} {
 		if !strings.Contains(out, want+"\n") {
 			t.Errorf("metrics miss %s", want)
@@ -305,6 +305,9 @@ func TestLeavingTheQueueReleasesTheReservation(t *testing.T) {
 		!strings.Contains(line, `"kaiak.queue.wait_duration":`) {
 		t.Errorf("gone log line: %s", line)
 	}
+	// No status was sent: the request duration has none either.
+	expectMetricLines(t, g.metricsText(),
+		`http_server_request_duration_seconds_count{http_request_method="POST",url_scheme="http",http_route="/v1/chat/completions",error_type="client_closed",gen_ai_request_model="open"} 1`)
 	if n := len(g.usage.all()); n != 1 {
 		t.Errorf("%d usage records, want the holder's only", n)
 	}

@@ -97,8 +97,8 @@ func (r *run) checkCapacity() {
 		return
 	}
 	for _, b := range []string{backendFirst, backendSecond} {
-		if got := sumSeries(text, `kaiak_backend_max_in_flight{backend="`+b+`"}`); got != float64(r.o.maxInFlight) {
-			r.fail(name, "kaiak_backend_max_in_flight for %s = %v, want %d", b, got, r.o.maxInFlight)
+		if got := sumSeries(text, `kaiak_backend_active_requests_limit{kaiak_backend_id="`+b+`"}`); got != float64(r.o.maxInFlight) {
+			r.fail(name, "kaiak_backend_active_requests_limit for %s = %v, want %d", b, got, r.o.maxInFlight)
 			return
 		}
 	}
@@ -158,8 +158,8 @@ func (r *run) checkFailover() {
 	if !ok {
 		return
 	}
-	if got := sumSeries(text, "kaiak_circuit_open{", `backend="`+backendSecond+`"`); got != 1 {
-		r.fail(name, "kaiak_circuit_open for %s = %v after the circuit opened, want 1", backendSecond, got)
+	if got := sumSeries(text, "kaiak_circuit_state{", `kaiak_backend_id="`+backendSecond+`"`, `kaiak_circuit_state="open"`); got != 1 {
+		r.fail(name, "kaiak_circuit_state open for %s = %v after the circuit opened, want 1", backendSecond, got)
 		return
 	}
 	for i := range 2 {

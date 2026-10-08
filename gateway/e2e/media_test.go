@@ -75,7 +75,7 @@ func TestInlineImageKeepsItsDefaultOutput(t *testing.T) {
 	if requested, _ := line["kaiak.limit.requested"].(float64); requested <= 100000 {
 		t.Errorf("log line requested = %v, want above the limit", line["kaiak.limit.requested"])
 	}
-	if got := g.metric(t, `kaiak_limit_rejections_total{scope_kind="group",type="tokens_per_minute"}`); got != 1 {
+	if got := g.metric(t, `kaiak_limit_rejections_total{kaiak_limit_scope="group",kaiak_limit_type="tokens_per_minute"}`); got != 1 {
 		t.Errorf("limit rejections = %v, want 1", got)
 	}
 	if got := len(backend.Requests()); got != 1 {

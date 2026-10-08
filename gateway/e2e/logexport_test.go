@@ -159,7 +159,7 @@ func buildVersion(t *testing.T, g *gateway) string {
 	t.Helper()
 	_, body := g.get(t, "/metrics", "")
 	for line := range strings.SplitSeq(string(body), "\n") {
-		if rest, ok := strings.CutPrefix(line, `kaiak_build_info{version="`); ok {
+		if rest, ok := strings.CutPrefix(line, `kaiak_build_info{service_version="`); ok {
 			v, _, _ := strings.Cut(rest, `"`)
 			return v
 		}
@@ -215,8 +215,24 @@ func stderrLines(t *testing.T, g *gateway, skip string) []map[string]any {
 	return out
 }
 
-func logExportSeries(outcome string) string {
-	return fmt.Sprintf(`kaiak_log_export_records_total{outcome=%q}`, outcome)
+// exportedSeries is the log exporter's otel.sdk.exporter.log.exported series of
+// errorType: the records accepted for "".
+func exportedSeries(errorType string) string {
+	return logExportSeries("otel_sdk_exporter_log_exported_total", "otlp_http_json_log_exporter", errorType)
+}
+
+// processedSeries is the log queue's otel.sdk.processor.log.processed series of
+// errorType: the records handed to the exporter for "".
+func processedSeries(errorType string) string {
+	return logExportSeries("otel_sdk_processor_log_processed_total", "batching_log_processor", errorType)
+}
+
+func logExportSeries(name, component, errorType string) string {
+	labels := fmt.Sprintf(`otel_component_type=%q,otel_component_name=%q`, component, component+"/0")
+	if errorType != "" {
+		labels += fmt.Sprintf(`,error_type=%q`, errorType)
+	}
+	return name + "{" + labels + "}"
 }
 
 // Every line of a gateway's life — boot, a success, a 401, a limit refusal, the
@@ -249,9 +265,9 @@ func TestLogExport(t *testing.T) {
 	if got, want := starting["kaiak.log_export.endpoint"], collectorHost(t, collector); got != want {
 		t.Errorf("kaiak.log_export.endpoint %v, want %s", got, want)
 	}
-	for _, outcome := range []string{"failed", "dropped"} {
-		if v, ok := g.metricValue(t, logExportSeries(outcome)); !ok || v != 0 {
-			t.Errorf("%s = %v (exposed %v), want 0", logExportSeries(outcome), v, ok)
+	for _, dropped := range []string{"queue_full", "shutdown"} {
+		if v, ok := g.metricValue(t, processedSeries(dropped)); !ok || v != 0 {
+			t.Errorf("%s = %v (exposed %v), want 0", processedSeries(dropped), v, ok)
 		}
 	}
 
@@ -272,7 +288,7 @@ func TestLogExport(t *testing.T) {
 	}
 	// The metric moves with the exports: once the request lines are out, it counts
 	// every record the collector accepted.
-	exported := g.waitMetric(t, "exports counted", logExportSeries("exported"), func(v float64) bool {
+	exported := g.waitMetric(t, "exports counted", exportedSeries(""), func(v float64) bool {
 		return v > 0 && v == float64(acceptedRecords(collector))
 	})
 	version := buildVersion(t, g)
@@ -352,8 +368,11 @@ func TestLogExportOff(t *testing.T) {
 				t.Fatalf("chat: %d %s", r.StatusCode, r.body)
 			}
 			g.settled(t, "off-ok")
-			if _, ok := g.metricValue(t, logExportSeries("exported")); ok {
-				t.Error("kaiak_log_export_records_total exposed with export off")
+			if _, ok := g.metricValue(t, exportedSeries("")); ok {
+				t.Error("otel_sdk_exporter_log_exported_total exposed with export off")
+			}
+			if _, ok := g.metricValue(t, processedSeries("")); ok {
+				t.Error("otel_sdk_processor_log_processed_total exposed with export off")
 			}
 			if line := g.logs.wait(t, "kaiak starting", msg("kaiak starting")); line["kaiak.log_export.endpoint"] != nil {
 				t.Errorf("kaiak starting names an endpoint with export off: %v", line)
@@ -392,14 +411,14 @@ func TestLogExportRefusedBatch(t *testing.T) {
 		t.Errorf("failure report %v", report)
 	}
 	failed := report["kaiak.log_export.failed"].(float64)
-	if got := g.metric(t, logExportSeries("failed")); got != failed || failed == 0 {
+	if got := g.metric(t, exportedSeries("400")); got != failed || failed == 0 {
 		t.Errorf("failed records: metric %v, report %v", got, failed)
 	}
 	if r := g.post(t, "/v1/chat/completions", evalKey, "refused-ok", chatBody("chat", false, nil)); r.StatusCode != http.StatusOK {
 		t.Fatalf("chat: %d %s", r.StatusCode, r.body)
 	}
 	g.settled(t, "refused-ok")
-	g.waitMetric(t, "exports counted", logExportSeries("exported"), func(v float64) bool {
+	g.waitMetric(t, "exports counted", exportedSeries(""), func(v float64) bool {
 		return v > 0 && v == float64(acceptedRecords(collector))
 	})
 	g.stop(t)
@@ -455,7 +474,7 @@ func TestLogExportStalledCollectorAtExit(t *testing.T) {
 		t.Fatalf("chat: %d %s", r.StatusCode, r.body)
 	}
 	g.settled(t, "stalled-ok")
-	if v := g.metric(t, logExportSeries("exported")); v != 0 {
+	if v := g.metric(t, exportedSeries("")); v != 0 {
 		t.Errorf("exported %v with a collector that never answers", v)
 	}
 
@@ -519,9 +538,9 @@ func TestLogExportRedirectIsNotFollowed(t *testing.T) {
 		t.Errorf("failure report counts no failed records: %v", report)
 	}
 	// Every export is redirected: later batches may have failed since the report.
-	g.waitMetric(t, "failed records counted", logExportSeries("failed"), func(v float64) bool { return v >= failed })
-	if v, ok := g.metricValue(t, logExportSeries("exported")); !ok || v != 0 {
-		t.Errorf("%s = %v (exposed %v), want 0", logExportSeries("exported"), v, ok)
+	g.waitMetric(t, "failed records counted", exportedSeries("307"), func(v float64) bool { return v >= failed })
+	if v, ok := g.metricValue(t, exportedSeries("")); !ok || v != 0 {
+		t.Errorf("%s = %v (exposed %v), want 0", exportedSeries(""), v, ok)
 	}
 	g.stop(t)
 

@@ -143,9 +143,9 @@ outage):
   `control plane outage: priced USD-limited models refused` (warn) and `control
   plane outage over: contact is back` (info).
 - **Usage waits in memory, bounded per pod by `KAIAK_USAGE_MEMORY_BYTES`** (default
-  64 MiB of encoded records, shown by `kaiak_usage_queued_bytes`): past that, the
+  64 MiB of encoded records, shown by `kaiak_usage_queue_size_bytes`): past that, the
   oldest queued batches are dropped, logged at error level and counted in
-  `kaiak_usage_dropped_records_total{reason="memory_bound"}`
+  `kaiak_usage_dropped_records_total{kaiak_usage_drop_reason="memory_bound"}`
   (`GATEWAY.md` → Usage batches in memory). **What the default covers**: a typical
   record encodes to about 510 bytes (measured 506 with 32-character record and
   request IDs, a pod-name instance, ordinary key and model names and a short group
@@ -706,11 +706,11 @@ the document (a script, or the control plane) rather than editing it by hand.
   top-level group, key ID and model with their spend. A NetworkPolicy admitting to 9090 only the Prometheus
   pods (and the kubelet's probes, which come from the node — some CNIs need the node
   CIDR allowed); the token where that is not enough.
-- **Version**: `kaiak_build_info{version="…"}` carries the image's version (its tag,
+- **Version**: `kaiak_build_info{service_version="…"}` carries the image's version (its tag,
   from `git describe`); compare it across pods during a rollout.
 - **Config load cost** (`GATEWAY.md` → Observability: Config load cost): with a large
   config, read `kaiak_config_size_bytes`, the apply time
-  (`histogram_quantile(0.99, sum by (le) (rate(kaiak_config_apply_duration_seconds_bucket{result="applied"}[1h])))`,
+  (`histogram_quantile(0.99, sum by (le) (rate(kaiak_config_apply_duration_seconds_bucket{kaiak_config_result="applied"}[1h])))`,
   or the `kaiak.duration` and `kaiak.config.size` on each `config applied` line) and the limiter's
   sync to each new config (`kaiak_limits_sync_duration_seconds` — the pause the
   first requests on a new config feel). They are there to measure, not to alert on:
@@ -720,21 +720,22 @@ the document (a script, or the control plane) rather than editing it by hand.
   each: 18,000 series per replica, × the replicas for the store's total. When it
   outgrows the metrics store, switch `global.metrics.key_id_label` off first (one
   label set per group that owns keys — no gain when every key has its own group),
-  then `global.metrics.group_label` (one per top-level group, as `root_group`
-  stays: 216 series when those 500 keys sit under 5 team groups and a `users`
-  group); old series clear on restart. `root_group` bounds series only when the
+  then `global.metrics.group_label` (one per top-level group, as
+  `kaiak_key_root_group` stays: 216 series when those 500 keys sit under 5 team groups and a `users`
+  group); old series clear on restart. `kaiak_key_root_group` bounds series only when the
   top-level groups are few: with people as top-level groups it has one value per
   person and `group_label` off saves nothing — put them under one `users` group.
-  Usage series carry `key_group` (the key's group) and `root_group` (its top-level
-  group) — never the levels between, never a group's labels: sum a branch with
-  `sum by (root_group)`, a group's own keys with `sum by (key_group)`, and take
-  finer rollups from the usage records, which carry the whole path. The label is
-  `key_group`, not `group`, because scrape configs often set a target label
+  Usage series carry `kaiak_key_group` (the key's group) and `kaiak_key_root_group`
+  (its top-level group) — never the levels between, never a group's labels: sum a
+  branch with `sum by (kaiak_key_root_group)`, a group's own keys with
+  `sum by (kaiak_key_group)`, and take finer rollups from the usage records, which
+  carry the whole path. The label is `kaiak_key_group`, not `group`, because scrape configs often set a target label
   `group`, which would rename the gateway's to `exported_group`. Ops series are bounded by the
   config (backends, deployments, models), never by clients.
-- **Errors per team or key**: `kaiak_request_errors_total` carries the usage labels
-  and the error `code`, so a team's page shows its failures and refusals beside its
-  usage — e.g. `sum by (code) (increase(kaiak_request_errors_total{root_group="team-a"}[1h]))`.
+- **Errors per team or key**: `kaiak_request_errors_total` carries the key labels,
+  the model and the error code (`error_type`), so a team's page shows its failures
+  and refusals beside its usage — e.g.
+  `sum by (error_type) (increase(kaiak_request_errors_total{kaiak_key_root_group="team-a"}[1h]))`.
   Requests without a valid key count with no key labels. It follows the same two
   switches; its series are the keys that met an error, times the codes they met.
 - **Logs**: one JSON line per request (message `request`), its attributes named
@@ -821,9 +822,11 @@ the document (a script, or the control plane) rather than editing it by hand.
     `gen_ai.usage.output_tokens`; kaiak's own under `kaiak.*` (`kaiak.key.id`,
     `kaiak.limit.*`, `kaiak.tried`, `kaiak.usage.cost_usd`). The field tables:
     `GATEWAY.md` → Observability: Logs.
-  - **Watch for loss**: `kaiak_log_export_records_total{outcome="dropped"}` (the
-    queue was full, or records were still queued at exit) and `{outcome="failed"}`
-    (the collector refused a batch, or retries ran out of time); the gateway's
+  - **Watch for loss**: `otel_sdk_processor_log_processed_total` with an
+    `error_type` (`queue_full`: the queue was full; `shutdown`: records were still
+    queued at exit) and `otel_sdk_exporter_log_exported_total` with an `error_type`
+    (the collector refused a batch, or retries ran out of time — its status, or the
+    failure's class: `GATEWAY.md` → Observability: Exporters' own counts); the gateway's
     stderr says why (`log export failing`, at most once a minute). Lost log
     records lose no usage: usage records go to the control plane, never through
     the logs.
@@ -834,8 +837,8 @@ with its `for:` and a **severity**: **page** — clients are refused now, or wil
 when the outage grace ends; **ticket** — look within a working day. Every
 expression aggregates across replicas, so one condition is one alert, not one per
 pod: fleet-wide states are counted (`count(…) > 0`, the value is how many pods),
-deployments are taken at their worst replica (`max by (backend,
-deployment_model)`), rates are summed (`sum by (…)`). The control-plane alerts
+deployments are taken at their worst replica (`max by (kaiak_backend_id,
+kaiak_deployment_model)`), rates are summed (`sum by (…)`). The control-plane alerts
 fire at **300 s**, well inside the 900 s outage grace
 (`global.control_outage_grace_ms`): about 10 minutes to fix the control plane
 before priced models are refused. Scale the 300 with the grace if you change it.
@@ -845,25 +848,25 @@ before priced models are refused. Scale the 300 with the grace if you change it.
 | Control plane unreachable (lead time) | page | `count(kaiak_control_connected == 0 and time() - kaiak_control_last_contact_timestamp_seconds > 300) > 0` | — | No contact for 5 minutes: config updates and key revocations have stopped, and priced USD-limited models are refused when the grace ends. Check the control plane. |
 | Control-plane outage | page | `count(kaiak_control_outage == 1) > 0` | — | The grace has passed: priced models under a USD limit are being refused. |
 | Usage not acknowledged | page | `count(kaiak_usage_queue_batches > 0 unless time() - kaiak_usage_last_ack_timestamp_seconds <= 300) > 0` | 2m | Batches wait and nothing was acknowledged for 5 minutes (or ever, on a new pod): the control plane takes the stream but not `/v1/usage` — spend is not shared, usage piles up in memory, and unanswered batches become an outage at the grace. The `for` matters: a pod idle for 5 minutes has an old last ack when its next batch seals, true for the few seconds until its ack. |
-| Budget refusals | page | `sum(increase(kaiak_errors_total{class="budget_unavailable"}[5m])) > 0` | — | Clients refused because spend is unknown. Two causes: a control-plane outage (`kaiak_control_outage == 1`); or **no totals yet** — a pod started and its first totals were late (`first totals not received within the boot wait` in its log; `kaiak_control_totals_applied_timestamp_seconds` absent). |
-| No healthy deployment | page | `sum(increase(kaiak_errors_total{class="no_healthy_deployment"}[5m])) > 0` | — | Every deployment of a model has its circuit open: its requests are refused `503`. `kaiak_circuit_open` names them. |
+| Budget refusals | page | `sum(increase(kaiak_errors_total{kaiak_error_class="budget_unavailable"}[5m])) > 0` | — | Clients refused because spend is unknown. Two causes: a control-plane outage (`kaiak_control_outage == 1`); or **no totals yet** — a pod started and its first totals were late (`first totals not received within the boot wait` in its log; `kaiak_control_totals_applied_timestamp_seconds` absent). |
+| No healthy deployment | page | `sum(increase(kaiak_errors_total{kaiak_error_class="no_healthy_deployment"}[5m])) > 0` | — | Every deployment of a model has its circuit open: its requests are refused `503`. `kaiak_circuit_state{kaiak_circuit_state="open"}` names them. |
 | Pods crash-looping | page | `kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff", container="kaiak"} == 1` (kube-state-metrics) | — | A gateway cannot boot: the control plane stayed unavailable through the boot wait and there is no seed, or the token or config is refused. The pod's last log line names the cause. |
-| Usage near the memory bound | ticket | `kaiak_usage_queued_bytes > 33554432` | — | Per pod: half the default 64 MiB bound (scale with `KAIAK_USAGE_MEMORY_BYTES`); records start dropping when it is reached — during a long outage the page above already fired. |
-| Usage batches refused | ticket | `sum(increase(kaiak_usage_batch_sends_total{result="rejected"}[15m])) > 0` | — | The control plane refused a batch, which is dropped. |
-| Usage records dropped | ticket | `sum by (reason) (increase(kaiak_usage_dropped_records_total[15m])) > 0` | — | Lost billing data: `reason="memory_bound"` (the in-memory bound, a long outage), or `invalid` (failed the record checks). |
-| Config rejected | ticket | `sum(increase(kaiak_config_loads_total{result="rejected"}[15m])) > 0` | — | The gateways kept their running config; the log line has the issue codes (an unset `api_key_env` is the usual one). |
+| Usage near the memory bound | ticket | `kaiak_usage_queue_size_bytes > 33554432` | — | Per pod: half the default 64 MiB bound (scale with `KAIAK_USAGE_MEMORY_BYTES`); records start dropping when it is reached — during a long outage the page above already fired. |
+| Usage batches refused | ticket | `sum(increase(kaiak_usage_batch_sends_total{kaiak_usage_batch_result="rejected"}[15m])) > 0` | — | The control plane refused a batch, which is dropped. |
+| Usage records dropped | ticket | `sum by (kaiak_usage_drop_reason) (increase(kaiak_usage_dropped_records_total[15m])) > 0` | — | Lost billing data: `memory_bound` (the in-memory bound, a long outage), or `invalid` (failed the record checks). |
+| Config rejected | ticket | `sum(increase(kaiak_config_loads_total{kaiak_config_result="rejected"}[15m])) > 0` | — | The gateways kept their running config; the log line has the issue codes (an unset `api_key_env` is the usual one). |
 | Running a config the control plane moved off | ticket | `max(kaiak_control_config_rejected) == 1` | 15m | A gateway rejected the control plane's current config and runs an earlier one — its status `last_rejection` says which and why. It still enforces its own limits on the control plane's totals; it clears when the gateway applies a later config or receives the one it runs again. |
-| Circuit open | ticket | `max by (backend, deployment_model) (kaiak_circuit_open) == 1` | 5m | A deployment is out of rotation, its backend failing the probe; the model's other deployments carry its load (none left: No healthy deployment pages). A half-open circuit (the backend answers its probe; the next request is the trial) reads 0 here and 1 on `kaiak_circuit_half_open`: a recovered deployment with no traffic stays half-open indefinitely and must not alert. |
-| Circuit flapping | ticket | `max by (backend, deployment_model) (increase(kaiak_circuit_transitions_total{to="open"}[30m])) > 3` | — | Probes half-open it and trials fail (the host answers its models list but cannot serve), or its models list comes and goes (a failed probe re-opens a half-open circuit). |
-| Wrong model, path or credential | ticket | `sum by (backend, deployment_model, outcome) (increase(kaiak_upstream_attempts_total{outcome=~"model_missing\|path_missing\|endpoint_missing\|auth_failed"}[10m])) > 0` | — | A host serves another model than the config says, its `base_url` leads to no endpoint (`path_missing`: typically the API version path left out; the gateway also warns `the backend has no models list at its base_url` when the config is applied), its server version lacks an endpoint its type serves (`endpoint_missing`: upgrade it), or it refuses the gateway's key. |
-| Backend failure rate | ticket | `sum by (backend) (rate(kaiak_upstream_attempts_total{outcome=~"unavailable\|timeout\|server_error\|broke_off"}[5m])) / sum by (backend) (rate(kaiak_upstream_attempts_total[5m])) > 0.05 and sum by (backend) (rate(kaiak_upstream_attempts_total[5m])) > 0.1` | 5m | A struggling host, before its circuit opens. The second clause needs about 30 attempts in 5 minutes, so one failed request on a quiet backend is not a 50% rate. On an Azure backend, `broke_off` or `timeout` from reasoning models means their stream timeouts are too short (Azure OpenAI). |
-| Deployment often cooling down | ticket | `max by (backend, deployment_model) (avg_over_time(kaiak_deployment_cooling_down[30m])) > 0.25` | — | The deployment answered `429` often enough to spend a quarter of the last 30 minutes cooling down: its quota (Azure tokens or requests per minute) is too small for its share of the traffic. Raise the quota, or deploy the model in another resource or region and list it (Azure OpenAI: quota). Clients see it only when every deployment of the model cools at once (`kaiak_errors_total{class="upstream_rate_limited"}`). |
-| Queue rejections | ticket | `sum by (model) (rate(kaiak_queue_rejections_total[10m])) / sum by (model) (rate(kaiak_request_duration_seconds_count[10m])) > 0.01` | 10m | Over 1% of a model's requests refused by its queue (`reason="full"` or `timeout`) for 10 minutes: capacity. Compare `kaiak_backend_in_flight_requests` with `kaiak_backend_max_in_flight` across replicas (uneven shares), and the backends' own load. A burst that clears within minutes does not alert. |
-| Global limit refusals | ticket | `sum by (type) (increase(kaiak_limit_rejections_total{scope_kind="global"}[15m])) > 0` | — | A global limit refused requests — it applies to every client, so it is the platform's limit, not a group's. Group refusals (`scope_kind="group"`) are the group's business: their log lines name the group (`kaiak.limit.group`). |
-| Body budget refusals | ticket | `sum(increase(kaiak_errors_total{class="server_busy"}[10m])) > 0` | — | The body budget is spent: raise `KAIAK_BODY_MEMORY_BYTES` (and the memory limit) or add replicas. |
+| Circuit open | ticket | `max by (kaiak_backend_id, kaiak_deployment_model) (kaiak_circuit_state{kaiak_circuit_state="open"}) == 1` | 5m | A deployment is out of rotation, its backend failing the probe; the model's other deployments carry its load (none left: No healthy deployment pages). A half-open circuit (the backend answers its probe; the next request is the trial) reads 0 here and 1 on `kaiak_circuit_state="half_open"`: a recovered deployment with no traffic stays half-open indefinitely and must not alert. |
+| Circuit flapping | ticket | `max by (kaiak_backend_id, kaiak_deployment_model) (increase(kaiak_circuit_transitions_total{kaiak_circuit_state="open"}[30m])) > 3` | — | Probes half-open it and trials fail (the host answers its models list but cannot serve), or its models list comes and goes (a failed probe re-opens a half-open circuit). |
+| Wrong model, path or credential | ticket | `sum by (kaiak_backend_id, kaiak_deployment_model, kaiak_attempt_outcome) (increase(kaiak_upstream_attempts_total{kaiak_attempt_outcome=~"model_missing\|path_missing\|endpoint_missing\|auth_failed"}[10m])) > 0` | — | A host serves another model than the config says, its `base_url` leads to no endpoint (`path_missing`: typically the API version path left out; the gateway also warns `the backend has no models list at its base_url` when the config is applied), its server version lacks an endpoint its type serves (`endpoint_missing`: upgrade it), or it refuses the gateway's key. |
+| Backend failure rate | ticket | `sum by (kaiak_backend_id) (rate(kaiak_upstream_attempts_total{kaiak_attempt_outcome=~"unavailable\|timeout\|server_error\|broke_off"}[5m])) / sum by (kaiak_backend_id) (rate(kaiak_upstream_attempts_total[5m])) > 0.05 and sum by (kaiak_backend_id) (rate(kaiak_upstream_attempts_total[5m])) > 0.1` | 5m | A struggling host, before its circuit opens. The second clause needs about 30 attempts in 5 minutes, so one failed request on a quiet backend is not a 50% rate. On an Azure backend, `broke_off` or `timeout` from reasoning models means their stream timeouts are too short (Azure OpenAI). |
+| Deployment often cooling down | ticket | `max by (kaiak_backend_id, kaiak_deployment_model) (avg_over_time(kaiak_deployment_cooling_down[30m])) > 0.25` | — | The deployment answered `429` often enough to spend a quarter of the last 30 minutes cooling down: its quota (Azure tokens or requests per minute) is too small for its share of the traffic. Raise the quota, or deploy the model in another resource or region and list it (Azure OpenAI: quota). Clients see it only when every deployment of the model cools at once (`kaiak_errors_total{kaiak_error_class="upstream_rate_limited"}`). |
+| Queue rejections | ticket | `sum by (gen_ai_request_model) (rate(kaiak_queue_rejections_total[10m])) / sum by (gen_ai_request_model) (rate(http_server_request_duration_seconds_count[10m])) > 0.01` | 10m | Over 1% of a model's requests refused by its queue (`error_type="queue_full"` or `queue_timeout`) for 10 minutes: capacity. Compare `kaiak_backend_active_requests` with `kaiak_backend_active_requests_limit` across replicas (uneven shares), and the backends' own load. A burst that clears within minutes does not alert. |
+| Global limit refusals | ticket | `sum by (kaiak_limit_type) (increase(kaiak_limit_rejections_total{kaiak_limit_scope="global"}[15m])) > 0` | — | A global limit refused requests — it applies to every client, so it is the platform's limit, not a group's. Group refusals (`kaiak_limit_scope="group"`) are the group's business: their log lines name the group (`kaiak.limit.group`). |
+| Body budget refusals | ticket | `sum(increase(kaiak_errors_total{kaiak_error_class="server_busy"}[10m])) > 0` | — | The body budget is spent: raise `KAIAK_BODY_MEMORY_BYTES` (and the memory limit) or add replicas. |
 | Connections refused | ticket | `increase(kaiak_connections_refused_total[5m]) > 0` | — | Per pod: the API listener is at `KAIAK_MAX_CONNECTIONS` — a connection flood the ingress let through, or a cap too low for the pod's clients (idle keep-alive connections count). |
 | Clamped usage | ticket | `sum(increase(kaiak_usage_clamped_records_total[1h])) > 0` | — | A backend reported absurd usage. |
-| Log export losing records | ticket | `sum by (outcome) (increase(kaiak_log_export_records_total{outcome=~"dropped\|failed"}[15m])) > 0` | — | Log lines did not reach the collector: it is down, slow or refusing (`log export failing` on the gateway's stderr names the status or error). Only with log export on. |
+| Log export losing records | ticket | `sum by (error_type) (increase(otel_sdk_processor_log_processed_total{error_type!=""}[15m])) > 0 or sum by (error_type) (increase(otel_sdk_exporter_log_exported_total{error_type!=""}[15m])) > 0` | — | Log lines did not reach the collector: dropped by the queue (`queue_full`, `shutdown`) or failed by the exporter (the collector's status, or the failure's class: down, slow or refusing — `log export failing` on the gateway's stderr names the status or error). A failure's series is created at its first failure, so that first batch shows in the next one's increase. Only with log export on. |
 
 ## Secrets and trust
 

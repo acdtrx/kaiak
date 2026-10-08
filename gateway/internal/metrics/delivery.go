@@ -37,18 +37,18 @@ func (q *queueDepth) report(v int64) {
 func NewUsageDelivery(reg *metric.Registry) *UsageDelivery {
 	d := &UsageDelivery{
 		sends: reg.Counter(metric.Definition{Name: "kaiak.usage.batch.sends", Unit: "{batch}",
-			Description: "Usage batches sent to the control plane, by the result of the send.", Attributes: []string{"result"}}),
+			Description: "Usage batches sent to the control plane, by the result of the send.", Attributes: []string{"kaiak.usage.batch.result"}}),
 		lastAck: reg.Gauge(metric.Definition{Name: "kaiak.usage.last_ack_timestamp", Unit: "s",
 			Description: "Unix time the control plane last acknowledged a usage batch."}),
 		dropped: reg.Counter(metric.Definition{Name: "kaiak.usage.dropped_records", Unit: "{record}",
 			Description: "Usage records dropped before reaching the control plane, by the reason they were dropped.",
-			Attributes:  []string{"reason"}}),
+			Attributes:  []string{"kaiak.usage.drop_reason"}}),
 	}
 	d.batches.counter = reg.UpDownCounter(metric.Definition{Name: "kaiak.usage.queue.batches", Unit: "{batch}",
 		Description: "Sealed usage batches not yet acknowledged by the control plane (in memory)."})
 	d.records.counter = reg.UpDownCounter(metric.Definition{Name: "kaiak.usage.queue.records", Unit: "{record}",
 		Description: "Usage records in the sealed batches not yet acknowledged."})
-	d.bytes.counter = reg.UpDownCounter(metric.Definition{Name: "kaiak.usage.queued_bytes", Unit: "By",
+	d.bytes.counter = reg.UpDownCounter(metric.Definition{Name: "kaiak.usage.queue.size", Unit: "By",
 		Description: "Encoded bytes of the unacknowledged usage records held in memory, bounded by KAIAK_USAGE_MEMORY_BYTES (every queued record)."})
 	for _, r := range control.BatchResults {
 		d.sends.Add(0, string(r))

@@ -146,7 +146,7 @@ func TestClientTimeoutsOnARealListener(t *testing.T) {
 		if line := g.settled(t, "never-read"); line["kaiak.relay_end"] != "client_closed" {
 			t.Errorf("log line %v, want kaiak.relay_end client_closed", line)
 		}
-		g.waitMetric(t, "the slot freed", `kaiak_backend_in_flight_requests{backend="fake"}`, func(v float64) bool { return v == 0 })
+		g.waitMetric(t, "the slot freed", `kaiak_backend_active_requests{kaiak_backend_id="fake"}`, func(v float64) bool { return v == 0 })
 	})
 
 	g.stop(t)
@@ -194,10 +194,10 @@ func TestStalledStreamEndsAndCountsTowardTheCircuit(t *testing.T) {
 		t.Error("the stalled request was not cancelled upstream")
 	}
 	g.logs.wait(t, "a's circuit opening", msg("circuit opened", "kaiak.backend.id", "a"))
-	if got := g.metric(t, circuitSeries("a")); got != 1 {
+	if got := g.metric(t, circuitSeries("a", "open")); got != 1 {
 		t.Errorf("a's circuit = %v, want open", got)
 	}
-	if got := sumMetric(t, g, "kaiak_upstream_attempts_total", `backend="a"`, `outcome="broke_off"`); got != 1 {
+	if got := sumMetric(t, g, "kaiak_upstream_attempts_total", `kaiak_backend_id="a"`, `kaiak_attempt_outcome="broke_off"`); got != 1 {
 		t.Errorf("a's broken-off attempts = %v, want the stall", got)
 	}
 	// a's circuit is open (its probe far off): the next request goes to b.

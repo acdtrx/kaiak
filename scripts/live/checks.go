@@ -472,18 +472,19 @@ func (r *run) checkMetrics() {
 	records := sumSeries(text, "kaiak_usage_records_total{", chat)
 	tokensOut := sumSeries(text, "kaiak_usage_tokens_total{", chat, `unit="tokens_out"`)
 	cost := sumSeries(text, "kaiak_usage_cost_usd_total{", chat)
-	refused := sumSeries(text, `kaiak_errors_total{class="rate_limited"}`)
-	succeeded := sumSeries(text, "kaiak_upstream_attempts_total{", `outcome="success"`)
+	opsChat := `gen_ai_request_model="` + modelChat + `"`
+	refused := sumSeries(text, `kaiak_errors_total{kaiak_error_class="rate_limited"}`)
+	succeeded := sumSeries(text, "kaiak_upstream_attempts_total{", `kaiak_attempt_outcome="success"`)
 	timed := sumSeries(text, "kaiak_upstream_attempt_duration_seconds_count{")
 	missingEndpoint := ""
 	for _, ep := range []string{epMessages, epResponses} {
-		if r.o.serves(ep) && sumSeries(text, "kaiak_request_duration_seconds_count{", `endpoint="`+ep+`"`, chat) < 1 {
+		if r.o.serves(ep) && sumSeries(text, "http_server_request_duration_seconds_count{", `http_route="/v1/`+ep+`"`, opsChat) < 1 {
 			missingEndpoint = ep
 		}
 	}
 	backendOnUsage := false
 	for line := range strings.SplitSeq(text, "\n") {
-		backendOnUsage = backendOnUsage || strings.HasPrefix(line, "kaiak_usage_") && strings.Contains(line, "backend=")
+		backendOnUsage = backendOnUsage || strings.HasPrefix(line, "kaiak_usage_") && strings.Contains(line, "kaiak_backend_id=")
 	}
 	priced := r.o.priceIn != 0 || r.o.priceOut != 0
 	switch {
@@ -494,15 +495,15 @@ func (r *run) checkMetrics() {
 	case priced && cost <= 0:
 		r.fail("metrics", "no cost for %s", modelChat)
 	case refused < 1:
-		r.fail("metrics", "kaiak_errors_total{class=\"rate_limited\"} = %v, want ≥ 1", refused)
+		r.fail("metrics", "kaiak_errors_total{kaiak_error_class=\"rate_limited\"} = %v, want ≥ 1", refused)
 	case succeeded < 1:
-		r.fail("metrics", "kaiak_upstream_attempts_total{outcome=\"success\"} = %v, want ≥ 1", succeeded)
+		r.fail("metrics", "kaiak_upstream_attempts_total{kaiak_attempt_outcome=\"success\"} = %v, want ≥ 1", succeeded)
 	case timed < succeeded:
 		r.fail("metrics", "kaiak_upstream_attempt_duration_seconds_count = %v, want ≥ the %v successful attempts", timed, succeeded)
 	case backendOnUsage:
 		r.fail("metrics", "a usage series carries a backend label")
 	case missingEndpoint != "":
-		r.fail("metrics", "kaiak_request_duration_seconds has no %s request for %s", missingEndpoint, modelChat)
+		r.fail("metrics", "http_server_request_duration_seconds has no %s request for %s", missingEndpoint, modelChat)
 	default:
 		r.pass("metrics", fmt.Sprintf("%s: %v usage records, %v tokens out, %v USD; %v rate-limited; %v successful upstream attempts",
 			modelChat, records, tokensOut, cost, refused, succeeded))

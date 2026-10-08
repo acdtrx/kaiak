@@ -38,35 +38,35 @@ func TestSeriesStartAtZero(t *testing.T) {
 	deploymentSeries := func(model, backend, deploymentModel string) {
 		t.Helper()
 		for _, o := range outcomes {
-			want(fmt.Sprintf(`kaiak_upstream_attempts_total{backend=%q,deployment_model=%q,outcome=%q}`, backend, deploymentModel, o), 0)
+			want(fmt.Sprintf(`kaiak_upstream_attempts_total{kaiak_backend_id=%q,kaiak_deployment_model=%q,kaiak_attempt_outcome=%q}`, backend, deploymentModel, o), 0)
 		}
 		for _, to := range []string{"open", "half_open", "closed"} {
-			want(fmt.Sprintf(`kaiak_circuit_transitions_total{backend=%q,deployment_model=%q,to=%q}`, backend, deploymentModel, to), 0)
+			want(fmt.Sprintf(`kaiak_circuit_transitions_total{kaiak_backend_id=%q,kaiak_deployment_model=%q,kaiak_circuit_state=%q}`, backend, deploymentModel, to), 0)
 		}
 		for _, r := range []string{"success", "failure"} {
-			want(fmt.Sprintf(`kaiak_probes_total{backend=%q,result=%q}`, backend, r), 0)
+			want(fmt.Sprintf(`kaiak_probes_total{kaiak_backend_id=%q,kaiak_probe_result=%q}`, backend, r), 0)
 		}
 		for _, r := range reasons {
-			want(fmt.Sprintf(`kaiak_retries_total{model=%q,backend=%q,reason=%q}`, model, backend, r), 0)
+			want(fmt.Sprintf(`kaiak_retries_total{gen_ai_request_model=%q,kaiak_backend_id=%q,kaiak_attempt_outcome=%q}`, model, backend, r), 0)
 		}
-		want(fmt.Sprintf(`kaiak_upstream_attempt_duration_seconds_count{backend=%q}`, backend), 0)
-		want(fmt.Sprintf(`kaiak_time_to_first_token_seconds_count{model=%q,backend=%q}`, model, backend), 0)
-		want(fmt.Sprintf(`kaiak_output_token_rate_per_second_count{model=%q,backend=%q}`, model, backend), 0)
+		want(fmt.Sprintf(`kaiak_upstream_attempt_duration_seconds_count{kaiak_backend_id=%q}`, backend), 0)
+		want(fmt.Sprintf(`kaiak_time_to_first_token_seconds_count{gen_ai_request_model=%q,kaiak_backend_id=%q}`, model, backend), 0)
+		want(fmt.Sprintf(`kaiak_output_token_rate_per_second_count{gen_ai_request_model=%q,kaiak_backend_id=%q}`, model, backend), 0)
 	}
 	modelSeries := func(model string) {
 		t.Helper()
-		for _, r := range []string{"full", "timeout"} {
-			want(fmt.Sprintf(`kaiak_queue_rejections_total{model=%q,reason=%q}`, model, r), 0)
+		for _, r := range []string{"queue_full", "queue_timeout"} {
+			want(fmt.Sprintf(`kaiak_queue_rejections_total{gen_ai_request_model=%q,error_type=%q}`, model, r), 0)
 		}
-		want(fmt.Sprintf(`kaiak_queue_wait_seconds_count{model=%q}`, model), 0)
-		want(fmt.Sprintf(`kaiak_request_attempts_count{model=%q}`, model), 0)
+		want(fmt.Sprintf(`kaiak_queue_wait_duration_seconds_count{gen_ai_request_model=%q}`, model), 0)
+		want(fmt.Sprintf(`kaiak_request_attempts_count{gen_ai_request_model=%q}`, model), 0)
 	}
 
-	want(`kaiak_config_loads_total{trigger="startup",result="applied"}`, 1)
+	want(`kaiak_config_loads_total{kaiak_trigger="startup",kaiak_config_result="applied"}`, 1)
 	for _, trigger := range []string{"startup", "sighup", "control", "seed"} {
-		want(fmt.Sprintf(`kaiak_config_loads_total{trigger=%q,result="rejected"}`, trigger), 0)
+		want(fmt.Sprintf(`kaiak_config_loads_total{kaiak_trigger=%q,kaiak_config_result="rejected"}`, trigger), 0)
 	}
-	want(`kaiak_errors_total{class="internal"}`, 0)
+	want(`kaiak_errors_total{kaiak_error_class="internal"}`, 0)
 	want(`kaiak_usage_clamped_records_total`, 0)
 	modelSeries("chat")
 	deploymentSeries("chat", "a", reliableModel)
@@ -75,8 +75,8 @@ func TestSeriesStartAtZero(t *testing.T) {
 	// The first event moves a series from 0 to 1.
 	a.SetReply(fakebackend.Reply{Status: http.StatusInternalServerError})
 	chatOK(t, g, key, "first", "chat")
-	want(fmt.Sprintf(`kaiak_upstream_attempts_total{backend="a",deployment_model=%q,outcome="server_error"}`, reliableModel), 1)
-	want(`kaiak_retries_total{model="chat",backend="a",reason="server_error"}`, 1)
+	want(fmt.Sprintf(`kaiak_upstream_attempts_total{kaiak_backend_id="a",kaiak_deployment_model=%q,kaiak_attempt_outcome="server_error"}`, reliableModel), 1)
+	want(`kaiak_retries_total{gen_ai_request_model="chat",kaiak_backend_id="a",kaiak_attempt_outcome="server_error"}`, 1)
 
 	// A rejected reload: 0, then 1.
 	if err := os.WriteFile(configFile, []byte(`{"format_version": 5,`), 0o600); err != nil {
@@ -84,7 +84,7 @@ func TestSeriesStartAtZero(t *testing.T) {
 	}
 	g.signal(t, syscall.SIGHUP)
 	g.logs.wait(t, "the rejected reload", msg("config rejected", "kaiak.trigger", "sighup"))
-	want(`kaiak_config_loads_total{trigger="sighup",result="rejected"}`, 1)
+	want(`kaiak_config_loads_total{kaiak_trigger="sighup",kaiak_config_result="rejected"}`, 1)
 
 	// A reload adding backend c and a model on it: their series appear at 0.
 	c := fakebackend.New()
@@ -99,6 +99,6 @@ func TestSeriesStartAtZero(t *testing.T) {
 	g.logs.wait(t, "the applied reload", msg("config applied", "kaiak.trigger", "sighup"))
 	modelSeries("chat-c")
 	deploymentSeries("chat-c", "c", "other")
-	want(`kaiak_config_loads_total{trigger="sighup",result="applied"}`, 1)
+	want(`kaiak_config_loads_total{kaiak_trigger="sighup",kaiak_config_result="applied"}`, 1)
 	g.stop(t)
 }

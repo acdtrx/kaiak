@@ -114,11 +114,11 @@ func TestLimitRefusalsLogTheLimit(t *testing.T) {
 		}
 	}
 	expectMetricLines(t, g.metricsText(),
-		`kaiak_limit_rejections_total{scope_kind="group",type="requests_per_minute"} 1`,
-		`kaiak_limit_rejections_total{scope_kind="group",type="usd_per_month"} 1`,
-		`kaiak_limit_rejections_total{scope_kind="global",type="tokens_per_minute"} 1`,
-		`kaiak_limit_rejections_total{scope_kind="group",type="tokens_per_hour"} 0`,
-		`kaiak_limit_rejections_total{scope_kind="global",type="usd_per_month"} 0`)
+		`kaiak_limit_rejections_total{kaiak_limit_scope="group",kaiak_limit_type="requests_per_minute"} 1`,
+		`kaiak_limit_rejections_total{kaiak_limit_scope="group",kaiak_limit_type="usd_per_month"} 1`,
+		`kaiak_limit_rejections_total{kaiak_limit_scope="global",kaiak_limit_type="tokens_per_minute"} 1`,
+		`kaiak_limit_rejections_total{kaiak_limit_scope="group",kaiak_limit_type="tokens_per_hour"} 0`,
+		`kaiak_limit_rejections_total{kaiak_limit_scope="global",kaiak_limit_type="usd_per_month"} 0`)
 }
 
 // A budget refused as unavailable names the USD limit it could not check; its
@@ -136,7 +136,7 @@ func TestBudgetUnavailableLogsTheLimit(t *testing.T) {
 		"kaiak.limit.scope": "group", "kaiak.limit.group": "research", "kaiak.limit.type": "usd_per_month",
 		"kaiak.limit.enforced": float64(100), "kaiak.limit.configured": float64(100), "kaiak.key.group": "eval"},
 		"kaiak.limit.used")
-	expectMetricLines(t, g.metricsText(), `kaiak_limit_rejections_total{scope_kind="group",type="usd_per_month"} 0`)
+	expectMetricLines(t, g.metricsText(), `kaiak_limit_rejections_total{kaiak_limit_scope="group",kaiak_limit_type="usd_per_month"} 0`)
 }
 
 // A backend error status relayed to the client logs its class as the error code
@@ -170,8 +170,8 @@ func TestRelayedBackendErrorsLogTheirClass(t *testing.T) {
 		t.Fatalf("ok: status %d", w.Code)
 	}
 	expectFields(t, logFields(t, g, "ok"), nil, "error.type", "kaiak.upstream.error.code", "kaiak.upstream.error.type")
-	expectMetricLines(t, g.metricsText(), `kaiak_errors_total{class="upstream_client_error"} 1`,
-		`kaiak_errors_total{class="upstream_rate_limited"} 1`)
+	expectMetricLines(t, g.metricsText(), `kaiak_errors_total{kaiak_error_class="upstream_client_error"} 1`,
+		`kaiak_errors_total{kaiak_error_class="upstream_rate_limited"} 1`)
 }
 
 // Time to first token is the answering attempt's — from its send, not from the
@@ -200,8 +200,8 @@ func TestTimeToFirstTokenIsTheAnsweringAttempts(t *testing.T) {
 	}
 	text := g.metricsText()
 	for _, backend := range []string{"local", "local-b"} {
-		if strings.Contains(text, `kaiak_time_to_first_token_seconds_count{model="pair",backend="`+backend+`"} 1`+"\n") &&
-			!strings.Contains(text, `kaiak_time_to_first_token_seconds_bucket{model="pair",backend="`+backend+`",le="0.25"} 1`+"\n") {
+		if strings.Contains(text, `kaiak_time_to_first_token_seconds_count{gen_ai_request_model="pair",kaiak_backend_id="`+backend+`"} 1`+"\n") &&
+			!strings.Contains(text, `kaiak_time_to_first_token_seconds_bucket{gen_ai_request_model="pair",kaiak_backend_id="`+backend+`",le="0.25"} 1`+"\n") {
 			t.Errorf("time to first token on %s measured from arrival:\n%s", backend, text)
 		}
 	}
@@ -231,11 +231,11 @@ func TestAttemptMetricsPublishedAsAttemptsEnd(t *testing.T) {
 				g.h.ServeHTTP(httptest.NewRecorder(), r)
 			}()
 
-			failed := `kaiak_upstream_attempts_total{backend="local",deployment_model="pair-a",outcome="server_error"} 1`
+			failed := `kaiak_upstream_attempts_total{kaiak_backend_id="local",kaiak_deployment_model="pair-a",kaiak_attempt_outcome="server_error"} 1`
 			whileStreaming := []string{failed,
-				`kaiak_upstream_attempt_duration_seconds_count{backend="local"} 1`,
-				`kaiak_retries_total{model="pair",backend="local",reason="server_error"} 1`,
-				`kaiak_time_to_first_token_seconds_count{model="pair",backend="local-b"} 1`}
+				`kaiak_upstream_attempt_duration_seconds_count{kaiak_backend_id="local"} 1`,
+				`kaiak_retries_total{gen_ai_request_model="pair",kaiak_backend_id="local",kaiak_attempt_outcome="server_error"} 1`,
+				`kaiak_time_to_first_token_seconds_count{gen_ai_request_model="pair",kaiak_backend_id="local-b"} 1`}
 			deadline := time.Now().Add(2 * time.Second)
 			for {
 				text := g.metricsText()
@@ -253,8 +253,8 @@ func TestAttemptMetricsPublishedAsAttemptsEnd(t *testing.T) {
 				time.Sleep(10 * time.Millisecond)
 			}
 			expectMetricLines(t, g.metricsText(),
-				`kaiak_upstream_attempts_total{backend="local-b",deployment_model="pair-b",outcome="success"} 0`,
-				`kaiak_upstream_attempt_duration_seconds_count{backend="local-b"} 0`)
+				`kaiak_upstream_attempts_total{kaiak_backend_id="local-b",kaiak_deployment_model="pair-b",kaiak_attempt_outcome="success"} 0`,
+				`kaiak_upstream_attempt_duration_seconds_count{kaiak_backend_id="local-b"} 0`)
 
 			if end == "completes" {
 				close(pace)
@@ -263,12 +263,12 @@ func TestAttemptMetricsPublishedAsAttemptsEnd(t *testing.T) {
 			}
 			<-done
 			expectMetricLines(t, g.metricsText(), failed,
-				`kaiak_upstream_attempts_total{backend="local-b",deployment_model="pair-b",outcome="success"} 1`,
-				`kaiak_upstream_attempt_duration_seconds_count{backend="local"} 1`,
-				`kaiak_upstream_attempt_duration_seconds_count{backend="local-b"} 1`,
-				`kaiak_retries_total{model="pair",backend="local",reason="server_error"} 1`,
-				`kaiak_time_to_first_token_seconds_count{model="pair",backend="local-b"} 1`,
-				`kaiak_request_attempts_count{model="pair"} 1`)
+				`kaiak_upstream_attempts_total{kaiak_backend_id="local-b",kaiak_deployment_model="pair-b",kaiak_attempt_outcome="success"} 1`,
+				`kaiak_upstream_attempt_duration_seconds_count{kaiak_backend_id="local"} 1`,
+				`kaiak_upstream_attempt_duration_seconds_count{kaiak_backend_id="local-b"} 1`,
+				`kaiak_retries_total{gen_ai_request_model="pair",kaiak_backend_id="local",kaiak_attempt_outcome="server_error"} 1`,
+				`kaiak_time_to_first_token_seconds_count{gen_ai_request_model="pair",kaiak_backend_id="local-b"} 1`,
+				`kaiak_request_attempts_count{gen_ai_request_model="pair"} 1`)
 		})
 	}
 }

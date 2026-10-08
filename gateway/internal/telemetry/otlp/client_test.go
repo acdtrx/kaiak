@@ -3,15 +3,20 @@ package otlp
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -78,11 +83,12 @@ func wantDelivered(t *testing.T, o Outcome) {
 	}
 }
 
-// wantFailed fails the test unless o failed the body, with status as its status.
-func wantFailed(t *testing.T, o Outcome, status int) {
+// wantFailed fails the test unless o failed the body, with status as its status and
+// errorType as its class.
+func wantFailed(t *testing.T, o Outcome, status int, errorType string) {
 	t.Helper()
-	if o.Err == nil || o.Status != status {
-		t.Fatalf("outcome %+v, want failed with status %d", o, status)
+	if o.Err == nil || o.Status != status || o.ErrorType != errorType {
+		t.Fatalf("outcome %+v, want failed with status %d, error.type %q", o, status, errorType)
 	}
 }
 
@@ -232,7 +238,7 @@ func TestRetryAfterBeyondTheTimeLeftFailsAtOnce(t *testing.T) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	})
 	h := newHarness(t, col, map[string]string{"OTEL_EXPORTER_OTLP_LOGS_TIMEOUT": "10000"})
-	wantFailed(t, h.export(), http.StatusServiceUnavailable)
+	wantFailed(t, h.export(), http.StatusServiceUnavailable, "503")
 	if n := col.Requests(); n != 1 {
 		t.Fatalf("%d requests, want 1", n)
 	}
@@ -247,7 +253,7 @@ func TestRetriesEndWithTheTimeout(t *testing.T) {
 	})
 	// The first backoff (at least 0.25 s) is beyond a 100 ms timeout.
 	h := newHarness(t, col, map[string]string{"OTEL_EXPORTER_OTLP_TIMEOUT": "100"})
-	wantFailed(t, h.export(), http.StatusBadGateway)
+	wantFailed(t, h.export(), http.StatusBadGateway, "502")
 	if n := col.Requests(); n != 1 {
 		t.Fatalf("%d requests, want 1", n)
 	}
@@ -263,7 +269,7 @@ func TestNoRetryOnOtherStatuses(t *testing.T) {
 			})
 			h := newHarness(t, col, nil)
 			o := h.export()
-			wantFailed(t, o, status)
+			wantFailed(t, o, status, strconv.Itoa(status))
 			if n := col.Requests(); n != 1 {
 				t.Fatalf("%d requests, want 1", n)
 			}
@@ -299,7 +305,7 @@ func TestPartialSuccess(t *testing.T) {
 				t.Fatalf("%d requests, want 1: a partial success is not retried", n)
 			}
 			if tc.failed {
-				wantFailed(t, o, http.StatusOK)
+				wantFailed(t, o, http.StatusOK, "malformed_response")
 				return
 			}
 			if o.Err != nil || o.Rejected != tc.rejected || o.Status != http.StatusOK {
@@ -354,14 +360,18 @@ func TestPartialSuccessMemberIsTheSignals(t *testing.T) {
 }
 
 func TestOversizedResponseFailsUnretried(t *testing.T) {
-	for _, status := range []int{200, 503} {
+	for _, tc := range []struct {
+		status    int
+		errorType string
+	}{{200, "malformed_response"}, {503, "503"}} {
+		status := tc.status
 		t.Run(strconv.Itoa(status), func(t *testing.T) {
 			col := fakeotlp.New(t, func(w http.ResponseWriter, _ *http.Request, _ int) {
 				w.WriteHeader(status)
 				w.Write(bytes.Repeat([]byte(" "), maxResponseSize+1))
 			})
 			h := newHarness(t, col, nil)
-			wantFailed(t, h.export(), status)
+			wantFailed(t, h.export(), status, tc.errorType)
 			if n := col.Requests(); n != 1 {
 				t.Fatalf("%d requests, want 1", n)
 			}
@@ -395,7 +405,7 @@ func TestRedirectIsNotFollowed(t *testing.T) {
 			if n := col.Requests(); n != 1 {
 				t.Fatalf("%d requests, want 1: a redirect is not retried", n)
 			}
-			wantFailed(t, o, status)
+			wantFailed(t, o, status, strconv.Itoa(status))
 		})
 	}
 }
@@ -412,7 +422,7 @@ func TestRedirectToAPageAnsweringOKIsNotExported(t *testing.T) {
 		http.Redirect(w, r, login.URL+"/login", http.StatusFound)
 	})
 	h := newHarness(t, col, nil)
-	wantFailed(t, h.export(), http.StatusFound)
+	wantFailed(t, h.export(), http.StatusFound, "302")
 }
 
 // The collector's own text — a Status message, a partial success's errorMessage —
@@ -477,6 +487,53 @@ func TestTransportErrorTextIsNeverInTheOutcome(t *testing.T) {
 	if o.Status != 0 {
 		t.Fatalf("status %d, want none: no answer was read", o.Status)
 	}
+	if o.ErrorType != "malformed_response" {
+		t.Fatalf("error.type %q, want malformed_response", o.ErrorType)
+	}
+}
+
+// A failed exchange's class is its error.type, in the identifiers the exporters'
+// counts carry.
+func TestConnectionErrorType(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{&net.OpError{Op: "dial", Err: syscall.ECONNREFUSED}, "connection_refused"},
+		{&net.DNSError{Err: "no such host", Name: "collector"}, "name_not_resolved"},
+		{&net.OpError{Op: "dial", Err: syscall.EHOSTUNREACH}, "host_unreachable"},
+		{&net.OpError{Op: "read", Err: syscall.ECONNRESET}, "connection_closed"},
+		{tls.RecordHeaderError{Msg: "first record does not look like a TLS handshake"}, "tls_failure"},
+		{context.DeadlineExceeded, "timeout"},
+		{context.Canceled, "timeout"},
+		{textproto.ProtocolError("malformed MIME header"), "malformed_response"},
+		{errors.New("anything else"), "connection_failed"},
+	} {
+		if got := connectionErrorType(tc.err); got != tc.want {
+			t.Errorf("connectionErrorType(%v) = %q, want %q", tc.err, got, tc.want)
+		}
+	}
+}
+
+func TestRefusedConnectionErrorType(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+	l.Close()
+	s, err := ReadSettings(Logs, envOf(map[string]string{
+		"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT": "http://" + addr + "/v1/logs",
+		"OTEL_EXPORTER_OTLP_LOGS_TIMEOUT":  "100",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := NewClient(s, Service{Version: "1.2.3", InstanceID: "gw-1"})
+	defer c.CloseIdleConnections()
+	if o := c.Export(context.Background(), []byte(body)); o.Err == nil || o.ErrorType != "connection_refused" {
+		t.Fatalf("outcome %+v, want failed with error.type connection_refused", o)
+	}
 }
 
 // A 2xx counts as delivered only when its body is empty or the signal's export
@@ -517,7 +574,7 @@ func TestUnreadableAnswerFailsUnretried(t *testing.T) {
 			if n := col.Requests(); n != 1 {
 				t.Fatalf("%d requests, want 1: an unreadable answer is not retried", n)
 			}
-			wantFailed(t, o, http.StatusOK)
+			wantFailed(t, o, http.StatusOK, "malformed_response")
 		})
 	}
 }
@@ -554,7 +611,7 @@ func TestLongRetryAfterFailsTheExport(t *testing.T) {
 			if n := col.Requests(); n != 1 {
 				t.Fatalf("%d requests (waits %v), want 1: the export fails without a retry", n, h.recordedWaits())
 			}
-			wantFailed(t, o, http.StatusServiceUnavailable)
+			wantFailed(t, o, http.StatusServiceUnavailable, "503")
 			if got := retryAfter(header, time.Now()); got < 172800*time.Second {
 				t.Fatalf("retryAfter(%q) = %v, want at least two days", header, got)
 			}
@@ -608,7 +665,7 @@ func TestExportCutShortByItsContext(t *testing.T) {
 		cancel()
 	}()
 	o := h.c.Export(ctx, []byte(body))
-	if o.Err == nil || !strings.HasPrefix(o.Err.Error(), "export cut short") || o.Status != 0 {
+	if o.Err == nil || !strings.HasPrefix(o.Err.Error(), "export cut short") || o.Status != 0 || o.ErrorType != "timeout" {
 		t.Fatalf("outcome %+v, want cut short", o)
 	}
 	if n := col.Requests(); n != 1 {

@@ -351,7 +351,7 @@ func reloadOnSignal(ctx context.Context, reload <-chan os.Signal, loader *config
 // assigns it at run time.
 var version string
 
-// reportedVersion is the build version the gateway reports: kaiak_build_info, and the
+// reportedVersion is the build version the gateway reports: kaiak.build.info, and the
 // OTLP resource's service.version and the export's User-Agent.
 func reportedVersion() string {
 	info, ok := debug.ReadBuildInfo()

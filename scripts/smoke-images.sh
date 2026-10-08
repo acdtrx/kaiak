@@ -180,7 +180,7 @@ wait_ok "http://$run-gw-file:9090/readyz"
 chat "$run-gw-file"
 info="$(build_info "$run-gw-file")"
 echo "$info"
-[[ "$info" == "kaiak_build_info{version=\"$version\","* ]] ||
+[[ "$info" == "kaiak_build_info{service_version=\"$version\","* ]] ||
 	{ echo "smoke-images: kaiak_build_info does not report the image version $version" >&2; exit 1; }
 "${docker[@]}" stop "$run-gw-file" >/dev/null
 stopped_cleanly "$run-gw-file" "kaiak stopped"

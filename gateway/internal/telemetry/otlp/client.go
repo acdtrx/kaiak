@@ -84,6 +84,11 @@ type Outcome struct {
 	Status int
 	// Err is nil when the body was delivered.
 	Err error
+	// ErrorType is a failed export's class, its error.type on the exporters' own
+	// counts (docs/specs/GATEWAY.md, Observability → Exporters' own counts): the
+	// status that ended it as a string, ErrorMalformedResponse, ErrorTimeout, or a
+	// failed connection's class; "" when the body was delivered.
+	ErrorType string
 	// Rejected and RejectErr are a delivered body's partial success: the items the
 	// collector refused, as the signal's response counts them (rejectedLogRecords,
 	// rejectedDataPoints), and their description; 0 and nil when it refused none.
@@ -122,7 +127,7 @@ func (c *Client) Export(ctx context.Context, body []byte) Outcome {
 func (c *Client) post(ctx context.Context, body []byte) Outcome {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
 	if err != nil {
-		return Outcome{Err: err}
+		return Outcome{Err: err, ErrorType: connectionErrorType(err)}
 	}
 	for _, h := range c.headers {
 		req.Header.Add(h.name, h.value)
@@ -132,9 +137,10 @@ func (c *Client) post(ctx context.Context, body []byte) Outcome {
 	resp, err := c.http.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
-			return Outcome{Err: fmt.Errorf("export cut short: %w", ctx.Err())}
+			return Outcome{Err: fmt.Errorf("export cut short: %w", ctx.Err()), ErrorType: ErrorTimeout}
 		}
-		return Outcome{Err: errors.New("no answer from the collector: " + netfail.Class(err)), retry: true, retryAfter: -1}
+		return Outcome{Err: errors.New("no answer from the collector: " + netfail.Class(err)),
+			ErrorType: connectionErrorType(err), retry: true, retryAfter: -1}
 	}
 	defer resp.Body.Close()
 	data, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize+1))
@@ -143,22 +149,34 @@ func (c *Client) post(ctx context.Context, body []byte) Outcome {
 	if text := http.StatusText(resp.StatusCode); text != "" {
 		answered += " " + text
 	}
+	delivered := resp.StatusCode >= 200 && resp.StatusCode < 300
 	if len(data) > maxResponseSize {
 		o.Err = errors.New(answered + " with a body above 4 MiB")
+		o.ErrorType = statusErrorType(resp.StatusCode)
+		if delivered {
+			o.ErrorType = ErrorMalformedResponse
+		}
 		return o
 	}
 	switch {
-	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+	case delivered:
 		// What counts as delivered: an empty body or the signal's export response.
 		// Anything else fails the export unretried — the collector may have taken
 		// some of it, and a retry would duplicate those items.
 		if readErr != nil {
 			o.Err = errors.New(answered + ", its answer unreadable: " + netfail.Class(readErr))
+			// An answer that could not be read is not the signal's response, unless
+			// the export's time ran out while reading it.
+			o.ErrorType = ErrorMalformedResponse
+			if ctx.Err() != nil {
+				o.ErrorType = ErrorTimeout
+			}
 			return o
 		}
 		rejected, ok := readExportResponse(c.signal, data)
 		if !ok {
 			o.Err = errors.New(answered + " with a body that is not an " + c.signal.response)
+			o.ErrorType = ErrorMalformedResponse
 			return o
 		}
 		if rejected > 0 {
@@ -167,11 +185,13 @@ func (c *Client) post(ctx context.Context, body []byte) Outcome {
 		return o
 	case resp.StatusCode >= 300 && resp.StatusCode < 400:
 		o.Err = errors.New(answered + ": redirects are not followed")
+		o.ErrorType = statusErrorType(resp.StatusCode)
 		return o
 	}
 	// A failure's body, a Status, is not decoded: its message is the collector's
 	// text.
 	o.Err = errors.New(answered)
+	o.ErrorType = statusErrorType(resp.StatusCode)
 	switch resp.StatusCode {
 	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 		o.retry = true
@@ -275,4 +295,43 @@ func backoff(attempt int) time.Duration {
 		base = min(firstBackoff<<attempt, maxBackoff)
 	}
 	return base/2 + rand.N(base/2+1)
+}
+
+// The error.type values of a failed export that are not a status or a connection's
+// class (docs/specs/GATEWAY.md, Observability → Exporters' own counts).
+const (
+	// ErrorRejected: the items of a partial success the collector refused.
+	ErrorRejected = "rejected"
+	// ErrorMalformedResponse: an answer that could not be read as the signal's
+	// export response.
+	ErrorMalformedResponse = "malformed_response"
+	// ErrorTimeout: the export's time ran out during an attempt.
+	ErrorTimeout = "timeout"
+)
+
+// statusErrorType is the error.type of an export the collector's status ended: the
+// status as a string, as the HTTP convention has it.
+func statusErrorType(status int) string {
+	return strconv.Itoa(status)
+}
+
+// connectionErrorTypes are netfail's classes as error.type identifiers.
+var connectionErrorTypes = map[string]string{
+	"timed out":          ErrorTimeout,
+	"cancelled":          ErrorTimeout,
+	"name not resolved":  "name_not_resolved",
+	"connection refused": "connection_refused",
+	"host unreachable":   "host_unreachable",
+	"connection closed":  "connection_closed",
+	"TLS failure":        "tls_failure",
+	"malformed response": ErrorMalformedResponse,
+}
+
+// connectionErrorType is the error.type of an exchange that failed with err: its
+// class (netfail.Class), connection_failed for any other.
+func connectionErrorType(err error) string {
+	if t, ok := connectionErrorTypes[netfail.Class(err)]; ok {
+		return t
+	}
+	return "connection_failed"
 }

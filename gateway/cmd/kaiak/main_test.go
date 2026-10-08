@@ -266,8 +266,8 @@ func TestSignalTriggersReloadAndStopsWithContext(t *testing.T) {
 	var exposition bytes.Buffer
 	metric.WritePrometheus(&exposition, registry.Collect())
 	for _, want := range []string{
-		`kaiak_config_loads_total{trigger="startup",result="applied"} 1`,
-		`kaiak_config_loads_total{trigger="sighup",result="rejected"} 2`,
+		`kaiak_config_loads_total{kaiak_trigger="startup",kaiak_config_result="applied"} 1`,
+		`kaiak_config_loads_total{kaiak_trigger="sighup",kaiak_config_result="rejected"} 2`,
 	} {
 		if !strings.Contains(exposition.String(), want+"\n") {
 			t.Errorf("metrics miss %q:\n%s", want, exposition.String())

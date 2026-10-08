@@ -21,10 +21,8 @@ func (a *API) logRequest(rq *request) {
 	attrs := []slog.Attr{slog.String("kaiak.request.id", rq.id)}
 	attrs = append(attrs, methodAttrs(rq.r.Method)...)
 	attrs = append(attrs, slog.String("url.path", clip.String(rq.r.URL.Path)))
-	// No status for a client that left before any answer: none was sent. Its 499 is
-	// the request metric's alone (docs/specs/GATEWAY.md, Observability → Logs).
-	if rq.failure == nil || rq.failure.code != codeClientClosed {
-		attrs = append(attrs, slog.Int("http.response.status_code", rq.w.status))
+	if status, ok := statusSent(rq); ok {
+		attrs = append(attrs, slog.Int("http.response.status_code", status))
 	}
 	attrs = append(attrs, logattr.SecondsMicro("kaiak.request.duration", time.Since(rq.start)))
 	if rq.keyID != "" {
@@ -108,17 +106,41 @@ func (a *API) logRequest(rq *request) {
 	a.logger.LogAttrs(rq.r.Context(), slog.LevelInfo, "request", attrs...)
 }
 
-// methodAttrs are the request method's log fields: http.request.method — a method
-// the HTTP semantic convention names, else _OTHER — and, for _OTHER,
-// http.request.method_original, the method as sent (clipped).
+// statusSent is the status answered to rq; false for a client that left before any
+// answer: none was sent, and its error's 499 never reached the wire
+// (docs/specs/GATEWAY.md, Observability → Logs and the request duration's
+// attributes).
+func statusSent(rq *request) (int, bool) {
+	if rq.failure != nil && rq.failure.code == codeClientClosed {
+		return 0, false
+	}
+	return rq.w.status, true
+}
+
+// methodAttrs are the request method's log fields: http.request.method (knownMethod)
+// and, for _OTHER, http.request.method_original, the method as sent (clipped).
 func methodAttrs(method string) []slog.Attr {
+	known := knownMethod(method)
+	if known != methodOther {
+		return []slog.Attr{slog.String("http.request.method", known)}
+	}
+	return []slog.Attr{slog.String("http.request.method", known),
+		slog.String("http.request.method_original", clip.String(method))}
+}
+
+// methodOther is http.request.method for a method the HTTP semantic convention does
+// not name.
+const methodOther = "_OTHER"
+
+// knownMethod is the request method as http.request.method has it: a method the
+// HTTP semantic convention names, else _OTHER — never the method as sent.
+func knownMethod(method string) string {
 	switch method {
 	case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodHead,
 		http.MethodOptions, http.MethodPatch, http.MethodConnect, http.MethodTrace, "QUERY":
-		return []slog.Attr{slog.String("http.request.method", method)}
+		return method
 	}
-	return []slog.Attr{slog.String("http.request.method", "_OTHER"),
-		slog.String("http.request.method_original", clip.String(method))}
+	return methodOther
 }
 
 // triedAttempts lists a request's attempts for the log line, in order, as

@@ -123,7 +123,7 @@ func TestGroupTreeEndToEnd(t *testing.T) {
 		refused(t, "k-dev", "dev-rpm-2", "rpm", "rate_limit_exceeded", "acme-rag", "rag-sandbox")
 		// Another project under the same team has no such limit.
 		ok(t, "k-search", "search-rpm-1", "rpm")
-		if got := g.metric(t, `kaiak_limit_rejections_total{scope_kind="group",type="requests_per_minute"}`); got != 2 {
+		if got := g.metric(t, `kaiak_limit_rejections_total{kaiak_limit_scope="group",kaiak_limit_type="requests_per_minute"}`); got != 2 {
 			t.Errorf("group rejections = %v, want 2", got)
 		}
 	})
@@ -148,9 +148,9 @@ func TestGroupTreeEndToEnd(t *testing.T) {
 			}
 		}
 		for series, want := range map[string]float64{
-			`kaiak_usage_records_total{key_group="rag-api",root_group="acme",key_id="k-prod",model="chat",status="complete"}`:     2,
-			`kaiak_usage_records_total{key_group="rag-sandbox",root_group="acme",key_id="k-dev",model="rpm",status="complete"}`:   1,
-			`kaiak_usage_records_total{key_group="search-api",root_group="acme",key_id="k-search",model="rpm",status="complete"}`: 1,
+			`kaiak_usage_records_total{kaiak_key_group="rag-api",kaiak_key_root_group="acme",kaiak_key_id="k-prod",model="chat",status="complete"}`:     2,
+			`kaiak_usage_records_total{kaiak_key_group="rag-sandbox",kaiak_key_root_group="acme",kaiak_key_id="k-dev",model="rpm",status="complete"}`:   1,
+			`kaiak_usage_records_total{kaiak_key_group="search-api",kaiak_key_root_group="acme",kaiak_key_id="k-search",model="rpm",status="complete"}`: 1,
 		} {
 			if got := g.metric(t, series); got != want {
 				t.Errorf("%s = %v, want %v", series, got, want)
@@ -166,7 +166,7 @@ func TestGroupTreeEndToEnd(t *testing.T) {
 		// the backend cap's share halves once the gateway has applied such totals.
 		cp.SetLiveGateways(2)
 		cp.PushCurrentTotals()
-		g.waitMetric(t, "the pushed windows applied", `kaiak_backend_max_in_flight{backend="fake"}`,
+		g.waitMetric(t, "the pushed windows applied", `kaiak_backend_active_requests_limit{kaiak_backend_id="fake"}`,
 			func(v float64) bool { return v == 2 })
 		refused(t, "k-dev", "dev-priced", "priced", "budget_exceeded", "acme-rag", "rag-sandbox")
 		refused(t, "k-prod", "prod-priced", "priced", "budget_exceeded", "acme-rag", "rag-api")

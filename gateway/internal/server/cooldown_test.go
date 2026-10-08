@@ -39,8 +39,8 @@ func TestThrottledDeploymentCoolsDown(t *testing.T) {
 		t.Errorf("throttled %d, healthy %d, served %d; want 1, 100, 100", throttled, healthy, served)
 	}
 	expectMetricLines(t, scrape(g),
-		`kaiak_deployment_cooling_down{backend="local",deployment_model="first"} 1`,
-		`kaiak_deployment_cooling_down{backend="local-b",deployment_model="second"} 0`)
+		`kaiak_deployment_cooling_down{kaiak_backend_id="local",kaiak_deployment_model="first"} 1`,
+		`kaiak_deployment_cooling_down{kaiak_backend_id="local-b",kaiak_deployment_model="second"} 0`)
 }
 
 // A single-deployment model keeps its deployment through the cooldown: the client

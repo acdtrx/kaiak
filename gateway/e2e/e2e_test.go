@@ -317,19 +317,19 @@ func TestGatewayEndToEnd(t *testing.T) {
 	})
 
 	t.Run("metrics reflect the traffic", func(t *testing.T) {
-		usage := `{key_group="eval",root_group="research",key_id="k-eval",model="chat",status="complete"}`
+		usage := `{kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",model="chat",status="complete"}`
 		for series, want := range map[string]float64{
-			`kaiak_errors_total{class="auth"}`:                                                  2,
-			`kaiak_errors_total{class="rate_limited"}`:                                          1,
-			`kaiak_errors_total{class="budget_exceeded"}`:                                       1,
-			`kaiak_config_loads_total{trigger="sighup",result="rejected"}`:                      1,
-			`kaiak_config_loads_total{trigger="sighup",result="applied"}`:                       1,
-			`kaiak_config_apply_duration_seconds_count{trigger="startup",result="applied"}`:     1,
-			`kaiak_config_apply_duration_seconds_count{trigger="sighup",result="rejected"}`:     1,
-			`kaiak_config_apply_duration_seconds_count{trigger="sighup",result="applied"}`:      1,
-			`kaiak_usage_records_total` + usage:                                                 4,
-			`kaiak_usage_tokens_total` + strings.TrimSuffix(usage, "}") + `,unit="tokens_out"}`: 16,
-			`kaiak_backend_in_flight_requests{backend="fake"}`:                                  0,
+			`kaiak_errors_total{kaiak_error_class="auth"}`:                                                     2,
+			`kaiak_errors_total{kaiak_error_class="rate_limited"}`:                                             1,
+			`kaiak_errors_total{kaiak_error_class="budget_exceeded"}`:                                          1,
+			`kaiak_config_loads_total{kaiak_trigger="sighup",kaiak_config_result="rejected"}`:                  1,
+			`kaiak_config_loads_total{kaiak_trigger="sighup",kaiak_config_result="applied"}`:                   1,
+			`kaiak_config_apply_duration_seconds_count{kaiak_trigger="startup",kaiak_config_result="applied"}`: 1,
+			`kaiak_config_apply_duration_seconds_count{kaiak_trigger="sighup",kaiak_config_result="rejected"}`: 1,
+			`kaiak_config_apply_duration_seconds_count{kaiak_trigger="sighup",kaiak_config_result="applied"}`:  1,
+			`kaiak_usage_records_total` + usage:                                                                4,
+			`kaiak_usage_tokens_total` + strings.TrimSuffix(usage, "}") + `,unit="tokens_out"}`:                16,
+			`kaiak_backend_active_requests{kaiak_backend_id="fake"}`:                                           0,
 		} {
 			if got := g.metric(t, series); got != want {
 				t.Errorf("%s = %v, want %v", series, got, want)
@@ -463,7 +463,7 @@ func TestTieredPrices(t *testing.T) {
 		})
 	}
 
-	usage := `{key_group="eval",root_group="research",key_id="k-eval",model="tiered",status="complete"}`
+	usage := `{kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",model="tiered",status="complete"}`
 	if got, want := g.metric(t, `kaiak_usage_cost_usd_total`+usage), 0.0008395; got != want {
 		t.Errorf("cost metric %v, want %v", got, want)
 	}
@@ -532,7 +532,7 @@ func TestInputWrittenToTheCache(t *testing.T) {
 	}
 
 	usage := func(model, unit string) string {
-		return fmt.Sprintf(`{key_group="eval",root_group="research",key_id="k-eval",model=%q,status="complete"%s}`, model, unit)
+		return fmt.Sprintf(`{kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",model=%q,status="complete"%s}`, model, unit)
 	}
 	for series, want := range map[string]float64{
 		`kaiak_usage_tokens_total` + usage("written", `,unit="tokens_cache_write"`):        121, // 40 + 40 + 41

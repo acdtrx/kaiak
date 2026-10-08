@@ -3,7 +3,7 @@ package main
 import "slices"
 
 // The client API endpoints a kind's backend type serves (docs/specs/GATEWAY.md,
-// Providers → Endpoint support), by the gateway's metric names. The kit runs each
+// Providers → Endpoint support), by the gateway's endpoint names. The kit runs each
 // API's checks on the kinds that serve it, and checks the gateway refuses the others
 // with endpoint_not_served.
 const (

@@ -67,8 +67,8 @@ func TestUnknownPathIsTheDeploymentsFailure(t *testing.T) {
 				t.Error("circuit of local/first closed, want open: the outcome is a failure")
 			}
 			expectMetricLines(t, scrape(g),
-				`kaiak_retries_total{model="retry",backend="local",reason="path_missing"} 1`,
-				`kaiak_upstream_attempts_total{backend="local",deployment_model="first",outcome="path_missing"} 1`)
+				`kaiak_retries_total{gen_ai_request_model="retry",kaiak_backend_id="local",kaiak_attempt_outcome="path_missing"} 1`,
+				`kaiak_upstream_attempts_total{kaiak_backend_id="local",kaiak_deployment_model="first",kaiak_attempt_outcome="path_missing"} 1`)
 		})
 		t.Run(m.typ+"/no deployment left", func(t *testing.T) {
 			g := newTestGateway(t)
@@ -90,7 +90,7 @@ func TestUnknownPathIsTheDeploymentsFailure(t *testing.T) {
 				t.Fatalf("%d records, want the request's one", len(records))
 			}
 			expectUnits(t, records[0], units(0, 0, 0, 0, 0), false, true)
-			expectMetricLines(t, scrape(g), `kaiak_errors_total{class="upstream_error"} 1`)
+			expectMetricLines(t, scrape(g), `kaiak_errors_total{kaiak_error_class="upstream_error"} 1`)
 		})
 	}
 }

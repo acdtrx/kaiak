@@ -165,7 +165,7 @@ func TestAcrossHalves(t *testing.T) {
 		served(t, "chat-2 on gw-b", chat(t, b, "chat-2"))
 		allCounted(t, waitLimit)
 		for _, g := range []*gateway{a, b} {
-			if got := g.metric(t, `kaiak_usage_batch_sends_total{result="acked"}`); got < 1 {
+			if got := g.metric(t, `kaiak_usage_batch_sends_total{kaiak_usage_batch_result="acked"}`); got < 1 {
 				t.Errorf("acked batches = %v, want some from each gateway", got)
 			}
 		}
@@ -266,7 +266,7 @@ func TestAcrossHalves(t *testing.T) {
 	})
 
 	t.Run("a lost usage ack is not counted twice", func(t *testing.T) {
-		acked := a.metric(t, `kaiak_usage_batch_sends_total{result="acked"}`)
+		acked := a.metric(t, `kaiak_usage_batch_sends_total{kaiak_usage_batch_result="acked"}`)
 		proxy.dropNextUsageAnswer("gw-a")
 		served(t, "chat on gw-a", chat(t, a, "chat"))
 		select {
@@ -277,9 +277,9 @@ func TestAcrossHalves(t *testing.T) {
 		case <-time.After(waitLimit):
 			t.Fatal("gw-a sent no usage batch")
 		}
-		a.waitMetric(t, "the resent batch acknowledged", `kaiak_usage_batch_sends_total{result="acked"}`,
+		a.waitMetric(t, "the resent batch acknowledged", `kaiak_usage_batch_sends_total{kaiak_usage_batch_result="acked"}`,
 			func(v float64) bool { return v > acked })
-		if got := a.metric(t, `kaiak_usage_batch_sends_total{result="failed"}`); got < 1 {
+		if got := a.metric(t, `kaiak_usage_batch_sends_total{kaiak_usage_batch_result="failed"}`); got < 1 {
 			t.Errorf("failed sends = %v, want the lost answer counted", got)
 		}
 		// A batch counted after the resend: totals that include it include whatever
@@ -301,7 +301,7 @@ func TestAcrossHalves(t *testing.T) {
 		stream := openStream(t, a, evalKey, "held-stream",
 			chatBody("held", true, map[string]any{"stream_options": map[string]any{"include_usage": true}}))
 		waiting := postAsync(a, evalKey, "held-queued", "held")
-		a.waitMetric(t, "the request queued", `kaiak_queued_requests{model="held"}`, func(v float64) bool { return v == 1 })
+		a.waitMetric(t, "the request queued", `kaiak_queue_size{gen_ai_request_model="held"}`, func(v float64) bool { return v == 1 })
 		downOpen := func(st control.Status) bool {
 			d := st.Backends["down"].Deployments[backendChatModel]
 			return d.Circuit == control.CircuitOpen && d.OpenedAt != nil

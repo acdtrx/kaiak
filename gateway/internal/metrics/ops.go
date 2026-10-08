@@ -10,6 +10,7 @@
 package metrics
 
 import (
+	"strconv"
 	"time"
 
 	"kaiak/internal/config"
@@ -18,7 +19,7 @@ import (
 	"kaiak/internal/telemetry/metric"
 )
 
-// ErrorClass groups the gateway's error codes for kaiak_errors_total
+// ErrorClass groups the gateway's error codes, the kaiak.error.class of kaiak.errors
 // (docs/specs/GATEWAY.md, Observability).
 type ErrorClass string
 
@@ -48,8 +49,8 @@ var errorClasses = []ErrorClass{ErrorAuth, ErrorNotFound, ErrorInvalidRequest, E
 	ErrorUpstreamRateLimited, ErrorUpstreamClientError, ErrorClientClosed, ErrorShuttingDown, ErrorNotReady, ErrorServerBusy,
 	ErrorInternal}
 
-// AttemptOutcome is what one upstream attempt came to, the outcome label of
-// kaiak_upstream_attempts_total: the circuit breaker's classification
+// AttemptOutcome is what one upstream attempt came to, the kaiak.attempt.outcome of
+// kaiak.upstream.attempts: the circuit breaker's classification
 // (docs/specs/GATEWAY.md, Routing and reliability: outcome classes), named.
 type AttemptOutcome string
 
@@ -78,8 +79,8 @@ var attemptOutcomes = []AttemptOutcome{AttemptSuccess, AttemptUnavailable, Attem
 	AttemptResponseTimeout, AttemptRateLimited, AttemptClientError, AttemptCanceled, AttemptInternal}
 
 // RetryableOutcomes are the outcomes after which an attempt that relayed nothing may
-// be retried (docs/specs/GATEWAY.md, Routing and reliability: retries): the reason
-// label values of kaiak_retries_total.
+// be retried (docs/specs/GATEWAY.md, Routing and reliability: retries): the
+// kaiak.attempt.outcome values of kaiak.retries.
 var RetryableOutcomes = []AttemptOutcome{AttemptUnavailable, AttemptTimeout, AttemptServerError, AttemptRateLimited,
 	AttemptAuthFailed, AttemptModelMissing, AttemptPathMissing, AttemptEndpointMissing}
 
@@ -101,21 +102,35 @@ var (
 	configWorkBuckets = []float64{0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30}
 )
 
-// QueueReason is why a model's queue refused a request, the reason label of
-// kaiak_queue_rejections_total. The server names it from the refusal's error code;
-// it lives here, as ErrorClass does, because the server imports metrics.
+// QueueReason is why a model's queue refused a request: the error code answered, the
+// error.type of kaiak.queue.rejections. The server names it from the refusal; it
+// lives here, as ErrorClass does, because the server imports metrics.
 type QueueReason string
 
 const (
-	QueueFull    QueueReason = "full"    // the queue was full
-	QueueTimeout QueueReason = "timeout" // the wait for a slot timed out
+	QueueFull    QueueReason = "queue_full"    // the queue was full
+	QueueTimeout QueueReason = "queue_timeout" // the wait for a slot timed out
 )
 
 var queueReasons = []QueueReason{QueueFull, QueueTimeout}
 
+// Attribute keys several families share (docs/specs/GATEWAY.md, Observability →
+// Metric list).
+const (
+	attrModel           = "gen_ai.request.model"
+	attrBackend         = "kaiak.backend.id"
+	attrDeploymentModel = "kaiak.deployment.model"
+	attrOutcome         = "kaiak.attempt.outcome"
+	attrCircuitState    = "kaiak.circuit.state"
+)
+
+// urlScheme is every request's url.scheme: the API listener speaks plain HTTP; TLS,
+// where there is any, ends before it.
+const urlScheme = "http"
+
 // Ops holds the gateway's operational metrics: how requests go, not whose usage they
-// are. The request pipeline feeds it; label values are endpoint names, public model
-// names, backend IDs and classes — never a key or any content.
+// are. The request pipeline feeds it; attribute values are routes, public model
+// names, backend IDs and fixed vocabularies — never a key or any content.
 type Ops struct {
 	holder          *config.Holder
 	circuits        *Circuits
@@ -143,58 +158,59 @@ type Ops struct {
 // backend caps, queue depths, circuit and cooldown states — are read at each collect
 // from one routing.Serving against holder's live config, so every backend, model and
 // deployment of it is present (0 when idle); backend caps are the shares routing
-// enforces. Counters and histograms whose label values the config determines,
+// enforces. Counters and histograms whose attribute values the config determines,
 // circuits' among them, are created at 0 for holder's config, if it has one, and for
 // every config applied since (ConfigLoaded).
 func NewOps(reg *metric.Registry, router *routing.Router, circuits *Circuits, holder *config.Holder) *Ops {
 	o := &Ops{
 		holder:   holder,
 		circuits: circuits,
-		requestDuration: reg.Histogram(metric.Definition{Name: "kaiak.request.duration", Unit: "s",
-			Description: "Time from request arrival to the end of its response, by endpoint, model and status class.",
-			Attributes:  []string{"endpoint", "model", "status_class"}, Buckets: durationBuckets}),
+		requestDuration: reg.Histogram(metric.Definition{Name: "http.server.request.duration", Unit: "s",
+			Description: "Time from request arrival to the end of its response, by method, route, status, error and model.",
+			Attributes: []string{"http.request.method", "url.scheme", "http.route", "http.response.status_code",
+				"error.type", attrModel}, Buckets: durationBuckets}),
 		firstToken: reg.Histogram(metric.Definition{Name: "kaiak.time_to_first_token", Unit: "s",
 			Description: "Time from the send of a stream's answering attempt to its first event carrying generated content.",
-			Attributes:  []string{"model", "backend"}, Buckets: firstTokenBuckets}),
+			Attributes:  []string{attrModel, attrBackend}, Buckets: firstTokenBuckets}),
 		tokenRate: reg.Histogram(metric.Definition{Name: "kaiak.output_token_rate", Unit: "{token}/s",
 			Description: "Decode speed of completed streams: output tokens after the first, per second after the first content event.",
-			Attributes:  []string{"model", "backend"}, Buckets: tokenRateBuckets}),
+			Attributes:  []string{attrModel, attrBackend}, Buckets: tokenRateBuckets}),
 		errors: reg.Counter(metric.Definition{Name: "kaiak.errors", Unit: "{request}",
-			Description: "Requests that ended in an error, by class.", Attributes: []string{"class"}}),
+			Description: "Requests that ended in an error, by class.", Attributes: []string{"kaiak.error.class"}}),
 		requestErrors: reg.Counter(metric.Definition{Name: "kaiak.request.errors", Unit: "{request}",
-			Description: "Requests that ended in an error, refusals included, by key and error code.",
-			Attributes:  append(append([]string(nil), keyLabelNames...), "model", "code")}),
+			Description: "Requests that ended in an error, refusals included, by key, model and error type.",
+			Attributes:  append(append([]string(nil), keyAttributes...), attrModel, "error.type")}),
 		limitRejections: reg.Counter(metric.Definition{Name: "kaiak.limit.rejections", Unit: "{request}",
 			Description: "Requests a limit refused (rate_limit_exceeded, budget_exceeded), by the kind of scope the limit belongs to and its type.",
-			Attributes:  []string{"scope_kind", "type"}}),
-		queueWait: reg.Histogram(metric.Definition{Name: "kaiak.queue.wait", Unit: "s",
+			Attributes:  []string{"kaiak.limit.scope", "kaiak.limit.type"}}),
+		queueWait: reg.Histogram(metric.Definition{Name: "kaiak.queue.wait_duration", Unit: "s",
 			Description: "Time requests waited in their model's queue before getting a slot.",
-			Attributes:  []string{"model"}, Buckets: queueWaitBuckets}),
+			Attributes:  []string{attrModel}, Buckets: queueWaitBuckets}),
 		queueRejections: reg.Counter(metric.Definition{Name: "kaiak.queue.rejections", Unit: "{request}",
-			Description: "Requests refused by their model's queue, by the reason for the refusal.",
-			Attributes:  []string{"model", "reason"}}),
+			Description: "Requests refused by their model's queue, by the error code answered.",
+			Attributes:  []string{attrModel, "error.type"}}),
 		retries: reg.Counter(metric.Definition{Name: "kaiak.retries", Unit: "{attempt}",
 			Description: "Retries: attempts sent after an earlier attempt of the same request failed, by the backend of that attempt and the outcome that made it retryable.",
-			Attributes:  []string{"model", "backend", "reason"}}),
+			Attributes:  []string{attrModel, attrBackend, attrOutcome}}),
 		attempts: reg.Histogram(metric.Definition{Name: "kaiak.request.attempts", Unit: "{attempt}",
 			Description: "Attempts per routed request, the first included.",
-			Attributes:  []string{"model"}, Buckets: attemptBuckets}),
+			Attributes:  []string{attrModel}, Buckets: attemptBuckets}),
 		upstream: reg.Counter(metric.Definition{Name: "kaiak.upstream.attempts", Unit: "{attempt}",
 			Description: "Upstream attempts per deployment, by outcome: the circuit breaker's classification of each attempt.",
-			Attributes:  []string{"backend", "deployment_model", "outcome"}}),
+			Attributes:  []string{attrBackend, attrDeploymentModel, attrOutcome}}),
 		upstreamTime: reg.Histogram(metric.Definition{Name: "kaiak.upstream.attempt.duration", Unit: "s",
 			Description: "Duration of every upstream attempt, from its send to its end: the end of the relay, or its failure.",
-			Attributes:  []string{"backend"}, Buckets: durationBuckets}),
+			Attributes:  []string{attrBackend}, Buckets: durationBuckets}),
 		configLoads: reg.Counter(metric.Definition{Name: "kaiak.config.loads", Unit: "{load}",
 			Description: "Config loads, by what asked for the load and whether it was applied.",
-			Attributes:  []string{"trigger", "result"}}),
+			Attributes:  []string{"kaiak.trigger", "kaiak.config.result"}}),
 		configApplied: reg.Gauge(metric.Definition{Name: "kaiak.config.last_applied_timestamp", Unit: "s",
 			Description: "Unix time the running config was applied."}),
 		configSize: reg.Gauge(metric.Definition{Name: "kaiak.config.size", Unit: "By",
 			Description: "Size of the running config document, in bytes."}),
 		configApply: reg.Histogram(metric.Definition{Name: "kaiak.config.apply.duration", Unit: "s",
 			Description: "Time a config load took to validate the document and build its snapshot, to the swap or the rejection, by trigger and result.",
-			Attributes:  []string{"trigger", "result"}, Buckets: configWorkBuckets}),
+			Attributes:  []string{"kaiak.trigger", "kaiak.config.result"}, Buckets: configWorkBuckets}),
 		limitsSync: reg.Histogram(metric.Definition{Name: "kaiak.limits.sync.duration", Unit: "s",
 			Description: "Time the limiter took to match its counters to a newly applied config; the request that finds the new config waits for it, and every other request waits behind it.",
 			Buckets:     configWorkBuckets}),
@@ -227,52 +243,49 @@ func NewOps(reg *metric.Registry, router *routing.Router, circuits *Circuits, ho
 // registerRouting registers the routing up-down counters, read together at collect
 // from one routing.Serving against the live config.
 func (o *Ops) registerRouting(reg *metric.Registry, router *routing.Router) {
-	backend, model := []string{"backend"}, []string{"model"}
-	deployment := []string{"backend", "deployment_model"}
-	inFlight := reg.ObservableUpDownCounter(metric.Definition{Name: "kaiak.backend.in_flight_requests", Unit: "{request}",
+	backend, model := []string{attrBackend}, []string{attrModel}
+	deployment := []string{attrBackend, attrDeploymentModel}
+	active := reg.ObservableUpDownCounter(metric.Definition{Name: "kaiak.backend.active_requests", Unit: "{request}",
 		Description: "Requests in flight per backend, from routing until the response is over.", Attributes: backend})
-	maxInFlight := reg.ObservableUpDownCounter(metric.Definition{Name: "kaiak.backend.max_in_flight", Unit: "{request}",
+	activeLimit := reg.ObservableUpDownCounter(metric.Definition{Name: "kaiak.backend.active_requests_limit", Unit: "{request}",
 		Description: "The cap on requests in flight per backend this gateway enforces: its share of max_in_flight among the live gateways; backends without a cap are absent.",
 		Attributes:  backend})
-	queued := reg.ObservableUpDownCounter(metric.Definition{Name: "kaiak.queued_requests", Unit: "{request}",
+	queued := reg.ObservableUpDownCounter(metric.Definition{Name: "kaiak.queue.size", Unit: "{request}",
 		Description: "Requests waiting in each model's queue for a slot.", Attributes: model})
-	open := reg.ObservableUpDownCounter(metric.Definition{Name: "kaiak.circuit.open", Unit: "{deployment}",
-		Description: "1 while the deployment's circuit breaker is open (waiting for a probe), else 0; half-open counts 0.",
-		Attributes:  deployment})
-	halfOpen := reg.ObservableUpDownCounter(metric.Definition{Name: "kaiak.circuit.half_open", Unit: "{deployment}",
-		Description: "1 while the deployment's circuit breaker is half-open (a probe succeeded; the next request is its trial), else 0.",
-		Attributes:  deployment})
+	circuit := reg.ObservableUpDownCounter(metric.Definition{Name: "kaiak.circuit.state", Unit: "{deployment}",
+		Description: "1 on the deployment's current circuit-breaker state (closed; open, waiting for a probe; half_open, the next request is a probe's trial), 0 on the other two.",
+		Attributes:  append(append([]string(nil), deployment...), attrCircuitState)})
 	cooling := reg.ObservableUpDownCounter(metric.Definition{Name: "kaiak.deployment.cooling_down", Unit: "{deployment}",
 		Description: "1 while the deployment cools down after a 429 (routing sends it no request while another deployment of the model is eligible), else 0.",
 		Attributes:  deployment})
 	reg.Callback(func(obs *metric.Observer) {
 		serving := router.Serving(o.holder.Current())
 		for id, b := range serving.Backends {
-			inFlight.Observe(obs, int64(b.InFlight), id)
+			active.Observe(obs, int64(b.InFlight), id)
 			if b.Share > 0 {
-				maxInFlight.Observe(obs, int64(b.Share), id)
+				activeLimit.Observe(obs, int64(b.Share), id)
 			}
 		}
 		for name, m := range serving.Models {
 			queued.Observe(obs, int64(m.Queued), name)
 		}
-		deploymentState(obs, open, serving, func(d routing.DeploymentServing) bool { return d.Circuit == routing.CircuitOpen })
-		deploymentState(obs, halfOpen, serving, func(d routing.DeploymentServing) bool { return d.Circuit == routing.CircuitHalfOpen })
-		deploymentState(obs, cooling, serving, routing.DeploymentServing.CoolingDown)
-	}, inFlight, maxInFlight, queued, open, halfOpen, cooling)
+		for id, d := range serving.Deployments {
+			for _, state := range circuitStates {
+				circuit.Observe(obs, oneIf(d.Circuit == state), id.Backend, id.Model, string(state))
+			}
+			cooling.Observe(obs, oneIf(d.CoolingDown()), id.Backend, id.Model)
+		}
+	}, active, activeLimit, queued, circuit, cooling)
 }
 
-// deploymentState observes one point per deployment of serving — public models may
-// share one: 1 where is holds, else 0.
-func deploymentState(obs *metric.Observer, c *metric.ObservableUpDownCounter, serving routing.Serving,
-	is func(routing.DeploymentServing) bool) {
-	for id, d := range serving.Deployments {
-		var v int64
-		if is(d) {
-			v = 1
-		}
-		c.Observe(obs, v, id.Backend, id.Model)
+// circuitStates are a circuit breaker's states, the kaiak.circuit.state values.
+var circuitStates = []routing.CircuitState{routing.CircuitClosed, routing.CircuitOpen, routing.CircuitHalfOpen}
+
+func oneIf(b bool) int64 {
+	if b {
+		return 1
 	}
+	return 0
 }
 
 // Circuits counts circuit-breaker events, fed by routing (a routing.Observer).
@@ -287,10 +300,10 @@ func NewCircuits(reg *metric.Registry) *Circuits {
 	return &Circuits{
 		transitions: reg.Counter(metric.Definition{Name: "kaiak.circuit.transitions", Unit: "{transition}",
 			Description: "Circuit-breaker transitions per deployment, by the state entered (open, half_open, closed).",
-			Attributes:  []string{"backend", "deployment_model", "to"}}),
+			Attributes:  []string{attrBackend, attrDeploymentModel, attrCircuitState}}),
 		probes: reg.Counter(metric.Definition{Name: "kaiak.probes", Unit: "{probe}",
 			Description: "Probes of backends with open circuits, by result (success, failure).",
-			Attributes:  []string{"backend", "result"}}),
+			Attributes:  []string{attrBackend, "kaiak.probe.result"}}),
 	}
 }
 
@@ -305,7 +318,7 @@ func (c *Circuits) CircuitChanged(d routing.DeploymentID, to routing.CircuitStat
 func (c *Circuits) prepareSeries(s *config.Snapshot) {
 	for _, m := range s.Models {
 		for _, d := range m.Deployments {
-			for _, to := range []routing.CircuitState{routing.CircuitOpen, routing.CircuitHalfOpen, routing.CircuitClosed} {
+			for _, to := range circuitStates {
 				c.transitions.Add(0, d.Backend.ID, d.Model, string(to))
 			}
 			c.probes.Add(0, d.Backend.ID, "success")
@@ -323,11 +336,20 @@ func (c *Circuits) Probed(backend string, ok bool) {
 	c.probes.Inc(backend, result)
 }
 
-// ObserveRequest records one finished client request. endpoint and model are "" when
-// unknown (an unknown path, a model the caller may not use): only names the config
-// declares become label values, so clients cannot mint series.
-func (o *Ops) ObserveRequest(endpoint, model string, status int, d time.Duration) {
-	o.requestDuration.Observe(d.Seconds(), endpoint, model, statusClass(status))
+// ObserveRequest records one finished client request (docs/specs/GATEWAY.md,
+// Observability → the request duration's attributes): method is a method the HTTP
+// convention knows or _OTHER; route the route as the client API documents it, ""
+// for a path no route matched; status the status answered, 0 when none was sent
+// (the client left first); errorType the request's error code, or how a response
+// broken off after it started ended, "" without an error; model "" until the model
+// passed the access check. Only fixed vocabularies and names the config declares
+// become attribute values, so clients cannot mint series.
+func (o *Ops) ObserveRequest(method, route string, status int, errorType, model string, d time.Duration) {
+	code := ""
+	if status != 0 {
+		code = strconv.Itoa(status)
+	}
+	o.requestDuration.Observe(d.Seconds(), method, urlScheme, route, code, errorType, model)
 }
 
 // ObserveTimeToFirstToken records the time from the send of a streamed request's
@@ -343,7 +365,7 @@ func (o *Ops) ObserveOutputRate(model, backend string, tokensPerSecond float64) 
 
 // CountRequestError counts one request that ended in an error by who sent it and how
 // it ended: group and keyID are the request's key (group nil and keyID empty without
-// a valid key), labelled as the usage metrics are (keyLabels), model only once it
+// a valid key), attributed as the usage metrics are (keyLabels), model only once it
 // passed the access check, and code the request log line's error.type, or the
 // kaiak.relay_end of a response broken off after it started. Series exist only once
 // counted: their number follows the keys that met an error, not the config.
@@ -421,13 +443,13 @@ func (o *Ops) ObserveLimitsSync(d time.Duration) {
 	o.limitsSync.Observe(d.Seconds())
 }
 
-// prepareSeries creates at 0 every ops series whose label values s determines
+// prepareSeries creates at 0 every ops series whose attribute values s determines
 // (docs/specs/GATEWAY.md, Observability: series at 0): per model its queue
 // rejections, queue wait and attempts; per deployment its upstream attempts by
 // outcome and its backend's attempt duration, and the circuit counters; per model
-// and backend of its deployments the retries by reason, time to first token and
+// and backend of its deployments the retries by outcome, time to first token and
 // decode rate. Series of deployments a later config drops stay until restart. The
-// request duration is left out: its status class comes from traffic.
+// request duration is left out: its status and error type come from the answer.
 func (o *Ops) prepareSeries(s *config.Snapshot) {
 	o.circuits.prepareSeries(s)
 	for name, m := range s.Models {
@@ -448,11 +470,4 @@ func (o *Ops) prepareSeries(s *config.Snapshot) {
 			o.tokenRate.Prepare(name, d.Backend.ID)
 		}
 	}
-}
-
-func statusClass(status int) string {
-	if status < 100 || status > 599 {
-		return ""
-	}
-	return string(rune('0'+status/100)) + "xx"
 }

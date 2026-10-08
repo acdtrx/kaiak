@@ -96,9 +96,11 @@ func chatOK(t *testing.T, g *gateway, key, id, model string) map[string]any {
 	return g.settled(t, id)
 }
 
-// circuitSeries is the kaiak_circuit_open series of the model's deployment on backend.
-func circuitSeries(backend string) string {
-	return fmt.Sprintf(`kaiak_circuit_open{backend=%q,deployment_model=%q}`, backend, reliableModel)
+// circuitSeries is the kaiak_circuit_state series of state of the model's deployment
+// on backend.
+func circuitSeries(backend, state string) string {
+	return fmt.Sprintf(`kaiak_circuit_state{kaiak_backend_id=%q,kaiak_deployment_model=%q,kaiak_circuit_state=%q}`,
+		backend, reliableModel, state)
 }
 
 // sumMetric adds the values of every series of the metric name carrying all of the
@@ -166,7 +168,7 @@ func TestRetryOnAnotherDeploymentAndCircuit(t *testing.T) {
 		default:
 			t.Fatalf("%s: attempts %v", id, line["kaiak.attempts"])
 		}
-		if v, ok := g.metricValue(t, circuitSeries("a")); ok && v == 1 {
+		if v, ok := g.metricValue(t, circuitSeries("a", "open")); ok && v == 1 {
 			break
 		}
 	}
@@ -174,8 +176,8 @@ func TestRetryOnAnotherDeploymentAndCircuit(t *testing.T) {
 	if opened["kaiak.deployment.model"] != reliableModel || opened["kaiak.circuit.failures"] != 2.0 {
 		t.Errorf("circuit opened line %v, want deployment %s after 2 failures", opened, reliableModel)
 	}
-	if got := g.metric(t, circuitSeries("b")); got != 0 {
-		t.Errorf("b's circuit = %v, want closed", got)
+	if got := g.metric(t, circuitSeries("b", "closed")); got != 1 {
+		t.Errorf("b's closed circuit state = %v, want 1", got)
 	}
 
 	// With a's circuit open, requests go to b alone, at once.
@@ -199,12 +201,11 @@ func TestRetryOnAnotherDeploymentAndCircuit(t *testing.T) {
 	defer a.Close()
 	a.SetModels(reliableModel)
 	g.logs.wait(t, "a's circuit half-opening", msg("circuit half-open", "kaiak.backend.id", "a", "kaiak.trigger", "interval"))
-	if got := g.metric(t, circuitSeries("a")); got != 0 {
-		t.Errorf("a's kaiak_circuit_open after the probe = %v, want 0: half-open is not open", got)
+	if got := g.metric(t, circuitSeries("a", "open")); got != 0 {
+		t.Errorf("a's open circuit state after the probe = %v, want 0: half-open is not open", got)
 	}
-	halfOpen := fmt.Sprintf(`kaiak_circuit_half_open{backend="a",deployment_model=%q}`, reliableModel)
-	if got := g.metric(t, halfOpen); got != 1 {
-		t.Errorf("a's kaiak_circuit_half_open after the probe = %v, want 1 until the trial", got)
+	if got := g.metric(t, circuitSeries("a", "half_open")); got != 1 {
+		t.Errorf("a's half-open circuit state after the probe = %v, want 1 until the trial", got)
 	}
 	if len(a.ModelsRequests()) == 0 {
 		t.Error("a's circuit half-opened without a models probe reaching it")
@@ -221,10 +222,10 @@ func TestRetryOnAnotherDeploymentAndCircuit(t *testing.T) {
 		t.Errorf("a served %d of the 2 requests after recovering, want 1", got)
 	}
 	g.logs.wait(t, "a's circuit closing", msg("circuit closed", "kaiak.backend.id", "a", "kaiak.trigger", "trial"))
-	if got := g.metric(t, circuitSeries("a")) + g.metric(t, halfOpen); got != 0 {
-		t.Errorf("a's circuit after the trial = %v, want closed", got)
+	if got := g.metric(t, circuitSeries("a", "closed")); got != 1 {
+		t.Errorf("a's closed circuit state after the trial = %v, want 1", got)
 	}
-	if got := sumMetric(t, g, "kaiak_retries_total", `model="chat"`, `reason="unavailable"`); got < 1 {
+	if got := sumMetric(t, g, "kaiak_retries_total", `gen_ai_request_model="chat"`, `kaiak_attempt_outcome="unavailable"`); got < 1 {
 		t.Errorf("retries for unavailable = %v, want ≥ 1", got)
 	}
 	g.stop(t)
@@ -247,8 +248,8 @@ func TestRetryOnBackendError(t *testing.T) {
 	if line["kaiak.attempts"] != 1.0 || line["kaiak.backend.id"] != "a" {
 		t.Fatalf("after the 500: log line %v, want one attempt on a", line)
 	}
-	if got := g.metric(t, circuitSeries("a")); got != 0 {
-		t.Errorf("a's circuit = %v, want closed", got)
+	if got := g.metric(t, circuitSeries("a", "closed")); got != 1 {
+		t.Errorf("a's closed circuit state = %v, want 1", got)
 	}
 	g.stop(t)
 }
@@ -272,7 +273,7 @@ func TestThrottledDeploymentFailsOverAndCoolsDown(t *testing.T) {
 	if line["kaiak.attempts"] != 2.0 || line["kaiak.tried"] != tried("a", "429", "b", "500") || line["kaiak.retry_refused"] != "no_deployment_left" {
 		t.Fatalf("log line %v, want a's 429, then b's 500 with no deployment left", line)
 	}
-	if got := g.metric(t, fmt.Sprintf(`kaiak_deployment_cooling_down{backend="a",deployment_model=%q}`, reliableModel)); got != 1 {
+	if got := g.metric(t, fmt.Sprintf(`kaiak_deployment_cooling_down{kaiak_backend_id="a",kaiak_deployment_model=%q}`, reliableModel)); got != 1 {
 		t.Errorf("a cooling down = %v, want 1", got)
 	}
 	for i := range 2 {
@@ -284,7 +285,7 @@ func TestThrottledDeploymentFailsOverAndCoolsDown(t *testing.T) {
 	if got := len(a.Requests()); got != 1 {
 		t.Errorf("a got %d requests, want 1", got)
 	}
-	if got := sumMetric(t, g, "kaiak_retries_total", `model="chat"`, `reason="rate_limited"`); got != 1 {
+	if got := sumMetric(t, g, "kaiak_retries_total", `gen_ai_request_model="chat"`, `kaiak_attempt_outcome="rate_limited"`); got != 1 {
 		t.Errorf("retries for rate_limited = %v, want 1", got)
 	}
 	g.stop(t)
@@ -329,11 +330,11 @@ func TestFirstEventTimeoutRetried(t *testing.T) {
 		t.Errorf("complete usage records = %v, want the answer's", got)
 	}
 	for backend, outcome := range map[string]string{"a": "timeout", "b": "success"} {
-		if got := sumMetric(t, g, "kaiak_upstream_attempts_total", `backend="`+backend+`"`, `outcome="`+outcome+`"`); got != 1 {
+		if got := sumMetric(t, g, "kaiak_upstream_attempts_total", `kaiak_backend_id="`+backend+`"`, `kaiak_attempt_outcome="`+outcome+`"`); got != 1 {
 			t.Errorf("%s's %s attempts = %v, want 1", backend, outcome, got)
 		}
 	}
-	if got := sumMetric(t, g, "kaiak_request_duration_seconds_count", `model="chat"`); got != 1 {
+	if got := sumMetric(t, g, "http_server_request_duration_seconds_count", `gen_ai_request_model="chat"`); got != 1 {
 		t.Errorf("client requests = %v, want 1", got)
 	}
 	g.stop(t)
@@ -383,7 +384,7 @@ func TestQueueOnCappedBackends(t *testing.T) {
 		short["queue"] = map[string]any{"timeout_ms": 300}
 		cfg["models"].(map[string]any)["chat-short"] = short
 	})
-	queued := func(model string) string { return fmt.Sprintf(`kaiak_queued_requests{model=%q}`, model) }
+	queued := func(model string) string { return fmt.Sprintf(`kaiak_queue_size{gen_ai_request_model=%q}`, model) }
 
 	// Two held streams take both slots.
 	paceA, paceB := make(chan struct{}), make(chan struct{})
@@ -419,8 +420,8 @@ func TestQueueOnCappedBackends(t *testing.T) {
 			t.Errorf("queued request's log line %v, want served by a with kaiak.queue.wait_duration", line)
 		}
 		for series, want := range map[string]float64{
-			`kaiak_queue_rejections_total{model="chat",reason="full"}`:          1,
-			`kaiak_queue_rejections_total{model="chat-short",reason="timeout"}`: 1,
+			`kaiak_queue_rejections_total{gen_ai_request_model="chat",error_type="queue_full"}`:          1,
+			`kaiak_queue_rejections_total{gen_ai_request_model="chat-short",error_type="queue_timeout"}`: 1,
 			queued("chat"): 0,
 		} {
 			if got := g.metric(t, series); got != want {

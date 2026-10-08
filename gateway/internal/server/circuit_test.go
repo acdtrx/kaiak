@@ -201,10 +201,12 @@ func TestCircuitOpensAfterTheThresholdAndAllOpenIs503(t *testing.T) {
 	}
 	metrics := scrape(g)
 	for _, want := range []string{
-		`kaiak_circuit_open{backend="down",deployment_model="down"} 1`,
-		`kaiak_circuit_open{backend="local",deployment_model="open"} 0`,
-		`kaiak_circuit_transitions_total{backend="down",deployment_model="down",to="open"} 1`,
-		`kaiak_errors_total{class="no_healthy_deployment"} 1`,
+		`kaiak_circuit_state{kaiak_backend_id="down",kaiak_deployment_model="down",kaiak_circuit_state="open"} 1`,
+		`kaiak_circuit_state{kaiak_backend_id="down",kaiak_deployment_model="down",kaiak_circuit_state="closed"} 0`,
+		`kaiak_circuit_state{kaiak_backend_id="local",kaiak_deployment_model="open",kaiak_circuit_state="open"} 0`,
+		`kaiak_circuit_state{kaiak_backend_id="local",kaiak_deployment_model="open",kaiak_circuit_state="closed"} 1`,
+		`kaiak_circuit_transitions_total{kaiak_backend_id="down",kaiak_deployment_model="down",kaiak_circuit_state="open"} 1`,
+		`kaiak_errors_total{kaiak_error_class="no_healthy_deployment"} 1`,
 	} {
 		if !strings.Contains(metrics, want+"\n") {
 			t.Errorf("metrics miss %s", want)
@@ -288,8 +290,8 @@ func TestOpenDeploymentIsSkippedAndProbedBackIn(t *testing.T) {
 	// Half-open is not open to the metrics: an idle recovered deployment must not keep
 	// an open-circuit alert firing.
 	expectMetricLines(t, scrape(g),
-		`kaiak_circuit_open{backend="local-b",deployment_model="pair-b"} 0`,
-		`kaiak_circuit_half_open{backend="local-b",deployment_model="pair-b"} 1`)
+		`kaiak_circuit_state{kaiak_backend_id="local-b",kaiak_deployment_model="pair-b",kaiak_circuit_state="open"} 0`,
+		`kaiak_circuit_state{kaiak_backend_id="local-b",kaiak_deployment_model="pair-b",kaiak_circuit_state="half_open"} 1`)
 	do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey, body: `{"model":"pair"}`})
 	do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey, body: `{"model":"pair"}`})
 	if len(other.Requests()) != 3 {
@@ -311,13 +313,14 @@ func TestOpenDeploymentIsSkippedAndProbedBackIn(t *testing.T) {
 	}
 	metrics := scrape(g)
 	for _, want := range []string{
-		`kaiak_circuit_open{backend="local-b",deployment_model="pair-b"} 0`,
-		`kaiak_circuit_half_open{backend="local-b",deployment_model="pair-b"} 0`,
-		`kaiak_circuit_transitions_total{backend="local-b",deployment_model="pair-b",to="open"} 1`,
-		`kaiak_circuit_transitions_total{backend="local-b",deployment_model="pair-b",to="half_open"} 1`,
-		`kaiak_circuit_transitions_total{backend="local-b",deployment_model="pair-b",to="closed"} 1`,
-		`kaiak_probes_total{backend="local-b",result="failure"} 1`,
-		`kaiak_probes_total{backend="local-b",result="success"} 2`,
+		`kaiak_circuit_state{kaiak_backend_id="local-b",kaiak_deployment_model="pair-b",kaiak_circuit_state="open"} 0`,
+		`kaiak_circuit_state{kaiak_backend_id="local-b",kaiak_deployment_model="pair-b",kaiak_circuit_state="half_open"} 0`,
+		`kaiak_circuit_state{kaiak_backend_id="local-b",kaiak_deployment_model="pair-b",kaiak_circuit_state="closed"} 1`,
+		`kaiak_circuit_transitions_total{kaiak_backend_id="local-b",kaiak_deployment_model="pair-b",kaiak_circuit_state="open"} 1`,
+		`kaiak_circuit_transitions_total{kaiak_backend_id="local-b",kaiak_deployment_model="pair-b",kaiak_circuit_state="half_open"} 1`,
+		`kaiak_circuit_transitions_total{kaiak_backend_id="local-b",kaiak_deployment_model="pair-b",kaiak_circuit_state="closed"} 1`,
+		`kaiak_probes_total{kaiak_backend_id="local-b",kaiak_probe_result="failure"} 1`,
+		`kaiak_probes_total{kaiak_backend_id="local-b",kaiak_probe_result="success"} 2`,
 	} {
 		if !strings.Contains(metrics, want+"\n") {
 			t.Errorf("metrics miss %s", want)
@@ -383,7 +386,7 @@ func TestLongStreamingTrialDoesNotBlockItsDeployment(t *testing.T) {
 		t.Fatalf("trial's stream ended %q, %v", rest, err)
 	}
 	expectMetricLines(t, scrape(g),
-		`kaiak_circuit_transitions_total{backend="local",deployment_model="open",to="closed"} 1`)
+		`kaiak_circuit_transitions_total{kaiak_backend_id="local",kaiak_deployment_model="open",kaiak_circuit_state="closed"} 1`)
 }
 
 // A half-open trial is decided at its first data event, not at a comment block: a
@@ -466,8 +469,8 @@ func TestResponseTimeoutsOfAHungBackendOpenItsCircuit(t *testing.T) {
 	w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey, body: `{"model":"slow"}`})
 	expectError(t, w, http.StatusServiceUnavailable, "no_healthy_deployment")
 	expectMetricLines(t, scrape(g),
-		`kaiak_circuit_transitions_total{backend="slow",deployment_model="slow",to="open"} 2`,
-		`kaiak_upstream_attempts_total{backend="slow",deployment_model="slow",outcome="response_timeout"} 4`)
+		`kaiak_circuit_transitions_total{kaiak_backend_id="slow",kaiak_deployment_model="slow",kaiak_circuit_state="open"} 2`,
+		`kaiak_upstream_attempts_total{kaiak_backend_id="slow",kaiak_deployment_model="slow",kaiak_attempt_outcome="response_timeout"} 4`)
 }
 
 // notClosed returns when each circuit of g's config that is not closed (open or

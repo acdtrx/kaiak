@@ -47,13 +47,13 @@ func TestControlModeEndToEnd(t *testing.T) {
 		if status, body := g.get(t, "/v1/models/chat-2", evalKey); status != http.StatusOK {
 			t.Fatalf("/v1/models/chat-2 after the push = %d %s", status, body)
 		}
-		if got := g.metric(t, `kaiak_config_loads_total{trigger="control",result="applied"}`); got != 2 {
+		if got := g.metric(t, `kaiak_config_loads_total{kaiak_trigger="control",kaiak_config_result="applied"}`); got != 2 {
 			t.Errorf("control loads applied = %v, want 2", got)
 		}
 	})
 
 	t.Run("usage batches reach the control plane", func(t *testing.T) {
-		const acked = `kaiak_usage_batch_sends_total{result="acked"}`
+		const acked = `kaiak_usage_batch_sends_total{kaiak_usage_batch_result="acked"}`
 		ackedBefore, _ := g.metricValue(t, acked)
 		totalsBefore := g.metric(t, "kaiak_control_totals_applied_timestamp_seconds")
 		if r := g.post(t, "/v1/chat/completions", evalKey, "e2e-usage-1", chatBody("chat", false, nil)); r.StatusCode != http.StatusOK {

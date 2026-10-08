@@ -455,17 +455,17 @@ func (l *attempts) end(rq *request) {
 // classifyAttempt classifies what attempt at's end says about its deployment
 // (docs/specs/GATEWAY.md, Routing and reliability: outcome classes), its relay having
 // ended for relayEnd ("" when it ran to its end, or nothing was relayed): the named
-// outcome (the ops metrics' label), its class for the circuit breaker, and the reason
-// of a failure. A failure to get a response is classified by its provider code
-// (failureRules) or its error event's kind (errorEventRules); a provider's refusal is
-// the caller's mistake, nothing asked of the deployment; the client gone or the
-// drain's cut before the first event, and a gateway fault, teach nothing. After a
-// response: broken off upstream, stalled or ended incomplete is a failure; a
-// non-stream response timeout after the first bytes is neutral (a large body still
-// arriving: the backend was working); a busy status (429, 529: provider.BusyStatus)
-// and another 4xx (the caller's) are neutral, another 5xx a failure; a response
-// relayed to its end, or until the client left (or the drain cut it), is a success —
-// the backend answered and was serving.
+// outcome (the ops metrics' kaiak.attempt.outcome), its class for the circuit breaker,
+// and the reason of a failure. A failure to get a response is classified by its
+// provider code (failureRules) or its error event's kind (errorEventRules); a
+// provider's refusal is the caller's mistake, nothing asked of the deployment; the
+// client gone or the drain's cut before the first event, and a gateway fault, teach
+// nothing. After a response: broken off upstream, stalled or ended incomplete is a
+// failure; a non-stream response timeout after the first bytes is neutral (a large
+// body still arriving: the backend was working); a busy status (429, 529:
+// provider.BusyStatus) and another 4xx (the caller's) are neutral, another 5xx a
+// failure; a response relayed to its end, or until the client left (or the drain cut
+// it), is a success — the backend answered and was serving.
 func classifyAttempt(at *attempt, relayEnd string) (metrics.AttemptOutcome, routing.Outcome, string) {
 	if at.status == 0 {
 		if _, refused := errors.AsType[*provider.RefusalError](at.err); refused {

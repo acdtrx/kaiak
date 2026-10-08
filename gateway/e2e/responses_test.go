@@ -154,7 +154,7 @@ func TestResponses(t *testing.T) {
 		if n := len(old.Requests()); n == 0 {
 			t.Fatal("the old server got no request: the scenario did not run")
 		}
-		if v := g.metric(t, `kaiak_circuit_open{backend="old",deployment_model="Qwen/Qwen3-8B"}`); v != 0 {
+		if v := g.metric(t, `kaiak_circuit_state{kaiak_backend_id="old",kaiak_deployment_model="Qwen/Qwen3-8B",kaiak_circuit_state="open"}`); v != 0 {
 			t.Errorf("old's circuit open = %v, want closed", v)
 		}
 	})

@@ -4,7 +4,8 @@
 // queues a copy; a background sender posts the queue in batches through the
 // signal's OTLP connection (otlp), which holds the delivery rules. Logging never
 // waits on the collector: a full queue drops the newest records, and every record
-// ends up counted as exported, failed or dropped.
+// ends up counted: dropped by the queue, or handed to the exporter and then
+// exported or failed (Counts).
 package otlplog
 
 import (
@@ -59,7 +60,12 @@ type Exporter struct {
 	done         chan struct{}
 	shutdownOnce sync.Once
 
-	exported, failed, dropped atomic.Uint64
+	// The counts: records handed from the queue to the export, exported, failed (in
+	// all), and dropped by a full queue or at shutdown.
+	handed, exported, failed, droppedFull, droppedShutdown atomic.Uint64
+	// failedBy is failed by error.type.
+	failedMu sync.Mutex
+	failedBy map[string]uint64
 
 	// Problem reporting: the sender's alone, and Shutdown's once the sender has
 	// stopped.
@@ -123,10 +129,33 @@ func (e *Exporter) Handler(next slog.Handler) slog.Handler {
 	return &handler{next: next, exp: e}
 }
 
-// Counts are the records by what became of them, since the exporter started:
-// accepted by the collector, in a batch given up, or never sent.
-func (e *Exporter) Counts() (exported, failed, dropped uint64) {
-	return e.exported.Load(), e.failed.Load(), e.dropped.Load()
+// Counts are the log records by what became of them since the exporter started, as
+// the SDK's own metrics count them (docs/specs/GATEWAY.md, Observability →
+// Exporters' own counts).
+type Counts struct {
+	// Handed are the records the queue handed to the export; QueueFull and Shutdown
+	// those it dropped: refused by the full queue, and still queued (or logged) once
+	// the exporter shut down.
+	Handed, QueueFull, Shutdown uint64
+	// Exported are the records the collector accepted; Failed those in an export
+	// given up or a partial success's rejections, by error.type (otlp.Outcome).
+	Exported uint64
+	Failed   map[string]uint64
+}
+
+// Counts are the records by what became of them, since the exporter started.
+func (e *Exporter) Counts() Counts {
+	c := Counts{Handed: e.handed.Load(), QueueFull: e.droppedFull.Load(), Shutdown: e.droppedShutdown.Load(),
+		Exported: e.exported.Load()}
+	e.failedMu.Lock()
+	defer e.failedMu.Unlock()
+	if len(e.failedBy) > 0 {
+		c.Failed = make(map[string]uint64, len(e.failedBy))
+		for t, n := range e.failedBy {
+			c.Failed[t] = n
+		}
+	}
+	return c
 }
 
 // ForceFlush sends what is queued until the queue is empty — records logged
@@ -163,7 +192,7 @@ func (e *Exporter) Shutdown(ctx context.Context) {
 		left := len(e.queue)
 		e.queue, e.closed = nil, true
 		e.mu.Unlock()
-		e.dropped.Add(uint64(left))
+		e.droppedShutdown.Add(uint64(left))
 		e.client.CloseIdleConnections()
 		// The report at exit is never held back: drops at exit are never silent.
 		e.writeReport()
@@ -173,9 +202,14 @@ func (e *Exporter) Shutdown(ctx context.Context) {
 // enqueue adds r to the queue without waiting; a full or closed queue drops it.
 func (e *Exporter) enqueue(r record) {
 	e.mu.Lock()
-	if e.closed || len(e.queue) >= e.opts.capacity {
+	if e.closed {
 		e.mu.Unlock()
-		e.dropped.Add(1)
+		e.droppedShutdown.Add(1)
+		return
+	}
+	if len(e.queue) >= e.opts.capacity {
+		e.mu.Unlock()
+		e.droppedFull.Add(1)
 		return
 	}
 	e.queue = append(e.queue, r)
@@ -238,6 +272,7 @@ func (e *Exporter) take(least int) []record {
 	n = min(n, e.opts.batchSize)
 	batch := e.queue[:n:n]
 	e.queue = e.queue[n:]
+	e.handed.Add(uint64(n))
 	return batch
 }
 
@@ -247,24 +282,35 @@ func (e *Exporter) export(ctx context.Context, batch []record) {
 	n := uint64(len(batch))
 	body, err := encodeBatch(e.client.Resource(), batch)
 	if err != nil {
-		e.fail(n, 0, fmt.Errorf("encode batch: %w", err))
+		e.fail(n, errorTypeOther, 0, fmt.Errorf("encode batch: %w", err))
 		return
 	}
 	o := e.client.Export(ctx, body)
 	if o.Err != nil {
-		e.fail(n, o.Status, o.Err)
+		e.fail(n, o.ErrorType, o.Status, o.Err)
 		return
 	}
 	rejected := min(o.Rejected, n)
 	e.exported.Add(n - rejected)
 	if rejected > 0 {
-		e.fail(rejected, o.Status, o.RejectErr)
+		e.fail(rejected, otlp.ErrorRejected, o.Status, o.RejectErr)
 	}
 }
 
-// fail counts n records as failed and keeps the reason for the next report.
-func (e *Exporter) fail(n uint64, status int, err error) {
+// errorTypeOther is the error.type of a failure outside the export's classes (a
+// batch that could not be encoded): the convention's fallback value.
+const errorTypeOther = "_OTHER"
+
+// fail counts n records as failed, of class errorType, and keeps the reason for
+// the next report.
+func (e *Exporter) fail(n uint64, errorType string, status int, err error) {
 	e.failed.Add(n)
+	e.failedMu.Lock()
+	if e.failedBy == nil {
+		e.failedBy = map[string]uint64{}
+	}
+	e.failedBy[errorType] += n
+	e.failedMu.Unlock()
 	e.lastStatus = status
 	e.lastError = err.Error()
 }
@@ -281,7 +327,7 @@ func (e *Exporter) reportProblems() {
 // writeReport writes `log export failing` when records failed or were dropped since
 // the last such line.
 func (e *Exporter) writeReport() {
-	failed, dropped := e.failed.Load(), e.dropped.Load()
+	failed, dropped := e.failed.Load(), e.droppedFull.Load()+e.droppedShutdown.Load()
 	newFailed, newDropped := failed-e.reportedFailed, dropped-e.reportedDropped
 	if newFailed == 0 && newDropped == 0 {
 		return

@@ -268,7 +268,7 @@ func TestDrainTimeoutCutsOffHungRequests(t *testing.T) {
 				t.Errorf("log misses %s:\n%s", wantEnd, logs)
 			}
 			if got := errorsCounted(t, g, "shutting_down"); got != "1" {
-				t.Errorf("kaiak_errors_total{class=shutting_down} = %s, want 1", got)
+				t.Errorf("kaiak_errors_total{kaiak_error_class=shutting_down} = %s, want 1", got)
 			}
 		})
 	}
@@ -344,7 +344,7 @@ func errorsCounted(t *testing.T, g *testGateway, class string) string {
 	t.Helper()
 	w := httptest.NewRecorder()
 	scrapeHandler(g.metrics).ServeHTTP(w, httptest.NewRequest("GET", "/metrics", nil))
-	prefix := `kaiak_errors_total{class="` + class + `"} `
+	prefix := `kaiak_errors_total{kaiak_error_class="` + class + `"} `
 	for line := range strings.SplitSeq(w.Body.String(), "\n") {
 		if v, ok := strings.CutPrefix(line, prefix); ok {
 			return v

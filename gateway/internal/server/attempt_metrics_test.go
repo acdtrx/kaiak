@@ -53,28 +53,28 @@ func TestUpstreamAttemptMetrics(t *testing.T) {
 
 	text := g.metricsText()
 	expectMetricLines(t, text,
-		`kaiak_upstream_attempts_total{backend="local",deployment_model="open",outcome="success"} 1`,
-		`kaiak_upstream_attempts_total{backend="local",deployment_model="pair-a",outcome="server_error"} 1`,
-		`kaiak_upstream_attempts_total{backend="local-b",deployment_model="pair-b",outcome="success"} 1`,
-		`kaiak_upstream_attempts_total{backend="local",deployment_model="open",outcome="client_error"} 1`,
-		`kaiak_upstream_attempts_total{backend="local",deployment_model="open",outcome="broke_off"} 1`,
-		`kaiak_upstream_attempts_total{backend="local",deployment_model="pair-a",outcome="rate_limited"} 1`,
-		`kaiak_upstream_attempts_total{backend="local-b",deployment_model="pair-b",outcome="rate_limited"} 1`,
-		`kaiak_upstream_attempts_total{backend="down",deployment_model="down",outcome="unavailable"} 1`,
-		`kaiak_upstream_attempt_duration_seconds_count{backend="local"} 5`,
-		`kaiak_upstream_attempt_duration_seconds_count{backend="local-b"} 2`,
-		`kaiak_upstream_attempt_duration_seconds_count{backend="down"} 1`,
-		`kaiak_retries_total{model="pair",backend="local",reason="server_error"} 1`,
-		`kaiak_retries_total{model="down",backend="down",reason="unavailable"} 0`,
+		`kaiak_upstream_attempts_total{kaiak_backend_id="local",kaiak_deployment_model="open",kaiak_attempt_outcome="success"} 1`,
+		`kaiak_upstream_attempts_total{kaiak_backend_id="local",kaiak_deployment_model="pair-a",kaiak_attempt_outcome="server_error"} 1`,
+		`kaiak_upstream_attempts_total{kaiak_backend_id="local-b",kaiak_deployment_model="pair-b",kaiak_attempt_outcome="success"} 1`,
+		`kaiak_upstream_attempts_total{kaiak_backend_id="local",kaiak_deployment_model="open",kaiak_attempt_outcome="client_error"} 1`,
+		`kaiak_upstream_attempts_total{kaiak_backend_id="local",kaiak_deployment_model="open",kaiak_attempt_outcome="broke_off"} 1`,
+		`kaiak_upstream_attempts_total{kaiak_backend_id="local",kaiak_deployment_model="pair-a",kaiak_attempt_outcome="rate_limited"} 1`,
+		`kaiak_upstream_attempts_total{kaiak_backend_id="local-b",kaiak_deployment_model="pair-b",kaiak_attempt_outcome="rate_limited"} 1`,
+		`kaiak_upstream_attempts_total{kaiak_backend_id="down",kaiak_deployment_model="down",kaiak_attempt_outcome="unavailable"} 1`,
+		`kaiak_upstream_attempt_duration_seconds_count{kaiak_backend_id="local"} 5`,
+		`kaiak_upstream_attempt_duration_seconds_count{kaiak_backend_id="local-b"} 2`,
+		`kaiak_upstream_attempt_duration_seconds_count{kaiak_backend_id="down"} 1`,
+		`kaiak_retries_total{gen_ai_request_model="pair",kaiak_backend_id="local",kaiak_attempt_outcome="server_error"} 1`,
+		`kaiak_retries_total{gen_ai_request_model="down",kaiak_backend_id="down",kaiak_attempt_outcome="unavailable"} 0`,
 	)
 	// pair's first attempt went to either deployment (ties take turns).
-	if !strings.Contains(text, `kaiak_retries_total{model="pair",backend="local",reason="rate_limited"} 1`+"\n") &&
-		!strings.Contains(text, `kaiak_retries_total{model="pair",backend="local-b",reason="rate_limited"} 1`+"\n") {
+	if !strings.Contains(text, `kaiak_retries_total{gen_ai_request_model="pair",kaiak_backend_id="local",kaiak_attempt_outcome="rate_limited"} 1`+"\n") &&
+		!strings.Contains(text, `kaiak_retries_total{gen_ai_request_model="pair",kaiak_backend_id="local-b",kaiak_attempt_outcome="rate_limited"} 1`+"\n") {
 		t.Error("no retry of pair counted under the backend that answered 429")
 	}
 	// The stream's attempt lasted to the end of its relay, past 100 ms: at most the
 	// four other attempts on local fall at or under 0.1 s.
-	if !strings.Contains(text, `kaiak_upstream_attempt_duration_seconds_bucket{backend="local",le="0.1"} 4`+"\n") {
+	if !strings.Contains(text, `kaiak_upstream_attempt_duration_seconds_bucket{kaiak_backend_id="local",le="0.1"} 4`+"\n") {
 		t.Errorf("the stream's attempt was not timed to the end of its relay:\n%s", text)
 	}
 }

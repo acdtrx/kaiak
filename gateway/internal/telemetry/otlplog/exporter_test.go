@@ -134,16 +134,10 @@ func (h *harness) flush(t *testing.T) {
 	}
 }
 
-// counts are an exporter's counts, compared whole.
-type counts struct {
-	Exported, Failed, Dropped uint64
-}
-
-func wantCounts(t *testing.T, e *Exporter, want counts) {
+// wantCounts compares an exporter's counts whole.
+func wantCounts(t *testing.T, e *Exporter, want Counts) {
 	t.Helper()
-	var got counts
-	got.Exported, got.Failed, got.Dropped = e.Counts()
-	if got != want {
+	if got := e.Counts(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("counts %+v, want %+v", got, want)
 	}
 }
@@ -210,7 +204,7 @@ func TestBatchBySize(t *testing.T) {
 		t.Fatalf("second batch %q, want the one left", second.Messages())
 	}
 	<-done
-	wantCounts(t, h.e, counts{Exported: batchSize + 1})
+	wantCounts(t, h.e, Counts{Handed: batchSize + 1, Exported: batchSize + 1})
 }
 
 func TestBatchByInterval(t *testing.T) {
@@ -222,7 +216,7 @@ func TestBatchByInterval(t *testing.T) {
 		t.Fatalf("batch %q, want m0..m2", r.Messages())
 	}
 	h.flush(t)
-	wantCounts(t, h.e, counts{Exported: 3})
+	wantCounts(t, h.e, Counts{Handed: 3, Exported: 3})
 	if r := h.reports.reports(t); len(r) != 0 {
 		t.Errorf("reports %v, want none: the batch was delivered", r)
 	}
@@ -242,7 +236,7 @@ func TestNoRetryOnOtherStatuses(t *testing.T) {
 			if n := col.Requests(); n != 1 {
 				t.Fatalf("%d requests, want 1", n)
 			}
-			wantCounts(t, h.e, counts{Failed: 3})
+			wantCounts(t, h.e, Counts{Handed: 3, Failed: map[string]uint64{strconv.Itoa(status): 3}})
 			reports := h.reports.reports(t)
 			if len(reports) != 1 {
 				t.Fatalf("reports %v, want 1", reports)
@@ -259,15 +253,17 @@ func TestNoRetryOnOtherStatuses(t *testing.T) {
 
 func TestPartialSuccessCountsRejectedAsFailed(t *testing.T) {
 	for _, tc := range []struct {
-		name, body       string
-		exported, failed uint64
+		name, body string
+		exported   uint64
+		failed     map[string]uint64
 	}{
-		{"rejected as a string", `{"partialSuccess":{"rejectedLogRecords":"2","errorMessage":"too large"}}`, 3, 2},
-		{"rejected as a number", `{"partialSuccess":{"rejectedLogRecords":1}}`, 4, 1},
-		{"more rejected than sent", `{"partialSuccess":{"rejectedLogRecords":"9"}}`, 0, 5},
-		{"a warning only", `{"partialSuccess":{"errorMessage":"deprecated field"}}`, 5, 0},
-		{"no body", ``, 5, 0},
-		{"not JSON: unreadable", `ok`, 0, 5},
+		{"rejected as a string", `{"partialSuccess":{"rejectedLogRecords":"2","errorMessage":"too large"}}`, 3,
+			map[string]uint64{"rejected": 2}},
+		{"rejected as a number", `{"partialSuccess":{"rejectedLogRecords":1}}`, 4, map[string]uint64{"rejected": 1}},
+		{"more rejected than sent", `{"partialSuccess":{"rejectedLogRecords":"9"}}`, 0, map[string]uint64{"rejected": 5}},
+		{"a warning only", `{"partialSuccess":{"errorMessage":"deprecated field"}}`, 5, nil},
+		{"no body", ``, 5, nil},
+		{"not JSON: unreadable", `ok`, 0, map[string]uint64{"malformed_response": 5}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			col := fakeotlp.New(t, func(w http.ResponseWriter, _ *http.Request, _ int) {
@@ -279,7 +275,7 @@ func TestPartialSuccessCountsRejectedAsFailed(t *testing.T) {
 			if n := col.Requests(); n != 1 {
 				t.Fatalf("%d requests, want 1: a partial success is not retried", n)
 			}
-			wantCounts(t, h.e, counts{Exported: tc.exported, Failed: tc.failed})
+			wantCounts(t, h.e, Counts{Handed: 5, Exported: tc.exported, Failed: tc.failed})
 		})
 	}
 }
@@ -302,12 +298,12 @@ func TestFullQueueDropsTheNewest(t *testing.T) {
 	col := fakeotlp.New(t, nil)
 	h := newHarness(t, col, nil, options{capacity: 4})
 	h.logN(10, "m")
-	wantCounts(t, h.e, counts{Dropped: 6})
+	wantCounts(t, h.e, Counts{QueueFull: 6})
 	h.flush(t)
 	if r := col.Next(t); !reflect.DeepEqual(r.Messages(), messages("m", 0, 4)) {
 		t.Fatalf("sent %q, want the oldest four", r.Messages())
 	}
-	wantCounts(t, h.e, counts{Exported: 4, Dropped: 6})
+	wantCounts(t, h.e, Counts{Handed: 4, Exported: 4, QueueFull: 6})
 	reports := h.reports.reports(t)
 	if len(reports) != 1 || reports[0]["kaiak.log_export.dropped"] != float64(6) || reports[0]["kaiak.log_export.failed"] != float64(0) {
 		t.Fatalf("reports %v, want one with 6 dropped", reports)
@@ -351,7 +347,7 @@ func TestStalledCollectorNeverBlocksHandle(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("logging blocked behind a stalled collector")
 	}
-	wantCounts(t, h.e, counts{Dropped: 996})
+	wantCounts(t, h.e, Counts{Handed: 4, QueueFull: 996})
 }
 
 func TestForceFlushDeliversWhatIsQueued(t *testing.T) {
@@ -359,7 +355,7 @@ func TestForceFlushDeliversWhatIsQueued(t *testing.T) {
 	h := newHarness(t, col, nil, options{})
 	h.logN(600, "m")
 	h.flush(t)
-	wantCounts(t, h.e, counts{Exported: 600})
+	wantCounts(t, h.e, Counts{Handed: 600, Exported: 600})
 	var got []string
 	for len(got) < 600 {
 		got = append(got, col.Next(t).Messages()...)
@@ -383,7 +379,8 @@ func TestForceFlushEndsWithItsDeadlineAndShutdownDrops(t *testing.T) {
 		t.Fatalf("ForceFlush = %v, want the deadline", err)
 	}
 	h.e.Shutdown(context.Background())
-	wantCounts(t, h.e, counts{Failed: 3, Dropped: 5})
+	// The export Shutdown cut ran out of time at exit: timeout.
+	wantCounts(t, h.e, Counts{Handed: 3, Failed: map[string]uint64{"timeout": 3}, Shutdown: 5})
 	// The report at exit is never held back: the drops at Shutdown get their own
 	// line within the minute of the cut export's.
 	reports := h.reports.reports(t)
@@ -404,7 +401,7 @@ func TestAfterShutdown(t *testing.T) {
 	if !strings.Contains(next.String(), "after shutdown") {
 		t.Fatal("the next handler missed a record logged after Shutdown")
 	}
-	wantCounts(t, h.e, counts{Dropped: 1})
+	wantCounts(t, h.e, Counts{Shutdown: 1})
 	if err := h.e.ForceFlush(context.Background()); !errors.Is(err, errShutdown) {
 		t.Fatalf("ForceFlush after Shutdown = %v, want errShutdown", err)
 	}
@@ -513,7 +510,7 @@ func TestTransportErrorTextIsNeverReported(t *testing.T) {
 	h := newHarness(t, col, map[string]string{"OTEL_EXPORTER_OTLP_LOGS_TIMEOUT": "100"}, options{})
 	h.logN(1, "m")
 	h.flush(t)
-	wantCounts(t, h.e, counts{Failed: 1})
+	wantCounts(t, h.e, Counts{Handed: 1, Failed: map[string]uint64{"malformed_response": 1}})
 	reports := h.reports.reports(t)
 	if len(reports) != 1 {
 		t.Fatalf("reports %v, want 1", reports)

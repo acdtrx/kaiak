@@ -325,7 +325,7 @@ context length. `go -C scripts/live run . -h` lists them all.
 | `rate-limit` | the second `live-rpm` request in a minute (with the metered key) gets `429 rate_limit_exceeded` with `Retry-After` and `x-ratelimit-*-requests` headers — before reaching the backend (through Messages on Anthropic and Foundry, in Anthropic's shape: `rate_limit_error`) |
 | `metrics` | the admin `/metrics` shows the `live-chat` requests, their `tokens_out` and cost, the rate-limit refusal, and a request on each of the `messages` and `responses` endpoints the backend serves |
 | `spread` | two backends: six requests one after another are served by both (`kaiak.backend.id` on each log line) — tied deployments take turns |
-| `capacity` | two backends with `-max-in-flight N`: 2N+2 requests at once are all answered — those over the cap wait in the gateway's queue (the count queued is reported, not required) — and `kaiak_backend_max_in_flight` shows N for each |
+| `capacity` | two backends with `-max-in-flight N`: 2N+2 requests at once are all answered — those over the cap wait in the gateway's queue (the count queued is reported, not required) — and `kaiak_backend_active_requests_limit` shows N for each |
 | `failover` | two backends with `-check-failover`: see the failover procedure below |
 | `gateway-exit` | (reported only on failure) SIGTERM drained the gateway and it exited 0 |
 
@@ -387,8 +387,8 @@ kit sends a short chat every second the whole time; each must answer `200`. It t
 1. waits for `live-2`'s circuit to open — requests routed to it while it is down are
    retried on `live` (connect refused), and the second failure takes it out of
    rotation;
-2. checks `kaiak_circuit_open{backend="live-2",…}` is 1 and that two more requests go
-   straight to `live` in one attempt;
+2. checks `kaiak_circuit_state{kaiak_backend_id="live-2",…,kaiak_circuit_state="open"}`
+   is 1 and that two more requests go straight to `live` in one attempt;
 3. prints `>>>>  Start the second backend (…) again`: run the same `vllm serve` command
    again. vLLM opens its port only once the model is loaded; the gateway's probe
    (`GET /v1/models`, every second) then makes the circuit half-open;

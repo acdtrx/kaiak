@@ -35,7 +35,7 @@ func TestBackendErrorBodies(t *testing.T) {
 	if strings.Contains(line, "CUDA") || strings.Contains(line, "gpu-7") || strings.Contains(line, "upstream_body") {
 		t.Errorf("the backend's message reached the log: %.3000s", line)
 	}
-	expectMetricLines(t, g.metricsText(), `kaiak_errors_total{class="upstream_error"} 1`)
+	expectMetricLines(t, g.metricsText(), `kaiak_errors_total{kaiak_error_class="upstream_error"} 1`)
 
 	// The caller's 400 passes as the backend sent it.
 	caller := `{"error":{"message":"This model's maximum context length is 8192 tokens.","type":"invalid_request_error","param":"messages","code":"context_length_exceeded"}}`
@@ -110,7 +110,7 @@ func TestErrorAnswerBrokenBeforeItsBodyIsAnsweredByItsStatus(t *testing.T) {
 			if r.Units[config.UnitTokensIn] != 0 || r.CostNanoUSD != 0 || r.Estimated || r.Partial {
 				t.Errorf("record %+v, want an answer: no units, no cost, not estimated", r)
 			}
-			if !strings.Contains(g.metricsText(), `outcome="`+c.outcome+`"} 1`) {
+			if !strings.Contains(g.metricsText(), `kaiak_attempt_outcome="`+c.outcome+`"} 1`) {
 				t.Errorf("no attempt counted as %s:\n%s", c.outcome, g.metricsText())
 			}
 		})

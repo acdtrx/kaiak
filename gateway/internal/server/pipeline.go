@@ -19,8 +19,11 @@ import (
 // what the pipeline decides by endpoint. A request refused before it matched one has
 // none (nil).
 type endpoint struct {
-	// name is the endpoint's metric label value.
+	// name is the endpoint's name on log lines (kaiak.endpoint).
 	name string
+	// path is a model endpoint's route as the client API documents it; a body
+	// endpoint's is its API's (route).
+	path string
 	// operation is the endpoint's gen_ai.operation.name on the log line: the GenAI
 	// convention's well-known value — a chat operation in any of its APIs is "chat" —
 	// and "" for the model and token-counting endpoints, which have none.
@@ -69,14 +72,18 @@ var bodyEndpoints = []*endpoint{
 // Anthropic's shape when asked for it: Anthropic's SDKs send anthropic-version on
 // every request, and OpenAI's never do.
 var (
-	endpointListModels = &endpoint{name: "list_models", anthropicOnHeader: true}
-	endpointGetModel   = &endpoint{name: "get_model", anthropicOnHeader: true}
-	endpointModelProps = &endpoint{name: "model_props"}
+	endpointListModels = &endpoint{name: "list_models", path: "/v1/models", anthropicOnHeader: true}
+	endpointGetModel   = &endpoint{name: "get_model", path: "/v1/models/{model}", anthropicOnHeader: true}
+	endpointModelProps = &endpoint{name: "model_props", path: "/v1/models/{model}/props"}
 )
 
-// route is a body endpoint's route, as the client API documents it.
+// route is the endpoint's route as the client API documents it — never a request's
+// path: {model} stays literal. It is the request duration's http.route.
 func (e *endpoint) route() string {
-	return "/v1/" + e.api.Path()
+	if e.body {
+		return "/v1/" + e.api.Path()
+	}
+	return e.path
 }
 
 // answersAnthropic reports whether a request r to e is answered in Anthropic's shape —
