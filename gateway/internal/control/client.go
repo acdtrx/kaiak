@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"kaiak/internal/config"
+	"kaiak/internal/limits"
 	"kaiak/internal/logattr"
 	"kaiak/internal/schemacheck"
 )
@@ -107,8 +108,15 @@ type Options struct {
 	// dead and reconnected.
 	IdleTimeout time.Duration
 	// OnTotals receives what each totals event gives, one call at a time, in the order
-	// the stream delivered them; nil drops them.
-	OnTotals func(TotalsUpdate)
+	// the stream delivered them; nil drops them. Both parts come in one call, so the
+	// consumer can adopt the totals and stop counting what they include in one step:
+	// totals are complete for the stream's first since it connected (listing every
+	// window with usage; the others list only the windows that changed), and counted
+	// is the newest usage generation (Record) of the batches held that the message's
+	// counted_through covers — each at or below its epoch's entry: the totals include
+	// them, since every message is a consistent snapshot. counted is 0 when the
+	// message covers none.
+	OnTotals func(totals limits.Totals, counted uint64)
 	// BatchInterval seals the filling usage batch this often; BatchMaxRecords seals it
 	// once it holds that many records (at most MaxBatchRecords).
 	BatchInterval   time.Duration
@@ -243,6 +251,15 @@ func (c *Client) Contact() (connected bool, last time.Time) {
 }
 
 func (c *Client) touch() { c.lastContact.Store(time.Now().UnixNano()) }
+
+// LimitsContact is the client's contact as the limiter decides the outage on it
+// (docs/specs/GATEWAY.md, Limits → Outage refusal): the stream's contact, and the
+// usage the control plane has not answered or not yet shown counted.
+func (c *Client) LimitsContact() limits.Contact {
+	connected, last := c.Contact()
+	waiting, uncounted := c.usage.waiting()
+	return limits.Contact{Connected: connected, Last: last, UsageWaitingSince: waiting, UsageUncountedSince: uncounted}
+}
 
 // AppliedConfigHash is the hash of the config in force from the control plane; false
 // before one is applied, and while the seed is.
@@ -384,9 +401,9 @@ func (c *Client) Run(ctx context.Context) {
 // plane keeps its stream in order (CONTROL-PROTOCOL.md, Config stream → Order).
 // complete: the stream's first totals since it connected.
 func (c *Client) takeTotals(t Totals, complete bool) {
-	update := TotalsUpdate{Totals: t, Complete: complete, Counted: c.usage.countedGeneration(t.CountedThrough)}
+	counted := c.usage.countedGeneration(t.CountedThrough)
 	if c.opts.OnTotals != nil {
-		c.opts.OnTotals(update)
+		c.opts.OnTotals(limits.Totals{LiveGateways: t.LiveGateways, Complete: complete, Windows: t.Windows}, counted)
 	}
 }
 

@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"kaiak/internal/accounting"
-	"kaiak/internal/config"
+	"kaiak/internal/limits"
 )
 
 // The messages, following protocol/schema/. Collections a message requires (Windows,
@@ -39,43 +39,15 @@ type Totals struct {
 	// has counted in each epoch it still keeps a cursor for, one per epoch; empty
 	// before its first.
 	CountedThrough []BatchPosition `json:"counted_through"`
-	Windows        []TotalsWindow  `json:"windows"`
+	// Windows are the scopes' current windows, one per scope and type, whether or not
+	// the scope has a limit of that type: the limiter's pushed windows as sent.
+	Windows []limits.PushedWindow `json:"windows"`
 }
 
 // BatchPosition is a batch within its instance's epochs.
 type BatchPosition struct {
 	Epoch    string `json:"epoch"`
 	Sequence int64  `json:"sequence"`
-}
-
-// TotalsWindow is one scope's current window for one type: its group (or global) and
-// type, whether or not the scope has a limit of that type.
-type TotalsWindow struct {
-	// Group is the group the limit belongs to; "" for a global limit.
-	Group string           `json:"group,omitempty"`
-	Type  config.LimitType `json:"type"`
-	// WindowStart is the start of the type's window (the top of an hour, the first of a
-	// month), UTC, by the control plane's clock.
-	WindowStart time.Time `json:"window_start"`
-	// Used counts tokens (tokens_in + tokens_cache_write + tokens_out; cache reads do
-	// not count) or nano-USD. It travels as a string of digits: a JavaScript number is exact only
-	// up to 2^53.
-	Used int64 `json:"used,string"`
-}
-
-// TotalsUpdate is what one totals event gives the totals consumer. Both parts come in
-// one call, so the consumer can adopt the totals and stop counting what they include
-// in one step.
-type TotalsUpdate struct {
-	Totals Totals
-	// Complete: the stream's first totals since it connected, listing every window
-	// with usage; the others list only the windows that changed.
-	Complete bool
-	// Counted is the newest usage generation (Client.Record) of the batches held that
-	// the message's counted_through covers — each at or below its epoch's entry: the
-	// totals include them, since every message is a consistent snapshot. 0 when the
-	// message covers none.
-	Counted uint64
 }
 
 // BatchID identifies a usage batch; the control plane counts each one once.

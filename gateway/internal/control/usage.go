@@ -108,7 +108,7 @@ type usageSender struct {
 	mu sync.Mutex
 	// generation is the filling batch's usage generation: the process's first batch
 	// takes 1, one more per sealed batch. A totals message showing a batch counted
-	// names its generation to the consumer (TotalsUpdate.Counted).
+	// names its generation to the consumer (Options.OnTotals).
 	generation    uint64
 	filling       []accounting.UsageRecord
 	sealed        []sealedBatch // sealed, not yet checked and queued: no batch ID yet
@@ -272,26 +272,17 @@ func covers(through map[string]int64, id BatchID) bool {
 	return ok && id.Sequence <= last
 }
 
-// UsageWaitingSince is when the usage batches not yet answered started waiting for
-// the control plane's next answer — since the first was sealed, or since the last
-// answer; zero while none waits. A config stream that stays open while this grows
-// is a control plane that no longer takes usage (docs/specs/GATEWAY.md, Limits →
-// Outage refusal).
-func (c *Client) UsageWaitingSince() time.Time {
-	c.usage.mu.Lock()
-	defer c.usage.mu.Unlock()
-	return c.usage.waitingSince
-}
-
-// UsageUncountedSince is when the oldest batch acknowledged but not yet shown counted
-// by applied totals was acknowledged; zero while none waits. A config stream that
-// stays open while this grows brings no totals that count this gateway's usage: its
-// bases are frozen (docs/specs/GATEWAY.md, Limits → Usage acks count for money
-// limits).
-func (c *Client) UsageUncountedSince() time.Time {
-	c.usage.mu.Lock()
-	defer c.usage.mu.Unlock()
-	return c.usage.uncountedSince
+// waiting is when the usage batches not yet answered started waiting for the control
+// plane's next answer — since the first was sealed, or since the last answer — and
+// when the oldest batch acknowledged but not yet shown counted by applied totals was
+// acknowledged; each zero while none waits. A config stream that stays open while
+// the first grows is a control plane that no longer takes usage; while the second
+// grows, one whose totals no longer count this gateway's usage: its bases are frozen
+// (docs/specs/GATEWAY.md, Limits → Outage refusal; Usage acks count for money limits).
+func (u *usageSender) waiting() (since, uncountedSince time.Time) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.waitingSince, u.uncountedSince
 }
 
 // countedGeneration is the newest usage generation among the batches a totals event

@@ -34,14 +34,20 @@ type Totals struct {
 }
 
 // PushedWindow is one scope's current window of one type as the control plane counts
-// it, identified as a reload identifies a count.
+// it, identified as a reload identifies a count. It is the totals message's window as
+// sent (CONTROL-PROTOCOL.md, Messages → Totals): the control client decodes the
+// message straight into it, whether or not the scope has a limit of that type.
 type PushedWindow struct {
 	// Group is the group the count belongs to; "" for global.
-	Group string
-	Type  config.LimitType
-	Start time.Time
-	// Used counts tokens or nano-USD, as the counter does.
-	Used int64
+	Group string           `json:"group,omitempty"`
+	Type  config.LimitType `json:"type"`
+	// Start is the start of the type's window (the top of an hour, the first of a
+	// month), UTC, by the control plane's clock.
+	Start time.Time `json:"window_start"`
+	// Used counts tokens (tokens_in + tokens_cache_write + tokens_out; cache reads do
+	// not count) or nano-USD, as the counter does. It travels as a string of digits: a
+	// JavaScript number is exact only up to 2^53.
+	Used int64 `json:"used,string"`
 }
 
 // TakeTotals takes one totals message, in one step under the limiter's lock: its

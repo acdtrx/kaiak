@@ -209,7 +209,7 @@ svg .band { stroke: none; }
   <line x1="828" y1="465" x2="792" y2="465" class="edge" marker-end="url(#g-a)"/>
   <text x="810" y="432" text-anchor="middle" class="l">scrape</text>
 </svg>
-<figcaption>The stage packages never call each other's I/O: <code>server</code> drives them in order. <code>provider</code> and <code>control</code> are capability fences — nothing else opens a socket to a backend or to the control plane. <code>cmd/kaiak</code> (not drawn) wires the edges: it converts the control client's totals for <code>limits</code>, hooks routing changes into status reports, and hands every applied config to routing and the provider's connection pools.</figcaption>
+<figcaption>The stage packages never call each other's I/O: <code>server</code> drives them in order. <code>provider</code> and <code>control</code> are capability fences — nothing else opens a socket to a backend or to the control plane. <code>cmd/kaiak</code> (not drawn) wires the edges: it hands the control client's totals and contact to <code>limits</code> (in the limiter's own types: <code>control</code> imports <code>limits</code>, never the reverse), hooks routing changes into status reports, and hands every applied config to routing and the provider's connection pools.</figcaption>
 </figure>
 
 <div class="table-wrap">

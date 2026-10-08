@@ -13,6 +13,7 @@ import (
 
 	"kaiak/internal/accounting"
 	"kaiak/internal/fakecontrol"
+	"kaiak/internal/limits"
 )
 
 // scriptedTotals is a totals message with the given live-gateway count.
@@ -34,7 +35,7 @@ func TestEveryTotalsEventIsAppliedInStreamOrder(t *testing.T) {
 		st.Send("totals", scriptedTotals(live+1))
 	}
 	for live := range int64(3) {
-		if u := h.nextTotals(); u.Totals.LiveGateways != live+1 || u.Counted != 0 {
+		if u := h.nextTotals(); u.totals.LiveGateways != live+1 || u.counted != 0 {
 			t.Fatalf("update %+v, want the totals with live %d", u, live+1)
 		}
 	}
@@ -64,12 +65,12 @@ func TestAckedBatchLeavesWithTheTotalsThatCountIt(t *testing.T) {
 	}
 
 	h.cp.PushCurrentTotals()
-	if u := h.nextTotals(); u.Counted != 1 || len(u.Totals.CountedThrough) != 1 || u.Totals.CountedThrough[0].Sequence != 1 {
-		t.Fatalf("push update %+v, want batch 1's generation counted", u)
+	if u, through := h.nextTotals(), lastCounted(c); u.counted != 1 || len(through) != 1 || through[c.usage.epoch] != 1 {
+		t.Fatalf("push update %+v counting through %v, want batch 1's generation counted", u, through)
 	}
 	// Retired once: the next push counts nothing new.
 	h.cp.PushCurrentTotals()
-	if u := h.nextTotals(); u.Counted != 0 {
+	if u := h.nextTotals(); u.counted != 0 {
 		t.Errorf("second push update %+v, want nothing counted", u)
 	}
 }
@@ -90,9 +91,9 @@ func TestPushCountingTheOutstandingBatch(t *testing.T) {
 	h.wantUsage(fakecontrol.OutcomeAckDropped, 1, 1)
 
 	h.cp.PushCurrentTotals()
-	u := h.nextTotals()
-	if u.Counted != 1 || len(u.Totals.CountedThrough) != 1 || u.Totals.CountedThrough[0].Sequence != 1 {
-		t.Fatalf("push update %+v, want totals counting through batch 1 and generation 1 counted", u)
+	u, through := h.nextTotals(), lastCounted(c)
+	if u.counted != 1 || len(through) != 1 || through[c.usage.epoch] != 1 {
+		t.Fatalf("push update %+v counting through %v, want totals counting through batch 1 and generation 1 counted", u, through)
 	}
 
 	h.cp.SetUsageFault(nil)
@@ -100,11 +101,11 @@ func TestPushCountingTheOutstandingBatch(t *testing.T) {
 	}
 	for obs.next(t) != BatchAcked {
 	}
-	if got := c.UsageUncountedSince(); !got.IsZero() {
+	if got := c.LimitsContact().UsageUncountedSince; !got.IsZero() {
 		t.Errorf("the covered batch waits to be shown counted since %v", got)
 	}
 	h.cp.PushCurrentTotals()
-	if u := h.nextTotals(); u.Counted != 0 {
+	if u := h.nextTotals(); u.counted != 0 {
 		t.Errorf("update %+v after the ack, want nothing newly counted", u)
 	}
 	if n := len(h.cp.CountedRecords()); n != 1 {
@@ -123,7 +124,7 @@ func TestCountedThroughOfAnotherEpoch(t *testing.T) {
 	h.wantUsage(fakecontrol.OutcomeRefused, 1, 1)
 	st.Send("totals", []byte(`{"live_gateways":1,`+
 		`"counted_through":[{"epoch":"00000000000000000000000000000001","sequence":9}],"windows":[]}`))
-	if u := h.nextTotals(); u.Counted != 0 {
+	if u := h.nextTotals(); u.counted != 0 {
 		t.Errorf("update %+v, want nothing counted", u)
 	}
 }
@@ -209,7 +210,7 @@ func TestAckHandOffNeverHidesABatchFromTotals(t *testing.T) {
 		e := queuedBatch{id: batch.Batch, generation: 1, records: batch.Records}
 		u := &usageSender{queue: []queuedBatch{e}, queuedRecords: 1, changed: make(chan struct{})}
 		var counted atomic.Uint64
-		c := &Client{usage: u, opts: Options{OnTotals: func(update TotalsUpdate) { counted.Store(update.Counted) }}}
+		c := &Client{usage: u, opts: Options{OnTotals: func(_ limits.Totals, generation uint64) { counted.Store(generation) }}}
 		start := make(chan struct{})
 		var acked atomic.Bool
 		var both sync.WaitGroup
@@ -279,11 +280,11 @@ func TestAnAcknowledgedBatchWaitsToBeShownCounted(t *testing.T) {
 	if r := obs.next(t); r != BatchAcked {
 		t.Fatalf("result %s, want %s", r, BatchAcked)
 	}
-	since := c.UsageUncountedSince()
+	since := c.LimitsContact().UsageUncountedSince
 	if since.Before(before) {
 		t.Fatalf("waiting to be shown counted since %v after the ack, want from the ack", since)
 	}
-	if !c.UsageWaitingSince().IsZero() {
+	if !c.LimitsContact().UsageWaitingSince.IsZero() {
 		t.Error("an acknowledged batch still waits for an answer")
 	}
 	c.Record(testRecord(2))
@@ -291,13 +292,13 @@ func TestAnAcknowledgedBatchWaitsToBeShownCounted(t *testing.T) {
 	if r := obs.next(t); r != BatchAcked {
 		t.Fatalf("result %s, want %s", r, BatchAcked)
 	}
-	if got := c.UsageUncountedSince(); !got.Equal(since) {
+	if got := c.LimitsContact().UsageUncountedSince; !got.Equal(since) {
 		t.Errorf("a later ack moved the wait to %v, want it kept at %v", got, since)
 	}
 	st.Send("totals", fmt.Appendf(nil, `{"live_gateways":1,"counted_through":[{"epoch":%q,"sequence":2}],"windows":[]}`,
 		first.Batch.Epoch))
 	h.nextTotals()
-	if got := c.UsageUncountedSince(); !got.IsZero() {
+	if got := c.LimitsContact().UsageUncountedSince; !got.IsZero() {
 		t.Errorf("still waiting since %v with every batch shown counted", got)
 	}
 }

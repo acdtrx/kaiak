@@ -29,15 +29,17 @@ type controlledGateway struct {
 	*testGateway
 	cp     *fakecontrol.Server
 	client *control.Client
-	// totals receives every totals update the client hands the limiter.
-	totals chan control.TotalsUpdate
+	// counted receives the usage generation every totals message the client hands
+	// the limiter shows counted (0: none).
+	counted chan uint64
 }
 
 const controlToken = "server-test-token"
 
 // newControlledGateway builds the gateway with the test config (limits edited in by
 // edit), a control client sealing a batch every maxRecords records, and runs the
-// client until the test ends.
+// client until the test ends. The client and the limiter are wired as the binary
+// wires them: the client's limits contact and its totals.
 func newControlledGateway(t *testing.T, maxRecords int, edit func(doc string) string) *controlledGateway {
 	t.Helper()
 	cp := fakecontrol.New(controlToken)
@@ -45,13 +47,10 @@ func newControlledGateway(t *testing.T, maxRecords int, edit func(doc string) st
 	// Every counted batch pushes the totals that count it, as kaiak-control does.
 	cp.PushTotalsOnChange()
 	var client *control.Client
-	totals := make(chan control.TotalsUpdate, 64)
+	counted := make(chan uint64, 64)
 	g := buildTestGateway(t, testOptions{edit: edit,
 		limiter: func(h *config.Holder) *limits.Limiter {
-			return limits.NewShared(h, time.Now, func() limits.Contact {
-				connected, last := client.Contact()
-				return limits.Contact{Connected: connected, Last: last, UsageWaitingSince: client.UsageWaitingSince()}
-			}, nil)
+			return limits.NewShared(h, time.Now, func() limits.Contact { return client.LimitsContact() }, nil)
 		},
 		attach: func(doc string, logger *slog.Logger, limiter *limits.Limiter) accounting.Batcher {
 			cp.Publish([]byte(doc))
@@ -62,9 +61,9 @@ func newControlledGateway(t *testing.T, maxRecords int, edit func(doc string) st
 			client = control.New(control.Options{URL: u, Token: controlToken, Instance: "gw-test", Applier: applier,
 				Logger: logger, BatchInterval: time.Hour, BatchMaxRecords: maxRecords,
 				BackoffBase: 10 * time.Millisecond, BackoffCap: 50 * time.Millisecond,
-				OnTotals: func(up control.TotalsUpdate) {
-					limiter.TakeTotals(testLimitsTotals(up.Totals), up.Counted)
-					totals <- up
+				OnTotals: func(totals limits.Totals, generation uint64) {
+					limiter.TakeTotals(totals, generation)
+					counted <- generation
 				}})
 			ctx, cancel := context.WithCancel(context.Background())
 			var running sync.WaitGroup
@@ -77,29 +76,18 @@ func newControlledGateway(t *testing.T, maxRecords int, edit func(doc string) st
 			}
 			return client
 		}})
-	return &controlledGateway{testGateway: g, cp: cp, client: client, totals: totals}
+	return &controlledGateway{testGateway: g, cp: cp, client: client, counted: counted}
 }
 
-// testLimitsTotals converts the control plane's totals for the limiter, as the
-// binary's wiring does.
-func testLimitsTotals(t control.Totals) limits.Totals {
-	out := limits.Totals{LiveGateways: t.LiveGateways}
-	for _, w := range t.Windows {
-		out.Windows = append(out.Windows, limits.PushedWindow{Group: w.Group, Type: w.Type,
-			Start: w.WindowStart, Used: w.Used})
-	}
-	return out
-}
-
-// nextCounted waits for a totals update that shows a batch counted.
-func (g *controlledGateway) nextCounted(t *testing.T) control.TotalsUpdate {
+// nextCounted waits for a totals message that shows a batch counted.
+func (g *controlledGateway) nextCounted(t *testing.T) {
 	t.Helper()
 	timeout := time.After(10 * time.Second)
 	for {
 		select {
-		case up := <-g.totals:
-			if up.Counted != 0 {
-				return up
+		case generation := <-g.counted:
+			if generation != 0 {
+				return
 			}
 		case <-timeout:
 			t.Fatal("no totals showing a batch counted")
@@ -142,6 +130,25 @@ func TestRecordFillingABatchIsCountedOnce(t *testing.T) {
 	if w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey, body: chatBody}); w.Code != 200 {
 		t.Errorf("next request: status %d: %s", w.Code, w.Body.String())
 	}
+}
+
+// The first totals after the stream reconnects are complete: a window they do not
+// list has used nothing in the control plane's current window, so its pushed base goes
+// back to 0, where a changes-only message would have kept it.
+func TestCompleteTotalsResetAPushedWindowTheyDoNotList(t *testing.T) {
+	g := newControlledGateway(t, 1, workloadLimits(t, `[{ "type": "tokens_per_hour", "value": 1000 }]`))
+	hourUsed := func() int64 { return counterUsed(t, g.testGateway, "eval", config.LimitTokensPerHour) }
+	g.cp.SetWindows(hourWindow(600))
+	waitFor(t, func() bool { return hourUsed() == 600 })
+
+	// The control plane goes away and comes back without the window. The stream is
+	// gone before the window is: no changes-only message lists it at 0.
+	g.cp.SetDown(true)
+	g.cp.CloseStreams()
+	waitFor(t, func() bool { connected, _ := g.client.Contact(); return !connected })
+	g.cp.SetWindows([]byte("[]"))
+	g.cp.SetDown(false)
+	waitFor(t, func() bool { return hourUsed() == 0 })
 }
 
 // H5: a backend reporting 2^53 tokens. The record is clamped to the protocol's bound

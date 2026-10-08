@@ -18,7 +18,6 @@ import (
 	"kaiak/internal/control"
 	"kaiak/internal/fakecontrol"
 	"kaiak/internal/fixturetest"
-	"kaiak/internal/limits"
 	"kaiak/internal/metrics"
 	"kaiak/internal/routing"
 	"kaiak/internal/server"
@@ -538,18 +537,6 @@ func TestServingStatusCoversTheAppliedConfig(t *testing.T) {
 	none := servingStatus(map[string]int{}, map[string]int{}, nil, nil)
 	if none.Backends == nil || none.Models == nil || len(none.Backends)+len(none.Models) != 0 {
 		t.Errorf("before a config: %+v, want empty collections", none)
-	}
-}
-
-// The conversion carries the live-gateway count, whether the totals are complete, and
-// every window by group and type.
-func TestLimitsTotalsCarryWindowsByGroupAndType(t *testing.T) {
-	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
-	got := limitsTotals(control.Totals{LiveGateways: 3, Windows: []control.TotalsWindow{
-		{Group: "team", Type: config.LimitUSDPerMonth, WindowStart: start, Used: 42}}}, true)
-	want := limits.PushedWindow{Group: "team", Type: config.LimitUSDPerMonth, Start: start, Used: 42}
-	if got.LiveGateways != 3 || !got.Complete || len(got.Windows) != 1 || got.Windows[0] != want {
-		t.Errorf("limitsTotals = %+v, want 3 live gateways, complete, and %+v", got, want)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -17,6 +18,7 @@ import (
 
 	"kaiak/internal/accounting"
 	"kaiak/internal/fakecontrol"
+	"kaiak/internal/limits"
 )
 
 // testRecord is a valid usage record of the test instance; n makes it unique.
@@ -186,14 +188,27 @@ func (h *harness) wantUsage(outcome string, sequence int64, records int) fakecon
 	return e
 }
 
-func (h *harness) nextTotals() TotalsUpdate {
+// totalsUpdate is what one OnTotals call gives.
+type totalsUpdate struct {
+	totals  limits.Totals
+	counted uint64
+}
+
+// lastCounted is the counted_through of the totals c applied last, by epoch.
+func lastCounted(c *Client) map[string]int64 {
+	c.usage.mu.Lock()
+	defer c.usage.mu.Unlock()
+	return maps.Clone(c.usage.lastCounted)
+}
+
+func (h *harness) nextTotals() totalsUpdate {
 	h.t.Helper()
 	select {
 	case u := <-h.totals:
 		return u
 	case <-time.After(testWaitLimit):
 		h.t.Fatal("no totals delivered")
-		return TotalsUpdate{}
+		return totalsUpdate{}
 	}
 }
 

@@ -401,7 +401,7 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 		// The limiter reads the client's contact (the outage) and the client feeds
 		// the limiter totals and usage generations; client is set before any request
 		// or scrape can read it.
-		limiter = limits.NewShared(holder, time.Now, func() limits.Contact { return controlContact(client) }, logger)
+		limiter = limits.NewShared(holder, time.Now, func() limits.Contact { return client.LimitsContact() }, logger)
 		limiter.ObserveSyncs(ops.ObserveLimitsSync)
 		client = control.New(control.Options{URL: s.control.url, Token: s.control.token, Instance: s.instanceID,
 			Applier: applier, Logger: logger, BootWait: s.control.bootWait, StartedAt: startedAt,
@@ -410,10 +410,10 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 				return servingStatus(router.InFlightByBackend(), router.QueuedByModel(), router.Circuits(), holder.Current())
 			},
 			Observer: metrics.NewUsageDelivery(registry), UsageMemoryBytes: s.usageMemory,
-			OnTotals: func(u control.TotalsUpdate) {
-				limiter.TakeTotals(limitsTotals(u.Totals, u.Complete), u.Counted)
+			OnTotals: func(totals limits.Totals, counted uint64) {
+				limiter.TakeTotals(totals, counted)
 				// Backend caps are split among the live gateways the totals count.
-				router.SetLiveGateways(u.Totals.LiveGateways)
+				router.SetLiveGateways(totals.LiveGateways)
 			}})
 		metrics.RegisterControlState(registry, controlState{client, limiter})
 		// A model's queue starting or ending and a circuit opening or closing are
@@ -720,14 +720,6 @@ func ignoreReloads(ctx context.Context, reload <-chan os.Signal, logger *slog.Lo
 	}
 }
 
-// controlContact is the control client's contact as the limiter decides the outage
-// on it.
-func controlContact(client *control.Client) limits.Contact {
-	connected, last := client.Contact()
-	return limits.Contact{Connected: connected, Last: last, UsageWaitingSince: client.UsageWaitingSince(),
-		UsageUncountedSince: client.UsageUncountedSince()}
-}
-
 // controlState is the control-plane connection for the metrics: the client's contact
 // and the limiter's outage.
 type controlState struct {
@@ -783,16 +775,6 @@ func servingStatus(inFlight, queued map[string]int, circuits map[routing.Deploym
 	}
 	for name, n := range queued {
 		out.Models[name] = control.ModelStatus{Queued: int64(n)}
-	}
-	return out
-}
-
-// limitsTotals converts the control plane's totals for the limiter.
-func limitsTotals(t control.Totals, complete bool) limits.Totals {
-	out := limits.Totals{LiveGateways: t.LiveGateways, Complete: complete, Windows: make([]limits.PushedWindow, len(t.Windows))}
-	for i, w := range t.Windows {
-		out.Windows[i] = limits.PushedWindow{Group: w.Group, Type: w.Type,
-			Start: w.WindowStart, Used: w.Used}
 	}
 	return out
 }

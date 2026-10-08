@@ -28,6 +28,7 @@ import (
 	"kaiak/internal/config"
 	"kaiak/internal/control"
 	"kaiak/internal/fakebackend"
+	"kaiak/internal/limits"
 	"kaiak/internal/sse"
 )
 
@@ -726,7 +727,7 @@ func (s *servedTokens) counted(totals control.Totals) bool {
 	end := start.Add(time.Hour)
 	var used int64
 	for _, w := range totals.Windows {
-		if w.Group == "" && w.Type == config.LimitTokensPerHour && w.WindowStart.Equal(start) {
+		if w.Group == "" && w.Type == config.LimitTokensPerHour && w.Start.Equal(start) {
 			used = w.Used
 		}
 	}
@@ -746,7 +747,7 @@ func (s *servedTokens) counted(totals control.Totals) bool {
 // mergeWindows is the windows of earlier totals with those of a later changes-only
 // message replacing theirs by scope and type (CONTROL-PROTOCOL.md, Config stream →
 // Totals).
-func mergeWindows(earlier, changed []control.TotalsWindow) []control.TotalsWindow {
+func mergeWindows(earlier, changed []limits.PushedWindow) []limits.PushedWindow {
 	type key struct {
 		group string
 		typ   config.LimitType

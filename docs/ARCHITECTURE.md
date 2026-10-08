@@ -158,8 +158,9 @@ enforce the boundaries.
   shares from the live-gateway count, the outage refusal for priced
   money-limited models (no stream contact, usage batches unanswered, or acknowledged
   batches no totals have shown counted, past the grace). Nothing outlives the
-  process. It knows nothing of the
-  protocol: `cmd/kaiak` converts the client's totals updates and contact.
+  process. It imports nothing of `control`: its `Totals` and `Contact` are what the
+  control client hands it, and a totals message's windows decode straight into its
+  `PushedWindow`, which carries their JSON tags.
 - `metrics` — a small registry (counters, gauges, fixed-bucket histograms, gauges and
   counters read at scrape time) and its Prometheus text exposition, served on the admin port; the
   ops metrics the `server` pipeline feeds when a request is over; the usage metrics
@@ -209,7 +210,10 @@ enforce the boundaries.
   second). Totals come from stream events only and go to one consumer (the
   limiter), in stream order, with the usage generations they show counted (an ack
   only stops a batch being sent, and a malformed totals event ends the stream); the client also tracks contact with the control
-  plane (read by the limiter's outage check and the metrics). `cmd/kaiak` wires the
+  plane (read by the limiter's outage check and the metrics). It imports `limits`
+  for the limiter's input types (`Totals`, `PushedWindow`, `Contact`), as it imports
+  `accounting` for the usage record: `cmd/kaiak` hands the client's totals and its
+  limits contact to the limiter as they come, with no conversion. `cmd/kaiak` wires the
   usage flush and the final status into the drain; `metrics` gets the delivery
   metrics through an observer interface `control` defines, and the connection state
   through one `metrics` defines.

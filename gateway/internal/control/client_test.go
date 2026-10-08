@@ -25,6 +25,7 @@ import (
 	"kaiak/internal/config"
 	"kaiak/internal/fakecontrol"
 	"kaiak/internal/fixturetest"
+	"kaiak/internal/limits"
 )
 
 const (
@@ -98,7 +99,7 @@ type harness struct {
 	holder *config.Holder
 	logs   *syncBuffer
 	loads  chan load
-	totals chan TotalsUpdate
+	totals chan totalsUpdate
 
 	mu     sync.Mutex
 	delays []time.Duration
@@ -119,7 +120,7 @@ func newHarness(t *testing.T) *harness {
 	cp.HoldTotalsOnConnect(true)
 	logs := &syncBuffer{}
 	h := &harness{t: t, cp: cp, logs: logs, holder: &config.Holder{},
-		loads: make(chan load, 100), totals: make(chan TotalsUpdate, 10)}
+		loads: make(chan load, 100), totals: make(chan totalsUpdate, 10)}
 	t.Cleanup(func() {
 		if t.Failed() {
 			t.Logf("client log:\n%s", logs.String())
@@ -143,7 +144,7 @@ func (h *harness) client(tune func(*Options)) *Client {
 	// A short boot wait: a boot with the control plane down retries (at test speed)
 	// until it ends.
 	opts := Options{URL: u, Token: testToken, Instance: testInstance, Applier: applier, Logger: logger,
-		OnTotals: func(u TotalsUpdate) { h.totals <- u }, BootWait: 200 * time.Millisecond,
+		OnTotals: func(totals limits.Totals, counted uint64) { h.totals <- totalsUpdate{totals, counted} }, BootWait: 200 * time.Millisecond,
 		wait: h.wait, random: func() float64 { return 0.5 }}
 	if tune != nil {
 		tune(&opts)
@@ -848,12 +849,40 @@ func TestTotalsEventsReachTheConsumer(t *testing.T) {
 	}
 	select {
 	case got := <-h.totals:
-		if got.Totals.LiveGateways != want.LiveGateways || len(got.Totals.Windows) != len(want.Windows) ||
-			len(got.Totals.Windows) == 0 || got.Counted != 0 {
+		if got.totals.LiveGateways != want.LiveGateways || len(got.totals.Windows) != len(want.Windows) ||
+			len(got.totals.Windows) == 0 || got.counted != 0 {
 			t.Errorf("totals %+v, want %+v and nothing counted", got, want)
 		}
 	case <-time.After(testWaitLimit):
 		t.Fatal("no totals delivered")
+	}
+}
+
+// A totals event reaches the limiter as sent: the live-gateway count, whether the
+// totals are complete — the stream's first are — and every window by group and type,
+// with its start and amount.
+func TestLimitsTotalsCarryWindowsByGroupAndType(t *testing.T) {
+	h := newHarness(t)
+	h.cp.Publish(configA(t))
+	c := h.client(nil)
+	h.boot(c)
+	h.run(c)
+	st := h.nextStream()
+
+	st.Send("totals", []byte(`{"live_gateways":3,"counted_through":[],"windows":[`+
+		`{"group":"team","type":"usd_per_month","window_start":"2026-09-01T00:00:00Z","used":"42"},`+
+		`{"type":"tokens_per_hour","window_start":"2026-09-01T10:00:00Z","used":"7"}]}`))
+	want := []limits.PushedWindow{
+		{Group: "team", Type: config.LimitUSDPerMonth, Start: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), Used: 42},
+		{Type: config.LimitTokensPerHour, Start: time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC), Used: 7},
+	}
+	u := h.nextTotals()
+	if u.totals.LiveGateways != 3 || !u.totals.Complete || !slices.Equal(u.totals.Windows, want) {
+		t.Errorf("totals %+v, want 3 live gateways, complete, and %+v", u.totals, want)
+	}
+	st.Send("totals", []byte(`{"live_gateways":3,"counted_through":[],"windows":[]}`))
+	if u := h.nextTotals(); u.totals.Complete {
+		t.Errorf("the stream's second totals %+v, want changes only", u.totals)
 	}
 }
 
@@ -870,7 +899,7 @@ func TestMalformedTotalsEndTheStream(t *testing.T) {
 	h.run(c)
 	st := h.nextStream()
 	st.Send("totals", scriptedTotals(1))
-	if u := h.nextTotals(); !u.Complete {
+	if u := h.nextTotals(); !u.totals.Complete {
 		t.Fatalf("first totals %+v, want complete", u)
 	}
 	st.Send("totals", []byte(`{"live_gateways":1,"counted_through":[],"windows":[{"type":"usd_per_month","window_start":"2026-10-01T00:00:00Z","used":"oops"}]}`))
@@ -882,7 +911,7 @@ func TestMalformedTotalsEndTheStream(t *testing.T) {
 	default:
 	}
 	again.Send("totals", scriptedTotals(3))
-	if u := h.nextTotals(); !u.Complete || u.Totals.LiveGateways != 3 {
+	if u := h.nextTotals(); !u.totals.Complete || u.totals.LiveGateways != 3 {
 		t.Errorf("totals %+v after the reconnect, want the complete ones of the new stream", u)
 	}
 	if !strings.Contains(h.logs.String(), `level=ERROR msg="config stream failed"`) ||
