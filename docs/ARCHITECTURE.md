@@ -31,7 +31,7 @@ flowchart LR
     cp -.->|backend verify: GETs,<br/>when the app calls it| be
     file[(Config file)] -.->|file mode| gw
     prom[Prometheus] -->|scrape admin port| gw
-    gw -.->|log lines, OTLP/HTTP JSON,<br/>when configured| otel[OpenTelemetry<br/>collector]
+    gw -.->|logs and metrics, OTLP/HTTP JSON,<br/>when configured| otel[OpenTelemetry<br/>collector]
 ```
 
 - Client → gateway → backend is the only request path. A request reaches only a
@@ -286,7 +286,9 @@ Test tooling outside the binary:
   the drain), the binary's timeouts on real sockets (`timeouts_test.go`: body-read,
   idle and write deadlines from the environment, a stalled stream counted toward the
   circuit), every metric series at 0 from startup and each config apply
-  (`zeroseries_test.go`), and the stateless
+  (`zeroseries_test.go`), OTLP log and metric export to a fake collector
+  (`logexport_test.go`, `metricexport_test.go`: one endpoint feeding both signals,
+  the push equal to the scrape, the final exports at exit), and the stateless
   gateway (`stateless_test.go`: the minimal setup — control plane URL and token
   only, a read-only working directory — the boot order with the seed and the exit
   without a config, a priced seed refused, the drain's flush reserve delivering a

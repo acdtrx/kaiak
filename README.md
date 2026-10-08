@@ -109,7 +109,10 @@ stable).
    KAIAK_CONFIG_FILE=../examples/config.json KAIAK_LOG_FORMAT=text ./kaiak
    ```
 
-   API on `:8080`, admin on `:9090` (`/healthz`, `/readyz`, `/metrics`).
+   API on `:8080`, admin on `:9090` (`/healthz`, `/readyz`, `/metrics` — metrics in
+   OpenTelemetry's names, Prometheus format). With `OTEL_EXPORTER_OTLP_ENDPOINT` set,
+   logs and metrics are also pushed to an OpenTelemetry collector
+   (`docs/DEPLOYMENT.md` → Observability).
 
    ```sh
    curl -s localhost:8080/v1/chat/completions -H "Authorization: Bearer $key" \

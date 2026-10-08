@@ -323,7 +323,7 @@ context length. `go -C scripts/live run . -h` lists them all.
 | `endpoint-not-served` | every API the backend type does not serve (chat completions on Claude, Messages on OpenAI, `responses/input_tokens` on vLLM and Azure, …) is refused `400 endpoint_not_served`, in that API's error shape |
 | `output-ceiling` | a request for the model's whole context length in output tokens (`-context-length`; more is refused, `400 invalid_value`) is lowered to the ceiling: `completion_tokens` ≤ ceiling, `finish_reason: "length"`. vLLM and llama-server are asked through `max_tokens` (the gateway lowers the client's own key), OpenAI and Azure through `max_completion_tokens` (their reasoning models refuse `max_tokens`); Anthropic and Foundry through Messages' `max_tokens`, ending `stop_reason: "max_tokens"` |
 | `rate-limit` | the second `live-rpm` request in a minute (with the metered key) gets `429 rate_limit_exceeded` with `Retry-After` and `x-ratelimit-*-requests` headers — before reaching the backend (through Messages on Anthropic and Foundry, in Anthropic's shape: `rate_limit_error`) |
-| `metrics` | the admin `/metrics` shows the `live-chat` requests, their `tokens_out` and cost, the rate-limit refusal, and a request on each of the `messages` and `responses` endpoints the backend serves |
+| `metrics` | the admin `/metrics` shows the `live-chat` usage records, their output tokens (`gen_ai_client_inference_usage_output_tokens_total`) and cost, the rate-limit refusal, successful upstream attempts with their durations, no backend label on a usage series, and a request on each of the `messages` and `responses` routes the backend serves (`http_server_request_duration_seconds`, by `http_route`) |
 | `spread` | two backends: six requests one after another are served by both (`kaiak.backend.id` on each log line) — tied deployments take turns |
 | `capacity` | two backends with `-max-in-flight N`: 2N+2 requests at once are all answered — those over the cap wait in the gateway's queue (the count queued is reported, not required) — and `kaiak_backend_active_requests_limit` shows N for each |
 | `failover` | two backends with `-check-failover`: see the failover procedure below |
@@ -525,7 +525,8 @@ when access arrives, in this order:
 7. **Error shapes**: Azure answers errors in the OpenAI shape (`{"error": {...}}`),
    relayed as they are; content-filter refusals are `400` with
    `code: content_filter`. A backend `429` (quota) is relayed with its `Retry-After`
-   and counted as `upstream_rate_limited` in the metrics.
+   and counted in
+   `kaiak_errors_total{kaiak_error_class="upstream_rate_limited"}`.
 8. **Output-limit field**: `max_completion_tokens` is accepted by every current Azure
    chat model; reasoning deployments (o-series) refuse `max_tokens`.
 
@@ -594,4 +595,5 @@ for chunk in client.chat.completions.create(model="qwen3-32b", stream=True,
     print(chunk.choices[0].delta.content or "", end="", flush=True)
 ```
 
-and check `curl -s localhost:9090/metrics | grep kaiak_usage` afterwards.
+and check `curl -s localhost:9090/metrics | grep -E 'kaiak_usage|gen_ai_client_inference_usage'`
+afterwards.

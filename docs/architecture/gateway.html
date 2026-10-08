@@ -128,7 +128,8 @@ svg .band { stroke: none; }
   <text x="890" y="399" text-anchor="middle" class="s">self-hosted · cloud</text>
 
   <rect x="830" y="440" width="120" height="50" rx="8" class="ext"/>
-  <text x="890" y="470" text-anchor="middle" class="t">Prometheus</text>
+  <text x="890" y="462" text-anchor="middle" class="t">Prometheus</text>
+  <text x="890" y="479" text-anchor="middle" class="s">or a collector</text>
 
   <!-- server -->
   <rect x="140" y="150" width="180" height="230" rx="10" class="hot"/>
@@ -172,7 +173,7 @@ svg .band { stroke: none; }
 
   <rect x="620" y="440" width="170" height="50" rx="8" class="box"/>
   <text x="705" y="462" text-anchor="middle" class="t">metrics</text>
-  <text x="705" y="478" text-anchor="middle" class="s">registry · text exposition</text>
+  <text x="705" y="478" text-anchor="middle" class="s">OTel names · scrape · push</text>
 
   <!-- edges -->
   <line x1="110" y1="243" x2="138" y2="243" class="edge" marker-end="url(#g-a)"/>
@@ -207,7 +208,7 @@ svg .band { stroke: none; }
   <path d="M230,380 L230,465 L618,465" class="edge" marker-end="url(#g-a)"/>
   <text x="420" y="457" text-anchor="middle" class="l">ops + usage metrics</text>
   <line x1="828" y1="465" x2="792" y2="465" class="edge" marker-end="url(#g-a)"/>
-  <text x="810" y="432" text-anchor="middle" class="l">scrape</text>
+  <text x="810" y="432" text-anchor="middle" class="l">scrape · push</text>
 </svg>
 <figcaption>The stage packages never call each other's I/O: <code>server</code> drives them in order. <code>provider</code> and <code>control</code> are capability fences — nothing else opens a socket to a backend or to the control plane. <code>cmd/kaiak</code> (not drawn) wires the edges: it hands the control client's totals and contact to <code>limits</code> (in the limiter's own types: <code>control</code> imports <code>limits</code>, never the reverse), hooks routing changes into status reports, and hands every applied config to routing and the provider's connection pools.</figcaption>
 </figure>
@@ -224,8 +225,9 @@ svg .band { stroke: none; }
     <tr><td><code>provider</code></td><td>A module per backend type (OpenAI, Azure OpenAI, vLLM, llama-server, Anthropic, Claude in Foundry, and the generic OpenAI-compatible) over a shared wire core, the table of which endpoints each type serves, passthrough body edits per client API, per-backend connection pools, the circuit probe (<code>GET …/models</code>; none for Foundry, which has no models list), the config-time model check.</td></tr>
     <tr><td><code>config</code></td><td>Strict decoding, validation, resolution into an immutable snapshot (each group's path, allowed models and effective limits), the holder that swaps it atomically, the one apply path, the file loader.</td></tr>
     <tr><td><code>control</code></td><td>Boot (the stream's first config → seed), the config stream with reconnect (every config the control plane sends is applied, unless its hash is the running or last rejected one), totals from the stream only (a malformed totals event ends the stream), the usage batch sender (batches queued in memory, the drain delivering them), the status reporter, contact tracking (stream bytes only).</td></tr>
-    <tr><td><code>metrics</code></td><td>Small registry (counters, gauges, fixed-bucket histograms) and Prometheus text exposition.</td></tr>
-    <tr><td><code>telemetry/otlp</code>, <code>telemetry/otlplog</code></td><td>Optional OTLP log export (<code>OTEL_*</code> variables): an <code>slog</code> handler beside the stderr one queues a copy of every line; one sender posts OTLP/HTTP JSON batches through the OTLP connection every signal shares (<code>otlp</code>: settings per signal, resource, retries, what counts as delivered), drops the newest when its queue is full, and flushes at exit after usage. Its own problems go to stderr only. Not drawn: <code>cmd/kaiak</code> wraps the logger with it.</td></tr>
+    <tr><td><code>metrics</code></td><td>The gateway's metric families — ops, usage, control-plane state, usage delivery, the exporters' own counts — each defined once under its OpenTelemetry name on <code>telemetry/metric</code>'s registry. <code>/metrics</code> and the OTLP metric exporter both read it.</td></tr>
+    <tr><td><code>telemetry/otlp</code>, <code>telemetry/otlplog</code></td><td>The OpenTelemetry tree (standard library and <code>netfail</code> only, built to leave the repo as a library). Optional OTLP log export (<code>OTEL_*</code> variables): an <code>slog</code> handler beside the stderr one queues a copy of every line; one sender posts OTLP/HTTP JSON batches through the OTLP connection every signal shares (<code>otlp</code>: settings per signal, resource, retries, what counts as delivered), drops the newest when its queue is full, and flushes at exit after usage. Its own problems go to stderr only. Not drawn: <code>cmd/kaiak</code> wraps the logger with it.</td></tr>
+    <tr><td><code>telemetry/metric</code>, <code>telemetry/otlpmetric</code></td><td>The instruments (counter, up-down counter, gauge, histogram, and the forms read at collect), the collect step producing OpenTelemetry's data model, and the Prometheus text writer with the name translation; optional OTLP metric export (<code>OTEL_*</code> variables): a periodic reader collects the registry, applies the temporality and posts OTLP/HTTP JSON through <code>otlp</code>, with a final export at exit after usage and before the logs. Not drawn: <code>cmd/kaiak</code> starts it.</td></tr>
     <tr><td><code>sse</code>, <code>netfail</code>, <code>clip</code>, <code>logattr</code>, <code>schemacheck</code></td><td>Shared parts: SSE reader (backend streams and the config stream), a failed exchange named by its class in the gateway's own words (never the remote party's text), bounding client strings before they are logged, log durations in seconds, the one validation pipeline every received document goes through (strict JSON, the schema walker, the typed decode).</td></tr>
     <tr><td><code>fakebackend</code>, <code>fakecontrol</code>, <code>telemetry/fakeotlp</code>, <code>fixturetest</code></td><td>Test tooling only: a backend, a control plane and an OTLP collector for the unit tests and the e2e suite in <code>gateway/e2e</code>, and the runner of the shared fixtures in <code>protocol/fixtures/</code>.</td></tr>
   </tbody>
@@ -762,13 +764,13 @@ svg .band { stroke: none; }
 <h2>Observability</h2>
 <ul>
   <li><strong>Logs</strong>: one line per request (JSON by default, <code>KAIAK_LOG_FORMAT=text</code> for development); config loads log their trigger and result. Never a client key, provider secret, prompt or response. Attribute names follow OpenTelemetry's conventions where they fit. With an OTLP endpoint in the standard <code>OTEL_*</code> variables every line also goes to an OpenTelemetry collector (OTLP/HTTP JSON) — stderr is always written; the export is queued off the request path and counted in <code>otel.sdk.processor.log.processed</code> and <code>otel.sdk.exporter.log.exported</code>.</li>
-  <li><strong>Metrics</strong> on the admin port (optionally behind <code>KAIAK_METRICS_TOKEN</code>): ops metrics from the pipeline, usage metrics from accounting (labelled <code>kaiak.key.group</code> — the key's group; not <code>group</code>, a common scrape target label —, <code>kaiak.key.root_group</code> — its top-level group —, <code>kaiak.key.id</code>, <code>gen_ai.request.model</code>, <code>gen_ai.operation.name</code>, <code>gen_ai.provider.name</code>, <code>kaiak.usage.status</code>; <code>global.metrics.group_label</code> and <code>key_id_label</code> switch the first and third off to bound series), control-plane connection state (<code>kaiak_control_connected</code>, <code>kaiak_control_outage</code>), delivery metrics from the batch sender. Every series with config-bounded labels exists at 0 from startup; usage series appear with traffic.</li>
+  <li><strong>Metrics</strong> on the admin port (optionally behind <code>KAIAK_METRICS_TOKEN</code>): ops metrics from the pipeline, usage metrics from accounting (labelled <code>kaiak.key.group</code> — the key's group; not <code>group</code>, a common scrape target label —, <code>kaiak.key.root_group</code> — its top-level group —, <code>kaiak.key.id</code>, <code>gen_ai.request.model</code>, <code>gen_ai.operation.name</code>, <code>gen_ai.provider.name</code>, <code>kaiak.usage.status</code>; <code>global.metrics.group_label</code> and <code>key_id_label</code> switch the first and third off to bound series), control-plane connection state (<code>kaiak_control_connected</code>, <code>kaiak_control_outage</code>), delivery metrics from the batch sender. Each metric is defined once under its OpenTelemetry name — the HTTP and GenAI conventions' where they fit (<code>http.server.request.duration</code>, <code>gen_ai.client.inference.usage.*</code>), <code>kaiak.*</code> for the rest; <code>/metrics</code> writes the name Prometheus's own OTLP ingestion makes of it (<code>http_server_request_duration_seconds</code>). With an OTLP endpoint the same series are also pushed to a collector on an interval (cumulative by default, delta on request), counted in <code>otel.sdk.exporter.metric_data_point.exported</code>. Every series with config-bounded labels exists at 0 from startup; usage series appear with traffic.</li>
   <li><strong>Limit refusals</strong> carry <code>Retry-After</code> and rate-limit headers; <code>X-Request-Id</code> ties a response to its log line and usage record.</li>
 </ul>
 </section>
 
 <footer>
-  Overview only — the contracts are in <code>docs/specs/GATEWAY.md</code> and <code>docs/specs/CONTROL-PROTOCOL.md</code>, the package-level detail in <code>docs/ARCHITECTURE.md</code>, operations in <code>docs/DEPLOYMENT.md</code>. Written 2026-09-26 against 0.6.0; describes the group tree with the 2026-09-27 review's fixes (after 0.7.1), tiered prices (2026-09-29), the cache-write unit (2026-10-02), OTLP log export (2026-10-05), Messages and Responses passthrough with the Anthropic backend types (2026-10-06), and the package graph after the 2026-10-08 structure work. Continue with <a href="control-plane.html">gateway ↔ control plane</a>.
+  Overview only — the contracts are in <code>docs/specs/GATEWAY.md</code> and <code>docs/specs/CONTROL-PROTOCOL.md</code>, the package-level detail in <code>docs/ARCHITECTURE.md</code>, operations in <code>docs/DEPLOYMENT.md</code>. Written 2026-09-26 against 0.6.0; describes the group tree with the 2026-09-27 review's fixes (after 0.7.1), tiered prices (2026-09-29), the cache-write unit (2026-10-02), OTLP log export (2026-10-05), Messages and Responses passthrough with the Anthropic backend types (2026-10-06), the package graph after the 2026-10-08 structure work, and metrics in OpenTelemetry names with OTLP metric export (2026-10-08). Continue with <a href="control-plane.html">gateway ↔ control plane</a>.
 </footer>
 </main>
 </body>

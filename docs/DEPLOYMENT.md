@@ -20,6 +20,7 @@ flowchart LR
     gw0 & gw1 & gw2 <-->|config, totals / usage, status| cp[Control plane<br/>1 process per store]
     cp --- store[(Store)]
     prom[Prometheus] -->|:9090 /metrics| gw0 & gw1 & gw2
+    gw0 & gw1 & gw2 -.->|OTLP logs, metrics,<br/>when configured| otel[OpenTelemetry<br/>collector]
 ```
 
 - **Gateways**: N identical, **stateless** replicas — a Deployment behind one
@@ -178,8 +179,8 @@ refused, and in-flight requests, streams included, get the drain timeout
 Requests still running then are cut, and their partial usage records go out with
 the rest in the reserve. Usage batches keep going out every 5 s throughout the
 drain; then a final status (≤ 2 s), the admin listener closes (≤ 5 s for a scrape
-still open), with log export on the last queued log lines are sent (at least 1 s),
-and the process exits 0. The `draining` log line names the times in
+still open), with metric export on a final export of the metrics, with log export
+on the last queued log lines (each given at least 1 s), and the process exits 0. The `draining` log line names the times in
 force, in seconds: `kaiak.drain.grace`, `kaiak.drain.timeout`,
 `kaiak.drain.flush_reserve` and `kaiak.drain.cut_after` — when requests still
 running are cut, counted from the grace's end (the timeout less the reserve; the
@@ -322,21 +323,24 @@ sources):
 | `KAIAK_BODY_MEMORY_BYTES` | `536870912` (512 MiB) | The body budget (Resources); above 0. |
 | `KAIAK_USAGE_MEMORY_BYTES` | `67108864` (64 MiB) | Control-plane mode: the bound on unacknowledged usage held in memory, by encoded size (Control-plane outages); above 0. |
 | `KAIAK_MAX_CONNECTIONS` | `0` (no cap) | The most connections the API listener keeps open, idle keep-alive ones included; beyond it a connection is closed at accept (Secrets and trust: connection floods); 0 or more. |
-| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | — | Log export (Observability: log export): the URL log records are posted to, as is (`http://collector:4318/v1/logs`). Setting it turns export on. |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | The same, as a base: `/v1/logs` is appended (`http://collector:4318`). The `LOGS` variable wins. |
-| `OTEL_LOGS_EXPORTER` | — | `none` turns log export off whatever else is set; `otlp` turns it on, to `http://localhost:4318/v1/logs` when no endpoint is set. |
-| `OTEL_SDK_DISABLED` | `false` | `true` turns log export off. |
-| `OTEL_EXPORTER_OTLP_LOGS_HEADERS`, `OTEL_EXPORTER_OTLP_HEADERS` | — | Headers sent with each export, `key=value,…`, values percent-encoded (a backend's API key: a Secret). Never logged. |
-| `OTEL_EXPORTER_OTLP_LOGS_TIMEOUT`, `OTEL_EXPORTER_OTLP_TIMEOUT` | `10000` | How long one batch may take, retries included (above 0). |
-| `OTEL_EXPORTER_OTLP_LOGS_PROTOCOL`, `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/json` | Only `http/json`; `grpc` or `http/protobuf` fail the start. |
-| `OTEL_SERVICE_NAME` | `kaiak` | The `service.name` of the exported records' resource. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OTLP export (Observability: OTLP export), both signals: the collector's base URL (`http://collector:4318`); `/v1/logs` and `/v1/metrics` are appended. Setting it turns log and metric export on. |
+| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | — | One signal's URL, used as is (`http://collector:4318/v1/logs`); it wins over the general one for that signal, and setting it turns that signal on. |
+| `OTEL_LOGS_EXPORTER`, `OTEL_METRICS_EXPORTER` | — | `none` turns that signal's export off whatever else is set; `otlp` turns it on, to `http://localhost:4318/v1/logs` or `…/v1/metrics` when no endpoint is set. |
+| `OTEL_SDK_DISABLED` | `false` | `true` turns both exports off. |
+| `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_EXPORTER_OTLP_LOGS_HEADERS`, `OTEL_EXPORTER_OTLP_METRICS_HEADERS` | — | Headers sent with each export, `key=value,…`, values percent-encoded (a backend's API key: a Secret). Never logged. The signal's variable wins. |
+| `OTEL_EXPORTER_OTLP_TIMEOUT`, `OTEL_EXPORTER_OTLP_LOGS_TIMEOUT`, `OTEL_EXPORTER_OTLP_METRICS_TIMEOUT` | `10000` | How long one request may take, retries included (above 0): a log batch; for metrics, within the export timeout. The signal's variable wins. |
+| `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_EXPORTER_OTLP_LOGS_PROTOCOL`, `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL` | `http/json` | Only `http/json`; `grpc` or `http/protobuf` fail the start. |
+| `OTEL_METRIC_EXPORT_INTERVAL` | `60000` | Metric export: the time between exports (above 0). |
+| `OTEL_METRIC_EXPORT_TIMEOUT` | `30000` | Metric export: the bound on one export, retries and split requests included (above 0); the shorter of it and the OTLP timeout applies — 10 s at the defaults. |
+| `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` | `cumulative` | `cumulative`, `delta` or `lowmemory` (any case): what the pushed sums and histograms carry (Observability: OTLP export). `/metrics` is always cumulative. |
+| `OTEL_SERVICE_NAME` | `kaiak` | The `service.name` of the resource both exports carry. |
 | `OTEL_RESOURCE_ATTRIBUTES` | — | More resource attributes, `key=value,…` (`deployment.environment.name=prod`); `service.version` and `service.instance.id` are always the gateway's own. |
 
 Also read by the gateway (Go runtime and standard library): every backend's
 `api_key_env` (Secrets); `GOMEMLIMIT` (Resources); `SSL_CERT_FILE` (the image sets
 its bundle) and `SSL_CERT_DIR` (Availability: private CAs); and
 `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` for both backend and control-plane
-connections and the log export — when the cluster sets a proxy, list in-cluster
+connections and the OTLP export — when the cluster sets a proxy, list in-cluster
 backends, the control plane and the collector in `NO_PROXY`.
 
 **Sample control plane** (`control/sample/src/settings/index.ts`):
@@ -547,7 +551,8 @@ the document (a script, or the control plane) rather than editing it by hand.
   is a request too large for the limit, otherwise the window is full.
 - **vLLM: add `--enable-prompt-tokens-details`** to `vllm serve` for the cached-token
   count. Without it vLLM reports no `prompt_tokens_details`, so prefix-cache hits
-  count as ordinary input (`tokens_cached` 0 in usage and metrics): a
+  count as ordinary input (`tokens_cached` 0 in the usage records, no cache reads
+  in the metrics): a
   `tokens_cached` price never applies, and token limits count the whole prompt,
   cache hits included.
 - **Reliability defaults** worth knowing: 3 attempts (failover only: at most one
@@ -702,10 +707,19 @@ the document (a script, or the control plane) rather than editing it by hand.
 - **Scrape** the admin port, `GET /metrics` on 9090 (Prometheus text format), from
   every pod — a PodMonitor or a headless Service. With `KAIAK_METRICS_TOKEN` set,
   give the scraper the same token as a bearer token.
+- **Metric names are OpenTelemetry's** (`GATEWAY.md` → Observability: Metric list,
+  Naming): each metric is defined once, under its OpenTelemetry name, and `/metrics`
+  writes the name Prometheus's own OTLP ingestion makes of it — dots to `_`, the
+  unit's suffix, `_total` on counters: `http.server.request.duration` is
+  `http_server_request_duration_seconds`, `kaiak.backend.id` is `kaiak_backend_id`.
+  The conventions' names where one fits (the HTTP request duration, the GenAI usage
+  counters `gen_ai.client.inference.usage.*`, the exporters' `otel.sdk.*` counts),
+  `kaiak.*` for the rest. Queries below are in the Prometheus names.
 - **Restrict the admin port**: `/metrics` names every group that owns keys, every
   top-level group, key ID and model with their spend. A NetworkPolicy admitting to 9090 only the Prometheus
   pods (and the kubelet's probes, which come from the node — some CNIs need the node
-  CIDR allowed); the token where that is not enough.
+  CIDR allowed); the token where that is not enough. The metric export carries the
+  same series: treat its collector and store as you treat the scraper's.
 - **Version**: `kaiak_build_info{service_version="…"}` carries the image's version (its tag,
   from `git describe`); compare it across pods during a rollout.
 - **Config load cost** (`GATEWAY.md` → Observability: Config load cost): with a large
@@ -761,22 +775,31 @@ the document (a script, or the control plane) rather than editing it by hand.
   written without a decimal point (`0`, `30`) — a store typing the field from the
   first value it sees would make it an integer and then truncate or refuse the
   fractions. Over OTLP they arrive typed (`doubleValue`).
-- **Log export to an OpenTelemetry collector** (`GATEWAY.md` → Observability: OTLP
-  log export), for a platform that cannot read container output: set
-  `OTEL_EXPORTER_OTLP_ENDPOINT` (or the `LOGS` variable) and every log line — the
-  request line and every operational event, the same attributes as on stderr — is
-  also posted to the collector over OTLP/HTTP as JSON. stderr stays on. Nothing
-  else changes: the request path only queues a copy; a slow or down collector costs
-  at most the queue (10 000 records) and drops the newest records beyond it.
+- **OTLP export to an OpenTelemetry collector** (`GATEWAY.md` → Observability: OTLP
+  log export, OTLP metric export), for a platform that collects by push or cannot
+  read container output: set `OTEL_EXPORTER_OTLP_ENDPOINT` and the gateway posts
+  both signals to the collector over OTLP/HTTP as JSON — every log line (the
+  request line and every operational event, the same attributes as on stderr) to
+  `/v1/logs`, and every metric series `/metrics` shows to `/v1/metrics`, every 60 s.
+  stderr and `/metrics` stay on: the export is beside them, never instead. Nothing
+  changes on the request path: log lines are queued, metrics are collected from the
+  counters a scrape reads; a slow or down collector costs at most the log queue
+  (10 000 records; the newest beyond it are dropped) and one metric export in
+  flight. The variables: Environment.
+  - **One signal only**: give it its own endpoint (`OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`
+    or `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`) and leave the shared one unset, or
+    keep the shared one and opt the other out with `OTEL_METRICS_EXPORTER=none` or
+    `OTEL_LOGS_EXPORTER=none`. `OTEL_SDK_DISABLED=true` turns both off — for a
+    gateway in a namespace that injects an endpoint for other workloads.
   - **Where the collector runs**: a sidecar in the gateway's pod
     (`OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318`), or the node's agent (a
     DaemonSet with a host port), reached through the node's IP. Keep it near: the
-    gateway has one export in flight, at most 512 records a round trip, so its log
-    throughput is about 512 records ÷ the collector's answer time — a remote
+    gateway has one log export in flight, at most 512 records a round trip, so its
+    log throughput is about 512 records ÷ the collector's answer time — a remote
     collector 100 ms away caps a gateway near 5 000 lines a second (one request
     line per request, plus operational lines), and beyond that the queue fills and
     drops. The endpoint must be the address that answers: the gateway does not
-    follow redirects (a `3xx` fails the batch):
+    follow redirects (a `3xx` fails the export):
 
     ```yaml
     env:
@@ -788,9 +811,10 @@ the document (a script, or the control plane) rather than editing it by hand.
         value: deployment.environment.name=prod
     ```
 
-    The records' resource carries `service.name` (`kaiak`, or `OTEL_SERVICE_NAME`),
-    `service.version` and `service.instance.id` (the pod name, the gateway's
-    instance ID); add the cluster's own with `OTEL_RESOURCE_ATTRIBUTES` or the
+    Logs and metrics carry one resource — `service.name` (`kaiak`, or
+    `OTEL_SERVICE_NAME`), `service.version` and `service.instance.id` (the pod name,
+    the gateway's instance ID) — so the collector joins a gateway's logs and
+    metrics on it; add the cluster's own with `OTEL_RESOURCE_ATTRIBUTES` or the
     collector's `k8sattributes` processor.
   - **A minimal collector** (`otel/opentelemetry-collector-contrib`, or the core
     `otel/opentelemetry-collector`) with the OTLP receiver on HTTP — the only
@@ -807,10 +831,14 @@ the document (a script, or the control plane) rather than editing it by hand.
       batch: {}
     exporters:
       debug:
-        verbosity: detailed   # replace with the backend's exporter
+        verbosity: detailed   # replace with the backends' exporters
     service:
       pipelines:
         logs:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [debug]
+        metrics:
           receivers: [otlp]
           processors: [batch]
           exporters: [debug]
@@ -818,13 +846,13 @@ the document (a script, or the control plane) rather than editing it by hand.
 
     The request lines are the records whose body is `request`: a `filter` or
     `routing` processor on the log body separates them from operational events.
-  - **Query by the standard names** where they exist: `http.response.status_code`,
-    `error.type` (the gateway's error code), `gen_ai.request.model`,
-    `gen_ai.usage.input_tokens` (all input, cache reads and writes included) and
-    `gen_ai.usage.output_tokens`; kaiak's own under `kaiak.*` (`kaiak.key.id`,
-    `kaiak.limit.*`, `kaiak.tried`, `kaiak.usage.cost_usd`). The field tables:
-    `GATEWAY.md` → Observability: Logs.
-  - **Watch for loss**: `otel_sdk_processor_log_processed_total` with an
+  - **Logs: query by the standard names** where they exist:
+    `http.response.status_code`, `error.type` (the gateway's error code),
+    `gen_ai.request.model`, `gen_ai.usage.input_tokens` (all input, cache reads and
+    writes included) and `gen_ai.usage.output_tokens`; kaiak's own under `kaiak.*`
+    (`kaiak.key.id`, `kaiak.limit.*`, `kaiak.tried`, `kaiak.usage.cost_usd`). The
+    field tables: `GATEWAY.md` → Observability: Logs.
+  - **Logs: watch for loss**: `otel_sdk_processor_log_processed_total` with an
     `error_type` (`queue_full`: the queue was full; `shutdown`: records were still
     queued at exit) and `otel_sdk_exporter_log_exported_total` with an `error_type`
     (the collector refused a batch, or retries ran out of time — its status, or the
@@ -832,6 +860,50 @@ the document (a script, or the control plane) rather than editing it by hand.
     stderr says why (`log export failing`, at most once a minute). Lost log
     records lose no usage: usage records go to the control plane, never through
     the logs.
+  - **Metrics: the same series as the scrape.** Each export carries every series a
+    scrape would show at that moment, under the OpenTelemetry names, with units,
+    descriptions and the same attributes. A store that ingests OTLP as Prometheus
+    does lands the push under the scrape's names, so dashboards and the alerts below
+    work on either. To push straight to Prometheus 3 (started with
+    `--web.enable-otlp-receiver`), name the full path:
+    `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://prometheus:9090/api/v1/otlp/v1/metrics`
+    (the shared variable would append `/v1/metrics` to its own path). The pushed
+    series' `job` is `service.name` and their `instance` `service.instance.id` —
+    the pod name, where a scrape's is the pod's address. One difference is
+    Prometheus's own: it stores a whole-number bucket bound as `le="1.0"` from a
+    scrape and `le="1"` from OTLP, so keep a scraped and a pushed copy of a
+    histogram out of one `sum by (le)` (moving a gateway from scrape to push
+    included).
+  - **Metrics: temporality** (`OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE`):
+    `cumulative`, the default, sends what the scrape shows — counts since the
+    process start; keep it for Prometheus, whose OTLP receiver refuses a delta
+    export whole (`500`) unless its delta support is turned on. `delta`, for a backend that wants
+    changes (some SaaS backends): counters and histograms carry what changed since
+    the previous export, up-down counters stay cumulative; every series is in every
+    export, an unchanged one as 0. `lowmemory` is `delta` but for the exporters' own
+    counts, which stay cumulative. `/metrics` stays cumulative whatever the choice.
+  - **Metrics: interval and size.** An export every `OTEL_METRIC_EXPORT_INTERVAL`
+    (60 s): match the store's resolution, as a scrape interval would. One export in
+    flight; a tick that comes while one runs is skipped. One export is bounded by
+    the shorter of `OTEL_METRIC_EXPORT_TIMEOUT` (30 s) and the OTLP timeout (10 s) —
+    10 s at the defaults; raise `OTEL_EXPORTER_OTLP_METRICS_TIMEOUT` for a large
+    export over a slow link. An export over 4 MiB of JSON goes as several requests
+    of at most 4 MiB each, so the collector's default limits (4 MiB a message over
+    gRPC, 20 MiB a request over HTTP) take it: the usage families with
+    `key_id_label` on reach tens of MB at a few thousand keys (Cardinality). A
+    request that fails fails its own points only.
+  - **Metrics: `metric export failing`** — a warn line at the first failed export,
+    then at most once a minute while failures continue: `kaiak.metric_export.failed`
+    (data points failed since the previous line), `http.response.status_code` when
+    the collector answered, and `exception.message` in the gateway's own words
+    (never the collector's text). A `4xx` is a setup problem — a wrong path, a
+    missing header, a body over the receiver's limit; a `429`, `502`–`504` or a
+    connection failure was retried until the export's time ran out. A cumulative
+    stream loses only resolution (the next export carries the counts); a delta
+    stream loses the failed export's changes. It is an ordinary line, so with log
+    export on it reaches the collector too, when the logs still get through. The
+    count: `otel_sdk_exporter_metric_data_point_exported_total`, accepted or by
+    `error_type` (the status, or the failure's class). The scrape is unaffected.
 
 **Starter alerts** (every metric and label exists in `gateway/internal/metrics`;
 thresholds are starting points). Each is written as a Prometheus rule expression
@@ -869,11 +941,12 @@ before priced models are refused. Scale the 300 with the grace if you change it.
 | Connections refused | ticket | `increase(kaiak_connections_refused_total[5m]) > 0` | — | Per pod: the API listener is at `KAIAK_MAX_CONNECTIONS` — a connection flood the ingress let through, or a cap too low for the pod's clients (idle keep-alive connections count). |
 | Clamped usage | ticket | `sum(increase(kaiak_usage_clamped_records_total[1h])) > 0` | — | A backend reported absurd usage. |
 | Log export losing records | ticket | `sum by (error_type) (increase(otel_sdk_processor_log_processed_total{error_type!=""}[15m])) > 0 or sum by (error_type) (increase(otel_sdk_exporter_log_exported_total{error_type!=""}[15m])) > 0` | — | Log lines did not reach the collector: dropped by the queue (`queue_full`, `shutdown`) or failed by the exporter (the collector's status, or the failure's class: down, slow or refusing — `log export failing` on the gateway's stderr names the status or error). A failure's series is created at its first failure, so that first batch shows in the next one's increase. Only with log export on. |
+| Metric export failing | ticket | `sum by (error_type) (increase(otel_sdk_exporter_metric_data_point_exported_total{error_type!=""}[15m])) > 0` | — | Pushed data points did not reach the collector (its status, or the failure's class — `metric export failing` in the gateway's log says which); a cumulative push catches up at the next export that succeeds, a delta push loses them. A failure's series is created at its first failure, so that first failure shows in the next one's increase. Only with metric export on. |
 
 ## Secrets and trust
 
-- **Secrets**: `KAIAK_CONTROL_TOKEN`, `KAIAK_METRICS_TOKEN`, the log export's
-  headers (`OTEL_EXPORTER_OTLP_HEADERS`) and every backend `api_key_env` come from
+- **Secrets**: `KAIAK_CONTROL_TOKEN`, `KAIAK_METRICS_TOKEN`, the OTLP export's
+  headers (`OTEL_EXPORTER_OTLP_HEADERS` and the per-signal ones) and every backend `api_key_env` come from
   Kubernetes Secrets, never from the config (config holds only variable names; a
   `base_url` with `user:password@` is refused). A backend's `api_key_env` cannot
   name a `KAIAK_` or `OTEL_` variable: the config author picks the backend's URL,
@@ -1039,6 +1112,87 @@ Boot).
     backend type` info line at each config apply; the request line's
     `kaiak.upstream.error.*` fields describe the last attempt only (an earlier
     attempt's failure shows in `kaiak.tried`).
+- **Next release** (unreleased; protocol 5 and config format 5 unchanged):
+  - **Every metric is named in OpenTelemetry's vocabulary** (`GATEWAY.md` →
+    Observability: Metric list, its Was column; Observability above): `/metrics`
+    writes the Prometheus translation of each OpenTelemetry name, and no old name
+    is kept beside a new one. Update dashboards, recording rules and alerts before
+    the rollout — or expect them to read nothing until it ends; the starter alerts
+    above are in the new names. Renamed metrics:
+
+    | Was | Now |
+    |---|---|
+    | `kaiak_request_duration_seconds` | `http_server_request_duration_seconds` (its attributes: below) |
+    | `kaiak_output_tokens_per_second` | `kaiak_output_token_rate_per_second` |
+    | `kaiak_backend_in_flight_requests` | `kaiak_backend_active_requests` |
+    | `kaiak_backend_max_in_flight` | `kaiak_backend_active_requests_limit` |
+    | `kaiak_queued_requests` | `kaiak_queue_size` |
+    | `kaiak_queue_wait_seconds` | `kaiak_queue_wait_duration_seconds` |
+    | `kaiak_circuit_open`, `kaiak_circuit_half_open` | `kaiak_circuit_state` (below) |
+    | `kaiak_usage_queued_bytes` | `kaiak_usage_queue_size_bytes` |
+    | `kaiak_usage_tokens_total{unit="tokens_in"}` | `gen_ai_client_inference_usage_input_tokens_total` — **all** input now (below) |
+    | `kaiak_usage_tokens_total{unit="tokens_cached"}` | `gen_ai_client_inference_usage_cache_read_input_tokens_total` |
+    | `kaiak_usage_tokens_total{unit="tokens_cache_write"}` | `gen_ai_client_inference_usage_cache_write_input_tokens_total` |
+    | `kaiak_usage_tokens_total{unit="tokens_out"}` | `gen_ai_client_inference_usage_output_tokens_total` |
+    | `kaiak_usage_tokens_total{unit="tokens_reasoning"}` | `gen_ai_client_inference_usage_reasoning_output_tokens_total` |
+    | `kaiak_log_export_records_total{outcome="exported"}`, `{outcome="failed"}` | `otel_sdk_exporter_log_exported_total`: exported has no `error_type`, failed has one (the collector's status, or the failure's class) |
+    | `kaiak_log_export_records_total{outcome="dropped"}` | `otel_sdk_processor_log_processed_total{error_type="queue_full"}` or `{error_type="shutdown"}`; the series with no `error_type` counts records handed to the exporter |
+
+    Every other family keeps its name. The two `otel_sdk_*` log families and the
+    new `otel_sdk_exporter_metric_data_point_exported_total` carry
+    `otel_component_type` and `otel_component_name`.
+  - **Renamed labels**, on every family that has them:
+
+    | Was | Now |
+    |---|---|
+    | `model` | `gen_ai_request_model` |
+    | `backend` | `kaiak_backend_id` |
+    | `deployment_model` | `kaiak_deployment_model` |
+    | `key_group`, `root_group`, `key_id` | `kaiak_key_group`, `kaiak_key_root_group`, `kaiak_key_id` |
+    | `status` (usage) | `kaiak_usage_status` |
+    | `class` (`kaiak_errors_total`) | `kaiak_error_class` |
+    | `code` (`kaiak_request_errors_total`) | `error_type` |
+    | `scope_kind`, `type` (`kaiak_limit_rejections_total`) | `kaiak_limit_scope`, `kaiak_limit_type` |
+    | `reason` (`kaiak_queue_rejections_total`), values `full`, `timeout` | `error_type`, values `queue_full`, `queue_timeout` |
+    | `reason` (`kaiak_retries_total`), `outcome` (`kaiak_upstream_attempts_total`) | `kaiak_attempt_outcome` |
+    | `to` (`kaiak_circuit_transitions_total`) | `kaiak_circuit_state` |
+    | `result` (`kaiak_probes_total`) | `kaiak_probe_result` |
+    | `trigger`, `result` (`kaiak_config_loads_total`, `kaiak_config_apply_duration_seconds`) | `kaiak_trigger`, `kaiak_config_result` |
+    | `version`, `go_version` (`kaiak_build_info`) | `service_version`, `process_runtime_version` |
+    | `result` (`kaiak_usage_batch_sends_total`) | `kaiak_usage_batch_result` |
+    | `reason` (`kaiak_usage_dropped_records_total`) | `kaiak_usage_drop_reason` |
+
+  - **The request duration** takes the HTTP convention's attributes:
+    `http_request_method`, `url_scheme` (`http`), `http_route` (the documented
+    route, `/v1/chat/completions`, where `endpoint` was kaiak's name for it,
+    `chat_completions`), `http_response_status_code` and `error_type` (kaiak's error
+    code, on every request that ended in an error) replace `endpoint` and
+    `status_class`. `status_class="5xx"` becomes
+    `http_response_status_code=~"5.."`; a client that left before any answer, which
+    counted under `4xx`, now has no status code and `error_type="client_closed"`.
+    The count over every series is still the client request count.
+  - **Input tokens changed meaning**: `gen_ai_client_inference_usage_input_tokens_total`
+    counts all input, cache reads and writes included — as the request line's
+    `gen_ai.usage.input_tokens` — where `kaiak_usage_tokens_total{unit="tokens_in"}`
+    counted input neither read from nor written to the cache. The old value is
+    input − cache read − cache write. Output already included reasoning. The usage
+    families gain `gen_ai_operation_name` and `gen_ai_provider_name` (absent for the
+    self-hosted types), the token counters `gen_ai_token_modality="unknown"`; a
+    usage series is now per operation and provider too (Cardinality).
+  - **The circuit gauges merged**: `kaiak_circuit_state` has three series per
+    deployment (`kaiak_circuit_state` = `closed`, `open`, `half_open`), 1 on the
+    current state. `kaiak_circuit_open == 1` becomes
+    `kaiak_circuit_state{kaiak_circuit_state="open"} == 1`, and `kaiak_circuit_half_open`
+    the same with `half_open`.
+  - **Metric export is new, and the shared endpoint turns it on**: a gateway with
+    `OTEL_EXPORTER_OTLP_ENDPOINT` set for log export now pushes its metrics to the
+    same collector, every 60 s (Observability: OTLP export). To keep logs only, set
+    `OTEL_METRICS_EXPORTER=none`, or name the logs' own endpoint
+    (`OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`) instead. A collector without a metrics
+    pipeline answers the push `404`, logged as `metric export failing`.
+  - **The dependency rule changed** (`docs/TECH-STACK.md`, Dependencies): minimal,
+    maintained dependencies that are clearly worth their cost, in place of none at
+    all. The gateway still has no third-party dependency: this release adds none.
 
 ## Images
 
