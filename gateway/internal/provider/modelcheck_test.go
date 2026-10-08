@@ -60,7 +60,7 @@ func checkSnapshot(models ...*config.Model) *config.Snapshot {
 }
 
 // At config apply every backend is probed once, in the background, and each
-// deployment whose model it does not list is warned about (H8).
+// deployment whose model it does not list is warned about.
 func TestModelCheckWarnsPerMissingModel(t *testing.T) {
 	var logs logBuffer
 	logger := slog.New(slog.NewTextHandler(&logs, nil))

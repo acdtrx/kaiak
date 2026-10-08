@@ -57,7 +57,7 @@ func startStreams(t *testing.T, g *testGateway, url, key, model string, n int) c
 	return cancel
 }
 
-// E10: a key has at most max_concurrent_requests_per_key requests in flight on a
+// A key has at most max_concurrent_requests_per_key requests in flight on a
 // gateway. Past it every request of that key — a model endpoint too — is refused at
 // once, 429 concurrency_limit_exceeded with Retry-After: 1, before its body is read
 // or anything reaches a backend; other keys are unaffected, and the key's slots come
@@ -111,7 +111,7 @@ func TestPerKeyConcurrencyLimit(t *testing.T) {
 	}
 }
 
-// E10: a request's slot is given back however the request ends — the finisher
+// A request's slot is given back however the request ends — the finisher
 // mechanism, which also runs when the handler panics to cut a broken-off response.
 // With a limit of 1, each ending is followed by a request of the same key that must
 // be admitted.

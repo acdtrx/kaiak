@@ -9,7 +9,7 @@ import (
 	"kaiak/internal/fakebackend"
 )
 
-// L5: a backend 5xx is the backend's fault: its body — which may name backend
+// A backend 5xx is the backend's fault: its body — which may name backend
 // internals — is replaced by the gateway's upstream_error answer under the
 // backend's status; only its error code and type are logged, never its message.
 // A backend 4xx is the caller's actionable error and is relayed as it came.
@@ -72,12 +72,12 @@ func TestBackendErrorFields(t *testing.T) {
 	}
 }
 
-// The independent audit's finding 3: an error answer whose body breaks before its
-// first byte — cut, or timed out after its headers — is still the backend's answer.
-// Accounting settles it as an answer (nothing processed: no units, no cost — not
-// the estimated input of a request left unanswered), the circuit classifies it by
-// its status, and the client gets the gateway's upstream_error under the backend's
-// status with its Retry-After (the body, broken, cannot be relayed).
+// An error answer whose body breaks before its first byte — cut, or timed out after
+// its headers — is still the backend's answer. Accounting settles it as an answer
+// (nothing processed: no units, no cost — not the estimated input of a request left
+// unanswered), the circuit classifies it by its status, and the client gets the
+// gateway's upstream_error under the backend's status with its Retry-After (the body,
+// broken, cannot be relayed).
 func TestErrorAnswerBrokenBeforeItsBodyIsAnsweredByItsStatus(t *testing.T) {
 	for _, c := range []struct {
 		name    string

@@ -109,7 +109,7 @@ func workloadLimits(t *testing.T, limitsJSON string) func(doc string) string {
 	}
 }
 
-// H4: the record that fills a batch seals it as the request finishes. Its usage is
+// The record that fills a batch seals it as the request finishes. Its usage is
 // counted by the control plane (the pushed totals hold it) and must leave the
 // gateway's own count in the same step — no later traffic comes to clear it.
 func TestRecordFillingABatchIsCountedOnce(t *testing.T) {
@@ -151,7 +151,7 @@ func TestCompleteTotalsResetAPushedWindowTheyDoNotList(t *testing.T) {
 	waitFor(t, func() bool { return hourUsed() == 0 })
 }
 
-// H5: a backend reporting 2^53 tokens. The record is clamped to the protocol's bound
+// A backend reporting 2^53 tokens. The record is clamped to the protocol's bound
 // at settlement, so its batch — and the other records in it — is accepted: every
 // counted record passes the usage record's checks.
 func TestBackendReportingTooManyTokensDoesNotLoseItsBatch(t *testing.T) {
@@ -183,8 +183,8 @@ func TestBackendReportingTooManyTokensDoesNotLoseItsBatch(t *testing.T) {
 	}
 }
 
-// M16: the config stream stays up while /v1/usage keeps failing. The stream alone is
-// no longer contact for money limits: with batches waiting for an ack past the
+// The config stream stays up while /v1/usage keeps failing. The stream alone is
+// not contact for money limits: with batches waiting for an ack past the
 // outage grace, a priced model under a USD limit is refused as in an outage (free
 // models keep serving); the first ack ends it.
 func TestUsageAcksFailingPastTheGraceRefusePricedBudgets(t *testing.T) {
@@ -194,7 +194,7 @@ func TestUsageAcksFailingPastTheGraceRefusePricedBudgets(t *testing.T) {
 	})
 	pair := call{method: "POST", path: "/v1/chat/completions", key: workloadKey, body: `{"model":"pair","messages":[]}`}
 	waitFor(t, func() bool { connected, _ := g.client.Contact(); return connected })
-	// The totals that follow the stream's replay make the budget's spend known (D8).
+	// The totals that follow the stream's replay make the budget's spend known.
 	select {
 	case <-g.limiter.FirstTotals():
 	case <-time.After(10 * time.Second):

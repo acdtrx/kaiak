@@ -363,10 +363,10 @@ func TestTokenLimitRefusesAnOversizeRequest(t *testing.T) {
 	}
 }
 
-// N-M1: a team with 1000 tokens per hour, 10
-// already used, and a request reserving the int64 maximum. A wrapped used + need
-// would admit it and leave the counter negative — admitting every later request
-// until it ended. It is refused as too large and the counter keeps its 10.
+// A team with 1000 tokens per hour, 10 already used, and a request reserving the
+// int64 maximum. A wrapped used + need would admit it and leave the counter
+// negative — admitting every later request until it ended. It is refused as too
+// large and the counter keeps its 10.
 func TestAHugeReservationCannotWrapTheCounter(t *testing.T) {
 	for _, typ := range []config.LimitType{config.LimitTokensPerHour, config.LimitTokensPerMinute} {
 		t.Run(string(typ), func(t *testing.T) {
@@ -725,11 +725,11 @@ func TestSyncIsObservedOncePerNewConfig(t *testing.T) {
 	}
 }
 
-// The independent audit's finding 6: whether USD limits apply to a request is decided
-// by the request's own config snapshot — the one its usage is priced from — not by
-// the config in force at admission. A reload removing m1's prices while a request
-// that took the priced snapshot is still reading its body left the spent budget
-// unchecked, and the request's cost was then charged past it.
+// Whether USD limits apply to a request is decided by the request's own config
+// snapshot — the one its usage is priced from — not by the config in force at
+// admission. Decided at admission, a reload removing m1's prices while a request that
+// took the priced snapshot is still reading its body would leave the spent budget
+// unchecked, and the request's cost would be charged past it.
 func TestBillabilityComesFromTheRequestsOwnSnapshot(t *testing.T) {
 	c := newClock("2026-09-24T10:30:00Z")
 	priced := snapshot(t, limitsDoc{team: usdLimit})

@@ -187,7 +187,7 @@ func TestClientDisconnectRecordsPartialUsage(t *testing.T) {
 	expectUnits(t, settledRecord(t, g), units(int64(len(body)+3)/4, 0, 0, 3, 0), true, true)
 }
 
-// D1 (H6): the client leaving after its request reached the backend, before the
+// The client leaving after its request reached the backend, before the
 // first event, bills the prompt the backend has: the input estimated from the body,
 // no output, flagged estimated and partial.
 func TestClientGoneBeforeTheFirstEventBillsTheSentPrompt(t *testing.T) {

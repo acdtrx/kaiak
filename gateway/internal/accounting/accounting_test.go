@@ -356,7 +356,7 @@ func TestRecorderSettlesOneRecordToTheBatcherThenTheMetrics(t *testing.T) {
 	}
 }
 
-// H5: a backend reporting more than 2^53 − 1 tokens would make the record — and its
+// A backend reporting more than 2^53 − 1 tokens would make the record — and its
 // whole batch — unacceptable to the control plane. Settlement clamps every unit and
 // the cost to the bound, logs it with the request ID and tells the metric.
 func TestSettlementClampsUsageToTheProtocolBound(t *testing.T) {

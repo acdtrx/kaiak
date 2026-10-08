@@ -14,8 +14,8 @@ func withSeed(seed []byte) func(*Options) {
 	return func(o *Options) { o.SeedConfig, o.SeedFile = seed, "seed.json" }
 }
 
-// E2: a boot with the control plane out of reach serves the seed config. The status
-// says ready with no control-plane config hash (N-P11), and the first config from the
+// A boot with the control plane out of reach serves the seed config. The status
+// says ready with no control-plane config hash, and the first config from the
 // control plane replaces it.
 func TestSeedConfigServesABootWithTheControlPlaneDown(t *testing.T) {
 	h := newHarness(t)
@@ -62,7 +62,7 @@ func TestSeedConfigIsIgnoredWhenTheControlPlaneAnswers(t *testing.T) {
 	}
 }
 
-// E2: a control plane with nothing published cannot give a config within the boot
+// A control plane with nothing published cannot give a config within the boot
 // wait: the seed serves.
 func TestSeedConfigServesWhenTheControlPlaneHasNoConfig(t *testing.T) {
 	h := newHarness(t)
@@ -90,7 +90,7 @@ func errorControlPlane(t *testing.T, status int, code string) *url.URL {
 	return u
 }
 
-// E2: a control plane failing on its side (5xx) is unavailable too: the seed serves.
+// A control plane failing on its side (5xx) is unavailable too: the seed serves.
 func TestSeedConfigServesWhenTheControlPlaneFails(t *testing.T) {
 	h := newHarness(t)
 	u := errorControlPlane(t, http.StatusInternalServerError, "internal-error")
@@ -100,7 +100,7 @@ func TestSeedConfigServesWhenTheControlPlaneFails(t *testing.T) {
 	h.wantLoad(load{TriggerSeed, true})
 }
 
-// E2: what the operator must fix — a refused token, a config the gateway rejects —
+// What the operator must fix — a refused token, a config the gateway rejects —
 // is never covered up by the seed: Boot fails, naming the cause.
 func TestSeedConfigIsNotUsedForAnOperatorError(t *testing.T) {
 	t.Run("refused token", func(t *testing.T) {
@@ -124,7 +124,7 @@ func TestSeedConfigIsNotUsedForAnOperatorError(t *testing.T) {
 	})
 }
 
-// E2: with neither the control plane nor a seed, Boot fails with the message the
+// With neither the control plane nor a seed, Boot fails with the message the
 // process exits on.
 func TestBootFailsWithNoSourceOfConfig(t *testing.T) {
 	h := newHarness(t)

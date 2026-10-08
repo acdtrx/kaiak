@@ -518,7 +518,7 @@ func TestBootWaitBoundsTheWaitForAConfig(t *testing.T) {
 	}
 }
 
-// D7: a control plane that comes up within the boot wait — restarting beside the
+// A control plane that comes up within the boot wait — restarting beside the
 // gateway — gives the gateway its config: boot opens the stream again with jittered
 // backoff (250 ms doubling, capped at 2 s) instead of giving up after one attempt.
 func TestBootRetriesUntilTheControlPlaneComesUp(t *testing.T) {
@@ -608,7 +608,7 @@ func TestBootTakesAConfigPublishedWithinTheWait(t *testing.T) {
 	}
 }
 
-// D7: what the operator must fix is never retried — a refused token, a config the
+// What the operator must fix is never retried — a refused token, a config the
 // gateway rejects: boot exits at once.
 func TestBootDoesNotRetryWhatTheOperatorMustFix(t *testing.T) {
 	for name, c := range map[string]struct {

@@ -109,8 +109,8 @@ func TestMinimalControlPlaneSetup(t *testing.T) {
 	wantEmpty(t, cwd)
 }
 
-// E2: the minimal setup with the control plane down at boot and no seed exits
-// non-zero with the reason, once the boot wait (retrying all along, D7) is over.
+// The minimal setup with the control plane down at boot and no seed exits
+// non-zero with the reason, once the boot wait (retrying all along) is over.
 func TestNoConfigAtBootExits(t *testing.T) {
 	cp := fakecontrol.New("t")
 	cp.Close()
@@ -128,7 +128,7 @@ func TestNoConfigAtBootExits(t *testing.T) {
 	}
 }
 
-// E2: with the control plane down the seed config serves its free models, and the
+// With the control plane down the seed config serves its free models, and the
 // gateway is ready.
 func TestSeedServesWithTheControlPlaneDown(t *testing.T) {
 	backend := fakebackend.New()
@@ -150,7 +150,7 @@ func TestSeedServesWithTheControlPlaneDown(t *testing.T) {
 	g.logs.wait(t, "the undelivered usage", msg("usage not flushed: lost at exit", "level", "ERROR", "kaiak.usage.batches", "1"))
 }
 
-// E2: a seed with a priced model fails the start, naming the model.
+// A seed with a priced model fails the start, naming the model.
 func TestPricedSeedFailsTheStart(t *testing.T) {
 	cp := fakecontrol.New("t")
 	defer cp.Close()
@@ -191,7 +191,7 @@ func streamInBackground(g *gateway, key, requestID, model string) (done <-chan s
 	return ch
 }
 
-// E3: batches keep going out on the 5 s interval through the drain, and a stream
+// Batches keep going out on the 5 s interval through the drain, and a stream
 // still running at drain timeout − flush reserve is cut there; its partial record
 // reaches the control plane in the reserve, before the exit.
 func TestDrainReserveDeliversTheCutRequestsUsage(t *testing.T) {

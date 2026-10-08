@@ -92,8 +92,8 @@ func TestRetrySucceedsOnTheOtherDeployment(t *testing.T) {
 		{name: "connect refused", first: "down", outcome: "upstream_unavailable", reason: "unavailable", records: 1},
 		{name: "backend 500", first: "local", fail: fakebackend.Reply{Status: 500}, outcome: "500", reason: "server_error", records: 1},
 		{name: "backend 429", first: "local", fail: fakebackend.Reply{Status: 429}, outcome: "429", reason: "rate_limited", records: 1},
-		// The independent audit's finding 3: an error answer broken before its body
-		// is retried by its status — no record of its own (it was answered).
+		// An error answer broken before its body is retried by its status — no record
+		// of its own (it was answered).
 		{name: "backend 429 cut before its body", first: "local", fail: fakebackend.Reply{Status: 429, Before: fakebackend.CutBody},
 			outcome: "429", reason: "rate_limited", records: 1},
 		{name: "backend 500 cut before its body", first: "local", fail: fakebackend.Reply{Status: 500, Before: fakebackend.CutBody},
@@ -292,7 +292,7 @@ func TestTimedOutAttemptIsRecordedAndLimitsSettleTheSum(t *testing.T) {
 		`kaiak_request_duration_seconds_count{endpoint="chat_completions",model="retry",status_class="2xx"} 1`)
 }
 
-// Retries are failover only (D4): a single-deployment model answers the attempt's
+// Retries are failover only: a single-deployment model answers the attempt's
 // error at once; the client (its SDK) retries.
 func TestSingleDeploymentIsNotRetried(t *testing.T) {
 	g := newTestGateway(t)

@@ -212,7 +212,7 @@ func TestCircuitOpensAfterTheThresholdAndAllOpenIs503(t *testing.T) {
 	}
 }
 
-// Retries are failover only (D4): with the default max_attempts, a request to a
+// Retries are failover only: with the default max_attempts, a request to a
 // single-deployment model is one attempt, so a client (an SDK) repeating a failed
 // call counts one failure per call — the threshold is reached by the calls, not
 // multiplied by the attempts within each.
@@ -351,8 +351,8 @@ func TestProbeUsesTheBackendCredential(t *testing.T) {
 	}
 }
 
-// E4: a half-open trial is decided at its first event. A long stream as the trial no
-// longer keeps its deployment out of rotation: the next request is served while the
+// A half-open trial is decided at its first event. A long stream as the trial does
+// not keep its deployment out of rotation: the next request is served while the
 // trial still streams.
 func TestLongStreamingTrialDoesNotBlockItsDeployment(t *testing.T) {
 	g := newCircuitGateway(t, 1, nil)
@@ -437,7 +437,7 @@ func TestTrialIsDecidedAtItsFirstDataEvent(t *testing.T) {
 	}
 }
 
-// N-C2: a hung backend behind a live models list. The half-open trial running into
+// A hung backend behind a live models list. The half-open trial running into
 // its response timeout opens the circuit again; with the circuit closed, the third
 // response timeout in a row counts as a failure. The "slow" backend's response
 // timeout is 150 ms.

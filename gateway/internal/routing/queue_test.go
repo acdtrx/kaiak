@@ -348,7 +348,7 @@ func TestCapIsSplitAmongLiveGateways(t *testing.T) {
 	}
 }
 
-// N-C3: after a reload, one model's queue holds waiters of two snapshots. A slot the
+// After a reload, one model's queue holds waiters of two snapshots. A slot the
 // new snapshot's deployments can use goes to its waiter, even behind an older
 // waiter that cannot use it.
 func TestFreedSlotReachesTheNewSnapshotsWaiter(t *testing.T) {

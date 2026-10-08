@@ -1,6 +1,6 @@
 package control
 
-// E1: the client keeps everything in memory: usage batches until acknowledged
+// The client keeps everything in memory: usage batches until acknowledged
 // (bounded), a fresh epoch per process. The filesystem side — nothing written at all —
 // is checked on the whole process (cmd/kaiak).
 
@@ -48,7 +48,7 @@ func TestBatchesAreDeliveredFromMemory(t *testing.T) {
 	}
 }
 
-// O7: batches the flush could not deliver are lost with the process — billing data
+// Batches the flush could not deliver are lost with the process — billing data
 // lost, logged at error level like the other losses.
 func TestAnUndeliveredFlushIsLoggedAsLost(t *testing.T) {
 	h := newHarness(t)

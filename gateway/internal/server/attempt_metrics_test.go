@@ -9,7 +9,7 @@ import (
 	"kaiak/internal/fakebackend"
 )
 
-// M4: every attempt is counted per deployment by its outcome — the circuit's
+// Every attempt is counted per deployment by its outcome — the circuit's
 // classification, named — and timed per backend to its end (a stream to the end of
 // its relay); retries carry the backend of the attempt they followed.
 func TestUpstreamAttemptMetrics(t *testing.T) {

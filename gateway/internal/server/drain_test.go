@@ -245,7 +245,7 @@ func TestDrainTimeoutCutsOffHungRequests(t *testing.T) {
 			}
 			r := records[0]
 			if c.reply.Before == fakebackend.StallFirstByte {
-				// D1: the backend had the prompt when the drain cut it: the input,
+				// The backend had the prompt when the drain cut it: the input,
 				// estimated from the body, no output.
 				expectUnits(t, r, units(int64(len(body)+3)/4, 0, 0, 0, 0), true, true)
 			}
@@ -305,7 +305,7 @@ func TestHurriedDrainSkipsTheWaitsAndCutsOff(t *testing.T) {
 	}
 }
 
-// O8: the draining line names the configured timeout and the flush reserve, and when
+// The draining line names the configured timeout and the flush reserve, and when
 // in-flight requests are cut — the reserve before the timeout.
 func TestDrainCutsTheReserveBeforeTheTimeout(t *testing.T) {
 	g := newTestGateway(t)

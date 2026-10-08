@@ -49,7 +49,7 @@ func postAs(t *testing.T, g *testGateway, key, id, body string) *httptest.Respon
 		header: map[string]string{"X-Request-Id": id}})
 }
 
-// D6: a limit refusal logs which limit refused — its kind of scope, its group's ID
+// A limit refusal logs which limit refused — its kind of scope, its group's ID
 // (never a key, never a label), its type, the value enforced and the value
 // configured, and what was used — and every line names the key's group. The
 // refusals are counted by scope kind and limit type, every series present from the
@@ -121,7 +121,7 @@ func TestLimitRefusalsLogTheLimit(t *testing.T) {
 		`kaiak_limit_rejections_total{scope_kind="global",type="usd_per_month"} 0`)
 }
 
-// D6: a budget refused as unavailable names the USD limit it could not check; its
+// A budget refused as unavailable names the USD limit it could not check; its
 // spend is unknown, so no used amount. It is no caller's limit hit: not counted
 // among the limit rejections.
 func TestBudgetUnavailableLogsTheLimit(t *testing.T) {
@@ -139,7 +139,7 @@ func TestBudgetUnavailableLogsTheLimit(t *testing.T) {
 	expectMetricLines(t, g.metricsText(), `kaiak_limit_rejections_total{scope_kind="group",type="usd_per_month"} 0`)
 }
 
-// D6: a backend error status relayed to the client logs its class as the error code
+// A backend error status relayed to the client logs its class as the error code
 // and the error code and type its body names — never its message.
 func TestRelayedBackendErrorsLogTheirClass(t *testing.T) {
 	g := newTestGateway(t)
@@ -174,7 +174,7 @@ func TestRelayedBackendErrorsLogTheirClass(t *testing.T) {
 		`kaiak_errors_total{class="upstream_rate_limited"} 1`)
 }
 
-// D6: time to first token is the answering attempt's — from its send, not from the
+// Time to first token is the answering attempt's — from its send, not from the
 // request's arrival: a first attempt that timed out before its first event does not
 // count against the backend that then answered. The log line carries the same
 // measure and whether the request streamed.

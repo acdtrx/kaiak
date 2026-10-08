@@ -12,11 +12,10 @@ import (
 	"kaiak/internal/routing"
 )
 
-// The reviewers' scenario (D3; the independent audit's finding 3): deployment A
-// answers 429 with Retry-After: 60 at once, B is healthy with one long stream
-// holding a slot. Least-in-flight alone prefers A every time and the retry budget
-// runs out on the spill-over; with the cooldown, A takes the first attempt only and
-// every request is served by B.
+// Deployment A answers 429 with Retry-After: 60 at once, B is healthy with one long
+// stream holding a slot. Least-in-flight alone prefers A every time and the retry
+// budget runs out on the spill-over; with the cooldown, A takes the first attempt
+// only and every request is served by B.
 func TestThrottledDeploymentCoolsDown(t *testing.T) {
 	g, other := newRetryGateway(t, "local", "local-b", nil)
 	g.backend.SetReply(fakebackend.Reply{Status: http.StatusTooManyRequests, Header: map[string]string{"Retry-After": "60"}})

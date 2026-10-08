@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// The 2026-10-05 review's M5: what a control URL answers can carry anything — a proxy
+// What a control URL answers can carry anything — a proxy
 // or a misdirected URL echoing the bearer token. The client's failures reach log
 // lines in its own words (docs/specs/GATEWAY.md, Logs: no remote text): the
 // Kaiak-Protocol header as absent, invalid or the number parsed; an error code only in

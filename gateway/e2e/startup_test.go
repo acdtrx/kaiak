@@ -35,7 +35,7 @@ func spentBudgetControlPlane(t *testing.T, backendURL, evalHash, annHash string)
 
 const startupToken = "e2e-startup-token"
 
-// D7: a control plane that comes up 3 s after the gateway — both restarted together —
+// A control plane that comes up 3 s after the gateway — both restarted together —
 // gives the gateway its config: the boot retries within its wait (60 s by default)
 // instead of exiting after one attempt.
 func TestBootWaitsForAControlPlaneComingUp(t *testing.T) {
@@ -63,11 +63,10 @@ func TestBootWaitsForAControlPlaneComingUp(t *testing.T) {
 	g.stop(t)
 }
 
-// D8: a fresh stateless gateway against a
-// control plane whose budget is spent, the totals that follow the stream's first
-// config held back. The gateway must not be ready before they arrive — ready, it
-// admitted the priced request as if nothing were spent — and once they arrive it
-// refuses it.
+// A fresh stateless gateway against a control plane whose budget is spent, the totals
+// that follow the stream's first config held back. The gateway must not be ready
+// before they arrive — ready, it admitted the priced request as if nothing were
+// spent — and once they arrive it refuses it.
 func TestReadinessWaitsForTheFirstTotals(t *testing.T) {
 	backend := fakebackend.New()
 	defer backend.Close()
@@ -107,9 +106,10 @@ func TestReadinessWaitsForTheFirstTotals(t *testing.T) {
 	g.stop(t)
 }
 
-// D8, the wait running out: the gateway becomes ready without its first totals, and
-// refuses priced USD-limited requests budget_unavailable until they arrive — other
-// models serve; once they arrive, the spent budget refuses budget_exceeded.
+// The wait for the first totals running out: the gateway becomes ready without its
+// first totals, and refuses priced USD-limited requests budget_unavailable until they
+// arrive — other models serve; once they arrive, the spent budget refuses
+// budget_exceeded.
 func TestFirstTotalsLateRefuseBudgetsUntilTheyArrive(t *testing.T) {
 	backend := fakebackend.New()
 	defer backend.Close()

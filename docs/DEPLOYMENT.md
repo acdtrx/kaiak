@@ -959,7 +959,7 @@ Boot).
   alerts. **The control plane broadcasts its current config**: no config versions —
   a gateway applies the config the control plane sends, and reports configs by
   their `config_hash`.
-- **Host apps on `kaiak-control`** (this release):
+- **Host apps on `kaiak-control`** (0.11):
   - **The store interface changed** (`control/kaiak-control/GUIDE.md` §5):
     - the current config only, kept as its JSON **text** with its hash
       (`ConfigEntry { text, hash, publishedAt }`; `currentConfig()`,

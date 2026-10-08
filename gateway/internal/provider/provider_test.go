@@ -123,7 +123,7 @@ func TestProbeGetsTheModelsListWithTheBackendCredential(t *testing.T) {
 	}
 }
 
-// The probe reads which models the backend lists (H8): a deployment is served only
+// The probe reads which models the backend lists: a deployment is served only
 // when its backend-side model name is among them. Azure's list names models, not the
 // deployments requests use, so its probe cannot tell.
 func TestProbeReportsTheListedModels(t *testing.T) {
@@ -159,7 +159,7 @@ func TestProbeReportsTheListedModels(t *testing.T) {
 }
 
 // A backend 404 saying the deployment's model does not exist is the deployment's
-// failure (H8): an error the pipeline retries and counts, not a caller's 4xx relayed.
+// failure: an error the pipeline retries and counts, not a caller's 4xx relayed.
 // Other 404s are relayed as they came.
 func TestModelMissingAnswerIsAnError(t *testing.T) {
 	fb := fakebackend.New()
@@ -257,7 +257,7 @@ func TestMissingModelCodesArePerModule(t *testing.T) {
 	}
 }
 
-// Backend model names in the backend's own naming (E12): llama-server lists a model
+// Backend model names in the backend's own naming: llama-server lists a model
 // by its file path. The probe matches the path whole, and a 404 naming it is the
 // deployment's failure; a longer path containing it is another model.
 func TestPathStyleBackendModelNames(t *testing.T) {
@@ -298,7 +298,7 @@ func TestPathStyleBackendModelNames(t *testing.T) {
 }
 
 // Sent reports that the request reached the backend in full — accounting bills the
-// prompt from then on (D1) — and never fires for a connection refused.
+// prompt from then on — and never fires for a connection refused.
 func TestSentReportsTheRequestWrittenInFull(t *testing.T) {
 	fb := fakebackend.New()
 	defer fb.Close()
@@ -412,9 +412,9 @@ func TestSuccessfulAnswerEndingBeforeTheFirstEventIsUnavailable(t *testing.T) {
 	}
 }
 
-// Defense in depth for the independent audit's finding 1: a backend naming one of the
-// gateway's own KAIAK_ variables — refused by the config schema, so reaching here
-// only past a validation bug — gets no credential: the variable's value never leaves.
+// Defense in depth: a backend naming one of the gateway's own KAIAK_ variables —
+// refused by the config schema, so reaching here only past a validation bug — gets no
+// credential: the variable's value never leaves.
 func TestReservedVariablesAreNeverSentAsACredential(t *testing.T) {
 	fb := fakebackend.New()
 	defer fb.Close()
@@ -482,12 +482,12 @@ func TestLogExportVariablesAreNeverSentAsACredential(t *testing.T) {
 	}
 }
 
-// An error answer whose body breaks before its first byte is still that answer (the
-// independent audit's finding 3): the status came with the headers, so Send returns
-// the response — status and headers intact, the break its first Next — and the
-// pipeline accounts and retries by the status, not as a request left unanswered. A
-// 404 too (its model check reads the body first), and a first-read timeout after
-// error headers. A successful status is no answer without its body: still unavailable.
+// An error answer whose body breaks before its first byte is still that answer: the
+// status came with the headers, so Send returns the response — status and headers
+// intact, the break its first Next — and the pipeline accounts and retries by the
+// status, not as a request left unanswered. A 404 too (its model check reads the body
+// first), and a first-read timeout after error headers. A successful status is no
+// answer without its body: still unavailable.
 func TestErrorAnswerBrokenBeforeItsBodyKeepsItsStatus(t *testing.T) {
 	for _, c := range []struct {
 		name   string

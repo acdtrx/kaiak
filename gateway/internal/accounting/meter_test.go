@@ -193,7 +193,7 @@ func TestNoAnswerOrErrorStatusCountsNothing(t *testing.T) {
 	expect(t, units, flags, withEveryTokenUnit(Units{}), Flags{})
 }
 
-// D1: a request written to the backend in full that gets no answer — a first-event
+// A request written to the backend in full that gets no answer — a first-event
 // or response timeout, the client gone, the drain's cut — counts the input, estimated; one the
 // backend refused (its credential) or never got in full counts nothing.
 func TestSentUnansweredCountsTheEstimatedInput(t *testing.T) {

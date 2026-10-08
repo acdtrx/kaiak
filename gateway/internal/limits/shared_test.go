@@ -163,12 +163,12 @@ func TestPushedWindowRolloverMidBatch(t *testing.T) {
 	}
 }
 
-// N-M2: the control plane's clock steps 90 minutes ahead and
-// pushes a 12:00 window while the gateway is in 10:00 — a warning, and the window
-// moves to 12:00 (the control plane's newest window leads). Its clock fixed, the
-// control plane pushes 10:00 again: that matches the gateway's own clock window, so
-// it is taken — the window goes back and the hour limit is enforced again, instead
-// of counting nothing pushed until the gateway's clock reaches 12:00.
+// The control plane's clock steps 90 minutes ahead and pushes a 12:00 window while
+// the gateway is in 10:00 — a warning, and the window moves to 12:00 (the control
+// plane's newest window leads). Its clock fixed, the control plane pushes 10:00
+// again: that matches the gateway's own clock window, so it is taken — the window
+// goes back and the hour limit is enforced again, instead of counting nothing pushed
+// until the gateway's clock reaches 12:00.
 func TestEarlierPushedWindowMatchingTheGatewayClockIsTaken(t *testing.T) {
 	c := newClock("2026-09-24T10:30:00Z")
 	var logs bytes.Buffer
@@ -206,10 +206,10 @@ func TestEarlierPushedWindowMatchingTheGatewayClockIsTaken(t *testing.T) {
 	}
 }
 
-// D4: a workload using 60% of its hour limit every hour through a
-// 2-hour outage. Uncounted usage stays in the window it was settled in — the control
-// plane counts it there too (its gateway_time window, current or previous) — so each
-// new hour starts from nothing of its own, and nothing is refused.
+// A workload using 60% of its hour limit every hour through a 2-hour outage.
+// Uncounted usage stays in the window it was settled in — the control plane counts it
+// there too (its gateway_time window, current or previous) — so each new hour starts
+// from nothing of its own, and nothing is refused.
 func TestUncountedUsageStaysInItsOwnWindow(t *testing.T) {
 	c := newClock("2026-09-24T10:00:00Z")
 	l, contact := c.shared(holderOf(snapshot(t, limitsDoc{workload: hourLimit})))
@@ -505,7 +505,7 @@ func TestTotalsApplyWhateverTheConfig(t *testing.T) {
 	admitN(t, l, workload, 1, 10)
 }
 
-// D6: a model with no price in force costs nothing, so no budget ever refuses it —
+// A model with no price in force costs nothing, so no budget ever refuses it —
 // neither a spent USD limit nor the outage refusal, which exists because spend is
 // unknown; priced models under the same limit are refused.
 func TestUnpricedModelsAreNeverRefusedForBudgets(t *testing.T) {
@@ -590,7 +590,7 @@ func TestShareWarningNamesOnlyModelsTheScopeMayUse(t *testing.T) {
 	}
 }
 
-// O6: the outage's start is logged once as a warning, its end once at info — on
+// The outage's start is logged once as a warning, its end once at info — on
 // the transitions, whatever the requests and scrapes in between.
 func TestOutageStartAndEndAreLoggedOnce(t *testing.T) {
 	c := newClock("2026-09-24T10:30:00Z")
@@ -666,7 +666,7 @@ func TestOutageStartAndEndAreLoggedOnce(t *testing.T) {
 	}
 }
 
-// M16 at the limiter: an open stream is contact, but not while usage batches have
+// At the limiter, an open stream is contact, but not while usage batches have
 // waited past the grace for an answer.
 func TestUsageWaitingPastTheGraceIsAnOutage(t *testing.T) {
 	c := newClock("2026-09-24T10:30:00Z")
@@ -762,7 +762,7 @@ func TestEditedLimitKeepsTheSpend(t *testing.T) {
 }
 
 // A gateway that boots without reaching the control plane does not know what was
-// spent: it refuses priced USD-limited requests from the start (D8: no totals yet), and
+// spent: it refuses priced USD-limited requests from the start (no totals yet), and
 // past the grace since it started the outage rule refuses them too.
 func TestBootWithoutTheControlPlaneIsAnOutageAfterTheGrace(t *testing.T) {
 	c := newClock("2026-09-24T10:30:00Z")
@@ -802,7 +802,7 @@ func TestHoldOfAClearedWindowIsNeverReleasedAfterAClockCorrection(t *testing.T) 
 	admitN(t, l, workload, 1, 1)
 }
 
-// D8: a fresh gateway does not know what was spent until its first totals arrive.
+// A fresh gateway does not know what was spent until its first totals arrive.
 // "No totals yet" is not "totals with no usage": priced USD-limited requests are
 // refused as unavailable until then; token limits keep counting locally from zero;
 // the first totals end it.

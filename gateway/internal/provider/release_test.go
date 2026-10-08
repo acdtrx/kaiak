@@ -27,7 +27,7 @@ func (c *capturingTransport) RoundTrip(r *http.Request) (*http.Response, error) 
 	return c.next.RoundTrip(r)
 }
 
-// M2: once Send has returned (the first event is in), neither the client's body nor
+// Once Send has returned (the first event is in), neither the client's body nor
 // the edited copy sent upstream is reachable from the response, which may stream on
 // for minutes: no retry can use them any more.
 func TestSendKeepsNoRequestBodyOnceTheFirstEventIsIn(t *testing.T) {

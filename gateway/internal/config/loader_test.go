@@ -208,9 +208,9 @@ func mustRead(t *testing.T, path string) string {
 	return string(data)
 }
 
-// The independent audit's finding 1: a second "backends" member held a backend the
-// schema walker never saw (the generic tree keeps the last member, the typed decode
-// merges both), naming a KAIAK_ variable as its credential. Duplicate members are
+// A second "backends" member could hold a backend the schema walker never sees (the
+// generic tree keeps the last member, the typed decode merges both), naming a
+// KAIAK_ variable as its credential. Duplicate members are
 // refused before either decoder runs, at any depth.
 func TestDuplicateMembersCannotHideABackendFromTheSchema(t *testing.T) {
 	doc := minimalDoc(`{ "type": "openai-compatible", "base_url": "http://x/v1" }`)

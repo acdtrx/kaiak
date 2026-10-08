@@ -49,7 +49,7 @@ func TestRetryBudgetWindow(t *testing.T) {
 }
 
 // A retry counts against the budget when it is sent, not when it is approved: one
-// approved and then never sent (no slot, the client gone) spends nothing (N-P8).
+// approved and then never sent (no slot, the client gone) spends nothing.
 func TestRetryBudgetCountsSentRetries(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	b := newRetryBudget(func() time.Time { return now })
@@ -68,7 +68,7 @@ func TestRetryBudgetCountsSentRetries(t *testing.T) {
 }
 
 // Past the model's retry budget a failed attempt is not retried: the request ends
-// with its answer, and the log line says why (L1).
+// with its answer, and the log line says why.
 func TestRetryBudgetStopsRetries(t *testing.T) {
 	g, other := newRetryGateway(t, "local", "local-b",
 		withGlobal(t, `"circuit": { "failure_threshold": 1000, "probe_interval_ms": 3600000 }`))

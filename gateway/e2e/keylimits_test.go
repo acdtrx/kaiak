@@ -1,9 +1,8 @@
 package e2e
 
-// The request guards the follow-up audit added, through the built binary
-// (docs/specs/GATEWAY.md, Limits): the per-key concurrency limit, an output limit
-// above the model's context, and the short retry of a token refusal blocked only by
-// running requests.
+// Request guards through the built binary (docs/specs/GATEWAY.md, Limits): the
+// per-key concurrency limit, an output limit above the model's context, and the short
+// retry of a token refusal blocked only by running requests.
 
 import (
 	"bytes"
@@ -59,7 +58,7 @@ func holdStream(t *testing.T, g *gateway, key, requestID string) *heldStream {
 	return s
 }
 
-// E10: a key holds at most max_concurrent_requests_per_key (default 16) requests on
+// A key holds at most max_concurrent_requests_per_key (default 16) requests on
 // the gateway; the next is refused at once with 429 concurrency_limit_exceeded and
 // Retry-After 1, another key is still served, and a finished request gives its slot
 // back.
@@ -108,7 +107,7 @@ func TestPerKeyConcurrencyLimit(t *testing.T) {
 	g.stop(t)
 }
 
-// E9: max_tokens or max_completion_tokens above the model's context_length is
+// max_tokens or max_completion_tokens above the model's context_length is
 // refused 400 invalid_value naming the key, before anything reaches the backend; the
 // context length itself is accepted (and lowered to the ceiling).
 func TestOutputLimitAboveTheContextIsRefused(t *testing.T) {

@@ -72,7 +72,7 @@ func TestClientTimeoutsOnARealListener(t *testing.T) {
 	g, key := startTimeoutGateway(t, backend.URL())
 
 	t.Run("a stalled body without a key is answered 401 and closed", func(t *testing.T) {
-		// The audit's reproduction: headers declaring a one-byte body that never comes.
+		// Headers declaring a one-byte body that never comes.
 		conn := dialAPI(t, g)
 		if _, err := io.WriteString(conn, "POST /v1/chat/completions HTTP/1.1\r\nHost: kaiak\r\n"+
 			"Content-Type: application/json\r\nContent-Length: 1\r\n\r\n"); err != nil {

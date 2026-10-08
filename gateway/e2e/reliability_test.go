@@ -253,7 +253,7 @@ func TestRetryOnBackendError(t *testing.T) {
 	g.stop(t)
 }
 
-// Retries are failover only, and a 429 cools its deployment down (D3, D4): a's 429
+// Retries are failover only, and a 429 cools its deployment down: a's 429
 // fails over to b, whose 500 answers (no deployment left — a is never retried);
 // while a cools down, requests go to b alone.
 func TestThrottledDeploymentFailsOverAndCoolsDown(t *testing.T) {

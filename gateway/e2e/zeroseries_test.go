@@ -11,7 +11,7 @@ import (
 	"kaiak/internal/fakebackend"
 )
 
-// E5 (the audit's N-O4): every counter and histogram whose label set the config
+// Every counter and histogram whose label set the config
 // determines exists at 0 from startup, and a reload's new deployments, models and
 // backends get theirs at once — so an increase() alert sees the first event (two
 // scrapes: 0, then 1), not a series born at 1.

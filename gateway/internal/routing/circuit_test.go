@@ -628,7 +628,7 @@ func enqueueWhileOpen(t *testing.T, r *Router, m *config.Model, depth int) <-cha
 }
 
 // A probe half-opens only the circuits of deployments whose model the backend lists;
-// the others stay open and the prober keeps probing (H8).
+// the others stay open and the prober keeps probing.
 func TestProbeKeepsUnlistedDeploymentsOpen(t *testing.T) {
 	probe := newScriptedProbe()
 	r := New(Options{Probe: probe.probe})
@@ -692,7 +692,7 @@ func TestProbeThatCannotTellHalfOpens(t *testing.T) {
 	trial.Release()
 }
 
-// E4: a half-open trial is decided when its response starts: the circuit closes at
+// A half-open trial is decided when its response starts: the circuit closes at
 // once and the deployment takes other requests while the trial still runs; a later
 // failure of that request counts as an ordinary failure against the closed circuit.
 func TestHalfOpenTrialIsDecidedWhenItsResponseStarts(t *testing.T) {
@@ -753,7 +753,7 @@ func TestResponseStartedOutsideATrialChangesNothing(t *testing.T) {
 	}
 }
 
-// N-C2: response timeouts are neutral until responseTimeoutsAsFailure arrive in a row
+// Response timeouts are neutral until responseTimeoutsAsFailure arrive in a row
 // with no success between; from then on each counts as a failure.
 func TestResponseTimeoutsInARowCountAsFailures(t *testing.T) {
 	r := New(Options{})
@@ -783,7 +783,7 @@ func TestResponseTimeoutsInARowCountAsFailures(t *testing.T) {
 	}
 }
 
-// N-C2: a half-open trial that runs into its response timeout failed: the circuit
+// A half-open trial that runs into its response timeout failed: the circuit
 // opens again.
 func TestHalfOpenTrialResponseTimeoutReopens(t *testing.T) {
 	obs := &events{}
@@ -807,7 +807,7 @@ func TestHalfOpenTrialResponseTimeoutReopens(t *testing.T) {
 	}
 }
 
-// N-C2: the prober keeps probing a backend while its circuits are half-open: a
+// The prober keeps probing a backend while its circuits are half-open: a
 // success leaves them half-open, a failure opens them again; the prober stops once
 // a trial closed the last one.
 func TestProberKeepsProbingHalfOpenCircuits(t *testing.T) {

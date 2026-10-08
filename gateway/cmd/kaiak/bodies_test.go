@@ -10,7 +10,7 @@ import (
 	"kaiak/internal/server"
 )
 
-// M2: KAIAK_BODY_MEMORY_BYTES sets the body budget: whole bytes above 0.
+// KAIAK_BODY_MEMORY_BYTES sets the body budget: whole bytes above 0.
 func TestBodyMemorySetting(t *testing.T) {
 	base := map[string]string{"KAIAK_CONFIG_FILE": "c.json", "KAIAK_INSTANCE_ID": "i"}
 	with := func(value string) map[string]string {
@@ -34,7 +34,7 @@ func TestBodyMemorySetting(t *testing.T) {
 	}
 }
 
-// M2: a config whose body cap exceeds the whole body budget is applied, with a
+// A config whose body cap exceeds the whole body budget is applied, with a
 // warning: bodies above the budget are refused as too large.
 func TestBodyCapAboveTheBudgetIsWarned(t *testing.T) {
 	var logs syncBuffer
@@ -85,7 +85,7 @@ func TestUsageMemoryAndConnectionSettings(t *testing.T) {
 	}
 }
 
-// L2: KAIAK_METRICS_TOKEN is the bearer token /metrics requires; unset or empty,
+// KAIAK_METRICS_TOKEN is the bearer token /metrics requires; unset or empty,
 // /metrics is open.
 func TestMetricsTokenSetting(t *testing.T) {
 	base := map[string]string{"KAIAK_CONFIG_FILE": "c.json", "KAIAK_INSTANCE_ID": "i"}

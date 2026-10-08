@@ -8,7 +8,7 @@ import (
 	"kaiak/internal/provider"
 )
 
-// D1, D2: the input estimate counts text by bytes, each media item as
+// The input estimate counts text by bytes, each media item as
 // InlineMediaTokens and each token ID as one token; a completion batch's largest
 // prompt is what one sequence sees.
 func TestEstimateInput(t *testing.T) {

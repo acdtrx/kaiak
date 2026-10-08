@@ -482,7 +482,7 @@ func TestUsageBatchEncodesAsTheProtocolSays(t *testing.T) {
 	}
 }
 
-// H5: a record the protocol refuses (here a unit past 2^53 − 1, which settlement
+// A record the protocol refuses (here a unit past 2^53 − 1, which settlement
 // clamps — a record reaching the sender unclamped stands for any invalid record)
 // would make the control plane refuse its whole batch. It is dropped alone at seal
 // time; the rest of the batch is counted.

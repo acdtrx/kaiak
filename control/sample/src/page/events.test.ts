@@ -168,7 +168,7 @@ async function openPageStream(url: string): Promise<PageStream> {
   };
 }
 
-// N-S6: page streams share the port with the gateways' config streams, so their
+// Page streams share the port with the gateways' config streams, so their
 // number is capped; one past the cap is refused at once, and a slot frees when a
 // stream ends.
 test("page streams past the cap are refused with 503 until one ends", { timeout: 5000 }, async () => {

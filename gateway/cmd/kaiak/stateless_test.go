@@ -1,7 +1,8 @@
 package main
 
-// E1–E3 at the process level (in-process run): nothing written to disk, the boot
-// order with the seed, the seed's startup checks and the drain's flush reserve.
+// The stateless gateway at the process level (in-process run): nothing written to
+// disk, the boot order with the seed, the seed's startup checks and the drain's flush
+// reserve.
 
 import (
 	"context"
@@ -43,7 +44,7 @@ func wantEmptyDir(t *testing.T, dir string) {
 	}
 }
 
-// E1: the gateway writes nothing, in either mode, through boot, serving and the drain.
+// The gateway writes nothing, in either mode, through boot, serving and the drain.
 func TestRunWritesNothing(t *testing.T) {
 	fixture := absFixture(t)
 	data, err := os.ReadFile(fixture)
@@ -89,7 +90,7 @@ func TestRunWritesNothing(t *testing.T) {
 	})
 }
 
-// E2: in control-plane mode with no config from anywhere, run exits with the reason
+// In control-plane mode with no config from anywhere, run exits with the reason
 // before binding anything.
 func TestRunExitsWithNoConfigAtBoot(t *testing.T) {
 	cp := fakecontrol.New("cp-token")
@@ -139,7 +140,7 @@ func merged(base, extra map[string]any) map[string]any {
 	return base
 }
 
-// E2, N-P4: the seed is checked completely at startup — credentials included — and
+// The seed is checked completely at startup — credentials included — and
 // may hold no priced model: it serves during an outage, when nothing could be billed
 // against a budget the control plane keeps.
 func TestSeedIsCheckedAtStartup(t *testing.T) {
@@ -174,7 +175,7 @@ func TestSeedIsCheckedAtStartup(t *testing.T) {
 	}
 }
 
-// E2: a seed boot serves, and the status says ready (N-P11).
+// A seed boot serves, and the status says ready.
 func TestRunBootsFromTheSeedWithTheControlPlaneDown(t *testing.T) {
 	cp := fakecontrol.New("cp-token")
 	cp.Close()

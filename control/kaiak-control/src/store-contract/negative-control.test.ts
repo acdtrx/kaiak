@@ -1,7 +1,7 @@
 // The contract tests must catch a broken store, not only pass a good one: run in a child
 // process against each deliberately broken store, they fail — exactly the tests that
 // name the broken guarantee, each for the reason that guarantee gives, and no others
-// (docs/reviews/2026-10-07/AUDIT.md M4, AUDIT-2.md 2M7, AUDIT-3.md 3M5 and 3L3).
+// (GUIDE.md §11, Testing).
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";

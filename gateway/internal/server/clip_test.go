@@ -8,7 +8,7 @@ import (
 	"kaiak/internal/clip"
 )
 
-// L3: strings the client controls — the path, the method, a refused model name —
+// Strings the client controls — the path, the method, a refused model name —
 // are clipped to clip.Max bytes wherever they are logged or echoed in an error
 // message; the key never appears in either.
 func TestClientStringsAreClippedInLogsAndErrors(t *testing.T) {

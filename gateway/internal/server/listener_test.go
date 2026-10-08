@@ -53,7 +53,7 @@ func readAnswer(t *testing.T, conn net.Conn, limit time.Duration) (answer string
 	return string(data), true
 }
 
-// The audit's reproduction: complete headers declaring a one-byte body that never
+// Complete headers declaring a one-byte body that never
 // comes, and no key. Refused before the body is read, the answer still waits for
 // net/http to dispose of the body — the body-read deadline bounds that wait.
 func TestUnauthenticatedStalledBodyIsBounded(t *testing.T) {
@@ -173,7 +173,7 @@ func TestClientThatStopsReadingIsCutOff(t *testing.T) {
 	}
 }
 
-// N-S5: both listeners (Listen serves API and admin) refuse request headers above
+// Both listeners (Listen serves API and admin) refuse request headers above
 // maxHeaderBytes with 431, instead of net/http's default 1 MiB per connection; a
 // request with ordinary headers — tens of KiB still — passes.
 func TestOversizeHeadersAreRefused(t *testing.T) {

@@ -297,7 +297,7 @@ func TestModelEntryAndProps(t *testing.T) {
 
 // An injected output-limit default leaves room for the prompt: at most the context
 // length minus the input estimate, never below 256 (and never above the default); a
-// value the client sent is left as it is (L11).
+// value the client sent is left as it is.
 func TestInjectedOutputDefaultFitsTheContext(t *testing.T) {
 	g := newTestGateway(t)
 	s := testSnapshotWith(t, g.backend.URL(), func(doc string) string {

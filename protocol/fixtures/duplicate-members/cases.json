@@ -2,7 +2,7 @@
   "config-backends-twice.json": {
     "kind": "config",
     "path": "/backends",
-    "reason": "a first backends member holds a backend the last one lacks (the independent audit's finding 1: the typed decode merged both, the schema walker saw only the last)"
+    "reason": "a first backends member holds a backend the last one lacks: a decode that merged the two would check a different backend set than the one kept"
   },
   "config-nested-member-twice.json": {
     "kind": "config",

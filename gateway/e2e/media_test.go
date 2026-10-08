@@ -1,8 +1,8 @@
 package e2e
 
-// Inline media and limit refusals through the built binary (the daily-operations
-// review's D1 and D6): the input estimate and the refusal's log line as an operator
-// meets them, over a real HTTP body of screenshot size.
+// Inline media and limit refusals through the built binary: the input estimate and
+// the refusal's log line as an operator meets them, over a real HTTP body of
+// screenshot size.
 
 import (
 	"encoding/json"

@@ -140,13 +140,13 @@ func TestExhaustedBudgetIs429BudgetExceeded(t *testing.T) {
 		t.Errorf("Retry-After %q, want seconds to the month's end", w.Header().Get("Retry-After"))
 	}
 	// The limit names no models, but "open" has no price: it costs nothing, so the
-	// spent budget does not refuse it (D6).
+	// spent budget does not refuse it.
 	if w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey, body: chatBody}); w.Code != http.StatusOK {
 		t.Errorf("unpriced model: status %d: %s", w.Code, w.Body.String())
 	}
 }
 
-// D6 over HTTP: a global USD budget covers every model, yet in an outage only the
+// Over HTTP, a global USD budget covers every model, yet in an outage only the
 // priced model is refused; the free one keeps serving.
 func TestOutageRefusesOnlyPricedModels(t *testing.T) {
 	lost := time.Now().Add(-time.Hour)
@@ -210,7 +210,7 @@ func TestOutputMultiplicityMultipliesTheReservation(t *testing.T) {
 		sequences int64
 		param     string
 		// input is the input estimate; 0 = the body's bytes ÷ 4. A token ID counts
-		// one token, its bytes left out of the text (D1).
+		// one token, its bytes left out of the text.
 		input int64
 	}{
 		{name: "chat, one sequence", path: "/v1/chat/completions", body: `{"model":"pair","messages":[],"max_tokens":100}`, sequences: 1},
@@ -284,7 +284,7 @@ func TestOutputMultiplicityReservationSaturates(t *testing.T) {
 }
 
 // A request above this gateway's per-minute share but within the full limit waits for
-// room; only one above the full limit is too large (M7).
+// room; only one above the full limit is too large.
 func TestTooLargeMeansAboveTheFullLimit(t *testing.T) {
 	share := errLimited(&limits.Rejection{Group: "research", Type: config.LimitTokensPerMinute,
 		Measure: config.MeasureTokens, Limit: 15000, Max: 60000, Used: 16484, Requested: 16484, RetryAfter: 30 * time.Second})
@@ -298,7 +298,7 @@ func TestTooLargeMeansAboveTheFullLimit(t *testing.T) {
 	}
 }
 
-// E9: an output limit the client sets above the model's context length can never be
+// An output limit the client sets above the model's context length can never be
 // honored, so it is refused up front (400 invalid_value, OpenAI's answer to the same
 // mistake) — on each chat key and on completions. A value within the context but
 // above the ceiling is still lowered to the ceiling. Embeddings have no output limit.
@@ -390,10 +390,10 @@ func TestOutputLimitKeysTheEndpointDoesNotTakePassUnchecked(t *testing.T) {
 	}
 }
 
-// N-M1 over HTTP: team tokens_per_hour 1000 with
-// 10 used, then max_tokens at the int64 maximum on a model with no output limit. A
-// wrapped sum would admit it and leave the counter negative, admitting everything
-// after it: it is refused, and the counter and the limit are untouched.
+// Over HTTP: team tokens_per_hour 1000 with 10 used, then max_tokens at the int64
+// maximum on a model with no output limit. A wrapped sum would admit it and leave the
+// counter negative, admitting everything after it: it is refused, and the counter and
+// the limit are untouched.
 func TestHugeMaxTokensDoesNotDisableTokenLimits(t *testing.T) {
 	g := newTestGateway(t)
 	withLimits(t, g, `[{ "type": "tokens_per_hour", "value": 1000 }]`, "")
@@ -455,8 +455,8 @@ func TestNegativeOutputLimitIsRefused(t *testing.T) {
 	}
 }
 
-// The independent audit's finding 4: 10 000 prompts under max_n 8 were one request —
-// one backend slot, 10 000 generation jobs. The sequences a request generates are
+// 10 000 prompts under max_n 8 would be one request — one backend slot, 10 000
+// generation jobs. The sequences a request generates are
 // capped by global.max_sequences_per_request, an embeddings request's inputs by
 // global.max_embedding_inputs.
 func TestBatchSizeIsCappedPerRequest(t *testing.T) {

@@ -39,7 +39,7 @@ func waitIdle(t *testing.T, g *testGateway) {
 	}
 }
 
-// M2: request bodies share one gateway-wide budget. A request whose body does not fit
+// Request bodies share one gateway-wide budget. A request whose body does not fit
 // in what the requests in flight leave is refused at once — 503 server_busy with
 // Retry-After: 1, its body never read — and the budget comes back when they end.
 func TestBodyBudgetRefusesARequestWhenSpent(t *testing.T) {
@@ -92,7 +92,7 @@ func TestBodyBudgetRefusesARequestWhenSpent(t *testing.T) {
 	}
 }
 
-// M2: a body is dropped, and its share of the budget given back, as soon as the
+// A body is dropped, and its share of the budget given back, as soon as the
 // response starts relaying — no retry can use it any more — not when a long stream
 // ends.
 func TestBodyIsReleasedOnceTheResponseRelays(t *testing.T) {
@@ -122,7 +122,7 @@ func TestBodyIsReleasedOnceTheResponseRelays(t *testing.T) {
 	}
 }
 
-// M2: a body larger than the whole budget could never be held: it is refused as too
+// A body larger than the whole budget could never be held: it is refused as too
 // large, with the budget as the limit, even under a larger max_request_body_bytes.
 func TestBodyOverTheWholeBudgetIsTooLarge(t *testing.T) {
 	g := buildTestGateway(t, testOptions{bodyMemory: 500})
@@ -137,7 +137,7 @@ func TestBodyOverTheWholeBudgetIsTooLarge(t *testing.T) {
 	}
 }
 
-// M2: a body of unknown length (chunked) takes the budget step by step as it arrives:
+// A body of unknown length (chunked) takes the budget step by step as it arrives:
 // it is read while the budget has room, refused 503 once a step finds it spent, and
 // refused as too large past the limit. Every share comes back.
 func TestBodyOfUnknownLengthTakesTheBudgetAsItArrives(t *testing.T) {
@@ -180,12 +180,12 @@ func TestBodyOfUnknownLengthTakesTheBudgetAsItArrives(t *testing.T) {
 	}
 }
 
-// N-S1, scaled down: connections of one valid key declaring large bodies and sending
-// nothing. Taking the budget for the whole declared length before a byte arrived, two
-// would fill it here, and every other client would get 503 server_busy until the
-// body-read deadline. The key's concurrency limit refuses them past 16, and those
-// admitted hold at most one growth step of the budget each: another key's request is
-// served.
+// Idle declared bodies, scaled down: connections of one valid key declaring large
+// bodies and sending nothing. Taking the budget for the whole declared length before
+// a byte arrived, two would fill it here, and every other client would get 503
+// server_busy until the body-read deadline. The key's concurrency limit refuses them
+// past 16, and those admitted hold at most one growth step of the budget each:
+// another key's request is served.
 func TestIdleDeclaredBodiesDoNotStarveOtherKeys(t *testing.T) {
 	const declared, attackers, perKey = 1 << 20, 20, 16
 	g := buildTestGateway(t, testOptions{bodyMemory: 2 * declared})

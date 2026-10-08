@@ -9,7 +9,7 @@ import (
 	"kaiak/internal/metrics"
 )
 
-// L2: with a metrics token set, /metrics answers only a request bearing it; the
+// With a metrics token set, /metrics answers only a request bearing it; the
 // probes stay open.
 func TestMetricsTokenGuardsMetricsOnly(t *testing.T) {
 	g := newTestGateway(t)

@@ -11,9 +11,9 @@ import (
 	"kaiak/internal/fakebackend"
 )
 
-// D2: a non-stream request past its backend's response timeout answers 504, is not
-// retried (the backend was working on a long answer) and bills the prompt it sent
-// (D1). The "slow" backend's response timeout is 150 ms.
+// A non-stream request past its backend's response timeout answers 504, is not
+// retried (the backend was working on a long answer) and bills the prompt it sent.
+// The "slow" backend's response timeout is 150 ms.
 func TestResponseTimeoutIsNotRetried(t *testing.T) {
 	g := newTestGateway(t)
 	g.backend.SetReply(fakebackend.Reply{Before: fakebackend.StallFirstByte})
@@ -32,7 +32,7 @@ func TestResponseTimeoutIsNotRetried(t *testing.T) {
 	}
 }
 
-// H1: a stream silent past its backend's stall timeout after the first events ends
+// A stream silent past its backend's stall timeout after the first events ends
 // as a backend failure: the client connection is cut, the upstream request
 // cancelled, usage settled partial, no retry (part of the answer reached the
 // client). The "slow" backend's stall timeout is 150 ms.
@@ -103,7 +103,7 @@ func workloadStream(t *testing.T, url, body string) *http.Response {
 	return resp
 }
 
-// M13 (the audit's probe): a stream that ends cleanly after a content event, with no
+// A stream that ends cleanly after a content event, with no
 // finish_reason and no [DONE], is incomplete — a backend failure: the client
 // connection is cut, usage settled partial, not retried.
 func TestStreamEndingBeforeItsTerminalChunkIsIncomplete(t *testing.T) {
@@ -165,7 +165,7 @@ func TestJSONBodyEndingEarlyIsAnUpstreamFailure(t *testing.T) {
 	}
 }
 
-// E8: only data events are progress. A backend that sends keep-alive comments and
+// Only data events are progress. A backend that sends keep-alive comments and
 // no data past the stall timeout has stalled: the relay ends upstream_stalled. The
 // comments still reach the client. The "slow" backend's stall timeout is 150 ms.
 func TestKeepAliveCommentsDoNotHoldOffTheStallTimer(t *testing.T) {
