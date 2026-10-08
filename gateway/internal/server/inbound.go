@@ -71,7 +71,7 @@ func parseOwnedFields(rq *request) *apiError {
 	if repeated != "" {
 		return errDuplicateMember(repeated)
 	}
-	switch providerEndpoint(rq.endpoint).Format() {
+	switch rq.endpoint.api.Format() {
 	case provider.FormatOpenAI:
 		return parseOpenAIFields(rq, top)
 	case provider.FormatMessages:
@@ -98,10 +98,10 @@ func parseOpenAIFields(rq *request, top map[string]json.RawMessage) *apiError {
 		return apiErr
 	}
 
-	if rq.inbound.Sequences, apiErr = sequences(rq.endpoint, top, rq.snapshot); apiErr != nil {
+	if rq.inbound.Sequences, apiErr = sequences(rq.endpoint.api, top, rq.snapshot); apiErr != nil {
 		return apiErr
 	}
-	if rq.endpoint == endpointEmbeddings {
+	if rq.endpoint.api == provider.Embeddings {
 		if inputs := promptCount(top["input"]); inputs > rq.snapshot.MaxEmbeddingInputs {
 			return errTooManyInputs(inputs, rq.snapshot.MaxEmbeddingInputs)
 		}
@@ -123,7 +123,7 @@ func parseOpenAIFields(rq *request, top map[string]json.RawMessage) *apiError {
 		}
 		rq.inbound.IncludeUsage = includeUsage != nil && *includeUsage
 	}
-	rq.input = accounting.EstimateInput(providerEndpoint(rq.endpoint), rq.body)
+	rq.input = accounting.EstimateInput(rq.endpoint.api, rq.body)
 	return nil
 }
 
@@ -242,8 +242,8 @@ func decodeMembersRepeats(data []byte) (members map[string]json.RawMessage, repe
 // refused; a value below 1 counts as 1 (the backend refuses it). The product
 // saturates rather than overflows, and above max_sequences_per_request it is refused:
 // the backend takes it as one request — one slot — however many sequences it holds.
-func sequences(ep endpoint, top map[string]json.RawMessage, s *config.Snapshot) (int64, *apiError) {
-	if ep != endpointChatCompletions && ep != endpointCompletions {
+func sequences(api provider.Endpoint, top map[string]json.RawMessage, s *config.Snapshot) (int64, *apiError) {
+	if api != provider.ChatCompletions && api != provider.Completions {
 		return 1, nil
 	}
 	perPrompt, perPromptParam := int64(1), "n"
@@ -263,7 +263,7 @@ func sequences(ep endpoint, top map[string]json.RawMessage, s *config.Snapshot) 
 		}
 	}
 	prompts := int64(1)
-	if ep == endpointCompletions {
+	if api == provider.Completions {
 		prompts = promptCount(top["prompt"])
 	}
 	total := saturatingMul(perPrompt, prompts)

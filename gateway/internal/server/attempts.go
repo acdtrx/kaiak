@@ -75,7 +75,7 @@ type attempts struct {
 // Providers → Endpoint support). model_access has checked the model exists in the
 // snapshot.
 func (l *attempts) run(ctx context.Context, rq *request) *apiError {
-	m := l.missing.exclude(rq.serving, rq.endpoint, time.Now())
+	m := l.missing.exclude(rq.serving, rq.endpoint.api, time.Now())
 	// However the request ends, its last attempt settles, tells the circuit breaker
 	// and frees its slot.
 	rq.finishers = append(rq.finishers, func() { l.end(rq) })
@@ -104,7 +104,7 @@ func (l *attempts) run(ctx context.Context, rq *request) *apiError {
 		}
 
 		at := &attempt{slot: slot, deployment: slot.Deployment, wait: wait,
-			meter: accounting.NewMeter(providerEndpoint(rq.endpoint), rq.input.Total), start: time.Now()}
+			meter: accounting.NewMeter(rq.endpoint.api, rq.input.Total), start: time.Now()}
 		rq.attempts = append(rq.attempts, at)
 
 		if prev == nil {
@@ -172,13 +172,13 @@ func throttleCooldown(h http.Header, now time.Time) time.Duration {
 	return throttleCooldownDefault
 }
 
-// servingDeployments is model m as routing sees it for a request to ep: only the
-// deployments whose backend serves ep — m itself when every one does, nil when none
+// servingDeployments is model m as routing sees it for a request to api: only the
+// deployments whose backend serves api — m itself when every one does, nil when none
 // does (docs/specs/GATEWAY.md, Request pipeline: routing).
-func servingDeployments(m *config.Model, ep endpoint) *config.Model {
+func servingDeployments(m *config.Model, api provider.Endpoint) *config.Model {
 	n := 0
 	for _, d := range m.Deployments {
-		if serves(d, ep) {
+		if serves(d, api) {
 			n++
 		}
 	}
@@ -191,16 +191,16 @@ func servingDeployments(m *config.Model, ep endpoint) *config.Model {
 	view := *m
 	view.Deployments = make([]config.Deployment, 0, n)
 	for _, d := range m.Deployments {
-		if serves(d, ep) {
+		if serves(d, api) {
 			view.Deployments = append(view.Deployments, d)
 		}
 	}
 	return &view
 }
 
-// serves reports whether deployment d's backend serves endpoint ep.
-func serves(d config.Deployment, ep endpoint) bool {
-	return provider.Serves(d.Backend.Type, providerEndpoint(ep))
+// serves reports whether deployment d's backend serves api.
+func serves(d config.Deployment, api provider.Endpoint) bool {
+	return provider.Serves(d.Backend.Type, api)
 }
 
 // send sends the request to attempt at's deployment and waits for the first event. A
@@ -209,7 +209,7 @@ func serves(d config.Deployment, ep endpoint) bool {
 // that then gets no answer), and how the backend answered.
 func (l *attempts) send(ctx context.Context, rq *request, at *attempt) (provider.Response, *apiError) {
 	resp, err := l.providers.For(at.deployment.Backend).Send(ctx, &provider.Request{
-		Endpoint:     providerEndpoint(rq.endpoint),
+		Endpoint:     rq.endpoint.api,
 		Deployment:   at.deployment,
 		Body:         rq.body,
 		Stream:       rq.inbound.Stream,
@@ -224,13 +224,13 @@ func (l *attempts) send(ctx context.Context, rq *request, at *attempt) (provider
 		if perr, ok := errors.AsType[*provider.Error](at.err); ok && failureRuleOf(perr).refused {
 			at.meter.Refused()
 			if perr.Code == provider.CodeEndpointMissing &&
-				l.missing.remember(at.deployment.Backend.ID, rq.endpoint, time.Now(), rq.snapshot.Circuit.ProbeInterval) {
+				l.missing.remember(at.deployment.Backend.ID, rq.endpoint.api, time.Now(), rq.snapshot.Circuit.ProbeInterval) {
 				// Not a circuit failure, so it shows here, once per interval: the
 				// operator upgrades the server; meanwhile routing leaves it out for the
 				// endpoint.
 				l.logger.Warn("the backend's server lacks an endpoint its type serves: an older version?",
 					"kaiak.request.id", rq.id, "kaiak.backend.id", at.deployment.Backend.ID,
-					"kaiak.deployment.model", at.deployment.Model, "kaiak.endpoint", rq.endpoint.name())
+					"kaiak.deployment.model", at.deployment.Model, "kaiak.endpoint", rq.endpoint.name)
 			}
 		}
 		if _, ok := errors.AsType[*provider.RefusalError](at.err); ok {
@@ -408,7 +408,7 @@ func (l *attempts) settle(rq *request, at *attempt) {
 		return
 	}
 	at.settled = true
-	if rq.endpoint.counts() || (at.retryReason != "" && !at.meter.SentUnanswered()) {
+	if rq.endpoint.counts || (at.retryReason != "" && !at.meter.SentUnanswered()) {
 		return
 	}
 	rec := l.recorder.Settle(accounting.Request{
@@ -573,25 +573,6 @@ func failureRuleOf(perr *provider.Error) failureRule {
 		return rule
 	}
 	return failureRules[provider.CodeUnavailable]
-}
-
-// providerEndpoint maps a body endpoint to the provider's operation.
-func providerEndpoint(ep endpoint) provider.Endpoint {
-	switch ep {
-	case endpointCompletions:
-		return provider.Completions
-	case endpointEmbeddings:
-		return provider.Embeddings
-	case endpointMessages:
-		return provider.Messages
-	case endpointMessagesCountTokens:
-		return provider.MessagesCountTokens
-	case endpointResponses:
-		return provider.Responses
-	case endpointResponsesInputTokens:
-		return provider.ResponsesInputTokens
-	}
-	return provider.ChatCompletions
 }
 
 // upstreamFailure records attempt at's provider error and maps it to the client's

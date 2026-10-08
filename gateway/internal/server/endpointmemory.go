@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"kaiak/internal/config"
+	"kaiak/internal/provider"
 )
 
 // MissingEndpoints remembers which backends' servers lack an endpoint their type
@@ -22,8 +23,8 @@ type MissingEndpoints struct {
 }
 
 type missingEndpoint struct {
-	backend  string
-	endpoint endpoint
+	backend string
+	api     provider.Endpoint
 }
 
 // NewMissingEndpoints returns an empty memory.
@@ -45,25 +46,25 @@ func (m *MissingEndpoints) Retain(backends map[string]*config.Backend) {
 	}
 }
 
-// remember records that backend's server lacks ep until now+ttl, and reports whether
+// remember records that backend's server lacks api until now+ttl, and reports whether
 // it was not already remembered — the one moment worth a warning per interval.
-func (m *MissingEndpoints) remember(backend string, ep endpoint, now time.Time, ttl time.Duration) bool {
+func (m *MissingEndpoints) remember(backend string, api provider.Endpoint, now time.Time, ttl time.Duration) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	key := missingEndpoint{backend, ep}
+	key := missingEndpoint{backend, api}
 	fresh := !now.Before(m.until[key])
 	m.until[key] = now.Add(ttl)
 	return fresh
 }
 
-// exclude is model as routing sees it for ep at now: its deployments on backends
-// remembered as lacking ep left out — model itself when there are none, and when
+// exclude is model as routing sees it for api at now: its deployments on backends
+// remembered as lacking api left out — model itself when there are none, and when
 // every deployment is on one (they are tried again: a server may have been upgraded).
-func (m *MissingEndpoints) exclude(model *config.Model, ep endpoint, now time.Time) *config.Model {
+func (m *MissingEndpoints) exclude(model *config.Model, api provider.Endpoint, now time.Time) *config.Model {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	lacks := func(d config.Deployment) bool {
-		key := missingEndpoint{d.Backend.ID, ep}
+		key := missingEndpoint{d.Backend.ID, api}
 		until, ok := m.until[key]
 		if ok && !now.Before(until) {
 			delete(m.until, key)

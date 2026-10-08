@@ -14,7 +14,7 @@ import (
 // endpoints. Everything else — system, messages, thinking, tool_choice — is the
 // backend's and passes untouched.
 func parseMessagesFields(rq *request, top map[string]json.RawMessage) *apiError {
-	if rq.endpoint == endpointMessages {
+	if !rq.endpoint.counts {
 		if apiErr := readModelAndStream(rq, top); apiErr != nil {
 			return apiErr
 		}
@@ -32,14 +32,14 @@ func parseMessagesFields(rq *request, top map[string]json.RawMessage) *apiError 
 	if apiErr := refuseStoredFiles(top["messages"]); apiErr != nil {
 		return apiErr
 	}
-	if rq.endpoint == endpointMessages {
+	if !rq.endpoint.counts {
 		budget, apiErr := thinkingBudget(top["thinking"])
 		if apiErr != nil {
 			return apiErr
 		}
 		rq.inbound.ThinkingBudget = budget
 	}
-	rq.input = accounting.EstimateInput(providerEndpoint(rq.endpoint), rq.body)
+	rq.input = accounting.EstimateInput(rq.endpoint.api, rq.body)
 	return nil
 }
 

@@ -39,11 +39,11 @@ func (a *API) logRequest(rq *request) {
 	if rq.model != "" {
 		attrs = append(attrs, slog.String("gen_ai.request.model", clip.String(rq.model)))
 	}
-	if rq.modelAllowed && rq.endpoint.takesBody() {
+	if rq.modelAllowed && rq.endpoint.body {
 		attrs = append(attrs, slog.Bool("gen_ai.request.stream", rq.inbound.Stream))
 	}
-	if op := rq.endpoint.operationName(); op != "" {
-		attrs = append(attrs, slog.String("gen_ai.operation.name", op))
+	if rq.endpoint != nil && rq.endpoint.operation != "" {
+		attrs = append(attrs, slog.String("gen_ai.operation.name", rq.endpoint.operation))
 	}
 	// The upstream fields are the answering attempt's: an attempt that was retried
 	// shows only in kaiak.tried.

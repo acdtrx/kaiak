@@ -9,6 +9,7 @@ import (
 
 	"kaiak/internal/auth"
 	"kaiak/internal/config"
+	"kaiak/internal/provider"
 )
 
 // The model endpoints answer from the declared config alone; field names and shapes
@@ -70,8 +71,8 @@ func newModelEntry(m *config.Model) modelEntry {
 func servedEndpoints(m *config.Model) []string {
 	names := []string{}
 	for _, ep := range bodyEndpoints {
-		if slices.ContainsFunc(m.Deployments, func(d config.Deployment) bool { return serves(d, ep) }) {
-			names = append(names, ep.name())
+		if slices.ContainsFunc(m.Deployments, func(d config.Deployment) bool { return serves(d, ep.api) }) {
+			names = append(names, ep.name)
 		}
 	}
 	slices.Sort(names)
@@ -106,13 +107,6 @@ type anthropicModelList struct {
 // an RFC 3339 time.
 const anthropicModelCreated = "1970-01-01T00:00:00Z"
 
-// wantsAnthropicModels reports whether a model-list or model-entry request asks for
-// Anthropic's shape: Anthropic's SDKs send anthropic-version on every request, and
-// OpenAI's never do.
-func wantsAnthropicModels(r *http.Request) bool {
-	return r.Header.Get("Anthropic-Version") != ""
-}
-
 func newAnthropicModelEntry(m *config.Model) anthropicModelEntry {
 	e := newModelEntry(m)
 	return anthropicModelEntry{
@@ -125,7 +119,7 @@ func newAnthropicModelEntry(m *config.Model) anthropicModelEntry {
 // servesMessages reports whether some deployment of m serves Messages: the models an
 // Anthropic client can use.
 func servesMessages(m *config.Model) bool {
-	return slices.ContainsFunc(m.Deployments, func(d config.Deployment) bool { return serves(d, endpointMessages) })
+	return slices.ContainsFunc(m.Deployments, func(d config.Deployment) bool { return serves(d, provider.Messages) })
 }
 
 // answerAnthropicModels answers the Anthropic-shaped model list and entry, over the
@@ -156,7 +150,7 @@ func answerAnthropicModels(rq *request) *apiError {
 // answerModelEndpoint is the model endpoints' terminal stage (modelRequests).
 // model_access has checked a named model exists and is allowed.
 func answerModelEndpoint(_ context.Context, rq *request) *apiError {
-	if (rq.endpoint == endpointListModels || rq.endpoint == endpointGetModel) && wantsAnthropicModels(rq.r) {
+	if rq.endpoint.answersAnthropic(rq.r) {
 		return answerAnthropicModels(rq)
 	}
 	switch rq.endpoint {

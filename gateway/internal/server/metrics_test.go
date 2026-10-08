@@ -632,7 +632,7 @@ func errorAnswers() []struct {
 		// Every provider refusal is the caller's mistake, whatever its code.
 		{"errRefused", errRefused(&provider.RefusalError{Code: "price_option_unsupported"})},
 		{"errRefused", errRefused(&provider.RefusalError{Code: "duplicate_member"})},
-		{"errEndpointNotServed", errEndpointNotServed(endpointChatCompletions)},
+		{"errEndpointNotServed", errEndpointNotServed(bodyEndpoint(provider.ChatCompletions))},
 		{"errInternal", errInternal()},
 		{"errQueueFull", errQueueFull()},
 		{"errConcurrencyLimited", errConcurrencyLimited(1)},

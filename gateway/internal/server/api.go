@@ -47,7 +47,7 @@ func NewAPI(holder *config.Holder, drain *Drain, bodies *BodyBudget, providers *
 		stages: newPipeline(drain, keys, bodies, providers, limiter, router, missing, recorder, logger), mux: http.NewServeMux()}
 
 	for _, ep := range bodyEndpoints {
-		a.mux.HandleFunc("POST "+ep.path(), func(w http.ResponseWriter, r *http.Request) {
+		a.mux.HandleFunc("POST "+ep.route(), func(w http.ResponseWriter, r *http.Request) {
 			a.serve(w, r, ep, "")
 		})
 	}
@@ -59,16 +59,16 @@ func NewAPI(holder *config.Holder, drain *Drain, bodies *BodyBudget, providers *
 	// Method-less patterns catch the other methods on known paths, answered in the
 	// path's error shape; "/" catches unknown paths. ServeMux's own 404 and 405
 	// answers are plain text, so they never reach clients.
-	refuseMethod := func(path, allow string, ep endpoint) {
+	refuseMethod := func(path, allow string, ep *endpoint) {
 		a.mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Allow", allow)
-			a.refuse(w, r, errMethodNotAllowed(r), errorShapeOf(ep, r))
+			a.refuse(w, r, errMethodNotAllowed(r), ep.errorShape(r))
 		})
 	}
 	refuseMethod("/v1/models", "GET, HEAD", endpointListModels)
 	refuseMethod("/v1/models/{rest...}", "GET, HEAD", endpointGetModel)
 	for _, ep := range bodyEndpoints {
-		refuseMethod(ep.path(), http.MethodPost, ep)
+		refuseMethod(ep.route(), http.MethodPost, ep)
 	}
 	a.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		a.refuse(w, r, errUnknownURL(r), shapeOpenAI)
@@ -106,7 +106,7 @@ func (a *API) serveModelPath(w http.ResponseWriter, r *http.Request) {
 
 // serve runs the pipeline for one request to ep. pathModel is the model named by the
 // route ("" for endpoints that take it from the body or name none).
-func (a *API) serve(w http.ResponseWriter, r *http.Request, ep endpoint, pathModel string) {
+func (a *API) serve(w http.ResponseWriter, r *http.Request, ep *endpoint, pathModel string) {
 	rq := a.begin(w, r)
 	defer rq.finish()
 	// The first finisher runs last: the ops metrics and the log line carry what

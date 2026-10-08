@@ -53,7 +53,7 @@ func TestEndpointSupportFollowsTheSpec(t *testing.T) {
 		for i, cell := range cells[1:] {
 			for _, e := range endpointColumns[header[i+1]] {
 				if want := strings.HasPrefix(cell, "yes"); Serves(typ, e) != want {
-					t.Errorf("%s serves %s: %v, the spec says %q", typ, e.path(), Serves(typ, e), cell)
+					t.Errorf("%s serves %s: %v, the spec says %q", typ, e.Path(), Serves(typ, e), cell)
 				}
 			}
 		}
@@ -86,7 +86,7 @@ func TestEndpointMissingFromAServer(t *testing.T) {
 	}
 	r := moduleRegistry()
 	for _, c := range cases {
-		t.Run(string(c.typ)+"/"+c.endpoint.path(), func(t *testing.T) {
+		t.Run(string(c.typ)+"/"+c.endpoint.Path(), func(t *testing.T) {
 			s := newWireServer(t)
 			s.set(c.status, c.answer)
 			_, err := sendTo(r, wireBackend(s, c.typ), c.endpoint, `{"model":"pub"}`)
@@ -94,7 +94,7 @@ func TestEndpointMissingFromAServer(t *testing.T) {
 			if !ok || perr.Code != CodeEndpointMissing {
 				t.Fatalf("%v, want upstream_endpoint_missing", err)
 			}
-			if !strings.Contains(err.Error(), c.endpoint.path()) || strings.Contains(err.Error(), "Not Found") ||
+			if !strings.Contains(err.Error(), c.endpoint.Path()) || strings.Contains(err.Error(), "Not Found") ||
 				strings.Contains(err.Error(), "Invalid URL") {
 				t.Errorf("error %q: want the endpoint named, not the backend's text", err)
 			}
@@ -124,7 +124,7 @@ func TestNoUsageEditOutsideTheOpenAIFormat(t *testing.T) {
 		body, stripUsage, err := passthroughBody(&Request{Endpoint: e, Stream: true,
 			Deployment: config.Deployment{Model: "m"}, Body: []byte(`{"model":"pub","stream":true}`)})
 		if err != nil || stripUsage || string(body) != want {
-			t.Errorf("%s: %s, strip %v, %v", e.path(), body, stripUsage, err)
+			t.Errorf("%s: %s, strip %v, %v", e.Path(), body, stripUsage, err)
 		}
 	}
 }

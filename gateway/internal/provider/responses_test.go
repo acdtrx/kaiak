@@ -140,7 +140,7 @@ func TestEveryModuleSendsResponsesWithoutStore(t *testing.T) {
 				t.Fatalf("backend body %s: %v", got.Body, err)
 			}
 			if store := members["store"]; string(store) != c.want {
-				t.Errorf("%s %s: store %s, want %q: %s", m.typ, c.endpoint.path(), store, c.want, got.Body)
+				t.Errorf("%s %s: store %s, want %q: %s", m.typ, c.endpoint.Path(), store, c.want, got.Body)
 			}
 		}
 	}

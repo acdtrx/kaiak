@@ -36,7 +36,7 @@ func (m *llamaServer) header() http.Header {
 // Send implements Provider.
 func (m *llamaServer) Send(ctx context.Context, req *Request) (Response, error) {
 	return sendWire(ctx, req, wireCall{
-		backend: m.backend, client: m.client, url: m.url(req.Endpoint.path()), header: m.header(),
+		backend: m.backend, client: m.client, url: m.url(req.Endpoint.Path()), header: m.header(),
 		missingModel: missingModelNamedOrCoded("model_not_found"), unknownPath: m.unknownPath, core: openAICore(req.Endpoint),
 	})
 }

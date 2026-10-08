@@ -54,7 +54,7 @@ func (m *anthropic) Send(ctx context.Context, req *Request) (Response, error) {
 		edits = append(edits, setValue("service_tier", []byte(`"standard_only"`)))
 	}
 	return sendWire(ctx, req, wireCall{
-		backend: m.backend, client: m.client, url: m.url(req.Endpoint.path()), header: m.header(),
+		backend: m.backend, client: m.client, url: m.url(req.Endpoint.Path()), header: m.header(),
 		edits: edits, missingModel: anthropicModelMissing, unknownPath: m.unknownPath,
 		core: req.Endpoint == Messages,
 	})

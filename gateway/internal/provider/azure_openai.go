@@ -37,7 +37,7 @@ func (m *azureOpenAI) header() http.Header {
 // being OpenAI's shape, model_not_found is read as the same.
 func (m *azureOpenAI) Send(ctx context.Context, req *Request) (Response, error) {
 	return sendWire(ctx, req, wireCall{
-		backend: m.backend, client: m.client, url: m.url(req.Endpoint.path()), header: m.header(),
+		backend: m.backend, client: m.client, url: m.url(req.Endpoint.Path()), header: m.header(),
 		edits: []memberEdit{standardServiceTier(req.Endpoint)}, missingModel: missingModelCoded("DeploymentNotFound", "model_not_found"), unknownPath: m.unknownPath, core: openAICore(req.Endpoint),
 	})
 }

@@ -35,7 +35,7 @@ func TestURLJoining(t *testing.T) {
 		{azure, ChatCompletions, "https://res.openai.azure.com/openai/v1/chat/completions"},
 		{azure, Embeddings, "https://res.openai.azure.com/openai/v1/embeddings"},
 	} {
-		if got := c.m.url(c.e.path()); got != c.want {
+		if got := c.m.url(c.e.Path()); got != c.want {
 			t.Errorf("got %s, want %s", got, c.want)
 		}
 	}

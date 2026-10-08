@@ -89,25 +89,20 @@ func anthropicErrorType(status int) string {
 	return typeInvalidRequest
 }
 
-// errorShapeOf is the error shape of a request r to ep: Anthropic's on the Messages
+// errorShape is the error shape of a request r to e: Anthropic's on the Messages
 // endpoints, and on the model list and entry when the request carries an
 // anthropic-version header (the Anthropic-shaped model list); OpenAI's everywhere
-// else.
-func errorShapeOf(ep endpoint, r *http.Request) errorShape {
-	switch ep {
-	case endpointMessages, endpointMessagesCountTokens:
+// else (answersAnthropic).
+func (e *endpoint) errorShape(r *http.Request) errorShape {
+	if e.answersAnthropic(r) {
 		return shapeAnthropic
-	case endpointListModels, endpointGetModel:
-		if wantsAnthropicModels(r) {
-			return shapeAnthropic
-		}
 	}
 	return shapeOpenAI
 }
 
 // errorShape is the error shape of the request's answers.
 func (rq *request) errorShape() errorShape {
-	return errorShapeOf(rq.endpoint, rq.r)
+	return rq.endpoint.errorShape(rq.r)
 }
 
 // writeError writes e as the whole response, in shape.
@@ -313,9 +308,9 @@ func errRefused(r *provider.RefusalError) *apiError {
 // errEndpointNotServed answers a request for a model none of whose deployments is on
 // a backend serving the endpoint (docs/specs/GATEWAY.md, Providers → Endpoint
 // support). The model passed the access check, so naming the endpoint leaks nothing.
-func errEndpointNotServed(ep endpoint) *apiError {
+func errEndpointNotServed(ep *endpoint) *apiError {
 	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "endpoint_not_served", class: metrics.ErrorInvalidRequest,
-		message: fmt.Sprintf("The model is not served on %s: none of its backends serves this API.", ep.path())}
+		message: fmt.Sprintf("The model is not served on %s: none of its backends serves this API.", ep.route())}
 }
 
 func errInternal() *apiError {

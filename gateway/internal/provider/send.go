@@ -194,7 +194,7 @@ func deploymentFailure(resp *http.Response, req *Request, call wireCall) *Error 
 			call.backend.ID, call.url)}
 	case ok && call.unknownPath(answer):
 		return &Error{Code: CodeEndpointMissing, Err: fmt.Errorf("backend %s answered %d: its server has no %s endpoint (an older version?)",
-			call.backend.ID, resp.StatusCode, req.Endpoint.path())}
+			call.backend.ID, resp.StatusCode, req.Endpoint.Path())}
 	}
 	return nil
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
-	"slices"
 	"time"
 
 	"kaiak/internal/accounting"
@@ -16,114 +15,77 @@ import (
 	"kaiak/internal/routing"
 )
 
-// endpoint is a client API operation the gateway serves. The zero value is none: a
-// request refused before it matched an endpoint.
-type endpoint int
+// endpoint is a client API operation the gateway serves: one row, whose fields are
+// what the pipeline decides by endpoint. A request refused before it matched one has
+// none (nil).
+type endpoint struct {
+	// name is the endpoint's metric label value.
+	name string
+	// operation is the endpoint's gen_ai.operation.name on the log line: the GenAI
+	// convention's well-known value — a chat operation in any of its APIs is "chat" —
+	// and "" for the model and token-counting endpoints, which have none.
+	operation string
+	// body: the endpoint is a POST carrying a JSON request body in api's format,
+	// passed through to a backend serving api; its route is api's path under /v1/
+	// (route).
+	body bool
+	api  provider.Endpoint
+	// counts: the endpoint only counts a request's tokens: nothing is generated or
+	// billed there, so it reserves no tokens and settles into no usage record
+	// (docs/specs/GATEWAY.md, Client API → token-counting endpoints).
+	counts bool
+	// outputLimitKeys are the endpoint's output-limit parameters; the first is the one
+	// a default is set under. Chat takes max_completion_tokens, OpenAI's current
+	// field, which vLLM, SGLang, llama-server, OpenAI and Azure all read — and which
+	// OpenAI's and Azure's reasoning models require (they refuse max_tokens) — and
+	// still honors the older max_tokens. Completions and Messages have only
+	// max_tokens (Messages requires it, so a model with an output limit always sends
+	// one), Responses only max_output_tokens. Embeddings and the token-counting
+	// endpoints generate nothing.
+	outputLimitKeys []outputLimitKey
+	// anthropicOnHeader: the endpoint answers in Anthropic's shape when the request
+	// carries an anthropic-version header (answersAnthropic).
+	anthropicOnHeader bool
+}
 
-const (
-	endpointNone endpoint = iota
-	endpointChatCompletions
-	endpointCompletions
-	endpointEmbeddings
-	endpointMessages
-	endpointMessagesCountTokens
-	endpointResponses
-	endpointResponsesInputTokens
-	endpointListModels
-	endpointGetModel
-	endpointModelProps
+// bodyEndpoints are the endpoints served as a POST carrying a JSON request body, one
+// row per provider.Endpoint the client API serves.
+var bodyEndpoints = []*endpoint{
+	{body: true, api: provider.ChatCompletions, name: "chat_completions", operation: "chat",
+		outputLimitKeys: []outputLimitKey{maxCompletionTokensKey, maxTokensKey}},
+	{body: true, api: provider.Completions, name: "completions", operation: "text_completion",
+		outputLimitKeys: []outputLimitKey{maxTokensKey}},
+	{body: true, api: provider.Embeddings, name: "embeddings", operation: "embeddings"},
+	{body: true, api: provider.Messages, name: "messages", operation: "chat",
+		outputLimitKeys: []outputLimitKey{maxTokensKey}},
+	{body: true, api: provider.MessagesCountTokens, name: "messages_count_tokens", counts: true},
+	{body: true, api: provider.Responses, name: "responses", operation: "chat",
+		outputLimitKeys: []outputLimitKey{maxOutputTokensKey}},
+	{body: true, api: provider.ResponsesInputTokens, name: "responses_input_tokens", counts: true},
+}
+
+// The model endpoints, answered from the config. The model list and entry answer in
+// Anthropic's shape when asked for it: Anthropic's SDKs send anthropic-version on
+// every request, and OpenAI's never do.
+var (
+	endpointListModels = &endpoint{name: "list_models", anthropicOnHeader: true}
+	endpointGetModel   = &endpoint{name: "get_model", anthropicOnHeader: true}
+	endpointModelProps = &endpoint{name: "model_props"}
 )
 
-// path is the endpoint's route, as the client API documents it.
-func (e endpoint) path() string {
-	switch e {
-	case endpointChatCompletions:
-		return "/v1/chat/completions"
-	case endpointCompletions:
-		return "/v1/completions"
-	case endpointEmbeddings:
-		return "/v1/embeddings"
-	case endpointMessages:
-		return "/v1/messages"
-	case endpointMessagesCountTokens:
-		return "/v1/messages/count_tokens"
-	case endpointResponses:
-		return "/v1/responses"
-	case endpointResponsesInputTokens:
-		return "/v1/responses/input_tokens"
-	case endpointListModels:
-		return "/v1/models"
-	case endpointGetModel:
-		return "/v1/models/{id}"
-	case endpointModelProps:
-		return "/v1/models/{id}/props"
+// route is a body endpoint's route, as the client API documents it.
+func (e *endpoint) route() string {
+	return "/v1/" + e.api.Path()
+}
+
+// answersAnthropic reports whether a request r to e is answered in Anthropic's shape —
+// its errors (errorShape) and, on the model list and entry, the answer itself: a body
+// endpoint in the shape of the API it speaks, a model endpoint as its row says.
+func (e *endpoint) answersAnthropic(r *http.Request) bool {
+	if e.body {
+		return e.api.Format() == provider.FormatMessages
 	}
-	return ""
-}
-
-// name is the endpoint's metric label value.
-func (e endpoint) name() string {
-	switch e {
-	case endpointChatCompletions:
-		return "chat_completions"
-	case endpointCompletions:
-		return "completions"
-	case endpointEmbeddings:
-		return "embeddings"
-	case endpointMessages:
-		return "messages"
-	case endpointMessagesCountTokens:
-		return "messages_count_tokens"
-	case endpointResponses:
-		return "responses"
-	case endpointResponsesInputTokens:
-		return "responses_input_tokens"
-	case endpointListModels:
-		return "list_models"
-	case endpointGetModel:
-		return "get_model"
-	case endpointModelProps:
-		return "model_props"
-	}
-	return ""
-}
-
-// operationName is the endpoint's gen_ai.operation.name on the log line: the GenAI
-// convention's well-known value — a chat operation in any of its APIs is "chat" —
-// and "" for the model and token-counting endpoints, which have none.
-func (e endpoint) operationName() string {
-	switch e {
-	case endpointChatCompletions, endpointMessages, endpointResponses:
-		return "chat"
-	case endpointCompletions:
-		return "text_completion"
-	case endpointEmbeddings:
-		return "embeddings"
-	}
-	return ""
-}
-
-// bodyEndpoints are the endpoints served as a POST carrying a JSON request body, each
-// passed through to a backend serving it.
-var bodyEndpoints = []endpoint{endpointChatCompletions, endpointCompletions, endpointEmbeddings,
-	endpointMessages, endpointMessagesCountTokens, endpointResponses, endpointResponsesInputTokens}
-
-// takesBody reports whether the endpoint is a POST carrying a JSON request body.
-func (e endpoint) takesBody() bool {
-	return slices.Contains(bodyEndpoints, e)
-}
-
-// counts reports whether the endpoint only counts a request's tokens: nothing is
-// generated or billed there, so it reserves no tokens and settles into no usage
-// record (docs/specs/GATEWAY.md, Client API → token-counting endpoints).
-func (e endpoint) counts() bool {
-	return e == endpointMessagesCountTokens || e == endpointResponsesInputTokens
-}
-
-// namesModel reports whether a request to the endpoint names one model (in its body
-// or its path), which the caller must be allowed to use.
-func (e endpoint) namesModel() bool {
-	return e != endpointListModels
+	return e.anthropicOnHeader && r.Header.Get("Anthropic-Version") != ""
 }
 
 // request is the state of one client request as it moves through the pipeline. Each
@@ -131,7 +93,7 @@ func (e endpoint) namesModel() bool {
 type request struct {
 	w        *statusWriter
 	r        *http.Request
-	endpoint endpoint
+	endpoint *endpoint
 	// id is the request ID: the client's x-request-id when valid, else generated.
 	id    string
 	start time.Time
@@ -233,12 +195,12 @@ const (
 )
 
 // covers reports whether a stage of scope s runs for a request to ep.
-func (s stageScope) covers(ep endpoint) bool {
+func (s stageScope) covers(ep *endpoint) bool {
 	switch s {
 	case bodyRequests:
-		return ep.takesBody()
+		return ep.body
 	case modelRequests:
-		return !ep.takesBody()
+		return !ep.body
 	}
 	return true
 }
@@ -296,10 +258,11 @@ func authenticateKey(_ context.Context, rq *request) *apiError {
 	return nil
 }
 
-// authorizeModel applies the one model-access check (auth.Identity.AuthorizeModel).
-// Later stages may assume the model exists in the snapshot.
+// authorizeModel applies the one model-access check (auth.Identity.AuthorizeModel) to
+// the model a request names, in its body or its path: every endpoint but the model
+// list names one. Later stages may assume the model exists in the snapshot.
 func authorizeModel(_ context.Context, rq *request) *apiError {
-	if !rq.endpoint.namesModel() {
+	if rq.endpoint == endpointListModels {
 		return nil
 	}
 	if err := rq.identity.AuthorizeModel(rq.model); err != nil {
@@ -314,7 +277,7 @@ func authorizeModel(_ context.Context, rq *request) *apiError {
 // refused here, before limits spend anything on it (docs/specs/GATEWAY.md, Providers →
 // Endpoint support).
 func findServingDeployments(_ context.Context, rq *request) *apiError {
-	if rq.serving = servingDeployments(rq.snapshot.Models[rq.model], rq.endpoint); rq.serving == nil {
+	if rq.serving = servingDeployments(rq.snapshot.Models[rq.model], rq.endpoint.api); rq.serving == nil {
 		return errEndpointNotServed(rq.endpoint)
 	}
 	return nil

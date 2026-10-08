@@ -24,7 +24,7 @@ import (
 //     checked on its own.
 func applyModelParams(_ context.Context, rq *request) *apiError {
 	model := rq.snapshot.Models[rq.model]
-	keys := outputLimitKeys(rq.endpoint)
+	keys := rq.endpoint.outputLimitKeys
 	if len(keys) == 0 {
 		return nil
 	}
@@ -100,33 +100,18 @@ func injectedOutputLimit(def, contextLength, input int64) int64 {
 	return min(def, max(contextLength-input, minInjectedOutputLimit))
 }
 
-// outputLimitKey is a request parameter capping the tokens a request generates.
+// outputLimitKey is a request parameter capping the tokens a request generates
+// (endpoint.outputLimitKeys).
 type outputLimitKey struct {
 	name  string
 	value func(*inboundFields) *int64
 }
 
-// outputLimitKeys lists the endpoint's output-limit parameters; the first is the one a
-// default is set under. Chat takes max_completion_tokens, OpenAI's current field,
-// which vLLM, SGLang, llama-server, OpenAI and Azure all read — and which OpenAI's and
-// Azure's reasoning models require (they refuse max_tokens) — and still honors the
-// older max_tokens. Completions and Messages have only max_tokens (Messages requires
-// it, so a model with an output limit always sends one), Responses only
-// max_output_tokens. Embeddings and the token-counting endpoints generate nothing.
-func outputLimitKeys(ep endpoint) []outputLimitKey {
-	switch ep {
-	case endpointChatCompletions:
-		return []outputLimitKey{
-			{"max_completion_tokens", func(f *inboundFields) *int64 { return f.MaxCompletionTokens }},
-			{"max_tokens", func(f *inboundFields) *int64 { return f.MaxTokens }},
-		}
-	case endpointCompletions, endpointMessages:
-		return []outputLimitKey{{"max_tokens", func(f *inboundFields) *int64 { return f.MaxTokens }}}
-	case endpointResponses:
-		return []outputLimitKey{{"max_output_tokens", func(f *inboundFields) *int64 { return f.MaxOutputTokens }}}
-	}
-	return nil
-}
+var (
+	maxCompletionTokensKey = outputLimitKey{"max_completion_tokens", func(f *inboundFields) *int64 { return f.MaxCompletionTokens }}
+	maxTokensKey           = outputLimitKey{"max_tokens", func(f *inboundFields) *int64 { return f.MaxTokens }}
+	maxOutputTokensKey     = outputLimitKey{"max_output_tokens", func(f *inboundFields) *int64 { return f.MaxOutputTokens }}
+)
 
 func outputLimitParam(key string, n int64) provider.Param {
 	return provider.Param{Key: key, Value: strconv.AppendInt(nil, n, 10)}

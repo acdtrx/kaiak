@@ -26,7 +26,7 @@ import (
 // sum of its attempts'.
 func checkLimits(rq *request, limiter *limits.Limiter) *apiError {
 	tokens := rq.input.Total
-	if rq.endpoint.counts() {
+	if rq.endpoint.counts {
 		tokens = 0
 	}
 	if rq.outputLimit != nil {
@@ -36,7 +36,7 @@ func checkLimits(rq *request, limiter *limits.Limiter) *apiError {
 	// Billability comes from the request's own snapshot and arrival, as its cost
 	// does (accounting.Cost): a reload since changes neither.
 	_, priced := accounting.PriceAt(rq.snapshot.Models[rq.model].Prices, rq.start)
-	subject := limits.Subject{Groups: rq.identity.Group.PathIDs, Priced: priced, RequestsOnly: rq.endpoint.counts()}
+	subject := limits.Subject{Groups: rq.identity.Group.PathIDs, Priced: priced, RequestsOnly: rq.endpoint.counts}
 	res, rej := limiter.Reserve(subject, tokens)
 	rq.rejection = rej
 	if rej != nil && rej.Unavailable {

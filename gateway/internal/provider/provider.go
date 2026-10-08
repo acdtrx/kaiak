@@ -53,28 +53,6 @@ const (
 	ResponsesInputTokens
 )
 
-// path is the endpoint's path below the API's version prefix
-// (docs/specs/GATEWAY.md, Base URLs).
-func (e Endpoint) path() string {
-	switch e {
-	case ChatCompletions:
-		return "chat/completions"
-	case Completions:
-		return "completions"
-	case Embeddings:
-		return "embeddings"
-	case Messages:
-		return "messages"
-	case MessagesCountTokens:
-		return "messages/count_tokens"
-	case Responses:
-		return "responses"
-	case ResponsesInputTokens:
-		return "responses/input_tokens"
-	}
-	return ""
-}
-
 // Format is a client API format: the request and response shapes an endpoint speaks
 // (docs/specs/GATEWAY.md, Client API → Client APIs).
 type Format int
@@ -88,16 +66,27 @@ const (
 	FormatResponses
 )
 
-// Format is the format the endpoint speaks.
-func (e Endpoint) Format() Format {
-	switch e {
-	case Messages, MessagesCountTokens:
-		return FormatMessages
-	case Responses, ResponsesInputTokens:
-		return FormatResponses
-	}
-	return FormatOpenAI
+// endpoints holds each Endpoint's path below the API's version prefix
+// (docs/specs/GATEWAY.md, Base URLs) and the format it speaks.
+var endpoints = [...]struct {
+	path   string
+	format Format
+}{
+	ChatCompletions:      {"chat/completions", FormatOpenAI},
+	Completions:          {"completions", FormatOpenAI},
+	Embeddings:           {"embeddings", FormatOpenAI},
+	Messages:             {"messages", FormatMessages},
+	MessagesCountTokens:  {"messages/count_tokens", FormatMessages},
+	Responses:            {"responses", FormatResponses},
+	ResponsesInputTokens: {"responses/input_tokens", FormatResponses},
 }
+
+// Path is the endpoint's path below the API's version prefix: a backend URL ends with
+// it, and the client's route is /v1/ and it.
+func (e Endpoint) Path() string { return endpoints[e].path }
+
+// Format is the format the endpoint speaks.
+func (e Endpoint) Format() Format { return endpoints[e].format }
 
 // Request is one client request as the pipeline hands it to a provider: already
 // authenticated, parsed and routed.

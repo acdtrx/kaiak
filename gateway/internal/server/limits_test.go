@@ -11,6 +11,7 @@ import (
 	"kaiak/internal/config"
 	"kaiak/internal/fakebackend"
 	"kaiak/internal/limits"
+	"kaiak/internal/provider"
 )
 
 // withLimits swaps in the test config with limits on the top-level group research
@@ -433,19 +434,19 @@ func TestBatchSizeIsCappedPerRequest(t *testing.T) {
 		MaxEmbeddingInputs: config.DefaultMaxEmbeddingInputs}
 	for _, c := range []struct {
 		name  string
-		ep    endpoint
+		ep    *endpoint
 		body  string
 		param string // "" = accepted
 	}{
-		{"10 000 prompts", endpointCompletions, `{"model":"m","n":1,"max_tokens":1,"prompt":[` + strings.Repeat(`"x",`, 9999) + `"x"]}`, "prompt"},
-		{"16 sequences", endpointCompletions, `{"model":"m","n":2,"prompt":["a","b","c","d","e","f","g","h"]}`, ""},
-		{"17 prompts", endpointCompletions, `{"model":"m","prompt":[` + strings.Repeat(`"x",`, 16) + `"x"]}`, "prompt"},
-		{"one prompt, n at max_n", endpointCompletions, `{"model":"m","n":8,"prompt":"a"}`, ""},
-		{"token-ID prompts × best_of", endpointCompletions, `{"model":"m","best_of":6,"prompt":[[1],[2],[3]]}`, "prompt"},
-		{"2048 embedding inputs", endpointEmbeddings, `{"model":"m","input":[` + strings.Repeat(`"x",`, 2047) + `"x"]}`, ""},
-		{"2049 embedding inputs", endpointEmbeddings, `{"model":"m","input":[` + strings.Repeat(`"x",`, 2048) + `"x"]}`, "input"},
-		{"2049 token-ID embedding inputs", endpointEmbeddings, `{"model":"m","input":[` + strings.Repeat(`[1],`, 2048) + `[1]]}`, "input"},
-		{"one token-ID list is one input", endpointEmbeddings, `{"model":"m","input":[` + strings.Repeat(`1,`, 4000) + `1]}`, ""},
+		{"10 000 prompts", bodyEndpoint(provider.Completions), `{"model":"m","n":1,"max_tokens":1,"prompt":[` + strings.Repeat(`"x",`, 9999) + `"x"]}`, "prompt"},
+		{"16 sequences", bodyEndpoint(provider.Completions), `{"model":"m","n":2,"prompt":["a","b","c","d","e","f","g","h"]}`, ""},
+		{"17 prompts", bodyEndpoint(provider.Completions), `{"model":"m","prompt":[` + strings.Repeat(`"x",`, 16) + `"x"]}`, "prompt"},
+		{"one prompt, n at max_n", bodyEndpoint(provider.Completions), `{"model":"m","n":8,"prompt":"a"}`, ""},
+		{"token-ID prompts × best_of", bodyEndpoint(provider.Completions), `{"model":"m","best_of":6,"prompt":[[1],[2],[3]]}`, "prompt"},
+		{"2048 embedding inputs", bodyEndpoint(provider.Embeddings), `{"model":"m","input":[` + strings.Repeat(`"x",`, 2047) + `"x"]}`, ""},
+		{"2049 embedding inputs", bodyEndpoint(provider.Embeddings), `{"model":"m","input":[` + strings.Repeat(`"x",`, 2048) + `"x"]}`, "input"},
+		{"2049 token-ID embedding inputs", bodyEndpoint(provider.Embeddings), `{"model":"m","input":[` + strings.Repeat(`[1],`, 2048) + `[1]]}`, "input"},
+		{"one token-ID list is one input", bodyEndpoint(provider.Embeddings), `{"model":"m","input":[` + strings.Repeat(`1,`, 4000) + `1]}`, ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			rq := &request{endpoint: c.ep, snapshot: snapshot, body: []byte(c.body)}

@@ -16,7 +16,7 @@ import (
 // else — input, instructions, reasoning, include — is the backend's and passes
 // untouched.
 func parseResponsesFields(rq *request, top map[string]json.RawMessage) *apiError {
-	if rq.endpoint == endpointResponses {
+	if !rq.endpoint.counts {
 		if apiErr := readModelAndStream(rq, top); apiErr != nil {
 			return apiErr
 		}
@@ -37,7 +37,7 @@ func parseResponsesFields(rq *request, top map[string]json.RawMessage) *apiError
 	if apiErr := refuseResponsesInputItems(top["input"]); apiErr != nil {
 		return apiErr
 	}
-	rq.input = accounting.EstimateInput(providerEndpoint(rq.endpoint), rq.body)
+	rq.input = accounting.EstimateInput(rq.endpoint.api, rq.body)
 	return nil
 }
 

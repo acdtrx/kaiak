@@ -368,6 +368,16 @@ func errorFields(t *testing.T, w *httptest.ResponseRecorder) (code, param string
 	return body.Error.Code, param
 }
 
+// bodyEndpoint is the body endpoint row of api, for tests that call a stage directly.
+func bodyEndpoint(api provider.Endpoint) *endpoint {
+	for _, ep := range bodyEndpoints {
+		if ep.api == api {
+			return ep
+		}
+	}
+	panic("no body endpoint for " + api.Path())
+}
+
 func errorCodeOf(t *testing.T, w *httptest.ResponseRecorder) string {
 	code, _ := errorFields(t, w)
 	return code
@@ -544,7 +554,8 @@ func TestInboundValidation(t *testing.T) {
 func TestParseOwnedFieldsKeepsTheRawBody(t *testing.T) {
 	body := `{"model":"open","stream":true,"max_tokens":null,"max_completion_tokens":64,` +
 		`"stream_options":{"include_usage":true},"vendor_x":{"keep":[1,2]}}`
-	rq := &request{body: []byte(body), snapshot: &config.Snapshot{MaxN: config.DefaultMaxN}}
+	rq := &request{endpoint: bodyEndpoint(provider.ChatCompletions), body: []byte(body),
+		snapshot: &config.Snapshot{MaxN: config.DefaultMaxN, MaxSequencesPerRequest: config.DefaultMaxSequencesPerRequest}}
 	if err := parseOwnedFields(rq); err != nil {
 		t.Fatal(err)
 	}

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"kaiak/internal/fakebackend"
+	"kaiak/internal/provider"
 )
 
 // backendModel returns the model name a backend request carried.
@@ -190,18 +191,18 @@ func TestEffectiveOutputLimit(t *testing.T) {
 	snapshot := g.holder.Current()
 	cases := []struct {
 		name string
-		ep   endpoint
+		ep   *endpoint
 		body string
 		want int64 // -1: none
 	}{
-		{"default", endpointChatCompletions, `{"model":"pair"}`, 256},
-		{"client value under the ceiling", endpointChatCompletions, `{"model":"pair","max_tokens":10}`, 10},
-		{"lowered", endpointChatCompletions, `{"model":"pair","max_completion_tokens":9000}`, 1024},
-		{"both set: the larger", endpointChatCompletions, `{"model":"pair","max_completion_tokens":20,"max_tokens":30}`, 30},
-		{"completions ignores max_completion_tokens", endpointCompletions, `{"model":"pair","max_completion_tokens":20}`, 256},
-		{"embeddings", endpointEmbeddings, `{"model":"pair","max_tokens":20}`, -1},
-		{"no limit declared, client value", endpointChatCompletions, `{"model":"open","max_tokens":77}`, 77},
-		{"no limit declared, none sent", endpointChatCompletions, `{"model":"open"}`, -1},
+		{"default", bodyEndpoint(provider.ChatCompletions), `{"model":"pair"}`, 256},
+		{"client value under the ceiling", bodyEndpoint(provider.ChatCompletions), `{"model":"pair","max_tokens":10}`, 10},
+		{"lowered", bodyEndpoint(provider.ChatCompletions), `{"model":"pair","max_completion_tokens":9000}`, 1024},
+		{"both set: the larger", bodyEndpoint(provider.ChatCompletions), `{"model":"pair","max_completion_tokens":20,"max_tokens":30}`, 30},
+		{"completions ignores max_completion_tokens", bodyEndpoint(provider.Completions), `{"model":"pair","max_completion_tokens":20}`, 256},
+		{"embeddings", bodyEndpoint(provider.Embeddings), `{"model":"pair","max_tokens":20}`, -1},
+		{"no limit declared, client value", bodyEndpoint(provider.ChatCompletions), `{"model":"open","max_tokens":77}`, 77},
+		{"no limit declared, none sent", bodyEndpoint(provider.ChatCompletions), `{"model":"open"}`, -1},
 	}
 	for _, c := range cases {
 		rq := &request{endpoint: c.ep, snapshot: snapshot, body: []byte(c.body)}
@@ -320,7 +321,7 @@ func TestInjectedOutputDefaultFitsTheContext(t *testing.T) {
 		{"never below 256", padded(1000, ""), "max_completion_tokens=256", 256},        // 400 − 250 = 150
 		{"a client value is untouched", padded(1000, `,"max_tokens":300`), "", 300},
 	} {
-		rq := &request{endpoint: endpointChatCompletions, snapshot: s, body: []byte(c.body)}
+		rq := &request{endpoint: bodyEndpoint(provider.ChatCompletions), snapshot: s, body: []byte(c.body)}
 		if err := parseOwnedFields(rq); err != nil {
 			t.Fatal(err)
 		}

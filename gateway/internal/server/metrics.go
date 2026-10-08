@@ -17,7 +17,11 @@ func (a *API) observeRequest(rq *request) {
 	if rq.modelAllowed {
 		model = rq.model
 	}
-	a.ops.ObserveRequest(rq.endpoint.name(), model, rq.w.status, time.Since(rq.start))
+	endpoint := ""
+	if rq.endpoint != nil {
+		endpoint = rq.endpoint.name
+	}
+	a.ops.ObserveRequest(endpoint, model, rq.w.status, time.Since(rq.start))
 	if class, ok := errorClass(rq); ok {
 		a.ops.CountError(class)
 		code := errorCode(rq)

@@ -47,7 +47,7 @@ func (m *azureAnthropic) Send(ctx context.Context, req *Request) (Response, erro
 		}
 	}
 	return sendWire(ctx, req, wireCall{
-		backend: m.backend, client: m.client, url: m.url(req.Endpoint.path()), header: m.header(),
+		backend: m.backend, client: m.client, url: m.url(req.Endpoint.Path()), header: m.header(),
 		missingModel: azureAnthropicModelMissing, unknownPath: m.unknownPath,
 		core: req.Endpoint == Messages,
 	})

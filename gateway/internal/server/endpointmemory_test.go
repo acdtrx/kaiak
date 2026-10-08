@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"kaiak/internal/fakebackend"
+	"kaiak/internal/provider"
 )
 
 // rememberedBackends lists the backends m remembers lacking an endpoint, sorted.
@@ -32,7 +33,7 @@ func TestAppliedConfigForgetsARemovedBackendsMissingEndpoints(t *testing.T) {
 		Body: `{"error":{"message":"File Not Found","type":"not_found_error","code":404}}`})
 	w := do(t, g.h, call{method: "POST", path: "/v1/responses", key: workloadKey, body: responsesBody})
 	expectError(t, w, http.StatusBadGateway, "upstream_endpoint_missing")
-	g.missing.remember("local", endpointResponses, time.Now(), time.Hour)
+	g.missing.remember("local", provider.Responses, time.Now(), time.Hour)
 	if got := rememberedBackends(g.missing); !slices.Equal(got, []string{"local", "ls"}) {
 		t.Fatalf("remembered %v, want local and ls", got)
 	}
