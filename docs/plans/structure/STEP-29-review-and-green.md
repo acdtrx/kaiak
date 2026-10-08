@@ -1,6 +1,6 @@
 # Step 29 — independent review and green
 
-**Status:** not started
+**Status:** done (2026-10-08)
 
 ## Intent
 
@@ -237,3 +237,10 @@ module tables as done); behaviour unchanged, no assertion weakened.
 staticcheck 2026.2.1, race tests incl. `e2e` (108.7 s); live-test kit self-test for all
 seven setups; control `npm test` 629 tests, 628 pass, 0 fail, 1 skipped; lint and
 boundaries ok; cross-half e2e `ok kaiak/e2e 65.3s`.
+
+### Plan end
+
+`scripts/check-all.sh` green **three times in a row** on `3e10260` (main session,
+2026-10-08): gateway gofmt, vet, staticcheck, race tests (e2e ~106 s); the live-test
+kit self-test; control `npm test` 629 tests (628 pass, 1 skipped), lint and boundaries;
+the cross-half e2e (~65 s). Phase 6 and the plan end here.

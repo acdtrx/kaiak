@@ -226,4 +226,18 @@ them.
   recorded; `scripts/check-all.sh` green three times in a row; every review finding in
   scope marked done with its step in `STRUCTURE.md`'s outcome table.
 
-**Verification status:** not started.
+**Verification status:** done (2026-10-08); every phase ended green.
+
+- [x] Each step's suite recorded in its Result; phases 1–6 ended green.
+- [x] Removal checklists clean on the final tree, or their accepted false positives
+  recorded (step 29, part 1).
+- [x] Behaviour fixes each with a test that failed before: the stale upstream error
+  code (step 9), the repeated Messages member (step 23), the ignored output-limit keys
+  (step 23), the `azure-openai` info line (step 21), the sample page feed (step 25),
+  and the review's S1 (step 29).
+- [x] Dispatch bench before and after step 27: no slowdown (~5400 → ~5200 ns/op).
+- [x] Live after phase 5: vLLM 29/0/1 and llama-server 29/0/2 on the DGX (step 23).
+- [x] Independent review (`docs/reviews/2026-10-07-structure/BRANCH-REVIEW-independent.md`):
+  S1 fixed, S2 kept as intended; outcome table in `STRUCTURE.md` → Outcome.
+- [x] `scripts/check-all.sh` green three times in a row (step 29).
+- Step 17 (one stream per boot) not taken (user, 2026-10-08).
