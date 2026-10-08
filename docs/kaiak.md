@@ -118,7 +118,8 @@ The name reads the same both ways (the gateway carries traffic in both direction
   `/v1/models` (extended with metadata), `/v1/models/{id}/props`; Anthropic
   Messages `/v1/messages` and `/v1/messages/count_tokens` (`x-api-key` accepted,
   Anthropic-shaped `/v1/models`); OpenAI Responses `/v1/responses` and
-  `/v1/responses/input_tokens`, stateless (added 2026-10-06). Every API is passed
+  `/v1/responses/input_tokens`, stateless (added 2026-10-06); rerank `/v1/rerank`,
+  on vLLM and llama-server backends only (added 2026-10-08). Every API is passed
   through only to backends that speak it; tools a backend would run are refused.
 - Providers: a module per server — OpenAI, Azure OpenAI (its OpenAI-compatible
   `/openai/v1/` API), vLLM, llama-server, Anthropic, Claude in Microsoft Foundry —

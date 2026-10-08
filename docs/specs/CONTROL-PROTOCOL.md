@@ -443,7 +443,10 @@ the `{ error, detail }` body, `error` being the stable code:
 - **Top-level shape**: `format_version` (the integer `5`; settled 2026-10-06, with
   model `defaults` removed — a format-4 document with them is refused as an unknown
   field), `global`, `backends`, `models`, `keys` (required), `groups`
-  (optional, omitted = none).
+  (optional, omitted = none). Adding `global.max_rerank_documents` (the cap on a
+  rerank request's documents, `GATEWAY.md`, Limits) bumps neither the format nor
+  the protocol (settled 2026-10-08): an optional field is additive, as a backend
+  type is (Backend types → Types bump no version).
   Collections are **objects keyed by ID** — uniqueness comes for free; the model key is
   the public model name clients send.
 - **Conventions**: snake_case field names (as in the OpenAI API); durations are integer

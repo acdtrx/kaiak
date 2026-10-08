@@ -382,6 +382,10 @@
     "kind": "schema",
     "reason": "max_request_body_bytes is positive"
   },
+  "max-rerank-documents-zero.json": {
+    "kind": "schema",
+    "reason": "max_rerank_documents is 1 or more"
+  },
   "max-sequences-per-request-zero.json": {
     "kind": "schema",
     "reason": "max_sequences_per_request is 1 or more"

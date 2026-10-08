@@ -49,6 +49,17 @@ Group entries under headings as themes emerge.
   `usage.cache_creation.ephemeral_5m_input_tokens` and `ephemeral_1h_input_tokens`).
   Revisit trigger: a client needs one of them, or refusing 1-hour caching breaks a
   client in use.
+- **`/v1/models` `endpoints` per loaded model** — a model entry's `endpoints` follows
+  its deployments' backend types (`docs/specs/GATEWAY.md`, Client API →
+  `/v1/models`), not what each server answers: a vLLM chat model lists `embeddings`
+  and `rerank`, a vLLM reranker `chat_completions`, a llama-server model started
+  without `--reranking` `rerank` (`docs/specs/GATEWAY.md`, Providers → An endpoint
+  missing from a server). Listing what each loaded model serves needs the gateway to
+  know it: from the endpoint memory (only what traffic has found, per gateway), by
+  asking the servers (the gateway discovers nothing: Model metadata), or from a list
+  declared per model in config. Revisit trigger: a client relies on `endpoints` to
+  pick a model and is misled by a vLLM or llama-server model listing an endpoint its
+  server does not serve.
 - **Image and audio models** — graduated to `docs/plans/media-generation/` (research
   and direction settled 2026-10-09): on `vllm-omni` backends, speech and image
   generation first, then uploads with image edits and transcription. Planned after
@@ -121,7 +132,10 @@ Group entries under headings as themes emerge.
     those names (check, lower, reserve) or refuse them.
   - *Client errors answered 500* (L3): llama-server answers `500 server_error` to
     every internal exception except `invalid_argument` (`tools/server/server.cpp`),
-    including a `response_format` schema its grammar converter cannot handle; five
+    including a `response_format` schema its grammar converter cannot handle, and an
+    image, audio or video part sent to a model without a projector for it (`… input
+    is not supported`, on chat, Messages and Responses; source read at build b11513,
+    2026-10-08); five
     such requests open the circuit for every key, and one per probe interval keeps it
     open, billed $0. Fix: treat a llama-server `500` as the client's error (relayed,
     not retried, not a circuit failure); a dead server still opens the circuit
