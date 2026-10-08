@@ -345,30 +345,18 @@ Group entries under headings as themes emerge.
   version 4, `CountedBatch.refusals` in the store interface. Revisit trigger: the
   management app (or another host) needs failures and refusals in its own database
   rather than from Prometheus. (ruled 2026-10-01: metrics first. The user leans
-  toward the observability path instead (OpenTelemetry export, below; 2026-10-02).
-- **OpenTelemetry export** — request outcomes, timings and errors in an
-  OpenTelemetry-style backend, kept apart from the control plane's job (config,
-  usage, budgets). Three layers, cheapest first:
-  - *Logs* — built (2026-10-05, `docs/plans/otlp-logs/`): every log line in one
-    vocabulary, OpenTelemetry's names where they fit, exported over OTLP/HTTP when
-    an `OTEL_*` endpoint is set (`GATEWAY.md` → Observability: Logs, OTLP log
-    export); a collector can also still read stderr (OTel Collector `filelog`,
-    Vector, Fluent Bit). Either path may drop lines under pressure: fine for
-    outcomes, never for billing (usage records stay the record).
-  - *Metrics* — built (2026-10-08, `docs/plans/otel-metrics/`): every metric in
-    OpenTelemetry's vocabulary, exported over OTLP/HTTP beside `/metrics`, which
-    writes the same metrics' Prometheus translation (`GATEWAY.md` → Observability:
-    Metric list, OTLP metric export).
-  - *Traces* — new work. Confined test first: forward the W3C `traceparent` header
-    to backends (vLLM can continue the trace) and log `trace_id` on the request line,
-    linking client traces to gateway lines. Span export (per request, per attempt,
-    queue wait) needs spans: the dependency rule allows the OTel Go trace SDK core
-    (`otel`, `sdk/trace` — four small third-party modules, no gRPC), with a span
-    exporter of our own on `internal/telemetry/otlp`; the SDK's OTLP exporters were
-    rejected (`TECH-STACK.md`, 2026-10-08).
-  Revisit trigger (traces; logs and metrics are built): a question
-  about a request that the log line cannot answer, or a client team that traces its
-  own calls and needs the gateway's part linked in.
+  toward the observability path instead (OpenTelemetry traces, below; logs and metrics are exported; 2026-10-02).
+- **OpenTelemetry traces** — requests as traces in an OpenTelemetry backend, beside
+  the logs and metrics already exported over OTLP (`GATEWAY.md` → Observability).
+  Confined test first: forward the W3C `traceparent` header to backends (vLLM can
+  continue the trace) and log `trace_id` on the request line, linking client traces
+  to gateway lines. Span export (per request, per attempt, queue wait): the
+  dependency rule allows the OTel Go trace SDK core (`otel`, `sdk/trace` — four small
+  third-party modules, no gRPC), with a span exporter of our own on
+  `internal/telemetry/otlp`; the SDK's OTLP exporters were rejected (`TECH-STACK.md`,
+  2026-10-08). Revisit trigger: a question about a request that the log line cannot
+  answer, or a client team that traces its own calls and needs the gateway's part
+  linked in.
 
 - **Runtime and HTTP server metrics** — the conventions' Go runtime (`go.memory.used`,
   `go.goroutine.count`, `go.gc.*`, …) and process metrics (`process.cpu.time`,

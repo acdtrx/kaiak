@@ -1112,7 +1112,7 @@ Boot).
     backend type` info line at each config apply; the request line's
     `kaiak.upstream.error.*` fields describe the last attempt only (an earlier
     attempt's failure shows in `kaiak.tried`).
-- **Next release** (unreleased; protocol 5 and config format 5 unchanged):
+- **0.12.0** (protocol 5 and config format 5 unchanged):
   - **Every metric is named in OpenTelemetry's vocabulary** (`GATEWAY.md` →
     Observability: Metric list, its Was column; Observability above): `/metrics`
     writes the Prometheus translation of each OpenTelemetry name, and no old name
