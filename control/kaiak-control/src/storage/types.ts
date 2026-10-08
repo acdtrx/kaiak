@@ -190,8 +190,8 @@ export interface ControlPlaneStore {
   // a batch. Records older than the newest `keepRecords` are no longer needed and may
   // be dropped. A store that also keeps every record for good (a ledger) inserts them
   // idempotently by record_id: a batch resent after its cursor's retention is counted
-  // again (CONTROL-PROTOCOL.md, Status intake → Batch cursor retention), and a ledger refusing its records
-  // would refuse the batch for ever.
+  // again (CONTROL-PROTOCOL.md, Status intake → Batch cursor retention), and a ledger
+  // refusing its records would refuse the batch for ever.
   saveCountedBatch(
     counted: CountedBatch,
     expectedLast: BatchId | undefined,
