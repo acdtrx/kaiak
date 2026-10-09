@@ -9,7 +9,7 @@
 kaiak is a self-contained LLM gateway: one binary that sits between clients and model
 backends, speaks the OpenAI API, Anthropic Messages and OpenAI Responses to clients —
 each passed through to backends that speak it natively — routes to self-hosted
-servers (vLLM, llama-server, SGLang) and cloud providers (OpenAI, Azure OpenAI,
+servers (vLLM, vLLM-Omni, llama-server, SGLang) and cloud providers (OpenAI, Azure OpenAI,
 Anthropic, Claude in Microsoft Foundry; Bedrock later), and enforces access keys, rate
 limits and budgets while counting every token and dollar.
 
@@ -119,10 +119,14 @@ The name reads the same both ways (the gateway carries traffic in both direction
   Messages `/v1/messages` and `/v1/messages/count_tokens` (`x-api-key` accepted,
   Anthropic-shaped `/v1/models`); OpenAI Responses `/v1/responses` and
   `/v1/responses/input_tokens`, stateless (added 2026-10-06); rerank `/v1/rerank`,
-  on vLLM and llama-server backends only (added 2026-10-08). Every API is passed
-  through only to backends that speak it; tools a backend would run are refused.
+  on vLLM and llama-server backends only (added 2026-10-08); speech
+  `/v1/audio/speech` (the whole clip, an SSE stream or raw audio; WAV and PCM) and
+  vLLM-Omni's `/v1/audio/speech/batch`, and image generation
+  `/v1/images/generations`, on vLLM-Omni backends only (added 2026-10-09). Every
+  API is passed through only to backends that speak it; tools a backend would run,
+  and references a backend would fetch or read, are refused.
 - Providers: a module per server — OpenAI, Azure OpenAI (its OpenAI-compatible
-  `/openai/v1/` API), vLLM, llama-server, Anthropic, Claude in Microsoft Foundry —
+  `/openai/v1/` API), vLLM, vLLM-Omni, llama-server, Anthropic, Claude in Microsoft Foundry —
   and a generic OpenAI-compatible type for any other server speaking the OpenAI
   format (SGLang, …).
 - Routing: aliases, multiple deployments, load balancing, retries before the
@@ -130,8 +134,10 @@ The name reads the same both ways (the gateway carries traffic in both direction
   per-backend concurrency cap with a bounded queue.
 - Keys, the group tree, global limits; output-limit default and ceiling
   per model; output limit reserved against the allowance while a request runs.
-- Accounting: token usage from the backend (estimated and flagged when missing), cost
-  from the price table, billing of partial output on client disconnect.
+- Accounting: token usage from the backend (estimated and flagged when missing),
+  images counted and seconds of audio measured by the gateway (added 2026-10-09),
+  each limited in its own unit, cost from the price table, billing of partial
+  output on client disconnect.
 - Control-plane protocol; file mode (local and development use); seed config.
 - Ops and usage metrics; readiness, liveness, draining.
 - `kaiak-control` and the sample control plane with its read-only page.
@@ -139,7 +145,8 @@ The name reads the same both ways (the gateway carries traffic in both direction
 ## Out of v1 (see `docs/BACKLOG.md`)
 
 Bedrock; translation between client APIs (Messages or Responses to a backend that
-does not speak them); image and audio models;
+does not speak them); uploads — image edits and transcription (the media plan's
+second phase) — and video;
 response caching, guardrails, prompt templating, prompt logging; output limit derived
 from remaining budget; cloud workload identity (AWS IRSA / Azure managed identity);
 reasoning-effort discovery; interim usage reports for long streams; always-on active

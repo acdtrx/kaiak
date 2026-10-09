@@ -1,5 +1,5 @@
 {
-  "format_version": 5,
+  "format_version": 6,
   "global": {
     "max_request_body_bytes": 9007199254740991,
     "control_outage_grace_ms": 9007199254740991,
@@ -7,11 +7,19 @@
     "max_sequences_per_request": 9007199254740991,
     "max_embedding_inputs": 9007199254740991,
     "max_rerank_documents": 9007199254740991,
+    "max_images_per_request": 9007199254740991,
+    "max_speech_batch_items": 9007199254740991,
     "max_concurrent_requests_per_key": 9007199254740991,
     "queue": { "size": 9007199254740991, "timeout_ms": 9007199254740991 },
     "circuit": { "failure_threshold": 9007199254740991, "probe_interval_ms": 9007199254740991 },
     "limits": [
       { "type": "tokens_per_hour", "value": 9007199254740991 },
+      { "type": "images_per_minute", "value": 9007199254740991 },
+      { "type": "images_per_hour", "value": 9007199254740991 },
+      { "type": "audio_seconds_out_per_minute", "value": 9007199254740991 },
+      { "type": "audio_seconds_out_per_hour", "value": 9007199254740991 },
+      { "type": "audio_seconds_in_per_minute", "value": 9007199254740991 },
+      { "type": "audio_seconds_in_per_hour", "value": 9007199254740991 },
       { "type": "usd_per_month", "value": 9007199254740991 }
     ]
   },

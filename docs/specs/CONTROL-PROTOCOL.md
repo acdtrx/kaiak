@@ -32,8 +32,9 @@
   whatever its port or scheme — and logs the 3xx as an error;
   `KAIAK_CONTROL_URL` must be the address that answers.
 - **Protocol version** travels as a `Kaiak-Protocol` header on every request and
-  response (the SSE stream's response included); the current version is `5`
-  (settled 2026-10-06, with config format 5: model `defaults` removed).
+  response (the SSE stream's response included); the current version is `6`
+  (settled 2026-10-09, with config format 6: the media units, Config → Units and
+  price units).
 
 ## Endpoints (provisional)
 
@@ -62,11 +63,11 @@ the `{ error, detail }` body, `error` being the stable code:
 | Check | Code | Status |
 | --- | --- | --- |
 | `Authorization: Bearer <token>` carries the token (missing, not a bearer token, or wrong) | `unauthorized` | 401 |
-| `Kaiak-Protocol` is the current version, `5` (other or missing) | `protocol-version-mismatch` | 400 |
+| `Kaiak-Protocol` is the current version, `6` (other or missing) | `protocol-version-mismatch` | 400 |
 | `Kaiak-Instance` is an instance ID (Messages; missing or malformed) | `instance-invalid` | 400 |
 
 - **Repeated headers** (settled 2026-09-25): Node's HTTP layer joins a repeated
-  `Kaiak-Protocol` or `Kaiak-Instance` into one value (`5, 5`), which fails its check
+  `Kaiak-Protocol` or `Kaiak-Instance` into one value (`6, 6`), which fails its check
   as any other wrong value does, and keeps only the first of repeated `Authorization`
   headers — so the checks see one value per header and have no "repeated" case of
   their own.
@@ -340,14 +341,16 @@ the `{ error, detail }` body, `error` being the stable code:
     gateway still running a config it was moved off (it rejected the new one) enforces
     limits the new config dropped, and read them as unspent.
   - A window names its scope and type (settled 2026-09-27, model set removed
-    2026-10-06): `group` (absent for global) and `type` (`tokens_per_hour` or
-    `usd_per_month`) — the identity the gateway keeps its counts by (`GATEWAY.md`,
-    Limits).
-  - `window_start` is the top of a UTC hour (`tokens_per_hour`) or the first of a UTC
-    month at midnight (`usd_per_month`), by the control plane's clock.
+    2026-10-06): `group` (absent for global) and `type` — `tokens_per_hour`,
+    `images_per_hour`, `audio_seconds_out_per_hour`, `audio_seconds_in_per_hour`
+    (the media types settled 2026-10-09) or `usd_per_month` — the identity the
+    gateway keeps its counts by (`GATEWAY.md`, Limits).
+  - `window_start` is the top of a UTC hour (the per-hour types) or the first of a
+    UTC month at midnight (`usd_per_month`), by the control plane's clock.
   - `used` counts what the gateway counts against that limit: tokens as
     `tokens_in + tokens_cache_write + tokens_out` (input read from the cache does not
-    count: `GATEWAY.md`, Limits → Settle), USD in nano-USD.
+    count: `GATEWAY.md`, Limits → Settle), images as `images`, seconds of audio as
+    `audio_seconds_out` or `audio_seconds_in`, USD in nano-USD.
     It is a **string of decimal digits** (no leading zeros, at most 18 digits — below
     10^18 nano-USD, one billion dollars per window). A JSON number is exact in
     JavaScript only up to 2^53 nano-USD, about 9 million dollars, and a month of an
@@ -440,13 +443,19 @@ the `{ error, detail }` body, `error` being the stable code:
   `protocol/fixtures/config/` (settled 2026-09-24): `valid/`, `invalid/` (with
   `cases.json`: kind, code, reason) and `resolved/` (The group tree → Resolution
   fixtures).
-- **Top-level shape**: `format_version` (the integer `5`; settled 2026-10-06, with
-  model `defaults` removed — a format-4 document with them is refused as an unknown
-  field), `global`, `backends`, `models`, `keys` (required), `groups`
+- **Top-level shape**: `format_version` (the integer `6`; settled 2026-10-09, with
+  the media units — a format-5 document is refused as another version), `global`,
+  `backends`, `models`, `keys` (required), `groups`
   (optional, omitted = none). Adding `global.max_rerank_documents` (the cap on a
   rerank request's documents, `GATEWAY.md`, Limits) bumps neither the format nor
   the protocol (settled 2026-10-08): an optional field is additive, as a backend
-  type is (Backend types → Types bump no version).
+  type is (Backend types → Types bump no version). **The media units bump both**
+  (settled 2026-10-09, with the user): every usage record carries every unit, so a
+  record with `images` is one an older control plane refuses — its batch dropped,
+  billing data lost — and totals gain window types an older gateway cannot read. A
+  version mismatch makes the two halves refuse to talk instead, which an upgrade of
+  both ends. The limit types, `global.max_images_per_request`,
+  `global.max_speech_batch_items` and the `vllm-omni` type ride with the bump.
   Collections are **objects keyed by ID** — uniqueness comes for free; the model key is
   the public model name clients send.
 - **Conventions**: snake_case field names (as in the OpenAI API); durations are integer
@@ -472,10 +481,11 @@ the `{ error, detail }` body, `error` being the stable code:
   (`/models/qwen3-embedding-0.6b-q8_0.gguf`) included. ASCII keeps the byte and
   character counts equal in both halves and the names safe in logs and metric
   labels; a name outside it gets an alias on the backend (llama-server `--alias`).
-- **Backend types** (settled 2026-09-30; the Anthropic types 2026-10-06): a backend's
-  `type` is one of `openai-compatible` (the generic type), `openai`, `azure-openai`,
-  `vllm`, `llama-server`, `anthropic`, `azure-anthropic` — what each does and which
-  client API endpoints it serves: `GATEWAY.md`, Providers. `openai`,
+- **Backend types** (settled 2026-09-30; the Anthropic types 2026-10-06; `vllm-omni`
+  2026-10-09): a backend's `type` is one of `openai-compatible` (the generic type),
+  `openai`, `azure-openai`, `vllm`, `vllm-omni`, `llama-server`, `anthropic`,
+  `azure-anthropic` — what each does and which client API endpoints it serves:
+  `GATEWAY.md`, Providers. `openai`,
   `azure-openai`, `anthropic` and `azure-anthropic` require `api_key_env`. **Types bump no version** (settled
   2026-10-01): adding types is additive — every config of the current format stays
   valid — and a gateway that does not know a type rejects the config with a schema
@@ -551,9 +561,11 @@ the `{ error, detail }` body, `error` being the stable code:
     what each person gets unless their own group says otherwise.
   - **Counters are bounded** (settled 2026-09-27; counted by what is allocated,
     2026-10-07): the counters a config allocates on every gateway are at most
-    **50 000** (`counters-exceeded`): two for global and two for every group (the
-    hour and month counts every scope keeps, limited or not — `GATEWAY.md`, Limits →
-    Every scope is counted), plus one for each effective per-minute limit
+    **50 000** (`counters-exceeded`): five for global and five for every group —
+    one per counted type, the hour counts of tokens, images, audio generated and
+    audio processed and the USD month, which every scope keeps, limited or not
+    (`GATEWAY.md`, Limits → Every scope is counted; the media types' three settled
+    2026-10-09) — plus one for each effective per-minute limit
     (`global.limits`, and each group's own limits merged with its parent's
     `child_defaults.limits`). A per-minute counter holds a minute of one-second
     buckets (about 1.4 KB), an hour or month counter a few hundred bytes, so the
@@ -625,7 +637,21 @@ the `{ error, detail }` body, `error` being the stable code:
     (`prompt_tokens_details.cache_write_tokens`; settled 2026-10-02, below);
   - `tokens_out` — all output, reasoning included (providers bill reasoning as output);
   - `tokens_reasoning` — the reasoning share of `tokens_out`
-    (`completion_tokens_details.reasoning_tokens`), recorded for visibility only.
+    (`completion_tokens_details.reasoning_tokens`), recorded for visibility only;
+  - `images` — images generated (settled 2026-10-09, with the user): the elements
+    of an image answer's `data[]` (`GATEWAY.md`, Accounting → Media usage);
+  - `audio_seconds_out` — seconds of audio generated (settled 2026-10-09, with the
+    user): measured by the gateway on the speech audio it relays, rounded up to a
+    whole second once per record;
+  - `audio_seconds_in` — seconds of audio processed (settled 2026-10-09, with the
+    user): measured from audio a request uploads; no endpoint produces it yet (it
+    enters with the others so the uploads plan needs no version of its own).
+
+  The media units sit beside the tokens, not inside them: a speech record carries
+  the tokens its backend reports and the seconds the gateway measured, and each
+  limit counts its own unit (`GATEWAY.md`, Limits). Rejected: one `audio_seconds`
+  for both directions — audio generated and audio processed are limited and, when
+  priced, priced apart, as input and output tokens are.
 
   The three input units add up to the backend's prompt tokens. `usd_per_million`
   accepts only `tokens_in`, `tokens_cached`, `tokens_cache_write` and `tokens_out`;
@@ -633,7 +659,11 @@ the `{ error, detail }` body, `error` being the stable code:
   it would charge reasoning twice). Within a tier, an unpriced `tokens_cached` or
   `tokens_cache_write` is charged at that tier's `tokens_in` price — leaving it out
   must never make cached input free, nor written input cheaper than plain input; an
-  unpriced `tokens_in` or `tokens_out` costs 0 for that unit.
+  unpriced `tokens_in` or `tokens_out` costs 0 for that unit. The media units are
+  not price units (settled 2026-10-09): images and audio seconds cost nothing, and a
+  priced model's token prices still apply to a speech request's tokens — billing
+  focuses on local models, held by their unit limits (`docs/BACKLOG.md`, Pricing
+  media units).
   - **`tokens_cache_write`** (settled 2026-10-02). Azure OpenAI bills prompt tokens
     written to its cache above plain input — gpt-5.6 and later at 1.25× input, reads
     at 0.1× (LiteLLM's `cache_creation_input_token_cost`) — and reports them as
@@ -653,7 +683,7 @@ the `{ error, detail }` body, `error` being the stable code:
   - `group-depth-exceeded` — a group deeper than 8 levels (a top-level group is
     level 1). Depth is judged only where the parents reach a top-level group: a
     group below an unknown parent or a cycle reports those rules alone.
-  - `counters-exceeded` — the counters the config allocates (two per scope, global
+  - `counters-exceeded` — the counters the config allocates (five per scope, global
     and every group, plus one per effective per-minute limit) are more than 50 000
     (Config → The group tree). Reported once, at the document root (path `""`). The
     count needs only each group's direct parent, so it is made whatever the other
@@ -716,7 +746,8 @@ the `{ error, detail }` body, `error` being the stable code:
   {"record_id": "<32 hex, random>", "request_id": "…", "gateway_instance": "gw-1",
    "key_id": "k-eval-ci", "groups": ["research", "rag", "eval-pipeline"],
    "model": "qwen3-32b", "deployment": {"backend": "vllm-a", "model": "Qwen/Qwen3-32B"},
-   "units": {"tokens_cache_write": 0, "tokens_cached": 0, "tokens_in": 812,
+   "units": {"audio_seconds_in": 0, "audio_seconds_out": 0, "images": 0,
+             "tokens_cache_write": 0, "tokens_cached": 0, "tokens_in": 812,
              "tokens_out": 240, "tokens_reasoning": 96},
    "cost_nano_usd": 0, "estimated": false, "partial": false,
    "gateway_time": "2026-09-24T10:00:00.123456789Z"}
@@ -728,8 +759,9 @@ the `{ error, detail }` body, `error` being the stable code:
   first, the key's own group last (settled 2026-09-27: the path, not only the
   group, so the control plane counts a record without re-deriving ancestors from a
   config that may have changed since); `model` is the public name;
-  `units` always carries the five token units, zeros included (settled 2026-10-02,
-  with `tokens_cache_write`; other units join the map when their models do);
+  `units` always carries every unit, zeros included — the five token units
+  (`tokens_cache_write` settled 2026-10-02) and the three media units (settled
+  2026-10-09);
   `cost_nano_usd` is the cost in billionths of a dollar — an integer, so totals over
   any number of records add up exactly (a JavaScript number holds it exactly up to
   about 9 million dollars, the bound the schema puts on one record; aggregates beyond
@@ -856,7 +888,9 @@ How the control plane takes `POST /v1/usage`, as `kaiak-control` implements it.
   re-derived. In each scope, the record adds
   `tokens_in + tokens_cache_write + tokens_out` (written tokens count, settled
   2026-10-02; input read from the cache does not, settled 2026-10-05 — `GATEWAY.md`,
-  Limits → Settle) to the scope's `tokens_per_hour` window and `cost_nano_usd` to its
+  Limits → Settle) to the scope's `tokens_per_hour` window, `images` to its
+  `images_per_hour` window, `audio_seconds_out` and `audio_seconds_in` to their
+  per-hour windows (settled 2026-10-09) and `cost_nano_usd` to its
   `usd_per_month` window for the record (Counted in its own window), **whether or not
   the scope has a limit of that type** in any config: windows are kept per scope and
   type, and totals list every one with usage (Messages → Totals). Per-minute limits
@@ -864,10 +898,10 @@ How the control plane takes `POST /v1/usage`, as `kaiak-control` implements it.
   limits of the config in force — it ties counting to publishes.
   - **Counted-units fixtures** (settled 2026-10-08): `protocol/fixtures/usage/` pins
     this rule across the halves. Each file is `{ reason, units, cost_nano_usd,
-    expected: { <limit type>: <decimal string> } }` — a record's five token units and
-    its cost, and what it counts toward every token and cost limit type, in that
-    type's unit (`tokens_per_minute` included: the gateway's per-minute token limits
-    count the same tokens, `GATEWAY.md`, Limits → Settle). The gateway's limiter tests
+    expected: { <limit type>: <decimal string> } }` — a record's units, every one,
+    and its cost, and what it counts toward every limit type but requests, in that
+    type's unit (the per-minute types included: the gateway's per-minute limits
+    count the same amounts, `GATEWAY.md`, Limits → Settle). The gateway's limiter tests
     check every type; `kaiak-control`'s usage tests check the counted ones.
 - **Groups the config no longer defines** (deleted after the gateway settled the
   record) still count toward their windows, which no limit checks; the listed groups

@@ -1,0 +1,16 @@
+{
+  "reason": "a speech record: its tokens count toward token limits and its seconds of generated audio toward the audio_seconds_out limits, each apart; an unpriced speech model costs 0",
+  "units": { "tokens_in": 21, "tokens_cached": 0, "tokens_cache_write": 0, "tokens_out": 83, "tokens_reasoning": 0, "images": 0, "audio_seconds_out": 7, "audio_seconds_in": 0 },
+  "cost_nano_usd": 0,
+  "expected": {
+    "tokens_per_minute": "104",
+    "tokens_per_hour": "104",
+    "images_per_minute": "0",
+    "images_per_hour": "0",
+    "audio_seconds_out_per_minute": "7",
+    "audio_seconds_out_per_hour": "7",
+    "audio_seconds_in_per_minute": "0",
+    "audio_seconds_in_per_hour": "0",
+    "usd_per_month": "0"
+  }
+}

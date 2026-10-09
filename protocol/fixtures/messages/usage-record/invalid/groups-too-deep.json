@@ -20,6 +20,9 @@
     "model": "Qwen/Qwen3-32B"
   },
   "units": {
+    "audio_seconds_in": 0,
+    "audio_seconds_out": 0,
+    "images": 0,
     "tokens_cache_write": 0,
     "tokens_cached": 0,
     "tokens_in": 812,

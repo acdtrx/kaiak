@@ -1,6 +1,6 @@
 {
   "instance": "gw-1",
-  "protocol_version": 5,
+  "protocol_version": 6,
   "state": "ready",
   "started_at": "2026-09-24T09:58:12.5Z",
   "last_rejection": null,

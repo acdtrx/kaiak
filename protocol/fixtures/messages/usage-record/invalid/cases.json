@@ -84,13 +84,25 @@
     "kind": "schema",
     "reason": "request IDs hold no spaces"
   },
+  "units-missing-audio-seconds-in.json": {
+    "kind": "schema",
+    "reason": "every record carries audio_seconds_in, zeros included (no endpoint produces it yet)"
+  },
+  "units-missing-audio-seconds-out.json": {
+    "kind": "schema",
+    "reason": "every record carries audio_seconds_out, zeros included"
+  },
   "units-missing-cache-write.json": {
     "kind": "schema",
     "reason": "every record carries tokens_cache_write, zeros included"
   },
+  "units-missing-images.json": {
+    "kind": "schema",
+    "reason": "every record carries images, zeros included"
+  },
   "units-missing-reasoning.json": {
     "kind": "schema",
-    "reason": "the five token units are always present, zeros included"
+    "reason": "every unit is always present, zeros included"
   },
   "units-negative.json": {
     "kind": "schema",

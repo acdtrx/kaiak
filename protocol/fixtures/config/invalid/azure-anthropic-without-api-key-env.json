@@ -1,5 +1,5 @@
 {
-  "format_version": 5,
+  "format_version": 6,
   "global": {},
   "backends": { "vllm": { "type": "azure-anthropic", "base_url": "https://res.services.ai.azure.com" } },
   "models": {

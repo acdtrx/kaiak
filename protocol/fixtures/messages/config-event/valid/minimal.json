@@ -1,7 +1,7 @@
 {
-  "config_hash": "aca6f7ecfc05ab5a41524c797e9880427fc68b67f7ecf5a4bbb27e96f555ebf3",
+  "config_hash": "bdb5e122f57662e988a685029acca3d1c8df9272041ca3bf27c0d7067ac7d514",
   "config": {
-    "format_version": 5,
+    "format_version": 6,
     "global": {},
     "backends": {
       "local": {

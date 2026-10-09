@@ -41,7 +41,7 @@
 
 | Option | Required | Meaning |
 | --- | --- | --- |
-| `type` | yes | The config's backend `type`: `"openai-compatible"`, `"openai"`, `"azure-openai"`, `"vllm"`, `"llama-server"`, `"anthropic"` or `"azure-anthropic"` (settled 2026-09-30; the Anthropic types 2026-10-06). |
+| `type` | yes | The config's backend `type`: `"openai-compatible"`, `"openai"`, `"azure-openai"`, `"vllm"`, `"vllm-omni"`, `"llama-server"`, `"anthropic"` or `"azure-anthropic"` (settled 2026-09-30; the Anthropic types 2026-10-06; `vllm-omni` 2026-10-09). |
 | `baseUrl` | yes | The backend's `base_url`, exactly as config spells it. |
 | `credential` | no | The credential **value** (not an env name), passed by the app. Omitted: nothing is sent. |
 | `model` | no | A backend-side model name (a deployment's `model`) to check and describe. |
@@ -68,7 +68,7 @@ way by the gateway:
 
 | Type | Models list | Credential header |
 | --- | --- | --- |
-| `openai-compatible`, `openai`, `vllm`, `llama-server` | `GET <baseUrl>/models` | `Authorization: Bearer <credential>` |
+| `openai-compatible`, `openai`, `vllm`, `vllm-omni`, `llama-server` | `GET <baseUrl>/models` | `Authorization: Bearer <credential>` |
 | `azure-openai` | `GET <baseUrl>/openai/v1/models` | `api-key: <credential>` |
 | `anthropic` | `GET <baseUrl>/models?limit=1000` | `x-api-key: <credential>`, plus `anthropic-version: 2023-06-01` |
 | `azure-anthropic` | none — no request is sent | — |
@@ -127,7 +127,13 @@ already says what it is.
   (e.g. `… is vllm: use type "vllm", not "openai-compatible"`). It is a note, not a
   failure: the backend answered and the gateway reaches it the same way under either
   type — but only the server's own type gets its module's rules (`GATEWAY.md`,
-  Providers). An `"unknown"` server gets no note, whatever the type.
+  Providers). An `"unknown"` server gets no note, whatever the type. **A `vllm-omni`
+  backend whose list says `"vllm"` gets none either** (settled 2026-10-09):
+  vLLM-Omni serves vLLM's own models list (`owned_by: "vllm"`; a pure-diffusion
+  server's list too, `entrypoints/openai/models/serving.py`, v0.30.0), so the list
+  cannot tell the two apart, and a note would tell the operator to drop the type
+  that serves speech and images. A `vllm` backend that is really vLLM-Omni gets no
+  note for the same reason.
 
 ## Sources
 

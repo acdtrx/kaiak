@@ -2,7 +2,7 @@
   "config_hash": "1d4a7c0f3e6b9d2a5c8f1e4b7a0d3c6f9e2b5a8d1c4f7e0a3b6d9c2f5e8a1b4d",
   "config_hash": "9f2c8a1e4b7d6c3f0a5e8b2d1c4f7a9e6b3d0c8f5a2e7b4d1c9f6a3e0b8d5c2f",
   "config": {
-    "format_version": 5,
+    "format_version": 6,
     "global": {},
     "backends": {
       "local": {

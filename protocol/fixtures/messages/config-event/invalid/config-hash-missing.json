@@ -1,6 +1,6 @@
 {
   "config": {
-    "format_version": 5,
+    "format_version": 6,
     "global": {},
     "backends": {
       "local": {

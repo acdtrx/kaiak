@@ -1,12 +1,25 @@
 {
-  "reason": "every unit and the cost at the record's maximum, 2^53 - 1: the counted tokens add up past 2^53, exactly",
+  "reason": "every unit and the cost at the record's maximum, 2^53 - 1: the counted tokens add up past 2^53, exactly; each media unit counts alone",
   "units": {
     "tokens_in": 9007199254740991,
     "tokens_cached": 9007199254740991,
     "tokens_cache_write": 9007199254740991,
     "tokens_out": 9007199254740991,
-    "tokens_reasoning": 9007199254740991
+    "tokens_reasoning": 9007199254740991,
+    "images": 9007199254740991,
+    "audio_seconds_out": 9007199254740991,
+    "audio_seconds_in": 9007199254740991
   },
   "cost_nano_usd": 9007199254740991,
-  "expected": { "tokens_per_minute": "27021597764222973", "tokens_per_hour": "27021597764222973", "usd_per_month": "9007199254740991" }
+  "expected": {
+    "tokens_per_minute": "27021597764222973",
+    "tokens_per_hour": "27021597764222973",
+    "images_per_minute": "9007199254740991",
+    "images_per_hour": "9007199254740991",
+    "audio_seconds_out_per_minute": "9007199254740991",
+    "audio_seconds_out_per_hour": "9007199254740991",
+    "audio_seconds_in_per_minute": "9007199254740991",
+    "audio_seconds_in_per_hour": "9007199254740991",
+    "usd_per_month": "9007199254740991"
+  }
 }

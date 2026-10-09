@@ -1,4 +1,12 @@
 {
+  "audio-seconds-in-hour-window-misaligned.json": {
+    "kind": "schema",
+    "reason": "a audio_seconds_in_per_hour window starts at the top of the hour"
+  },
+  "audio-seconds-out-hour-window-misaligned.json": {
+    "kind": "schema",
+    "reason": "a audio_seconds_out_per_hour window starts at the top of the hour"
+  },
   "counted-through-epoch-duplicate.json": {
     "kind": "semantic",
     "code": "counted-through-epoch-duplicate",
@@ -36,6 +44,10 @@
     "kind": "schema",
     "reason": "an hour window starts at the top of the hour"
   },
+  "images-hour-window-misaligned.json": {
+    "kind": "schema",
+    "reason": "a images_per_hour window starts at the top of the hour"
+  },
   "live-gateways-missing.json": {
     "kind": "schema",
     "reason": "totals carry the live-gateway count"
@@ -43,6 +55,10 @@
   "month-window-not-first.json": {
     "kind": "schema",
     "reason": "a month window starts on the first at midnight"
+  },
+  "per-minute-media-type.json": {
+    "kind": "schema",
+    "reason": "per-minute image and audio limits stay local to each gateway, as every per-minute limit does, and are never pushed"
   },
   "per-minute-type.json": {
     "kind": "schema",

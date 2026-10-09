@@ -68,15 +68,18 @@
           "description": "Limit types counted by the control plane: fixed UTC hours and calendar months.",
           "enum": [
             "tokens_per_hour",
+            "images_per_hour",
+            "audio_seconds_out_per_hour",
+            "audio_seconds_in_per_hour",
             "usd_per_month"
           ]
         },
         "window_start": {
-          "description": "Start of the window, UTC: the top of an hour for tokens_per_hour, the first of a month for usd_per_month.",
+          "description": "Start of the window, UTC: the top of an hour for the per-hour types, the first of a month for usd_per_month.",
           "$ref": "config.schema.json#/$defs/timestamp"
         },
         "used": {
-          "description": "tokens_per_hour: tokens (tokens_in + tokens_cache_write + tokens_out; input read from the cache does not count); usd_per_month: nano-USD.",
+          "description": "tokens_per_hour: tokens (tokens_in + tokens_cache_write + tokens_out; input read from the cache does not count); images_per_hour: images; audio_seconds_out_per_hour, audio_seconds_in_per_hour: seconds of audio; usd_per_month: nano-USD.",
           "$ref": "common.schema.json#/$defs/amount"
         }
       },
@@ -85,7 +88,12 @@
           "if": {
             "properties": {
               "type": {
-                "const": "tokens_per_hour"
+                "enum": [
+                  "tokens_per_hour",
+                  "images_per_hour",
+                  "audio_seconds_out_per_hour",
+                  "audio_seconds_in_per_hour"
+                ]
               }
             },
             "required": [

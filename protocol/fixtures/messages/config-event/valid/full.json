@@ -1,7 +1,7 @@
 {
-  "config_hash": "27cfd8f8ea175222871c2199db7d21289638549380d0483a264824b31ea89660",
+  "config_hash": "f978193e15a37a6ab81064b9aef41938201268878ded1d1e324e2fe7dc3ca8e6",
   "config": {
-    "format_version": 5,
+    "format_version": 6,
     "global": {
       "limits": [
         {
@@ -19,6 +19,8 @@
       "max_sequences_per_request": 32,
       "max_embedding_inputs": 512,
       "max_rerank_documents": 250,
+      "max_images_per_request": 6,
+      "max_speech_batch_items": 16,
       "max_concurrent_requests_per_key": 32,
       "metrics": {
         "key_id_label": true,

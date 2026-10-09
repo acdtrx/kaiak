@@ -134,6 +134,29 @@ Group entries under headings as themes emerge.
 - **Cloud workload identity** — AWS IRSA / Pod Identity, Azure managed identity instead
   of static keys. Revisit trigger: static credentials are not allowed in the target
   cluster.
+- **Omni chat models** — chat answers carrying audio or images: vLLM-Omni's chat
+  route answers images on a diffusion model and speaks by default on an Omni model
+  with a talker stage (`modalities` defaults to the model's outputs), with token
+  usage only. `vllm-omni` therefore serves the media endpoints alone (ruled
+  2026-10-09, `docs/specs/GATEWAY.md`, Providers → Endpoint support). Serving such a
+  model's chat needs the chat answers parsed for their media — audio in a message
+  or a stream's deltas, images in its content — to count them in `images` and
+  `audio_seconds_out` and hold them to their limits. Revisit trigger: someone needs
+  an Omni chat model (audio in chat answers) behind kaiak.
+- **Image `file` responses** — vLLM-Omni's `response_format: "file"` answers an
+  image's raw bytes, or a ZIP of every image when there are several; the gateway
+  refuses it and counts images from `data[]` only (ruled 2026-10-09). Serving it
+  needs a count of the answer's images without `data[]` — a ZIP's entries read as
+  they stream — since `n` undercounts a layered model, which answers one image per
+  layer. Revisit trigger: a client needs image bytes rather than base64 (a large
+  image where base64's third more matters, or a client that cannot decode it).
+- **vLLM-Omni quirks** — an image request to a model with no diffusion stage (a
+  speech model) answers `503 No diffusion stage found in multi-stage pipeline.`, a
+  server status for a request no deployment of that model can serve; the gateway
+  reads it as the endpoint missing by that message (`docs/specs/GATEWAY.md`,
+  Providers → An endpoint missing from a server). Worth an upstream report (a
+  `404` or `400` would say what it is). Revisit trigger: a vLLM-Omni release
+  changes that answer, and the reading needs its update. (recorded 2026-10-09.)
 - **llama-server quirks** — behaviours of llama-server that break what the gateway
   assumes of a backend, for the `llama-server` backend module (2026-09-30 review,
   L1–L3; all reproduced live):
@@ -189,6 +212,16 @@ Group entries under headings as themes emerge.
   Revisit trigger: one model is served from deployment types or regions with
   different prices, and the difference matters for budgets. (parked by the user
   2026-09-29, recorded 2026-10-06.)
+- **Pricing media units** — `images`, `audio_seconds_out` and `audio_seconds_in` are
+  counted and limited but not priced: `usd_per_million` takes the token units only,
+  so images and seconds of audio cost nothing, and a priced model's token prices
+  apply to a speech request's tokens (ruled 2026-10-09,
+  `docs/plans/media-generation/`; `docs/specs/CONTROL-PROTOCOL.md`, Config → Units
+  and price units). Pricing them needs price units of their own — USD per image,
+  likely by size and quality as the cloud APIs price images, and per second of
+  audio — beside the token prices of a tier, and a format and protocol change on
+  both halves. Revisit trigger: a priced image or speech model is needed (a cloud
+  backend for them, or an internal charge per image or per minute of audio).
 - **Cost identical across CPU architectures** — `accounting.Cost` multiplies units by
   per-unit prices and rounds once per record; the Go compiler fuses multiply-add on
   arm64 but not on amd64, so the same record can cost 1 nano-USD more or less at a

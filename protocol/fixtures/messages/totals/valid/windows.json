@@ -35,6 +35,28 @@
       "type": "tokens_per_hour",
       "window_start": "2026-09-24T10:00:00Z",
       "used": "52000"
+    },
+    {
+      "group": "alice",
+      "type": "images_per_hour",
+      "window_start": "2026-09-24T10:00:00Z",
+      "used": "12"
+    },
+    {
+      "type": "audio_seconds_out_per_hour",
+      "window_start": "2026-09-24T10:00:00Z",
+      "used": "3600"
+    },
+    {
+      "group": "alice",
+      "type": "audio_seconds_out_per_hour",
+      "window_start": "2026-09-24T10:00:00Z",
+      "used": "95"
+    },
+    {
+      "type": "audio_seconds_in_per_hour",
+      "window_start": "2026-09-24T10:00:00Z",
+      "used": "0"
     }
   ]
 }

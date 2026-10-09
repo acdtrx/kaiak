@@ -130,7 +130,7 @@
   "counters-exceeded.json": {
     "kind": "semantic",
     "code": "counters-exceeded",
-    "reason": "50 001 counters, one over the 50 000 bound: global's hour and month counters (no per-minute limits), the users group's 2 plus its 2 per-minute limits, 4 on each of its 12 498 children (2 plus users' 2 per-minute child_defaults; one child overrides a default, still 4), and the top-level group spare's 2 plus its one per-minute limit"
+    "reason": "50 001 counters, one over the 50 000 bound: global's five (one per counted type: the hour counts of tokens, images, audio generated and audio processed, and the USD month; no per-minute limits), the users group's 5 plus its 2 per-minute limits, 7 on each of its 7 140 children (5 plus users' 2 per-minute child_defaults; one child overrides a default, still 7), and the top-level group spare's 5 plus its 4 per-minute limits"
   },
   "deployment-backend-unknown.json": {
     "kind": "semantic",
@@ -184,9 +184,9 @@
     "kind": "schema",
     "reason": "the first-event timeout is a positive integer"
   },
-  "format-version-4.json": {
+  "format-version-5.json": {
     "kind": "schema",
-    "reason": "format_version must be 5"
+    "reason": "format_version must be 6"
   },
   "format-version-missing.json": {
     "kind": "schema",
@@ -319,6 +319,22 @@
     "kind": "schema",
     "reason": "a group has at most 16 labels"
   },
+  "limit-audio-seconds-in-per-hour-fractional.json": {
+    "kind": "schema",
+    "reason": "audio_seconds_in_per_hour limits are whole seconds of audio processed"
+  },
+  "limit-audio-seconds-in-per-minute-fractional.json": {
+    "kind": "schema",
+    "reason": "audio_seconds_in_per_minute limits are whole seconds of audio processed"
+  },
+  "limit-audio-seconds-out-per-hour-fractional.json": {
+    "kind": "schema",
+    "reason": "audio_seconds_out_per_hour limits are whole seconds of audio generated"
+  },
+  "limit-audio-seconds-out-per-minute-fractional.json": {
+    "kind": "schema",
+    "reason": "audio_seconds_out_per_minute limits are whole seconds of audio generated"
+  },
   "limit-duplicate-child-defaults.json": {
     "kind": "semantic",
     "code": "limit-duplicate",
@@ -334,6 +350,14 @@
     "code": "limit-duplicate",
     "reason": "two limits of one type in the global scope"
   },
+  "limit-images-per-hour-fractional.json": {
+    "kind": "schema",
+    "reason": "images_per_hour limits are whole images"
+  },
+  "limit-images-per-minute-fractional.json": {
+    "kind": "schema",
+    "reason": "images_per_minute limits are whole images"
+  },
   "limit-models.json": {
     "kind": "schema",
     "reason": "a limit has no model list: it covers all of its scope's usage (settled 2026-10-06)"
@@ -344,11 +368,11 @@
   },
   "limit-requests-fractional.json": {
     "kind": "schema",
-    "reason": "request and token limits are integers"
+    "reason": "request, token, image and audio-second limits are integers"
   },
   "limit-type-unknown.json": {
     "kind": "schema",
-    "reason": "limit types are the four v1 types"
+    "reason": "limit types are the ten the protocol defines"
   },
   "limit-value-above-safe.json": {
     "kind": "schema",
@@ -365,6 +389,10 @@
   "max-embedding-inputs-zero.json": {
     "kind": "schema",
     "reason": "max_embedding_inputs is 1 or more"
+  },
+  "max-images-per-request-zero.json": {
+    "kind": "schema",
+    "reason": "max_images_per_request is 1 or more"
   },
   "max-in-flight-fractional.json": {
     "kind": "schema",
@@ -389,6 +417,10 @@
   "max-sequences-per-request-zero.json": {
     "kind": "schema",
     "reason": "max_sequences_per_request is 1 or more"
+  },
+  "max-speech-batch-items-zero.json": {
+    "kind": "schema",
+    "reason": "max_speech_batch_items is 1 or more"
   },
   "metadata-missing.json": {
     "kind": "schema",
@@ -529,7 +561,7 @@
   },
   "price-unknown-unit.json": {
     "kind": "schema",
-    "reason": "price units are tokens_in, tokens_cached, tokens_cache_write, tokens_out"
+    "reason": "price units are tokens_in, tokens_cached, tokens_cache_write, tokens_out: images and audio seconds are counted, not priced"
   },
   "queue-size-negative.json": {
     "kind": "schema",

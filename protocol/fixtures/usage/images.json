@@ -1,0 +1,16 @@
+{
+  "reason": "an image record: its images count toward the image limits; its estimated prompt tokens toward token limits",
+  "units": { "tokens_in": 30, "tokens_cached": 0, "tokens_cache_write": 0, "tokens_out": 0, "tokens_reasoning": 0, "images": 4, "audio_seconds_out": 0, "audio_seconds_in": 0 },
+  "cost_nano_usd": 0,
+  "expected": {
+    "tokens_per_minute": "30",
+    "tokens_per_hour": "30",
+    "images_per_minute": "4",
+    "images_per_hour": "4",
+    "audio_seconds_out_per_minute": "0",
+    "audio_seconds_out_per_hour": "0",
+    "audio_seconds_in_per_minute": "0",
+    "audio_seconds_in_per_hour": "0",
+    "usd_per_month": "0"
+  }
+}
