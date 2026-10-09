@@ -1,0 +1,233 @@
+# Plan: media generation — phase A (speech and image generation on vLLM-Omni)
+
+## Goal
+
+Serve speech and image generation from self-hosted models through the full request
+pipeline: `POST /v1/audio/speech` (whole clip, SSE stream, raw-audio stream),
+vLLM-Omni's `POST /v1/audio/speech/batch` and `POST /v1/images/generations`, passed
+through to vLLM-Omni backends, counted in their own units — images and seconds of
+audio — and limited in them.
+
+Phase B (uploads, then image edits and transcription) follows in its own plan after
+this one is released. The research and the direction settled with the user are in
+`RESEARCH.md` beside this file; this plan builds on them and does not repeat them.
+
+## Scope
+
+- **A backend type, `vllm-omni`:** vLLM-Omni's server, claiming the media endpoints and
+  every endpoint `vllm` claims, with no core endpoints.
+- **Three client API endpoints:** speech, speech batch, image generation — each a format
+  of its own, through every pipeline stage.
+- **Three usage units:** `images`, `audio_seconds_out`, `audio_seconds_in` (the last one
+  is produced in phase B).
+- **Six limit types:** images and the two audio units, per minute and per hour.
+- **Two global caps:** images per request and speech batch items.
+- **Both halves:** config format 6 and protocol 6 — the specs, schemas, fixtures, the
+  gateway and `kaiak-control`.
+- **kaiak measures speech audio length** (WAV and PCM) as it relays it.
+- **Live-test kit:** a `vllm-omni` kind with speech and image checks; docs for serving
+  Qwen3-TTS and Qwen-Image behind kaiak.
+
+## Out of scope
+
+- **Phase B:** uploads (`multipart/form-data`), image edits, transcription — their own
+  plan, after this one is released.
+- **Speech output in MP3, FLAC, Opus or AAC:** refused (`docs/BACKLOG.md`, measuring
+  compressed speech audio).
+- **Streaming image generation:** vLLM-Omni does not stream generations.
+- **Prices for the new units:** a priced model's token prices still apply to speech
+  tokens; images and audio seconds cost nothing. Backlog (step 1).
+- **Video, WebSocket endpoints, the voices endpoints, other servers.**
+
+## Decisions
+
+Settled with the user (2026-10-09; `RESEARCH.md` → Direction and Settled for
+planning):
+
+1. **vLLM-Omni only**, a backend type of its own: `vllm-omni`.
+2. **Phase A is speech (whole clip, SSE stream, raw-audio stream, batch) and image
+   generation**, released before phase B.
+3. **Units:**
+   - `images` — images generated;
+   - `audio_seconds_out` — audio generated;
+   - `audio_seconds_in` — audio processed (phase B).
+
+   All three enter in this plan's version bump, so phase B needs none.
+4. **Limits:** images and audio seconds per minute (each gateway) and per hour (shared
+   through the control plane's totals), as tokens are.
+   - Images reserve `n` before the request runs.
+   - Audio generated settles after it.
+   - Audio processed (phase B) is reserved from the measured upload.
+5. **Speech output is WAV or PCM only.** kaiak measures the seconds; the other formats
+   are refused.
+6. **Raw-audio streaming is accepted.**
+   - Its seconds are measured.
+   - Its tokens are estimated from the input text and flagged `estimated`.
+7. **Image `response_format: "file"`** (raw bytes) passes through; images are counted
+   from `n`.
+8. **`vllm-omni` claims the media endpoints plus everything `vllm` claims**, and has no
+   core endpoints.
+9. **`gen_ai.operation.name` is `generate_content`**, OpenTelemetry's well-known value,
+   with `gen_ai.output.type` naming the kind.
+10. **Model metadata is unchanged and required.**
+    - `capabilities.vision` means the model takes images in.
+    - `context_length` bounds the prompt and, for speech, the output limit.
+11. **URLs and file paths are refused** in fields that make the server fetch or read
+    (speech `ref_audio`). Inline data only.
+12. **New global caps**, as `max_embedding_inputs`:
+    - images per request, default 10;
+    - speech batch items, default 32.
+
+Made while planning (confirm in review):
+
+13. **Speech's owned fields:**
+    - `model`;
+    - `stream` and `stream_format`, which together pick the mode: whole clip, SSE, or
+      raw audio;
+    - `response_format` (`wav` or `pcm`; anything else refused);
+    - `max_new_tokens`, the output-limit key (the model's `output_limit` default and
+      ceiling, bounded by `context_length`);
+    - `ref_audio` (no URLs or paths);
+    - `sample_rate`, read to measure PCM.
+
+    Everything else passes untouched.
+14. **The speech batch's owned fields:**
+    - `model`;
+    - `items`, counted against the cap;
+    - each item's and the batch's `response_format`, `ref_audio` and `max_new_tokens`,
+      with the same rules as speech.
+15. **Image generation's owned fields:**
+    - `model`;
+    - `n`, against the cap and reserved;
+    - `response_format` (`b64_json` or `file`; `url` refused).
+
+    It is never a stream: an event-stream answer is incomplete, as for rerank.
+16. **Usage on a speech answer:**
+    - whole clip: tokens from the `x-vllm-omni-*-tokens` response headers;
+    - SSE: tokens from `speech.audio.done`;
+    - batch: the items' usage summed;
+    - raw audio: tokens estimated (decision 6);
+    - every mode: `audio_seconds_out` measured on the audio relayed to the client. A
+      client gone mid-answer settles the seconds sent, as tokens do today.
+17. **Image usage:** `images` is the answer's `data[]` count, read while the body streams
+    through without keeping it (decision 7 for `file`).
+18. **The PCM sample rate when the request sets none:** step 1 settles it from vLLM-Omni's
+    sources.
+    - Candidates: OpenAI's PCM definition (24 kHz, 16-bit, mono), which vLLM-Omni's
+      speech models share; or a declared per-model rate.
+    - It must never be guessed silently wrong for a model with another native rate.
+19. **The names:**
+    - limit types: `images_per_minute`, `images_per_hour`,
+      `audio_seconds_out_per_minute`, `audio_seconds_out_per_hour`,
+      `audio_seconds_in_per_minute`, `audio_seconds_in_per_hour`;
+    - global caps: `max_images_per_request`, `max_speech_batch_items`;
+    - endpoint names: `audio_speech`, `audio_speech_batch`, `images_generations`.
+
+    Step 1 may refine them.
+20. **Metrics for the new units:**
+    - OpenTelemetry's GenAI conventions have no image or audio-length metric, so they
+      get `kaiak.*` counters (e.g. `kaiak.usage.images`, `kaiak.usage.audio.duration`,
+      in seconds) beside the token usage counter.
+    - The labels match the usage metrics.
+    - Step 1 checks the pinned conventions first.
+21. **Versions:** config `format_version` 6 and protocol 6 — the new units on the usage
+    record, the new limit types and totals windows, the new backend type and caps.
+
+## Constraints
+
+- **One pipeline, no side doors:** every new endpoint passes every stage.
+- **Passthrough** preserves what it does not understand; owned fields only.
+- **Nothing sensitive in logs:** no prompt text, no audio or image bytes.
+- **Audio and images are never held whole:** measured and counted as they stream
+  through.
+- **Protocol changes land on both halves at once.**
+- No new dependency (audio-length reading is the standard library).
+
+## Risks
+
+- **vLLM-Omni moves fast** (195 commits in the two weeks after v0.30.0).
+  - Mitigation: step 1 pins the version read, the fake backend follows it, and the
+    live run uses the latest release.
+- **Measuring audio while relaying it** (a streamed WAV may carry an unknown length;
+  SSE carries base64 chunks).
+  - Mitigation: the length is read from the bytes actually sent, never from a header's
+    size field; tests over each shape.
+- **The PCM sample rate** (decision 18).
+- **Audio generated settles after the request**, so a per-minute audio limit can be
+  overshot by one request, as USD can.
+  - Mitigation: documented; images and tokens still reserve.
+- **The DGX's memory:** Qwen-Image and a TTS model beside the user's serving model.
+  - Mitigation: the live run stops and restores the user's model, as the rerank run
+    did.
+
+## Tag
+
+`v0.13.1` on `main`, "before the media generation plan, phase A", immediately before
+step 1 starts. It is not pushed to `github`: an anchor, not a release.
+
+## Branch and worktree
+
+Branch `media-a`, worktree `.claude/worktrees/media-a`. It rebases onto `main` before
+the ff merge.
+
+Steps are implemented by subagents (the same model as the main session), one step per
+brief. The main session reviews each against its acceptance criteria and commits at
+the step boundary. The release after the merge is the user's call.
+
+## Phases and steps
+
+- **Phase 1 — Contract, units, limits and the type** (steps 1–4). Green at the end: both
+  halves at format and protocol 6, the units and limits counted end to end, the
+  `vllm-omni` type serving vLLM's endpoints.
+  1. `STEP-1-contract.md` — research pinned, specs, schemas, fixtures, versions.
+  2. `STEP-2-kaiak-control.md` — units, limit types, totals and storage, the backend
+     type, backend-verify, the sample.
+  3. `STEP-3-gateway-units-and-limits.md` — the units on records and metrics, the limit
+     types and their reservations, the caps, versions.
+  4. `STEP-4-gateway-vllm-omni-type.md` — the module, its endpoints and probe.
+- **Phase 2 — Speech** (steps 5–7). Green at the end.
+  5. `STEP-5-speech.md` — the whole clip and the raw-audio stream; usage headers; audio
+     length.
+  6. `STEP-6-speech-sse.md` — the SSE stream.
+  7. `STEP-7-speech-batch.md` — the batch endpoint.
+- **Phase 3 — Image generation** (step 8). Green at the end.
+  8. `STEP-8-images.md`
+- **Phase 4 — End to end, live kit, docs, review, live run** (steps 9–12). Green at the
+  end.
+  9. `STEP-9-e2e.md` — gateway e2e and cross-half e2e.
+  10. `STEP-10-live-kit-and-docs.md`
+  11. `STEP-11-review-and-green.md`
+  12. `STEP-12-live-run.md` — the DGX, with vLLM-Omni.
+
+Expected reds inside phase 1:
+- After step 1, both halves fail the new fixtures and the version checks.
+- Step 2 clears `kaiak-control`'s, and step 3 the gateway's.
+- The cross-half e2e is red until both halves speak protocol 6 (step 3).
+
+## Verification
+
+- **Component tests:**
+  - each format's owned fields and refusals;
+  - the caps;
+  - the reservations (images by `n`, audio settled after);
+  - usage from headers, from the SSE `done` event and from batch items;
+  - audio length for WAV (whole, streamed with unknown size) and PCM (with and without
+    `sample_rate`), base64 included;
+  - image counting over a multi-MB answer without holding it;
+  - the new limit types per minute and per hour;
+  - metrics and the request line for the new units.
+- **Gateway e2e** against the fake backend:
+  - each endpoint and mode, through the whole pipeline;
+  - usage records with the new units;
+  - each new limit refusing;
+  - wrong endpoints on `vllm-omni` neutral.
+- **Cross-half e2e:**
+  - a speech request and an image request settle at the sample;
+  - the hourly image and audio totals limit a second gateway.
+- **`scripts/check-all.sh`** green at every phase end, and 3× in a row at the end.
+- **Live (step 12):** vLLM-Omni on the DGX with Qwen3-TTS and Qwen-Image.
+  - The kit's `vllm-omni` kind passes.
+  - The real answers match the fake's shapes.
+  - The user's model is restored.
+
+**Verification status:** not started.
