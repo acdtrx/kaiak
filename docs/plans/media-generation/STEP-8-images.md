@@ -52,6 +52,10 @@ Serve `POST /v1/images/generations` on `vllm-omni` deployments:
 
 ## Result
 
+**Confirmed with the user (2026-10-09):** an image request sent but never answered (a
+timeout or the client gone before the first byte) records 0 images, by the spec's
+no-output rule — vLLM aborts the generation when the connection closes.
+
 ### What changed
 
 - `gateway/internal/provider/`:
