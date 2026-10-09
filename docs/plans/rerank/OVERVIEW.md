@@ -261,4 +261,8 @@ embeddings' `promptCount` allocation recorded in `docs/BACKLOG.md`.
 `STEP-7-review-and-green.md` has the table.
 
 **Verification status:** component, e2e and cross-half tests green, `check-all.sh` 3×
-in a row (2026-10-09). The live run (step 8) waits for the DGX.
+in a row (2026-10-09). Live on the DGX (step 8, 2026-10-09): the kit passes on
+`-kind vllm` (vLLM 0.30.0, Qwen3-Reranker-8B) and `-kind llama-server` (b11525, the
+8B converted to q8_0) — 34 passed, 0 failed each; the servers' real answers match the
+fake backend in every field the gateway and the kit read; b10970 answers an oversize
+pair `500` and b11525 `400`, as decision 15 says.

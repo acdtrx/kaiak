@@ -675,6 +675,11 @@ the document (a script, or the control plane) rather than editing it by hand.
     so a few chat requests sent to its model name open its circuit. Keep chat
     clients off its model name, or serve it on vLLM, which has no chat route for a
     reranker (an endpoint missing, neutral for the circuit).
+  - **A causal reranker answers chat with nonsense**: on llama-server, a chat request
+    sent to Qwen3-Reranker answers `200` with meaningless text, and an embeddings
+    request `200` with null values (b11525, 2026-10-09) — no harm to the circuit, but
+    no use to the client. The same advice holds: keep other clients off its model
+    name.
 - **Before go-live, run the live kit** with the reranker
   (`docs/testing/LIVE-BACKENDS.md`, Reranker on a server of its own): it checks the
   answer, the relevance order, the usage, the oversize refusal and the
