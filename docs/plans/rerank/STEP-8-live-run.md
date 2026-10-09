@@ -1,7 +1,6 @@
 # Step 8 — live run
 
 **Status:** done — reviewed and committed 2026-10-09
-gateway or the kit reads; the DGX is restored.
 
 ## Intent
 
