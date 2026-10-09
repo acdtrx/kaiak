@@ -127,12 +127,14 @@ type usageReader interface {
 
 // mediaReader is the usageReader of a format whose answer is media (speech): it reads
 // a successful answer's response headers, and its body as relayed — audio, not JSON —
-// and adds the media units to the record (docs/specs/GATEWAY.md, Accounting → Media
-// usage).
+// or its stream events, and adds the media units to the record (docs/specs/GATEWAY.md,
+// Accounting → Media usage).
 type mediaReader interface {
 	usageReader
-	// answered reads a successful answer's response headers, as the backend sent them.
-	answered(header http.Header)
+	// answered reads a successful answer's response headers, as the backend sent them;
+	// stream reports whether its body is an event stream, read by its events
+	// (streamEvent) rather than as relayed (bodyPiece).
+	answered(header http.Header, stream bool)
 	// bodyPiece reads a piece of a successful non-stream body, as relayed.
 	bodyPiece(p []byte)
 	// media is the media units the answer counts, and whether they were measured: an
@@ -173,7 +175,7 @@ func (m *Meter) Answered(status int, stream bool, header http.Header) {
 	m.status = status
 	m.stream = stream
 	if m.media != nil && m.succeeded() {
-		m.media.answered(header)
+		m.media.answered(header, stream)
 		return
 	}
 	if !stream && m.succeeded() {

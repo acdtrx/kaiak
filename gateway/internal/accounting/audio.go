@@ -1,10 +1,12 @@
 package accounting
 
 import (
+	"encoding/base64"
 	"encoding/binary"
 	"math"
 	"math/bits"
 	"mime"
+	"strings"
 	"time"
 )
 
@@ -23,6 +25,11 @@ type audioClip interface {
 	length() (d time.Duration, measured bool)
 	// samplesSeen reports whether audio samples were relayed — not a WAV header alone.
 	samplesSeen() bool
+	// count reads up to n of the clip's next bytes by their number alone, for audio
+	// whose bytes are not at hand (base64 in an event, never decoded whole), and says
+	// how many it took: the bytes it does not read — samples, a chunk it skips. It
+	// takes none of the bytes it must read (a WAV header's), which come through write.
+	count(n int64) int64
 }
 
 // pcmFrameBytes is the size of one PCM sample frame vLLM-Omni sends: 16-bit mono,
@@ -30,16 +37,24 @@ type audioClip interface {
 // (docs/specs/GATEWAY.md, Client API → owned fields: speech).
 const pcmFrameBytes = 2
 
-// newAudioClip is the clip of an answer whose content type is contentType: WAV
-// (audio/wav), read from its own header; PCM (audio/pcm), 16-bit mono at sampleRate,
-// the request's (0 when it names none: then it cannot be measured); any other type
-// cannot be measured.
+// newAudioClip is the clip of an answer whose content type is contentType: audio/wav
+// or audio/pcm, as formatClip reads them; any other type cannot be measured.
 func newAudioClip(contentType string, sampleRate int64) audioClip {
 	mediaType, _, _ := mime.ParseMediaType(contentType)
-	switch mediaType {
-	case "audio/wav":
+	if format, ok := strings.CutPrefix(mediaType, "audio/"); ok {
+		return formatClip(format, sampleRate)
+	}
+	return unmeasuredClip{}
+}
+
+// formatClip is a clip of audio in format, as speech's response_format names it: wav,
+// read from its own header; pcm, 16-bit mono at sampleRate, the request's (0 when it
+// names none: then it cannot be measured); any other format cannot be measured.
+func formatClip(format string, sampleRate int64) audioClip {
+	switch format {
+	case "wav":
 		return &wavClip{}
-	case "audio/pcm":
+	case "pcm":
 		return &pcmClip{byteRate: SaturatingMul(max(sampleRate, 0), pcmFrameBytes)}
 	}
 	return unmeasuredClip{}
@@ -61,6 +76,11 @@ func (c *pcmClip) length() (time.Duration, bool) {
 
 func (c *pcmClip) samplesSeen() bool { return c.received > 0 }
 
+func (c *pcmClip) count(n int64) int64 {
+	c.received = SaturatingAdd(c.received, n)
+	return n
+}
+
 // unmeasuredClip is audio the gateway cannot measure: another content type, or PCM at
 // no known rate.
 type unmeasuredClip struct{}
@@ -68,6 +88,15 @@ type unmeasuredClip struct{}
 func (unmeasuredClip) write([]byte)                  {}
 func (unmeasuredClip) length() (time.Duration, bool) { return 0, false }
 func (unmeasuredClip) samplesSeen() bool             { return false }
+func (unmeasuredClip) count(n int64) int64           { return n }
+
+// emptyClip is the audio of an answer that relayed none: 0 s, exactly.
+type emptyClip struct{}
+
+func (emptyClip) write([]byte)                  {}
+func (emptyClip) length() (time.Duration, bool) { return 0, true }
+func (emptyClip) samplesSeen() bool             { return false }
+func (emptyClip) count(n int64) int64           { return n }
 
 // wavClip reads a WAV file (RIFF, form type WAVE) as its bytes stream through. Its
 // chunks are walked up to the data chunk — the fmt chunk's sample rate, channels and
@@ -145,25 +174,38 @@ func (c *wavClip) write(p []byte) {
 				c.readHead()
 				c.head = c.head[:0]
 			}
-		case wavSkip:
-			n := min(c.skip, int64(len(p)))
-			c.skip -= n
-			p = p[n:]
-			if c.skip == 0 {
-				c.state = wavChunkHeader
-			}
-		case wavData:
-			n := min(c.declared, int64(len(p)))
-			c.declared -= n
-			c.received += n
-			p = p[n:]
-			if c.declared == 0 {
-				c.state = wavEnd
-			}
+		case wavSkip, wavData:
+			p = p[c.count(int64(len(p))):]
 		default:
 			return
 		}
 	}
+}
+
+// count takes the bytes of a chunk the clip skips, and the data chunk's audio up to
+// the size it declares; past it, and in a header it cannot read, every byte. A
+// header's bytes it does not take.
+func (c *wavClip) count(n int64) int64 {
+	switch c.state {
+	case wavSkip:
+		k := min(c.skip, n)
+		c.skip -= k
+		if c.skip == 0 {
+			c.state = wavChunkHeader
+		}
+		return k
+	case wavData:
+		k := min(c.declared, n)
+		c.declared -= k
+		c.received += k
+		if c.declared == 0 {
+			c.state = wavEnd
+		}
+		return k
+	case wavEnd, wavUnreadable:
+		return n
+	}
+	return 0
 }
 
 // headBytes is the size of the fixed part the clip is reading.
@@ -245,6 +287,68 @@ func (c *wavClip) length() (time.Duration, bool) {
 }
 
 func (c *wavClip) samplesSeen() bool { return c.received > 0 }
+
+// base64Window is how many bytes of base64 audio are decoded at a time while a clip
+// reads them — a WAV header, whose fixed parts are 8 to 16 bytes.
+const base64Window = 48
+
+// writeBase64 reads base64 text b64 — a speech.audio.delta's audio — into clip without
+// decoding it whole: its decoded size from its length and padding (base64Size), the
+// bytes the clip must read (a WAV header) decoded a few at a time, the rest taken by
+// their number (audioClip.count). It reports false when bytes the clip must read are
+// not base64: the clip cannot read them.
+func writeBase64(clip audioClip, b64 string) bool {
+	text := base64Text(b64)
+	size := base64Size(text)
+	for at := int64(0); at < size; {
+		at += clip.count(size - at)
+		if at == size {
+			break
+		}
+		n := min(base64Window, size-at)
+		p, ok := base64Bytes(text, at, n)
+		if !ok {
+			return false
+		}
+		clip.write(p)
+		at += n
+	}
+	return true
+}
+
+// base64Text is base64 text without its padding: at most two "=" at its end.
+func base64Text(s string) string {
+	for range 2 {
+		s = strings.TrimSuffix(s, "=")
+	}
+	return s
+}
+
+// base64Size is the decoded size of base64 text without its padding (base64Text):
+// three bytes for every four characters, one or two for a last group of two or three.
+// A lone character past the last whole group carries no whole byte and counts none.
+func base64Size(text string) int64 {
+	size := int64(len(text)/4) * 3
+	switch len(text) % 4 {
+	case 2:
+		size++
+	case 3:
+		size += 2
+	}
+	return size
+}
+
+// base64Bytes decodes the n bytes at decoded offset at of base64 text without its
+// padding, from the four-character groups that hold them alone; ok is false when those
+// are not base64.
+func base64Bytes(text string, at, n int64) ([]byte, bool) {
+	from, to := at/3*4, min((at+n+2)/3*4, int64(len(text)))
+	p, err := base64.RawStdEncoding.DecodeString(text[from:to])
+	if skip := at % 3; err == nil && skip+n <= int64(len(p)) {
+		return p[skip : skip+n], true
+	}
+	return nil, false
+}
 
 // audioDuration is the length of n bytes of audio at byteRate bytes per second,
 // rounded down to the nanosecond — less than a nanosecond lost per clip, which no

@@ -57,7 +57,7 @@ func newStreamFormat(f Format) streamFormat {
 	case FormatRerank:
 		return rerankStream{}
 	case FormatSpeech:
-		return speechStream{}
+		return &speechStream{}
 	}
 	return &openAIStream{}
 }
@@ -394,27 +394,51 @@ func (rerankStream) relayedError(payload []byte) []byte {
 	return withGatewayMessage(payload, `{"error":{"message":%s,"type":"server_error","param":null,"code":null}}`)
 }
 
-// speechStream: the gateway serves speech's whole clip and its raw-audio stream, audio
-// bodies whose completeness is their framing (docs/specs/GATEWAY.md, Providers:
-// complete responses); an event stream answering a speech request is none it reads:
-// its events say nothing, and it is never complete.
-type speechStream struct{}
+// speechStream: speech's SSE stream is complete once it carried speech.audio.done;
+// speech.audio.error is the backend abandoning it, and always a failure — vLLM-Omni
+// sends it, server_error and code 500, for any exception once the stream started,
+// while it answers every fault of the request itself 400 before the stream
+// (docs/specs/GATEWAY.md, Providers: complete responses, error events). Events are read
+// by their data's type, which every speech event carries. The whole clip and the
+// raw-audio stream are audio bodies, whose completeness is their framing.
+type speechStream struct {
+	done bool
+}
 
 // requestEdits: none — a speech request gets the model edit and its output limit
 // under max_new_tokens alone (docs/specs/GATEWAY.md, Providers: passthrough edits);
-// its stream and stream_format pass untouched, and the whole clip reports usage in
-// its headers unasked.
-func (speechStream) requestEdits(*Request) ([]memberEdit, bool) { return nil, false }
+// its stream and stream_format pass untouched, and it reports usage unasked: the whole
+// clip in its headers, the SSE stream in speech.audio.done.
+func (e *speechStream) requestEdits(*Request) ([]memberEdit, bool) { return nil, false }
 
-func (speechStream) observe([]byte) observation { return observation{} }
+func (e *speechStream) observe(payload []byte) observation {
+	var event struct {
+		Type  string          `json:"type"`
+		Error json.RawMessage `json:"error"`
+	}
+	// An event that does not decode says nothing about the end.
+	if json.Unmarshal(payload, &event) != nil {
+		return observation{}
+	}
+	switch event.Type {
+	case "speech.audio.done":
+		e.done = true
+	case "speech.audio.error":
+		var detail struct {
+			Code json.RawMessage `json:"code"`
+		}
+		_ = json.Unmarshal(event.Error, &detail) // an error that is not an object names no code
+		return observation{errorEvent: &ErrorEvent{Kind: ErrorEventFailure, Code: detail.Code}}
+	}
+	return observation{}
+}
 
-func (speechStream) complete() bool { return false }
+func (e *speechStream) complete() bool { return e.done }
 
-func (speechStream) nestedModel() string { return "" }
+func (e *speechStream) nestedModel() string { return "" }
 
-// relayedError is never reached — no event of a speech stream is read as an error
-// event; were one relayed, its plain form is an OpenAI error, the shape vLLM-Omni's
-// errors take.
-func (speechStream) relayedError(payload []byte) []byte {
-	return withGatewayMessage(payload, `{"error":{"message":%s,"type":"server_error","param":null,"code":null}}`)
+// relayedError: the plain form is vLLM-Omni's own error event.
+func (e *speechStream) relayedError(payload []byte) []byte {
+	return withGatewayMessage(payload,
+		`{"type":"speech.audio.error","error":{"message":%s,"type":"server_error","param":null,"code":500}}`)
 }

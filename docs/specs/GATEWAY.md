@@ -2232,7 +2232,10 @@ own, and a client sending repeats is broken either way.
       required with it (Client API → owned fields: speech);
     - SSE: each `speech.audio.delta`'s `audio` by its decoded size, computed from
       its base64 length and padding, never decoded whole — only a leading WAV
-      header is decoded;
+      header is decoded, however the deltas split it (vLLM-Omni sends it as a delta
+      of its own). The stream's format is its first delta's `response_format`; a
+      later delta naming another, or a WAV header that is not base64, leaves the
+      answer unmeasured (settled 2026-10-09);
     - the batch: each successful item's `audio_data` the same way, by its
       `media_type`;
     - an answer it cannot measure (a WAV header it cannot read, another content

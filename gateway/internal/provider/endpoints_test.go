@@ -198,8 +198,8 @@ func TestWrongEndpointAnswersByModule(t *testing.T) {
 // stream_options edit, and nothing is hidden from the client. A Responses request gets
 // store: false and nothing else. Rerank has no stream: its stream member passes
 // untouched, and the model is its one edit. Speech's stream is its mode's, passed
-// untouched, and the whole clip reports usage in its headers unasked: the model is its
-// one edit beside its output limit.
+// untouched, and speech reports usage unasked — the whole clip in its headers, the SSE
+// stream in speech.audio.done: the model is its one edit beside its output limit.
 func TestNoUsageEditOutsideTheOpenAIFormat(t *testing.T) {
 	for e, want := range map[Endpoint]string{
 		Messages:    `{"model":"m","stream":true}`,

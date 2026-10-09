@@ -1,7 +1,10 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strconv"
@@ -15,20 +18,17 @@ import (
 	"kaiak/internal/provider"
 )
 
-// withSpeechModels swaps in the test config, edits applied, plus vllm-omni backends
-// on the fake backend — "omni", and "omni-slow" whose response and stall timeouts are
-// 150 ms and first-event timeout 5 s — and speech models: "tts" on omni (as
-// "Qwen/Qwen3-TTS"; output limit default 300, ceiling 1000; priced at $1 and $2 per
-// million input and output tokens), "tts-free" there with no output limit and no
-// price, "tts-slow" on omni-slow, and "painter" on omni (as "Qwen/Qwen-Image"), a model
-// that does not speak.
+// withSpeechModels swaps in the test config with vllm-omni backends on the fake
+// backend — "omni", and "omni-slow" whose response and stall timeouts are 150 ms and
+// first-event timeout 5 s — and speech models: "tts" on omni (as "Qwen/Qwen3-TTS";
+// output limit default 300, ceiling 1000; priced at $1 and $2 per million input and
+// output tokens), "tts-free" there with no output limit and no price, "tts-slow" on
+// omni-slow, and "painter" on omni (as "Qwen/Qwen-Image"), a model that does not
+// speak; then edits applied.
 func withSpeechModels(t *testing.T, g *testGateway, edits ...func(doc string) string) {
 	t.Helper()
 	g.backend.SetNonSpeechModels("Qwen/Qwen-Image")
 	g.apply(t, func(doc string) string {
-		for _, edit := range edits {
-			doc = edit(doc)
-		}
 		doc = replaceOnce(t, doc, `"backends": {`, `"backends": {
     "omni": { "type": "vllm-omni", "base_url": "`+g.backend.URL()+`/v1" },
     "omni-slow": { "type": "vllm-omni", "base_url": "`+g.backend.URL()+`/v1", "response_timeout_ms": 150,
@@ -42,10 +42,37 @@ func withSpeechModels(t *testing.T, g *testGateway, edits ...func(doc string) st
 		priced := `, "output_limit": { "default": 300, "ceiling": 1000 },
       "prices": [{ "effective_from": "2020-01-01",
         "tiers": [{ "above_input_tokens": 0, "usd_per_million": { "tokens_in": 1, "tokens_out": 2 } }] }]`
-		return replaceOnce(t, doc, `"models": { `, `"models": {
+		doc = replaceOnce(t, doc, `"models": { `, `"models": {
     `+model("tts", "omni", "Qwen/Qwen3-TTS", priced)+model("tts-free", "omni", "Qwen/Qwen3-TTS-free", "")+
 			model("tts-slow", "omni-slow", "Qwen/Qwen3-TTS-slow", "")+model("painter", "omni", "Qwen/Qwen-Image", ""))
+		for _, edit := range edits {
+			doc = edit(doc)
+		}
+		return doc
 	})
+}
+
+// speechEvents reads a speech SSE stream as the client got it: each event's name, the
+// audio of its deltas decoded and joined, and its last event's data.
+func speechEvents(t *testing.T, stream string) (names []string, audio []byte, last string) {
+	t.Helper()
+	for block := range strings.SplitSeq(strings.TrimSuffix(stream, "\n\n"), "\n\n") {
+		name, data, ok := strings.Cut(block, "\ndata: ")
+		if !ok || !strings.HasPrefix(name, "event: ") {
+			t.Fatalf("block %q is no speech event", block)
+		}
+		names, last = append(names, strings.TrimPrefix(name, "event: ")), data
+		var delta struct{ Audio string }
+		if err := json.Unmarshal([]byte(data), &delta); err != nil {
+			t.Fatalf("event data %s: %v", data, err)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(delta.Audio)
+		if err != nil {
+			t.Fatalf("delta audio: %v", err)
+		}
+		audio = append(audio, decoded...)
+	}
+	return names, audio, last
 }
 
 // speechCall is a speech request of the eval group's key carrying body, request ID id.
@@ -64,34 +91,51 @@ func speechUnits(in, out, seconds int64) accounting.Units {
 // A speech request passes the whole pipeline to a vllm-omni deployment, in each mode
 // and format: sent with the model edit and the default output limit under
 // max_new_tokens, everything else as the client wrote it; answered as the backend
-// answered — its audio byte for byte, its content type and word timing, never the
-// usage headers — flushed and unbuffered; settled from the whole clip's headers, or
-// estimated on the raw-audio stream, with the audio relayed measured into
-// audio_seconds_out (2.5 s → 3), priced on its tokens; operation generate_content and
-// output type speech on the request line and the usage metrics, the raw-audio stream a
-// stream there and timed to its first audio (docs/specs/GATEWAY.md, Client API → owned
-// fields: speech; Providers; Accounting → Media usage; Observability).
+// answered — its audio byte for byte, or its events, its content type and word
+// timing, never the usage headers — flushed and unbuffered; settled from the whole
+// clip's headers or the SSE stream's speech.audio.done, or estimated on the raw-audio
+// stream, with the audio relayed measured into audio_seconds_out (2.5 s → 3), priced
+// on its tokens; operation generate_content and output type speech on the request
+// line and the usage metrics, the two streams streams there and timed to their first
+// audio (docs/specs/GATEWAY.md, Client API → owned fields: speech; Providers;
+// Accounting → Media usage; Observability).
 func TestSpeechThroughThePipeline(t *testing.T) {
 	for _, c := range []struct {
 		name, body, contentType string
 		size                    int
-		raw                     bool
+		raw, sse                bool
 	}{
-		{"whole clip, wav", `{"model":"tts","input":"Hello there","voice":"vivian"}`, "audio/wav", 44 + 120000, false},
+		{"whole clip, wav", `{"model":"tts","input":"Hello there","voice":"vivian"}`, "audio/wav", 44 + 120000, false, false},
 		{"whole clip, pcm", `{"model":"tts","input":"Hello there","response_format":"pcm","sample_rate":8000}`,
-			"audio/pcm", 40000, false},
-		{"raw-audio stream, wav", `{"model":"tts","input":"Hello there","stream_format":"audio"}`, "audio/wav", 44 + 120000, true},
+			"audio/pcm", 40000, false, false},
+		{"raw-audio stream, wav", `{"model":"tts","input":"Hello there","stream_format":"audio"}`, "audio/wav", 44 + 120000, true, false},
 		{"raw-audio stream, pcm", `{"model":"tts","input":"Hello there","stream_format":"audio","stream":true,` +
-			`"response_format":"pcm","sample_rate":8000}`, "audio/pcm", 40000, true},
+			`"response_format":"pcm","sample_rate":8000}`, "audio/pcm", 40000, true, false},
+		{"SSE stream, wav", `{"model":"tts","input":"Hello there","stream":true}`, "text/event-stream", 44 + 120000, false, true},
+		{"SSE stream, pcm", `{"model":"tts","input":"Hello there","stream_format":"sse","response_format":"pcm","sample_rate":8000}`,
+			"text/event-stream", 40000, false, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			g := newTestGateway(t)
 			withSpeechModels(t, g)
 			g.backend.SetReply(fakebackend.Reply{Header: map[string]string{"X-Word-Timestamps": `[{"word":"Hello"}]`}})
 			w := do(t, g.h, speechCall(c.body, "sp-1"))
-			if w.Code != http.StatusOK || w.Body.Len() != c.size || w.Header().Get("Content-Type") != c.contentType {
-				t.Fatalf("%d, %d bytes of %s: want 200, %d bytes of %s", w.Code, w.Body.Len(), w.Header().Get("Content-Type"),
+			audio := w.Body.Bytes()
+			if c.sse && w.Code == http.StatusOK {
+				var names []string
+				names, audio, _ = speechEvents(t, w.Body.String())
+				if names[0] != "speech.audio.delta" || names[len(names)-1] != "speech.audio.done" {
+					t.Errorf("events %v: want deltas, then done", names)
+				}
+			}
+			if w.Code != http.StatusOK || len(audio) != c.size || w.Header().Get("Content-Type") != c.contentType {
+				t.Fatalf("%d, %d bytes of audio in %s: want 200, %d bytes in %s", w.Code, len(audio), w.Header().Get("Content-Type"),
 					c.size, c.contentType)
+			}
+			if c.contentType == "audio/wav" || (c.sse && !strings.Contains(c.body, "pcm")) {
+				if !bytes.HasPrefix(audio, []byte("RIFF")) {
+					t.Errorf("audio not relayed as sent: % x…", audio[:min(len(audio), 48)])
+				}
 			}
 			if w.Header().Get("X-Word-Timestamps") != `[{"word":"Hello"}]` || w.Header().Get("X-Accel-Buffering") != "no" ||
 				!w.Flushed {
@@ -122,7 +166,7 @@ func TestSpeechThroughThePipeline(t *testing.T) {
 			}
 			line := logLine(t, g, "sp-1")
 			for _, want := range []string{`"gen_ai.operation.name":"generate_content"`, `"gen_ai.output.type":"speech"`,
-				`"gen_ai.request.stream":` + strconv.FormatBool(c.raw), `"kaiak.backend.type":"vllm-omni"`,
+				`"gen_ai.request.stream":` + strconv.FormatBool(c.raw || c.sse), `"kaiak.backend.type":"vllm-omni"`,
 				`"kaiak.usage.audio.output.duration":3`, `"gen_ai.usage.input_tokens":` + strconv.FormatInt(in, 10)} {
 				if !strings.Contains(line, want) {
 					t.Errorf("log line lacks %s: %s", want, line)
@@ -137,9 +181,9 @@ func TestSpeechThroughThePipeline(t *testing.T) {
 				`kaiak_usage_records_total`+usage+` 1`,
 				`kaiak_usage_audio_output_duration_seconds_total`+usage+` 3`)
 			ttft := `kaiak_time_to_first_token_seconds_count{gen_ai_request_model="tts",kaiak_backend_id="omni"} 1`
-			if strings.Contains(text, ttft) != c.raw {
+			if strings.Contains(text, ttft) != (c.raw || c.sse) {
 				t.Errorf("time to first token observed %v, want %v: only a stream is timed to its first audio",
-					strings.Contains(text, ttft), c.raw)
+					strings.Contains(text, ttft), c.raw || c.sse)
 			}
 		})
 	}
@@ -149,9 +193,9 @@ func TestSpeechThroughThePipeline(t *testing.T) {
 // OpenAI's error shape, naming the member at fault: audio it cannot measure, PCM
 // without its rate, a reference audio the backend would fetch or read — every
 // variant, each entry of a list, a references entry's audio_path — owned fields of
-// the wrong type or named twice, an output limit out of range, the SSE stream it does
-// not serve, a model on no vllm-omni deployment (docs/specs/GATEWAY.md, Client API →
-// owned fields: speech; errors).
+// the wrong type or named twice, an output limit out of range, a model on no
+// vllm-omni deployment (docs/specs/GATEWAY.md, Client API → owned fields: speech;
+// errors).
 func TestSpeechRefusals(t *testing.T) {
 	g := newTestGateway(t)
 	withSpeechModels(t, g)
@@ -195,8 +239,6 @@ func TestSpeechRefusals(t *testing.T) {
 		{"references entry not an object", `{"model":"tts","input":"hi","references":["/srv/a.wav"]}`, "invalid_type", "references[0]"},
 		{"ref_audio named twice", `{"model":"tts","input":"hi","ref_audio":` + inline + `,"ref_audio":"/srv/a.wav"}`,
 			"duplicate_member", "ref_audio"},
-		{"SSE by stream", `{"model":"tts","input":"hi","stream":true}`, "invalid_value", "stream"},
-		{"SSE by stream_format", `{"model":"tts","input":"hi","stream_format":"sse"}`, "invalid_value", "stream_format"},
 		{"stream not a boolean", `{"model":"tts","input":"hi","stream":"yes"}`, "invalid_type", "stream"},
 		{"stream_format not a string", `{"model":"tts","input":"hi","stream_format":true}`, "invalid_type", "stream_format"},
 		{"max_new_tokens not an integer", `{"model":"tts","input":"hi","max_new_tokens":"many"}`, "invalid_type", "max_new_tokens"},
@@ -388,7 +430,8 @@ func speechRequest(t *testing.T, ctx context.Context, url, body string) *http.Re
 // The whole clip takes the response timeout, not retried; the raw-audio stream the
 // stream timers: its body reads are its progress, so a backend silent past the stall
 // timeout after its first audio has stalled — the relay cut, the seconds relayed
-// settled partial (docs/specs/GATEWAY.md, Routing and reliability → Timeouts).
+// settled partial; the SSE stream the stream timers as every event stream does (the
+// next test) (docs/specs/GATEWAY.md, Routing and reliability → Timeouts).
 func TestSpeechTimers(t *testing.T) {
 	g := newTestGateway(t)
 	withSpeechModels(t, g)
@@ -421,6 +464,172 @@ func TestSpeechTimers(t *testing.T) {
 	}
 	if logs := g.logText(); !strings.Contains(logs, `"kaiak.relay_end":"upstream_stalled"`) {
 		t.Errorf("log misses the stall:\n%s", logs)
+	}
+}
+
+// The SSE stream takes the stream timers: a backend that sends no first event within
+// the first-event timeout is a 504 upstream_timeout, the prompt billed as sent; one
+// silent past the stall timeout after its first events has stalled — the relay cut,
+// the seconds its deltas relayed settled, the tokens estimated, partial
+// (docs/specs/GATEWAY.md, Routing and reliability → Timeouts).
+func TestSpeechEventStreamTimers(t *testing.T) {
+	g := newTestGateway(t)
+	withSpeechModels(t, g, func(doc string) string {
+		return replaceOnce(t, doc, `"first_event_timeout_ms": 5000`, `"first_event_timeout_ms": 150`)
+	})
+	g.backend.SetReply(fakebackend.Reply{Before: fakebackend.StallFirstByte})
+	body := `{"model":"tts-slow","input":"hi","stream":true}`
+	w := do(t, g.h, speechCall(body, "sse-first"))
+	expectError(t, w, http.StatusGatewayTimeout, "upstream_timeout")
+	if line := logLine(t, g, "sse-first"); !strings.Contains(line, "no first event within 150ms") ||
+		!strings.Contains(line, `"gen_ai.request.stream":true`) {
+		t.Errorf("log line: %s", line)
+	}
+	in := accounting.EstimateInput(provider.AudioSpeech, []byte(body)).Total
+	expectUnits(t, onlyRecord(t, g), speechUnits(in, 0, 0), true, true)
+
+	g = newTestGateway(t)
+	withSpeechModels(t, g)
+	g.backend.SetReply(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 1, Kind: fakebackend.Hang}})
+	url := serveGateway(t, g)
+	start := time.Now()
+	resp := speechRequest(t, context.Background(), url, body)
+	data, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err == nil || time.Since(start) > waitTimeout {
+		t.Fatalf("ended %v after %s: want the connection cut", err, time.Since(start))
+	}
+	if names, audio, _ := speechEvents(t, string(data)); len(names) != 2 || len(audio) != 44+30000 {
+		t.Errorf("relayed %v, %d bytes of audio: want the header and the first piece", names, len(audio))
+	}
+	expectUnits(t, settledRecord(t, g), speechUnits(in, 0, 1), true, true)
+	waitLog(t, g, `"kaiak.relay_end":"upstream_stalled"`)
+}
+
+// An SSE stream that ends before speech.audio.done — the connection cut, or ended
+// cleanly without it — is a backend failure: the relay cut (upstream_failed,
+// upstream_incomplete), the audio its deltas relayed settled, rounded up, the tokens
+// estimated, partial. A done event without usage completes the stream, its tokens
+// estimated (docs/specs/GATEWAY.md, Providers: complete responses; Accounting →
+// Media usage, Partial).
+func TestSpeechEventStreamEnds(t *testing.T) {
+	body := `{"model":"tts","input":"hello","stream":true}`
+	in := accounting.EstimateInput(provider.AudioSpeech, []byte(body)).Total
+	for _, c := range []struct {
+		name     string
+		kind     fakebackend.StreamFaultKind
+		relayEnd string
+	}{
+		{"cut", fakebackend.Cut, "upstream_failed"},
+		{"ended without done", fakebackend.End, "upstream_incomplete"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			g := newTestGateway(t)
+			withSpeechModels(t, g)
+			g.backend.SetReply(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 2, Kind: c.kind}})
+			resp := speechRequest(t, context.Background(), serveGateway(t, g), body)
+			data, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err == nil {
+				t.Errorf("the stream ended cleanly; want the connection cut")
+			}
+			// The header, then two pieces of 0.625 s: 1.25 s relayed.
+			if names, audio, _ := speechEvents(t, string(data)); len(names) != 3 || len(audio) != 44+60000 {
+				t.Errorf("relayed %v, %d bytes of audio: want the header and two pieces", names, len(audio))
+			}
+			expectUnits(t, settledRecord(t, g), speechUnits(in, 0, 2), true, true)
+			waitLog(t, g, `"kaiak.relay_end":"`+c.relayEnd+`"`)
+			expectMetricLines(t, scrape(g), `kaiak_upstream_attempts_total{kaiak_backend_id="omni",`+
+				`kaiak_deployment_model="Qwen/Qwen3-TTS",kaiak_attempt_outcome="broke_off"} 1`)
+		})
+	}
+
+	g := newTestGateway(t)
+	withSpeechModels(t, g)
+	g.backend.SetReply(fakebackend.Reply{OmitUsage: true})
+	w := do(t, g.h, speechCall(body, "no-usage"))
+	if names, _, last := speechEvents(t, w.Body.String()); w.Code != http.StatusOK || names[len(names)-1] != "speech.audio.done" ||
+		strings.Contains(last, "usage") {
+		t.Fatalf("%d %v %s: want the stream whole, done without usage", w.Code, names, last)
+	}
+	expectUnits(t, onlyRecord(t, g), speechUnits(in, 0, 3), true, false)
+}
+
+// speech.audio.error after the first event reaches the client — its type and code,
+// partial_audio and action kept, its message the gateway's — then the connection is
+// cut: the stream ended incomplete, a backend failure (broke_off), the audio relayed
+// settled with the tokens estimated, partial. As the first event it is the backend
+// failing before anything reached the client: retried on another deployment, the
+// failed attempt billing nothing, and answered 502 upstream_error with its code on the
+// log line when no deployment is left (docs/specs/GATEWAY.md, Providers: error
+// events).
+func TestSpeechEventStreamErrorEvents(t *testing.T) {
+	body := `{"model":"tts","input":"hello","stream":true}`
+	in := accounting.EstimateInput(provider.AudioSpeech, []byte(body)).Total
+	g := newTestGateway(t)
+	withSpeechModels(t, g)
+	g.backend.SetReply(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 2, Kind: fakebackend.ErrorEvent}})
+	resp := speechRequest(t, context.Background(), serveGateway(t, g), body)
+	data, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err == nil {
+		t.Errorf("the stream ended cleanly; want the connection cut")
+	}
+	names, audio, last := speechEvents(t, string(data))
+	if len(names) != 4 || names[3] != "speech.audio.error" || len(audio) != 44+60000 {
+		t.Errorf("relayed %v, %d bytes of audio: want the header, two pieces, then the error", names, len(audio))
+	}
+	for _, want := range []string{`"type":"speech.audio.error"`, `"type":"server_error"`, `"code":500`, `"partial_audio":true`,
+		`"action":"discard"`, `"message":"The model backend ended the response with an error."`} {
+		if !strings.Contains(last, want) {
+			t.Errorf("relayed error %s lacks %s", last, want)
+		}
+	}
+	if strings.Contains(string(data), "CUDA") || strings.Contains(string(data), "Qwen") {
+		t.Errorf("the backend's message reached the client: %s", last)
+	}
+	expectUnits(t, settledRecord(t, g), speechUnits(in, 0, 2), true, true)
+	waitLog(t, g, `"kaiak.relay_end":"upstream_incomplete"`)
+	expectMetricLines(t, scrape(g), `kaiak_upstream_attempts_total{kaiak_backend_id="omni",`+
+		`kaiak_deployment_model="Qwen/Qwen3-TTS",kaiak_attempt_outcome="broke_off"} 1`)
+
+	// The first event: retried on the second deployment, which answers.
+	other := fakebackend.New()
+	t.Cleanup(other.Close)
+	g = newTestGateway(t)
+	withSpeechModels(t, g, func(doc string) string {
+		doc = replaceOnce(t, doc, `"backends": {`, `"backends": {
+    "omni-b": { "type": "vllm-omni", "base_url": "`+other.URL()+`/v1" },`)
+		return replaceOnce(t, doc, `[{ "backend": "omni", "model": "Qwen/Qwen3-TTS" }]`,
+			`[{ "backend": "omni", "model": "Qwen/Qwen3-TTS" }, { "backend": "omni-b", "model": "Qwen/Qwen3-TTS" }]`)
+	})
+	g.backend.SetReply(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 0, Kind: fakebackend.ErrorEvent}})
+	w := do(t, g.h, speechCall(body, "first"))
+	if w.Code != http.StatusOK || len(g.backend.Requests())+len(other.Requests()) != 2 {
+		t.Fatalf("%d, %d and %d backend requests: want 200, after one attempt on each deployment", w.Code,
+			len(g.backend.Requests()), len(other.Requests()))
+	}
+	records := recordsOf(g, "first")
+	if len(records) != 1 {
+		t.Fatalf("%d records, want the answer's alone: the error event billed nothing", len(records))
+	}
+	expectUnits(t, records[0], speechUnits(7, 4, 3), false, false)
+	expectFields(t, logFields(t, g, "first"), map[string]any{
+		"kaiak.tried": "omni/Qwen/Qwen3-TTS:upstream_error,omni-b/Qwen/Qwen3-TTS:200"})
+	expectMetricLines(t, scrape(g),
+		`kaiak_retries_total{gen_ai_request_model="tts",kaiak_backend_id="omni",kaiak_attempt_outcome="server_error"} 1`)
+
+	// No deployment left: 502 upstream_error, the event's code on the log line.
+	g = newTestGateway(t)
+	withSpeechModels(t, g)
+	g.backend.SetReply(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 0, Kind: fakebackend.ErrorEvent}})
+	w = do(t, g.h, speechCall(body, "first-alone"))
+	expectError(t, w, http.StatusBadGateway, "upstream_error")
+	expectFields(t, logFields(t, g, "first-alone"), map[string]any{"error.type": "upstream_error",
+		"kaiak.upstream.error.code": "500", "gen_ai.request.stream": true})
+	expectUnits(t, onlyRecord(t, g), speechUnits(0, 0, 0), false, true)
+	if strings.Contains(g.logText(), "CUDA") {
+		t.Errorf("the backend's message reached the log:\n%s", g.logText())
 	}
 }
 
@@ -475,8 +684,9 @@ func TestSpeechToAModelThatDoesNotSpeak(t *testing.T) {
 	expectUnits(t, onlyRecord(t, g), speechUnits(0, 0, 0), false, false)
 }
 
-// Nothing of the text to speak, the reference audio, the audio answered or the word
-// timing reaches the log (docs/specs/GATEWAY.md, Observability: logs).
+// Nothing of the text to speak, the reference audio, the audio answered — as bytes or
+// as base64 in events — the word timing or a backend's error text reaches the log
+// (docs/specs/GATEWAY.md, Observability: logs).
 func TestSpeechLogsHoldNoContent(t *testing.T) {
 	g := newTestGateway(t)
 	withSpeechModels(t, g)
@@ -485,11 +695,18 @@ func TestSpeechLogsHoldNoContent(t *testing.T) {
 		`"ref_audio":"data:audio/wav;base64,UklGRnF1b2trYQ==","ref_text":"pomegranate"}`
 	for _, c := range []call{speechCall(body, "secret-1"),
 		speechCall(strings.Replace(body, `"model":"tts"`, `"stream_format":"audio","model":"tts"`, 1), "secret-2"),
-		speechCall(strings.Replace(body, `"ref_text"`, `"ref_audio_2":"https://zanzibar.example/a.wav","ref_text"`, 1), "secret-3")} {
+		speechCall(strings.Replace(body, `"ref_text"`, `"ref_audio_2":"https://zanzibar.example/a.wav","ref_text"`, 1), "secret-3"),
+		speechCall(strings.Replace(body, `"model":"tts"`, `"stream":true,"model":"tts"`, 1), "secret-4")} {
 		do(t, g.h, c)
 	}
+	g.backend.SetReply(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 1, Kind: fakebackend.ErrorEvent}})
+	resp := speechRequest(t, context.Background(), serveGateway(t, g), strings.Replace(body, `"model":"tts"`, `"stream":true,"model":"tts"`, 1))
+	_, _ = io.Copy(io.Discard, resp.Body) // the connection is cut after the error event
+	resp.Body.Close()
+	waitLog(t, g, `"kaiak.relay_end":"upstream_incomplete"`)
 	logs := g.logText()
-	for _, secret := range []string{"zanzibar", "quokka", "marmalade", "UklGRnF1b2trYQ", "pomegranate", "RIFF"} {
+	// UklGR begins a WAV header in base64, as an SSE stream's first delta carries it.
+	for _, secret := range []string{"zanzibar", "quokka", "marmalade", "UklGRnF1b2trYQ", "pomegranate", "RIFF", "UklGR", "CUDA"} {
 		if strings.Contains(logs, secret) {
 			t.Errorf("the log holds %q:\n%s", secret, logs)
 		}

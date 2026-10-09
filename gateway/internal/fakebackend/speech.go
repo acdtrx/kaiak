@@ -1,6 +1,7 @@
 package fakebackend
 
 import (
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -11,14 +12,16 @@ import (
 
 // Speech, as vLLM-Omni serves it (vllm_omni/entrypoints/openai/serving_speech.py,
 // v0.30.0), at /v1/audio/speech: the whole clip — a WAV file with its real sizes, or
-// PCM — with its token usage in X-VLLM-OMNI-* response headers; or, for
-// stream_format "audio", the raw-audio stream — the audio's bytes as they are
-// generated, chunked, a WAV stream opening with a 44-byte header whose two size
-// fields are the placeholder 0xFFFFFFFF, no usage. The audio is 16-bit mono silence at
-// the request's sample_rate (DefaultSampleRate when it names none), AudioMillis long.
-// The SSE mode is not played: a request asking for it is refused 400, as is a format
-// other than wav and pcm; a stream_format other than sse and audio is refused 400, as
-// vLLM-Omni refuses it.
+// PCM — with its token usage in X-VLLM-OMNI-* response headers; for stream_format
+// "audio", the raw-audio stream — the audio's bytes as they are generated, chunked, a
+// WAV stream opening with a 44-byte header whose two size fields are the placeholder
+// 0xFFFFFFFF, no usage; for stream true or stream_format "sse", the SSE stream — a
+// speech.audio.delta event per piece of audio, base64, a WAV stream's header a delta
+// of its own, then speech.audio.done carrying the usage. The audio is 16-bit mono
+// silence at the request's sample_rate (DefaultSampleRate when it names none),
+// AudioMillis long, in len(Chunks) pieces on either stream. A format other than wav
+// and pcm is refused 400, as is a stream_format other than sse and audio, as vLLM-Omni
+// refuses it.
 
 // speechPath is the speech endpoint, below the version prefix.
 const speechPath = "audio/speech"
@@ -81,10 +84,6 @@ func (b *Backend) writeSpeech(w http.ResponseWriter, r *http.Request, req *Reque
 		writeJSON(w, http.StatusBadRequest, speechError(http.StatusBadRequest, "BadRequestError",
 			"stream_format must be 'sse' or 'audio'"))
 		return
-	case !raw && (stream || streamFormat == "sse"):
-		writeJSON(w, http.StatusBadRequest, speechError(http.StatusBadRequest, "BadRequestError",
-			"the fake does not play the SSE mode"))
-		return
 	}
 
 	millis := reply.AudioMillis
@@ -93,6 +92,10 @@ func (b *Backend) writeSpeech(w http.ResponseWriter, r *http.Request, req *Reque
 	}
 	frames := rate * millis / 1000
 	audio := make([]byte, frames*speechFrameBytes)
+	if !raw && (stream || streamFormat == "sse") {
+		b.writeSpeechEvents(w, r, req, reply, format, rate, audio, max(len(chunks), 1), usage)
+		return
+	}
 	w.Header().Set("Content-Type", "audio/"+format)
 	if raw {
 		b.writeAudioStream(w, r, req, reply, format, rate, audio, max(len(chunks), 1))
@@ -137,6 +140,68 @@ func (b *Backend) writeAudioStream(w http.ResponseWriter, r *http.Request, req *
 			return
 		}
 	}
+}
+
+// writeSpeechEvents writes the SSE stream as vLLM-Omni's _generate_audio_sse_events
+// does: a speech.audio.delta per piece of audio — {"type", "audio": base64,
+// "response_format"} — a WAV stream's header first, a delta of its own; then
+// speech.audio.done with the usage (none with OmitUsage). The reply's stream fault
+// applies before piece At — At 0 before the header too — its error event
+// speech.audio.error: server_error (or the fault's Code as its type), code 500, and
+// partial_audio and action "discard" once a delta was sent.
+func (b *Backend) writeSpeechEvents(w http.ResponseWriter, r *http.Request, req *Request, reply Reply,
+	format string, rate int, audio []byte, pieces int, usage Usage) {
+	var s *streamWriter
+	errorEvent := func(errType string) []byte {
+		if errType == "" {
+			errType = "server_error"
+		}
+		detail := map[string]any{"message": "CUDA error on device 3: the engine died serving Qwen/Qwen3-TTS-backend",
+			"type": errType, "param": nil, "code": http.StatusInternalServerError}
+		if s.sent > 0 {
+			detail["partial_audio"], detail["action"] = true, "discard"
+		}
+		payload, _ := json.Marshal(map[string]any{"type": "speech.audio.error", "error": detail}) // test values always encode
+		return payload
+	}
+	s, ok := b.startStream(w, r, req, reply, errorEvent)
+	if !ok {
+		return
+	}
+	event := func(v map[string]any) bool {
+		payload, _ := json.Marshal(v) // test values always encode
+		return s.send(v["type"].(string), payload)
+	}
+	delta := func(p []byte) bool {
+		return event(map[string]any{"type": "speech.audio.delta", "audio": base64.StdEncoding.EncodeToString(p),
+			"response_format": format})
+	}
+	if !s.interrupt(0) {
+		return
+	}
+	if format == "wav" && !delta(wavHeader(rate, 0, true)) {
+		return
+	}
+	frames := len(audio) / speechFrameBytes
+	for i := range pieces {
+		if !s.interrupt(i) {
+			return
+		}
+		from, to := frames*i/pieces*speechFrameBytes, frames*(i+1)/pieces*speechFrameBytes
+		if !delta(audio[from:to]) {
+			return
+		}
+	}
+	done := map[string]any{"type": "speech.audio.done"}
+	if !reply.OmitUsage {
+		done["usage"] = map[string]any{
+			"input_tokens":        usage.PromptTokens,
+			"output_tokens":       usage.CompletionTokens,
+			"total_tokens":        usage.PromptTokens + usage.CompletionTokens,
+			"input_token_details": map[string]any{"text_tokens": usage.PromptTokens, "audio_tokens": 0},
+		}
+	}
+	event(done)
 }
 
 // wavHeader is the 44-byte header of a WAV file of 16-bit mono PCM at rate whose data

@@ -70,7 +70,8 @@ type Reply struct {
 	// the first (a slow model).
 	EventDelay time.Duration
 	// AudioMillis is a speech answer's length in milliseconds (default
-	// DefaultAudioMillis), split across len(Chunks) pieces on the raw-audio stream.
+	// DefaultAudioMillis), split across len(Chunks) pieces on the raw-audio and SSE
+	// streams.
 	AudioMillis int
 	// HonorMaxTokens: generate at most the request's max_completion_tokens,
 	// max_tokens or max_output_tokens chunks (the smallest when several are set), one
@@ -101,8 +102,9 @@ const (
 type StreamFault struct {
 	At   int
 	Kind StreamFaultKind
-	// Code, with ErrorEvent, is the error event's Anthropic error type (Messages) or
-	// code (Responses) in place of overloaded_error and server_error.
+	// Code, with ErrorEvent, is the error event's Anthropic error type (Messages),
+	// code (Responses) or error type (speech) in place of overloaded_error and
+	// server_error.
 	Code string
 	// PingEvery, with Hang, makes the hanging stream send a ": ping" comment block
 	// that often while it waits (a keep-alive with no data).
@@ -122,7 +124,8 @@ const (
 	// message_stop, a Responses stream without response.completed.
 	End
 	// ErrorEvent: send the API's error event (Anthropic's overloaded_error, a
-	// Responses error) and end there. Messages and Responses streams only.
+	// Responses error, speech.audio.error) and end there. Messages, Responses and
+	// speech streams only.
 	ErrorEvent
 )
 
@@ -666,7 +669,12 @@ func (s *streamWriter) interrupt(i int) bool {
 		if s.errorEvent == nil {
 			panic("fakebackend: an ErrorEvent fault on a stream with no error event")
 		}
-		s.send("error", s.errorEvent(fault.Code))
+		payload := s.errorEvent(fault.Code)
+		var event struct {
+			Type string `json:"type"`
+		}
+		_ = json.Unmarshal(payload, &event) // each API's error event is named by its data's type
+		s.send(event.Type, payload)
 	default:
 		panic(fmt.Sprintf("fakebackend: StreamFault with unknown Kind %d", fault.Kind))
 	}

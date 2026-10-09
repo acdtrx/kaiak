@@ -706,7 +706,6 @@ func errorAnswers() []struct {
 		{"errOutputLimitNegative", errOutputLimitNegative("max_tokens", -1)},
 		{"errMissingModel", errMissingModel()},
 		{"errMissingSampleRate", errMissingSampleRate("sample_rate")},
-		{"errSpeechEventStream", errSpeechEventStream("stream")},
 		{"errReadBody", errReadBody()},
 		{"errClientClosed", errClientClosed()},
 		{"errUpstreamFault", errUpstreamFault(http.StatusInternalServerError)},

@@ -71,7 +71,7 @@ const (
 	// serve.
 	FormatRerank
 	// FormatSpeech: speech, OpenAI's speech API as vLLM-Omni serves it: a JSON
-	// request, an audio answer.
+	// request, an audio answer — or its audio in server-sent events.
 	FormatSpeech
 )
 

@@ -36,10 +36,9 @@ func parseSpeechFields(rq *request, top map[string]json.RawMessage) *apiError {
 // readSpeechMode reads the mode as vLLM-Omni reads it (is_raw_audio_stream,
 // is_sse_stream): stream_format "audio" is the raw-audio stream; else stream true or
 // stream_format "sse" is the SSE stream; else the whole clip — any other
-// stream_format passes for the backend to refuse, timed as the whole clip. The
-// raw-audio stream takes the stream timers and sets gen_ai.request.stream
-// (inbound.Stream). The gateway does not serve the SSE stream: it is refused, naming
-// the member that asks for it.
+// stream_format passes for the backend to refuse, timed as the whole clip. The two
+// streams take the stream timers and set gen_ai.request.stream (inbound.Stream, which
+// stream true has set already).
 func readSpeechMode(rq *request, top map[string]json.RawMessage) *apiError {
 	format, apiErr := optionalField[string](top, "stream_format", "stream_format", "a string")
 	if apiErr != nil {
@@ -50,9 +49,7 @@ func readSpeechMode(rq *request, top map[string]json.RawMessage) *apiError {
 		rq.inbound.Stream = true
 		rq.inbound.Speech.RawStream = true
 	case format != nil && *format == "sse":
-		return errSpeechEventStream("stream_format")
-	case rq.inbound.Stream:
-		return errSpeechEventStream("stream")
+		rq.inbound.Stream = true
 	}
 	return nil
 }

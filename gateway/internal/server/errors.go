@@ -269,14 +269,6 @@ func errMissingSampleRate(param string) *apiError {
 		param: param, message: fmt.Sprintf("Missing required parameter: '%s'. PCM audio carries no header: name the sample rate to receive it at.", param)}
 }
 
-// errSpeechEventStream refuses a speech request asking for the SSE stream, which the
-// gateway does not serve; param names the member that asks for it (stream or
-// stream_format).
-func errSpeechEventStream(param string) *apiError {
-	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "invalid_value", class: metrics.ErrorInvalidRequest, param: param,
-		message: fmt.Sprintf("'%s' asks for speech as server-sent events, which the gateway does not serve; ask for the whole clip, or stream_format \"audio\".", param)}
-}
-
 func errReadBody() *apiError {
 	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "invalid_body", class: metrics.ErrorInvalidRequest,
 		message: "The request body could not be read."}

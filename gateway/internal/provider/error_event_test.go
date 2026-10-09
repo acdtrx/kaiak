@@ -28,16 +28,33 @@ func TestErrorEventKinds(t *testing.T) {
 		{FormatResponses, `{"type":"response.failed","response":{"error":{"code":"failed_to_download_image","message":"x"}}}`, ErrorEventCaller},
 		{FormatResponses, `{"type":"response.failed","response":{"error":{"code":"server_error","message":"x"}}}`, ErrorEventFailure},
 		{FormatResponses, `{"type":"error","code":null}`, ErrorEventFailure},
+		// Every speech.audio.error is a failure, whatever it names.
+		{FormatSpeech, `{"type":"speech.audio.error","error":{"message":"x","type":"server_error","param":null,"code":500}}`, ErrorEventFailure},
+		{FormatSpeech, `{"type":"speech.audio.error","error":{"message":"x","type":"invalid_request_error","code":400}}`, ErrorEventFailure},
+		{FormatSpeech, `{"type":"speech.audio.error","error":{"type":"rate_limit_exceeded","code":"rate_limit_exceeded"}}`, ErrorEventFailure},
+		{FormatSpeech, `{"type":"speech.audio.error","error":"boom"}`, ErrorEventFailure},
+		{FormatSpeech, `{"type":"speech.audio.error"}`, ErrorEventFailure},
 	} {
 		got := newStreamFormat(c.format).observe([]byte(c.payload)).errorEvent
 		if got == nil || got.Kind != c.want {
 			t.Errorf("%s: %+v, want kind %d", c.payload, got, c.want)
 		}
 	}
-	for _, payload := range []string{`{"type":"message_stop"}`, `{"type":"response.completed"}`, `not json`} {
-		if got := newStreamFormat(FormatResponses).observe([]byte(payload)).errorEvent; got != nil {
-			t.Errorf("%s: %+v, want no error event", payload, got)
+	for format, payloads := range map[Format][]string{
+		FormatResponses: {`{"type":"message_stop"}`, `{"type":"response.completed"}`, `not json`},
+		FormatSpeech: {`{"type":"speech.audio.delta","audio":"AAAA","response_format":"pcm"}`, `{"type":"speech.audio.done"}`,
+			`{"type":"error","error":{"type":"server_error"}}`, `not json`},
+	} {
+		for _, payload := range payloads {
+			if got := newStreamFormat(format).observe([]byte(payload)).errorEvent; got != nil {
+				t.Errorf("%s: %+v, want no error event", payload, got)
+			}
 		}
+	}
+	// A speech error event's code is its error's: vLLM-Omni's integer 500.
+	event := newStreamFormat(FormatSpeech).observe([]byte(`{"type":"speech.audio.error","error":{"type":"server_error","code":500}}`)).errorEvent
+	if event == nil || string(event.Code) != "500" {
+		t.Errorf("speech error event %+v, want code 500", event)
 	}
 }
 
@@ -59,6 +76,12 @@ func TestRelayedErrorEventCarriesTheGatewaysMessage(t *testing.T) {
 			[]string{`"model":"public"`, `"server_error"`, errorEventMessage}, []string{"backend-model"}},
 		{FormatResponses, "error", `{"type":"error","message":"a","message":"b"}`,
 			[]string{`"server_error"`, errorEventMessage}, []string{`"a"`, `"b"`}},
+		{FormatSpeech, "speech.audio.error", `{"type":"speech.audio.error","error":{"message":"CUDA error on gpu-7 serving backend-model",` +
+			`"type":"server_error","param":null,"code":500,"partial_audio":true,"action":"discard"}}`,
+			[]string{`"type":"speech.audio.error"`, `"server_error"`, `"code":500`, `"partial_audio":true`, `"action":"discard"`,
+				errorEventMessage}, []string{"gpu-7", "backend-model"}},
+		{FormatSpeech, "speech.audio.error", `{"type":"speech.audio.error","error":{"message":"a","message":"b"}}`,
+			[]string{`"type":"speech.audio.error"`, `"server_error"`, `"code":500`, errorEventMessage}, []string{`"a"`, `"b"`}},
 	} {
 		r := &upstreamResponse{format: newStreamFormat(c.format), publicModel: publicModel}
 		r.format.observe([]byte(c.data)) // as readEvent does, before relaying the block
