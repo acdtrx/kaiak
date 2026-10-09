@@ -730,6 +730,8 @@ func errorAnswers() []struct {
 		{"errHostedMember", errHostedMember("mcp_servers")},
 		{"errResponseFormatUnsupported", errResponseFormatUnsupported("response_format", "wav and pcm")},
 		{"errExternalReference", errExternalReference("ref_audio")},
+		{"errExtraParams", errExtraParams()},
+		{"errOutputLimitAboveCeiling", errOutputLimitAboveCeiling("max_new_tokens", 2, 1)},
 		{"errShuttingDown", errShuttingDown()},
 		{"errConfigNotLoaded", errConfigNotLoaded()},
 		{"errLimited", errLimited(&limits.Rejection{Type: config.LimitRequestsPerMinute, Measure: config.MeasureRequests})},

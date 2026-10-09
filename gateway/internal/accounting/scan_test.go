@@ -22,6 +22,7 @@ func scanBoth(t *testing.T, body string) *memberScanner {
 }
 
 func TestScannerFindsTopLevelMembers(t *testing.T) {
+	const bs = `\` // a JSON escape begins with it
 	cases := []struct {
 		name, body, usage, choices string
 	}{
@@ -37,7 +38,7 @@ func TestScannerFindsTopLevelMembers(t *testing.T) {
 		{"strings with braces, quotes and escapes",
 			`{"model":"a\"}{,\\","choices":[{"text":"}\"]\\"}],"usage":{"prompt_tokens":2}}`,
 			`{"prompt_tokens":2}`, `[{"text":"}\"]\\"}]`},
-		{"escaped key", `{"usage":{"prompt_tokens":4}}`, `{"prompt_tokens":4}`, ""},
+		{"escaped key", `{"` + bs + `u0075sage":{"prompt_tokens":4}}`, `{"prompt_tokens":4}`, ""},
 		{"scalar values", `{"created":17,"ok":true,"usage":null,"choices":"x"}`, `null`, `"x"`},
 		{"repeated member: last wins", `{"usage":{"prompt_tokens":1},"usage":{"prompt_tokens":2}}`,
 			`{"prompt_tokens":2}`, ""},

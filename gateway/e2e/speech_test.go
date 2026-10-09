@@ -175,11 +175,11 @@ func TestSpeech(t *testing.T) {
 
 	// 2.5 s of 16-bit mono audio (the fake's default) in each mode: 120 000 bytes at
 	// Qwen3-TTS's 24 kHz, 40 000 at 8 kHz, 80 000 at 16 kHz — 3 s once rounded up. The
-	// backend gets the request with the model edit and the default output limit under
-	// max_new_tokens; the client gets the audio byte for byte, or the events, with the
-	// word timing and never the usage headers; the whole clip and the SSE stream settle
-	// the reported 7 tokens in and 4 out, the raw-audio stream the input estimate,
-	// flagged.
+	// backend gets the request with the model edit alone — the model's default output
+	// limit is reserved, never sent; the client gets the audio byte for byte, or the
+	// events, with the word timing and never the usage headers; the whole clip and the
+	// SSE stream settle the reported 7 tokens in and 4 out, the raw-audio stream the
+	// input estimate, flagged.
 	for _, c := range []struct {
 		name, body, contentType string
 		audio                   []byte // the body, or the SSE deltas' audio joined
@@ -232,7 +232,6 @@ func TestSpeech(t *testing.T) {
 				t.Fatalf("backend got %d requests, want 1", len(reqs)-before)
 			}
 			want := strings.Replace(c.body, `"model":"tts"`, `"model":"`+omniSpeechModel+`"`, 1)
-			want = strings.TrimSuffix(want, "}") + `,"max_new_tokens":300}`
 			if got := reqs[len(reqs)-1]; got.Path != "/v1/audio/speech" || string(got.Body) != want {
 				t.Errorf("backend got %s\n %s\nwant /v1/audio/speech\n %s", got.Path, got.Body, want)
 			}
@@ -249,9 +248,10 @@ func TestSpeech(t *testing.T) {
 		})
 	}
 
-	// Three items of 1.25 s, the second errored: the answer relayed as sent, each
-	// result's audio in its item's format; the usage of the two successful items
-	// summed, their audio summed before one rounding (2.5 s → 3 s).
+	// Three items of 1.25 s, the second errored: the answer relayed as sent but for the
+	// errored item's text, the gateway's; each result's audio in its item's format; the
+	// usage of the two successful items summed, their audio summed before one rounding
+	// (2.5 s → 3 s).
 	t.Run("batch", func(t *testing.T) {
 		fake.SetReply(fakebackend.Reply{AudioMillis: 1250, FailItems: []int{1}})
 		defer fake.SetReply(fakebackend.Reply{})
@@ -291,8 +291,11 @@ func TestSpeech(t *testing.T) {
 					i, got.Index, got.Status, got.MediaType, len(audio), err, want.status, want.mediaType, len(want.audio))
 			}
 		}
-		if answer.Results[1].Error != fakebackend.SpeechBatchItemError {
-			t.Errorf("the errored item's error %q, want the backend's relayed", answer.Results[1].Error)
+		if answer.Results[1].Error != "The model backend could not generate this item." {
+			t.Errorf("the errored item's error %q, want the gateway's text in place of the backend's", answer.Results[1].Error)
+		}
+		if bytes.Contains(r.body, []byte(fakebackend.SpeechBatchItemError)) {
+			t.Errorf("the client got the backend's item error text")
 		}
 
 		reqs := fake.Requests()
@@ -300,7 +303,6 @@ func TestSpeech(t *testing.T) {
 			t.Fatalf("backend got %d requests, want 1", len(reqs)-before)
 		}
 		want := strings.Replace(body, `"model":"tts"`, `"model":"`+omniSpeechModel+`"`, 1)
-		want = strings.TrimSuffix(want, "}") + `,"max_new_tokens":300}`
 		if got := reqs[len(reqs)-1]; got.Path != "/v1/audio/speech/batch" || string(got.Body) != want {
 			t.Errorf("backend got %s\n %s\nwant /v1/audio/speech/batch\n %s", got.Path, got.Body, want)
 		}

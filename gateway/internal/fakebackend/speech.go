@@ -119,25 +119,25 @@ func (b *Backend) writeSpeech(w http.ResponseWriter, r *http.Request, req *Reque
 	_, _ = w.Write(audio)
 }
 
-// writeAudioStream writes the raw-audio stream: a WAV stream's header first, flushed
-// on its own, then the audio in pieces of whole frames, one per paced event — the
-// reply's Fault before piece At (Hang, Cut, End).
+// writeAudioStream writes the raw-audio stream: the audio in pieces of whole frames,
+// one per paced event — a WAV stream's header written with the first, as vLLM-Omni's
+// _generate_audio_chunks yields it right before the first audio chunk — the reply's
+// Fault before piece At (Hang, Cut, End): a fault at 0 comes before any byte.
 func (b *Backend) writeAudioStream(w http.ResponseWriter, r *http.Request, req *Request, reply Reply,
 	format string, rate int, audio []byte, pieces int) {
 	w.WriteHeader(http.StatusOK)
 	s := &streamWriter{b: b, w: w, r: r, req: req, reply: reply, flusher: http.NewResponseController(w)}
-	if format == "wav" {
-		if _, err := w.Write(WAVHeader(rate, 0, true)); err != nil || s.flusher.Flush() != nil {
-			return
-		}
-	}
 	frames := len(audio) / speechFrameBytes
 	for i := range pieces {
 		if !s.interrupt(i) || !s.await() {
 			return
 		}
 		from, to := frames*i/pieces*speechFrameBytes, frames*(i+1)/pieces*speechFrameBytes
-		if _, err := w.Write(audio[from:to]); err != nil || s.flusher.Flush() != nil {
+		piece := audio[from:to]
+		if i == 0 && format == "wav" {
+			piece = append(WAVHeader(rate, 0, true), piece...)
+		}
+		if _, err := w.Write(piece); err != nil || s.flusher.Flush() != nil {
 			return
 		}
 	}

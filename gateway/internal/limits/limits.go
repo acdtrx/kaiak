@@ -365,18 +365,21 @@ func (c *counter) admits(now time.Time, need int64) bool {
 	return !c.key.typ.Counted() && need > c.w.limit && need <= c.max && c.w.usedAt(now) == 0
 }
 
-// inFlightRetry is what a token limit blocked only by requests still running counts
-// toward Retry-After, and its x-ratelimit-reset-tokens on that refusal
-// (docs/specs/GATEWAY.md, Limits → Refusal): a reservation holds the input estimate
-// plus the output limit, a request settles at a fraction of it, and when the running
-// requests end is unknown — a short guess, not a promise.
+// inFlightRetry is what a token or image limit blocked only by requests still running
+// counts toward Retry-After, and a token limit's x-ratelimit-reset-tokens on that
+// refusal (docs/specs/GATEWAY.md, Limits → Refusal): when the running requests end is
+// unknown, and what they reserved does not leave with their reservations' slots — a
+// token reservation settles at a fraction of it, an image reservation is counted again
+// at settlement, in the window the request ends in — so the slots' expiry is no
+// promise; a short guess is.
 const inFlightRetry = 2 * time.Second
 
 // blockedByRunning reports whether c, refusing need at now, would admit it were its
-// in-flight reservations gone — a token limit only: a request limit keeps counting the
-// request once it settles.
+// in-flight reservations gone — a token or image limit only: a request limit keeps
+// counting the request in its slot once it settles, and the limits that reserve
+// nothing (USD, audio generated) hold no reservation.
 func (c *counter) blockedByRunning(now time.Time, need int64) bool {
-	if c.measure != config.MeasureTokens {
+	if c.measure != config.MeasureTokens && c.measure != config.MeasureImages {
 		return false
 	}
 	held := c.w.inFlight(now)

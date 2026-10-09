@@ -58,6 +58,14 @@ type endpoint struct {
 	// alone: another output-limit key the client sends is not the endpoint's and
 	// passes untouched.
 	outputLimitKeys []string
+	// writesNoOutputLimit: the gateway never sends an output limit of its own making
+	// (speech and the speech batch) — a request that sets none reserves the model's
+	// default but is sent without it, and a value above the model's ceiling is
+	// refused, not lowered: vLLM-Omni budgets an unset max_new_tokens itself — on
+	// Qwen3-TTS voice cloning from the text's length, with a retry of a clone that
+	// ran to it — and a value it is sent turns both off, so a clone reaching it fails,
+	// a 500 (docs/specs/GATEWAY.md, Limits → Output-limit keys).
+	writesNoOutputLimit bool
 	// anthropicOnHeader: the endpoint answers in Anthropic's shape when the request
 	// carries an anthropic-version header (answersAnthropic).
 	anthropicOnHeader bool
@@ -79,9 +87,9 @@ var bodyEndpoints = []*endpoint{
 	{body: true, api: provider.ResponsesInputTokens, name: "responses_input_tokens", counts: true},
 	{body: true, api: provider.Rerank, name: "rerank", operation: "rerank"},
 	{body: true, api: provider.AudioSpeech, name: "audio_speech", operation: "generate_content", outputType: "speech",
-		outputLimitKeys: []string{"max_new_tokens"}},
+		outputLimitKeys: []string{"max_new_tokens"}, writesNoOutputLimit: true},
 	{body: true, api: provider.AudioSpeechBatch, name: "audio_speech_batch", operation: "generate_content", outputType: "speech",
-		outputLimitKeys: []string{"max_new_tokens"}},
+		outputLimitKeys: []string{"max_new_tokens"}, writesNoOutputLimit: true},
 	{body: true, api: provider.ImagesGenerations, name: "images_generations", operation: "generate_content", outputType: "image"},
 }
 
@@ -152,13 +160,11 @@ type request struct {
 	bodyHeld int64
 
 	// Set by the model_params stage for the body endpoints: the parameters the model's
-	// config sets — at the top level, and in a speech batch's items — the request's
-	// effective output limit — the most tokens one of its sequences may generate as
-	// sent to the backend; nil when unbounded or unknown — and outputReserve, the most
-	// it may generate in all, which the limits reserve: the effective output limit once
-	// per sequence, a speech batch's items' own limits summed; 0 when unbounded.
+	// config sets, the request's effective output limit — the most tokens one of its
+	// sequences may generate; nil when unbounded or unknown — and outputReserve, the
+	// most it may generate in all, which the limits reserve: the effective output limit
+	// once per sequence, a speech batch's items' own limits summed; 0 when unbounded.
 	params        []provider.Param
-	itemParams    []provider.ItemParam
 	outputLimit   *int64
 	outputReserve int64
 

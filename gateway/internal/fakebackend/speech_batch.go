@@ -49,7 +49,7 @@ type speechBatchAnswer struct {
 }
 
 // SpeechBatchItemError is the error text of an item the reply fails: a backend's own
-// words, which tests prove never reach the gateway's log.
+// words, which tests prove never reach the gateway's client or its log.
 const SpeechBatchItemError = "CUDA error on device 3: the engine died serving Qwen/Qwen3-TTS-backend"
 
 // writeSpeechBatch answers a speech batch for model, each item's usage the reply's.

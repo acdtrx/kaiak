@@ -11,9 +11,11 @@ import (
 )
 
 // Audio length (docs/specs/GATEWAY.md, Accounting → Media usage): audio_seconds_out is
-// measured on the audio relayed to the client, from the bytes actually sent — never
-// from a size a header declares. A clip is read in one pass as its bytes stream
-// through; nothing of it is held but a WAV header's fields.
+// measured on the audio the backend sent while the client was there, the last piece
+// read included — the relay reads each piece before it writes it, so one whose write
+// finds the client gone still counts — from the bytes actually sent, never from a size
+// a header declares. A clip is read in one pass as its bytes stream through; nothing
+// of it is held but a WAV header's fields.
 
 // audioClip measures one clip of audio as its bytes stream through.
 type audioClip interface {
@@ -37,6 +39,16 @@ type audioClip interface {
 // (docs/specs/GATEWAY.md, Client API → owned fields: speech).
 const pcmFrameBytes = 2
 
+// maxAudioByteRate bounds the byte rate of audio the gateway measures: audio said to
+// play faster is not measured (0 s, the record estimated), never read as a few
+// nanoseconds of audio. Every real format is far below it — 768 kHz, the highest
+// sample rate in use, of 32 channels of 32-bit samples is 98.3 MB/s, and the speech
+// models vLLM-Omni serves answer 16-bit audio at 44.1 kHz or less, 128 KB/s at most
+// (MiniMax Music 3's 32 kHz stereo) — and below it a byte lasts at least 10 ns, so
+// rounding each clip down to the nanosecond loses less than one byte's length
+// (audioDuration).
+const maxAudioByteRate = 100_000_000
+
 // newAudioClip is the clip of an answer whose content type is contentType: audio/wav
 // or audio/pcm, as formatClip reads them; any other type cannot be measured.
 func newAudioClip(contentType string, sampleRate int64) audioClip {
@@ -56,7 +68,8 @@ func audioFormat(contentType string) string {
 
 // formatClip is a clip of audio in format, as speech's response_format names it: wav,
 // read from its own header; pcm, 16-bit mono at sampleRate, the request's (0 when it
-// names none: then it cannot be measured); any other format cannot be measured.
+// names none, or a rate above maxAudioByteRate: then it cannot be measured); any other
+// format cannot be measured.
 func formatClip(format string, sampleRate int64) audioClip {
 	switch format {
 	case "wav":
@@ -75,7 +88,7 @@ type pcmClip struct {
 func (c *pcmClip) write(p []byte) { c.received = SaturatingAdd(c.received, int64(len(p))) }
 
 func (c *pcmClip) length() (time.Duration, bool) {
-	if c.byteRate <= 0 {
+	if c.byteRate <= 0 || c.byteRate > maxAudioByteRate {
 		return 0, false
 	}
 	return audioDuration(c.received, c.byteRate), true
@@ -113,8 +126,8 @@ func (emptyClip) count(n int64) int64           { return n }
 // placeholder there (vLLM-Omni's raw-audio stream writes 0xFFFFFFFF in both size
 // fields), so the length is never read from a size field. A WAV whose header cannot
 // be read — not RIFF and WAVE, a format whose data is not sample frames of its block
-// size, a data chunk before the fmt chunk, a header cut short before its data chunk —
-// is not measured.
+// size, a byte rate above maxAudioByteRate, a data chunk before the fmt chunk, a
+// header cut short before its data chunk — is not measured.
 type wavClip struct {
 	state wavState
 	// head holds the bytes of the part being read: the RIFF header, a chunk header,
@@ -271,6 +284,10 @@ func (c *wavClip) readHead() {
 			return
 		}
 		c.byteRate = int64(rate) * int64(blockSize)
+		if c.byteRate > maxAudioByteRate {
+			c.state = wavUnreadable
+			return
+		}
 		c.skipChunk(c.fmtRest)
 	}
 }
@@ -365,9 +382,10 @@ func base64Bytes[T string | []byte](text T, at, n int64) ([]byte, bool) {
 	return nil, false
 }
 
-// audioDuration is the length of n bytes of audio at byteRate bytes per second,
-// rounded down to the nanosecond — less than a nanosecond lost per clip, which no
-// audio byte is shorter than — saturating at the longest time.Duration.
+// audioDuration is the length of n bytes of audio at byteRate bytes per second — at
+// most maxAudioByteRate, so a byte lasts at least 10 ns — rounded down to the
+// nanosecond: less than a nanosecond lost per clip, shorter than any byte of it;
+// saturating at the longest time.Duration.
 func audioDuration(n, byteRate int64) time.Duration {
 	if n <= 0 || byteRate <= 0 {
 		return 0

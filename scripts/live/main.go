@@ -104,6 +104,11 @@ type options struct {
 	// stopSecond and startSecond stop and restart the second backend; nil in a live
 	// run, where the check asks the user to do it.
 	stopSecond, startSecond func() error
+
+	// imageCheckParams are added to the image check's request; nil in a live run (one
+	// image). The self-test asks its fake for a layered answer of more than one
+	// image, so the count the usage log carries is above 1.
+	imageCheckParams map[string]any
 }
 
 // twoBackends: a second backend serves the model.

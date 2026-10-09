@@ -152,45 +152,6 @@ func TestPassthroughBodyEdits(t *testing.T) {
 	}
 }
 
-// The pipeline's item parameters are spliced into the elements they name, inside the
-// list, every other byte kept: replaced where the element has the key, added after its
-// last member where it has not, the list's other elements and whitespace untouched. A
-// list or element the inbound stage would not have passed is an error, as is an
-// element naming the edited key twice.
-func TestPassthroughBodyEditsElements(t *testing.T) {
-	set := func(index int, key, value string) ItemParam {
-		return ItemParam{List: "items", Index: index, Param: Param{Key: key, Value: []byte(value)}}
-	}
-	req := &Request{Deployment: config.Deployment{Model: "d"}, Endpoint: AudioSpeechBatch,
-		Body:   []byte(`{"model":"pub","items":[ {"input":"a","max_new_tokens":5000} ,{"input":"b"},{} ],"max_new_tokens":9}`),
-		Params: []Param{{"max_new_tokens", []byte("300")}},
-		ItemParams: []ItemParam{set(0, "max_new_tokens", "1000"), set(2, "max_new_tokens", "1000"),
-			set(2, "voice", `"x"`)}}
-	got, _, err := passthroughBody(req)
-	want := `{"model":"d","items":[ {"input":"a","max_new_tokens":1000} ,{"input":"b"},{"max_new_tokens":1000,"voice":"x"} ],` +
-		`"max_new_tokens":300}`
-	if err != nil || string(got) != want {
-		t.Errorf("got %s, %v; want %s", got, err, want)
-	}
-
-	for _, c := range []struct {
-		name, body string
-		param      ItemParam
-	}{
-		{"no such element", `{"items":[{}]}`, set(1, "max_new_tokens", "1")},
-		{"a negative index", `{"items":[{}]}`, set(-1, "max_new_tokens", "1")},
-		{"an element not an object", `{"items":[{},"x"]}`, set(1, "max_new_tokens", "1")},
-		{"no list", `{"input":"x"}`, set(0, "max_new_tokens", "1")},
-		{"a list that is no list", `{"items":{"0":{}}}`, set(0, "max_new_tokens", "1")},
-		{"the key twice in the element", `{"items":[{"max_new_tokens":1,"max_new_tokens":2}]}`, set(0, "max_new_tokens", "3")},
-	} {
-		req := &Request{Deployment: config.Deployment{Model: "d"}, Body: []byte(c.body), ItemParams: []ItemParam{c.param}}
-		if got, _, err := passthroughBody(req); err == nil {
-			t.Errorf("%s: edited to %s", c.name, got)
-		}
-	}
-}
-
 // A chat or Responses request always names the standard tier: an absent one is
 // "auto", the deployment's or project's own setting. Completions and embeddings get
 // "default" only in place of a tier the client sent: OpenAI refuses parameters an

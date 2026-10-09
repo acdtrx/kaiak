@@ -14,12 +14,18 @@ const speechFormats = "wav and pcm"
 
 // parseSpeechFields reads a speech request's own owned fields (docs/specs/GATEWAY.md,
 // Client API → owned fields: speech), past those every format shares
-// (parseOwnedFields; max_new_tokens is its output-limit key): the mode, from stream
-// and stream_format; the audio format and its sample rate; the reference audio, which
-// must be inline. The request counts toward the limits on audio generated, reserving
+// (parseOwnedFields; max_new_tokens is its output-limit key): extra_params, refused
+// whatever its value, null included — vLLM-Omni passes it to the model's adapter,
+// which resolves some keys as it resolves a reference audio (IndexTTS2's emo_audio),
+// and which keys a model fetches the gateway cannot know; the mode, from stream and
+// stream_format; the audio format and its sample rate; the reference audio, which must
+// be inline. The request counts toward the limits on audio generated, reserving
 // nothing: its length is known only once relayed. Everything else — input, voice,
 // instructions, task_type, word_timestamps, … — is the backend's and passes untouched.
 func parseSpeechFields(rq *request, top map[string]json.RawMessage) *apiError {
+	if _, present := top["extra_params"]; present {
+		return errExtraParams()
+	}
 	if apiErr := readSpeechMode(rq, top); apiErr != nil {
 		return apiErr
 	}
@@ -168,7 +174,9 @@ func inlineAudio(s string) bool {
 // speech's rules, the param naming the member that set the value; a reference audio
 // must be inline wherever it is set. A batch answer is JSON, never a stream: stream is
 // not read. Everything else — each item's input, voice, instructions, … — is the
-// backend's and passes untouched.
+// backend's and passes untouched, extra_params included: vLLM-Omni's batch and its
+// items declare no such field, so it drops it at either level unread, and the merged
+// request it runs carries none.
 func parseSpeechBatchFields(rq *request, top map[string]json.RawMessage) *apiError {
 	batch, apiErr := readSpeechBatchLevel(top, "")
 	if apiErr != nil {
@@ -200,9 +208,6 @@ func parseSpeechBatchFields(rq *request, top map[string]json.RawMessage) *apiErr
 	})
 	if apiErr != nil {
 		return apiErr
-	}
-	if len(items) > 0 {
-		rq.inbound.Sequences = int64(len(items))
 	}
 	rq.inbound.Media = map[config.Measure]int64{config.MeasureAudioSecondsOut: 0}
 	return nil

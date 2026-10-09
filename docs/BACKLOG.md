@@ -157,6 +157,26 @@ Group entries under headings as themes emerge.
   Providers → An endpoint missing from a server). Worth an upstream report (a
   `404` or `400` would say what it is). Revisit trigger: a vLLM-Omni release
   changes that answer, and the reading needs its update. (recorded 2026-10-09.)
+- **vLLM-Omni `extra_params`** — the gateway refuses `extra_params` on speech and
+  image generation, whatever it holds, because vLLM-Omni hands it to the model — a
+  speech model's adapter, a diffusion pipeline's extra arguments — and some fetch
+  what a key names (IndexTTS2's `emo_audio`, through the media connector that fetches
+  `http(s)` URLs and reads `file:` URIs; ruled 2026-10-10, `docs/specs/GATEWAY.md`,
+  Client API → owned fields: speech, images). Serving it needs an allowlist of keys
+  known not to fetch or read — per adapter or pipeline, from its source — passed
+  through while every other key stays refused. Revisit trigger: someone needs a
+  model-specific knob only `extra_params` carries.
+- **vLLM-Omni: a reached `max_new_tokens` answers 500** — on Qwen3-TTS voice cloning
+  (`task_type: "Base"`), a request that sets `max_new_tokens` turns off vLLM-Omni's
+  budget scaled to the text and its retry, and a clone that reaches the value
+  raises `Qwen3TTSCodecLimitError`: `500` on the whole clip, `speech.audio.error`
+  on the SSE stream — read as the backend failing, toward the circuit, though the
+  client's value caused it (as llama-server's client errors answered `500`). The
+  gateway sends no default of its own for this reason (ruled 2026-10-10,
+  `docs/specs/GATEWAY.md`, Limits → Output-limit keys), but a client that sets a
+  small value can still open the circuit. Worth an upstream report (a `4xx`, or a
+  short clip flagged incomplete). Revisit trigger: a circuit opened by it in
+  practice, or vLLM-Omni answering it as a `4xx`.
 - **llama-server quirks** — behaviours of llama-server that break what the gateway
   assumes of a backend, for the `llama-server` backend module (2026-09-30 review,
   L1–L3; all reproduced live):

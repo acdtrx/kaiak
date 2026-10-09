@@ -50,8 +50,8 @@ func batchResults(t *testing.T, body []byte) (statuses []string, audio [][]byte)
 }
 
 // A speech batch passes the whole pipeline to a vllm-omni deployment: sent with the
-// model edit, the default output limit at the batch's level and an item's own above
-// the ceiling lowered in the item, everything else as the client wrote it; answered
+// model edit alone — the model's default output limit is reserved, never sent —
+// everything else as the client wrote it; answered
 // with the backend's JSON as sent — each item's audio in its format — never a stream;
 // settled from the items' usage summed, the audio of every item measured — WAV and
 // PCM at the item's rate — and summed before one rounding (3 × 1.25 s → 4 s), priced on
@@ -63,7 +63,7 @@ func TestSpeechBatchThroughThePipeline(t *testing.T) {
 	g := newTestGateway(t)
 	withSpeechModels(t, g)
 	g.backend.SetReply(fakebackend.Reply{AudioMillis: 1250})
-	body := `{"model":"tts","voice":"vivian","items":[{"input":"one"},{"input":"two","max_new_tokens":5000},` +
+	body := `{"model":"tts","voice":"vivian","items":[{"input":"one"},{"input":"two","max_new_tokens":1000},` +
 		`{"input":"three","response_format":"pcm","sample_rate":8000,"max_new_tokens":200}],"stream":true}`
 	w := do(t, g.h, batchCall(body, "batch-1"))
 	if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "application/json" {
@@ -78,7 +78,7 @@ func TestSpeechBatchThroughThePipeline(t *testing.T) {
 
 	reqs := g.backend.Requests()
 	want := `{"model":"Qwen/Qwen3-TTS","voice":"vivian","items":[{"input":"one"},{"input":"two","max_new_tokens":1000},` +
-		`{"input":"three","response_format":"pcm","sample_rate":8000,"max_new_tokens":200}],"stream":true,"max_new_tokens":300}`
+		`{"input":"three","response_format":"pcm","sample_rate":8000,"max_new_tokens":200}],"stream":true}`
 	if len(reqs) != 1 || reqs[0].Path != "/v1/audio/speech/batch" || string(reqs[0].Body) != want {
 		t.Fatalf("backend requests %+v, want one to /v1/audio/speech/batch with\n %s", reqs, want)
 	}
@@ -115,8 +115,9 @@ func TestSpeechBatchThroughThePipeline(t *testing.T) {
 // items than max_speech_batch_items; audio it cannot measure, from the item's own
 // format or the batch's it inherits; PCM without the rate the item gets; a reference
 // audio the backend would fetch or read, at either level; owned fields of the wrong
-// type or named twice; an output limit out of range, the batch's or an item's; a model
-// on no vllm-omni deployment (docs/specs/GATEWAY.md, Client API → owned fields: speech
+// type or named twice; an output limit out of range or above the model's ceiling, the
+// batch's or an item's — the batch's even when every item overrides it; a model on no
+// vllm-omni deployment (docs/specs/GATEWAY.md, Client API → owned fields: speech
 // batch; errors).
 func TestSpeechBatchRefusals(t *testing.T) {
 	g := newTestGateway(t)
@@ -156,6 +157,10 @@ func TestSpeechBatchRefusals(t *testing.T) {
 			"invalid_value", "items[0].max_new_tokens"},
 		{"an item's output limit above the context", `{"model":"tts","items":[{"input":"a"},{"input":"b"},{"input":"c"},` +
 			`{"input":"d","max_new_tokens":8193}]}`, "invalid_value", "items[3].max_new_tokens"},
+		{"an item's output limit above the ceiling", `{"model":"tts","items":[{"input":"a","max_new_tokens":1000},` +
+			`{"input":"b","max_new_tokens":1001}]}`, "invalid_value", "items[1].max_new_tokens"},
+		{"the batch's output limit above the ceiling", `{"model":"tts","max_new_tokens":1001,"items":[{"input":"a","max_new_tokens":5}]}`,
+			"invalid_value", "max_new_tokens"},
 		{"the batch's output limit negative", `{"model":"tts","max_new_tokens":-1,"items":[{"input":"a"}]}`,
 			"invalid_value", "max_new_tokens"},
 		{"items not a list", `{"model":"tts","items":{"input":"a"}}`, "invalid_type", "items"},
@@ -205,7 +210,8 @@ func TestSpeechBatchRefusals(t *testing.T) {
 // when they keep to the rules: the batch's defaults where items override them all, a
 // rate an item's PCM inherits from the batch, inline reference audio at either level,
 // null values as absent, stream and stream_format — a batch has none, so it is timed
-// and logged as no stream.
+// and logged as no stream — and extra_params at either level, which vLLM-Omni's batch
+// drops unread.
 func TestSpeechBatchPassesWhatItDoesNotOwn(t *testing.T) {
 	g := newTestGateway(t)
 	withSpeechModels(t, g)
@@ -219,6 +225,7 @@ func TestSpeechBatchPassesWhatItDoesNotOwn(t *testing.T) {
 			`"items":[{"input":"a","ref_audio":null,"response_format":null,"sample_rate":null,"max_new_tokens":null}]}`,
 		`{"model":"tts-free","stream":true,"stream_format":"sse","voice":"vivian","task_type":"Base","extra":{"model":"keep"},` +
 			`"items":[{"input":"a","voice":"x","instructions":"calm","speed":1.5,"x_vector_only_mode":true,"stream":true}]}`,
+		`{"model":"tts-free","extra_params":{"emo_alpha":0.5},"items":[{"input":"a","extra_params":{"emo_alpha":0.7}},{"input":"b"}]}`,
 	} {
 		w := do(t, g.h, batchCall(body, "pass"))
 		if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "application/json" {
@@ -236,21 +243,22 @@ func TestSpeechBatchPassesWhatItDoesNotOwn(t *testing.T) {
 }
 
 // A batch's output limits (docs/specs/GATEWAY.md, Limits → Output-limit keys, Output
-// multiplicity): the model's default is written at the batch's level when the batch
-// sets none, and an item without its own inherits it; the batch's own value is lowered
-// to the ceiling there, an item's own in the item, each checked on its own; a model
-// with no output limit gets none. The reservation counts each item's effective limit
+// multiplicity): nothing is ever written — a batch that sets none is sent without one,
+// vLLM-Omni budgets each item itself, and an item without its own reserves the model's
+// default; the batch's own value and each item's are kept, each checked on its own
+// (above the ceiling refused: TestSpeechBatchRefusals); a model with no output limit
+// reserves what the client set. The reservation counts each item's effective limit
 // once: a token limit too small for the items refuses the batch as too large.
 func TestSpeechBatchOutputLimits(t *testing.T) {
 	for _, c := range []struct {
 		name, body, want string
 		reserved         int64
 	}{
-		{"the default at the batch's level", `{"model":"tts","items":[{"input":"a"},{"input":"b","max_new_tokens":50},` +
-			`{"input":"c","max_new_tokens":5000}]}`,
+		{"the default reserved, unsent", `{"model":"tts","items":[{"input":"a"},{"input":"b","max_new_tokens":50},` +
+			`{"input":"c","max_new_tokens":1000}]}`,
 			`{"model":"Qwen/Qwen3-TTS","items":[{"input":"a"},{"input":"b","max_new_tokens":50},` +
-				`{"input":"c","max_new_tokens":1000}],"max_new_tokens":300}`, 300 + 50 + 1000},
-		{"the batch's own, lowered", `{"model":"tts","max_new_tokens":5000,"items":[{"input":"a"},{"input":"b"}]}`,
+				`{"input":"c","max_new_tokens":1000}]}`, 300 + 50 + 1000},
+		{"the batch's own, at the ceiling", `{"model":"tts","max_new_tokens":1000,"items":[{"input":"a"},{"input":"b"}]}`,
 			`{"model":"Qwen/Qwen3-TTS","max_new_tokens":1000,"items":[{"input":"a"},{"input":"b"}]}`, 2 * 1000},
 		{"the batch's own, kept", `{"model":"tts","max_new_tokens":200,"items":[{"input":"a"},{"input":"b","max_new_tokens":20}]}`,
 			`{"model":"Qwen/Qwen3-TTS","max_new_tokens":200,"items":[{"input":"a"},{"input":"b","max_new_tokens":20}]}`, 200 + 20},
@@ -342,6 +350,23 @@ func TestSpeechBatchOfSeveralMiB(t *testing.T) {
 	expectUnits(t, onlyRecord(t, g), speechUnits(56, 32, 80), false, false)
 }
 
+// An item's own sample_rate wins over the batch's, as vLLM-Omni merges them: its PCM
+// comes at the item's rate and is measured at it — 2.5 s at 8 kHz, 3 s once rounded
+// up; read at the batch's 24 kHz it would be 1 (docs/specs/GATEWAY.md, Client API →
+// owned fields: speech batch).
+func TestSpeechBatchItemRateWinsOverTheBatchs(t *testing.T) {
+	g := newTestGateway(t)
+	withSpeechModels(t, g)
+	g.backend.SetReply(fakebackend.Reply{AudioMillis: 2500})
+	body := `{"model":"tts","sample_rate":24000,"items":[{"input":"a","response_format":"pcm","sample_rate":8000}]}`
+	if w := do(t, g.h, batchCall(body, "rates")); w.Code != http.StatusOK {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	if rec := onlyRecord(t, g); rec.Units[config.UnitAudioSecondsOut] != 3 || rec.Estimated {
+		t.Errorf("record %+v: want 3 s, measured at the item's 8 kHz", rec)
+	}
+}
+
 // The limits on audio generated count a batch's seconds once it settles: a window
 // reached refuses the next batch, 429 audio_seconds (docs/specs/GATEWAY.md, Limits →
 // Check and reserve, Settle).
@@ -388,8 +413,8 @@ func TestSpeechBatchLogsHoldNoContent(t *testing.T) {
 	g.backend.SetReply(fakebackend.Reply{FailItems: []int{1}})
 	body := `{"model":"tts","instructions":"whisper marmalade","ref_audio":"data:audio/wav;base64,UklGRnF1b2trYQ==",` +
 		`"items":[{"input":"zanzibar quokka","ref_text":"pomegranate"},{"input":"second"}]}`
-	if w := do(t, g.h, batchCall(body, "secret")); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "CUDA") {
-		t.Fatalf("%d %.300s: want the answer, the item's error relayed to the client", w.Code, w.Body.String())
+	if w := do(t, g.h, batchCall(body, "secret")); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"status":"error"`) {
+		t.Fatalf("%d %.300s: want the answer, an item errored", w.Code, w.Body.String())
 	}
 	do(t, g.h, batchCall(strings.Replace(body, `"ref_text"`, `"ref_audio":"https://zanzibar.example/a.wav","ref_text"`, 1), "secret-2"))
 	logs := g.logText()
@@ -398,4 +423,46 @@ func TestSpeechBatchLogsHoldNoContent(t *testing.T) {
 			t.Errorf("the log holds %q:\n%s", secret, logs)
 		}
 	}
+}
+
+// An errored item's text is the gateway's, never the backend's — which can name hosts,
+// devices or the backend-side model — and reaches neither the client nor the log; the
+// result keeps its index and status, and the others pass as sent (docs/specs/GATEWAY.md,
+// Providers: media answers).
+func TestSpeechBatchItemErrorIsTheGateways(t *testing.T) {
+	g := newTestGateway(t)
+	withSpeechModels(t, g)
+	g.backend.SetReply(fakebackend.Reply{FailItems: []int{1}})
+	w := do(t, g.h, batchCall(`{"model":"tts","items":[{"input":"one"},{"input":"two"},{"input":"three"}]}`, "item-error"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("%d %.300s", w.Code, w.Body.String())
+	}
+	var answer struct {
+		Results []struct {
+			Index  int     `json:"index"`
+			Status string  `json:"status"`
+			Error  *string `json:"error"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &answer); err != nil || len(answer.Results) != 3 {
+		t.Fatalf("answer %.300s (%v): want three results", w.Body.String(), err)
+	}
+	for i, r := range answer.Results {
+		wantError := i == 1
+		if r.Index != i || (r.Status == "error") != wantError || (r.Error != nil) != wantError {
+			t.Errorf("result %d: index %d, status %q, error %v; want only the second errored", i, r.Index, r.Status, r.Error)
+		}
+	}
+	if e := answer.Results[1].Error; e == nil || *e != "The model backend could not generate this item." {
+		t.Errorf("the errored item's error %v, want the gateway's text", e)
+	}
+	for _, text := range []string{fakebackend.SpeechBatchItemError, "CUDA", "Qwen3-TTS-backend"} {
+		if strings.Contains(w.Body.String(), text) {
+			t.Errorf("the client got the backend's text %q", text)
+		}
+		if strings.Contains(g.logText(), text) {
+			t.Errorf("the log holds the backend's text %q", text)
+		}
+	}
+	expectUnits(t, onlyRecord(t, g), speechUnits(14, 8, 5), false, false)
 }

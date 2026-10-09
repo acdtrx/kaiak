@@ -174,10 +174,10 @@
   | `model` missing or empty (`param: "model"`); or a speech request, or a speech batch item, whose audio is `pcm` and which sets no `sample_rate` (`param: "sample_rate"`, or the item's: `items[2].sample_rate`; settled 2026-10-09, Client API → owned fields: speech) | 400 | `invalid_request_error` | `missing_required_parameter` |
   | An owned field has the wrong type (`param` names it) | 400 | `invalid_request_error` | `invalid_type` |
   | `n` or `best_of` above `global.max_n` (`param` names it) | 400 | `invalid_request_error` | `n_too_large` |
-  | `max_tokens`, `max_completion_tokens`, `max_output_tokens` or `max_new_tokens` (speech, its batch and each item; settled 2026-10-09) below 0 or above the model's `context_length` (`param` names it; Limits → Output limit out of range); or a Messages output limit the gateway would set — the model's ceiling or default — at or below `thinking.budget_tokens` (Limits → Output limit) | 400 | `invalid_request_error` | `invalid_value` |
+  | `max_tokens`, `max_completion_tokens`, `max_output_tokens` or `max_new_tokens` (speech, its batch and each item; settled 2026-10-09) below 0 or above the model's `context_length` (`param` names it; Limits → Output limit out of range); a `max_new_tokens` above the model's output-limit ceiling (settled 2026-10-10; Limits → Output-limit keys); or a Messages output limit the gateway would set — the model's ceiling or default — at or below `thinking.budget_tokens` (Limits → Output limit) | 400 | `invalid_request_error` | `invalid_value` |
   | More generated sequences than `global.max_sequences_per_request` (`param`: `prompt`, `n` or `best_of`), more embeddings inputs than `global.max_embedding_inputs` (`param: "input"`), more rerank documents than `global.max_rerank_documents` (`param: "documents"`, settled 2026-10-08), more images than `global.max_images_per_request` (`param: "n"`) or more speech batch items than `global.max_speech_batch_items` (`param: "items"`, both settled 2026-10-09) — Limits → Output multiplicity: batch caps | 400 | `invalid_request_error` | `invalid_value` |
   | A speech request or batch item asks for audio other than `wav` or `pcm`, or an image request for a `response_format` other than `b64_json` (`param` names it: `response_format`, `items[2].response_format`; settled 2026-10-09, Client API → owned fields: speech, images) | 400 | `invalid_request_error` | `response_format_unsupported` |
-  | A field that makes the backend fetch or read something names a URL or a path instead of inline data: speech `ref_audio` (each entry of a list), `ref_audio_2`, a `references` entry's `audio_path`, a batch's or item's `ref_audio`; an image request's `lora` (`param` names it; settled 2026-10-09, Client API → owned fields: speech, images) | 400 | `invalid_request_error` | `external_reference_unsupported` |
+  | A field that makes the backend fetch or read something names a URL or a path instead of inline data: speech `ref_audio` (each entry of a list), `ref_audio_2`, a `references` entry's `audio_path`, a batch's or item's `ref_audio`; an image request's `lora`; a speech or image request's `extra_params`, whatever its value (`param` names it; settled 2026-10-09, `extra_params` 2026-10-10, Client API → owned fields: speech, images) | 400 | `invalid_request_error` | `external_reference_unsupported` |
   | Body over `max_request_body_bytes`, or over the whole body budget (`KAIAK_BODY_MEMORY_BYTES`) when that is smaller | 413 | `invalid_request_error` | `request_too_large` |
   | A Responses request sets `previous_response_id`, `conversation`, `prompt` or `background: true`, or refers to an item or file stored at the backend (`param` names it; Client API → Responses is stateless) | 400 | `invalid_request_error` | `stateful_responses_unsupported` |
   | A Messages request refers to a file stored at the backend (`param` names it; Client API → Responses is stateless: stored objects) | 400 | `invalid_request_error` | `stored_object_unsupported` |
@@ -303,9 +303,22 @@
       with the user, 2026-10-09). An allowlist: a scheme the connector learns later
       is refused until judged. Rejected: refusing `http`, `https` and `file` by
       name — bare paths and new schemes would pass.
+    - **`extra_params` is refused** (settled 2026-10-10, with the user), whatever
+      its value — `null` and `{}` too, as rerank's `texts` — `400
+      external_reference_unsupported`, `param: "extra_params"`, the message naming
+      the member, never its value. vLLM-Omni hands it to the model as extra
+      arguments (`create_speech`), and a model's adapter can resolve a key the way
+      it resolves `ref_audio`: IndexTTS2's `extra_params.emo_audio` goes through
+      the same media connector, which fetches an `http(s)` URL and reads a `file:`
+      URI (`tts_adapters/indextts2.py`, `_resolve_ref_audio`, at `a8576ccb`, as
+      v0.30.0). Which keys a model fetches is the model's, unknown to the
+      gateway. Rejected: refusing only the values that look like a URL or a path —
+      what a key means is the model's contract, and judging a value by its look
+      is what `docs/CODING-RULES.md` §4 rules out; an allowlist of keys known not
+      to fetch — none is needed yet (`docs/BACKLOG.md`, vLLM-Omni `extra_params`).
     - Everything else passes untouched: `input`, `voice`, `instructions`, `speed`,
       `task_type`, `language`, `ref_text`, `x_vector_only_mode`,
-      `speaker_embedding`, `seed`, `extra_params`, `word_timestamps`, …
+      `speaker_embedding`, `seed`, `word_timestamps`, …
   - Speech batch (settled 2026-10-09): `model`; `items`, a list, counted against
     `global.max_speech_batch_items` (Limits → Output multiplicity: batch caps); and
     at the batch's level and in each item, `response_format`, `sample_rate`,
@@ -317,7 +330,12 @@
     judged; a `ref_audio` must be inline data wherever it is set, inherited or not
     (the errors table). `items` absent or null holds none, for the backend to
     refuse; one that is not a list, or an item that is not an object, is
-    `invalid_type` (settled 2026-10-09).
+    `invalid_type` (settled 2026-10-09). `extra_params` passes untouched at either
+    level (settled 2026-10-10): the batch and its items declare no such field, so
+    vLLM-Omni drops it unread, and the speech request it merges for each item
+    carries none (`BatchSpeechRequest`, `SpeechBatchItem`, `_merge_batch_item`, at
+    `a8576ccb` and on `main` at `b65107d`, 2026-10-09) — so do `stream`,
+    `ref_audio_2` and `references` there.
     A batch answer is JSON, never a stream: the non-stream timers apply and
     `gen_ai.request.stream` is `false`.
   - Images (settled 2026-10-09; vLLM-Omni's request read at v0.30.0,
@@ -341,12 +359,19 @@
       a file the server reads on the client's behalf (settled with the user for
       every such field, 2026-10-09). Rejected: passing it — a client would pick
       files on the backend's disk for the server to load.
+    - **`extra_params` is refused** as speech's is (settled 2026-10-10), whatever
+      its value — `null` and `{}` too — `400 external_reference_unsupported`,
+      `param: "extra_params"`: vLLM-Omni passes it into the diffusion pipeline's
+      extra arguments (`generate_images`, `api_server.py`, at `a8576ccb`), and
+      which keys a pipeline fetches or reads is the pipeline's, unknown to the
+      gateway — the reasoning of speech's `extra_params`, above. Rejected: the
+      same as there (`docs/BACKLOG.md`, vLLM-Omni `extra_params`).
     - `stream` is not owned: it passes untouched, and an image request is never a
       stream (the non-stream timers; `gen_ai.request.stream` `false`; an
       event-stream answer is incomplete, Providers → Media answers).
     - Everything else passes untouched: `prompt`, `negative_prompt`, `size`,
       `layers`, `seed`, `num_inference_steps`, `guidance_scale`, `true_cfg_scale`,
-      `output_format`, `output_compression`, `extra_params`, …
+      `output_format`, `output_compression`, …
 - **Request IDs**: `x-request-id` is accepted (or generated), forwarded to the backend,
   returned to the client, and stamped on the log line and the usage record. A client
   ID is kept when it is 1–128 characters of `[A-Za-z0-9._:-]`; any other value is
@@ -672,10 +697,10 @@ own, and a client sending repeats is broken either way.
   they get no such edit; a Responses request gets `store: false` (Client API →
   Responses is stateless); a Messages request to an `anthropic` backend gets
   `service_tier: "standard_only"` (Standard price on Anthropic types); a rerank
-  request gets the model edit alone (settled 2026-10-08); a speech request the model
-  edit and its output limit under `max_new_tokens` — a batch's default at the
-  batch's level, an item's own value lowered in the item (Limits → Output-limit
-  keys) — and an image request the model edit alone (settled 2026-10-09). Edits splice the owned values into the raw bytes — every
+  request gets the model edit alone (settled 2026-10-08); a speech or speech batch
+  request the model edit alone — no output limit is ever written there (settled
+  2026-10-10; Limits → Output-limit keys) — and an
+  image request the model edit alone (settled 2026-10-09). Edits splice the owned values into the raw bytes — every
   other byte (unknown fields, their values, key order, whitespace) reaches the backend
   unchanged. Each owned key is edited once: a body repeating a top-level member never
   gets here (Request pipeline → duplicate members), and the editor refuses a repeated
@@ -824,6 +849,22 @@ own, and a client sending repeats is broken either way.
   image request is no answer: it never completes, so once relayed it ends
   `upstream_incomplete`, as rerank's does (Complete responses, below). Rejected: one
   envelope for the audio of every mode — translating answers.
+  **A batch's item errors are the gateway's** (settled 2026-10-10, with the user): in
+  a successful batch answer, the `error` of each object in the top-level `results`
+  — a string, an object or an array; `null`, a number or a boolean carries no text
+  and passes — becomes `"The model backend could not generate this item."`, each
+  result keeping its `index` and `status`, as a `5xx` body's and an error event's
+  text are replaced (Backend error bodies, Error events, below). vLLM-Omni writes
+  there an item's validation message or any exception's text (`create_speech_batch`,
+  v0.30.0), which can name hosts, devices or the backend-side model, and nothing in
+  the result tells the two apart. The answer is edited as it streams through, in the
+  pass that rewrites `model`, never held; every `error` member of a result is
+  edited — one named twice gets both, as a body naming `model` twice gets both
+  rewritten: a body that streams through has no whole to fall back on. The text is
+  never logged. Its cost: a client loses vLLM-Omni's reason for an item it refused
+  (an unknown voice, say). Rejected: relaying the text — it leaks internals to every
+  caller; telling a validation message from an exception's text by its wording
+  (`docs/CODING-RULES.md` §4).
 - **The first event of a stream is its first data event** (settled 2026-10-06, the
   pre-merge review's [B] M3): comment and keep-alive blocks the backend sends ahead
   of it (up to 64) are held and relayed just before it, so the first-event window —
@@ -1665,7 +1706,8 @@ own, and a client sending repeats is broken either way.
     injected default is fitted to: the context belongs to each generated sequence,
     not to the batch). Chat has one prompt, so the two are equal.
 - **Output limit**: each model has an output-limit **default** (applied when the request
-  sets none) and **ceiling** (requests above it are lowered). While a request runs, its
+  sets none) and **ceiling** (requests above it are lowered — on speech, the default
+  is reserved unsent and a request above the ceiling refused: Output-limit keys). While a request runs, its
   output limit counts as used against its scopes' local allowance; the unused part is
   released at settlement. **Thinking budgets** (settled 2026-10-06, the pre-merge
   review's M6): Anthropic requires `thinking.budget_tokens` below `max_tokens`, so a
@@ -1695,21 +1737,41 @@ own, and a client sending repeats is broken either way.
   the field, so a model with an `output_limit` always sends one; on a model without
   one, a request that omits it reaches the backend without it, which answers as it
   does. The token-counting endpoints have no output limit.
-  **Speech** reads and writes `max_new_tokens` (settled 2026-10-09; vLLM-Omni's
-  name — the codec tokens a speech model generates, the audio's length), under the
-  same rules; in a **speech batch** each item's effective limit is its own
-  `max_new_tokens`, else the batch's, each checked on its own, and the default is
-  written at the batch's level when the batch sets none (items without their own
-  inherit it, as vLLM-Omni merges them). The batch's effective output limit is
-  each item's, once per item (Output multiplicity, below). Writing the default has
-  one cost an operator should know: on Qwen3-TTS voice cloning (`task_type:
-  "Base"`) a request that names `max_new_tokens` opts out of vLLM-Omni's own budget
-  scaled to the text and of its one retry of a clone that ran to its budget without
-  ending (`Qwen3TTSAdapter.apply_sampling_overrides`, `create_speech`, v0.30.0); a
-  model declared without `output_limit` keeps them (`docs/DEPLOYMENT.md`). vLLM-Omni
-  bounds `max_new_tokens` per model (1 to 4096 for most, 9000 for MiniMax Music 3)
-  and defaults to 2048: a model's ceiling above its server's bound makes the server
-  refuse the requests that reach it. **Image generation** has no output limit.
+  **Speech** reads `max_new_tokens` (settled 2026-10-09; vLLM-Omni's name — the
+  codec tokens a speech model generates, the audio's length), out of range refused
+  as everywhere, but **the gateway sends no `max_new_tokens` of its own making**
+  (settled 2026-10-10, with the user): a request that sets none is sent without it,
+  and its effective output limit, what the reservation counts, is the default the
+  gateway would have written, fitted to the context (Injected default fits the
+  context, below); and a value above the model's ceiling is **refused, not
+  lowered** — `400 invalid_value`, `param` naming the member (`max_new_tokens`, or
+  an item's: `items[2].max_new_tokens`; the batch's too, even when every item sets
+  its own), in the out-of-range wording ("`max_new_tokens is too large: 5000. This
+  model supports at most 1000 tokens (its output-limit ceiling), whereas you
+  provided 5000.`"). A value at or below the ceiling is sent as the client wrote it. vLLM-Omni budgets an unset `max_new_tokens` itself — the model's
+  own default, and on Qwen3-TTS voice cloning (`task_type: "Base"`) a budget scaled
+  to the text, with one retry of a clone that ran to it without ending — and a value
+  it is sent turns both off: a Base clone that reaches it raises
+  `Qwen3TTSCodecLimitError`, which the whole clip answers `500` and the SSE stream
+  `speech.audio.error` — circuit failures — and a batch item an error
+  (`qwen3_tts.py`, `apply_sampling_overrides`, `validate_generation`;
+  `serving_speech.py`, `create_speech`; at `a8576ccb`, as v0.30.0). A default the
+  gateway wrote turned legitimate requests into circuit failures, and so would a
+  value it lowered: a clone that needed more than the ceiling fails at it, where
+  the client's value would have let it finish — the client is told the ceiling
+  instead. Rejected: writing the default, or lowering to the ceiling — that failure;
+  reserving no output for a request that sets none — speech would pass the token
+  limits on its input alone. Chat, completions, Messages and Responses keep
+  lowering to the ceiling (above). A `max_new_tokens` the client sets still turns
+  vLLM-Omni's budget off, and a Base clone reaching it still answers `500`
+  (`docs/BACKLOG.md`, vLLM-Omni: a reached `max_new_tokens` answers 500). In a
+  **speech batch** each item's effective limit is its own `max_new_tokens`, else the
+  batch's, else the default the batch reserves unsent, each checked on its own, as
+  vLLM-Omni merges them. The batch's effective output limit is each item's, once per
+  item (Output multiplicity, below). vLLM-Omni bounds `max_new_tokens` per model (1
+  to 4096 for most, 9000 for MiniMax Music 3) and defaults to 2048: a model's
+  ceiling above its server's bound makes the server refuse the requests that reach
+  it. **Image generation** has no output limit.
 - **Output limit out of range** — above the context (settled 2026-09-25, E9; the
   follow-up audit's N-M1): a key the client set (chat: either key, each checked on its own;
   completions: `max_tokens`) above the model's `context_length` is refused — `400`,
@@ -1718,7 +1780,8 @@ own, and a client sending repeats is broken either way.
   honored, and on a model with no `output_limit` it would otherwise reserve an absurd
   amount. The code and message wording are OpenAI's for the same refusal
   (`max_tokens is too large: …`), so client libraries treat it as they do there.
-  A value within the context but above the ceiling is still lowered to the ceiling.
+  A value within the context but above the ceiling is still lowered to the ceiling
+  (on speech refused: Output-limit keys, above).
   Every model declares `context_length` (config), so every client output limit is
   bounded. Rejected: a gateway-specific code (`max_tokens_too_large`) — OpenAI's
   existing answer fits. **Below 0** (settled 2026-09-25): refused the same way on
@@ -1736,7 +1799,8 @@ own, and a client sending repeats is broken either way.
   backends refuse the request (vLLM answers `400` when prompt + `max_tokens` exceed
   the context). A value the client set is never lowered for this: only the ceiling
   applies to it. The lowered value is the request's effective output limit (what
-  the reservation counts).
+  the reservation counts) — on speech, where it is reserved and never sent, too
+  (Output-limit keys, above).
 - **Output multiplicity** (settled 2026-09-25, H10): a backend's output limit bounds
   each generated sequence, not the request, so the reservation counts the effective
   output limit × the request's sequences: `n` per prompt, or `best_of` when it is
@@ -1924,6 +1988,14 @@ own, and a client sending repeats is broken either way.
   2 s is a short guess, not a promise: a request refused again gets the same answer.
   Rejected: the end of the running requests — unknown (a stream lasts as long as it
   generates); the slot expiry — what made agents sleep a minute for nothing.
+  **An image limit blocked only by requests still running** answers the same 2 s
+  (settled 2026-10-10): the running request's images are counted again when it
+  settles, in the bucket or window it ends in, so its reservation's expiry is a
+  promise that cannot hold — `images_per_minute` 4, a 4-image request reserved at
+  0 s and settled at 30 s, a request refused at 10 s told `Retry-After: 50` was
+  refused again at 60 s. An image limit blocked by settled images keeps its time,
+  which holds. Its refusal has no `x-ratelimit-*` header (Rate-limit headers,
+  below).
 - **Rate-limit headers** (settled 2026-09-24): `x-ratelimit-limit-requests`,
   `x-ratelimit-remaining-requests`, `x-ratelimit-reset-requests`, and the same for
   `-tokens`, on refusals **and** on admitted responses (as OpenAI sends them; clients
@@ -2228,8 +2300,11 @@ own, and a client sending repeats is broken either way.
       nothing; a successful item without one leaves the batch with no report, and
       so does an answer with no item read whole. An item is successful when its
       `status` is `success` (settled 2026-10-09).
-  - **Audio length**: `audio_seconds_out` is measured on the audio relayed to the
-    client, from the bytes actually sent — never from a size a header declares:
+  - **Audio length**: `audio_seconds_out` is measured on the audio the backend sent
+    while the client was there, the last piece read included — each piece is read
+    before it is written to the client, so one whose write finds the client gone
+    still counts (settled 2026-10-10) — from the bytes actually sent, never from a
+    size a header declares:
     - WAV (`audio/wav`, a delta's `response_format: "wav"`, an item's
       `media_type`): rate, channels and block size from the `fmt ` chunk (PCM or
       the extensible format), then the `data` chunk's bytes received, at most the
@@ -2249,7 +2324,12 @@ own, and a client sending repeats is broken either way.
       cannot measure counts 0 and flags the record `estimated`, the others still
       count; a successful item without audio relayed none (settled 2026-10-09);
     - an answer it cannot measure (a WAV header it cannot read, another content
-      type) counts 0 seconds and flags the record `estimated`.
+      type) counts 0 seconds and flags the record `estimated` — and so does audio
+      said to play faster than 100 MB/s, a WAV header's rate times its block size
+      or PCM's `sample_rate` times 2 (settled 2026-10-10): every real format is
+      below it (768 kHz, the highest rate in use, of 32 channels of 32-bit samples
+      is 98.3 MB/s), and a header naming more (a rate of `0xFFFFFFFF`) made its
+      samples measure a few nanoseconds — 0 s, counted as measured.
 
     A record's seconds are its audio's exact length, summed over its chunks and
     items, rounded up to a whole second once — as vLLM reports the seconds of a
@@ -2295,7 +2375,8 @@ own, and a client sending repeats is broken either way.
   up to then — the backend's report when one arrived, else the estimate (for
   Messages, the output estimate when only `message_start`'s provisional count
   arrived: Messages usage, above). **Media** (settled 2026-10-09): the audio
-  seconds relayed (with the user); a whole clip keeps its token headers, which came
+  seconds the backend sent until then, the last piece read included (with the user;
+  Media usage → Audio length, above); a whole clip keeps its token headers, which came
   with its status; a batch cut short counts the items relayed whole — their usage
   and audio — or the estimate when none was; an image answer cut short counts the
   larger of the `data[]` elements seen and `n` — its images were generated before

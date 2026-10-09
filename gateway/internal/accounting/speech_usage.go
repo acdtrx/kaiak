@@ -37,9 +37,10 @@ const (
 // the whole clip's from its response headers, the SSE stream's from its
 // speech.audio.done event, and none on the raw-audio stream, which is estimated, its
 // output 0: the output is audio, and a model's codec-token rate is unknown to the
-// gateway. In every mode the audio relayed is measured as it streams through
-// (audioClip) into audio_seconds_out: an audio body's bytes, the SSE stream's
-// speech.audio.delta events.
+// gateway. In every mode the audio the backend sent while the client was there, the
+// last piece read included, is measured as it streams through (audioClip) into
+// audio_seconds_out: an audio body's bytes, the SSE stream's speech.audio.delta
+// events.
 type speechUsage struct {
 	request Speech
 	latestReport
@@ -122,8 +123,8 @@ func (u *speechUsage) answered(header http.Header, stream bool) {
 
 func (u *speechUsage) bodyPiece(p []byte) { u.clip.write(p) }
 
-// media: the audio relayed, in whole seconds rounded up; an answer whose audio cannot
-// be measured counts 0, unmeasured.
+// media: the audio read, in whole seconds rounded up; an answer whose audio cannot be
+// measured counts 0, unmeasured.
 func (u *speechUsage) media(bool) (Units, bool) {
 	d, measured := u.clip.length()
 	return Units{config.UnitAudioSecondsOut: wholeSeconds(d)}, measured

@@ -164,6 +164,10 @@ func TestSpeechBatchAudioLength(t *testing.T) {
 			`","media_type":"audio/wav"}`, okResult(1, "audio/wav", wav, usage)), 400 * time.Millisecond},
 		{"a status other than success", Speech{}, batchBody(`{"index":0,"status":"partial","audio_data":"` + b64(wav) +
 			`","media_type":"audio/wav"}`), 0},
+		// 3070 bytes are 4096 characters, "==" last: the window is full when the string
+		// ends, and is read without its padding.
+		{"a whole window ending in padding", rates, batchBody(okResult(0, "audio/pcm", make([]byte, 3070), usage)),
+			audioDuration(3070, 16000)},
 	} {
 		for _, piece := range pieceSizes {
 			if d, measured := batchLength(c.speech, c.body, piece); d != c.want || !measured {
@@ -175,10 +179,11 @@ func TestSpeechBatchAudioLength(t *testing.T) {
 
 // A successful result whose audio cannot be measured counts 0 and leaves the record
 // estimated, its tokens kept; the others still count: PCM at no rate — the item gets
-// none, or the result names no index, or one past the items — a format the gateway
-// cannot measure or none named, a WAV header it cannot read or that is not base64, an
-// escape base64 has no place for. PCM is counted by its size, never decoded: any
-// characters count (docs/specs/GATEWAY.md, Accounting → Media usage).
+// none, or the result names no index, a negative one or one past the items — a
+// format the gateway cannot measure or none named, a WAV header it cannot read or
+// that is not base64, an escape base64 has no place for. PCM is counted by its size,
+// never decoded: any characters count (docs/specs/GATEWAY.md, Accounting → Media
+// usage).
 func TestSpeechBatchUnmeasurableAudio(t *testing.T) {
 	wav := wav16(24000, 19200) // 0.4 s
 	pcm := make([]byte, 6400)  // 0.4 s at 8 kHz
@@ -195,6 +200,7 @@ func TestSpeechBatchUnmeasurableAudio(t *testing.T) {
 		{"PCM with a null index", Speech{ItemSampleRates: []int64{8000, 8000}},
 			`{"index":null,"status":"success","audio_data":"` + b64(pcm) + `","media_type":"audio/pcm","usage":` + usage + `}`},
 		{"PCM past the items", Speech{ItemSampleRates: []int64{8000, 8000}}, okResult(2, "audio/pcm", pcm, usage)},
+		{"PCM with a negative index", Speech{ItemSampleRates: []int64{8000, 8000}}, okResult(-1, "audio/pcm", pcm, usage)},
 		{"MP3", Speech{}, okResult(1, "audio/mpeg", pcm, usage)},
 		{"no media_type", Speech{}, `{"index":1,"status":"success","audio_data":"` + b64(wav) + `","usage":` + usage + `}`},
 		{"a WAV that is not one", Speech{}, okResult(1, "audio/wav", pcm, usage)},
@@ -226,7 +232,8 @@ func TestSpeechBatchUnmeasurableAudio(t *testing.T) {
 // own members — not a member of the same name elsewhere, nested or at the top. Names
 // match after decoding; text holding brackets and quotes is passed over; an element
 // of the list that is not an object is no result; a results list named twice counts
-// as its last, as a client reads it; whitespace anywhere reads the same.
+// as its last, as a client reads it; nothing after the answer's object is read;
+// whitespace anywhere reads the same.
 func TestSpeechBatchReadsWhereTheAnswerPutsThem(t *testing.T) {
 	wav := wav16(24000, 19200) // 0.4 s
 	ok := okResult(0, "audio/wav", wav, batchUsage(7, 40))
@@ -247,6 +254,8 @@ func TestSpeechBatchReadsWhereTheAnswerPutsThem(t *testing.T) {
 		{"results named twice", []byte(`{"results":[` + ok + `,` + ok + `],"results":[` + ok + `]}`)},
 		{"a long name", batchBody(`{"index":0,"status":"success","audio_data` + strings.Repeat("x", 100) + `":"` + b64(wav) +
 			`","audio_data":"` + b64(wav) + `","media_type":"audio/wav","usage":` + batchUsage(7, 40) + `}`)},
+		{"data after the answer", append(batchBody(ok), `,"results":[`+okResult(0, "audio/wav", wav16(24000, 96000),
+			batchUsage(100, 100))+`]}`...)},
 	} {
 		for _, piece := range pieceSizes {
 			units, flags := meterBatch(Speech{}, c.body, piece, true)

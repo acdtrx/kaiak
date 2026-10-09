@@ -56,6 +56,7 @@ func imageUnits(images int64) Units {
 // always estimated — the input estimate, output 0 — a usage the answer carries
 // unread (docs/specs/GATEWAY.md, Accounting → Media usage).
 func TestImagesCountTheAnswersData(t *testing.T) {
+	const bs = `\` // a JSON escape begins with it
 	for _, c := range []struct {
 		name   string
 		n      int64
@@ -73,7 +74,7 @@ func TestImagesCountTheAnswersData(t *testing.T) {
 		{"elements of any kind", 1, `{"data":[1,"x",null,{},[]]}`, 5},
 		{"data nested elsewhere", 1, `{"metrics":{"data":[{},{},{}]},"cot_output":["data",[{}]],"data":[{"b64_json":"iVBORw=="}]}`, 1},
 		{"data in a string", 1, `{"revised":"\"data\":[{},{},{}]","data":[{"b64_json":"iVBO\"RW]=="}]}`, 1},
-		{"an escaped name", 1, `{"data":[{},{}]}`, 2},
+		{"an escaped name", 1, `{"` + bs + `u0064ata":[{},{}]}`, 2},
 		{"a name escaped otherwise", 1, `{"dat\"a":[{},{}],"data":[{}]}`, 1},
 		{"data named twice: the last", 1, `{"data":[{},{},{}],"output_format":"png","data":[{}]}`, 1},
 		{"brackets and braces in strings", 1, `{"data":[{"b64_json":"[{,}]"},{"revised_prompt":"]},{"}]}`, 2},

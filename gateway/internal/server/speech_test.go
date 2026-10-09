@@ -89,16 +89,16 @@ func speechUnits(in, out, seconds int64) accounting.Units {
 }
 
 // A speech request passes the whole pipeline to a vllm-omni deployment, in each mode
-// and format: sent with the model edit and the default output limit under
-// max_new_tokens, everything else as the client wrote it; answered as the backend
-// answered — its audio byte for byte, or its events, its content type and word
-// timing, never the usage headers — flushed and unbuffered; settled from the whole
-// clip's headers or the SSE stream's speech.audio.done, or estimated on the raw-audio
-// stream, with the audio relayed measured into audio_seconds_out (2.5 s → 3), priced
-// on its tokens; operation generate_content and output type speech on the request
-// line and the usage metrics, the two streams streams there and timed to their first
-// audio (docs/specs/GATEWAY.md, Client API → owned fields: speech; Providers;
-// Accounting → Media usage; Observability).
+// and format: sent with the model edit alone — the model's default output limit is
+// reserved, never sent — everything else as the client wrote it; answered as the
+// backend answered — its audio byte for byte, or its events, its content type and
+// word timing, never the usage headers — flushed and unbuffered; settled from the
+// whole clip's headers or the SSE stream's speech.audio.done, or estimated on the
+// raw-audio stream, with the audio read measured into audio_seconds_out (2.5 s → 3),
+// priced on its tokens; operation generate_content and output type speech on the
+// request line and the usage metrics, the two streams streams there and timed to
+// their first audio (docs/specs/GATEWAY.md, Client API → owned fields: speech;
+// Providers; Accounting → Media usage; Observability).
 func TestSpeechThroughThePipeline(t *testing.T) {
 	for _, c := range []struct {
 		name, body, contentType string
@@ -149,7 +149,6 @@ func TestSpeechThroughThePipeline(t *testing.T) {
 
 			reqs := g.backend.Requests()
 			want := strings.Replace(c.body, `"model":"tts"`, `"model":"Qwen/Qwen3-TTS"`, 1)
-			want = want[:len(want)-1] + `,"max_new_tokens":300}`
 			if len(reqs) != 1 || reqs[0].Path != "/v1/audio/speech" || string(reqs[0].Body) != want {
 				t.Fatalf("backend requests %+v, want one to /v1/audio/speech with\n %s", reqs, want)
 			}
@@ -192,8 +191,10 @@ func TestSpeechThroughThePipeline(t *testing.T) {
 // What the gateway refuses on /v1/audio/speech it refuses before routing, in
 // OpenAI's error shape, naming the member at fault: audio it cannot measure, PCM
 // without its rate, a reference audio the backend would fetch or read — every
-// variant, each entry of a list, a references entry's audio_path — owned fields of
-// the wrong type or named twice, an output limit out of range, a model on no
+// variant, each entry of a list, a references entry's audio_path — extra_params,
+// whatever it holds (the model's adapter can fetch what a key names), owned fields of
+// the wrong type or named twice, an output limit out of range or above the model's
+// ceiling (the gateway sends no max_new_tokens of its own making), a model on no
 // vllm-omni deployment (docs/specs/GATEWAY.md, Client API → owned fields: speech;
 // errors).
 func TestSpeechRefusals(t *testing.T) {
@@ -244,6 +245,14 @@ func TestSpeechRefusals(t *testing.T) {
 		{"max_new_tokens not an integer", `{"model":"tts","input":"hi","max_new_tokens":"many"}`, "invalid_type", "max_new_tokens"},
 		{"max_new_tokens negative", `{"model":"tts","input":"hi","max_new_tokens":-1}`, "invalid_value", "max_new_tokens"},
 		{"max_new_tokens above the context", `{"model":"tts","input":"hi","max_new_tokens":8193}`, "invalid_value", "max_new_tokens"},
+		{"max_new_tokens above the ceiling", `{"model":"tts","input":"hi","max_new_tokens":1001}`, "invalid_value", "max_new_tokens"},
+		{"extra_params naming a URL", `{"model":"tts","input":"hi","extra_params":{"emo_audio":"http://169.254.169.254/latest/meta-data/x.wav"}}`,
+			"external_reference_unsupported", "extra_params"},
+		{"extra_params naming no URL", `{"model":"tts","input":"hi","extra_params":{"emo_alpha":0.5}}`,
+			"external_reference_unsupported", "extra_params"},
+		{"extra_params empty", `{"model":"tts","input":"hi","extra_params":{}}`, "external_reference_unsupported", "extra_params"},
+		{"extra_params null", `{"model":"tts","input":"hi","extra_params":null}`, "external_reference_unsupported", "extra_params"},
+		{"extra_params not an object", `{"model":"tts","input":"hi","extra_params":"x"}`, "external_reference_unsupported", "extra_params"},
 		{"model missing", `{"input":"hi"}`, "missing_required_parameter", "model"},
 		{"not on vllm-omni", `{"model":"open","input":"hi"}`, "endpoint_not_served", ""},
 	} {
@@ -253,8 +262,13 @@ func TestSpeechRefusals(t *testing.T) {
 			if _, _, param := openAIError(t, w); (param == nil && c.param != "") || (param != nil && *param != c.param) {
 				t.Errorf("param %v, want %q: %s", param, c.param, w.Body.String())
 			}
-			if msg := errorMessage(t, w); strings.Contains(msg, "example.com") || strings.Contains(msg, "/srv/") {
+			if msg := errorMessage(t, w); strings.Contains(msg, "example.com") || strings.Contains(msg, "/srv/") ||
+				strings.Contains(msg, "169.254") || strings.Contains(msg, "emo_") {
 				t.Errorf("message %q echoes the value", msg)
+			}
+			if c.param == "max_new_tokens" && strings.Contains(c.body, "1001") &&
+				!strings.Contains(errorMessage(t, w), "at most 1000 tokens (its output-limit ceiling)") {
+				t.Errorf("message %q does not name the ceiling", errorMessage(t, w))
 			}
 			if c.code == "endpoint_not_served" && !strings.Contains(errorMessage(t, w), "/v1/audio/speech") {
 				t.Errorf("message %q does not name the endpoint", errorMessage(t, w))
@@ -285,7 +299,7 @@ func TestSpeechPassesInlineReferencesAndWhatItDoesNotOwn(t *testing.T) {
 		`{"model":"tts-free","input":"hi","ref_audio":null,"ref_audio_2":null,"references":null,"response_format":null,` +
 			`"stream":null,"stream_format":null,"sample_rate":null}`,
 		`{"model":"tts-free","input":"hi","response_format":"wav","sample_rate":16000,"speed":1.2,"seed":7,` +
-			`"extra_params":{"model":"keep"},"word_timestamps":true,"stream":false}`,
+			`"extra":{"model":"keep"},"word_timestamps":true,"stream":false}`,
 	} {
 		w := do(t, g.h, speechCall(body, "pass"))
 		if w.Code != http.StatusOK {
@@ -308,31 +322,45 @@ func TestSpeechPassesInlineReferencesAndWhatItDoesNotOwn(t *testing.T) {
 }
 
 // max_new_tokens is speech's output-limit key (docs/specs/GATEWAY.md, Limits →
-// Output-limit keys): a request naming none gets the model's default there, one above
-// the ceiling is lowered to it, one within it is kept; a model with no output limit
-// sends what the client sent. The reservation counts it.
+// Output-limit keys), and the gateway sends none of its own making: a request naming
+// none is sent without it — vLLM-Omni budgets it itself — and reserves the model's
+// default; one within the ceiling, or at it, is kept (one above it is refused:
+// TestSpeechRefusals); a model with no output limit sends what the client sent, and
+// reserves no output when the client sent none. The reservation counts the effective
+// limit.
 func TestSpeechOutputLimit(t *testing.T) {
-	g := newTestGateway(t)
-	withSpeechModels(t, g)
-	for _, c := range []struct{ body, want string }{
-		{`{"model":"tts","input":"hi"}`, `{"model":"Qwen/Qwen3-TTS","input":"hi","max_new_tokens":300}`},
-		{`{"model":"tts","input":"hi","max_new_tokens":5000}`, `{"model":"Qwen/Qwen3-TTS","input":"hi","max_new_tokens":1000}`},
-		{`{"model":"tts","input":"hi","max_new_tokens":200}`, `{"model":"Qwen/Qwen3-TTS","input":"hi","max_new_tokens":200}`},
-		{`{"model":"tts","input":"hi","max_tokens":5000}`, `{"model":"Qwen/Qwen3-TTS","input":"hi","max_tokens":5000,"max_new_tokens":300}`},
-		{`{"model":"tts-free","input":"hi"}`, `{"model":"Qwen/Qwen3-TTS-free","input":"hi"}`},
+	for _, c := range []struct {
+		body, want string
+		reserved   int64
+	}{
+		{`{"model":"tts","input":"hi"}`, `{"model":"Qwen/Qwen3-TTS","input":"hi"}`, 300},
+		{`{"model":"tts","input":"hi","max_new_tokens":1000}`, `{"model":"Qwen/Qwen3-TTS","input":"hi","max_new_tokens":1000}`, 1000},
+		{`{"model":"tts","input":"hi","max_new_tokens":200}`, `{"model":"Qwen/Qwen3-TTS","input":"hi","max_new_tokens":200}`, 200},
+		{`{"model":"tts","input":"hi","max_tokens":5000}`, `{"model":"Qwen/Qwen3-TTS","input":"hi","max_tokens":5000}`, 300},
+		{`{"model":"tts-free","input":"hi"}`, `{"model":"Qwen/Qwen3-TTS-free","input":"hi"}`, 0},
+		{`{"model":"tts-free","input":"hi","max_new_tokens":7000}`, `{"model":"Qwen/Qwen3-TTS-free","input":"hi","max_new_tokens":7000}`, 7000},
 	} {
-		if w := do(t, g.h, speechCall(c.body, "limit")); w.Code != http.StatusOK {
+		g := newTestGateway(t)
+		withSpeechModels(t, g, func(doc string) string {
+			return replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [{ "type": "tokens_per_minute", "value": 100000 }] }`)
+		})
+		w := do(t, g.h, speechCall(c.body, "limit"))
+		if w.Code != http.StatusOK {
 			t.Fatalf("%s: %d %s", c.body, w.Code, w.Body.String())
 		}
 		reqs := g.backend.Requests()
 		if sent := string(reqs[len(reqs)-1].Body); sent != c.want {
 			t.Errorf("%s sent\n %s\nwant\n %s", c.body, sent, c.want)
 		}
+		estimate := accounting.EstimateInput(provider.AudioSpeech, []byte(c.body)).Total
+		if got := w.Header().Get("x-ratelimit-remaining-tokens"); got != strconv.FormatInt(100000-estimate-c.reserved, 10) {
+			t.Errorf("%s: remaining tokens at admission %s, want the reservation of %d + %d taken", c.body, got, estimate, c.reserved)
+		}
 	}
 
-	// The reservation is the input estimate plus the output limit: a token limit too
-	// small for the default refuses the request as too large.
-	g = newTestGateway(t)
+	// A token limit too small for the default reserved refuses the request as too
+	// large, though the default is never sent.
+	g := newTestGateway(t)
 	withSpeechModels(t, g, func(doc string) string {
 		return replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [{ "type": "tokens_per_minute", "value": 200 }] }`)
 	})
@@ -465,6 +493,27 @@ func TestSpeechTimers(t *testing.T) {
 	if logs := g.logText(); !strings.Contains(logs, `"kaiak.relay_end":"upstream_stalled"`) {
 		t.Errorf("log misses the stall:\n%s", logs)
 	}
+}
+
+// A WAV raw-audio stream opens with its header together with its first audio, as
+// vLLM-Omni yields them, so a backend that hangs before its first audio sent nothing:
+// a 504 upstream_timeout at the first-event timeout, the prompt billed as sent, no
+// audio (docs/specs/GATEWAY.md, Routing and reliability → Timeouts; Providers → media
+// answers).
+func TestSpeechRawAudioHangBeforeTheFirstAudio(t *testing.T) {
+	g := newTestGateway(t)
+	withSpeechModels(t, g, func(doc string) string {
+		return replaceOnce(t, doc, `"first_event_timeout_ms": 5000`, `"first_event_timeout_ms": 150`)
+	})
+	g.backend.SetReply(fakebackend.Reply{Fault: &fakebackend.StreamFault{At: 0, Kind: fakebackend.Hang}})
+	body := `{"model":"tts-slow","input":"hi","stream_format":"audio"}`
+	w := do(t, g.h, speechCall(body, "raw-first"))
+	expectError(t, w, http.StatusGatewayTimeout, "upstream_timeout")
+	if line := logLine(t, g, "raw-first"); !strings.Contains(line, "no first event within 150ms") {
+		t.Errorf("log line: %s", line)
+	}
+	in := accounting.EstimateInput(provider.AudioSpeech, []byte(body)).Total
+	expectUnits(t, onlyRecord(t, g), speechUnits(in, 0, 0), true, true)
 }
 
 // The SSE stream takes the stream timers: a backend that sends no first event within

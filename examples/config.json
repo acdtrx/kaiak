@@ -80,7 +80,7 @@
     "qwen3-tts": {
       "deployments": [{ "backend": "omni-tts", "model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice" }],
       "metadata": {
-        "context_length": 32768,
+        "context_length": 4096,
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }
       },
       "output_limit": { "default": 2048, "ceiling": 4096 }

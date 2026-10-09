@@ -43,7 +43,7 @@ func TestImagesPassThroughAsJSON(t *testing.T) {
 	fb.SetReply(fakebackend.Reply{ImageBytes: 3000})
 	b := omniBackend(fb.URL() + "/v1")
 	const body = `{"model":"pub", "prompt":"a red fox","negative_prompt":"blur","n":2,"size":"512x512",` +
-		`"stream":true,"seed":7,"extra_params":{"model":"keep"}}`
+		`"stream":true,"seed":7,"extra":{"model":"keep"}}`
 	resp, err := sendImages(b, body)
 	if err != nil {
 		t.Fatal(err)

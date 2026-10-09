@@ -124,8 +124,10 @@ func TestWAVCutShortCountsWhatArrived(t *testing.T) {
 // A WAV header the gateway cannot read is not measured: not RIFF and WAVE, a format
 // whose data is not sample frames of its block size (IEEE float's tag, a compressed
 // one), a block size that is not the channels' samples, a zero rate or channel count,
-// a fmt chunk shorter than its fields, a data chunk before any fmt chunk, a header cut
-// short before its data chunk.
+// a byte rate above any real format's (maxAudioByteRate) — its samples would measure a
+// few nanoseconds, 0 s — a fmt chunk shorter than its fields, a data chunk before any
+// fmt chunk, a header cut short before its data chunk. A byte rate at the bound is
+// measured.
 func TestUnreadableWAVIsNotMeasured(t *testing.T) {
 	data := wavChunk("data", make([]byte, 4800))
 	for name, wav := range map[string][]byte{
@@ -136,6 +138,8 @@ func TestUnreadableWAVIsNotMeasured(t *testing.T) {
 		"block size mismatch":  riff(0, wavChunk("fmt ", fmtBody(1, 2, 24000, 2, 16)), data),
 		"zero rate":            riff(0, wavChunk("fmt ", fmtBody(1, 1, 0, 2, 16)), data),
 		"zero channels":        riff(0, wavChunk("fmt ", fmtBody(1, 0, 24000, 0, 16)), data),
+		"an absurd rate":       riff(0, wavChunk("fmt ", fmtBody(1, 8, 0xFFFFFFFF, 32, 32)), data),
+		"past the bound":       riff(0, wavChunk("fmt ", fmtBody(1, 1, 50_000_001, 2, 16)), data),
 		"short fmt":            riff(0, wavChunk("fmt ", fmtBody(1, 1, 24000, 2, 16)[:14]), data),
 		"data before fmt":      riff(0, data, wavChunk("fmt ", fmtBody(1, 1, 24000, 2, 16))),
 		"cut in the fmt chunk": riff(0, wavChunk("fmt ", fmtBody(1, 1, 24000, 2, 16)))[:30],
@@ -147,11 +151,15 @@ func TestUnreadableWAVIsNotMeasured(t *testing.T) {
 			t.Errorf("%s: %v measured %v, samples seen %v; want unmeasured", name, d, measured, clip.samplesSeen())
 		}
 	}
+	atBound := riff(0, wavChunk("fmt ", fmtBody(1, 1, 50_000_000, 2, 16)), wavChunk("data", make([]byte, 1000)))
+	if d, measured := measure("audio/wav", 0, atBound, 0).length(); !measured || d != 10*time.Microsecond {
+		t.Errorf("a byte rate at the bound: %v measured %v, want 10µs", d, measured)
+	}
 }
 
 // PCM is 16-bit mono at the request's sample rate: every byte is audio. Without a
-// rate it is not measured, nor is audio of another content type; the content type's
-// parameters do not matter.
+// rate, or at one past maxAudioByteRate, it is not measured, nor is audio of another
+// content type; the content type's parameters do not matter.
 func TestPCMAndOtherContentTypes(t *testing.T) {
 	clip := measure("audio/pcm", 8000, make([]byte, 24000), 7)
 	if d, measured := clip.length(); !measured || d != 1500*time.Millisecond || !clip.samplesSeen() {
@@ -159,6 +167,9 @@ func TestPCMAndOtherContentTypes(t *testing.T) {
 	}
 	if d, measured := measure("audio/pcm", 0, make([]byte, 24000), 0).length(); measured || d != 0 {
 		t.Errorf("PCM without a rate: %v measured %v, want unmeasured", d, measured)
+	}
+	if d, measured := measure("audio/pcm", 50_000_001, make([]byte, 24000), 0).length(); measured || d != 0 {
+		t.Errorf("PCM at a rate past the bound: %v measured %v, want unmeasured", d, measured)
 	}
 	wav := riff(0, wavChunk("fmt ", fmtBody(1, 1, 24000, 2, 16)), wavChunk("data", make([]byte, 48000)))
 	if d, measured := measure("audio/wav; codecs=1", 0, wav, 0).length(); !measured || d != time.Second {

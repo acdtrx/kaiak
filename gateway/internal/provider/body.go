@@ -157,95 +157,17 @@ func setIncludeUsage(current []byte) ([]byte, error) {
 	return editObject(current, setValue("include_usage", []byte("true")))
 }
 
-// indexArray locates the elements of the JSON array data holds: each one's byte span.
-func indexArray(data []byte) ([][2]int, error) {
-	dec := json.NewDecoder(bytes.NewReader(data))
-	if tok, err := dec.Token(); err != nil || tok != json.Delim('[') {
-		return nil, errors.New("not a JSON array")
-	}
-	var spans [][2]int
-	for dec.More() {
-		var value json.RawMessage
-		if err := dec.Decode(&value); err != nil {
-			return nil, err
-		}
-		end := int(dec.InputOffset())
-		spans = append(spans, [2]int{end - len(value), end})
-	}
-	if _, err := dec.Token(); err != nil {
-		return nil, err
-	}
-	return spans, nil
-}
-
-// elementEdits are the edits setting params in the elements of the lists they name:
-// one edit per list, in the order the lists first appear.
-func elementEdits(params []ItemParam) []memberEdit {
-	var edits []memberEdit
-	for i, p := range params {
-		if slices.ContainsFunc(params[:i], func(q ItemParam) bool { return q.List == p.List }) {
-			continue
-		}
-		list := p.List
-		edits = append(edits, memberEdit{key: list, set: func(current []byte) ([]byte, error) {
-			return editElements(current, list, params)
-		}})
-	}
-	return edits
-}
-
-// editElements applies the params of list to the JSON array current, the list's
-// value: each sets its member in the element at its index (editObject), every other
-// byte kept. A list that is absent or not an array, an index past its end and an
-// element that is not an object are errors: the inbound stage read the list as one of
-// objects.
-func editElements(current []byte, list string, params []ItemParam) ([]byte, error) {
-	if current == nil {
-		return nil, errors.New("no such list")
-	}
-	spans, err := indexArray(current)
-	if err != nil {
-		return nil, err
-	}
-	byIndex := map[int][]memberEdit{}
-	for _, p := range params {
-		if p.List != list {
-			continue
-		}
-		if p.Index < 0 || p.Index >= len(spans) {
-			return nil, fmt.Errorf("no element %d", p.Index)
-		}
-		byIndex[p.Index] = append(byIndex[p.Index], setValue(p.Key, p.Value))
-	}
-	out := make([]byte, 0, len(current)+64)
-	pos := 0
-	for i, span := range spans {
-		edits, ok := byIndex[i]
-		if !ok {
-			continue
-		}
-		element, err := editObject(current[span[0]:span[1]], edits...)
-		if err != nil {
-			return nil, fmt.Errorf("element %d: %w", i, err)
-		}
-		out = append(append(out, current[pos:span[0]]...), element...)
-		pos = span[1]
-	}
-	return append(out, current[pos:]...), nil
-}
-
 // passthroughBody applies the gateway's owned edits to the client's body: the model
 // name becomes the deployment's, the module's own edits (extra) and the pipeline's
-// parameters are set — at the top level, and in the elements of a list — then the
-// format's (streamFormat.requestEdits). stripUsage is true when a format edit asked
-// for the usage-only chunk the client did not, so it must not reach the client.
+// parameters are set, then the format's (streamFormat.requestEdits). stripUsage is
+// true when a format edit asked for the usage-only chunk the client did not, so it
+// must not reach the client.
 func passthroughBody(req *Request, extra ...memberEdit) (body []byte, stripUsage bool, err error) {
 	model, _ := json.Marshal(req.Deployment.Model) // a string always encodes
 	edits := append([]memberEdit{setValue("model", model)}, extra...)
 	for _, p := range req.Params {
 		edits = append(edits, setValue(p.Key, p.Value))
 	}
-	edits = append(edits, elementEdits(req.ItemParams)...)
 	formatEdits, stripUsage := newStreamFormat(req.Endpoint.Format()).requestEdits(req)
 	body, err = editObject(req.Body, append(edits, formatEdits...)...)
 	return body, stripUsage, err

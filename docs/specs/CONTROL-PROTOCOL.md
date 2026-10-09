@@ -360,8 +360,10 @@ the `{ error, detail }` body, `error` being the stable code:
     failure mode), and strings for USD only (one representation for every `used` keeps
     one parsing path).
 - **Matching totals to limits** (enforced by the gateway, `GATEWAY.md`, Limits;
-  settled 2026-10-07): the gateway keeps an hour and a month count for every scope and
-  type, limited or not, and a limit is a check over its scope's count. A window's
+  settled 2026-10-07): the gateway keeps, for every scope, limited or not, its four
+  hour counts — `tokens_per_hour`, `images_per_hour`, `audio_seconds_out_per_hour`,
+  `audio_seconds_in_per_hour` — and its month count, `usd_per_month` (`GATEWAY.md`,
+  Limits → Every scope is counted), and a limit is a check over its scope's count. A window's
   `used` is the pushed base of the count with the same group (or global) and type,
   **whatever config the gateway runs** — windows are counted per scope and type
   whatever the config (Usage intake → Counted toward), so they mean the same under

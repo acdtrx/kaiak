@@ -15,13 +15,14 @@ import (
 
 // A rerank request reaches a vllm or llama-server backend at /v1/rerank with the model
 // edit alone — every other byte as the client sent it, stream included — and its
-// answer is relayed as the backend sent it, the top-level model the public name
+// answer is relayed as the backend sent it, the top-level model the public name — a
+// result's error member too: only a speech batch's results carry the gateway's text
 // (docs/specs/GATEWAY.md, Providers: passthrough edits; rerank answers are relayed as
 // the backend sends them).
 func TestRerankPassesThroughWithTheModelEditAlone(t *testing.T) {
 	const body = `{"model":"pub", "query":"q","documents":["a",{"content":[]}],"top_n":1,"stream":"yes","return_documents":false}`
 	const answer = `{"id":"rerank-1","model":"backend-model","usage":{"prompt_tokens":9,"total_tokens":9},` +
-		`"results":[{"index":0,"document":{"text":"a","model":"backend-model"},"relevance_score":0.9}]}`
+		`"results":[{"index":0,"document":{"text":"a","model":"backend-model"},"relevance_score":0.9,"error":"kept"}]}`
 	for _, typ := range []config.BackendType{config.BackendVLLM, config.BackendLlamaServer} {
 		t.Run(string(typ), func(t *testing.T) {
 			s := newWireServer(t)

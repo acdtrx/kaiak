@@ -25,7 +25,9 @@ import (
 //     that sets no output-limit key gets the default under the endpoint's key,
 //     lowered to leave the prompt room in the context (injectedOutputLimit); a key
 //     set above the ceiling is lowered to the ceiling — each key the client set is
-//     checked on its own.
+//     checked on its own. Speech and the speech batch get no output limit of the
+//     gateway's making (writesNoOutputLimit): the default is reserved, never sent,
+//     and a key above the ceiling is refused, 400 invalid_value naming it.
 //   - A speech batch's items (applyItemOutputLimits): each item's own max_new_tokens
 //     under the same rules, else the batch's.
 //
@@ -57,6 +59,9 @@ func applyModelParams(_ context.Context, rq *request) *apiError {
 			return errOutputLimitTooLarge(key, *value, model.ContextLength)
 		}
 		if limit := model.OutputLimit; limit != nil && *value > limit.Ceiling {
+			if rq.endpoint.writesNoOutputLimit {
+				return errOutputLimitAboveCeiling(key, *value, limit.Ceiling)
+			}
 			if apiErr := fitsThinkingBudget(rq, key, limit.Ceiling, "ceiling"); apiErr != nil {
 				return apiErr
 			}
@@ -71,7 +76,9 @@ func applyModelParams(_ context.Context, rq *request) *apiError {
 		if apiErr := fitsThinkingBudget(rq, keys[0], n, "default"); apiErr != nil {
 			return apiErr
 		}
-		rq.params = append(rq.params, outputLimitParam(keys[0], n))
+		if !rq.endpoint.writesNoOutputLimit {
+			rq.params = append(rq.params, outputLimitParam(keys[0], n))
+		}
 		raise(n)
 	}
 	if rq.endpoint.api.Format() == provider.FormatSpeechBatch {
@@ -86,12 +93,12 @@ func applyModelParams(_ context.Context, rq *request) *apiError {
 
 // applyItemOutputLimits works out a speech batch's items' output limits
 // (docs/specs/GATEWAY.md, Limits → Output-limit keys): an item's own key is checked as
-// the batch's is — refused below 0 or above the context, lowered to the ceiling in the
-// item — and an item without one gets the batch's effective limit (batch, the default
-// included), as vLLM-Omni merges each item with the batch. The items are the batch's
-// sequences: its effective output limit is its largest item's, and the reservation
-// counts each item's own once; an item with no limit — none sent, none declared —
-// reserves nothing, as an unbounded request does.
+// the batch's is — refused below 0, above the context or above the ceiling, never
+// edited — and an item without one gets the batch's effective limit (batch: the
+// batch's own, or the default it reserves unsent), as vLLM-Omni merges each item with
+// the batch. The items are the batch's sequences: its effective output limit is its
+// largest item's, and the reservation counts each item's own once; an item with no
+// limit — none sent, none declared — reserves nothing, as an unbounded request does.
 func applyItemOutputLimits(rq *request, model *config.Model, key string, batch *int64) *apiError {
 	var largest *int64
 	var reserve int64
@@ -105,12 +112,10 @@ func applyItemOutputLimits(rq *request, model *config.Model, key string, batch *
 			if *value > model.ContextLength {
 				return errOutputLimitTooLarge(param, *value, model.ContextLength)
 			}
-			n := *value
-			if declared := model.OutputLimit; declared != nil && n > declared.Ceiling {
-				n = declared.Ceiling
-				rq.itemParams = append(rq.itemParams, provider.ItemParam{List: "items", Index: i, Param: outputLimitParam(key, n)})
+			if declared := model.OutputLimit; declared != nil && *value > declared.Ceiling {
+				return errOutputLimitAboveCeiling(param, *value, declared.Ceiling)
 			}
-			limit = &n
+			limit = value
 		}
 		if limit == nil {
 			continue
@@ -143,7 +148,8 @@ func fitsThinkingBudget(rq *request, key string, n int64, which string) *apiErro
 const minInjectedOutputLimit = 256
 
 // injectedOutputLimit is the output limit the gateway sets on a request that sets
-// none: the model's default, lowered to the room the prompt leaves in the context
+// none — or, on speech, reserves for it unsent: the model's default, lowered to the
+// room the prompt leaves in the context
 // (context length − the input one sequence sees: a batch's largest prompt, not the
 // batch), but not below minInjectedOutputLimit — a
 // default above the context minus a long prompt makes backends refuse the request

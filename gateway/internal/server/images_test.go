@@ -121,9 +121,9 @@ func TestImagesThroughThePipeline(t *testing.T) {
 // What the gateway refuses on /v1/images/generations it refuses before routing, in
 // OpenAI's error shape, naming the member at fault and never echoing its value: more
 // images than max_images_per_request; a response_format other than b64_json — url and
-// file included; lora, whatever it names; owned fields of the wrong type or named
-// twice; a model on no vllm-omni deployment (docs/specs/GATEWAY.md, Client API → owned
-// fields: images; errors).
+// file included; lora and extra_params, whatever they hold; owned fields of the wrong
+// type or named twice; a model on no vllm-omni deployment (docs/specs/GATEWAY.md,
+// Client API → owned fields: images; errors).
 func TestImagesRefusals(t *testing.T) {
 	g := newTestGateway(t)
 	withSpeechModels(t, g)
@@ -139,6 +139,12 @@ func TestImagesRefusals(t *testing.T) {
 			"external_reference_unsupported", "lora"},
 		{"lora as a string", `{"model":"painter","prompt":"a fox","lora":"/srv/adapters/style"}`, "external_reference_unsupported", "lora"},
 		{"lora empty", `{"model":"painter","prompt":"a fox","lora":{}}`, "external_reference_unsupported", "lora"},
+		{"extra_params naming a path", `{"model":"painter","prompt":"a fox","extra_params":{"control_image":"/srv/images/a.png"}}`,
+			"external_reference_unsupported", "extra_params"},
+		{"extra_params naming no path", `{"model":"painter","prompt":"a fox","extra_params":{"lora":"x","model":"keep"}}`,
+			"external_reference_unsupported", "extra_params"},
+		{"extra_params empty", `{"model":"painter","prompt":"a fox","extra_params":{}}`, "external_reference_unsupported", "extra_params"},
+		{"extra_params null", `{"model":"painter","prompt":"a fox","extra_params":null}`, "external_reference_unsupported", "extra_params"},
 		{"n not an integer", `{"model":"painter","prompt":"a fox","n":"2"}`, "invalid_type", "n"},
 		{"n a fraction", `{"model":"painter","prompt":"a fox","n":2.5}`, "invalid_type", "n"},
 		{"response_format not a string", `{"model":"painter","prompt":"a fox","response_format":["b64_json"]}`, "invalid_type",
@@ -216,7 +222,7 @@ func TestImagesPassWhatTheyDoNotOwn(t *testing.T) {
 	for _, body := range []string{
 		`{"model":"painter","prompt":"a fox","response_format":"b64_json","n":1}`,
 		`{"model":"painter","prompt":"a fox","response_format":null,"n":null,"lora":null}`,
-		`{"model":"painter","prompt":"a fox","stream":true,"layers":4,"output_format":"webp","extra_params":{"lora":"x","model":"keep"},` +
+		`{"model":"painter","prompt":"a fox","stream":true,"layers":4,"output_format":"webp","extra":{"lora":"x","model":"keep"},` +
 			`"url":"https://example.com/x.png","num_inference_steps":20,"guidance_scale":4.5,"true_cfg_scale":4}`,
 	} {
 		if w := do(t, g.h, imagesCall(body, "pass")); w.Code != http.StatusOK || w.Header().Get("Content-Type") != "application/json" {

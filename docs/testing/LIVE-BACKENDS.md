@@ -311,7 +311,9 @@ image request as vLLM-Omni's speech models do (`503`, no diffusion stage), and a
 image server whose model answers speech with vLLM-Omni's `400` (`TTS model did not
 produce audio output.`). The fake's audio is 2.5 s of silence per clip and per batch
 item, so a record of two items counts 5 s — rounded once — where rounding each item
-would count 6.
+would count 6. The `image` check asks the fake for two images of two layers each,
+as a layered model answers, so `usage-log/image` checks a count of four, more than
+`n`.
 
 The self-test ends with a two-backend run: two fakes serving one model, each capped
 at one request (`-max-in-flight 1`), with the failover check — the runner stops the
@@ -378,7 +380,7 @@ context length. `go -C scripts/live run . -h` lists them all.
 | `image` | with `-image-base-url`: one 512×512 image, `b64_json` decoding to a PNG, JPEG or WebP |
 | `usage-log/image` | `kaiak.usage.images` equal to the answer's `data[]` count, output type `image`, the input tokens estimated and flagged (vLLM-Omni reports no image usage) |
 | `image-cap` | `n` one above `global.max_images_per_request` (2 here) is refused, `400 invalid_value` on `n`, before routing |
-| `image-refused` | `response_format` `url` and `file` (`400 response_format_unsupported`) and a `lora` (`400 external_reference_unsupported`) are refused before routing |
+| `image-refused` | `response_format` `url` and `file` (`400 response_format_unsupported`), a `lora` and `extra_params` (`400 external_reference_unsupported`) are refused before routing |
 | `chat-to-image` | a chat request to `live-image` is the gateway's own `400 endpoint_not_served`: `vllm-omni` serves the media endpoints alone |
 | `audio-limit` | with the `live-media` key: a first clip is served and fills the 1-second window — audio generated settles after the request — and the next is refused `429 audio_seconds` with `Retry-After`, no `x-ratelimit-*` header, its log line naming `audio_seconds_out_per_minute` |
 | `image-limit` | the same for images: a request reserves its `n`, so the second image in the minute is refused `429 images`, naming `images_per_minute` |
@@ -575,7 +577,9 @@ server and its model, `-image-base-url` (env `LIVE_IMAGE_BASE_URL`) and `-image-
 the kind's server as without them — and either one can come alone.
 
 - `-speech-model` and `-image-model` are the names `curl <base-url>/models` lists:
-  the model path unless the server was started with `--served-model-name`.
+  the model path unless the server was started with `--served-model-name` — its
+  first one, when it has several: image generation answers any other `400 Model
+  mismatch`.
 - No key by default; `-speech-api-key-env NAME` and `-image-api-key-env NAME` if the
   servers want one.
 - The kit sends no `voice`: the model's default speaks (Qwen3-TTS CustomVoice:

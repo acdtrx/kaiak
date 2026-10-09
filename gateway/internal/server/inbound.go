@@ -32,7 +32,9 @@ type inboundFields struct {
 	IncludeUsage bool
 	// Sequences is how many output sequences the request asks the backend to
 	// generate, each up to the output limit: n (or best_of, when larger) per
-	// prompt, times a completion's prompts; a speech batch's items. At least 1.
+	// prompt, times a completion's prompts. At least 1. A speech batch's items are
+	// its sequences too, each with its own limit (ItemOutputLimits), which the
+	// reservation sums instead.
 	Sequences int64
 	// Media are the media measures the request counts toward, each with what it
 	// reserves before it runs (limits.Need.Media): the images an image request asks
@@ -194,10 +196,12 @@ func parseRerankFields(rq *request, top map[string]json.RawMessage) *apiError {
 // 1 counted as 1, for the backend to refuse — refused above max_images_per_request
 // and reserved against the image limits; response_format, b64_json only (absent means
 // it): the images are counted from the answer's data, which no other format carries
-// countably; and lora, refused whatever its value — vLLM-Omni loads the adapter from
-// the server path it names. A null value is absent. stream is not read: an image
-// answer is never a stream. Everything else — prompt, negative_prompt, size, layers,
-// seed, … — is the backend's and passes untouched.
+// countably; lora, refused whatever its value — vLLM-Omni loads the adapter from the
+// server path it names; and extra_params, refused whatever its value, null included —
+// vLLM-Omni passes it into the diffusion pipeline's extra arguments, and which keys a
+// pipeline fetches or reads the gateway cannot know. A null value is otherwise absent.
+// stream is not read: an image answer is never a stream. Everything else — prompt,
+// negative_prompt, size, layers, seed, … — is the backend's and passes untouched.
 func parseImagesFields(rq *request, top map[string]json.RawMessage) *apiError {
 	n, apiErr := optionalField[int64](top, "n", "n", "an integer")
 	if apiErr != nil {
@@ -219,6 +223,9 @@ func parseImagesFields(rq *request, top map[string]json.RawMessage) *apiError {
 	}
 	if raw, present := top["lora"]; present && string(raw) != "null" {
 		return errExternalReference("lora")
+	}
+	if _, present := top["extra_params"]; present {
+		return errExtraParams()
 	}
 	rq.inbound.Media = map[config.Measure]int64{config.MeasureImages: images}
 	return nil

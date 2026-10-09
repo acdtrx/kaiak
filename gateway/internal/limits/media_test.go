@@ -112,6 +112,44 @@ func TestImageLimitRefusesARequestLargerThanTheLimit(t *testing.T) {
 	reserve(t, l, workload, imageNeed(3))
 }
 
+// An image limit blocked only by a request still running answers the short retry, as
+// a token limit does: the running request's images are counted again when it
+// settles, in the window it ends in, so its reservation's expiry is no promise — a
+// client told to come back then is refused again. Once settled images block, the wait
+// is theirs, and it holds (docs/specs/GATEWAY.md, Limits → Refusal).
+func TestImageLimitBlockedOnlyByARunningRequestAnswersAShortRetry(t *testing.T) {
+	const shortRetry = 2 * time.Second // the spec's fixed value
+	for _, c := range []struct {
+		typ config.LimitType
+		// settledWait is the wait once the running request settled at 10:30:30 and
+		// a request is refused at 10:30:40: its bucket leaves the minute at 10:31:30,
+		// the hour ends at 11:00.
+		settledWait time.Duration
+	}{
+		{config.LimitImagesPerMinute, 50 * time.Second},
+		{config.LimitImagesPerHour, 29*time.Minute + 20*time.Second},
+	} {
+		t.Run(string(c.typ), func(t *testing.T) {
+			clk := newClock("2026-09-24T10:30:00Z")
+			l := clk.limiter(holderOf(snapshot(t, limitsDoc{workload: limitJSON(c.typ, "4")})))
+			running := reserve(t, l, workload, imageNeed(4))
+			clk.advance(10 * time.Second)
+			if rej := refusedNeed(t, l, workload, imageNeed(1)); rej.RetryAfter != shortRetry {
+				t.Errorf("retry after %v, want %v: only a running request blocks", rej.RetryAfter, shortRetry)
+			}
+			clk.advance(20 * time.Second)
+			l.Settle(running, mediaRecord(4, 0, 0))
+			clk.advance(10 * time.Second)
+			rej := refusedNeed(t, l, workload, imageNeed(1))
+			if rej.RetryAfter != c.settledWait {
+				t.Errorf("retry after %v once settled, want %v", rej.RetryAfter, c.settledWait)
+			}
+			clk.advance(rej.RetryAfter)
+			reserve(t, l, workload, imageNeed(1))
+		})
+	}
+}
+
 // Audio generated reserves nothing — its length is known once the audio is relayed —
 // so, as USD, a limit refuses once its window has reached its value, and requests in
 // flight then can pass it. Only requests generating audio meet it.

@@ -3,6 +3,7 @@ package provider
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -62,7 +63,8 @@ type upstreamResponse struct {
 	// stripUsage marks the usage-only chunk Hidden.
 	stripUsage bool
 	// publicModel (encoded JSON) replaces the backend's model name in every stream
-	// chunk; bodyModel does so in a JSON body, nil for other bodies.
+	// chunk; bodyModel does so in a JSON body — and in a successful speech batch
+	// answer, replaces each result's error with batchItemError — nil for other bodies.
 	publicModel []byte
 	bodyModel   *modelRewriter
 
@@ -82,6 +84,13 @@ const maxSSEBlockBytes = 16 << 20
 
 // pieceSize is how much of a non-stream body is read per event.
 const pieceSize = 32 << 10
+
+// batchItemError replaces the backend's text in each errored result of a successful
+// speech batch answer (docs/specs/GATEWAY.md, Providers: media answers): vLLM-Omni
+// puts there an item's validation message or any exception's text, which, like a 5xx
+// body's or an error event's, can name hosts, devices or the backend-side model, and
+// nothing in the result tells the two apart. The result keeps its index and status.
+const batchItemError = "The model backend could not generate this item."
 
 // newUpstreamResponse reads resp in format; relayed are the headers the module relays
 // beside clientHeaders.
@@ -112,6 +121,10 @@ func newUpstreamResponse(ctx context.Context, cancel context.CancelCauseFunc, re
 		r.buf = make([]byte, pieceSize)
 		if mediaType == "application/json" || strings.HasSuffix(mediaType, "+json") {
 			r.bodyModel = newModelRewriter(publicModel)
+			if format == FormatSpeechBatch && r.succeeded() {
+				itemError, _ := json.Marshal(batchItemError) // a string always encodes
+				r.bodyModel = newSpeechBatchRewriter(publicModel, itemError)
+			}
 		}
 	}
 	return r

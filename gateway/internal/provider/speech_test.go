@@ -25,16 +25,16 @@ func omniBackend(baseURL string) *config.Backend {
 }
 
 // sendSpeech sends body to a vllm-omni backend's speech endpoint for backend-side
-// model "backend-model", in the mode stream says, with params.
-func sendSpeech(b *config.Backend, body string, stream bool, params ...Param) (Response, error) {
+// model "backend-model", in the mode stream says.
+func sendSpeech(b *config.Backend, body string, stream bool) (Response, error) {
 	return moduleRegistry().For(b).Send(context.Background(), &Request{Endpoint: AudioSpeech,
 		Deployment: config.Deployment{Backend: b, Model: "backend-model"}, Body: []byte(body), Stream: stream,
-		RequestID: "r", PublicModel: "pub", Params: params})
+		RequestID: "r", PublicModel: "pub"})
 }
 
 // A speech request reaches a vllm-omni backend at /v1/audio/speech with its owned
-// edits alone — the model, and the output limit the pipeline sets under
-// max_new_tokens — every other byte as the client sent it, stream_format included; its
+// edit alone — the model; the pipeline sets no output limit on speech — every other
+// byte as the client sent it, stream_format included; its
 // answer is audio, relayed byte for byte with its content type, never read as a stream
 // or rewritten, complete once its body ended (docs/specs/GATEWAY.md, Providers:
 // passthrough edits; media answers are relayed as the backend sends them).
@@ -47,7 +47,7 @@ func TestSpeechPassesThroughAsAudio(t *testing.T) {
 		stream                  bool
 		size                    int
 	}{
-		{"whole clip, wav", `{"model":"pub", "input":"hello","voice":"vivian","extra_params":{"model":"keep"}}`,
+		{"whole clip, wav", `{"model":"pub", "input":"hello","voice":"vivian","extra":{"model":"keep"}}`,
 			"audio/wav", false, 44 + 120000},
 		{"whole clip, pcm", `{"model":"pub","input":"hello","response_format":"pcm","sample_rate":8000}`,
 			"audio/pcm", false, 40000},
@@ -56,7 +56,7 @@ func TestSpeechPassesThroughAsAudio(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			before := len(fb.Requests())
-			resp, err := sendSpeech(b, c.body, c.stream, Param{Key: "max_new_tokens", Value: []byte("300")})
+			resp, err := sendSpeech(b, c.body, c.stream)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -79,7 +79,6 @@ func TestSpeechPassesThroughAsAudio(t *testing.T) {
 			}
 			sent := fb.Requests()[before:]
 			want := strings.Replace(c.body, `"model":"pub"`, `"model":"backend-model"`, 1)
-			want = want[:len(want)-1] + `,"max_new_tokens":300}`
 			if len(sent) != 1 || sent[0].Path != "/v1/audio/speech" || string(sent[0].Body) != want {
 				t.Fatalf("sent %+v, want one request to /v1/audio/speech with\n %s", sent, want)
 			}
@@ -217,7 +216,7 @@ func TestSpeechEventStreamPassesThrough(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			before := len(fb.Requests())
-			resp, err := sendSpeech(b, c.body, true, Param{Key: "max_new_tokens", Value: []byte("300")})
+			resp, err := sendSpeech(b, c.body, true)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -256,7 +255,6 @@ func TestSpeechEventStreamPassesThrough(t *testing.T) {
 			}
 			sent := fb.Requests()[before:]
 			want := strings.Replace(c.body, `"model":"pub"`, `"model":"backend-model"`, 1)
-			want = want[:len(want)-1] + `,"max_new_tokens":300}`
 			if len(sent) != 1 || string(sent[0].Body) != want || sent[0].Header.Get("Accept") != "text/event-stream" {
 				t.Fatalf("sent %+v, want one request with\n %s\nand Accept: text/event-stream", sent, want)
 			}

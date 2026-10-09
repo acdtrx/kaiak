@@ -33,6 +33,7 @@ const (
 	idImageURL      = "live-image-url"
 	idImageFile     = "live-image-file"
 	idImageLoRA     = "live-image-lora"
+	idImageExtra    = "live-image-extra-params"
 	idChatToImage   = "live-chat-to-image"
 	idAudioLimit    = "live-audio-limit"
 	idAudioRefused  = "live-audio-refused"
@@ -473,27 +474,22 @@ func (r *run) checkSpeechBatchCap() {
 		http.StatusBadRequest, "invalid_value", "items"}})
 }
 
-// checkImage asks for one image: b64_json data whose every element decodes to a PNG,
-// JPEG or WebP. It returns how many the answer holds, which a layered model makes more
-// than n.
+// checkImage asks for one image (with the run's imageCheckParams: the self-test asks
+// for more): b64_json data whose every element decodes to a PNG, JPEG or WebP. It
+// returns how many the answer holds, which a layered model makes more than n.
 func (r *run) checkImage() (int64, bool) {
 	const name = "image"
-	resp, err := r.post(r.key, "/v1/images/generations", idImage, imageBody(modelImage, nil))
+	resp, err := r.post(r.key, "/v1/images/generations", idImage, imageBody(modelImage, r.o.imageCheckParams))
 	if !r.ok(name, resp, err, idImage) {
 		return 0, false
 	}
 	var answer struct {
-		Model *string
-		Data  []struct {
+		Data []struct {
 			B64JSON string `json:"b64_json"`
 		}
 	}
 	if err := json.Unmarshal(resp.body, &answer); err != nil || len(answer.Data) == 0 {
 		r.fail(name, "no data: %s", clip(string(resp.body)))
-		return 0, false
-	}
-	if answer.Model != nil && *answer.Model != modelImage {
-		r.fail(name, "answer names model %q, want the public name %q", *answer.Model, modelImage)
 		return 0, false
 	}
 	var formats []string
@@ -518,8 +514,9 @@ func (r *run) checkImageCap() {
 		http.StatusBadRequest, "invalid_value", "n"}})
 }
 
-// checkImageRefused: answers other than b64_json, and a LoRA the server would load
-// from a path, are refused before the backend.
+// checkImageRefused: answers other than b64_json, a LoRA the server would load from a
+// path, and extra_params, which reach the diffusion pipeline unread by the gateway,
+// are refused before the backend.
 func (r *run) checkImageRefused() {
 	images := "/v1/images/generations"
 	r.checkRefusals("image-refused", []refusalCase{
@@ -530,6 +527,8 @@ func (r *run) checkImageRefused() {
 		{"lora", images, idImageLoRA, imageBody(modelImage, map[string]any{"lora": map[string]any{
 			"name": "style", "path": "/models/lora/style"}}),
 			http.StatusBadRequest, "external_reference_unsupported", "lora"},
+		{"extra_params", images, idImageExtra, imageBody(modelImage, map[string]any{"extra_params": map[string]any{}}),
+			http.StatusBadRequest, "external_reference_unsupported", "extra_params"},
 	})
 }
 

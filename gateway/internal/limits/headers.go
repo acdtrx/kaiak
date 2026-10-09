@@ -24,7 +24,7 @@ type Rejection struct {
 	// limit refuses once its window has reached the limit.
 	Limit, Max, Used, Requested int64
 	// RetryAfter is how long until every refusing limit has room for the request; a
-	// token limit blocked only by requests still running counts inFlightRetry.
+	// token or image limit blocked only by requests still running counts inFlightRetry.
 	RetryAfter time.Duration
 	Headers    Headers
 	// Unavailable: the request's priced model is covered by a USD limit (Group, Type)

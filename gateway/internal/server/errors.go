@@ -252,6 +252,16 @@ func errOutputLimitTooLarge(param string, value, contextLength int64) *apiError 
 			param, value, contextLength, value)}
 }
 
+// errOutputLimitAboveCeiling refuses an output limit above the model's output-limit
+// ceiling on an endpoint the gateway sends no output limit of its own on (speech and
+// the speech batch: param max_new_tokens, or an item's), in the wording of
+// errOutputLimitTooLarge.
+func errOutputLimitAboveCeiling(param string, value, ceiling int64) *apiError {
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "invalid_value", class: metrics.ErrorInvalidRequest, param: param,
+		message: fmt.Sprintf("%s is too large: %d. This model supports at most %d tokens (its output-limit ceiling), whereas you provided %d.",
+			param, value, ceiling, value)}
+}
+
 // errOutputLimitBelowThinking refuses a Messages request whose output limit the
 // gateway would set to the model's ceiling or default (which), n, at or below the
 // request's thinking budget.
@@ -457,4 +467,15 @@ func errResponseFormatUnsupported(param, allowed string) *apiError {
 func errExternalReference(param string) *apiError {
 	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "external_reference_unsupported", class: metrics.ErrorInvalidRequest, param: param,
 		message: fmt.Sprintf("'%s' names something for the backend to fetch or read (a URL or a file path); the gateway sends only inline data.", param)}
+}
+
+// errExtraParams refuses a speech or image request naming extra_params, whatever its
+// value (docs/specs/GATEWAY.md, Client API → owned fields: speech, images): vLLM-Omni
+// hands it to the model — a speech model's adapter, a diffusion pipeline's extra
+// arguments — which can fetch or read what a key names, and which keys do is the
+// model's, unknown to the gateway. The message names the member, never its value.
+func errExtraParams() *apiError {
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "external_reference_unsupported", class: metrics.ErrorInvalidRequest,
+		param: "extra_params", message: "'extra_params' passes model-specific parameters the backend can fetch or read (a URL or a file path) " +
+			"with; the gateway does not send it."}
 }

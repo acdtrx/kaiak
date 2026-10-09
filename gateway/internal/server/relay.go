@@ -17,8 +17,10 @@ import (
 // Stream events are flushed one by one as they arrive, and an audio body's pieces as
 // they are read; nothing is buffered beyond one event. The first data event of a
 // stream, or a body's first bytes, under a status below 400 tells the circuit breaker
-// the response started. Every event, hidden or not, passes through here: the meter reads each one
-// before it is written, so what the backend sent counts even when the client is gone.
+// the response started. Every event, hidden or not, passes through here: the meter
+// reads each one before it is written, so what the backend sent while the client was
+// there counts — usage and audio seconds alike — the event whose write finds the
+// client gone included.
 // The request body is dropped first: once a response relays no retry can use it, and
 // the attempts' meters took its size when they opened. A backend 5xx is answered by
 // the gateway instead (answerBackendFault), and so is a 4xx whose body broke before

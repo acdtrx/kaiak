@@ -2,6 +2,7 @@ package provider
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -75,6 +76,77 @@ func TestNestedModelRewriter(t *testing.T) {
 				if string(out) != c.want {
 					t.Fatalf("cut at %d:\ngot  %s\nwant %s", cut, out, c.want)
 				}
+			}
+		})
+	}
+}
+
+// A speech batch answer's errored results carry the gateway's text in place of the
+// backend's: every error member of each object in the top-level results list, whatever
+// it holds that can carry text — a string, an object, an array — and every one of a
+// result naming it twice; a null, a number or a boolean passes, and so does an error
+// anywhere else. The top-level model is rewritten as in any body, in the same pass;
+// everything else passes as sent (docs/specs/GATEWAY.md, Providers: media answers).
+func TestSpeechBatchRewriterReplacesEachResultsError(t *testing.T) {
+	const bs = `\`
+	escapeAll := func(name string) string {
+		var b strings.Builder
+		for _, r := range name {
+			fmt.Fprintf(&b, "%su%04x", bs, r)
+		}
+		return b.String()
+	}
+	for _, c := range []struct{ name, in, want string }{
+		{"an errored result", `{"id":"b","results":[{"index":0,"status":"success","audio_data":"UklGR","media_type":"audio/wav"},` +
+			`{"index":1,"status":"error","error":"CUDA error on gpu-3.internal"}],"total":2,"succeeded":1,"failed":1}`,
+			`{"id":"b","results":[{"index":0,"status":"success","audio_data":"UklGR","media_type":"audio/wav"},` +
+				`{"index":1,"status":"error","error":"G"}],"total":2,"succeeded":1,"failed":1}`},
+		{"every result", `{"results":[{"index":0,"error":"a"},{"index":1,"error":"b"},{"index":2,"error":"c"}]}`,
+			`{"results":[{"index":0,"error":"G"},{"index":1,"error":"G"},{"index":2,"error":"G"}]}`},
+		{"named twice", `{"results":[{"error":"a","index":0,"error":"b"}]}`, `{"results":[{"error":"G","index":0,"error":"G"}]}`},
+		{"an object", `{"results":[{"error":{"message":"host gpu-3","trace":["}]\"{",{"x":[1]}]},"index":0}]}`,
+			`{"results":[{"error":"G","index":0}]}`},
+		{"an array", `{"results":[{"index":0,"error":["a",{"b":"]"}]}]}`, `{"results":[{"index":0,"error":"G"}]}`},
+		{"quotes, braces and escapes in the text", `{"results":[{"error":"a\"]}{,\\","index":0}]}`,
+			`{"results":[{"error":"G","index":0}]}`},
+		{"null, a number and a boolean pass", `{"results":[{"error":null},{"error":500},{"error":false}]}`,
+			`{"results":[{"error":null},{"error":500},{"error":false}]}`},
+		{"an escaped name", `{"results":[{"` + bs + `u0065rror":"x"}]}`, `{"results":[{"` + bs + `u0065rror":"G"}]}`},
+		{"an escaped list name", `{"r` + bs + `u0065sults":[{"error":"x"}]}`, `{"r` + bs + `u0065sults":[{"error":"G"}]}`},
+		{"layout kept", "{ \"results\" :\n [ { \"error\" :\t\"x\" } ,{\"error\":\"y\"}] }",
+			"{ \"results\" :\n [ { \"error\" :\t\"G\" } ,{\"error\":\"G\"}] }"},
+		{"results named twice", `{"results":[{"error":"a"}],"results":[{"error":"b"}]}`,
+			`{"results":[{"error":"G"}],"results":[{"error":"G"}]}`},
+		{"the top-level model rewritten, a result's kept", `{"model":"back","results":[{"model":"x","error":"e"}]}`,
+			`{"model":"pub","results":[{"model":"x","error":"G"}]}`},
+		{"an error elsewhere untouched", `{"error":"t","meta":{"results":[{"error":"m"}]},"other":[{"error":"o"}],` +
+			`"results":[{"usage":{"error":"u"},"index":0},[{"error":"n"}],"error"]}`,
+			`{"error":"t","meta":{"results":[{"error":"m"}]},"other":[{"error":"o"}],` +
+				`"results":[{"usage":{"error":"u"},"index":0},[{"error":"n"}],"error"]}`},
+		{"results not a list", `{"results":{"error":"x"}}`, `{"results":{"error":"x"}}`},
+		{"error as a value", `{"results":[{"status":"error","x":["error",":"]}]}`, `{"results":[{"status":"error","x":["error",":"]}]}`},
+		{"every character escaped", `{"` + escapeAll("results") + `":[{"` + escapeAll("error") + `":"x"}]}`,
+			`{"` + escapeAll("results") + `":[{"` + escapeAll("error") + `":"G"}]}`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			for cut := 0; cut <= len(c.in); cut++ {
+				m := newSpeechBatchRewriter([]byte(`"pub"`), []byte(`"G"`))
+				out := m.rewrite(nil, []byte(c.in[:cut]))
+				out = m.rewrite(out, []byte(c.in[cut:]))
+				if string(out) != c.want {
+					t.Fatalf("cut at %d:\ngot  %s\nwant %s", cut, out, c.want)
+				}
+				if !m.closed() {
+					t.Fatalf("cut at %d: the answer did not close", cut)
+				}
+			}
+			m := newSpeechBatchRewriter([]byte(`"pub"`), []byte(`"G"`))
+			var out []byte
+			for i := range len(c.in) {
+				out = m.rewrite(out, []byte{c.in[i]})
+			}
+			if string(out) != c.want {
+				t.Errorf("byte by byte:\ngot  %s\nwant %s", out, c.want)
 			}
 		})
 	}

@@ -711,10 +711,11 @@ the document (a script, or the control plane) rather than editing it by hand.
   edits, transcription, video, the voices endpoints and vLLM-Omni's WebSocket
   endpoints are not served.
 - **One backend per model**: one vLLM-Omni process serves one model. A
-  deployment's `model` is the name the server lists (its `--served-model-name`, else
-  the model path): image generation compares a request's model with it and answers
-  `400 Model mismatch` otherwise, read as `502 upstream_model_missing`, a circuit
-  failure. An image request sent to a speech model's server answers `503` (no
+  deployment's `model` is the server's **first** `--served-model-name` (else the
+  model path): image generation compares a request's model with that name alone and
+  answers `400 Model mismatch` for any other — a second served name too — read as
+  `502 upstream_model_missing`, a circuit failure (`GATEWAY.md` → Providers: wrong
+  model on a host). An image request sent to a speech model's server answers `503` (no
   diffusion stage), read as the endpoint missing — neutral, the deployment keeps
   serving speech (Clients).
 - **What the gateway accepts** (`GATEWAY.md` → Client API: owned fields; the rest of
@@ -734,6 +735,11 @@ the document (a script, or the control plane) rather than editing it by hand.
     would fetch or read it on the client's behalf. Inline audio counts toward
     `max_request_body_bytes` (Config for many hosts), base64 a third larger than the
     file: ten seconds of 24 kHz 16-bit mono WAV is about 640 KB as base64.
+  - **No `extra_params`** on speech or image generation: refused whatever it holds,
+    `400 external_reference_unsupported` — vLLM-Omni hands it to the model (a speech
+    model's adapter, a diffusion pipeline), which can fetch or read what a key names
+    (IndexTTS2's `emo_audio`), and which keys do is the model's. The speech batch
+    passes it, since vLLM-Omni ignores it there.
   - **Images as `b64_json` only**: `response_format` `url` and `file` are refused
     (`400 response_format_unsupported`), and so is `lora` (`400
     external_reference_unsupported`: it names an adapter path on the server).
@@ -749,17 +755,24 @@ the document (a script, or the control plane) rather than editing it by hand.
 - **Output limit** (speech only): `max_new_tokens` is speech's output-limit key —
   the codec tokens a model generates, the audio's length. Keep `output_limit`
   within the server's bound for the model (1 to 4096 for most, vLLM-Omni's default
-  2048) and within `context_length`. The gateway writes the default into every
-  speech request that sets none, which costs Qwen3-TTS voice cloning (`task_type:
-  "Base"`) vLLM-Omni's own budget scaled to the text and its one retry of a clone
-  that ran to its budget without ending: declare a Base model without
-  `output_limit` to keep them. Image generation has no output limit.
+  2048) and within `context_length`. A request that sets none is sent without it —
+  vLLM-Omni budgets it itself, on Qwen3-TTS voice cloning (`task_type: "Base"`)
+  from the text's length with one retry — and reserves the model's default against
+  token limits; a value above the ceiling is refused (`400 invalid_value`), never
+  lowered: the gateway sends no `max_new_tokens` of its own. A Base clone that
+  reaches a `max_new_tokens` it was sent answers `500`, a circuit failure: clients
+  cloning voices on Qwen3-TTS should leave it unset (`docs/BACKLOG.md`). Image
+  generation has no output limit.
 - **Usage**: speech records the tokens vLLM-Omni reports — from the whole clip's
   `x-vllm-omni-*` response headers (never relayed to the client), SSE's
   `speech.audio.done`, each batch item's usage — and estimates them, flagged, on the
   raw-audio stream, which reports none. In every mode the gateway measures the
-  audio it relays (`audio_seconds_out`, rounded up to a whole second once per
-  record); a client gone mid-clip settles the seconds sent. An image record counts
+  audio the backend sent while the client was there (`audio_seconds_out`, rounded
+  up to a whole second once per record); a client gone mid-clip settles the seconds
+  sent until then. A batch item that failed carries the gateway's text, `The model
+  backend could not generate this item.`, in place of vLLM-Omni's, which can name
+  hosts and devices — its reason for refusing an item (an unknown voice, say) is
+  lost with it. An image record counts
   `images`, the answer's `data[]` — a layered model answers one image per layer,
   more than `n` — with the prompt's tokens estimated. Token prices apply to the
   tokens; images and seconds of audio are never priced (`docs/BACKLOG.md`, Pricing
@@ -776,7 +789,8 @@ the document (a script, or the control plane) rather than editing it by hand.
   its unit: a spent audio window stops speech, not chat. Refusals are `429` with
   type `images` or `audio_seconds` and `Retry-After`, without `x-ratelimit-*`
   headers. Token limits apply to speech as to chat, reserving the input estimate
-  plus `max_new_tokens` (each item's, summed, in a batch).
+  plus `max_new_tokens` — the model's default when the request sets none — each
+  item's, summed, in a batch.
 - **Where the units show**: every usage record carries `images`,
   `audio_seconds_out` and `audio_seconds_in` (zeros included); the request line
   `gen_ai.operation.name` `generate_content`, `gen_ai.output.type` `speech` or

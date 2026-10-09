@@ -140,26 +140,12 @@ type Request struct {
 	// occurrence of its key or, when the key is absent, is added. Keys never repeat
 	// and never name a member the provider edits itself (model, stream_options).
 	Params []Param
-	// ItemParams are parameters the pipeline sets in an element of a top-level list —
-	// a speech batch item's output limit, lowered to the model's ceiling in the item —
-	// in order. Each replaces its key in the element, an object, or is added there.
-	// The list and the element are in the body, as the inbound stage read it; a list
-	// is never a Params key.
-	ItemParams []ItemParam
 }
 
 // Param is one top-level request parameter set by the pipeline.
 type Param struct {
 	Key   string
 	Value []byte
-}
-
-// ItemParam is one request parameter set by the pipeline in an element of a list: the
-// top-level member List, its element at Index.
-type ItemParam struct {
-	List  string
-	Index int
-	Param
 }
 
 // Response is a backend's answer, in the client's format. The caller reads events
