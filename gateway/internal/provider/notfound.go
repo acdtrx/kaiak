@@ -117,6 +117,18 @@ func readErrorAnswer(answer []byte) (e errorAnswer, ok bool) {
 	return e, true
 }
 
+// fastAPIDetail reports whether answer is FastAPI's own error body, {"detail":
+// "<text>"}, with one of texts: what the web framework answers where the app's error
+// handlers do not reach — a path it has no route for ("Not Found"), a method a route
+// does not take ("Method Not Allowed"). vLLM and vLLM-Omni are FastAPI apps answering
+// their own errors in the OpenAI or the Anthropic shape.
+func fastAPIDetail(answer []byte, texts ...string) bool {
+	var a struct {
+		Detail *string `json:"detail"`
+	}
+	return json.Unmarshal(answer, &a) == nil && a.Detail != nil && slices.Contains(texts, *a.Detail)
+}
+
 // namesWord reports whether text contains word with no model-name character right
 // before or after it, so "llama" is not found in "llama-2".
 func namesWord(text, word string) bool {

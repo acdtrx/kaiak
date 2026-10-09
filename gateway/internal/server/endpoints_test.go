@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -83,6 +84,83 @@ func TestRoutingFollowsEndpointSupport(t *testing.T) {
 		if !strings.Contains(string(r.Body), `"model":"mixed-local"`) {
 			t.Errorf("a chat request reached the anthropic deployment: %s", r.Body)
 		}
+	}
+}
+
+// withOmniModel swaps in the test config plus a vllm-omni backend "omni" on the fake
+// backend and a model served only there ("omni-only").
+func withOmniModel(t *testing.T, g *testGateway) {
+	t.Helper()
+	g.apply(t, func(doc string) string {
+		doc = replaceOnce(t, doc, `"backends": {`, `"backends": {
+    "omni": { "type": "vllm-omni", "base_url": "`+g.backend.URL()+`/v1" },`)
+		return replaceOnce(t, doc, `"models": { `, `"models": {
+    "omni-only": { "deployments": [{ "backend": "omni", "model": "Qwen/Qwen3-TTS" }],
+      "metadata": { "context_length": 8192,
+        "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } } },
+    `)
+	})
+}
+
+// omniRefusedBodies are a valid request body for each body endpoint vllm-omni does not
+// serve, naming the model "omni-only".
+var omniRefusedBodies = map[provider.Endpoint]string{
+	provider.ChatCompletions:      `{"model":"omni-only","messages":[{"role":"user","content":"hi"}]}`,
+	provider.Completions:          `{"model":"omni-only","prompt":"hi"}`,
+	provider.Embeddings:           `{"model":"omni-only","input":"a"}`,
+	provider.Messages:             `{"model":"omni-only","max_tokens":1,"messages":[]}`,
+	provider.MessagesCountTokens:  `{"model":"omni-only","messages":[]}`,
+	provider.Responses:            `{"model":"omni-only","input":"hi"}`,
+	provider.ResponsesInputTokens: `{"model":"omni-only","input":"hi"}`,
+	provider.Rerank:               `{"model":"omni-only","query":"q","documents":["a"]}`,
+}
+
+// vllm-omni serves the media endpoints alone: chat, completions, embeddings, Messages,
+// Responses, rerank and the token-counting endpoints to a model whose deployments are
+// all vllm-omni answer 400 endpoint_not_served, in the endpoint's error shape, before
+// any backend and with nothing settled; the model's entry lists only what the type
+// serves (docs/specs/GATEWAY.md, Providers → Endpoint support).
+func TestVLLMOmniServesNoOtherEndpoint(t *testing.T) {
+	g := newTestGateway(t)
+	withOmniModel(t, g)
+	served := []string{}
+	for _, ep := range bodyEndpoints {
+		if provider.Serves(config.BackendVLLMOmni, ep.api) {
+			served = append(served, ep.name)
+			continue
+		}
+		body, ok := omniRefusedBodies[ep.api]
+		if !ok {
+			t.Fatalf("no request body for %s, which vllm-omni does not serve", ep.name)
+		}
+		t.Run(ep.name, func(t *testing.T) {
+			w := do(t, g.h, call{method: "POST", path: ep.route(), key: workloadKey, body: body,
+				header: map[string]string{"X-Request-Id": "omni-" + ep.name}})
+			if ep.api.Format() == provider.FormatMessages {
+				expectAnthropicError(t, w, http.StatusBadRequest, "invalid_request_error", "endpoint_not_served")
+			} else {
+				expectError(t, w, http.StatusBadRequest, "endpoint_not_served")
+			}
+			if msg := errorMessage(t, w); !strings.Contains(msg, ep.route()) {
+				t.Errorf("message %q does not name %s", msg, ep.route())
+			}
+			if line := logLine(t, g, "omni-"+ep.name); !strings.Contains(line, `"error.type":"endpoint_not_served"`) {
+				t.Errorf("log line lacks the error: %s", line)
+			}
+		})
+	}
+	if n := len(g.backend.Requests()); n != 0 {
+		t.Errorf("%d requests reached the backend, want none", n)
+	}
+	if n := len(g.usage.all()); n != 0 {
+		t.Errorf("%d usage records, want none: nothing was routed", n)
+	}
+
+	slices.Sort(served)
+	want, _ := json.Marshal(served)
+	w := do(t, g.h, call{method: "GET", path: "/v1/models/omni-only", key: workloadKey})
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"endpoints":`+string(want)) {
+		t.Errorf("omni-only: %d %s, want the endpoints %s", w.Code, w.Body.String(), want)
 	}
 }
 

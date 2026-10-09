@@ -111,7 +111,7 @@ func TestUsageMetricsCountsRecords(t *testing.T) {
 func TestUsageMetricsCountMediaUnits(t *testing.T) {
 	holder := &config.Holder{}
 	holder.Swap(&config.Snapshot{KeyIDLabel: true, GroupLabel: true,
-		Backends: map[string]*config.Backend{"omni": {ID: "omni", Type: config.BackendVLLM}}})
+		Backends: map[string]*config.Backend{"omni": {ID: "omni", Type: config.BackendVLLMOmni}}})
 	reg := metric.NewRegistry()
 	usage := NewUsageMetrics(reg, holder)
 	record := func(model, outputType string, units accounting.Units) accounting.UsageRecord {

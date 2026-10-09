@@ -326,6 +326,7 @@ var kinds = map[config.BackendType]backendKind{
 	config.BackendOpenAI:           {serves: openAIEndpoints, providerName: "openai", build: newOpenAI},
 	config.BackendAzureOpenAI:      {serves: azureOpenAIEndpoints, providerName: "azure.ai.openai", build: newAzureOpenAI},
 	config.BackendVLLM:             {serves: vLLMEndpoints, build: newVLLM},
+	config.BackendVLLMOmni:         {serves: vLLMOmniEndpoints, build: newVLLMOmni},
 	config.BackendLlamaServer:      {serves: llamaServerEndpoints, build: newLlamaServer},
 	config.BackendOpenAICompatible: {serves: openAICompatibleEndpoints, build: newOpenAICompatible},
 	config.BackendAnthropic:        {serves: anthropicEndpoints, providerName: "anthropic", build: newAnthropic},

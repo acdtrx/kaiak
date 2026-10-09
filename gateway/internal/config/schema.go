@@ -99,7 +99,7 @@ const PublicModelNameWhat = `a model name not ending in "` + reservedModelSuffix
 var (
 	backendTypes = []string{
 		string(BackendOpenAICompatible), string(BackendOpenAI), string(BackendAzureOpenAI), string(BackendVLLM),
-		string(BackendLlamaServer), string(BackendAnthropic), string(BackendAzureAnthropic),
+		string(BackendVLLMOmni), string(BackendLlamaServer), string(BackendAnthropic), string(BackendAzureAnthropic),
 	}
 	// Backend types whose API answers nothing without a key: api_key_env is required.
 	keyedBackendTypes = []string{

@@ -14,6 +14,7 @@ import (
 
 // endpointColumns names the endpoint support table's columns
 // (docs/specs/GATEWAY.md, Providers → Endpoint support) by the endpoints they cover.
+// The media column covers the media endpoints the client API serves: none yet.
 var endpointColumns = map[string][]Endpoint{
 	"chat, completions, embeddings": {ChatCompletions, Completions, Embeddings},
 	"messages":                      {Messages},
@@ -21,11 +22,25 @@ var endpointColumns = map[string][]Endpoint{
 	"responses":                     {Responses},
 	"responses_input_tokens":        {ResponsesInputTokens},
 	"rerank":                        {Rerank},
+	"audio_speech, audio_speech_batch, images_generations": {},
 }
 
-// Each type serves exactly what the spec's endpoint support table says, and the
-// table names every type.
+// Each type serves exactly what the spec's endpoint support table says, the table
+// names every type, every column is one endpointColumns knows, and every endpoint is
+// in a column.
 func TestEndpointSupportFollowsTheSpec(t *testing.T) {
+	covered := map[Endpoint]bool{}
+	for _, es := range endpointColumns {
+		for _, e := range es {
+			covered[e] = true
+		}
+	}
+	for e := range Endpoint(len(endpoints)) {
+		if !covered[e] {
+			t.Errorf("%s is in no column of endpointColumns", e.Path())
+		}
+	}
+
 	doc, err := os.ReadFile(filepath.Join("..", "..", "..", "docs", "specs", "GATEWAY.md"))
 	if err != nil {
 		t.Fatal(err)
@@ -41,6 +56,11 @@ func TestEndpointSupportFollowsTheSpec(t *testing.T) {
 		switch {
 		case strings.HasPrefix(line, "| Type | chat, completions, embeddings |"):
 			header = cells
+			for _, column := range header[1:] {
+				if _, ok := endpointColumns[column]; !ok {
+					t.Errorf("the spec's column %q is not in endpointColumns", column)
+				}
+			}
 			continue
 		case header == nil:
 			continue

@@ -68,6 +68,7 @@ const (
 	BackendOpenAI           BackendType = "openai"
 	BackendAzureOpenAI      BackendType = "azure-openai"
 	BackendVLLM             BackendType = "vllm"
+	BackendVLLMOmni         BackendType = "vllm-omni"
 	BackendLlamaServer      BackendType = "llama-server"
 	BackendAnthropic        BackendType = "anthropic"
 	BackendAzureAnthropic   BackendType = "azure-anthropic"

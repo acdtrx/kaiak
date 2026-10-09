@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 
 	"kaiak/internal/config"
@@ -53,10 +52,7 @@ func (m *vLLM) Send(ctx context.Context, req *Request) (Response, error) {
 // with {"detail": "Method Not Allowed"} (a 405); vLLM's own 404s carry the OpenAI or
 // the Anthropic error shape.
 func (m *vLLM) unknownPath(answer []byte) bool {
-	var a struct {
-		Detail *string `json:"detail"`
-	}
-	return json.Unmarshal(answer, &a) == nil && a.Detail != nil && (*a.Detail == "Not Found" || *a.Detail == "Method Not Allowed")
+	return fastAPIDetail(answer, "Not Found", "Method Not Allowed")
 }
 
 // probe reads the models list, which names what requests carry (vLLM's

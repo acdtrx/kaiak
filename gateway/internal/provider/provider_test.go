@@ -48,7 +48,7 @@ func TestProviderNames(t *testing.T) {
 	for typ, want := range map[config.BackendType]string{
 		config.BackendOpenAI: "openai", config.BackendAzureOpenAI: "azure.ai.openai",
 		config.BackendAnthropic: "anthropic", config.BackendAzureAnthropic: "anthropic",
-		config.BackendVLLM: "", config.BackendLlamaServer: "", config.BackendOpenAICompatible: "",
+		config.BackendVLLM: "", config.BackendVLLMOmni: "", config.BackendLlamaServer: "", config.BackendOpenAICompatible: "",
 	} {
 		if got := ProviderName(typ); got != want {
 			t.Errorf("%s: %q, want %q", typ, got, want)

@@ -138,12 +138,12 @@ enforce the boundaries.
   reporter, and its circuit events to `metrics` through an observer interface
   `routing` defines.
 - `provider` — the only code that talks to backends: a module per backend type
-  (openai, azure-openai, vllm, llama-server, anthropic, azure-anthropic, and the
-  generic openai-compatible), each self-contained over a shared wire core, the one
-  table of which endpoints each type serves, passthrough body edits per client API,
-  when a stream is whole per format, per-backend connection pools, the circuit
-  breaker's probe (`GET …/models`; none for azure-anthropic, which has no models
-  list), and the `ModelChecker` (goroutine run by `cmd/kaiak`), which probes each
+  (openai, azure-openai, vllm, vllm-omni, llama-server, anthropic, azure-anthropic,
+  and the generic openai-compatible), each self-contained over a shared wire core,
+  the one table of which endpoints each type serves, passthrough body edits per
+  client API, when a stream is whole per format, per-backend connection pools, the
+  circuit breaker's probe (`GET …/models`; none for azure-anthropic, which has no
+  models list), and the `ModelChecker` (goroutine run by `cmd/kaiak`), which probes each
   applied config's backends once, off the request path, and warns about deployments
   whose model is not listed; it reads backend streams with `sse`. It returns response events in the
   client's format; `server` relays them to the client, and observers (accounting)

@@ -15,14 +15,14 @@ import (
 )
 
 // The wire core: the request, response and error handling every backend module shares
-// (openai.go, azure_openai.go, vllm.go, llama_server.go, openai_compatible.go,
-// anthropic.go, azure_anthropic.go). The core is not a provider and knows no backend
-// type: a module prepares the upstream request — URL, credential (bearer, apiKey or
-// its own header), its own body edits, the error codes that mean a missing model, its
-// server's answer to a path it does not have, whether the endpoint is one of its
-// type's core ones, its server's answer that it was not started in the endpoint's
-// mode — and hands it to sendWire, which applies the edits every request gets
-// (passthroughBody); its probe reads the models list with fetchModelsList.
+// (openai.go, azure_openai.go, vllm.go, vllm_omni.go, llama_server.go,
+// openai_compatible.go, anthropic.go, azure_anthropic.go). The core is not a provider
+// and knows no backend type: a module prepares the upstream request — URL, credential
+// (bearer, apiKey or its own header), its own body edits, the error codes that mean a
+// missing model, its server's answer to a path it does not have, whether the endpoint
+// is one of its type's core ones, its server's answer that it was not started in the
+// endpoint's mode — and hands it to sendWire, which applies the edits every request
+// gets (passthroughBody); its probe reads the models list with fetchModelsList.
 
 // wireCall is one upstream request a backend module prepared.
 type wireCall struct {
