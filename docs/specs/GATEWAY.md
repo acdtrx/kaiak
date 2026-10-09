@@ -1863,14 +1863,20 @@ own, and a client sending repeats is broken either way.
   `completion_tokens_details.reasoning_tokens` → `tokens_reasoning`. Missing detail
   fields count 0; inconsistent ones are clamped — cached ≤ prompt first, then
   written ≤ prompt − cached, so the three input units always add up to
-  `prompt_tokens`; reasoning ≤ completion. Embeddings count `prompt_tokens` only.
+  `prompt_tokens`; reasoning ≤ completion. Embeddings count `prompt_tokens` only,
+  and a `usage` without it (absent or null) is no report — estimated and flagged
+  (Estimation, below) whatever else it carries, `completion_tokens` included
+  (settled 2026-10-09): an answer that generates nothing has no other count.
+  Rejected: reading the absent count as 0 — a `usage: {completion_tokens: 0}` would
+  settle as exact zero usage, unflagged and free.
 - **Rerank usage** (settled 2026-10-08): the answer's top-level `usage`, as for
   embeddings — `prompt_tokens` → `tokens_in`, every other unit 0: nothing is
   generated, and neither server reports cache detail there. vLLM (0.30.0 through
   `main`) and llama-server (`master`, build b11513) both send `usage:
   {prompt_tokens, total_tokens}`, counting every pair's tokens, the template
-  included. An answer without it is estimated and flagged by the usual rule
-  (Estimation, below). Priced through the model's `prices` on `tokens_in`, like
+  included. An answer without it, or whose `usage` has no `prompt_tokens`, is
+  estimated and flagged by the usual rule (Estimation, below; as for embeddings,
+  settled 2026-10-09). Priced through the model's `prices` on `tokens_in`, like
   embeddings; no new unit.
 - **Messages usage** (settled 2026-10-06): a body's top-level `usage`; a stream's
   `message_start.message.usage`, then each `message_delta.usage`, the latest value

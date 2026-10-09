@@ -81,9 +81,9 @@ type usageReport struct {
 }
 
 // parse maps a usage object onto the units: prompt_tokens includes the cache and
-// completion_tokens the reasoning (inclusiveUnits). Embeddings count prompt tokens
-// only (promptOnlyUnits). A null, missing or malformed usage, or one with neither
-// token count, is no report.
+// completion_tokens the reasoning (inclusiveUnits). A null, missing or malformed
+// usage, or one with neither token count, is no report. Embeddings count prompt
+// tokens only, and a usage without them is no report (promptOnlyUnits).
 func (u *openAIUsage) parse(raw json.RawMessage) (Units, bool) {
 	if u.endpoint == provider.Embeddings {
 		return promptOnlyUnits(raw)
@@ -114,11 +114,12 @@ func decodeUsageReport(raw json.RawMessage) (usageReport, bool) {
 
 // promptOnlyUnits maps the OpenAI-shaped usage object of an answer that generates
 // nothing — embeddings, rerank (docs/specs/GATEWAY.md, Accounting) — onto the units:
-// prompt_tokens as tokens_in, every other unit 0. A null, missing or malformed usage,
-// or one with neither prompt_tokens nor completion_tokens, is no report.
+// prompt_tokens as tokens_in, every other unit 0. prompt_tokens is the only count
+// such an answer has: a usage without it (absent or null) is no report whatever else
+// it carries, completion_tokens included, as is a null, missing or malformed usage.
 func promptOnlyUnits(raw json.RawMessage) (Units, bool) {
 	r, ok := decodeUsageReport(raw)
-	if !ok || (r.PromptTokens == nil && r.CompletionTokens == nil) {
+	if !ok || r.PromptTokens == nil {
 		return nil, false
 	}
 	return withEveryTokenUnit(Units{config.UnitTokensIn: nonNegative(r.PromptTokens)}), true

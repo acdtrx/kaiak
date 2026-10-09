@@ -8,10 +8,11 @@ import (
 	"kaiak/internal/provider"
 )
 
-// A rerank answer's usage is its top-level prompt_tokens, as tokens_in alone; without
-// a report the input is estimated and the record flagged, and the output is 0 however
-// much the results carry: nothing is generated (docs/specs/GATEWAY.md, Accounting →
-// rerank usage).
+// A rerank answer's usage is its top-level prompt_tokens, as tokens_in alone; a usage
+// without prompt_tokens is no report, whatever else it carries. Without a report the
+// input is estimated and the record flagged, and the output is 0 however much the
+// results carry: nothing is generated (docs/specs/GATEWAY.md, Accounting → rerank
+// usage).
 func TestRerankUsage(t *testing.T) {
 	const requestBytes = 41 // → 11 tokens
 	results := `"results":[{"index":1,"document":{"text":"` + strings.Repeat("a panda eats bamboo ", 50) + `"},"relevance_score":0.9},` +
@@ -34,6 +35,9 @@ func TestRerankUsage(t *testing.T) {
 		{"null", `{"model":"m","usage":null,` + results + `}`, estimated, Flags{Estimated: true}},
 		{"malformed", `{"model":"m","usage":{"prompt_tokens":"many"},` + results + `}`, estimated, Flags{Estimated: true}},
 		{"neither count", `{"model":"m","usage":{"total_tokens":40},` + results + `}`, estimated, Flags{Estimated: true}},
+		{"completion tokens alone", `{"model":"m","usage":{"completion_tokens":0},` + results + `}`, estimated, Flags{Estimated: true}},
+		{"completion tokens alone, not 0", `{"model":"m","usage":{"completion_tokens":7},` + results + `}`, estimated, Flags{Estimated: true}},
+		{"null prompt tokens", `{"model":"m","usage":{"prompt_tokens":null,"completion_tokens":0},` + results + `}`, estimated, Flags{Estimated: true}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			units, flags := bodyMeter(provider.Rerank, requestBytes, 200, c.body).Settle(true)
@@ -108,5 +112,31 @@ func TestEstimateRerankInput(t *testing.T) {
 	body := `{"model":"m","query":` + query + `,"documents":["a","b","c","d"],"input":"x"}`
 	if got, want := EstimateInput(provider.Embeddings, []byte(body)).Total, text(body); got != want {
 		t.Errorf("embeddings with query and documents: total %d, want %d", got, want)
+	}
+}
+
+// A query of any JSON value adds its own estimate once more for each document beyond
+// the first, measured from its value's first byte; documents of any shape count one
+// per element (docs/specs/GATEWAY.md, Limits → the input estimate: rerank).
+func TestEstimateRerankInputOfAnyQueryAndDocuments(t *testing.T) {
+	text := func(s string) int64 { return EstimateTokens(int64(len(s))) }
+	queries := map[string]string{
+		"null":                    `null`,
+		"false":                   `false`,
+		"a number past int64":     `123456789012345678901234567890`,
+		"escapes":                 `"a\\\"b"`,
+		"an object, repeated key": `{"x":["a",{"x":"b","x":"c"}]}`,
+		"deeply nested":           strings.Repeat("[", 9998) + `"q"` + strings.Repeat("]", 9998),
+	}
+	for qname, query := range queries {
+		for _, documents := range []string{`["a","b","c"]`, `[null,{},[1,2,3]]`} {
+			t.Run(qname+" "+documents, func(t *testing.T) {
+				body := `{"model":"m","query":` + query + `,"documents":` + documents + `}`
+				want := InputEstimate{Total: text(body) + 2*text(query), LargestPrompt: text(body)}
+				if got := EstimateInput(provider.Rerank, []byte(body)); got != want {
+					t.Errorf("EstimateInput = %+v, want %+v", got, want)
+				}
+			})
+		}
 	}
 }

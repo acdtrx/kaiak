@@ -4,9 +4,10 @@ import "encoding/json"
 
 // rerankUsage reads rerank answers (docs/specs/GATEWAY.md, Accounting → rerank usage):
 // a body's top-level usage, as for embeddings — prompt_tokens as tokens_in, nothing
-// else. A rerank answer generates nothing, so one without usage estimates no output;
-// it is never a stream, and an event stream answering a rerank request carries
-// nothing the meter reads.
+// else; a usage without prompt_tokens is no report (promptOnlyUnits). A rerank answer
+// generates nothing, so one without a report estimates no output; it is never a
+// stream, and an event stream answering a rerank request carries nothing the meter
+// reads.
 type rerankUsage struct {
 	latestReport
 }

@@ -224,21 +224,37 @@ func TestRerankRefusesTEIFormat(t *testing.T) {
 	}
 }
 
-// A rerank answer without usage settles the request's input estimate, flagged
-// estimated, and no output: nothing is generated (docs/specs/GATEWAY.md, Accounting).
+// A rerank answer without usage, or with a usage that has no prompt_tokens, settles
+// the request's input estimate, flagged estimated and priced, and no output: nothing
+// is generated (docs/specs/GATEWAY.md, Accounting).
 func TestRerankUsageMissingIsEstimated(t *testing.T) {
-	g := newTestGateway(t)
-	withRerankModels(t, g)
-	g.backend.SetReply(fakebackend.Reply{OmitUsage: true})
-	body := `{"model":"reranker","query":"what is a panda","documents":["the sky is blue","a panda is a bear","bamboo"]}`
-	if w := do(t, g.h, call{method: "POST", path: "/v1/rerank", key: workloadKey, body: body}); w.Code != http.StatusOK {
-		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	for _, c := range []struct {
+		name  string
+		reply fakebackend.Reply
+	}{
+		{"no usage", fakebackend.Reply{OmitUsage: true}},
+		{"completion tokens alone", fakebackend.Reply{Status: http.StatusOK,
+			Body: `{"model":"reranker-back","results":[{"index":0,"relevance_score":0.9}],"usage":{"completion_tokens":0}}`}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			g := newTestGateway(t)
+			withRerankModels(t, g)
+			g.backend.SetReply(c.reply)
+			body := `{"model":"reranker","query":"what is a panda","documents":["the sky is blue","a panda is a bear","bamboo"]}`
+			if w := do(t, g.h, call{method: "POST", path: "/v1/rerank", key: workloadKey, body: body}); w.Code != http.StatusOK {
+				t.Fatalf("status %d: %s", w.Code, w.Body.String())
+			}
+			input := accounting.EstimateInput(provider.Rerank, []byte(body)).Total
+			if body := accounting.EstimateTokens(int64(len(body))); input <= body {
+				t.Fatalf("estimate %d, want the body's %d and the query twice more", input, body)
+			}
+			rec := onlyRecord(t, g)
+			expectUnits(t, rec, units(input, 0, 0, 0, 0), true, false)
+			if want := input * 2_000; rec.CostNanoUSD != want {
+				t.Errorf("cost %d nano-USD, want %d (%d × $2/M)", rec.CostNanoUSD, want, input)
+			}
+		})
 	}
-	input := accounting.EstimateInput(provider.Rerank, []byte(body)).Total
-	if body := accounting.EstimateTokens(int64(len(body))); input <= body {
-		t.Fatalf("estimate %d, want the body's %d and the query twice more", input, body)
-	}
-	expectUnits(t, onlyRecord(t, g), units(input, 0, 0, 0, 0), true, false)
 }
 
 // A rerank request is never a stream, whatever its stream member says: the backend's

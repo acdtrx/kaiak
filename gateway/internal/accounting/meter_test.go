@@ -159,6 +159,16 @@ func TestMissingUsageIsEstimatedFromContent(t *testing.T) {
 		units, flags := bodyMeter(provider.Embeddings, requestBytes, 200, body).Settle(true)
 		expect(t, units, flags, withEveryTokenUnit(Units{config.UnitTokensIn: 11}), Flags{Estimated: true})
 	})
+	t.Run("embeddings: a usage without prompt tokens is no usage", func(t *testing.T) {
+		for _, usage := range []string{`{"completion_tokens":0}`, `{"completion_tokens":7}`,
+			`{"prompt_tokens":null,"completion_tokens":0}`, `{"total_tokens":40}`} {
+			t.Run(usage, func(t *testing.T) {
+				body := `{"object":"list","data":[{"embedding":[0.1,0.2]}],"usage":` + usage + `}`
+				units, flags := bodyMeter(provider.Embeddings, requestBytes, 200, body).Settle(true)
+				expect(t, units, flags, withEveryTokenUnit(Units{config.UnitTokensIn: 11}), Flags{Estimated: true})
+			})
+		}
+	})
 	t.Run("malformed usage is no usage", func(t *testing.T) {
 		body := `{"choices":[{"text":"abcd"}],"usage":{"total_tokens":"many"}}`
 		units, flags := bodyMeter(provider.Completions, requestBytes, 200, body).Settle(true)
