@@ -84,7 +84,10 @@ planning):
 11. **URLs and file paths are refused** in fields that make the server fetch or read:
     speech's reference audio (`ref_audio` and its variants, step 1) and image
     generation's `lora` (an adapter path, confirmed at step 1 review). Inline data
-    only.
+    only. **Speech's `extra_params` is refused outright** (step 11 review,
+    2026-10-10): vLLM-Omni hands it to the model, and IndexTTS2 fetches
+    `extra_params.emo_audio` like `ref_audio`; the gateway cannot know which keys a
+    model fetches, and judging values by how they look is rejected.
 12. **New global caps**, as `max_embedding_inputs`:
     - images per request, default 10;
     - speech batch items, default 32.
@@ -96,8 +99,12 @@ Made while planning (confirm in review):
     - `stream` and `stream_format`, which together pick the mode: whole clip, SSE, or
       raw audio;
     - `response_format` (`wav` or `pcm`; anything else refused);
-    - `max_new_tokens`, the output-limit key (the model's `output_limit` default and
-      ceiling, bounded by `context_length`);
+    - `max_new_tokens`, the output-limit key: a client's value is refused above the
+      model's ceiling (bounded by `context_length`), but **no default is injected**
+      (step 11 review, 2026-10-10) — an injected value switches off vLLM-Omni's
+      text-scaled budget and retry, and a reached `max_new_tokens` on Qwen3-TTS voice
+      cloning answers `500`, a circuit failure the gateway's own default would cause.
+      Limits still reserve the model's default figure;
     - `ref_audio` (no URLs or paths);
     - `sample_rate`, read to measure PCM.
 
@@ -106,7 +113,10 @@ Made while planning (confirm in review):
     - `model`;
     - `items`, counted against the cap;
     - each item's and the batch's `response_format`, `ref_audio` and `max_new_tokens`,
-      with the same rules as speech.
+      with the same rules as speech (no injected default);
+    - each errored item's `error` text replaced with the gateway's own message, its
+      `index` and `status` kept (step 11 review, 2026-10-10), as 5xx bodies and error
+      events are: vLLM-Omni's text can name GPU errors and the backend-side model.
 15. **Image generation's owned fields:**
     - `model`;
     - `n`, against the cap and reserved;
