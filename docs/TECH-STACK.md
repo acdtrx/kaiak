@@ -188,7 +188,12 @@
 - **Lint**: `gofmt`, `go vet` and **staticcheck** (settled 2026-09-24). staticcheck runs
   as `go run honnef.co/go/tools/cmd/staticcheck@<pinned version>` from a script: fetched
   once into the module cache, never listed in `go.mod`, never in the binary — a
-  tool, not a dependency.
+  tool, not a dependency. It runs on the Go version `go.mod` names (`GOTOOLCHAIN`),
+  as CI does (settled 2026-10-09): a newer local toolchain can write export data the
+  pinned staticcheck cannot read — Go 1.27.2 did, against staticcheck 2026.2.1
+  (dominikh/go-tools#1832) — and a lint should not depend on which Go a machine has
+  installed. Raising `go.mod`'s version is the deliberate step that needs a
+  staticcheck reading it.
 
 ### Go rules (apply in `gateway/`)
 

@@ -24,8 +24,13 @@ lint() {
 	echo "==> go vet ($1)"
 	go vet -tags crosshalf ./...
 
-	echo "==> staticcheck ${STATICCHECK_VERSION} ($1)"
-	go run "honnef.co/go/tools/cmd/staticcheck@${STATICCHECK_VERSION}" -tags crosshalf ./...
+	# staticcheck runs on the Go version go.mod names, as CI does (docs/TECH-STACK.md,
+	# Lint): a newer local toolchain can write export data the pinned staticcheck
+	# cannot read yet.
+	local go_version
+	go_version=$(go list -m -f '{{.GoVersion}}')
+	echo "==> staticcheck ${STATICCHECK_VERSION} on go${go_version} ($1)"
+	GOTOOLCHAIN="go${go_version}" go run "honnef.co/go/tools/cmd/staticcheck@${STATICCHECK_VERSION}" -tags crosshalf ./...
 }
 
 cd "$root/gateway"
