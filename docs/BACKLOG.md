@@ -65,6 +65,12 @@ Group entries under headings as themes emerge.
   generation first, then uploads with image edits and transcription. Planned after
   the rerank plan merges. Video and WebSocket endpoints stay out (revisit trigger: a
   user needs video generation through the gateway).
+- **Measuring compressed speech audio** — speech output is WAV or PCM only, because
+  kaiak measures `audio_seconds_out` from the header or sample rate and the bytes
+  (ruled 2026-10-09, `docs/plans/media-generation/RESEARCH.md`); MP3, FLAC, Opus and
+  AAC are refused. Accepting them needs a small parser per format for its length
+  (MP3 frame headers, FLAC's STREAMINFO, Ogg Opus's last granule position), standard
+  library only. Revisit trigger: someone asks for a compressed speech format.
 - **Reasoning-effort discovery** — read the supported `reasoning_efforts` from backends
   instead of declaring them. No backend reports the list today: llama-server's `/props`
   has only a yes/no (`chat_template_caps.supports_reasoning_effort`), vLLM and cloud
