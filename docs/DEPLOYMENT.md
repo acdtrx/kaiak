@@ -360,20 +360,23 @@ default builder), `KAIAK_IMAGE_REPO` (required: the registry and namespace, e.g.
 
 ## Clients
 
-- **Four client APIs on the one API port** (`GATEWAY.md` → Client API): OpenAI's
+- **The client APIs on the one API port** (`GATEWAY.md` → Client API): OpenAI's
   chat completions, completions, embeddings and models; Anthropic Messages
   (`/v1/messages`, `/v1/messages/count_tokens`, and `/v1/models` in Anthropic's shape
   when the request carries `anthropic-version`); OpenAI Responses (`/v1/responses`,
-  `/v1/responses/input_tokens`); rerank (`/v1/rerank`; Rerankers, below). One key
-  works on all of them, as `Authorization: Bearer` or `x-api-key`.
+  `/v1/responses/input_tokens`); rerank (`/v1/rerank`; Rerankers, below); speech
+  (`/v1/audio/speech`, and vLLM-Omni's `/v1/audio/speech/batch`) and image
+  generation (`/v1/images/generations`; Speech and images, below). One key works on
+  all of them, as `Authorization: Bearer` or `x-api-key`.
 - **Passthrough only** (settled 2026-10-06): a request reaches only the deployments
   whose backend type serves its endpoint (`GATEWAY.md` → Providers: Endpoint
   support); a model with none answers `400 endpoint_not_served`. So a Claude model on
   `anthropic` or `azure-anthropic` is reachable through Messages only, an OpenAI or
   Azure OpenAI model through OpenAI's endpoints and Responses, a vLLM or
-  llama-server model through all four. `/v1/models` lists each model's
-  `endpoints`. Responses `input_tokens` is served by `llama-server` and `openai`
-  only, rerank by `vllm` and `llama-server` only.
+  llama-server model through all four, a vLLM-Omni model through speech, the speech
+  batch and image generation only. `/v1/models` lists each model's `endpoints`.
+  Responses `input_tokens` is served by `llama-server` and `openai` only, rerank by
+  `vllm` and `llama-server` only, the media endpoints by `vllm-omni` only.
 - **Responses is stateless**: every request goes out with `store: false`, and
   `previous_response_id`, `conversation` and `background` are refused — clients
   send the whole conversation each turn. **Tools a backend would run** (web search,
@@ -395,7 +398,8 @@ default builder), `KAIAK_IMAGE_REPO` (required: the registry and namespace, e.g.
   (`GATEWAY.md` → Providers: An endpoint missing from a server): the server's
   version (vLLM before `/v1/messages`: upgrade it); the model it loaded — vLLM
   creates its routes from it, so a chat request sent to a reranker or embedding
-  model, or a rerank request to a chat model, finds none; or its flags —
+  model, or a rerank request to a chat model, finds none, and vLLM-Omni serving a
+  speech model answers an image request `503` (no diffusion stage); or its flags —
   llama-server not started with `--reranking` (or `--embeddings`) answers rerank (or
   embeddings) `501`. **A wrong `base_url` on a `vllm` backend** shows the same way —
   the config-apply warning `the backend has no models list at its base_url` and the
@@ -413,18 +417,20 @@ example: `examples/config.json`. Twenty hosts × a few models is repetitive — 
 the document (a script, or the control plane) rather than editing it by hand.
 
 - **A backend's `type` is its server's** (`GATEWAY.md` → Providers): `vllm`,
-  `llama-server` (llama.cpp), `openai` (OpenAI's API, `https://api.openai.com/v1`),
-  `azure-openai` (Azure OpenAI, below), `anthropic` and `azure-anthropic` (Claude,
-  below), and `openai-compatible` only for a server without a type of its own
-  (SGLang, …). A backend answers the same under any of the OpenAI-format types, but
-  only its own type carries that server's rules — and **the type decides which client
-  APIs reach the model** (Clients, below): `openai-compatible` serves OpenAI's chat,
+  `vllm-omni` (vLLM-Omni: Speech and images, below), `llama-server` (llama.cpp),
+  `openai` (OpenAI's API, `https://api.openai.com/v1`), `azure-openai` (Azure
+  OpenAI, below), `anthropic` and `azure-anthropic` (Claude, below), and
+  `openai-compatible` only for a server without a type of its own (SGLang, …). A
+  backend answers the same under any of the OpenAI-format types, but only its own
+  type carries that server's rules — and **the type decides which client APIs reach
+  the model** (Clients, below): `openai-compatible` serves OpenAI's chat,
   completions and embeddings only, so a vLLM or llama-server host listed under it
   loses Messages, Responses and rerank. `openai`
   and `azure-openai` require `api_key_env` and **force the standard service tier**: a
   client's `service_tier` becomes `"default"` and every chat and Responses request
-  carries it, so requests are billed at the standard rates `prices` holds. `vllm`, `llama-server`
-  and `openai-compatible` pass the client's `service_tier` untouched and add none —
+  carries it, so requests are billed at the standard rates `prices` holds. `vllm`,
+  `vllm-omni`, `llama-server` and `openai-compatible` pass the client's
+  `service_tier` untouched and add none —
   **an OpenAI deployment kept as `openai-compatible` runs on the tier the client asks
   for, or the project's own**, and priority bills about twice the configured prices.
   The sample's `verify` (`kaiak-control`'s `verifyBackend`) notes a vLLM or
@@ -444,9 +450,11 @@ the document (a script, or the control plane) rather than editing it by hand.
   sequence**: a completions request with a prompt list, or `n`/`best_of` above 1,
   generates several sequences in the one slot — up to
   `global.max_sequences_per_request` (default 16), an embeddings request carries
-  up to `global.max_embedding_inputs` (default 2048) inputs, and a rerank request
+  up to `global.max_embedding_inputs` (default 2048) inputs, a rerank request
   up to `global.max_rerank_documents` (default 1000) documents, each scored with the
-  query. Size `max_in_flight`
+  query, an image request up to `global.max_images_per_request` (default 10) images
+  and a speech batch up to `global.max_speech_batch_items` (default 32) items. Size
+  `max_in_flight`
   with that in mind (below `--max-num-seqs` when clients batch), and keep the
   backend's own batch limits in place — vLLM's `--max-num-seqs` and
   `--max-num-batched-tokens`, llama-server's `--parallel` and `--batch-size` — as the
@@ -491,12 +499,15 @@ the document (a script, or the control plane) rather than editing it by hand.
 - **`global.max_n`** (default 8): the largest `n`/`best_of` a request may ask for;
   the token reservation multiplies by it, so keep it low.
 - **`global.max_sequences_per_request`** (default 16),
-  **`global.max_embedding_inputs`** (default 2048, OpenAI's own limit) and
+  **`global.max_embedding_inputs`** (default 2048, OpenAI's own limit),
   **`global.max_rerank_documents`** (default 1000, the most Cohere's rerank API
-  recommends): what one request may make a backend generate, embed or score in its
-  one slot (`n` or `best_of` × a completion's prompts; an embeddings request's
-  inputs; a rerank request's documents), past them `400 invalid_value`. Raise them
-  only as far as the backends' own batch limits allow.
+  recommends), **`global.max_images_per_request`** (default 10) and
+  **`global.max_speech_batch_items`** (default 32, vLLM-Omni's own maxima): what
+  one request may make a backend generate, embed or score in its one slot (`n` or
+  `best_of` × a completion's prompts; an embeddings request's inputs; a rerank
+  request's documents; an image request's `n`; a speech batch's items), past them
+  `400 invalid_value`. Raise them only as far as the backends' own batch limits
+  allow.
 - **`global.max_concurrent_requests_per_key`** (default 16): the most requests one
   key may have open at once on one gateway, past it `429
   concurrency_limit_exceeded`. Per gateway, so N replicas allow N × it. Raise it
@@ -516,13 +527,14 @@ the document (a script, or the control plane) rather than editing it by hand.
   the default, so it can loosen it. Put a hard restriction for a
   subtree — the models and budget no person under `users` may exceed — on the
   parent's **own** `allowed_models` and `limits`, which bind every group below it.
-- **Counters are bounded at 50 000** (`counters-exceeded`): every gateway keeps an
-  hour and a month counter for global and for every group, limited or not, plus one
+- **Counters are bounded at 50 000** (`counters-exceeded`): every gateway keeps five
+  counters for global and for every group, limited or not — the hour counts of
+  tokens, images, audio generated and audio processed, and the USD month — plus one
   counter per effective per-minute limit (a group's own merged with its parent's
   `child_defaults.limits`). A per-minute counter is about 1.4 KB and an hour or month
   one a few hundred bytes, so the bound keeps counters under about 70 MB of heap per
   pod (part of the headroom in Resources). Groups and defaults multiply: 5 000 people
-  under a `users` group with 2 default per-minute limits are 20 000 counters.
+  under a `users` group with 2 default per-minute limits are 35 000 counters.
 - **A group ID used again resumes its spend**: a group deleted and created again with
   the same ID (a move included) within the hour or month gets that window's spend
   back. Use a new ID for a fresh budget.
@@ -684,6 +696,149 @@ the document (a script, or the control plane) rather than editing it by hand.
   (`docs/testing/LIVE-BACKENDS.md`, Reranker on a server of its own): it checks the
   answer, the relevance order, the usage, the oversize refusal and the
   endpoint-missing answers on the real server.
+
+## Speech and images
+
+- **Speech, the speech batch and image generation reach `vllm-omni` backends only,
+  and `vllm-omni` serves nothing else** (`GATEWAY.md` → Providers: Endpoint
+  support): `POST /v1/audio/speech` — the whole clip, an SSE stream
+  (`stream: true` or `stream_format: "sse"`) or the raw-audio stream
+  (`stream_format: "audio"`) — vLLM-Omni's `POST /v1/audio/speech/batch`, and
+  `POST /v1/images/generations`. Chat, completions, embeddings, Messages, Responses
+  and rerank to a model on `vllm-omni` answer `400 endpoint_not_served`: vLLM-Omni's
+  chat on an image model generates images, and on an Omni model with a talker it
+  speaks, which no image or audio limit would see. Keep chat models on `vllm`. Image
+  edits, transcription, video, the voices endpoints and vLLM-Omni's WebSocket
+  endpoints are not served.
+- **One backend per model**: one vLLM-Omni process serves one model. A
+  deployment's `model` is the name the server lists (its `--served-model-name`, else
+  the model path): image generation compares a request's model with it and answers
+  `400 Model mismatch` otherwise, read as `502 upstream_model_missing`, a circuit
+  failure. An image request sent to a speech model's server answers `503` (no
+  diffusion stage), read as the endpoint missing — neutral, the deployment keeps
+  serving speech (Clients).
+- **What the gateway accepts** (`GATEWAY.md` → Client API: owned fields; the rest of
+  a request passes through — `voice`, `instructions`, `language`, `task_type`,
+  `seed`, `size`, `negative_prompt`, `num_inference_steps`, …):
+  - **Speech audio is WAV or PCM.** `response_format` `wav` (the default) or `pcm`;
+    `mp3`, `flac`, `opus` and `aac` are refused, `400 response_format_unsupported`
+    — the gateway measures the seconds of WAV and PCM only.
+  - **PCM needs `sample_rate`** (`400 missing_required_parameter` without it): PCM
+    has no header saying its rate, and models differ (24 kHz, 44.1 kHz, 22.05 kHz,
+    32 kHz stereo). Only Qwen3-TTS (8000 or 24000) and Breeze-TTS-2 (24000) take a
+    `sample_rate`; Fish Speech, Gepard and the others refuse one, so their clients
+    use WAV, which works on every model.
+  - **Reference audio inline only**: `ref_audio`, `ref_audio_2`, a `references`
+    entry's `audio_path`, a batch's or item's `ref_audio` must be a `data:` URL; a
+    URL or a file path is refused, `400 external_reference_unsupported` — the server
+    would fetch or read it on the client's behalf. Inline audio counts toward
+    `max_request_body_bytes` (Config for many hosts), base64 a third larger than the
+    file: ten seconds of 24 kHz 16-bit mono WAV is about 640 KB as base64.
+  - **Images as `b64_json` only**: `response_format` `url` and `file` are refused
+    (`400 response_format_unsupported`), and so is `lora` (`400
+    external_reference_unsupported`: it names an adapter path on the server).
+  - **The caps**: an image request's `n` at most `global.max_images_per_request`,
+    a speech batch's items at most `global.max_speech_batch_items` (Config for many
+    hosts). Keep the batch cap at or below the server's `tts_batch_max_items` (32 by
+    default): past it the server refuses what the gateway admitted.
+- **Timeouts**: the whole clip, the speech batch and image generation are
+  non-stream requests, bounded by `response_timeout_ms` (30 min by default) and not
+  retried once it runs out; the raw-audio and SSE streams take the stream timeouts
+  (Config for many hosts: Timeouts). An ingress in front must allow a large image's
+  generation time too.
+- **Output limit** (speech only): `max_new_tokens` is speech's output-limit key —
+  the codec tokens a model generates, the audio's length. Keep `output_limit`
+  within the server's bound for the model (1 to 4096 for most, vLLM-Omni's default
+  2048) and within `context_length`. The gateway writes the default into every
+  speech request that sets none, which costs Qwen3-TTS voice cloning (`task_type:
+  "Base"`) vLLM-Omni's own budget scaled to the text and its one retry of a clone
+  that ran to its budget without ending: declare a Base model without
+  `output_limit` to keep them. Image generation has no output limit.
+- **Usage**: speech records the tokens vLLM-Omni reports — from the whole clip's
+  `x-vllm-omni-*` response headers (never relayed to the client), SSE's
+  `speech.audio.done`, each batch item's usage — and estimates them, flagged, on the
+  raw-audio stream, which reports none. In every mode the gateway measures the
+  audio it relays (`audio_seconds_out`, rounded up to a whole second once per
+  record); a client gone mid-clip settles the seconds sent. An image record counts
+  `images`, the answer's `data[]` — a layered model answers one image per layer,
+  more than `n` — with the prompt's tokens estimated. Token prices apply to the
+  tokens; images and seconds of audio are never priced (`docs/BACKLOG.md`, Pricing
+  media units).
+- **Limits**: `images_per_minute` and `images_per_hour`,
+  `audio_seconds_out_per_minute` and `audio_seconds_out_per_hour` (and
+  `audio_seconds_in_*` for audio processed, which no endpoint produces yet), each
+  scope at most one of each — per minute on each gateway's share, per hour through
+  the control plane's totals, as tokens. An image request reserves its `n` and
+  settles the answer's count; audio generated is known only once it is sent, so an
+  audio limit admits requests while its window is below its value, and the clips
+  then in flight can take it past. A layered image answer can take an image window
+  past its value too. A media limit refuses only requests of
+  its unit: a spent audio window stops speech, not chat. Refusals are `429` with
+  type `images` or `audio_seconds` and `Retry-After`, without `x-ratelimit-*`
+  headers. Token limits apply to speech as to chat, reserving the input estimate
+  plus `max_new_tokens` (each item's, summed, in a batch).
+- **Where the units show**: every usage record carries `images`,
+  `audio_seconds_out` and `audio_seconds_in` (zeros included); the request line
+  `gen_ai.operation.name` `generate_content`, `gen_ai.output.type` `speech` or
+  `image`, and `kaiak.usage.images` or `kaiak.usage.audio.output.duration` when not
+  0; the metrics `kaiak_usage_images_total` and
+  `kaiak_usage_audio_output_duration_seconds_total` (and
+  `kaiak_usage_audio_input_duration_seconds_total`), with `gen_ai_output_type`
+  among the usage labels, and the limit refusals in `kaiak_limit_rejections_total`
+  by `kaiak_limit_type`; the sample control plane's page names each limit's unit in
+  its totals and shows images and seconds of audio in recent usage.
+- **Installing vLLM-Omni** (its `docs/getting_started/` at v0.30.0, the latest
+  release on 2026-10-09): Linux, Python 3.12, in a virtual environment of its own
+  with the vLLM release it is built for — vLLM-Omni 0.30.0 runs on vLLM 0.30.x and
+  warns when the two differ — so the chat servers' vLLM upgrades on its own
+  schedule. `vllm serve … --omni` hands the command to vLLM-Omni.
+
+  ```sh
+  uv venv --python 3.12 --seed /opt/vllm-omni && source /opt/vllm-omni/bin/activate
+  uv pip install vllm==0.30.0 --torch-backend=auto
+  uv pip install vllm-omni==0.30.0
+  ```
+
+  Or the image `vllm/vllm-omni:v0.30.0`, with `vllm serve … --omni` after the image
+  name (it has no default entrypoint).
+- **Serving Qwen3-TTS** (vLLM-Omni's `docs/serving/speech_api.md` at v0.30.0):
+
+  ```sh
+  vllm serve Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice --omni --port 8091 \
+    --trust-remote-code --enforce-eager
+  ```
+
+  - CustomVoice speaks preset voices (`voice`, `vivian` by default), VoiceDesign a
+    voice described in `instructions`, Base clones a reference voice (inline
+    `ref_audio` and its `ref_text`) — a checkpoint each; the 0.6B CustomVoice and
+    Base ones are smaller.
+  - vLLM-Omni runs Qwen3-TTS from its bundled deploy config (`qwen3_tts.yaml`):
+    two stages, each taking 0.3 of GPU 0's memory. `--deploy-config` names
+    another, `--stage-overrides` changes a stage's settings, such as
+    `'{"0":{"gpu_memory_utilization":0.2},"1":{"gpu_memory_utilization":0.2}}'`.
+  - Native audio is 24 kHz mono; `sample_rate` 8000 resamples it.
+- **Serving Qwen-Image** (vLLM-Omni's `docs/serving/image_generation_api.md` at
+  v0.30.0):
+
+  ```sh
+  vllm serve Qwen/Qwen-Image --omni --port 8092
+  ```
+
+  - Qwen-Image takes a prompt of at most 1024 tokens (`tokenizer_max_length` in
+    vLLM-Omni's pipeline): declare `context_length` 1024.
+  - `n` is 1 to 10; `size`, `num_inference_steps`, `guidance_scale`,
+    `true_cfg_scale`, `negative_prompt` and `seed` pass through to the pipeline,
+    whose defaults apply when they are absent.
+- **The config**: a `vllm-omni` backend per server, `base_url` with `/v1`
+  (`http://omni-tts:8091/v1`); the example's `qwen3-tts` and `qwen-image` models
+  (`examples/config.json`) and its `users` defaults (`images_per_hour`,
+  `audio_seconds_out_per_hour`). Every capability `false` but `streaming` for
+  speech (`vision` is images taken in).
+- **Before go-live, run the live kit** with both servers
+  (`docs/testing/LIVE-BACKENDS.md`, Speech and images on vLLM-Omni): it checks each
+  speech mode, that the seconds the gateway counts match the audio, the batch,
+  images, the caps, the media limits and the endpoint-missing reading on the real
+  servers — again after every vLLM-Omni upgrade or new speech model.
 
 ## Azure OpenAI
 
@@ -848,9 +1003,10 @@ the document (a script, or the control plane) rather than editing it by hand.
   no threshold is known yet.
 - **Cardinality** (`GATEWAY.md` → Observability: Cardinality): usage series per
   replica ≈ `label sets × models used × operations × providers × 2 statuses × 7`
-  (records, cost and the five token counters; a model is usually used for one
-  operation through one provider). 500 keys using 3 models each: 21,000 series per
-  replica, × the replicas for the store's total. When it
+  (records, cost and the five token counters; a speech or image model one more, its
+  unit's; a model is usually used for one operation through one provider). 500
+  keys using 3 models each: 21,000 series per replica, × the replicas for the
+  store's total. When it
   outgrows the metrics store, switch `global.metrics.key_id_label` off first (one
   label set per group that owns keys — no gain when every key has its own group),
   then `global.metrics.group_label` (one per top-level group, as
@@ -878,7 +1034,9 @@ the document (a script, or the control plane) rather than editing it by hand.
   `error.type` is `client_closed`), `kaiak.request.duration` and
   `kaiak.time_to_first_token` for streams (seconds), the `gen_ai.usage.*` token
   counts (`gen_ai.usage.input_tokens` is all input, cache reads and writes
-  included) and, on failure, `error.type`; never keys, prompts or responses. A
+  included), `kaiak.usage.images` and `kaiak.usage.audio.output.duration` for
+  media, and, on failure, `error.type`; never keys, prompts, responses, audio or
+  images. A
   limit refusal names the limit (`kaiak.limit.scope`, `kaiak.limit.group`,
   `kaiak.limit.type`, `kaiak.limit.enforced`, `kaiak.limit.configured`,
   `kaiak.limit.used`, `kaiak.limit.requested`); a relayed backend `4xx` carries
@@ -1049,8 +1207,8 @@ before priced models are refused. Scale the 300 with the grace if you change it.
 | Running a config the control plane moved off | ticket | `max(kaiak_control_config_rejected) == 1` | 15m | A gateway rejected the control plane's current config and runs an earlier one — its status `last_rejection` says which and why. It still enforces its own limits on the control plane's totals; it clears when the gateway applies a later config or receives the one it runs again. |
 | Circuit open | ticket | `max by (kaiak_backend_id, kaiak_deployment_model) (kaiak_circuit_state{kaiak_circuit_state="open"}) == 1` | 5m | A deployment is out of rotation, its backend failing the probe; the model's other deployments carry its load (none left: No healthy deployment pages). A half-open circuit (the backend answers its probe; the next request is the trial) reads 0 here and 1 on `kaiak_circuit_state="half_open"`: a recovered deployment with no traffic stays half-open indefinitely and must not alert. |
 | Circuit flapping | ticket | `max by (kaiak_backend_id, kaiak_deployment_model) (increase(kaiak_circuit_transitions_total{kaiak_circuit_state="open"}[30m])) > 3` | — | Probes half-open it and trials fail (the host answers its models list but cannot serve), or its models list comes and goes (a failed probe re-opens a half-open circuit). |
-| Wrong model, path or credential | ticket | `sum by (kaiak_backend_id, kaiak_deployment_model, kaiak_attempt_outcome) (increase(kaiak_upstream_attempts_total{kaiak_attempt_outcome=~"model_missing\|path_missing\|auth_failed"}[10m])) > 0` | — | A host serves another model than the config says, its `base_url` leads to no endpoint (`path_missing`: typically the API version path left out; the gateway also warns `the backend has no models list at its base_url` when the config is applied), or it refuses the gateway's key. A wrong `base_url` shows as `endpoint_missing` instead on `vllm`, and on llama-server's endpoints beyond OpenAI's three (Endpoint missing on every attempt, below). |
-| Endpoint missing on every attempt | ticket | `sum by (kaiak_backend_id, kaiak_deployment_model) (increase(kaiak_upstream_attempts_total{kaiak_attempt_outcome="endpoint_missing"}[30m])) > 0 unless on (kaiak_backend_id, kaiak_deployment_model) sum by (kaiak_backend_id, kaiak_deployment_model) (increase(kaiak_upstream_attempts_total{kaiak_attempt_outcome!="endpoint_missing"}[30m])) > 0` | — | For 30 minutes every attempt on a deployment found its server without the endpoint, and none got another answer: a wrong `base_url` on `vllm` (with the config-apply warning `the backend has no models list at its base_url`) or on a llama-server deployment that gets only Messages, Responses or rerank traffic; a server restarted with another model or without the flag its traffic needs (llama-server without `--reranking`); or a model name pointing at the wrong server. The log's `the deployment's server does not serve an endpoint its type serves` names the deployment and the endpoint. `endpoint_missing` beside other outcomes does not alert: mostly clients sending an endpoint the deployment's model does not serve (a chat request to a reranker), answered neutrally while the deployment serves its own traffic. |
+| Wrong model, path or credential | ticket | `sum by (kaiak_backend_id, kaiak_deployment_model, kaiak_attempt_outcome) (increase(kaiak_upstream_attempts_total{kaiak_attempt_outcome=~"model_missing\|path_missing\|auth_failed"}[10m])) > 0` | — | A host serves another model than the config says (on `vllm-omni`, an image server answering `400 Model mismatch`), its `base_url` leads to no endpoint (`path_missing`: typically the API version path left out; the gateway also warns `the backend has no models list at its base_url` when the config is applied), or it refuses the gateway's key. A wrong `base_url` shows as `endpoint_missing` instead on `vllm`, and on llama-server's endpoints beyond OpenAI's three (Endpoint missing on every attempt, below). |
+| Endpoint missing on every attempt | ticket | `sum by (kaiak_backend_id, kaiak_deployment_model) (increase(kaiak_upstream_attempts_total{kaiak_attempt_outcome="endpoint_missing"}[30m])) > 0 unless on (kaiak_backend_id, kaiak_deployment_model) sum by (kaiak_backend_id, kaiak_deployment_model) (increase(kaiak_upstream_attempts_total{kaiak_attempt_outcome!="endpoint_missing"}[30m])) > 0` | — | For 30 minutes every attempt on a deployment found its server without the endpoint, and none got another answer: a wrong `base_url` on `vllm` (with the config-apply warning `the backend has no models list at its base_url`) or on a llama-server deployment that gets only Messages, Responses or rerank traffic; a server restarted with another model or without the flag its traffic needs (llama-server without `--reranking`); or a model name pointing at the wrong server (an image model's deployment on a vLLM-Omni speech server). The log's `the deployment's server does not serve an endpoint its type serves` names the deployment and the endpoint. `endpoint_missing` beside other outcomes does not alert: mostly clients sending an endpoint the deployment's model does not serve (a chat request to a reranker), answered neutrally while the deployment serves its own traffic. |
 | Backend failure rate | ticket | `sum by (kaiak_backend_id) (rate(kaiak_upstream_attempts_total{kaiak_attempt_outcome=~"unavailable\|timeout\|server_error\|broke_off"}[5m])) / sum by (kaiak_backend_id) (rate(kaiak_upstream_attempts_total[5m])) > 0.05 and sum by (kaiak_backend_id) (rate(kaiak_upstream_attempts_total[5m])) > 0.1` | 5m | A struggling host, before its circuit opens. The second clause needs about 30 attempts in 5 minutes, so one failed request on a quiet backend is not a 50% rate. On an Azure backend, `broke_off` or `timeout` from reasoning models means their stream timeouts are too short (Azure OpenAI). |
 | Deployment often cooling down | ticket | `max by (kaiak_backend_id, kaiak_deployment_model) (avg_over_time(kaiak_deployment_cooling_down[30m])) > 0.25` | — | The deployment answered `429` often enough to spend a quarter of the last 30 minutes cooling down: its quota (Azure tokens or requests per minute) is too small for its share of the traffic. Raise the quota, or deploy the model in another resource or region and list it (Azure OpenAI: quota). Clients see it only when every deployment of the model cools at once (`kaiak_errors_total{kaiak_error_class="upstream_rate_limited"}`). |
 | Queue rejections | ticket | `sum by (gen_ai_request_model) (rate(kaiak_queue_rejections_total[10m])) / sum by (gen_ai_request_model) (rate(http_server_request_duration_seconds_count[10m])) > 0.01` | 10m | Over 1% of a model's requests refused by its queue (`error_type="queue_full"` or `queue_timeout`) for 10 minutes: capacity. Compare `kaiak_backend_active_requests` with `kaiak_backend_active_requests_limit` across replicas (uneven shares), and the backends' own load. A burst that clears within minutes does not alert. |
@@ -1131,7 +1289,7 @@ Boot).
 - **Usage is flushed by the drain**: confirm each old pod logged `usage flushed` (not
   `usage not flushed`) during a rollout; give it a drain that ends before its
   timeout.
-- **Config format 5** (this release, protocol 5): models carry no `defaults` — a
+- **Config format 5** (0.11.0, protocol 5): models carry no `defaults` — a
   config with them is refused. Bump `format_version` to 5 and delete every model's
   `defaults` before publishing (the parameters move to the backends' own settings:
   vLLM's generation config or flags, llama-server's flags). **Limits carry no
@@ -1342,6 +1500,52 @@ Boot).
   - **An embeddings answer whose `usage` has no `prompt_tokens`** (only
     `completion_tokens`, or `prompt_tokens: null`) is no usage report: the record
     takes the input estimate, flagged `estimated`, where it settled as zero usage.
+- **Next release** (protocol 6 and config format 6):
+  - **Protocol 6 and config format 6 — gateways and the control plane upgrade
+    together.** Every usage record carries the media units (`images`,
+    `audio_seconds_out`, `audio_seconds_in`) and totals carry their hour windows,
+    which a protocol-5 half cannot read: the two versions refuse each other (the
+    first bullet above). Move every config to `format_version` 6 — a format-5
+    document is refused — before or with the upgrade; nothing else in an existing
+    config changes.
+  - **Speech and image generation are new** (Speech and images): the `vllm-omni`
+    backend type; `/v1/audio/speech`, `/v1/audio/speech/batch` and
+    `/v1/images/generations`; the usage operation `generate_content` with
+    `gen_ai.output.type` `speech` or `image`.
+  - **New, optional config fields**: the limit types `images_per_minute`,
+    `images_per_hour`, `audio_seconds_out_per_minute`, `audio_seconds_out_per_hour`,
+    `audio_seconds_in_per_minute` and `audio_seconds_in_per_hour`;
+    `global.max_images_per_request` (default 10) and `global.max_speech_batch_items`
+    (default 32).
+  - **Five counters per scope** (`counters-exceeded`): the hour counts of images,
+    audio generated and audio processed join tokens and the USD month, so a config
+    within the 50 000 bound at two per scope may now pass it — count five per group
+    plus the effective per-minute limits before publishing (Config for many hosts).
+  - **New error codes**: `400 response_format_unsupported` (speech audio other than
+    WAV or PCM, images other than `b64_json`), `400 external_reference_unsupported`
+    (reference audio by URL or path, an image `lora`); `400
+    missing_required_parameter` now also for PCM without `sample_rate`; `429
+    rate_limit_exceeded` with the types `images` and `audio_seconds`. The upstream
+    readings gain vLLM-Omni's: its image `400 Model mismatch` is
+    `upstream_model_missing`, its image `503` for a speech model
+    `upstream_endpoint_missing`.
+  - **New metrics and fields**: `kaiak_usage_images_total`,
+    `kaiak_usage_audio_output_duration_seconds_total` and
+    `kaiak_usage_audio_input_duration_seconds_total`; the usage families gain the
+    label `gen_ai_output_type` (`speech`, `image`; absent for the other
+    operations); `kaiak_limit_rejections_total` and the request line's
+    `kaiak.limit.type` take the six media types; the request line gains
+    `gen_ai.output.type`, `kaiak.usage.images`,
+    `kaiak.usage.audio.output.duration` and `kaiak.usage.audio.input.duration`, and
+    `kaiak.backend.type` takes `vllm-omni`. The starter alerts are unchanged: Global
+    limit refusals covers the media types by `kaiak_limit_type`.
+  - **Host apps on `kaiak-control`** (`control/kaiak-control/GUIDE.md`): a store
+    keeps windows of five counted types — `images_per_hour`,
+    `audio_seconds_out_per_hour` and `audio_seconds_in_per_hour` beside
+    `tokens_per_hour` and `usd_per_month` — so `WindowStarts` has five keys, and a
+    database store that lists the types (an enum, a check, a query per type) takes
+    the three new ones; run the contract tests (GUIDE §11). Usage records carry the
+    three media units. The sample's page shows them.
 
 ## Images
 

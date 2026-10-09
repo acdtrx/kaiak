@@ -249,7 +249,8 @@ func (r *run) checkServiceTier() {
 }
 
 // checkNotServed: the APIs the kind's backend type does not serve are refused with
-// endpoint_not_served, each in its API's error shape (rerank's is OpenAI's).
+// endpoint_not_served, each in its API's error shape (rerank's and the media
+// endpoints' are OpenAI's). No kind serves the media endpoints: vllm-omni does.
 func (r *run) checkNotServed() {
 	const name = "endpoint-not-served"
 	openAI := func(path string, body map[string]any) func() string {
@@ -290,10 +291,11 @@ func (r *run) checkNotServed() {
 	if !r.o.serves(epRerank) {
 		want = append(want, refusal{"/v1/rerank", openAI("/v1/rerank", rerankBody(modelChat, relevanceDocuments))})
 	}
-	if len(want) == 0 {
-		r.skip(name, r.o.kind+" serves every endpoint the kit checks")
-		return
-	}
+	want = append(want,
+		refusal{"/v1/audio/speech", openAI("/v1/audio/speech", speechBody(modelChat, nil))},
+		refusal{"/v1/audio/speech/batch", openAI("/v1/audio/speech/batch",
+			map[string]any{"model": modelChat, "items": []any{map[string]any{"input": speechText}}})},
+		refusal{"/v1/images/generations", openAI("/v1/images/generations", imageBody(modelChat, nil))})
 	var refused []string
 	for _, w := range want {
 		if problem := w.check(); problem != "" {

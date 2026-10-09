@@ -3,7 +3,8 @@
 > The runbook for `scripts/live/`: run the built `kaiak` against a real vLLM,
 > llama-server, OpenAI, Azure OpenAI, Anthropic or Claude in Microsoft Foundry
 > backend and check it end to end, through every client API the backend serves (chat
-> completions, Anthropic Messages, OpenAI Responses, rerank). Opt-in — never needed for a
+> completions, Anthropic Messages, OpenAI Responses, rerank) — and, with vLLM-Omni
+> servers beside it, speech and image generation. Opt-in — never needed for a
 > green suite (`docs/TECH-STACK.md`, Testing). The kit's own self-test, against the
 > fake backend, runs in `scripts/check-gateway.sh`. Someone running it for the kaiak
 > team without knowing kaiak: start at **For a tester with access**.
@@ -17,7 +18,8 @@ One command per backend kind. The runner:
    backend of the type `-kind` names (two with `-base-url-2`: see Two vLLM
    processes, one model; one more with `-embeddings-base-url`: see Embeddings on a
    server of their own; one more with `-rerank-base-url`: see Reranker on a server of
-   its own), the public models below, one group holding the key;
+   its own; one each with `-speech-base-url` and `-image-base-url`: see Speech and
+   images on vLLM-Omni), the public models below, one group holding the key;
 3. starts `kaiak` on free loopback ports with JSON logs;
 4. runs the checks — through each client API the backend type serves (the table in
    `docs/specs/GATEWAY.md`, Providers → Endpoint support) — printing
@@ -37,11 +39,17 @@ model:
 | `live-rpm` | limit check, sent with a second key whose group (`live-metered`) allows 1 request per minute: a limit counts every request of its group |
 | `live-embed` | embeddings, only with `-embeddings-model` — whatever the model's name on the backend (a path-style id too) |
 | `live-rerank` | rerank, only with `-rerank-base-url` on `vllm` or `llama-server` |
+| `live-tts` | speech and the speech batch, only with `-speech-base-url`; output limit 2048, ceiling 4096 (`max_new_tokens`) |
+| `live-image` | image generation, only with `-image-base-url` |
 
 Every model is priced at `-price-in` / `-price-out` USD per million tokens (default
 1 / 2 — placeholders, only so the cost path is exercised; `0` and `0` leave them
-unpriced and skip the cost checks). With a reranker, the config also sets
-`global.max_rerank_documents` to 4, for the `rerank-cap` check.
+unpriced and skip the cost checks); images and seconds of audio are never priced.
+With a reranker, the config also sets `global.max_rerank_documents` to 4, for the
+`rerank-cap` check. With a vLLM-Omni server it sets `global.max_speech_batch_items`
+to 3 and `global.max_images_per_request` to 2, for the cap checks, and adds a third
+key whose group (`live-media`) allows 1 image and 1 second of audio generated per
+minute, for the media limit checks.
 
 ## For a tester with access
 
@@ -153,7 +161,9 @@ default; each refusal names the parameter, so the fix is one setting:
   Messages backend also gets
   the cache check's two requests of about 8,000 input tokens each. With
   `-rerank-base-url`, a few small rerank requests and one carrying a 1 MB document,
-  which the reranker server refuses. On a paid API a
+  which the reranker server refuses. With `-speech-base-url`, about ten clips of a
+  sentence each; with `-image-base-url`, three 512×512 images at 10 steps. On a paid
+  API a
   run costs cents (Claude Haiku 4.5 at $1 / $5 per million tokens: under $0.05).
 
 ## Commands
@@ -178,6 +188,9 @@ go -C scripts/live run . -kind vllm \
   `-embeddings-base-url` (see Embeddings on a server of their own).
 - A reranker always does — one vLLM process serves one model: add
   `-rerank-base-url` and `-rerank-model` (see Reranker on a server of its own).
+- Speech and image models run on vLLM-Omni, one model per server: add
+  `-speech-base-url`, `-image-base-url` and their models (see Speech and images on
+  vLLM-Omni), beside a run of any kind.
 
 ### llama-server
 
@@ -292,6 +305,14 @@ server does: vLLM's reranker has no chat route and vLLM's chat model no rerank r
 (`404 {"detail":"Not Found"}`); llama-server's chat server answers rerank `501
 not_supported_error`, as one started without `--reranking` does.
 
+The vLLM run has two more fakes playing vLLM-Omni, each with a bearer key
+(`-speech-api-key-env`, `-image-api-key-env`): a speech server whose model answers an
+image request as vLLM-Omni's speech models do (`503`, no diffusion stage), and an
+image server whose model answers speech with vLLM-Omni's `400` (`TTS model did not
+produce audio output.`). The fake's audio is 2.5 s of silence per clip and per batch
+item, so a record of two items counts 5 s — rounded once — where rounding each item
+would count 6.
+
 The self-test ends with a two-backend run: two fakes serving one model, each capped
 at one request (`-max-in-flight 1`), with the failover check — the runner stops the
 second fake and starts it again on its address itself — and a third fake as the
@@ -342,7 +363,29 @@ context length. `go -C scripts/live run . -h` lists them all.
 | `responses-stateful` | a request naming `previous_response_id` is refused, `400 stateful_responses_unsupported`, before routing — the gateway serves Responses stateless |
 | `responses-hosted-tool` | a hosted tool (`web_search`) is refused, `400 hosted_tool_unsupported`, before routing |
 | `service-tier` | OpenAI and Azure: a request asking for `service_tier: "priority"` runs on `default` (skipped when the answer does not report its tier) |
-| `endpoint-not-served` | every API the backend type does not serve (chat completions on Claude, Messages on OpenAI, `responses/input_tokens` on vLLM and Azure, rerank on the cloud APIs, …) is refused `400 endpoint_not_served`, in that API's error shape |
+| `speech-wav` | with `-speech-base-url`: the whole clip as WAV (`audio/wav`), decoded here — its rate, channels and length from the header and the data bytes — and none of vLLM-Omni's `x-vllm-omni-*` usage headers reaching the client |
+| `usage-log/speech-wav` | its log line: operation `generate_content`, output type `speech`, the server's token counts (not estimated, read from those headers) and `kaiak.usage.audio.output.duration` equal to the length decoded here, rounded up to a whole second |
+| `speech-pcm` | the whole clip as PCM with `sample_rate` 24000 (`audio/pcm`), its length from the byte count |
+| `usage-log/speech-pcm` | as for WAV |
+| `speech-raw` | the raw-audio stream (`stream_format: "audio"`) in WAV: a streamed WAV whose size fields are placeholders, measured from the bytes received |
+| `usage-log/speech-raw` | its tokens **estimated and flagged** (vLLM-Omni reports none for this mode), `gen_ai.request.stream` true, the seconds as measured here |
+| `speech-sse` | the SSE stream (`stream: true`) in WAV: `speech.audio.delta` events whose base64 audio, joined, is a WAV stream, then `speech.audio.done` with usage, last |
+| `usage-log/speech-sse` | the tokens `done` reported, exactly, and the seconds as measured here |
+| `speech-refused` | `mp3` (`400 response_format_unsupported`), a `ref_audio` URL (`400 external_reference_unsupported`) and `pcm` without `sample_rate` (`400 missing_required_parameter`) are refused before routing |
+| `speech-batch` | a batch of a WAV and a PCM item: two successful results, each item's audio measured by its `media_type` |
+| `usage-log/batch` | the items' usage summed, exactly, and their lengths summed before the one rounding |
+| `speech-batch-cap` | one item more than `global.max_speech_batch_items` (3 here) is refused, `400 invalid_value` on `items`, before routing |
+| `image` | with `-image-base-url`: one 512×512 image, `b64_json` decoding to a PNG, JPEG or WebP |
+| `usage-log/image` | `kaiak.usage.images` equal to the answer's `data[]` count, output type `image`, the input tokens estimated and flagged (vLLM-Omni reports no image usage) |
+| `image-cap` | `n` one above `global.max_images_per_request` (2 here) is refused, `400 invalid_value` on `n`, before routing |
+| `image-refused` | `response_format` `url` and `file` (`400 response_format_unsupported`) and a `lora` (`400 external_reference_unsupported`) are refused before routing |
+| `chat-to-image` | a chat request to `live-image` is the gateway's own `400 endpoint_not_served`: `vllm-omni` serves the media endpoints alone |
+| `audio-limit` | with the `live-media` key: a first clip is served and fills the 1-second window — audio generated settles after the request — and the next is refused `429 audio_seconds` with `Retry-After`, no `x-ratelimit-*` header, its log line naming `audio_seconds_out_per_minute` |
+| `image-limit` | the same for images: a request reserves its `n`, so the second image in the minute is refused `429 images`, naming `images_per_minute` |
+| `image-to-speech` | an image request to `live-tts`: vLLM-Omni answers `503` for a model with no diffusion stage, which the gateway reads as `502 upstream_endpoint_missing` with its warning, and a speech request right after is served — the deployment stays in service |
+| `speech-to-image` | a speech request to `live-image`: what vLLM-Omni answers is recorded, not judged (its source does not decide it) — status, error type and code, and the gateway's reading on the log line. It fails only when no answer came |
+| `media-metrics` | `/metrics` counts the seconds of audio (`kaiak_usage_audio_output_duration_seconds_total`, `gen_ai_output_type="speech"`) and the images (`kaiak_usage_images_total`, `gen_ai_output_type="image"`) and each media limit's refusal (`kaiak_limit_rejections_total` by `kaiak_limit_type`) |
+| `endpoint-not-served` | every API the backend type does not serve (chat completions on Claude, Messages on OpenAI, `responses/input_tokens` on vLLM and Azure, rerank on the cloud APIs, speech, the speech batch and image generation on every kind, …) is refused `400 endpoint_not_served`, in that API's error shape |
 | `output-ceiling` | a request for the model's whole context length in output tokens (`-context-length`; more is refused, `400 invalid_value`) is lowered to the ceiling: `completion_tokens` ≤ ceiling, `finish_reason: "length"`. vLLM and llama-server are asked through `max_tokens` (the gateway lowers the client's own key), OpenAI and Azure through `max_completion_tokens` (their reasoning models refuse `max_tokens`); Anthropic and Foundry through Messages' `max_tokens`, ending `stop_reason: "max_tokens"` |
 | `rate-limit` | the second `live-rpm` request in a minute (with the metered key) gets `429 rate_limit_exceeded` with `Retry-After` and `x-ratelimit-*-requests` headers — before reaching the backend (through Messages on Anthropic and Foundry, in Anthropic's shape: `rate_limit_error`) |
 | `metrics` | the admin `/metrics` shows the `live-chat` usage records, their output tokens (`gen_ai_client_inference_usage_output_tokens_total`) and cost, the rate-limit refusal, successful upstream attempts with their durations, no backend label on a usage series, and a request on each of the `messages` and `responses` routes the backend serves (`http_server_request_duration_seconds`, by `http_route`) |
@@ -520,6 +563,72 @@ server) and `rerank-oversize` (the server refuses a pair longer than its context
 `rerank-to-chat` check the other side: a request to a server that lacks the endpoint
 answers `upstream_endpoint_missing` and leaves the deployment in service.
 
+## Speech and images on vLLM-Omni
+
+Speech and image generation run on vLLM-Omni, one model per server, and the gateway
+serves them on `vllm-omni` backends alone. `-speech-base-url` (env
+`LIVE_SPEECH_BASE_URL`) and `-speech-model` (env `LIVE_SPEECH_MODEL`) name a speech
+server and its model, `-image-base-url` (env `LIVE_IMAGE_BASE_URL`) and `-image-model`
+(env `LIVE_IMAGE_MODEL`) an image server and its model; the generated config gets a
+`vllm-omni` backend for each, `live-speech` and `live-images`, with `live-tts` and
+`live-image` deployed there. They join a run of any kind — the chat checks run on
+the kind's server as without them — and either one can come alone.
+
+- `-speech-model` and `-image-model` are the names `curl <base-url>/models` lists:
+  the model path unless the server was started with `--served-model-name`.
+- No key by default; `-speech-api-key-env NAME` and `-image-api-key-env NAME` if the
+  servers want one.
+- The kit sends no `voice`: the model's default speaks (Qwen3-TTS CustomVoice:
+  `vivian`). The PCM checks ask for `sample_rate` 24000, which only Qwen3-TTS and
+  Breeze-TTS-2 take.
+
+**Start the servers** — vLLM-Omni in a virtual environment of its own, with the vLLM
+release it is built for; `docs/DEPLOYMENT.md` → Speech and images says why:
+
+```sh
+uv venv --python 3.12 --seed ~/vllm-omni && source ~/vllm-omni/bin/activate
+uv pip install vllm==0.30.0 --torch-backend=auto
+uv pip install vllm-omni==0.30.0
+
+# speech: Qwen3-TTS CustomVoice (port 8091)
+vllm serve Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice --omni --port 8091 \
+  --trust-remote-code --enforce-eager
+# sharing a GPU: its two stages take 0.3 of GPU 0's memory each; lower them with
+#   --stage-overrides '{"0":{"gpu_memory_utilization":0.1},"1":{"gpu_memory_utilization":0.1}}'
+# images: Qwen-Image (port 8092)
+vllm serve Qwen/Qwen-Image --omni --port 8092
+```
+
+**Run the kit** with the chat server and both:
+
+```sh
+go -C scripts/live run . -kind vllm \
+  -base-url http://gpu-host:8001/v1 \
+  -model qwen3.5-2b \
+  -speech-base-url http://gpu-host:8091/v1 \
+  -speech-model Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
+  -image-base-url http://gpu-host:8092/v1 \
+  -image-model Qwen/Qwen-Image
+```
+
+Each image check asks for one 512×512 image at 10 steps; a slow GPU, or a server
+still loading, may need a longer `-request-timeout` (default 2m).
+
+The checks that matter for the servers:
+
+- `speech-wav`, `speech-pcm`, `speech-raw`, `speech-sse`, `speech-batch` and their
+  `usage-log/*` lines: each mode answers audio, the tokens are the server's where it
+  reports them (estimated on the raw-audio stream, which reports none), and the
+  seconds the gateway counted equal the audio decoded on this machine, rounded up —
+  run them on every vLLM-Omni upgrade and every new speech model: they are the check
+  that the gateway measures that model's audio right.
+- `image` and `usage-log/image`: an image answered and counted.
+- `image-to-speech`: vLLM-Omni's `503` for an image request to a speech model still
+  reads as the endpoint missing.
+- `audio-limit` and `image-limit`: the media limits refuse.
+- `speech-to-image` is a record, not a check: copy its line into the run's notes —
+  it is how vLLM-Omni answers speech sent to an image model.
+
 ## Reading failures
 
 - A failed request prints the status, the body and the gateway's view from its log
@@ -569,6 +678,23 @@ answers `upstream_endpoint_missing` and leaves the deployment in service.
 - `rerank-to-chat` answering `200`: the chat model's server serves rerank —
   llama-server started with `--reranking`, or a vLLM embedding model (which scores
   rerank by similarity) given as `-model`.
+- `speech-pcm` with a `400` relayed from the server: the model takes no
+  `sample_rate` — only Qwen3-TTS and Breeze-TTS-2 do, and PCM through kaiak needs
+  one. Use WAV with that model (`docs/DEPLOYMENT.md` → Speech and images).
+- `usage-log/speech-*` or `usage-log/batch` counting other seconds than measured
+  here: the gateway read the audio otherwise than this machine did — for example
+  PCM that is not 16-bit mono at the request's rate. Rerun with `-v -keep` and keep
+  the log; that model's audio is not measured right.
+- `usage-log/speech-wav` or `-pcm` with `kaiak.usage.estimated=true`: the answer
+  carried no `x-vllm-omni-*` usage headers (a speech server in diffusion mode sends
+  none), or audio the gateway could not measure (its seconds 0).
+- `image` with `502 upstream_model_missing`: `-image-model` is not the image
+  server's served name — vLLM-Omni compares the request's model with it and answers
+  `400 Model mismatch`.
+- `image-to-speech` answering `200`, or another error: the speech server generated
+  an image, or vLLM-Omni's answer for a model with no diffusion stage changed — the
+  gateway reads only that `503` as the endpoint missing (`docs/specs/GATEWAY.md`,
+  Providers → An endpoint missing from a server).
 - `400 hosted_tool_unsupported`, `stateful_responses_unsupported`,
   `price_option_unsupported` on a check other than the one testing it: a
   `-messages-params` or `-responses-params` value asks for something the gateway

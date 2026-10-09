@@ -22,7 +22,10 @@ type run struct {
 	key string
 	// meteredKey is the rate-limit checks' key: its group allows 1 request a minute.
 	meteredKey string
-	client     *http.Client
+	// mediaKey is the media limit checks' key: its group allows 1 image and 1 second
+	// of audio generated a minute.
+	mediaKey string
+	client   *http.Client
 
 	passed, failed, skipped int
 }
@@ -63,8 +66,9 @@ const (
 
 // checks runs every check the kind's backend type allows: the chat completions checks,
 // then the embeddings, rerank, Messages and Responses checks where it serves them, the
-// refusal of the APIs it does not, and the checks across APIs (output ceiling, rate
-// limit, metrics) through the first API it serves.
+// speech and image checks on the vLLM-Omni servers given, the refusal of the APIs the
+// kind does not serve, and the checks across APIs (output ceiling, rate limit,
+// metrics) through the first API it serves.
 func (r *run) checks() {
 	r.checkAuth()
 	r.checkModels()
@@ -95,6 +99,7 @@ func (r *run) checks() {
 	if r.o.serves(epResponses) {
 		r.responsesChecks()
 	}
+	r.mediaChecks()
 	r.checkNotServed()
 	if r.o.serves(epChat) {
 		r.checkCeiling()
@@ -162,12 +167,11 @@ func (r *run) checkModels() {
 		r.fail("models", "not a model list: %s", body)
 		return
 	}
-	var ids, chatEndpoints []string
+	var ids []string
+	endpoints := map[string][]string{}
 	for _, m := range list.Data {
 		ids = append(ids, m.ID)
-		if m.ID == modelChat {
-			chatEndpoints = m.Endpoints
-		}
+		endpoints[m.ID] = m.Endpoints
 	}
 	want := []string{modelCapped, modelChat, modelRPM}
 	if r.o.embeddingsModel != "" {
@@ -176,17 +180,37 @@ func (r *run) checkModels() {
 	if r.o.reranker() {
 		want = append(want, modelRerank)
 	}
+	// A model on vllm-omni lists the media endpoints, whatever its server loaded.
+	mediaEndpoints := []string{epSpeech, epSpeechBatch, epImages}
+	var mediaModels []string
+	if r.o.speechServer() {
+		mediaModels = append(mediaModels, modelSpeech)
+	}
+	if r.o.imageServer() {
+		mediaModels = append(mediaModels, modelImage)
+	}
+	want = append(want, mediaModels...)
 	slices.Sort(want)
 	if !slices.Equal(ids, want) {
 		r.fail("models", "lists %v, want %v", ids, want)
 		return
 	}
 	wantEndpoints := slices.Sorted(slices.Values(kindEndpoints[r.o.kind]))
-	if !slices.Equal(chatEndpoints, wantEndpoints) {
-		r.fail("models", "%s lists endpoints %v, want %s's %v", modelChat, chatEndpoints, r.o.kind, wantEndpoints)
+	if !slices.Equal(endpoints[modelChat], wantEndpoints) {
+		r.fail("models", "%s lists endpoints %v, want %s's %v", modelChat, endpoints[modelChat], r.o.kind, wantEndpoints)
 		return
 	}
-	r.pass("models", "lists "+strings.Join(ids, ", ")+"; endpoints "+strings.Join(chatEndpoints, ", "))
+	for _, m := range mediaModels {
+		if !slices.Equal(endpoints[m], mediaEndpoints) {
+			r.fail("models", "%s lists endpoints %v, want vllm-omni's %v", m, endpoints[m], mediaEndpoints)
+			return
+		}
+	}
+	detail := "lists " + strings.Join(ids, ", ") + "; endpoints " + strings.Join(endpoints[modelChat], ", ")
+	if len(mediaModels) > 0 {
+		detail += "; " + strings.Join(mediaModels, " and ") + ": " + strings.Join(mediaEndpoints, ", ")
+	}
+	r.pass("models", detail)
 }
 
 // chatAnswer is the part of a chat completion the checks read.

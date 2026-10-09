@@ -10,10 +10,14 @@
 // the embeddings model is served by a server of its own (openai-compatible), a third
 // backend in the config. With -rerank-base-url a reranker server of the run's kind
 // (vllm or llama-server) serves rerank, and the wrong-endpoint checks send each model
-// the endpoint its server lacks. -self-test runs every check against the fake backend
-// standing in for each kind (and a second fake as the reranker server where the kind
-// serves rerank), and the two-backend checks against two fakes, stopping and
-// restarting the second itself, with a third fake as the embeddings server.
+// the endpoint its server lacks. With -speech-base-url and -image-base-url vLLM-Omni
+// servers (vllm-omni backends, whatever the run's kind) serve speech and image
+// generation, and the media checks run: each speech mode, the batch, images, their
+// units on the usage log line, the media limits and caps. -self-test runs every check
+// against the fake backend standing in for each kind (and a second fake as the
+// reranker server where the kind serves rerank, and two more as the vLLM-Omni servers
+// on vllm), and the two-backend checks against two fakes, stopping and restarting the
+// second itself, with a third fake as the embeddings server.
 //
 // Standard library only, and a module of its own: nothing here is part of the
 // gateway. Runbook: docs/testing/LIVE-BACKENDS.md.
@@ -61,6 +65,15 @@ type options struct {
 	rerankBaseURL   string
 	rerankModel     string
 	rerankAPIKeyEnv string
+	// speechBaseURL and imageBaseURL, when set, are vLLM-Omni servers — one model per
+	// process — serving speechModel and imageModel, authenticated by speechAPIKeyEnv
+	// and imageAPIKeyEnv ("" = no key).
+	speechBaseURL   string
+	speechModel     string
+	speechAPIKeyEnv string
+	imageBaseURL    string
+	imageModel      string
+	imageAPIKeyEnv  string
 	apiKeyEnv       string
 	maxOutput       int
 	ceiling         int
@@ -103,6 +116,11 @@ func (o options) embeddingsServer() bool { return o.embeddingsBaseURL != "" }
 // config deploys live-rerank there.
 func (o options) reranker() bool { return o.rerankBaseURL != "" && o.serves(epRerank) }
 
+// speechServer and imageServer: a vLLM-Omni server is given for speech, for images —
+// the config deploys live-tts, live-image there.
+func (o options) speechServer() bool { return o.speechBaseURL != "" }
+func (o options) imageServer() bool  { return o.imageBaseURL != "" }
+
 // label names the run's files and gateway instance.
 func (o options) label() string {
 	if o.twoBackends() {
@@ -134,6 +152,12 @@ func main() {
 	flag.StringVar(&o.rerankBaseURL, "rerank-base-url", os.Getenv("LIVE_RERANK_BASE_URL"), "a reranker server of the run's kind, vllm or llama-server, for -rerank-model (env LIVE_RERANK_BASE_URL), e.g. http://host:8004/v1: the rerank checks")
 	flag.StringVar(&o.rerankModel, "rerank-model", os.Getenv("LIVE_RERANK_MODEL"), "with -rerank-base-url: the reranker's model name on that server (env LIVE_RERANK_MODEL)")
 	flag.StringVar(&o.rerankAPIKeyEnv, "rerank-api-key-env", "", "with -rerank-base-url: name of the environment variable holding that server's key (default: none)")
+	flag.StringVar(&o.speechBaseURL, "speech-base-url", os.Getenv("LIVE_SPEECH_BASE_URL"), "a vLLM-Omni server for -speech-model (env LIVE_SPEECH_BASE_URL), e.g. http://host:8091/v1, beside a run of any kind: the speech checks")
+	flag.StringVar(&o.speechModel, "speech-model", os.Getenv("LIVE_SPEECH_MODEL"), "with -speech-base-url: the speech model's name on that server (env LIVE_SPEECH_MODEL), e.g. Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice")
+	flag.StringVar(&o.speechAPIKeyEnv, "speech-api-key-env", "", "with -speech-base-url: name of the environment variable holding that server's key (default: none)")
+	flag.StringVar(&o.imageBaseURL, "image-base-url", os.Getenv("LIVE_IMAGE_BASE_URL"), "a vLLM-Omni server for -image-model (env LIVE_IMAGE_BASE_URL), e.g. http://host:8092/v1, beside a run of any kind: the image checks")
+	flag.StringVar(&o.imageModel, "image-model", os.Getenv("LIVE_IMAGE_MODEL"), "with -image-base-url: the image model's name on that server (env LIVE_IMAGE_MODEL), e.g. Qwen/Qwen-Image")
+	flag.StringVar(&o.imageAPIKeyEnv, "image-api-key-env", "", "with -image-base-url: name of the environment variable holding that server's key (default: none)")
 	flag.StringVar(&o.apiKeyEnv, "api-key-env", "-", "name of the environment variable holding the backend key (default: none for vllm and llama-server, OPENAI_API_KEY, AZURE_OPENAI_API_KEY, ANTHROPIC_API_KEY, ANTHROPIC_FOUNDRY_API_KEY)")
 	flag.IntVar(&o.maxOutput, "max-output", 1024, "output-limit default and ceiling of the chat model (raise it for reasoning models)")
 	flag.IntVar(&o.ceiling, "ceiling", 16, "output-limit ceiling of the model the ceiling check uses")
@@ -273,6 +297,27 @@ func resolve(o *options) error {
 			return fmt.Errorf("%s is not set: export the reranker server's key there", o.rerankAPIKeyEnv)
 		}
 	}
+	for _, m := range []struct {
+		what, flag           string
+		baseURL, model, keys *string
+	}{{"speech", "-speech", &o.speechBaseURL, &o.speechModel, &o.speechAPIKeyEnv},
+		{"image", "-image", &o.imageBaseURL, &o.imageModel, &o.imageAPIKeyEnv}} {
+		if (*m.baseURL == "") != (*m.model == "") {
+			return fmt.Errorf("%s-base-url and %s-model go together: the vLLM-Omni %s server and the model name on it", m.flag, m.flag, m.what)
+		}
+		if *m.baseURL != "" {
+			*m.baseURL = normalizeBaseURL("vllm-omni", *m.baseURL)
+		}
+		if *m.keys == "" {
+			continue
+		}
+		if *m.baseURL == "" {
+			return fmt.Errorf("%s-api-key-env needs %s-base-url", m.flag, m.flag)
+		}
+		if os.Getenv(*m.keys) == "" {
+			return fmt.Errorf("%s is not set: export the %s server's key there", *m.keys, m.what)
+		}
+	}
 	if o.model == "" {
 		return errors.New("no model: set -model or LIVE_MODEL (for Azure OpenAI and Foundry, the deployment name)")
 	}
@@ -306,7 +351,8 @@ func normalizeBaseURL(kind, u string) string {
 func runKind(ctx context.Context, o options, ws *workspace, extraEnv []string) error {
 	key, hash := newKey()
 	meteredKey, meteredHash := newKey()
-	cfg, err := buildConfig(o, hash, meteredHash)
+	mediaKey, mediaHash := newKey()
+	cfg, err := buildConfig(o, hash, meteredHash, mediaHash)
 	if err != nil {
 		return err
 	}
@@ -328,6 +374,12 @@ func runKind(ctx context.Context, o options, ws *workspace, extraEnv []string) e
 	if o.reranker() {
 		fmt.Printf(", reranker %s on %s", o.rerankModel, o.rerankBaseURL)
 	}
+	if o.speechServer() {
+		fmt.Printf(", speech %s on %s", o.speechModel, o.speechBaseURL)
+	}
+	if o.imageServer() {
+		fmt.Printf(", images %s on %s", o.imageModel, o.imageBaseURL)
+	}
 	fmt.Println()
 
 	gw, err := startGateway(ctx, o, ws, configFile, extraEnv)
@@ -336,7 +388,7 @@ func runKind(ctx context.Context, o options, ws *workspace, extraEnv []string) e
 	}
 	defer gw.stop()
 
-	r := &run{ctx: ctx, o: o, gw: gw, key: key, meteredKey: meteredKey, client: newClient(o.requestTimeout)}
+	r := &run{ctx: ctx, o: o, gw: gw, key: key, meteredKey: meteredKey, mediaKey: mediaKey, client: newClient(o.requestTimeout)}
 	r.checks()
 	gw.stop()
 	if !gw.cleanExit() {

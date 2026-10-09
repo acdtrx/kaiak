@@ -6,7 +6,9 @@
 // "listening <url>" on stdout once it accepts connections, and stops on SIGINT or
 // SIGTERM. Answers honor max_completion_tokens / max_tokens (finish_reason "length"
 // when they cut the answer short). Rerank answers in vLLM's shape or llama-server's;
-// the server played can lack endpoints the way each server lacks them.
+// the server played can lack endpoints the way each server lacks them. Speech, the
+// speech batch and image generation answer as vLLM-Omni does, and a model can be
+// played as one that does not speak or does not draw, as vLLM-Omni answers for it.
 package main
 
 import (
@@ -42,6 +44,9 @@ func main() {
 	rerankContext := flag.Int("rerank-context", 0, "the most words a rerank query and one document may hold together; a longer pair is refused 400 in the server's error (0: no limit)")
 	noRoute := flag.String("no-route", "", `comma-separated endpoints (paths below /v1/, e.g. chat/completions) the server has no route for, answered as vLLM answers one: 404 {"detail":"Not Found"} (a vLLM reranker has no chat route, a vLLM chat model no rerank route)`)
 	notSupported := flag.String("not-supported", "", "comma-separated endpoints answered as llama-server answers one it was not started for: 501 not_supported_error (rerank without --reranking, embeddings without --embeddings)")
+	nonSpeech := flag.String("non-speech-models", "", `comma-separated models whose speech is answered as vLLM-Omni answers it on a model with no speech stage: 400 "TTS model did not produce audio output." (the speech batch: 400, as on a pure-diffusion server)`)
+	nonImage := flag.String("non-image-models", "", `comma-separated models whose image generation is answered as vLLM-Omni answers it on a model with no diffusion stage: 503 "No diffusion stage found in multi-stage pipeline."`)
+	imageServed := flag.String("image-served-model", "", `the server's served model name, which image generation compares a request's model with, as vLLM-Omni does: another model is answered 400 "Model mismatch" ("": none compared)`)
 	flag.Parse()
 
 	if *cachedTokens < 0 || *cachedTokens > 7 {
@@ -90,6 +95,13 @@ func main() {
 	if *notSupported != "" {
 		backend.SetNotSupported(strings.Split(*notSupported, ",")...)
 	}
+	if *nonSpeech != "" {
+		backend.SetNonSpeechModels(strings.Split(*nonSpeech, ",")...)
+	}
+	if *nonImage != "" {
+		backend.SetNonImageModels(strings.Split(*nonImage, ",")...)
+	}
+	backend.SetImageServedModel(*imageServed)
 	fmt.Println("listening", backend.URL())
 
 	stop := make(chan os.Signal, 1)

@@ -20,22 +20,53 @@ const (
 	modelRPM    = "live-rpm"    // the rate-limit checks' model, sent with the metered key
 	modelEmbed  = "live-embed"  // only with -embeddings-model (whatever its name on the backend)
 	modelRerank = "live-rerank" // only with -rerank-base-url on a kind serving rerank
+	modelSpeech = "live-tts"    // only with -speech-base-url
+	modelImage  = "live-image"  // only with -image-base-url
 )
 
 // Backend IDs in the generated config: the -base-url backend, the -base-url-2
-// backend when there is one, the -embeddings-base-url backend and the
-// -rerank-base-url backend when there are.
+// backend when there is one, the -embeddings-base-url, -rerank-base-url,
+// -speech-base-url and -image-base-url backends when there are.
 const (
 	backendFirst  = "live"
 	backendSecond = "live-2"
 	backendEmbed  = "live-embeddings"
 	backendRerank = "live-reranker"
+	backendSpeech = "live-speech"
+	backendImages = "live-images"
 )
 
 // rerankDocumentsCap is global.max_rerank_documents with a reranker: above every
 // rerank request the checks send but the cap check's, so that one is refused before
 // the backend.
 const rerankDocumentsCap = 4
+
+// The media caps with a vLLM-Omni server: global.max_images_per_request and
+// global.max_speech_batch_items, above every image and batch request the checks send
+// but the cap checks', so those are refused before the backend.
+const (
+	imagesPerRequestCap = 2
+	speechBatchItemsCap = 3
+)
+
+// The media limit checks' group: a minute's window holds 1 image, and 1 second of
+// audio generated — any clip fills it.
+const (
+	groupMedia        = "live-media"
+	mediaLimitImages  = 1
+	mediaLimitSeconds = 1
+)
+
+// The speech model's metadata: Qwen3-TTS's talker context in vLLM-Omni's bundled
+// deploy config (max_model_len 4096), and vLLM-Omni's max_new_tokens default and
+// bound as the output limit. The image model's context: Qwen-Image's prompt bound
+// (tokenizer_max_length 1024).
+const (
+	speechContextLength = 4096
+	speechOutputDefault = 2048
+	speechOutputCeiling = 4096
+	imageContextLength  = 1024
+)
 
 // Circuit settings with two backends: a stopped backend is out of rotation after two
 // failed requests and probed every second, so the failover check runs in seconds.
@@ -46,11 +77,14 @@ const (
 
 // buildConfig is the config document for one run: one backend (two with
 // -base-url-2, each deploying the chat models; one more with -embeddings-base-url,
-// deploying the embeddings model, and with -rerank-base-url, deploying the reranker),
-// the models above, and two groups with every model allowed: live holds the checks'
-// key (hash), live-metered the rate-limit checks' key (meteredHash) under 1 request a
-// minute — a limit counts every request of its group.
-func buildConfig(o options, hash, meteredHash string) ([]byte, error) {
+// deploying the embeddings model, with -rerank-base-url, deploying the reranker, and
+// with -speech-base-url and -image-base-url, vllm-omni backends deploying the speech
+// and image models), the models above, and groups with every model allowed: live
+// holds the checks' key (hash), live-metered the rate-limit checks' key (meteredHash)
+// under 1 request a minute — a limit counts every request of its group — and, with a
+// vLLM-Omni server, live-media the media limit checks' key (mediaHash) under 1 image
+// and 1 second of audio a minute.
+func buildConfig(o options, hash, meteredHash, mediaHash string) ([]byte, error) {
 	timeout := o.requestTimeout.Milliseconds()
 	backendOf := func(backendType, baseURL, apiKeyEnv string) map[string]any {
 		b := map[string]any{"type": backendType, "base_url": baseURL, "first_event_timeout_ms": timeout,
@@ -127,22 +161,54 @@ func buildConfig(o options, hash, meteredHash string) ([]byte, error) {
 		models[modelRerank] = rerank
 		global["max_rerank_documents"] = rerankDocumentsCap
 	}
+	media := func(backend, baseURL, apiKeyEnv, model string, contextLength int, streaming bool) map[string]any {
+		backends[backend] = backendOf("vllm-omni", baseURL, apiKeyEnv)
+		m := map[string]any{
+			"deployments": []any{map[string]any{"backend": backend, "model": model}},
+			"metadata": map[string]any{"context_length": contextLength,
+				"capabilities": map[string]any{"streaming": streaming, "tools": false, "vision": false, "reasoning": false}},
+		}
+		if prices != nil {
+			m["prices"] = prices
+		}
+		return m
+	}
+	if o.speechServer() {
+		speech := media(backendSpeech, o.speechBaseURL, o.speechAPIKeyEnv, o.speechModel, speechContextLength, true)
+		speech["output_limit"] = map[string]any{"default": speechOutputDefault, "ceiling": speechOutputCeiling}
+		models[modelSpeech] = speech
+		global["max_speech_batch_items"] = speechBatchItemsCap
+	}
+	if o.imageServer() {
+		models[modelImage] = media(backendImages, o.imageBaseURL, o.imageAPIKeyEnv, o.imageModel, imageContextLength, false)
+		global["max_images_per_request"] = imagesPerRequestCap
+	}
+
+	groups := map[string]any{
+		"live": map[string]any{},
+		"live-metered": map[string]any{
+			"limits": []any{map[string]any{"type": "requests_per_minute", "value": 1}},
+		},
+	}
+	keys := map[string]any{
+		"k-live":         map[string]any{"hash": hash, "group": "live"},
+		"k-live-metered": map[string]any{"hash": meteredHash, "group": "live-metered"},
+	}
+	if o.speechServer() || o.imageServer() {
+		groups[groupMedia] = map[string]any{"limits": []any{
+			map[string]any{"type": "images_per_minute", "value": mediaLimitImages},
+			map[string]any{"type": "audio_seconds_out_per_minute", "value": mediaLimitSeconds},
+		}}
+		keys["k-"+groupMedia] = map[string]any{"hash": mediaHash, "group": groupMedia}
+	}
 
 	return json.MarshalIndent(map[string]any{
 		"format_version": 6,
 		"global":         global,
 		"backends":       backends,
 		"models":         models,
-		"groups": map[string]any{
-			"live": map[string]any{},
-			"live-metered": map[string]any{
-				"limits": []any{map[string]any{"type": "requests_per_minute", "value": 1}},
-			},
-		},
-		"keys": map[string]any{
-			"k-live":         map[string]any{"hash": hash, "group": "live"},
-			"k-live-metered": map[string]any{"hash": meteredHash, "group": "live-metered"},
-		},
+		"groups":         groups,
+		"keys":           keys,
 	}, "", "  ")
 }
 

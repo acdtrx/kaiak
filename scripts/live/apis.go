@@ -15,8 +15,15 @@ const (
 	epResponses   = "responses"
 	epInputTokens = "responses_input_tokens"
 	epRerank      = "rerank"
+	// The media endpoints: vllm-omni serves them, and nothing else. It is no kind of
+	// its own: its servers join a run of any kind (-speech-base-url, -image-base-url).
+	epSpeech      = "audio_speech"
+	epSpeechBatch = "audio_speech_batch"
+	epImages      = "images_generations"
 )
 
+// kindEndpoints are the endpoints each kind's backend type serves; none serves the
+// media endpoints.
 var kindEndpoints = map[string][]string{
 	kindVLLM:           {epChat, epCompletions, epEmbeddings, epMessages, epCountTokens, epResponses, epRerank},
 	kindLlamaServer:    {epChat, epCompletions, epEmbeddings, epMessages, epCountTokens, epResponses, epInputTokens, epRerank},

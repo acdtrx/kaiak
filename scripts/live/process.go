@@ -237,13 +237,16 @@ func msg(message string, fields ...string) func(map[string]any) bool {
 
 // runSelfTest runs every check against the fake backend standing in for each kind
 // (or only o.kind) — with a second fake as the reranker server, with a key, where the
-// kind serves rerank — then, when vllm is among them, the two-backend checks against
-// two fakes, the failover check stopping and restarting the second: the kit's own
-// acceptance test, no real backend needed.
+// kind serves rerank, and on vllm two more as the vLLM-Omni speech and image servers
+// — then, when vllm is among them, the two-backend checks against two fakes, the
+// failover check stopping and restarting the second: the kit's own acceptance test,
+// no real backend needed.
 func runSelfTest(ctx context.Context, o options) error {
-	// The reranker server is the self-test's own fake, whatever the flags or the
-	// environment name.
+	// The reranker and vLLM-Omni servers are the self-test's own fakes, whatever the
+	// flags or the environment name.
 	o.rerankBaseURL, o.rerankModel, o.rerankAPIKeyEnv = "", "", ""
+	o.speechBaseURL, o.speechModel, o.speechAPIKeyEnv = "", "", ""
+	o.imageBaseURL, o.imageModel, o.imageAPIKeyEnv = "", "", ""
 	kinds := allKinds
 	if o.kind != "" {
 		if _, ok := defaultAPIKeyEnv[o.kind]; !ok {
@@ -292,23 +295,36 @@ func runSelfTest(ctx context.Context, o options) error {
 		if k.apiKeyEnv != "" {
 			extraEnv = []string{k.apiKeyEnv + "=" + secret}
 		}
-		var reranker *exec.Cmd
+		fakes := []*exec.Cmd{fake}
+		stopFakes := func() {
+			for _, f := range fakes {
+				stopFake(f)
+			}
+		}
 		if k.serves(epRerank) {
 			const rerankKeyEnv = "LIVE_SELF_TEST_RERANK_KEY"
 			rerankSecret, _ := newKey()
-			var rootRerank string
-			reranker, rootRerank, err = startFake(ctx, fakeBin, "127.0.0.1:0", "bearer", rerankSecret,
+			reranker, rootRerank, err := startFake(ctx, fakeBin, "127.0.0.1:0", "bearer", rerankSecret,
 				[]string{selfTestRerankModel}, fakeFlags(kind, true)...)
 			if err != nil {
-				stopFake(fake)
+				stopFakes()
 				return err
 			}
+			fakes = append(fakes, reranker)
 			k.rerankBaseURL, k.rerankModel, k.rerankAPIKeyEnv = rootRerank+"/v1", selfTestRerankModel, rerankKeyEnv
 			extraEnv = append(extraEnv, rerankKeyEnv+"="+rerankSecret)
 		}
+		if kind == kindVLLM {
+			media, mediaEnv, err := startMediaFakes(ctx, fakeBin, &k)
+			fakes = append(fakes, media...)
+			if err != nil {
+				stopFakes()
+				return err
+			}
+			extraEnv = append(extraEnv, mediaEnv...)
+		}
 		err = runKind(ctx, k, ws, extraEnv)
-		stopFake(fake)
-		stopFake(reranker)
+		stopFakes()
 		switch {
 		case errors.Is(err, errChecksFailed):
 			failed = append(failed, kind)
@@ -375,6 +391,30 @@ func selfTestTwoBackends(ctx context.Context, o options, ws *workspace, fakeBin 
 	return runKind(ctx, o, ws, []string{embedKeyEnv + "=" + embedSecret})
 }
 
+// startMediaFakes starts the vLLM-Omni fakes of a self-test run and points o at them,
+// each with a bearer key (-speech-api-key-env, -image-api-key-env): a speech server
+// whose model does not draw — an image request answered 503, no diffusion stage — and
+// an image server comparing a request's model with its own, whose model does not
+// speak. It returns the fakes started (when it fails too) and the keys' environment.
+func startMediaFakes(ctx context.Context, fakeBin string, o *options) ([]*exec.Cmd, []string, error) {
+	const speechKeyEnv, imageKeyEnv = "LIVE_SELF_TEST_SPEECH_KEY", "LIVE_SELF_TEST_IMAGE_KEY"
+	speechSecret, _ := newKey()
+	imageSecret, _ := newKey()
+	speech, rootSpeech, err := startFake(ctx, fakeBin, "127.0.0.1:0", "bearer", speechSecret,
+		[]string{selfTestSpeechModel}, "-non-image-models", selfTestSpeechModel)
+	if err != nil {
+		return nil, nil, err
+	}
+	image, rootImage, err := startFake(ctx, fakeBin, "127.0.0.1:0", "bearer", imageSecret, []string{selfTestImageModel},
+		"-non-speech-models", selfTestImageModel, "-image-served-model", selfTestImageModel)
+	if err != nil {
+		return []*exec.Cmd{speech}, nil, err
+	}
+	o.speechBaseURL, o.speechModel, o.speechAPIKeyEnv = rootSpeech+"/v1", selfTestSpeechModel, speechKeyEnv
+	o.imageBaseURL, o.imageModel, o.imageAPIKeyEnv = rootImage+"/v1", selfTestImageModel, imageKeyEnv
+	return []*exec.Cmd{speech, image}, []string{speechKeyEnv + "=" + speechSecret, imageKeyEnv + "=" + imageSecret}, nil
+}
+
 // stopFake stops a fake backend process and waits for it; a stopped one is left as
 // it is.
 func stopFake(cmd *exec.Cmd) {
@@ -391,6 +431,8 @@ const (
 	selfTestChatModel   = "fake-chat"
 	selfTestEmbedModel  = "fake-embed"
 	selfTestRerankModel = "fake-rerank"
+	selfTestSpeechModel = "fake-tts"
+	selfTestImageModel  = "fake-image"
 	// selfTestEmbedPath is the embeddings server's model: a path, not a valid public
 	// name, so the kit must expose it under its own.
 	selfTestEmbedPath = "/models/fake-embed-q8_0.gguf"

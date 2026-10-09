@@ -24,8 +24,8 @@
 
 ```mermaid
 flowchart LR
-    client[Clients<br/>OpenAI chat/completions/embeddings,<br/>Anthropic Messages, OpenAI Responses,<br/>rerank] -->|requests, SSE streams| gw[kaiak gateway<br/>N replicas]
-    gw -->|passthrough: the same API<br/>at both ends| be[Backends<br/>vLLM, llama-server, SGLang,<br/>OpenAI, Azure OpenAI,<br/>Anthropic, Claude in Foundry]
+    client[Clients<br/>OpenAI chat/completions/embeddings,<br/>Anthropic Messages, OpenAI Responses,<br/>rerank, speech, image generation] -->|requests, SSE streams,<br/>audio| gw[kaiak gateway<br/>N replicas]
+    gw -->|passthrough: the same API<br/>at both ends| be[Backends<br/>vLLM, vLLM-Omni, llama-server,<br/>SGLang, OpenAI, Azure OpenAI,<br/>Anthropic, Claude in Foundry]
     cp[Control plane<br/>kaiak-control] -->|SSE stream: current config,<br/>usage totals, live count| gw
     gw -->|usage records, status| cp
     cp -.->|backend verify: GETs,<br/>when the app calls it| be
@@ -36,7 +36,8 @@ flowchart LR
 
 - Client → gateway → backend is the only request path. A request reaches only a
   backend that speaks its client API natively (Anthropic Messages, OpenAI Responses,
-  OpenAI's chat, completions and embeddings, or rerank — vLLM's and llama-server's):
+  OpenAI's chat, completions and embeddings, rerank — vLLM's and llama-server's — or
+  speech, the speech batch and image generation — vLLM-Omni's):
   the gateway passes it through with the edits it owns and never translates between
   APIs (settled 2026-10-06; translation is in `docs/BACKLOG.md`). Each backend type
   fixes the endpoints it serves (`docs/specs/GATEWAY.md`, Providers → Endpoint
@@ -149,15 +150,18 @@ enforce the boundaries.
   client's format; `server` relays them to the client, and observers (accounting)
   read them on the way.
 - `accounting` — meters each attempt's response as it is relayed — reading usage as
-  each client API reports it (OpenAI, Messages, Responses, Rerank) into the same units —, settles usage and
+  each client API reports it (OpenAI, Messages, Responses, Rerank, Speech, Speech
+  batch, Images) into the same units, measuring the length of the WAV and PCM audio
+  it relays and counting the images of an answer without holding them —, settles usage and
   cost into usage records (each naming the key's group path) — one per routed
   request, plus one per retried attempt whose request reached the backend and got
   no answer — clamps them to the
   protocol's bound, hands each in control-plane mode to the control client's batch
   sender (the batcher, which tags it with its batch's usage generation), then to the
   usage metrics.
-- `limits` — a sliding-minute counter per per-minute limit, and a UTC-hour token count
-  and a UTC-month cost count for global and every group whether limited or not, kept
+- `limits` — a sliding-minute counter per per-minute limit, and UTC-hour counts (tokens,
+  images, audio generated, audio processed) and a UTC-month cost count for global and
+  every group whether limited or not, kept
   until its window ends whatever the config, each limit a check over its scope's
   count; a request is checked against global and every group
   on its key's path, following the live config; check-and-reserve before routing,
@@ -252,15 +256,19 @@ enforce the boundaries.
   through one `metrics` defines.
 - `fakebackend` — a test backend speaking OpenAI's chat, completions and embeddings,
   Anthropic Messages and OpenAI Responses (with recorded answers of real servers in
-  `captures/` for tests that need their exact bytes), and rerank in vLLM's answer
+  `captures/` for tests that need their exact bytes), rerank in vLLM's answer
   shape or llama-server's (refusing a pair longer than its context in that server's
-  error), that can stream, stall, hang, cut, lack an endpoint as vLLM or llama-server
+  error), and vLLM-Omni's speech (WAV or PCM, whole, streamed raw or as SSE, its
+  usage in headers or events), speech batch and image generation (answering as
+  vLLM-Omni does for a model that does not speak, does not draw or is not the one it
+  serves), that can stream, stall, hang, cut, lack an endpoint as vLLM or llama-server
   lacks one, fail (also for a scripted sequence of requests) and omit usage on demand,
   serves a models list whose status the test sets, and records every request it
   receives; used by tests only. `fakebackend/cmd/fakebackend` runs it as a process
   (listen address, behavior profile, credential check, the server whose rerank
-  answers it plays and the endpoints that server lacks) for scripts and the live-test
-  kit's self-test.
+  answers it plays and the endpoints that server lacks, the models that do not speak
+  or draw and the image server's served name) for scripts and the live-test kit's
+  self-test.
 - `fakecontrol` — a control plane for tests: the stream of the current config the
   test publishes, the request checks, and scripted events, outages, restarts and
   protocol versions; takes usage batches (de-duplicated by batch ID as the protocol
@@ -315,9 +323,10 @@ Test tooling outside the binary:
   `go test ./...` leaves them out and `scripts/check-all.sh` runs them.
 - `scripts/live` — the live-test kit, a separate Go module (standard library only,
   imports nothing from the gateway): generates a config for a real vLLM,
-  llama-server, Azure OpenAI or OpenAI backend — or two backends serving one model
-  (load spread, the cap, a failover the user drives) — runs the built binary and checks it end to end
-  (`docs/testing/LIVE-BACKENDS.md`).
+  llama-server, OpenAI, Azure OpenAI, Anthropic or Foundry backend — or two backends
+  serving one model (load spread, the cap, a failover the user drives), with
+  embeddings, reranker and vLLM-Omni speech and image servers beside it — runs the
+  built binary and checks it end to end (`docs/testing/LIVE-BACKENDS.md`).
 
 ## Control-plane packages
 
