@@ -111,7 +111,7 @@ func speechBatchItem(reply Reply, batch, item map[string]json.RawMessage, usage 
 	}
 	audio := make([]byte, rate*millis/1000*speechFrameBytes)
 	if format == "wav" {
-		audio = append(wavHeader(rate, len(audio), false), audio...)
+		audio = append(WAVHeader(rate, len(audio), false), audio...)
 	}
 	result := speechBatchResult{Status: "success", AudioData: base64.StdEncoding.EncodeToString(audio), MediaType: "audio/" + format}
 	if !reply.OmitUsage {

@@ -57,7 +57,7 @@ func TestAcrossHalvesReplicas(t *testing.T) {
 		g.logs.wait(t, "the boot from its core", msg("config applied", "kaiak.trigger", "control"))
 	}
 
-	var tokens servedTokens
+	tokens := servedAmounts{typ: config.LimitTokensPerHour}
 	serve := func(t *testing.T, g *gateway, model string) {
 		t.Helper()
 		r := g.post(t, "/v1/chat/completions", evalKey, "", chatBody(model, false, nil))

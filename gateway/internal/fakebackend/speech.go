@@ -103,7 +103,7 @@ func (b *Backend) writeSpeech(w http.ResponseWriter, r *http.Request, req *Reque
 		return
 	}
 	if format == "wav" {
-		audio = append(wavHeader(rate, len(audio), false), audio...)
+		audio = append(WAVHeader(rate, len(audio), false), audio...)
 	}
 	if !reply.OmitUsage {
 		// vLLM-Omni writes them upper-case; header names are case-insensitive.
@@ -127,7 +127,7 @@ func (b *Backend) writeAudioStream(w http.ResponseWriter, r *http.Request, req *
 	w.WriteHeader(http.StatusOK)
 	s := &streamWriter{b: b, w: w, r: r, req: req, reply: reply, flusher: http.NewResponseController(w)}
 	if format == "wav" {
-		if _, err := w.Write(wavHeader(rate, 0, true)); err != nil || s.flusher.Flush() != nil {
+		if _, err := w.Write(WAVHeader(rate, 0, true)); err != nil || s.flusher.Flush() != nil {
 			return
 		}
 	}
@@ -180,7 +180,7 @@ func (b *Backend) writeSpeechEvents(w http.ResponseWriter, r *http.Request, req 
 	if !s.interrupt(0) {
 		return
 	}
-	if format == "wav" && !delta(wavHeader(rate, 0, true)) {
+	if format == "wav" && !delta(WAVHeader(rate, 0, true)) {
 		return
 	}
 	frames := len(audio) / speechFrameBytes
@@ -205,10 +205,11 @@ func (b *Backend) writeSpeechEvents(w http.ResponseWriter, r *http.Request, req 
 	event(done)
 }
 
-// wavHeader is the 44-byte header of a WAV file of 16-bit mono PCM at rate whose data
+// WAVHeader is the 44-byte header of a WAV file of 16-bit mono PCM at rate whose data
 // is dataBytes long — or, streamed, the placeholder 0xFFFFFFFF in both size fields, as
-// vLLM-Omni's raw-audio stream writes.
-func wavHeader(rate, dataBytes int, streamed bool) []byte {
+// vLLM-Omni's raw-audio stream writes. Every WAV answer of the fake opens with it, its
+// data silence: a test builds the audio it expects relayed from it.
+func WAVHeader(rate, dataBytes int, streamed bool) []byte {
 	riffSize, dataSize := uint32(36+dataBytes), uint32(dataBytes)
 	if streamed {
 		riffSize, dataSize = 0xFFFFFFFF, 0xFFFFFFFF

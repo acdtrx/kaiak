@@ -29,6 +29,7 @@ import (
 	"kaiak/internal/control"
 	"kaiak/internal/fakebackend"
 	"kaiak/internal/limits"
+	"kaiak/internal/provider"
 	"kaiak/internal/sse"
 )
 
@@ -87,7 +88,7 @@ func TestAcrossHalves(t *testing.T) {
 	// tokens holds what the gateways served since the sample's store began: every
 	// answer's tokens a token limit counts — its total less the input read from the
 	// cache — which the sample's hourly token total must equal once counted.
-	var tokens servedTokens
+	tokens := servedAmounts{typ: config.LimitTokensPerHour}
 	served := func(t *testing.T, what string, r *response) {
 		t.Helper()
 		if r.StatusCode != http.StatusOK {
@@ -302,6 +303,90 @@ func TestAcrossHalves(t *testing.T) {
 		}
 	})
 
+	t.Run("speech and image answers settle at the sample; their hourly totals limit the other gateway", func(t *testing.T) {
+		// What gw-b must learn is the hour's count, which starts from zero at the top of
+		// the hour: with less than half a minute of the hour left, the subtest waits for
+		// the next one — the totals watch wakes its waits at the top of the hour.
+		sample.totals.wait(t, "half a minute of the hour left", time.Minute, func(control.Totals) bool {
+			return time.Until(time.Now().UTC().Truncate(time.Hour).Add(time.Hour)) >= 30*time.Second
+		})
+
+		// eval's hour spent on gw-a: a clip of 2.5 s — 3 s, eval's
+		// audio_seconds_out_per_hour — its 7 tokens in and 4 out from the response
+		// headers, and 2 images, eval's images_per_hour, the prompt's tokens estimated.
+		r := a.post(t, "/v1/audio/speech", evalKey, "xh-speech", map[string]any{"model": "tts", "input": "Hello there"})
+		if r.StatusCode != http.StatusOK || r.Header.Get("Content-Type") != "audio/wav" {
+			t.Fatalf("speech on gw-a: %d %.300s, want 200 with a WAV clip", r.StatusCode, r.body)
+		}
+		imageBody := json.RawMessage(`{"model":"painter","prompt":"a red fox in snow","n":2}`)
+		r = a.post(t, "/v1/images/generations", evalKey, "xh-images", imageBody)
+		if r.StatusCode != http.StatusOK || !strings.Contains(string(r.body), `"b64_json"`) {
+			t.Fatalf("images on gw-a: %d %.300s, want 200 with images", r.StatusCode, r.body)
+		}
+		estimate := accounting.EstimateInput(provider.ImagesGenerations, imageBody).Total
+		images := servedAmounts{typ: config.LimitImagesPerHour}
+		images.add(2)
+		audio := servedAmounts{typ: config.LimitAudioSecondsOutPerHour}
+		audio.add(3)
+		tokens.add(7 + 4 + estimate)
+
+		// Each record reaches the sample with its media units, and the sample's hourly
+		// totals count them: images, seconds of audio generated, tokens.
+		speech := proxy.waitRecord(t, "xh-speech", waitLimit)
+		want := accounting.Units{config.UnitTokensIn: 7, config.UnitTokensCached: 0, config.UnitTokensCacheWrite: 0,
+			config.UnitTokensOut: 4, config.UnitTokensReasoning: 0,
+			config.UnitImages: 0, config.UnitAudioSecondsOut: 3, config.UnitAudioSecondsIn: 0}
+		if !maps.Equal(speech.Units, want) || speech.Model != "tts" ||
+			speech.Deployment != (accounting.Deployment{Backend: "omni", Model: omniSpeechModel}) ||
+			speech.CostNanoUSD != 0 || speech.Estimated || speech.Partial {
+			t.Errorf("speech record %+v, want units %v on omni, reported, free", speech, want)
+		}
+		image := proxy.waitRecord(t, "xh-images", waitLimit)
+		want = accounting.Units{config.UnitTokensIn: estimate, config.UnitTokensCached: 0, config.UnitTokensCacheWrite: 0,
+			config.UnitTokensOut: 0, config.UnitTokensReasoning: 0,
+			config.UnitImages: 2, config.UnitAudioSecondsOut: 0, config.UnitAudioSecondsIn: 0}
+		if !maps.Equal(image.Units, want) || image.Model != "painter" ||
+			image.Deployment != (accounting.Deployment{Backend: "omni", Model: omniImageModel}) ||
+			image.CostNanoUSD != 0 || !image.Estimated || image.Partial {
+			t.Errorf("image record %+v, want units %v on omni, the input estimated, free", image, want)
+		}
+		sample.totals.wait(t, "the hourly image total at 2", waitLimit, images.counted)
+		sample.totals.wait(t, "the hourly audio total at 3", waitLimit, audio.counted)
+		allCounted(t, waitLimit)
+
+		// gw-b learns eval's hour from the sample's totals: until then it admits the
+		// probes — sent to a backend that refuses them, so they spend nothing — and then
+		// refuses them, 429 images (2 spent, 1 more asked for) and 429 audio_seconds (3
+		// spent).
+		probe := func(t *testing.T, path string, body json.RawMessage, errType string) bool {
+			t.Helper()
+			r := b.post(t, path, evalKey, "", body)
+			e, _ := r.json(t)["error"].(map[string]any)
+			switch {
+			case r.StatusCode == http.StatusTooManyRequests && e["type"] == errType && e["code"] == "rate_limit_exceeded":
+				return true
+			case r.StatusCode != http.StatusBadRequest:
+				t.Fatalf("probe %s on gw-b: %d %s, want the backend's 400 or 429 %s", path, r.StatusCode, r.body, errType)
+			}
+			return false
+		}
+		imagesRefused, audioRefused := false, false
+		pollUntil(t, "gw-b refusing eval's images and speech", waitLimit, func() bool {
+			imagesRefused = imagesRefused ||
+				probe(t, "/v1/images/generations", json.RawMessage(`{"model":"painter-probe","prompt":"a fox","n":1}`), "images")
+			audioRefused = audioRefused ||
+				probe(t, "/v1/audio/speech", json.RawMessage(`{"model":"tts-probe","input":"hi"}`), "audio_seconds")
+			return imagesRefused && audioRefused
+		})
+		for _, typ := range []config.LimitType{config.LimitImagesPerHour, config.LimitAudioSecondsOutPerHour} {
+			series := `kaiak_limit_rejections_total{kaiak_limit_scope="group",kaiak_limit_type="` + string(typ) + `"}`
+			if got := b.metric(t, series); got < 1 {
+				t.Errorf("gw-b: %s = %v, want its refusals counted", series, got)
+			}
+		}
+		served(t, "chat on gw-b, outside the media limits", chat(t, b, "chat"))
+	})
+
 	t.Run("a group's budget spent through one gateway is enforced on the other", func(t *testing.T) {
 		if r := chat(t, b, "priced-probe"); r.StatusCode != http.StatusBadRequest {
 			t.Fatalf("probe on gw-b before the spend: %d %s, want the backend's 400", r.StatusCode, r.body)
@@ -403,7 +488,7 @@ func TestAcrossHalves(t *testing.T) {
 	}
 	sample.stop(t)
 	proxy.setUpstream(t, "")
-	tokens = servedTokens{} // the next sample starts with an empty store
+	tokens = servedAmounts{typ: config.LimitTokensPerHour} // the next sample starts with an empty store
 
 	t.Run("with the control plane gone money-limited models fail closed, others serve", func(t *testing.T) {
 		for _, g := range []*gateway{a, b} {
@@ -463,7 +548,10 @@ func TestAcrossHalves(t *testing.T) {
 // limit of 1000 on eval beside metered's 2, and a 1 s outage grace; the
 // working backend again as a llama-server, serving the "agent" model over Messages and
 // Responses, and the "reranker", priced at $1 per million input tokens, under a
-// global.max_rerank_documents of 2; for the reliability status, a backend refusing
+// global.max_rerank_documents of 2; the working backend and the refusing one again as
+// vllm-omni backends, serving the unpriced media models "tts" and "painter" and their
+// probes "tts-probe" and "painter-probe", under eval's images_per_hour of 2 and
+// audio_seconds_out_per_hour of 3; for the reliability status, a backend refusing
 // connections (the "down" model; a circuit opens on its first failure) and one taking
 // one request at a time (the "held" model).
 func crossHalfConfig(backendURL, refuserURL, downURL, cappedURL, evalHash, annHash string) map[string]any {
@@ -491,6 +579,16 @@ func crossHalfConfig(backendURL, refuserURL, downURL, cappedURL, evalHash, annHa
 		"prices": []any{map[string]any{"effective_from": "2026-01-01", "tiers": []any{map[string]any{
 			"above_input_tokens": 0, "usd_per_million": map[string]any{"tokens_in": 1, "tokens_out": 0}}}}},
 	}
+	backends["omni"] = map[string]any{"type": "vllm-omni", "base_url": backendURL + "/v1"}
+	backends["omni-refuser"] = map[string]any{"type": "vllm-omni", "base_url": refuserURL + "/v1"}
+	for name, d := range map[string][2]string{"tts": {"omni", omniSpeechModel}, "painter": {"omni", omniImageModel},
+		"tts-probe": {"omni-refuser", omniSpeechModel}, "painter-probe": {"omni-refuser", omniImageModel}} {
+		models[name] = map[string]any{
+			"deployments": []any{map[string]any{"backend": d[0], "model": d[1]}},
+			"metadata": map[string]any{"context_length": 8192,
+				"capabilities": map[string]any{"streaming": true, "tools": false, "vision": false, "reasoning": false}},
+		}
+	}
 	global := cfg["global"].(map[string]any)
 	global["max_rerank_documents"] = 2
 	global["control_outage_grace_ms"] = 1000
@@ -503,6 +601,8 @@ func crossHalfConfig(backendURL, refuserURL, downURL, cappedURL, evalHash, annHa
 	}
 	groups["eval"].(map[string]any)["limits"] = []any{
 		map[string]any{"type": "requests_per_minute", "value": 1000},
+		map[string]any{"type": "images_per_hour", "value": 2},
+		map[string]any{"type": "audio_seconds_out_per_hour", "value": 3},
 	}
 	return cfg
 }
@@ -673,7 +773,7 @@ func watchTotals(t *testing.T, baseURL, token string) *totalsWatch {
 		defer resp.Body.Close()
 		w.read(sse.NewReader(resp.Body, 1<<20))
 	})
-	// A wait's match may read the clock (servedTokens.counted checks the current
+	// A wait's match may read the clock (servedAmounts.counted checks the current
 	// hour), and the top of the hour brings no push of its own: it wakes the waits.
 	running.Go(func() {
 		for {
@@ -755,47 +855,49 @@ type answerUsage struct {
 // read from the cache (GATEWAY.md, Limits → Settle).
 func (u answerUsage) limitTokens() int64 { return u.Total - u.Details.Cached }
 
-// servedTokens are the tokens of the answers served, each with when it was received.
-// The sample's tokens_per_hour total covers one UTC hour, so a run crossing the top
-// of the hour sees it start again from the answers of the new hour.
-type servedTokens struct {
+// servedAmounts are what the answers served add to one hourly total — tokens, images
+// or seconds of audio generated — each with when it was received. The sample's hourly
+// totals cover one UTC hour, so a run crossing the top of the hour sees them start
+// again from the answers of the new hour.
+type servedAmounts struct {
+	typ     config.LimitType // the hourly type whose global total the answers add to
 	answers []servedAnswer
 }
 
 type servedAnswer struct {
 	at     time.Time
-	tokens int64
+	amount int64
 }
 
 // hourEdge is how long before an answer's arrival its usage record may be stamped:
 // an answer received this close after the top of an hour may count in either hour.
 const hourEdge = time.Second
 
-func (s *servedTokens) add(tokens int64) {
-	s.answers = append(s.answers, servedAnswer{at: time.Now(), tokens: tokens})
+func (s *servedAmounts) add(amount int64) {
+	s.answers = append(s.answers, servedAnswer{at: time.Now(), amount: amount})
 }
 
-func (s *servedTokens) total() int64 {
+func (s *servedAmounts) total() int64 {
 	var n int64
 	for _, a := range s.answers {
-		n += a.tokens
+		n += a.amount
 	}
 	return n
 }
 
-// counted reports whether totals' global hourly token total of the current UTC hour
-// is the answers of that hour: exactly, but an answer at the hour's edges may count
+// counted reports whether totals' global hourly total of s's type for the current UTC
+// hour is the answers of that hour: exactly, but an answer at the hour's edges may count
 // in either hour. Totals carry only the current hour (CONTROL-PROTOCOL.md, Messages →
 // Totals): a window of an earlier hour is one the push merged in before the hour
 // ended, and an answer stamped just before the top of the hour whose batch is counted
 // after it lands in that earlier window, which no push lists again — so only the
 // current hour can be checked, and a window not listed for it has used nothing.
-func (s *servedTokens) counted(totals control.Totals) bool {
+func (s *servedAmounts) counted(totals control.Totals) bool {
 	start := time.Now().UTC().Truncate(time.Hour)
 	end := start.Add(time.Hour)
 	var used int64
 	for _, w := range totals.Windows {
-		if w.Group == "" && w.Type == config.LimitTokensPerHour && w.Start.Equal(start) {
+		if w.Group == "" && w.Type == s.typ && w.Start.Equal(start) {
 			used = w.Used
 		}
 	}
@@ -804,9 +906,9 @@ func (s *servedTokens) counted(totals control.Totals) bool {
 		switch {
 		case a.at.Before(start) || !a.at.Before(end.Add(hourEdge)):
 		case a.at.Before(start.Add(hourEdge)) || !a.at.Before(end):
-			edge += a.tokens
+			edge += a.amount
 		default:
-			sure += a.tokens
+			sure += a.amount
 		}
 	}
 	return used >= sure && used <= sure+edge
