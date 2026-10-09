@@ -186,8 +186,76 @@ func TestVLLMOmniImageReadings(t *testing.T) {
 		`{"error":{"message":"No diffusion stage found","type":"Service Unavailable","code":503}}`:                          false,
 		`Service Unavailable`: false,
 	} {
-		if got := m.noDiffusionStage([]byte(answer)); got != want {
+		if got := m.noDiffusionStage([]byte(answer), "Qwen/Qwen3-TTS"); got != want {
 			t.Errorf("%s: endpoint missing %v, want %v", answer, got, want)
+		}
+	}
+}
+
+// Image generation's own answers through Send (docs/specs/GATEWAY.md, Providers →
+// Wrong model on a host, An endpoint missing from a server): its 400 "Model mismatch"
+// quoting the deployment's model is upstream_model_missing, and its 503 "No diffusion
+// stage" upstream_endpoint_missing naming the URL — neither carrying the backend's
+// text; a mismatch quoting another model and any other 400 are relayed whole, as the
+// caller's; any other 503 is relayed for the pipeline to answer as the backend's 5xx.
+// Speech and the speech batch read neither: there the same answers are relayed.
+func TestVLLMOmniImageAnswersThroughSend(t *testing.T) {
+	// relayed: the answer is not the deployment's failure; the provider returns it.
+	const relayed = Code("")
+	mismatch := func(requested string) string {
+		return `{"error":{"message":"Model mismatch: request specifies '` + requested +
+			`' but server is running 'Qwen/Qwen3-TTS'.","type":"Bad Request","param":null,"code":400}}`
+	}
+	const noDiffusion = `{"error":{"message":"No diffusion stage found in multi-stage pipeline.","type":"Service Unavailable",` +
+		`"param":null,"code":503}}`
+	answers := []struct {
+		name   string
+		status int
+		body   string
+		want   Code
+	}{
+		{"model mismatch", http.StatusBadRequest, mismatch("backend-model"), CodeModelMissing},
+		{"another model's mismatch", http.StatusBadRequest, mismatch("backend-model-2"), relayed},
+		{"caller's 400", http.StatusBadRequest,
+			`{"error":{"message":"n: Input should be less than or equal to 10","type":"BadRequestError","param":null,"code":400}}`, relayed},
+		{"no diffusion stage", http.StatusServiceUnavailable, noDiffusion, CodeEndpointMissing},
+		{"another 503", http.StatusServiceUnavailable,
+			`{"error":{"message":"The engine is overloaded.","type":"Service Unavailable","param":null,"code":503}}`, relayed},
+	}
+	r := moduleRegistry()
+	s := newWireServer(t)
+	b := wireBackend(s, config.BackendVLLMOmni)
+	for _, a := range answers {
+		s.set(a.status, a.body)
+		for _, e := range []Endpoint{ImagesGenerations, AudioSpeech, AudioSpeechBatch} {
+			t.Run(a.name+"/"+e.Path(), func(t *testing.T) {
+				want := a.want
+				if e != ImagesGenerations {
+					want = relayed
+				}
+				resp, err := sendTo(r, b, e, `{"model":"pub"}`)
+				if want == relayed {
+					if err != nil {
+						t.Fatalf("%v, want the %d relayed", err, a.status)
+					}
+					if got := readAll(resp); resp.Status() != a.status || got != a.body {
+						t.Errorf("relayed %d %s, want %d %s", resp.Status(), got, a.status, a.body)
+					}
+					return
+				}
+				perr, ok := errors.AsType[*Error](err)
+				if !ok || perr.Code != want {
+					t.Fatalf("%v, want %s", err, want)
+				}
+				if want == CodeEndpointMissing && !strings.Contains(err.Error(), s.srv.URL+"/v1/images/generations") {
+					t.Errorf("error %q: want the URL named", err)
+				}
+				for _, text := range []string{"mismatch", "Qwen3-TTS", "diffusion", "pipeline"} {
+					if strings.Contains(err.Error(), text) {
+						t.Errorf("error %q carries the backend's text", err)
+					}
+				}
+			})
 		}
 	}
 }

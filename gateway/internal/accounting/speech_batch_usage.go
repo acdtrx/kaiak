@@ -1,7 +1,6 @@
 package accounting
 
 import (
-	"bytes"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -46,10 +45,9 @@ type speechBatchUsage struct {
 	key     []byte
 	escaped bool
 	member  batchMember
-	// skip follows the value being skipped — or kept, into keep — and resume is the
-	// phase after it.
+	// skip follows the value being skipped — or kept — and resume is the phase after
+	// it.
 	skip   valueSkip
-	keep   *memberCapture
 	resume batchPhase
 	// result is the result being read.
 	result batchResult
@@ -182,7 +180,7 @@ func (u *speechBatchUsage) reported() (Units, bool) {
 
 // media: the successful results' audio, its exact length summed and rounded up to
 // whole seconds once; unmeasured when one result's could not be measured.
-func (u *speechBatchUsage) media() (Units, bool) {
+func (u *speechBatchUsage) media(bool) (Units, bool) {
 	return Units{config.UnitAudioSecondsOut: wholeSeconds(u.audio)}, !u.unmeasured
 }
 
@@ -193,7 +191,10 @@ func (u *speechBatchUsage) bodyPiece(p []byte) {
 		case batchAudio:
 			p = u.audioRun(p)
 		case batchSkip:
-			p = u.skipRun(p)
+			var ended bool
+			if p, ended = u.skip.run(p); ended {
+				u.phase = u.resume
+			}
 		default:
 			if u.step(p[0]) {
 				p = p[1:]
@@ -371,109 +372,18 @@ func (u *speechBatchUsage) wantedMember() batchMember {
 	if u.inResult {
 		members = resultMembers
 	}
-	if len(u.key) > maxScanKey {
-		return memberOther
-	}
-	if bytes.IndexByte(u.key, '\\') < 0 {
-		return members[string(u.key)]
-	}
-	var name string
-	quoted := append(append([]byte{'"'}, u.key...), '"')
-	if json.Unmarshal(quoted, &name) != nil {
+	name, ok := scannedName(u.key)
+	if !ok {
 		return memberOther
 	}
 	return members[name]
 }
 
-// valueSkip follows a JSON value being skipped: its nesting and strings. A scalar
-// (number, true, false, null) ends at the first byte after it.
-type valueSkip struct {
-	depth                     int
-	inString, escaped, scalar bool
-}
-
 // startSkip skips the value whose first byte is c — keeping it into keep, unless nil
 // — then reads on in resume.
 func (u *speechBatchUsage) startSkip(c byte, keep *memberCapture, resume batchPhase) {
-	u.skip = valueSkip{scalar: c != '{' && c != '[' && c != '"'}
-	u.keep, u.resume, u.phase = keep, resume, batchSkip
-	if keep != nil {
-		keep.value, keep.size, keep.complete = keep.value[:0], 0, false
-	}
-}
-
-// skipRun reads the value being skipped from p and returns what follows it once it
-// ended: a scalar's end is the byte after it, which is not its own. A string's
-// characters are passed over a run at a time.
-func (u *speechBatchUsage) skipRun(p []byte) []byte {
-	s := &u.skip
-	for len(p) > 0 {
-		if s.inString && !s.escaped {
-			n := stringRun(p)
-			u.keepBytes(p[:n])
-			if p = p[n:]; len(p) == 0 {
-				return p
-			}
-		}
-		c := p[0]
-		ended := false
-		switch {
-		case s.scalar:
-			if isJSONSpace(c) || c == ',' || c == '}' || c == ']' {
-				u.endSkip()
-				return p
-			}
-		case s.inString:
-			switch {
-			case s.escaped:
-				s.escaped = false
-			case c == '\\':
-				s.escaped = true
-			case c == '"':
-				s.inString = false
-				ended = s.depth == 0
-			}
-		default:
-			switch c {
-			case '"':
-				s.inString = true
-			case '{', '[':
-				s.depth++
-			case '}', ']':
-				s.depth--
-				ended = s.depth == 0
-			}
-		}
-		u.keepBytes(p[:1])
-		p = p[1:]
-		if ended {
-			u.endSkip()
-			return p
-		}
-	}
-	return p
-}
-
-// keepBytes keeps b, the value's next bytes, when the value is kept: up to its limit,
-// every byte counted.
-func (u *speechBatchUsage) keepBytes(b []byte) {
-	k := u.keep
-	if k == nil {
-		return
-	}
-	k.size += len(b)
-	if room := k.limit - len(k.value); room > 0 {
-		k.value = append(k.value, b[:min(room, len(b))]...)
-	}
-}
-
-// endSkip ends the value skipped: a kept one is complete when every byte was kept.
-func (u *speechBatchUsage) endSkip() {
-	if u.keep != nil {
-		u.keep.complete = u.keep.size == len(u.keep.value)
-		u.keep = nil
-	}
-	u.phase = u.resume
+	u.skip.start(c, keep)
+	u.resume, u.phase = resume, batchSkip
 }
 
 // audioRun reads a result's audio_data string from p — its characters a run at a time
@@ -500,19 +410,6 @@ func (u *speechBatchUsage) audioRun(p []byte) []byte {
 		p = p[1:]
 	}
 	return p
-}
-
-// stringRun is how many bytes of p, inside a JSON string, are its characters before
-// the next quote or backslash.
-func stringRun(p []byte) int {
-	end := bytes.IndexByte(p, '"')
-	if end < 0 {
-		end = len(p)
-	}
-	if escape := bytes.IndexByte(p[:end], '\\'); escape >= 0 {
-		return escape
-	}
-	return end
 }
 
 // whole is the value kept, when it was kept whole; nil otherwise.

@@ -4,11 +4,12 @@
 // /openai/v1/ (Azure OpenAI's) and /anthropic/v1/ (Claude in Foundry's), and rerank
 // under /v1/ alone (vLLM's and llama-server's: neither Azure API has one), in vLLM's
 // answer shape or llama-server's (SetRerankShape), refusing a pair longer than its
-// context (SetRerankContext), and speech and the speech batch under /v1/ alone
-// (vLLM-Omni's: speech.go, speech_batch.go); it answers as scripted by the test — a
-// path it has no route for (SetNoRoute), an
-// endpoint it was not started for (SetNotSupported) and a model that does not speak
-// (SetNonSpeechModels) too — and records every request it receives.
+// context (SetRerankContext), and speech, the speech batch and image generation under
+// /v1/ alone (vLLM-Omni's: speech.go, speech_batch.go, images.go); it answers as
+// scripted by the test — a path it has no route for (SetNoRoute), an endpoint it was
+// not started for (SetNotSupported), a model that does not speak (SetNonSpeechModels),
+// one that does not draw (SetNonImageModels) and one it does not run
+// (SetImageServedModel) too — and records every request it receives.
 // Test tooling only: nothing in the gateway binary imports it; cmd/fakebackend runs it
 // as a process for the e2e test and the live-test kit.
 package fakebackend
@@ -77,6 +78,9 @@ type Reply struct {
 	// FailItems are the positions of the speech batch items whose result is an error
 	// (SpeechBatchItemError).
 	FailItems []int
+	// ImageBytes is each generated image's size in bytes before base64 (default
+	// DefaultImageBytes).
+	ImageBytes int
 	// HonorMaxTokens: generate at most the request's max_completion_tokens,
 	// max_tokens or max_output_tokens chunks (the smallest when several are set), one
 	// token each, and finish with "length" ("max_tokens" in Messages, an incomplete
@@ -102,7 +106,8 @@ const (
 
 // StreamFault breaks a stream after At text events. At 0 the fault comes before the
 // stream's first event — before a Messages or Responses stream's opening events too.
-// A stream with fewer than At text events is not broken.
+// A stream with fewer than At text events is not broken. An image answer, a body,
+// breaks within image At's base64, after the images before it (Cut, Hang, End).
 type StreamFault struct {
 	At   int
 	Kind StreamFaultKind
@@ -197,6 +202,11 @@ type Backend struct {
 	// nonSpeech are the models whose speech the backend refuses as a model with no
 	// speech stage (SetNonSpeechModels).
 	nonSpeech []string
+	// imageModel is the server's first served name, which image generation compares
+	// a request's model with ("": none compared); nonImage are the models whose image
+	// generation it refuses as a model with no diffusion stage.
+	imageModel string
+	nonImage   []string
 }
 
 // maxQueuedArrivals bounds requests queued for NextRequest; a test that never reads
@@ -392,6 +402,7 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 	reply := b.reply
 	rerankShape, rerankContext := b.rerankShape, b.rerankContext
 	noRoute, unrouted, notSupported, nonSpeech := b.noRoute, b.unrouted, b.notSupported, b.nonSpeech
+	imageModel, nonImage := b.imageModel, b.nonImage
 	if len(b.queued) > 0 {
 		reply = b.queued[0]
 		b.queued = b.queued[1:]
@@ -403,7 +414,7 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	switch endpoint {
 	case chatPath, completionPath, embeddingPath, messagesPath, countTokensPath, responsesPath, inputTokensPath:
-	case rerankPath, speechPath, speechBatchPath:
+	case rerankPath, speechPath, speechBatchPath, imagesPath:
 		ok = strings.HasPrefix(r.URL.Path, "/v1/")
 	default:
 		ok = false
@@ -534,6 +545,10 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 	case endpoint == speechBatchPath:
 		// vLLM-Omni's batch has no stream: its answer is a JSON body either way.
 		writeSpeechBatch(w, reply, top, params.model, usage, nonSpeech)
+	case endpoint == imagesPath:
+		// vLLM-Omni does not stream image generation: its answer is a JSON body either
+		// way.
+		b.writeImages(w, r, req, reply, top, params.model, imageModel, nonImage)
 	case params.stream:
 		b.writeStream(w, r, req, reply, endpoint, params.model, chunks, finish, usage, params.includeUsage && !reply.OmitUsage)
 	default:

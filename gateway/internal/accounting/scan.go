@@ -226,16 +226,131 @@ func (s *memberScanner) endValue() {
 // wanted returns the capture for the key just read, if it is one of the wanted
 // members. Keys match exactly after decoding.
 func (s *memberScanner) wanted() *memberCapture {
-	if len(s.key) > maxScanKey {
-		return nil
-	}
-	if bytes.IndexByte(s.key, '\\') < 0 {
-		return s.captures[string(s.key)]
-	}
-	var key string
-	quoted := append(append([]byte{'"'}, s.key...), '"')
-	if json.Unmarshal(quoted, &key) != nil {
+	key, ok := scannedName(s.key)
+	if !ok {
 		return nil
 	}
 	return s.captures[key]
+}
+
+// scannedName is a member name a one-pass reader read — its bytes between the quotes,
+// as sent, kept up to maxScanKey+1 bytes — decoded, as every JSON decoder reads it;
+// ok is false for a name longer than any a reader looks for, or one that does not
+// decode.
+func scannedName(key []byte) (string, bool) {
+	if len(key) > maxScanKey {
+		return "", false
+	}
+	if bytes.IndexByte(key, '\\') < 0 {
+		return string(key), true
+	}
+	var name string
+	quoted := append(append([]byte{'"'}, key...), '"')
+	if json.Unmarshal(quoted, &name) != nil {
+		return "", false
+	}
+	return name, true
+}
+
+// valueSkip follows one JSON value of a body read in one pass as it passes — its
+// nesting and strings, a string's characters a run at a time, so a value of many MiB
+// (base64 media) costs one pass and nothing held — keeping its bytes into keep, up to
+// keep's limit, when keep is set. A scalar (number, true, false, null) ends at the
+// first byte after it.
+type valueSkip struct {
+	depth                     int
+	inString, escaped, scalar bool
+	keep                      *memberCapture
+}
+
+// start begins the value whose first byte is c, which run reads; keep, unless nil,
+// keeps the value.
+func (s *valueSkip) start(c byte, keep *memberCapture) {
+	*s = valueSkip{scalar: c != '{' && c != '[' && c != '"', keep: keep}
+	if keep != nil {
+		keep.value, keep.size, keep.complete = keep.value[:0], 0, false
+	}
+}
+
+// run reads the value from p and returns what follows it, and whether the value
+// ended: a scalar's end is the byte after it, which is not its own.
+func (s *valueSkip) run(p []byte) (rest []byte, ended bool) {
+	for len(p) > 0 {
+		if s.inString && !s.escaped {
+			n := stringRun(p)
+			s.keepBytes(p[:n])
+			if p = p[n:]; len(p) == 0 {
+				return p, false
+			}
+		}
+		c := p[0]
+		switch {
+		case s.scalar:
+			if isJSONSpace(c) || c == ',' || c == '}' || c == ']' {
+				s.end()
+				return p, true
+			}
+		case s.inString:
+			switch {
+			case s.escaped:
+				s.escaped = false
+			case c == '\\':
+				s.escaped = true
+			case c == '"':
+				s.inString = false
+				ended = s.depth == 0
+			}
+		default:
+			switch c {
+			case '"':
+				s.inString = true
+			case '{', '[':
+				s.depth++
+			case '}', ']':
+				s.depth--
+				ended = s.depth == 0
+			}
+		}
+		s.keepBytes(p[:1])
+		p = p[1:]
+		if ended {
+			s.end()
+			return p, true
+		}
+	}
+	return p, false
+}
+
+// keepBytes keeps b, the value's next bytes, when the value is kept: up to its limit,
+// every byte counted.
+func (s *valueSkip) keepBytes(b []byte) {
+	k := s.keep
+	if k == nil {
+		return
+	}
+	k.size += len(b)
+	if room := k.limit - len(k.value); room > 0 {
+		k.value = append(k.value, b[:min(room, len(b))]...)
+	}
+}
+
+// end ends the value: a kept one is complete when every byte was kept.
+func (s *valueSkip) end() {
+	if s.keep != nil {
+		s.keep.complete = s.keep.size == len(s.keep.value)
+		s.keep = nil
+	}
+}
+
+// stringRun is how many bytes of p, inside a JSON string, are its characters before
+// the next quote or backslash.
+func stringRun(p []byte) int {
+	end := bytes.IndexByte(p, '"')
+	if end < 0 {
+		end = len(p)
+	}
+	if escape := bytes.IndexByte(p[:end], '\\'); escape >= 0 {
+		return escape
+	}
+	return end
 }

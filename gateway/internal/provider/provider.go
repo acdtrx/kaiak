@@ -25,8 +25,8 @@ import (
 // keeping every backend-specific concern behind Send and Response: the pipeline hands
 // over the client's request as received plus the routing decision, and gets back
 // status, headers and events already in the client's format (the endpoint's: OpenAI,
-// Messages or Responses JSON and SSE, a Rerank or Speech batch JSON body, or Speech
-// audio). A
+// Messages or Responses JSON and SSE, a Rerank, Speech batch or Images JSON body, or
+// Speech audio). A
 // translating provider converts on both sides; today's modules pass every request
 // through in its own format with the owned edits only (docs/specs/GATEWAY.md, Client
 // API → Client APIs).
@@ -56,6 +56,7 @@ const (
 	Rerank
 	AudioSpeech
 	AudioSpeechBatch
+	ImagesGenerations
 )
 
 // Format is a client API format: the request and response shapes an endpoint speaks
@@ -78,6 +79,9 @@ const (
 	// FormatSpeechBatch: vLLM-Omni's own speech batch: a JSON request of items sharing
 	// its defaults, a JSON answer carrying each item's audio in base64.
 	FormatSpeechBatch
+	// FormatImages: image generation, OpenAI's image generation API as vLLM-Omni serves
+	// it: a JSON request, a JSON answer carrying each image in base64.
+	FormatImages
 )
 
 // endpoints holds each Endpoint's path below the API's version prefix
@@ -96,6 +100,7 @@ var endpoints = [...]struct {
 	Rerank:               {"rerank", FormatRerank},
 	AudioSpeech:          {"audio/speech", FormatSpeech},
 	AudioSpeechBatch:     {"audio/speech/batch", FormatSpeechBatch},
+	ImagesGenerations:    {"images/generations", FormatImages},
 }
 
 // Path is the endpoint's path below the API's version prefix: a backend URL ends with
@@ -215,7 +220,8 @@ const (
 	// CodeAuthFailed: the backend refused the gateway's own credential (401 or 403).
 	CodeAuthFailed Code = "upstream_auth_failed"
 	// CodeModelMissing: the backend answered 404 saying the deployment's model does
-	// not exist there — the host serves another model (docs/specs/GATEWAY.md,
+	// not exist there, or vLLM-Omni's image generation answered 400 naming it in a
+	// model mismatch — the host serves another model (docs/specs/GATEWAY.md,
 	// Providers: wrong model on a host).
 	CodeModelMissing Code = "upstream_model_missing"
 	// CodePathMissing: the backend answered 404 the way its server answers a path it
@@ -224,7 +230,8 @@ const (
 	CodePathMissing Code = "upstream_path_missing"
 	// CodeEndpointMissing: the server does not serve an endpoint its type serves — the
 	// same answer on an endpoint beyond the type's core ones (every endpoint on vllm),
-	// or llama-server's 501 on embeddings or rerank: its version, the model it loaded
+	// llama-server's 501 on embeddings or rerank, or vLLM-Omni's 503 for image
+	// generation on a model with no diffusion stage: its version, the model it loaded
 	// or the flags it started with leave the endpoint out, while its other endpoints
 	// serve (docs/specs/GATEWAY.md, Providers: an endpoint missing from a server).
 	CodeEndpointMissing Code = "upstream_endpoint_missing"

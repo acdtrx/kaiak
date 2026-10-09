@@ -46,6 +46,13 @@ type inboundFields struct {
 	Speech accounting.Speech
 }
 
+// mediaRequest is what the request says about its answer, which its meters read: a
+// speech request's or batch's Speech, the images an image request asks for (its
+// image reservation).
+func (f *inboundFields) mediaRequest() accounting.MediaRequest {
+	return accounting.MediaRequest{Speech: f.Speech, Images: f.Media[config.MeasureImages]}
+}
+
 // readInbound parses a body endpoint's request: the raw body, capped by the snapshot's
 // max_request_body_bytes and by the whole body budget (a larger body could never be
 // held), and the owned fields. The body holds its share of the budget until it is
@@ -69,16 +76,16 @@ func readInbound(_ context.Context, rq *request, bodies *BodyBudget) *apiError {
 
 // parseOwnedFields reads the owned fields of the request's format by exact key
 // (docs/specs/GATEWAY.md, Client API → owned fields): the ones every format shares —
-// model; stream, except on the token-counting endpoints and in the rerank and speech
-// batch formats, which have none (their stream passes untouched, and the request is
-// never a stream) — speech reads it with stream_format for its mode; the endpoint's
-// output-limit keys — then the format's own, then the input estimate. encoding/json
-// matches struct fields case-insensitively, which would read "Model" as model while
-// the backend sees an unknown field; the top-level object is therefore decoded as a
-// map. A null value counts as absent, as it does for OpenAI. A top-level member named
-// twice is refused (docs/specs/GATEWAY.md, Request pipeline):
-// the gateway and the backend could read different occurrences, and the provider
-// edits each owned member once.
+// model; stream, except on the token-counting endpoints and in the rerank, speech
+// batch and images formats, which have none (their stream passes untouched, and the
+// request is never a stream) — speech reads it with stream_format for its mode; the
+// endpoint's output-limit keys — then the format's own, then the input estimate.
+// encoding/json matches struct fields case-insensitively, which would read "Model" as
+// model while the backend sees an unknown field; the top-level object is therefore
+// decoded as a map. A null value counts as absent, as it does for OpenAI. A top-level
+// member named twice is refused (docs/specs/GATEWAY.md, Request pipeline): the gateway
+// and the backend could read different occurrences, and the provider edits each owned
+// member once.
 func parseOwnedFields(rq *request) *apiError {
 	top, ok, apiErr := objectMembers(rq.body, "")
 	if !ok {
@@ -91,7 +98,7 @@ func parseOwnedFields(rq *request) *apiError {
 		return apiErr
 	}
 	if format := rq.endpoint.api.Format(); !rq.endpoint.counts && format != provider.FormatRerank &&
-		format != provider.FormatSpeechBatch {
+		format != provider.FormatSpeechBatch && format != provider.FormatImages {
 		var stream *bool
 		if stream, apiErr = optionalField[bool](top, "stream", "stream", "a boolean"); apiErr != nil {
 			return apiErr
@@ -118,6 +125,8 @@ func parseOwnedFields(rq *request) *apiError {
 		apiErr = parseSpeechFields(rq, top)
 	case provider.FormatSpeechBatch:
 		apiErr = parseSpeechBatchFields(rq, top)
+	case provider.FormatImages:
+		apiErr = parseImagesFields(rq, top)
 	default:
 		// The endpoint table routes only the formats the inbound stage reads.
 		panic("server: no inbound parser for the endpoint's format")
@@ -176,6 +185,42 @@ func parseRerankFields(rq *request, top map[string]json.RawMessage) *apiError {
 	if documents := rerankDocuments(top["documents"]); documents > rq.snapshot.MaxRerankDocuments {
 		return errTooManyDocuments(documents, rq.snapshot.MaxRerankDocuments)
 	}
+	return nil
+}
+
+// parseImagesFields reads an image generation request's own owned fields
+// (docs/specs/GATEWAY.md, Client API → owned fields: images), past model
+// (parseOwnedFields): n, the images it asks for — absent 1, vLLM-Omni's default; below
+// 1 counted as 1, for the backend to refuse — refused above max_images_per_request
+// and reserved against the image limits; response_format, b64_json only (absent means
+// it): the images are counted from the answer's data, which no other format carries
+// countably; and lora, refused whatever its value — vLLM-Omni loads the adapter from
+// the server path it names. A null value is absent. stream is not read: an image
+// answer is never a stream. Everything else — prompt, negative_prompt, size, layers,
+// seed, … — is the backend's and passes untouched.
+func parseImagesFields(rq *request, top map[string]json.RawMessage) *apiError {
+	n, apiErr := optionalField[int64](top, "n", "n", "an integer")
+	if apiErr != nil {
+		return apiErr
+	}
+	images := int64(1)
+	if n != nil && *n > 1 {
+		images = *n
+	}
+	if images > rq.snapshot.MaxImagesPerRequest {
+		return errTooManyImages(images, rq.snapshot.MaxImagesPerRequest)
+	}
+	format, apiErr := optionalField[string](top, "response_format", "response_format", "a string")
+	if apiErr != nil {
+		return apiErr
+	}
+	if format != nil && *format != "b64_json" {
+		return errResponseFormatUnsupported("response_format", "b64_json")
+	}
+	if raw, present := top["lora"]; present && string(raw) != "null" {
+		return errExternalReference("lora")
+	}
+	rq.inbound.Media = map[config.Measure]int64{config.MeasureImages: images}
 	return nil
 }
 

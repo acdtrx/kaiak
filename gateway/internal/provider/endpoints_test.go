@@ -14,7 +14,6 @@ import (
 
 // endpointColumns names the endpoint support table's columns
 // (docs/specs/GATEWAY.md, Providers → Endpoint support) by the endpoints they cover.
-// The media column covers the media endpoints the client API serves.
 var endpointColumns = map[string][]Endpoint{
 	"chat, completions, embeddings": {ChatCompletions, Completions, Embeddings},
 	"messages":                      {Messages},
@@ -22,7 +21,7 @@ var endpointColumns = map[string][]Endpoint{
 	"responses":                     {Responses},
 	"responses_input_tokens":        {ResponsesInputTokens},
 	"rerank":                        {Rerank},
-	"audio_speech, audio_speech_batch, images_generations": {AudioSpeech, AudioSpeechBatch},
+	"audio_speech, audio_speech_batch, images_generations": {AudioSpeech, AudioSpeechBatch, ImagesGenerations},
 }
 
 // Each type serves exactly what the spec's endpoint support table says, the table
@@ -200,14 +199,16 @@ func TestWrongEndpointAnswersByModule(t *testing.T) {
 // untouched, and the model is its one edit. Speech's stream is its mode's, passed
 // untouched, and speech reports usage unasked — the whole clip in its headers, the SSE
 // stream in speech.audio.done: the model is its one edit beside its output limit. The
-// speech batch has no stream, and reports each item's usage unasked.
+// speech batch has no stream, and reports each item's usage unasked. Image generation
+// has no stream and reports no usage: the model is its one edit.
 func TestNoUsageEditOutsideTheOpenAIFormat(t *testing.T) {
 	for e, want := range map[Endpoint]string{
-		Messages:         `{"model":"m","stream":true}`,
-		Responses:        `{"model":"m","stream":true,"store":false}`,
-		Rerank:           `{"model":"m","stream":true}`,
-		AudioSpeech:      `{"model":"m","stream":true}`,
-		AudioSpeechBatch: `{"model":"m","stream":true}`,
+		Messages:          `{"model":"m","stream":true}`,
+		Responses:         `{"model":"m","stream":true,"store":false}`,
+		Rerank:            `{"model":"m","stream":true}`,
+		AudioSpeech:       `{"model":"m","stream":true}`,
+		AudioSpeechBatch:  `{"model":"m","stream":true}`,
+		ImagesGenerations: `{"model":"m","stream":true}`,
 	} {
 		body, stripUsage, err := passthroughBody(&Request{Endpoint: e, Stream: true,
 			Deployment: config.Deployment{Model: "m"}, Body: []byte(`{"model":"pub","stream":true}`)})

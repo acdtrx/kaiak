@@ -33,7 +33,7 @@ func speechAnswer(contentType string, usage ...string) http.Header {
 // meterSpeech runs a speech answer through a meter: the answer's status and headers,
 // then body (in pieces of piece bytes), then settles it.
 func meterSpeech(speech Speech, status int, header http.Header, body []byte, piece int, complete bool) (Units, Flags) {
-	m := NewMeter(provider.AudioSpeech, 33, speech)
+	m := NewMeter(provider.AudioSpeech, 33, MediaRequest{Speech: speech})
 	m.Answered(status, false, header)
 	for len(body) > 0 {
 		n := min(piece, len(body))
@@ -142,7 +142,7 @@ func TestPartialAndRefusedSpeech(t *testing.T) {
 // The first audio is the first samples relayed, not a WAV header alone: the moment
 // StreamContentSeen turns true times a raw-audio stream's first token.
 func TestSpeechContentSeenIsTheFirstSamples(t *testing.T) {
-	m := NewMeter(provider.AudioSpeech, 10, Speech{RawStream: true})
+	m := NewMeter(provider.AudioSpeech, 10, MediaRequest{Speech: Speech{RawStream: true}})
 	m.Answered(http.StatusOK, false, speechAnswer("audio/wav"))
 	m.Observe(provider.Event{Data: riff(0xFFFFFFFF, wavChunk("fmt ", fmtBody(1, 1, 24000, 2, 16)), dataHeader(0xFFFFFFFF))})
 	if m.StreamContentSeen() {
@@ -165,7 +165,7 @@ func b64(p []byte) string { return base64.StdEncoding.EncodeToString(p) }
 // meterSpeechEvents runs an SSE speech answer through a meter — its headers, then its
 // events' data — and settles it.
 func meterSpeechEvents(speech Speech, header http.Header, events [][]byte, complete bool) (Units, Flags) {
-	m := NewMeter(provider.AudioSpeech, 33, speech)
+	m := NewMeter(provider.AudioSpeech, 33, MediaRequest{Speech: speech})
 	if header == nil {
 		header = http.Header{"Content-Type": {"text/event-stream"}}
 	}
@@ -342,7 +342,7 @@ func TestSpeechEventStreamBrokenBeforeDone(t *testing.T) {
 // header's delta, not an empty one: the moment StreamContentSeen turns true times its
 // first token.
 func TestSpeechEventContentSeenIsTheFirstSamples(t *testing.T) {
-	m := NewMeter(provider.AudioSpeech, 10, Speech{})
+	m := NewMeter(provider.AudioSpeech, 10, MediaRequest{})
 	m.Answered(http.StatusOK, true, http.Header{"Content-Type": {"text/event-stream"}})
 	for _, ev := range [][]byte{
 		speechDelta("wav", b64(riff(0xFFFFFFFF, wavChunk("fmt ", fmtBody(1, 1, 24000, 2, 16)), dataHeader(0xFFFFFFFF)))),

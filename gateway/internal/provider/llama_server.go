@@ -40,7 +40,7 @@ func (m *llamaServer) Send(ctx context.Context, req *Request) (Response, error) 
 	return sendWire(ctx, req, wireCall{
 		backend: m.backend, client: m.client, url: m.url(req.Endpoint.Path()), header: m.header(),
 		missingModel: missingModelNamedOrCoded("model_not_found"), unknownPath: m.unknownPath, core: openAICore(req.Endpoint),
-		modeMissing: m.modeMissing(req.Endpoint),
+		readings: m.readings(req.Endpoint),
 	})
 }
 
@@ -57,21 +57,25 @@ func (m *llamaServer) unknownPath(answer []byte) bool {
 	return ok && e.Type == "not_found_error" && e.Message == "File Not Found"
 }
 
-// modeMissing is the reading of a 501 on endpoint e: llama-server answers embeddings
-// when not started with --embeddings, and rerank when not started with --embeddings
-// and pooling rank, with a 501 of type not_supported_error ("This server does not
-// support reranking. Start it with --reranking") — the endpoint missing; the message
-// is not read. Its other 501s are on routes the gateway does not serve, so on any
-// other endpoint a 501 stays a backend 5xx (docs/specs/GATEWAY.md, Providers → An
+// readings are endpoint e's answers read beyond the 404: llama-server answers
+// embeddings when not started with --embeddings, and rerank when not started with
+// --embeddings and pooling rank, with a 501 of type not_supported_error ("This server
+// does not support reranking. Start it with --reranking") — the endpoint missing; the
+// message is not read. Its other 501s are on routes the gateway does not serve, so on
+// any other endpoint a 501 stays a backend 5xx (docs/specs/GATEWAY.md, Providers → An
 // endpoint missing from a server).
-func (m *llamaServer) modeMissing(e Endpoint) func(answer []byte) bool {
+func (m *llamaServer) readings(e Endpoint) []answerReading {
 	if e != Embeddings && e != Rerank {
 		return nil
 	}
-	return func(answer []byte) bool {
-		a, ok := readErrorAnswer(answer)
-		return ok && a.Type == "not_supported_error"
-	}
+	return []answerReading{{status: http.StatusNotImplemented, code: CodeEndpointMissing, read: m.modeMissing}}
+}
+
+// modeMissing reads llama-server's 501 saying it was not started in the endpoint's
+// mode: its error type not_supported_error.
+func (m *llamaServer) modeMissing(answer []byte, _ string) bool {
+	a, ok := readErrorAnswer(answer)
+	return ok && a.Type == "not_supported_error"
 }
 
 // probe reads the models list, which names what requests carry: the model file's

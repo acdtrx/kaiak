@@ -104,7 +104,7 @@ func (l *attempts) run(ctx context.Context, rq *request) *apiError {
 		}
 
 		at := &attempt{slot: slot, deployment: slot.Deployment, wait: wait,
-			meter: accounting.NewMeter(rq.endpoint.api, rq.input.Total, rq.inbound.Speech), start: time.Now()}
+			meter: accounting.NewMeter(rq.endpoint.api, rq.input.Total, rq.inbound.mediaRequest()), start: time.Now()}
 		rq.attempts = append(rq.attempts, at)
 
 		if prev == nil {

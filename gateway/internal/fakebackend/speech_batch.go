@@ -57,7 +57,7 @@ func writeSpeechBatch(w http.ResponseWriter, reply Reply, top map[string]json.Ra
 	nonSpeech []string) {
 	badRequest := func(message string) {
 		// vLLM's handler renders the route's HTTPException in OpenAI's shape.
-		writeJSON(w, http.StatusBadRequest, speechError(http.StatusBadRequest, "Bad Request", message))
+		writeJSON(w, http.StatusBadRequest, omniError(http.StatusBadRequest, "Bad Request", message))
 	}
 	if slices.Contains(nonSpeech, model) {
 		badRequest("Batch speech is not supported in diffusion mode")
@@ -65,7 +65,7 @@ func writeSpeechBatch(w http.ResponseWriter, reply Reply, top map[string]json.Ra
 	}
 	var items []map[string]json.RawMessage
 	if json.Unmarshal(top["items"], &items) != nil || len(items) == 0 {
-		writeJSON(w, http.StatusBadRequest, speechError(http.StatusBadRequest, "BadRequestError",
+		writeJSON(w, http.StatusBadRequest, omniError(http.StatusBadRequest, "BadRequestError",
 			"items: List should have at least 1 item after validation"))
 		return
 	}

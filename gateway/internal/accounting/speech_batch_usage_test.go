@@ -47,7 +47,7 @@ func batchBody(results ...string) []byte {
 // meterBatch runs a speech batch answer through a meter — answered 200, its body in
 // pieces of piece bytes — and settles it.
 func meterBatch(speech Speech, body []byte, piece int, complete bool) (Units, Flags) {
-	m := NewMeter(provider.AudioSpeechBatch, 33, speech)
+	m := NewMeter(provider.AudioSpeechBatch, 33, MediaRequest{Speech: speech})
 	m.Answered(http.StatusOK, false, http.Header{"Content-Type": {"application/json"}})
 	for len(body) > 0 {
 		n := min(piece, len(body))
@@ -298,14 +298,14 @@ func TestSpeechBatchCutShort(t *testing.T) {
 // answer — its events are not read, the input estimated (docs/specs/GATEWAY.md,
 // Providers: media answers).
 func TestSpeechBatchErrorAnswerAndEventStream(t *testing.T) {
-	m := NewMeter(provider.AudioSpeechBatch, 33, Speech{})
+	m := NewMeter(provider.AudioSpeechBatch, 33, MediaRequest{})
 	m.Answered(http.StatusBadRequest, false, http.Header{"Content-Type": {"application/json"}})
 	m.Observe(provider.Event{Data: []byte(`{"error":{"message":"Batch contains 40 items","code":400}}`)})
 	if units, flags := m.Settle(true); !maps.Equal(units, speechUnits(0, 0, 0)) || flags.Estimated {
 		t.Errorf("an error answer: %v %+v, want zeros", units, flags)
 	}
 
-	m = NewMeter(provider.AudioSpeechBatch, 33, Speech{})
+	m = NewMeter(provider.AudioSpeechBatch, 33, MediaRequest{})
 	m.Answered(http.StatusOK, true, http.Header{"Content-Type": {"text/event-stream"}})
 	payload := batchBody(okResult(0, "audio/wav", wav16(24000, 19200), batchUsage(7, 40)))
 	m.Observe(provider.Event{Data: append(append([]byte("data: "), payload...), "\n\n"...), Payload: payload})

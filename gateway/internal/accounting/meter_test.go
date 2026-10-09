@@ -9,7 +9,7 @@ import (
 )
 
 func streamMeter(ep provider.Endpoint, requestBytes int, payloads ...string) *Meter {
-	m := NewMeter(ep, EstimateTokens(int64(requestBytes)), Speech{})
+	m := NewMeter(ep, EstimateTokens(int64(requestBytes)), MediaRequest{})
 	m.Answered(200, true, nil)
 	for _, p := range payloads {
 		m.Observe(provider.Event{Data: []byte("data: " + p + "\n\n"), Payload: []byte(p)})
@@ -18,7 +18,7 @@ func streamMeter(ep provider.Endpoint, requestBytes int, payloads ...string) *Me
 }
 
 func bodyMeter(ep provider.Endpoint, requestBytes, status int, body string) *Meter {
-	m := NewMeter(ep, EstimateTokens(int64(requestBytes)), Speech{})
+	m := NewMeter(ep, EstimateTokens(int64(requestBytes)), MediaRequest{})
 	m.Answered(status, false, nil)
 	// Body pieces arrive in arbitrary sizes.
 	for len(body) > 0 {
@@ -146,7 +146,7 @@ func TestMissingUsageIsEstimatedFromContent(t *testing.T) {
 		expect(t, units, flags, withEveryUnit(Units{config.UnitTokensIn: 11, config.UnitTokensOut: 3}), Flags{Estimated: true})
 	})
 	t.Run("choices over the kept size: their raw size counts", func(t *testing.T) {
-		m := NewMeter(provider.Completions, EstimateTokens(int64(requestBytes)), Speech{})
+		m := NewMeter(provider.Completions, EstimateTokens(int64(requestBytes)), MediaRequest{})
 		m.Answered(200, false, nil)
 		m.body = newMemberScanner(map[string]int{"usage": maxUsageBytes, "choices": 4})
 		m.Observe(provider.Event{Data: []byte(`{"choices":[{"text":"abcdefgh"}]}`)})
@@ -195,7 +195,7 @@ func TestPartialUsage(t *testing.T) {
 }
 
 func TestNoAnswerOrErrorStatusCountsNothing(t *testing.T) {
-	units, flags := NewMeter(provider.ChatCompletions, 100, Speech{}).Settle(false)
+	units, flags := NewMeter(provider.ChatCompletions, 100, MediaRequest{}).Settle(false)
 	expect(t, units, flags, withEveryUnit(Units{}), Flags{Partial: true})
 
 	m := bodyMeter(provider.ChatCompletions, 400, 400, `{"error":{"message":"context too long"}}`)
@@ -208,7 +208,7 @@ func TestNoAnswerOrErrorStatusCountsNothing(t *testing.T) {
 // backend refused (its credential) or never got in full counts nothing.
 func TestSentUnansweredCountsTheEstimatedInput(t *testing.T) {
 	for _, ep := range []provider.Endpoint{provider.ChatCompletions, provider.Embeddings} {
-		m := NewMeter(ep, 101, Speech{})
+		m := NewMeter(ep, 101, MediaRequest{})
 		m.Sent()
 		if !m.SentUnanswered() {
 			t.Error("SentUnanswered false after Sent")
@@ -217,13 +217,13 @@ func TestSentUnansweredCountsTheEstimatedInput(t *testing.T) {
 		expect(t, units, flags, withEveryUnit(Units{config.UnitTokensIn: 101}), Flags{Estimated: true, Partial: true})
 	}
 
-	refused := NewMeter(provider.ChatCompletions, 101, Speech{})
+	refused := NewMeter(provider.ChatCompletions, 101, MediaRequest{})
 	refused.Sent()
 	refused.Refused()
 	units, flags := refused.Settle(true)
 	expect(t, units, flags, withEveryUnit(Units{}), Flags{Partial: true})
 
-	answered := NewMeter(provider.ChatCompletions, 101, Speech{})
+	answered := NewMeter(provider.ChatCompletions, 101, MediaRequest{})
 	answered.Sent()
 	answered.Answered(503, false, nil)
 	units, flags = answered.Settle(true)

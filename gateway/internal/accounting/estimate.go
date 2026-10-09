@@ -48,7 +48,8 @@ const maxEstimateDepth = 10000
 //
 // A rerank request's total adds its query's own estimate once more for each document
 // beyond the first: the backend scores every document paired with the query. A speech
-// batch's items are its prompts, as a completion batch's are.
+// batch's items are its prompts, as a completion batch's are. An image request is its
+// body by these rules: its prompt and negative_prompt are text.
 //
 // One pass over the body, bounded by its size. A body that does not scan (the parse
 // before this refuses those) is estimated by its size alone.

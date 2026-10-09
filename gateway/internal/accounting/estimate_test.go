@@ -82,6 +82,11 @@ func TestEstimateInput(t *testing.T) {
 		{name: "items elsewhere are text", ep: provider.AudioSpeech,
 			body:  `{"model":"m","input":"x","items":[{"input":"` + strings.Repeat("a", 2000) + `"},{"input":"b"}]}`,
 			total: text(`{"model":"m","input":"x","items":[{"input":"` + strings.Repeat("a", 2000) + `"},{"input":"b"}]}`)},
+		{name: "an image prompt and its negative prompt are text", ep: provider.ImagesGenerations,
+			body: `{"model":"m","prompt":"` + strings.Repeat("a red fox ", 300) + `","negative_prompt":"` +
+				strings.Repeat("blur ", 200) + `","n":4,"size":"1024x1024","layers":4}`,
+			total: text(`{"model":"m","prompt":"` + strings.Repeat("a red fox ", 300) + `","negative_prompt":"` +
+				strings.Repeat("blur ", 200) + `","n":4,"size":"1024x1024","layers":4}`)},
 		{name: "not JSON: its bytes", ep: provider.ChatCompletions,
 			body:  `not json at all`,
 			total: text(`not json at all`)},

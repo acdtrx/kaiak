@@ -54,7 +54,7 @@ func newStreamFormat(f Format) streamFormat {
 		return &messagesStream{}
 	case FormatResponses:
 		return &responsesStream{}
-	case FormatRerank, FormatSpeechBatch:
+	case FormatRerank, FormatSpeechBatch, FormatImages:
 		return jsonBodyStream{}
 	case FormatSpeech:
 		return &speechStream{}
@@ -371,17 +371,18 @@ func (e *responsesStream) relayedError(payload []byte) []byte {
 	return withGatewayMessage(payload, `{"type":"error","code":"server_error","message":%s,"param":null}`)
 }
 
-// jsonBodyStream: the formats answered by a JSON body, never a stream — rerank and
-// the speech batch (docs/specs/GATEWAY.md, Providers: rerank answers and media
-// answers are relayed as the backend sends them). An event stream answering one of
-// their requests is none the format knows: its events say nothing, and it is never
-// complete.
+// jsonBodyStream: the formats answered by a JSON body, never a stream — rerank, the
+// speech batch and image generation (docs/specs/GATEWAY.md, Providers: rerank answers
+// and media answers are relayed as the backend sends them). An event stream answering
+// one of their requests is none the format knows: its events say nothing, and it is
+// never complete.
 type jsonBodyStream struct{}
 
-// requestEdits: none of the format's own — a rerank request gets the model edit alone,
-// a speech batch its output limits beside it, which the pipeline sets
+// requestEdits: none of the format's own — a rerank or image request gets the model
+// edit alone, a speech batch its output limits beside it, which the pipeline sets
 // (docs/specs/GATEWAY.md, Providers: passthrough edits). A stream member is not the
-// format's and passes untouched; the answer carries usage unasked.
+// format's and passes untouched; a rerank or batch answer carries usage unasked, an
+// image answer none.
 func (jsonBodyStream) requestEdits(*Request) ([]memberEdit, bool) { return nil, false }
 
 func (jsonBodyStream) observe([]byte) observation { return observation{} }

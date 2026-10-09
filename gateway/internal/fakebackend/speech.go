@@ -46,8 +46,8 @@ func (b *Backend) SetNonSpeechModels(models ...string) {
 	b.nonSpeech = models
 }
 
-// speechError is vLLM-Omni's error answer: OpenAI's shape, its code the status.
-func speechError(status int, errType, message string) map[string]any {
+// omniError is vLLM-Omni's error answer: OpenAI's shape, its code the status.
+func omniError(status int, errType, message string) map[string]any {
 	return map[string]any{"error": map[string]any{"message": message, "type": errType, "param": nil, "code": status}}
 }
 
@@ -56,7 +56,7 @@ func speechError(status int, errType, message string) map[string]any {
 func (b *Backend) writeSpeech(w http.ResponseWriter, r *http.Request, req *Request, reply Reply,
 	top map[string]json.RawMessage, model string, chunks []string, usage Usage, nonSpeech []string) {
 	if slices.Contains(nonSpeech, model) {
-		writeJSON(w, http.StatusBadRequest, speechError(http.StatusBadRequest, "BadRequestError",
+		writeJSON(w, http.StatusBadRequest, omniError(http.StatusBadRequest, "BadRequestError",
 			"TTS model did not produce audio output."))
 		return
 	}
@@ -68,7 +68,7 @@ func (b *Backend) writeSpeech(w http.ResponseWriter, r *http.Request, req *Reque
 	rate := DefaultSampleRate
 	if raw, ok := top["sample_rate"]; ok && string(raw) != "null" {
 		if json.Unmarshal(raw, &rate) != nil || rate <= 0 {
-			writeJSON(w, http.StatusBadRequest, speechError(http.StatusBadRequest, "BadRequestError", "sample_rate must be above 0"))
+			writeJSON(w, http.StatusBadRequest, omniError(http.StatusBadRequest, "BadRequestError", "sample_rate must be above 0"))
 			return
 		}
 	}
@@ -78,11 +78,11 @@ func (b *Backend) writeSpeech(w http.ResponseWriter, r *http.Request, req *Reque
 	raw := streamFormat == "audio"
 	switch {
 	case format != "wav" && format != "pcm":
-		writeJSON(w, http.StatusBadRequest, speechError(http.StatusBadRequest, "BadRequestError",
+		writeJSON(w, http.StatusBadRequest, omniError(http.StatusBadRequest, "BadRequestError",
 			fmt.Sprintf("the fake does not play response_format %q", format)))
 		return
 	case streamFormat != "" && streamFormat != "audio" && streamFormat != "sse":
-		writeJSON(w, http.StatusBadRequest, speechError(http.StatusBadRequest, "BadRequestError",
+		writeJSON(w, http.StatusBadRequest, omniError(http.StatusBadRequest, "BadRequestError",
 			"stream_format must be 'sse' or 'audio'"))
 		return
 	}

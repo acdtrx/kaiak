@@ -124,7 +124,7 @@ func (u *speechUsage) bodyPiece(p []byte) { u.clip.write(p) }
 
 // media: the audio relayed, in whole seconds rounded up; an answer whose audio cannot
 // be measured counts 0, unmeasured.
-func (u *speechUsage) media() (Units, bool) {
+func (u *speechUsage) media(bool) (Units, bool) {
 	d, measured := u.clip.length()
 	return Units{config.UnitAudioSecondsOut: wholeSeconds(d)}, measured
 }
