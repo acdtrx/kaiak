@@ -25,7 +25,7 @@ type vLLMOmni struct {
 // so chat, completions, embeddings, Messages, Responses and rerank are not served: a
 // request for them to a model whose deployments are all vllm-omni is
 // endpoint_not_served (docs/specs/GATEWAY.md, Providers → Endpoint support).
-var vLLMOmniEndpoints = []Endpoint{AudioSpeech}
+var vLLMOmniEndpoints = []Endpoint{AudioSpeech, AudioSpeechBatch}
 
 // speechHeaders are the speech answer's headers relayed to the client: the word
 // timing a request asks for with word_timestamps, which vLLM-Omni sends only there

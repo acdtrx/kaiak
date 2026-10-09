@@ -40,11 +40,18 @@ const pcmFrameBytes = 2
 // newAudioClip is the clip of an answer whose content type is contentType: audio/wav
 // or audio/pcm, as formatClip reads them; any other type cannot be measured.
 func newAudioClip(contentType string, sampleRate int64) audioClip {
+	return formatClip(audioFormat(contentType), sampleRate)
+}
+
+// audioFormat is the format an audio content type names — wav for audio/wav, pcm for
+// audio/pcm, as formatClip reads them — or "" for a type that is not audio.
+func audioFormat(contentType string) string {
 	mediaType, _, _ := mime.ParseMediaType(contentType)
-	if format, ok := strings.CutPrefix(mediaType, "audio/"); ok {
-		return formatClip(format, sampleRate)
+	format, ok := strings.CutPrefix(mediaType, "audio/")
+	if !ok {
+		return ""
 	}
-	return unmeasuredClip{}
+	return format
 }
 
 // formatClip is a clip of audio in format, as speech's response_format names it: wav,
@@ -293,12 +300,18 @@ func (c *wavClip) samplesSeen() bool { return c.received > 0 }
 const base64Window = 48
 
 // writeBase64 reads base64 text b64 — a speech.audio.delta's audio — into clip without
-// decoding it whole: its decoded size from its length and padding (base64Size), the
-// bytes the clip must read (a WAV header) decoded a few at a time, the rest taken by
-// their number (audioClip.count). It reports false when bytes the clip must read are
+// decoding it whole (readBase64). It reports false when bytes the clip must read are
 // not base64: the clip cannot read them.
 func writeBase64(clip audioClip, b64 string) bool {
-	text := base64Text(b64)
+	return readBase64(clip, base64Text(b64))
+}
+
+// readBase64 reads base64 text without its padding (base64Text) — a whole audio, or a
+// run of whole four-character groups of one — into clip without decoding it whole:
+// its decoded size from its length (base64Size), the bytes the clip must read (a WAV
+// header) decoded a few at a time, the rest taken by their number (audioClip.count).
+// It reports false when bytes the clip must read are not base64.
+func readBase64[T string | []byte](clip audioClip, text T) bool {
 	size := base64Size(text)
 	for at := int64(0); at < size; {
 		at += clip.count(size - at)
@@ -317,9 +330,11 @@ func writeBase64(clip audioClip, b64 string) bool {
 }
 
 // base64Text is base64 text without its padding: at most two "=" at its end.
-func base64Text(s string) string {
+func base64Text[T string | []byte](s T) T {
 	for range 2 {
-		s = strings.TrimSuffix(s, "=")
+		if n := len(s); n > 0 && s[n-1] == '=' {
+			s = s[:n-1]
+		}
 	}
 	return s
 }
@@ -327,7 +342,7 @@ func base64Text(s string) string {
 // base64Size is the decoded size of base64 text without its padding (base64Text):
 // three bytes for every four characters, one or two for a last group of two or three.
 // A lone character past the last whole group carries no whole byte and counts none.
-func base64Size(text string) int64 {
+func base64Size[T string | []byte](text T) int64 {
 	size := int64(len(text)/4) * 3
 	switch len(text) % 4 {
 	case 2:
@@ -341,9 +356,9 @@ func base64Size(text string) int64 {
 // base64Bytes decodes the n bytes at decoded offset at of base64 text without its
 // padding, from the four-character groups that hold them alone; ok is false when those
 // are not base64.
-func base64Bytes(text string, at, n int64) ([]byte, bool) {
+func base64Bytes[T string | []byte](text T, at, n int64) ([]byte, bool) {
 	from, to := at/3*4, min((at+n+2)/3*4, int64(len(text)))
-	p, err := base64.RawStdEncoding.DecodeString(text[from:to])
+	p, err := base64.RawStdEncoding.DecodeString(string(text[from:to]))
 	if skip := at % 3; err == nil && skip+n <= int64(len(p)) {
 		return p[skip : skip+n], true
 	}

@@ -217,6 +217,7 @@ func (l *attempts) send(ctx context.Context, rq *request, at *attempt) (provider
 		RequestID:    rq.id,
 		PublicModel:  rq.model,
 		Params:       rq.params,
+		ItemParams:   rq.itemParams,
 		Sent:         at.meter.Sent,
 	})
 	if err != nil {

@@ -50,8 +50,9 @@ type endpoint struct {
 	// OpenAI's and Azure's reasoning models require (they refuse max_tokens) — and
 	// still honors the older max_tokens. Completions and Messages have only
 	// max_tokens (Messages requires it, so a model with an output limit always sends
-	// one), Responses only max_output_tokens, speech only max_new_tokens (vLLM-Omni's:
-	// the codec tokens a speech model generates). Embeddings, rerank and the
+	// one), Responses only max_output_tokens, speech and the speech batch only
+	// max_new_tokens (vLLM-Omni's: the codec tokens a speech model generates; a batch's
+	// items carry it too). Embeddings, rerank and the
 	// token-counting endpoints generate nothing. The inbound stage reads these keys
 	// alone: another output-limit key the client sends is not the endpoint's and
 	// passes untouched.
@@ -77,6 +78,8 @@ var bodyEndpoints = []*endpoint{
 	{body: true, api: provider.ResponsesInputTokens, name: "responses_input_tokens", counts: true},
 	{body: true, api: provider.Rerank, name: "rerank", operation: "rerank"},
 	{body: true, api: provider.AudioSpeech, name: "audio_speech", operation: "generate_content", outputType: "speech",
+		outputLimitKeys: []string{"max_new_tokens"}},
+	{body: true, api: provider.AudioSpeechBatch, name: "audio_speech_batch", operation: "generate_content", outputType: "speech",
 		outputLimitKeys: []string{"max_new_tokens"}},
 }
 
@@ -146,11 +149,16 @@ type request struct {
 	bodies   *BodyBudget
 	bodyHeld int64
 
-	// Set by the model_params stage for the body endpoints: the top-level parameters
-	// the model's config sets, and the request's effective output limit — the most
-	// tokens it may generate as sent to the backend; nil when unbounded or unknown.
-	params      []provider.Param
-	outputLimit *int64
+	// Set by the model_params stage for the body endpoints: the parameters the model's
+	// config sets — at the top level, and in a speech batch's items — the request's
+	// effective output limit — the most tokens one of its sequences may generate as
+	// sent to the backend; nil when unbounded or unknown — and outputReserve, the most
+	// it may generate in all, which the limits reserve: the effective output limit once
+	// per sequence, a speech batch's items' own limits summed; 0 when unbounded.
+	params        []provider.Param
+	itemParams    []provider.ItemParam
+	outputLimit   *int64
+	outputReserve int64
 
 	// Set by the attempt loop (routing, accounting, provider) for the body endpoints:
 	// every attempt, the latest last — each with its deployment, its meter and the

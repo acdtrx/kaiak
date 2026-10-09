@@ -22,7 +22,7 @@ var endpointColumns = map[string][]Endpoint{
 	"responses":                     {Responses},
 	"responses_input_tokens":        {ResponsesInputTokens},
 	"rerank":                        {Rerank},
-	"audio_speech, audio_speech_batch, images_generations": {AudioSpeech},
+	"audio_speech, audio_speech_batch, images_generations": {AudioSpeech, AudioSpeechBatch},
 }
 
 // Each type serves exactly what the spec's endpoint support table says, the table
@@ -199,13 +199,15 @@ func TestWrongEndpointAnswersByModule(t *testing.T) {
 // store: false and nothing else. Rerank has no stream: its stream member passes
 // untouched, and the model is its one edit. Speech's stream is its mode's, passed
 // untouched, and speech reports usage unasked — the whole clip in its headers, the SSE
-// stream in speech.audio.done: the model is its one edit beside its output limit.
+// stream in speech.audio.done: the model is its one edit beside its output limit. The
+// speech batch has no stream, and reports each item's usage unasked.
 func TestNoUsageEditOutsideTheOpenAIFormat(t *testing.T) {
 	for e, want := range map[Endpoint]string{
-		Messages:    `{"model":"m","stream":true}`,
-		Responses:   `{"model":"m","stream":true,"store":false}`,
-		Rerank:      `{"model":"m","stream":true}`,
-		AudioSpeech: `{"model":"m","stream":true}`,
+		Messages:         `{"model":"m","stream":true}`,
+		Responses:        `{"model":"m","stream":true,"store":false}`,
+		Rerank:           `{"model":"m","stream":true}`,
+		AudioSpeech:      `{"model":"m","stream":true}`,
+		AudioSpeechBatch: `{"model":"m","stream":true}`,
 	} {
 		body, stripUsage, err := passthroughBody(&Request{Endpoint: e, Stream: true,
 			Deployment: config.Deployment{Model: "m"}, Body: []byte(`{"model":"pub","stream":true}`)})

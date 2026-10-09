@@ -4,8 +4,9 @@
 // /openai/v1/ (Azure OpenAI's) and /anthropic/v1/ (Claude in Foundry's), and rerank
 // under /v1/ alone (vLLM's and llama-server's: neither Azure API has one), in vLLM's
 // answer shape or llama-server's (SetRerankShape), refusing a pair longer than its
-// context (SetRerankContext), and speech under /v1/ alone (vLLM-Omni's: speech.go); it
-// answers as scripted by the test — a path it has no route for (SetNoRoute), an
+// context (SetRerankContext), and speech and the speech batch under /v1/ alone
+// (vLLM-Omni's: speech.go, speech_batch.go); it answers as scripted by the test — a
+// path it has no route for (SetNoRoute), an
 // endpoint it was not started for (SetNotSupported) and a model that does not speak
 // (SetNonSpeechModels) too — and records every request it receives.
 // Test tooling only: nothing in the gateway binary imports it; cmd/fakebackend runs it
@@ -71,8 +72,11 @@ type Reply struct {
 	EventDelay time.Duration
 	// AudioMillis is a speech answer's length in milliseconds (default
 	// DefaultAudioMillis), split across len(Chunks) pieces on the raw-audio and SSE
-	// streams.
+	// streams; each speech batch item's too.
 	AudioMillis int
+	// FailItems are the positions of the speech batch items whose result is an error
+	// (SpeechBatchItemError).
+	FailItems []int
 	// HonorMaxTokens: generate at most the request's max_completion_tokens,
 	// max_tokens or max_output_tokens chunks (the smallest when several are set), one
 	// token each, and finish with "length" ("max_tokens" in Messages, an incomplete
@@ -399,7 +403,7 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	switch endpoint {
 	case chatPath, completionPath, embeddingPath, messagesPath, countTokensPath, responsesPath, inputTokensPath:
-	case rerankPath, speechPath:
+	case rerankPath, speechPath, speechBatchPath:
 		ok = strings.HasPrefix(r.URL.Path, "/v1/")
 	default:
 		ok = false
@@ -527,6 +531,9 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 		writeRerank(w, rerankShape, rerankContext, top, params.model, usage, reply.OmitUsage)
 	case endpoint == speechPath:
 		b.writeSpeech(w, r, req, reply, top, params.model, chunks, usage, nonSpeech)
+	case endpoint == speechBatchPath:
+		// vLLM-Omni's batch has no stream: its answer is a JSON body either way.
+		writeSpeechBatch(w, reply, top, params.model, usage, nonSpeech)
 	case params.stream:
 		b.writeStream(w, r, req, reply, endpoint, params.model, chunks, finish, usage, params.includeUsage && !reply.OmitUsage)
 	default:

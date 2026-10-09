@@ -54,8 +54,8 @@ func newStreamFormat(f Format) streamFormat {
 		return &messagesStream{}
 	case FormatResponses:
 		return &responsesStream{}
-	case FormatRerank:
-		return rerankStream{}
+	case FormatRerank, FormatSpeechBatch:
+		return jsonBodyStream{}
 	case FormatSpeech:
 		return &speechStream{}
 	}
@@ -371,26 +371,28 @@ func (e *responsesStream) relayedError(payload []byte) []byte {
 	return withGatewayMessage(payload, `{"type":"error","code":"server_error","message":%s,"param":null}`)
 }
 
-// rerankStream: a rerank answer is a JSON body, never a stream (docs/specs/GATEWAY.md,
-// Providers: rerank answers are relayed as the backend sends them). An event stream
-// answering a rerank request is none the format knows: its events say nothing, and it
-// is never complete.
-type rerankStream struct{}
+// jsonBodyStream: the formats answered by a JSON body, never a stream — rerank and
+// the speech batch (docs/specs/GATEWAY.md, Providers: rerank answers and media
+// answers are relayed as the backend sends them). An event stream answering one of
+// their requests is none the format knows: its events say nothing, and it is never
+// complete.
+type jsonBodyStream struct{}
 
-// requestEdits: none — a rerank request gets the model edit alone
-// (docs/specs/GATEWAY.md, Providers: passthrough edits). Its stream member is not the
+// requestEdits: none of the format's own — a rerank request gets the model edit alone,
+// a speech batch its output limits beside it, which the pipeline sets
+// (docs/specs/GATEWAY.md, Providers: passthrough edits). A stream member is not the
 // format's and passes untouched; the answer carries usage unasked.
-func (rerankStream) requestEdits(*Request) ([]memberEdit, bool) { return nil, false }
+func (jsonBodyStream) requestEdits(*Request) ([]memberEdit, bool) { return nil, false }
 
-func (rerankStream) observe([]byte) observation { return observation{} }
+func (jsonBodyStream) observe([]byte) observation { return observation{} }
 
-func (rerankStream) complete() bool { return false }
+func (jsonBodyStream) complete() bool { return false }
 
-func (rerankStream) nestedModel() string { return "" }
+func (jsonBodyStream) nestedModel() string { return "" }
 
 // relayedError is never reached — the format has no error event; were one relayed,
-// its plain form is an OpenAI error, the shape rerank errors take.
-func (rerankStream) relayedError(payload []byte) []byte {
+// its plain form is an OpenAI error, the shape rerank's and vLLM-Omni's errors take.
+func (jsonBodyStream) relayedError(payload []byte) []byte {
 	return withGatewayMessage(payload, `{"error":{"message":%s,"type":"server_error","param":null,"code":null}}`)
 }
 

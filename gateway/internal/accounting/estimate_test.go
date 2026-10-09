@@ -10,7 +10,7 @@ import (
 
 // The input estimate counts text by bytes, each media item as
 // InlineMediaTokens and each token ID as one token; a completion batch's largest
-// prompt is what one sequence sees.
+// prompt is what one sequence sees, and a speech batch's largest item.
 func TestEstimateInput(t *testing.T) {
 	const m = InlineMediaTokens
 	payload := strings.Repeat("QUJD", 100_000) // 400 KB of base64
@@ -68,6 +68,20 @@ func TestEstimateInput(t *testing.T) {
 		{name: "a single string prompt", ep: provider.Completions,
 			body:  `{"model":"m","prompt":"hello","suffix":"bye"}`,
 			total: text(`{"model":"m","prompt":"hello","suffix":"bye"}`)},
+		{name: "a speech batch: its items are its prompts", ep: provider.AudioSpeechBatch,
+			body: `{"model":"m","instructions":"calm","items":[{"input":"` + strings.Repeat("a", 8000) + `"},{"input":"` +
+				strings.Repeat("b", 400) + `","ref_audio":"data:audio/wav;base64,` + payload + `"}]}`,
+			total: text(`{"model":"m","instructions":"calm","items":[{"input":"`+strings.Repeat("a", 8000)+`"},{"input":"`+
+				strings.Repeat("b", 400)+`","ref_audio"}]}`) + m,
+			prompt: text(`{"model":"m","instructions":"calm","items":[{"input":"` + strings.Repeat("a", 8000) + `"}]}`)},
+		{name: "a speech batch: the largest item counts its media", ep: provider.AudioSpeechBatch,
+			body: `{"model":"m","items":[{"input":"` + strings.Repeat("a", 2000) + `"},{"input":"b","ref_audio":"data:audio/wav;base64,` +
+				payload + `"}]}`,
+			total:  text(`{"model":"m","items":[{"input":"`+strings.Repeat("a", 2000)+`"},{"input":"b","ref_audio"}]}`) + m,
+			prompt: text(`{"model":"m","items":[{"input":"b","ref_audio"}]}`) + m},
+		{name: "items elsewhere are text", ep: provider.AudioSpeech,
+			body:  `{"model":"m","input":"x","items":[{"input":"` + strings.Repeat("a", 2000) + `"},{"input":"b"}]}`,
+			total: text(`{"model":"m","input":"x","items":[{"input":"` + strings.Repeat("a", 2000) + `"},{"input":"b"}]}`)},
 		{name: "not JSON: its bytes", ep: provider.ChatCompletions,
 			body:  `not json at all`,
 			total: text(`not json at all`)},

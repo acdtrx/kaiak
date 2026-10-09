@@ -10,14 +10,18 @@ import (
 	"kaiak/internal/config"
 )
 
-// Speech is what a speech request says about the answer it gets, which its meter
-// reads (docs/specs/GATEWAY.md, Client API → owned fields: speech).
+// Speech is what a speech request or a speech batch says about the answer it gets,
+// which its meter reads (docs/specs/GATEWAY.md, Client API → owned fields: speech,
+// speech batch).
 type Speech struct {
 	// SampleRate is the request's sample_rate; 0 when it names none. A PCM answer is
 	// 16-bit mono at that rate: sample_rate is required with pcm.
 	SampleRate int64
 	// RawStream: the request asked for the raw-audio stream, which reports no usage.
 	RawStream bool
+	// ItemSampleRates are a speech batch's items' sample rates, by position: each
+	// item's own, else the batch's; 0 where an item gets none.
+	ItemSampleRates []int64
 }
 
 // The headers in which speech's whole clip reports its token usage (vLLM-Omni,

@@ -38,7 +38,8 @@ const speechFrameBytes = 2
 
 // SetNonSpeechModels scripts, from now on, the models whose speech the backend answers
 // as vLLM-Omni answers speech on a model with no speech stage: 400, "TTS model did not
-// produce audio output." (nil: every model speaks).
+// produce audio output." — and a speech batch as on a pure-diffusion server: 400,
+// "Batch speech is not supported in diffusion mode" (nil: every model speaks).
 func (b *Backend) SetNonSpeechModels(models ...string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()

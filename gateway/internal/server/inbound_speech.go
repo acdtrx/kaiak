@@ -157,3 +157,138 @@ func inlineAudio(s string) bool {
 	const scheme = "data:"
 	return len(s) >= len(scheme) && strings.EqualFold(s[:len(scheme)], scheme)
 }
+
+// parseSpeechBatchFields reads a speech batch's own owned fields
+// (docs/specs/GATEWAY.md, Client API → owned fields: speech batch), past model and the
+// batch's max_new_tokens (parseOwnedFields): items, counted against
+// max_speech_batch_items; and, at the batch's level and in each item,
+// response_format, sample_rate, ref_audio and max_new_tokens. vLLM-Omni runs each item
+// as a speech request of its own, merged with the batch — an item's value wins, else
+// the batch's (_merge_batch_item) — so each item's merged format and rate are held to
+// speech's rules, the param naming the member that set the value; a reference audio
+// must be inline wherever it is set. A batch answer is JSON, never a stream: stream is
+// not read. Everything else — each item's input, voice, instructions, … — is the
+// backend's and passes untouched.
+func parseSpeechBatchFields(rq *request, top map[string]json.RawMessage) *apiError {
+	batch, apiErr := readSpeechBatchLevel(top, "")
+	if apiErr != nil {
+		return apiErr
+	}
+	items, apiErr := speechBatchItems(top["items"], rq.snapshot.MaxSpeechBatchItems)
+	if apiErr != nil {
+		return apiErr
+	}
+	rq.inbound.ItemOutputLimits = make([]*int64, len(items))
+	rq.inbound.Speech.ItemSampleRates = make([]int64, len(items))
+	i := 0
+	apiErr = visitObjects(items, "items", true, func(at string, members map[string]json.RawMessage) *apiError {
+		item, apiErr := readSpeechBatchLevel(members, at)
+		if apiErr != nil {
+			return apiErr
+		}
+		if rq.inbound.ItemOutputLimits[i], apiErr = optionalField[int64](members, "max_new_tokens", at+".max_new_tokens",
+			"an integer"); apiErr != nil {
+			return apiErr
+		}
+		rate, apiErr := mergedSpeechAudio(batch, item)
+		if apiErr != nil {
+			return apiErr
+		}
+		rq.inbound.Speech.ItemSampleRates[i] = rate
+		i++
+		return nil
+	})
+	if apiErr != nil {
+		return apiErr
+	}
+	if len(items) > 0 {
+		rq.inbound.Sequences = int64(len(items))
+	}
+	rq.inbound.Media = map[config.Measure]int64{config.MeasureAudioSecondsOut: 0}
+	return nil
+}
+
+// speechBatchItems is a speech batch's items, each an element of the list: none when
+// it is absent or null (the backend refuses that); a value that is not a list is
+// refused, and so is a list longer than max_speech_batch_items — counted before any
+// item's members are read.
+func speechBatchItems(raw json.RawMessage, limit int64) ([]json.RawMessage, *apiError) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var items []json.RawMessage
+	if json.Unmarshal(raw, &items) != nil {
+		return nil, errInvalidType("items", "an array")
+	}
+	if n := int64(len(items)); n > limit {
+		return nil, errTooManyItems(n, limit)
+	}
+	return items, nil
+}
+
+// speechBatchLevel is what one level of a speech batch — the batch, or one of its
+// items — sets of the audio vLLM-Omni merges: nil where it sets none. at is its path
+// ("" for the batch, "items[2]" for an item), which params are named under.
+type speechBatchLevel struct {
+	at     string
+	format *string
+	rate   *int64
+}
+
+// param is the level's member's name as a param: the member at the batch's level,
+// at.member in an item.
+func (l speechBatchLevel) param(member string) string {
+	if l.at == "" {
+		return member
+	}
+	return l.at + "." + member
+}
+
+// readSpeechBatchLevel reads one level of a speech batch (members, at its path at):
+// response_format and sample_rate, each of its type, and ref_audio, a string, which
+// must be inline data wherever it is set (refuseExternalAudio's rule). Its
+// max_new_tokens is the output limit's (the batch's: parseOwnedFields; an item's:
+// parseSpeechBatchFields).
+func readSpeechBatchLevel(members map[string]json.RawMessage, at string) (speechBatchLevel, *apiError) {
+	l := speechBatchLevel{at: at}
+	var apiErr *apiError
+	if l.format, apiErr = optionalField[string](members, "response_format", l.param("response_format"), "a string"); apiErr != nil {
+		return l, apiErr
+	}
+	if l.rate, apiErr = optionalField[int64](members, "sample_rate", l.param("sample_rate"), "an integer"); apiErr != nil {
+		return l, apiErr
+	}
+	ref, apiErr := optionalField[string](members, "ref_audio", l.param("ref_audio"), "a string")
+	if apiErr != nil {
+		return l, apiErr
+	}
+	if ref != nil && !inlineAudio(*ref) {
+		return l, errExternalReference(l.param("ref_audio"))
+	}
+	return l, nil
+}
+
+// mergedSpeechAudio holds an item's audio as vLLM-Omni merges it with the batch to
+// speech's rules (readSpeechAudioFormat's): the format the item gets — its own, else
+// the batch's, absent meaning wav — must be wav or pcm, and pcm needs the rate the
+// item gets. A refusal names the member that set the value: the item's, or the
+// batch's. The rate is the one the item's PCM comes at; 0 when it gets none.
+func mergedSpeechAudio(batch, item speechBatchLevel) (int64, *apiError) {
+	formatSet, rate := item, item.rate
+	if item.format == nil {
+		formatSet = batch
+	}
+	if rate == nil {
+		rate = batch.rate
+	}
+	if f := formatSet.format; f != nil && *f != "wav" && *f != "pcm" {
+		return 0, errResponseFormatUnsupported(formatSet.param("response_format"), speechFormats)
+	}
+	if f := formatSet.format; f != nil && *f == "pcm" && rate == nil {
+		return 0, errMissingSampleRate(formatSet.param("sample_rate"))
+	}
+	if rate == nil {
+		return 0, nil
+	}
+	return *rate, nil
+}

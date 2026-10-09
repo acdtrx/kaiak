@@ -700,6 +700,7 @@ func errorAnswers() []struct {
 		{"errTooManySequences", errTooManySequences("n", 2, 1)},
 		{"errTooManyInputs", errTooManyInputs(2, 1)},
 		{"errTooManyDocuments", errTooManyDocuments(2, 1)},
+		{"errTooManyItems", errTooManyItems(2, 1)},
 		{"errRerankTEIFormat", errRerankTEIFormat()},
 		{"errOutputLimitTooLarge", errOutputLimitTooLarge("max_tokens", 2, 1)},
 		{"errOutputLimitBelowThinking", errOutputLimitBelowThinking("max_tokens", 1, "default", 2)},

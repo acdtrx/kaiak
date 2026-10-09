@@ -125,10 +125,10 @@ type usageReader interface {
 	streamContentBytes() int64
 }
 
-// mediaReader is the usageReader of a format whose answer is media (speech): it reads
-// a successful answer's response headers, and its body as relayed — audio, not JSON —
-// or its stream events, and adds the media units to the record (docs/specs/GATEWAY.md,
-// Accounting → Media usage).
+// mediaReader is the usageReader of a format whose answer is media (speech, the speech
+// batch): it reads a successful answer's response headers, and its body as relayed —
+// audio, or JSON carrying audio — or its stream events, and adds the media units to
+// the record (docs/specs/GATEWAY.md, Accounting → Media usage).
 type mediaReader interface {
 	usageReader
 	// answered reads a successful answer's response headers, as the backend sent them;
@@ -146,8 +146,8 @@ type mediaReader interface {
 }
 
 // NewMeter returns the meter for a request to ep whose input is estimated at input
-// tokens (EstimateInput); speech is what a speech request says about its answer, the
-// zero value for any other request.
+// tokens (EstimateInput); speech is what a speech request or batch says about its
+// answer, the zero value for any other request.
 func NewMeter(ep provider.Endpoint, input int64, speech Speech) *Meter {
 	var reader usageReader
 	switch ep.Format() {
@@ -159,6 +159,8 @@ func NewMeter(ep provider.Endpoint, input int64, speech Speech) *Meter {
 		reader = &rerankUsage{}
 	case provider.FormatSpeech:
 		reader = newSpeechUsage(speech)
+	case provider.FormatSpeechBatch:
+		reader = newSpeechBatchUsage(speech)
 	default:
 		reader = &openAIUsage{endpoint: ep}
 	}

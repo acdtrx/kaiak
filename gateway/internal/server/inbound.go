@@ -22,6 +22,9 @@ type inboundFields struct {
 	// OutputLimits are the values of the endpoint's output-limit keys, aligned with
 	// endpoint.outputLimitKeys; nil where the request omits the key.
 	OutputLimits []*int64
+	// ItemOutputLimits are a speech batch's items' own max_new_tokens, by position;
+	// nil where an item sets none.
+	ItemOutputLimits []*int64
 	// ThinkingBudget is a Messages request's thinking.budget_tokens when thinking is
 	// enabled; nil otherwise.
 	ThinkingBudget *int64
@@ -29,7 +32,7 @@ type inboundFields struct {
 	IncludeUsage bool
 	// Sequences is how many output sequences the request asks the backend to
 	// generate, each up to the output limit: n (or best_of, when larger) per
-	// prompt, times a completion's prompts. At least 1.
+	// prompt, times a completion's prompts; a speech batch's items. At least 1.
 	Sequences int64
 	// Media are the media measures the request counts toward, each with what it
 	// reserves before it runs (limits.Need.Media): the images an image request asks
@@ -37,8 +40,9 @@ type inboundFields struct {
 	// audio a request uploads. nil for a request that produces no media, which no
 	// media limit refuses.
 	Media map[config.Measure]int64
-	// Speech is what a speech request says about its answer — the sample rate its PCM
-	// comes at, whether it is the raw-audio stream — which its meters read.
+	// Speech is what a speech request or a speech batch says about its answer — the
+	// sample rate its PCM comes at, a batch item's, whether it is the raw-audio
+	// stream — which its meters read.
 	Speech accounting.Speech
 }
 
@@ -65,9 +69,9 @@ func readInbound(_ context.Context, rq *request, bodies *BodyBudget) *apiError {
 
 // parseOwnedFields reads the owned fields of the request's format by exact key
 // (docs/specs/GATEWAY.md, Client API → owned fields): the ones every format shares —
-// model; stream, except on the token-counting endpoints and in the rerank format,
-// which has none (a rerank request's stream passes untouched, and the request is never
-// a stream) — speech reads it with stream_format for its mode; the endpoint's
+// model; stream, except on the token-counting endpoints and in the rerank and speech
+// batch formats, which have none (their stream passes untouched, and the request is
+// never a stream) — speech reads it with stream_format for its mode; the endpoint's
 // output-limit keys — then the format's own, then the input estimate. encoding/json
 // matches struct fields case-insensitively, which would read "Model" as model while
 // the backend sees an unknown field; the top-level object is therefore decoded as a
@@ -86,7 +90,8 @@ func parseOwnedFields(rq *request) *apiError {
 	if apiErr = readModel(rq, top); apiErr != nil {
 		return apiErr
 	}
-	if !rq.endpoint.counts && rq.endpoint.api.Format() != provider.FormatRerank {
+	if format := rq.endpoint.api.Format(); !rq.endpoint.counts && format != provider.FormatRerank &&
+		format != provider.FormatSpeechBatch {
 		var stream *bool
 		if stream, apiErr = optionalField[bool](top, "stream", "stream", "a boolean"); apiErr != nil {
 			return apiErr
@@ -111,6 +116,8 @@ func parseOwnedFields(rq *request) *apiError {
 		apiErr = parseRerankFields(rq, top)
 	case provider.FormatSpeech:
 		apiErr = parseSpeechFields(rq, top)
+	case provider.FormatSpeechBatch:
+		apiErr = parseSpeechBatchFields(rq, top)
 	default:
 		// The endpoint table routes only the formats the inbound stage reads.
 		panic("server: no inbound parser for the endpoint's format")

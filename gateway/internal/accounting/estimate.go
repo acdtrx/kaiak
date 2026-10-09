@@ -47,7 +47,8 @@ const maxEstimateDepth = 10000
 //     InlineMediaTokens whatever it carries (data URL, URL or file ID).
 //
 // A rerank request's total adds its query's own estimate once more for each document
-// beyond the first: the backend scores every document paired with the query.
+// beyond the first: the backend scores every document paired with the query. A speech
+// batch's items are its prompts, as a completion batch's are.
 //
 // One pass over the body, bounded by its size. A body that does not scan (the parse
 // before this refuses those) is estimated by its size alone.
@@ -74,6 +75,17 @@ func EstimateInput(ep provider.Endpoint, body []byte) InputEstimate {
 		key, _ := name.(string)
 		if ep == provider.Completions && key == "prompt" {
 			list, ok := s.promptList()
+			if !ok {
+				return fallback
+			}
+			for _, p := range list {
+				rest.text -= p.span
+			}
+			prompts = append(prompts, list...)
+			continue
+		}
+		if ep == provider.AudioSpeechBatch && key == "items" {
+			list, ok := s.speechBatchItems()
 			if !ok {
 				return fallback
 			}
@@ -217,6 +229,35 @@ func (s *inputScan) promptList() ([]part, bool) {
 		return []part{s.measured(start, one)}, true
 	}
 	return elems, true
+}
+
+// speechBatchItems scans a speech batch's items into one part per item: each item is
+// one of the batch's prompts (docs/specs/GATEWAY.md, Limits → The input estimate); any
+// other value is one.
+func (s *inputScan) speechBatchItems() ([]part, bool) {
+	start := s.dec.InputOffset()
+	tok, err := s.dec.Token()
+	if err != nil {
+		return nil, false
+	}
+	if tok != json.Delim('[') {
+		var one part
+		if !s.handle(tok, s.dec.InputOffset()-start, "items", "", roleNone, false, 1, &one) {
+			return nil, false
+		}
+		return []part{s.measured(start, one)}, true
+	}
+	var items []part
+	for s.dec.More() {
+		itemStart := s.dec.InputOffset()
+		var p part
+		if _, ok := s.value("items", "", roleNone, false, 2, &p); !ok {
+			return nil, false
+		}
+		items = append(items, s.measured(itemStart, p))
+	}
+	_, err = s.dec.Token()
+	return items, err == nil
 }
 
 // documentList scans a rerank request's documents into p and returns how many it

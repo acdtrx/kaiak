@@ -313,6 +313,11 @@
     an item's value wins, else the batch's (`_merge_batch_item`) — so each item's
     effective values are held to speech's rules, `param` naming the member that set
     the value (`items[2].response_format`, or `response_format` for the batch's).
+    A `response_format` or `sample_rate` of the batch's that no item inherits is not
+    judged; a `ref_audio` must be inline data wherever it is set, inherited or not
+    (the errors table). `items` absent or null holds none, for the backend to
+    refuse; one that is not a list, or an item that is not an object, is
+    `invalid_type` (settled 2026-10-09).
     A batch answer is JSON, never a stream: the non-stream timers apply and
     `gen_ai.request.stream` is `false`.
   - Images (settled 2026-10-09; vLLM-Omni's request read at v0.30.0,
@@ -2220,7 +2225,9 @@ own, and a client sending repeats is broken either way.
       `output_tokens` both integers, else no report;
     - the raw-audio stream: no report, ever — estimated and flagged;
     - the batch: each successful item's `usage`, summed; an errored item adds
-      nothing; a successful item without one leaves the batch with no report.
+      nothing; a successful item without one leaves the batch with no report, and
+      so does an answer with no item read whole. An item is successful when its
+      `status` is `success` (settled 2026-10-09).
   - **Audio length**: `audio_seconds_out` is measured on the audio relayed to the
     client, from the bytes actually sent — never from a size a header declares:
     - WAV (`audio/wav`, a delta's `response_format: "wav"`, an item's
@@ -2237,7 +2244,10 @@ own, and a client sending repeats is broken either way.
       later delta naming another, or a WAV header that is not base64, leaves the
       answer unmeasured (settled 2026-10-09);
     - the batch: each successful item's `audio_data` the same way, by its
-      `media_type`;
+      `media_type`, wherever the item puts it (vLLM-Omni writes it after the
+      audio), PCM at the rate of the item its `index` names; an item whose audio it
+      cannot measure counts 0 and flags the record `estimated`, the others still
+      count; a successful item without audio relayed none (settled 2026-10-09);
     - an answer it cannot measure (a WAV header it cannot read, another content
       type) counts 0 seconds and flags the record `estimated`.
 

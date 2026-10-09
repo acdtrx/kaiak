@@ -25,7 +25,8 @@ import (
 // keeping every backend-specific concern behind Send and Response: the pipeline hands
 // over the client's request as received plus the routing decision, and gets back
 // status, headers and events already in the client's format (the endpoint's: OpenAI,
-// Messages or Responses JSON and SSE, a Rerank JSON body, or Speech audio). A
+// Messages or Responses JSON and SSE, a Rerank or Speech batch JSON body, or Speech
+// audio). A
 // translating provider converts on both sides; today's modules pass every request
 // through in its own format with the owned edits only (docs/specs/GATEWAY.md, Client
 // API → Client APIs).
@@ -54,6 +55,7 @@ const (
 	ResponsesInputTokens
 	Rerank
 	AudioSpeech
+	AudioSpeechBatch
 )
 
 // Format is a client API format: the request and response shapes an endpoint speaks
@@ -73,6 +75,9 @@ const (
 	// FormatSpeech: speech, OpenAI's speech API as vLLM-Omni serves it: a JSON
 	// request, an audio answer — or its audio in server-sent events.
 	FormatSpeech
+	// FormatSpeechBatch: vLLM-Omni's own speech batch: a JSON request of items sharing
+	// its defaults, a JSON answer carrying each item's audio in base64.
+	FormatSpeechBatch
 )
 
 // endpoints holds each Endpoint's path below the API's version prefix
@@ -90,6 +95,7 @@ var endpoints = [...]struct {
 	ResponsesInputTokens: {"responses/input_tokens", FormatResponses},
 	Rerank:               {"rerank", FormatRerank},
 	AudioSpeech:          {"audio/speech", FormatSpeech},
+	AudioSpeechBatch:     {"audio/speech/batch", FormatSpeechBatch},
 }
 
 // Path is the endpoint's path below the API's version prefix: a backend URL ends with
@@ -129,12 +135,26 @@ type Request struct {
 	// occurrence of its key or, when the key is absent, is added. Keys never repeat
 	// and never name a member the provider edits itself (model, stream_options).
 	Params []Param
+	// ItemParams are parameters the pipeline sets in an element of a top-level list —
+	// a speech batch item's output limit, lowered to the model's ceiling in the item —
+	// in order. Each replaces its key in the element, an object, or is added there.
+	// The list and the element are in the body, as the inbound stage read it; a list
+	// is never a Params key.
+	ItemParams []ItemParam
 }
 
 // Param is one top-level request parameter set by the pipeline.
 type Param struct {
 	Key   string
 	Value []byte
+}
+
+// ItemParam is one request parameter set by the pipeline in an element of a list: the
+// top-level member List, its element at Index.
+type ItemParam struct {
+	List  string
+	Index int
+	Param
 }
 
 // Response is a backend's answer, in the client's format. The caller reads events

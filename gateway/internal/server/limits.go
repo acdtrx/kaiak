@@ -15,25 +15,23 @@ import (
 
 // checkLimits checks a body request against every limit that applies to its scopes
 // (global and each group on its key's path) and model and reserves its share: one
-// request; its whole input estimate (every prompt of a batch) plus its effective
-// output limit once per sequence it asks for, in tokens (the input estimate alone when
-// the output is unbounded), capped at accounting.MaxAmount — no amount the protocol
-// carries is larger, and the limiter's arithmetic stays far from int64's edge; and the
-// media amounts its owned fields state (inboundFields.Media), each meeting only the
-// limits of its own measure. A token-counting request reserves no tokens and meets
-// only requests-per-minute limits: nothing is generated or billed there, so no token
-// or cost limit — nor an unknown budget — refuses it. The reservation settles in a
-// finisher registered before the attempt loop's, so it runs after settlement and reads
-// the request's usage records — the sum of its attempts'.
+// request; its whole input estimate (every prompt of a batch) plus the output it may
+// generate in all — its effective output limit once per sequence it asks for, a speech
+// batch's items' own limits summed (outputReserve) — in tokens (the input estimate
+// alone when the output is unbounded), capped at accounting.MaxAmount — no amount the
+// protocol carries is larger, and the limiter's arithmetic stays far from int64's
+// edge; and the media amounts its owned fields state (inboundFields.Media), each
+// meeting only the limits of its own measure. A token-counting request reserves no
+// tokens and meets only requests-per-minute limits: nothing is generated or billed
+// there, so no token or cost limit — nor an unknown budget — refuses it. The
+// reservation settles in a finisher registered before the attempt loop's, so it runs
+// after settlement and reads the request's usage records — the sum of its attempts'.
 func checkLimits(rq *request, limiter *limits.Limiter) *apiError {
 	tokens := rq.input.Total
 	if rq.endpoint.counts {
 		tokens = 0
 	}
-	if rq.outputLimit != nil {
-		tokens = accounting.SaturatingAdd(tokens, accounting.SaturatingMul(*rq.outputLimit, rq.inbound.Sequences))
-	}
-	tokens = min(tokens, accounting.MaxAmount)
+	tokens = min(accounting.SaturatingAdd(tokens, rq.outputReserve), accounting.MaxAmount)
 	// Billability comes from the request's own snapshot and arrival, as its cost
 	// does (accounting.Cost): a reload since changes neither.
 	_, priced := accounting.PriceAt(rq.snapshot.Models[rq.model].Prices, rq.start)

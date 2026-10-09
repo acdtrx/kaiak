@@ -220,6 +220,13 @@ func errTooManyDocuments(documents, limit int64) *apiError {
 		message: fmt.Sprintf("'documents' holds %d documents; the gateway's maximum is %d per request.", documents, limit)}
 }
 
+// errTooManyItems refuses a speech batch carrying more items than
+// global.max_speech_batch_items allows.
+func errTooManyItems(items, limit int64) *apiError {
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "invalid_value", class: metrics.ErrorInvalidRequest, param: "items",
+		message: fmt.Sprintf("'items' holds %d items; the gateway's maximum is %d per request.", items, limit)}
+}
+
 // errRerankTEIFormat refuses a rerank request carrying texts, TEI's rerank format
 // (docs/specs/GATEWAY.md, Client API → owned fields: rerank): llama-server reads it in
 // place of documents and answers it without usage. The message names the member,
