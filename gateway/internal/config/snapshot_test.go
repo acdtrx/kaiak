@@ -58,7 +58,7 @@ func mustReject(t *testing.T, doc string) *schemacheck.ValidationError {
 // minimalDoc is protocol/fixtures/config/valid/minimal.json with one field replaceable.
 func minimalDoc(backend string) string {
 	return `{
-  "format_version": 5,
+  "format_version": 6,
   "global": {},
   "backends": { "local": ` + backend + ` },
   "models": {
@@ -97,6 +97,10 @@ func TestDefaultsAppliedForOmittedFields(t *testing.T) {
 	if s.MaxSequencesPerRequest != 16 || s.MaxEmbeddingInputs != 2048 || s.MaxRerankDocuments != 1000 {
 		t.Errorf("MaxSequencesPerRequest = %d, MaxEmbeddingInputs = %d, MaxRerankDocuments = %d, want the defaults 16, 2048 and 1000",
 			s.MaxSequencesPerRequest, s.MaxEmbeddingInputs, s.MaxRerankDocuments)
+	}
+	if s.MaxImagesPerRequest != 10 || s.MaxSpeechBatchItems != 32 {
+		t.Errorf("MaxImagesPerRequest = %d, MaxSpeechBatchItems = %d, want the defaults 10 and 32",
+			s.MaxImagesPerRequest, s.MaxSpeechBatchItems)
 	}
 	if s.MaxConcurrentRequestsPerKey != 16 {
 		t.Errorf("MaxConcurrentRequestsPerKey = %d, want the default 16", s.MaxConcurrentRequestsPerKey)
@@ -172,6 +176,10 @@ func TestExplicitValuesOverrideDefaults(t *testing.T) {
 		t.Errorf("MaxSequencesPerRequest = %d, MaxEmbeddingInputs = %d, MaxRerankDocuments = %d, want 32, 512 and 250",
 			s.MaxSequencesPerRequest, s.MaxEmbeddingInputs, s.MaxRerankDocuments)
 	}
+	if s.MaxImagesPerRequest != 6 || s.MaxSpeechBatchItems != 16 {
+		t.Errorf("MaxImagesPerRequest = %d, MaxSpeechBatchItems = %d, want 6 and 16",
+			s.MaxImagesPerRequest, s.MaxSpeechBatchItems)
+	}
 	if s.MaxConcurrentRequestsPerKey != 32 {
 		t.Errorf("MaxConcurrentRequestsPerKey = %d, want 32", s.MaxConcurrentRequestsPerKey)
 	}
@@ -195,7 +203,7 @@ func TestExplicitValuesOverrideDefaults(t *testing.T) {
 
 func TestModelResolution(t *testing.T) {
 	s := parseFixture(t, "full.json")
-	if want := []string{"bge-m3", "gpt-4.1", "gpt-4.1-mini", "qwen3-32b"}; !slices.Equal(s.ModelNames, want) {
+	if want := []string{"bge-m3", "gpt-4.1", "gpt-4.1-mini", "qwen-image", "qwen3-32b", "qwen3-tts"}; !slices.Equal(s.ModelNames, want) {
 		t.Errorf("ModelNames = %v, want %v", s.ModelNames, want)
 	}
 	q := s.Models["qwen3-32b"]
@@ -285,6 +293,7 @@ func TestChildDefaultsMergeUnderEachChild(t *testing.T) {
 		{Type: LimitRequestsPerMinute, Value: 30},
 		{Type: LimitTokensPerHour, Value: 500000},
 		{Type: LimitUSDPerMonth, Value: 20},
+		{Type: LimitAudioSecondsOutPerHour, Value: 600},
 	}
 
 	// The users group itself gets nothing from its own child_defaults.
@@ -295,25 +304,26 @@ func TestChildDefaultsMergeUnderEachChild(t *testing.T) {
 
 	// carol: an empty entry takes everything from the defaults.
 	carol := s.Groups["carol"]
-	if !slices.Equal(carol.AllowedModels.Names(), []string{"bge-m3", "gpt-4.1-mini", "qwen3-32b"}) {
+	if !slices.Equal(carol.AllowedModels.Names(), []string{"bge-m3", "gpt-4.1-mini", "qwen3-32b", "qwen3-tts"}) {
 		t.Errorf("carol allowed = %v", carol.AllowedModels.Names())
 	}
 	assertLimits(t, "carol", carol.Limits, defaults)
 
-	// alice: allowed_models ["*"] replaces the default list; her usd limit replaces
-	// the default one in place; the others still apply.
+	// alice: allowed_models ["*"] replaces the default list; her usd and audio limits
+	// replace the default ones in place; the others still apply.
 	alice := s.Groups["alice"]
 	if !slices.Equal(alice.AllowedModels.Names(), s.ModelNames) || !alice.AllowedModels.Allows("gpt-4.1") {
 		t.Errorf("alice allowed = %v", alice.AllowedModels.Names())
 	}
-	assertLimits(t, "alice", alice.Limits, []Limit{defaults[0], defaults[1], {Type: LimitUSDPerMonth, Value: 200}})
+	assertLimits(t, "alice", alice.Limits, []Limit{defaults[0], defaults[1], {Type: LimitUSDPerMonth, Value: 200},
+		{Type: LimitAudioSecondsOutPerHour, Value: 3600}})
 
 	// bob: no allowed_models, so the default list applies.
 	bob := s.Groups["bob"]
 	if bob.AllowedModels.Allows("gpt-4.1") || !bob.AllowedModels.Allows("qwen3-32b") {
 		t.Errorf("bob allowed = %v", bob.AllowedModels.Names())
 	}
-	assertLimits(t, "bob", bob.Limits, []Limit{defaults[0], {Type: LimitTokensPerHour, Value: 2000000}, defaults[2]})
+	assertLimits(t, "bob", bob.Limits, []Limit{defaults[0], {Type: LimitTokensPerHour, Value: 2000000}, defaults[2], defaults[3]})
 }
 
 func TestChildOverrideMatchesOnType(t *testing.T) {
@@ -458,37 +468,45 @@ func TestPriceTierIssues(t *testing.T) {
 	}
 }
 
-// The counter count: two for global and for every group, limited or not, and one per
-// effective per-minute limit — a parent's per-minute defaults count once per direct
-// child that has no own limit of the type; hour and month limits add none; a group
-// whose parent has no entry counts its own limits alone.
+// The counter count: five for global and for every group — one per counted type, the
+// hour counts of tokens, images, audio generated and audio processed and the USD
+// month — limited or not, and one per effective per-minute limit, the media ones
+// included — a parent's per-minute defaults count once per direct child that has no
+// own limit of the type; hour and month limits add none; a group whose parent has no
+// entry counts its own limits alone.
 func TestCountCounters(t *testing.T) {
+	if got := countersPerScope(); got != 5 {
+		t.Fatalf("counters per scope = %d, want 5", got)
+	}
 	rpm := limitDoc{Type: string(LimitRequestsPerMinute), Value: 1}
 	tpm := limitDoc{Type: string(LimitTokensPerMinute), Value: 1}
 	tph := limitDoc{Type: string(LimitTokensPerHour), Value: 1}
+	ipm := limitDoc{Type: string(LimitImagesPerMinute), Value: 1}
+	aph := limitDoc{Type: string(LimitAudioSecondsOutPerHour), Value: 1}
+	apm := limitDoc{Type: string(LimitAudioSecondsInPerMinute), Value: 1}
 	usd := limitDoc{Type: string(LimitUSDPerMonth), Value: 2}
 	doc := &document{
-		Global: globalDoc{Limits: []limitDoc{rpm, usd}},
+		Global: globalDoc{Limits: []limitDoc{rpm, usd, ipm}},
 		Groups: map[string]groupDoc{
-			"users":    {Limits: []limitDoc{rpm}, ChildDefaults: &childDefaultsDoc{Limits: []limitDoc{rpm, tph}}},
+			"users":    {Limits: []limitDoc{rpm}, ChildDefaults: &childDefaultsDoc{Limits: []limitDoc{rpm, tph, apm}}},
 			"plain":    {Parent: "users"},
-			"override": {Parent: "users", Limits: []limitDoc{{Type: string(LimitRequestsPerMinute), Value: 9}}},
+			"override": {Parent: "users", Limits: []limitDoc{{Type: string(LimitRequestsPerMinute), Value: 9}, aph}},
 			"extra":    {Parent: "users", Limits: []limitDoc{tpm, usd}},
 			"orphan":   {Parent: "nowhere", Limits: []limitDoc{rpm, tph}},
 			"below":    {Parent: "plain"},
 			"empty":    {},
 		},
 	}
-	// global 3 + users 3 + plain 3 + override 3 + extra 4 + orphan 3 + below 2 + empty 2.
-	if got := countCounters(doc); got != 23 {
-		t.Errorf("count = %d, want 23", got)
+	// global 7 + users 6 + plain 7 + override 7 + extra 8 + orphan 6 + below 5 + empty 5.
+	if got := countCounters(doc); got != 51 {
+		t.Errorf("count = %d, want 51", got)
 	}
 }
 
 // The bound counts groups without limits, and is reported once, at the document root.
 func TestCountersExceededAtRoot(t *testing.T) {
 	groups := map[string]groupDoc{}
-	for i := range MaxCounters/2 - 1 {
+	for i := range MaxCounters/countersPerScope() - 1 {
 		groups[fmt.Sprintf("u%d", i)] = groupDoc{}
 	}
 	doc := &document{Groups: groups}
@@ -497,7 +515,8 @@ func TestCountersExceededAtRoot(t *testing.T) {
 	}
 	doc.Global.Limits = []limitDoc{{Type: string(LimitRequestsPerMinute), Value: 1}}
 	issues := checkSemantics(doc)
-	if len(issues) != 1 || issues[0].Code != CodeCountersExceeded || issues[0].Path != "" {
-		t.Errorf("one over the bound: %v, want one %s at \"\"", issues, CodeCountersExceeded)
+	if len(issues) != 1 || issues[0].Code != CodeCountersExceeded || issues[0].Path != "" ||
+		!strings.HasPrefix(issues[0].Message, "50001 counters (5 for global and for every group") {
+		t.Errorf("one over the bound: %v, want one %s at \"\" counting 50001 at five per scope", issues, CodeCountersExceeded)
 	}
 }

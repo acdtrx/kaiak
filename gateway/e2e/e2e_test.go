@@ -69,7 +69,7 @@ func testConfig(backendURL, evalHash, annHash, extraModel string) map[string]any
 		models[extraModel] = chatModel(nil)
 	}
 	return map[string]any{
-		"format_version": 5,
+		"format_version": 6,
 		"global":         map[string]any{},
 		"backends":       map[string]any{"fake": map[string]any{"type": "openai-compatible", "base_url": backendURL + "/v1"}},
 		"models":         models,
@@ -299,7 +299,7 @@ func TestGatewayEndToEnd(t *testing.T) {
 	})
 
 	t.Run("SIGHUP reload keeps a bad config out and applies a good one", func(t *testing.T) {
-		if err := os.WriteFile(configFile, []byte(`{"format_version": 5,`), 0o600); err != nil {
+		if err := os.WriteFile(configFile, []byte(`{"format_version": 6,`), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		g.signal(t, syscall.SIGHUP)

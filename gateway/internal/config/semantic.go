@@ -212,24 +212,31 @@ func (c *semanticCheck) tree() {
 func (c *semanticCheck) counters() {
 	if total := countCounters(c.doc); total > MaxCounters {
 		c.report(CodeCountersExceeded, "",
-			fmt.Sprintf("%d counters (two for global and for every group, one per per-minute limit): a config allocates at most %d",
-				total, MaxCounters))
+			fmt.Sprintf("%d counters (%d for global and for every group, one per per-minute limit): a config allocates at most %d",
+				total, countersPerScope(), MaxCounters))
 	}
 }
 
-// countCounters counts the counters a config allocates without building them: one per
-// counted limit type (the hour and month counts) for global and every group, limited
-// or not, and one per effective per-minute limit — a group's own per-minute types,
-// plus each type its parent's child_defaults give that it has no own limit of. Only
-// the direct parent is read, so the count holds whatever tree() finds; a group whose
-// parent has no entry counts its own limits alone.
-func countCounters(doc *document) int {
-	perScope := 0
+// countersPerScope is the counters every scope keeps, limited or not: one per counted
+// limit type, the hour and month counts.
+func countersPerScope() int {
+	n := 0
 	for _, t := range LimitTypes() {
 		if t.Counted() {
-			perScope++
+			n++
 		}
 	}
+	return n
+}
+
+// countCounters counts the counters a config allocates without building them:
+// countersPerScope for global and every group, limited or not, and one per effective
+// per-minute limit — a group's own per-minute types, plus each type its parent's
+// child_defaults give that it has no own limit of. Only the direct parent is read, so
+// the count holds whatever tree() finds; a group whose parent has no entry counts its
+// own limits alone.
+func countCounters(doc *document) int {
+	perScope := countersPerScope()
 	perMinute := func(limits []limitDoc) map[string]bool {
 		types := map[string]bool{}
 		for _, l := range limits {

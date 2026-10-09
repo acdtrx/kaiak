@@ -43,8 +43,8 @@ func TestServingStatusCoversTheAppliedConfig(t *testing.T) {
 		Circuit: routing.CircuitHalfOpen, OpenedAt: openedAt}
 	got := servingStatus(serving)
 
-	if len(got.Backends) != 4 || len(got.Models) != 5 {
-		t.Fatalf("backends %v, models %v: want the config's 3 backends plus the retired one, and its 4 models plus the retired one", got.Backends, got.Models)
+	if len(got.Backends) != 6 || len(got.Models) != 7 {
+		t.Fatalf("backends %v, models %v: want the config's 5 backends plus the retired one, and its 6 models plus the retired one", got.Backends, got.Models)
 	}
 	if a := got.Backends["vllm-a"]; a.InFlight != 2 || a.MaxInFlight != 8 || len(a.Deployments) != 1 || a.Deployments["Qwen/Qwen3-32B"].Circuit != control.CircuitClosed {
 		t.Errorf("vllm-a = %+v", a)

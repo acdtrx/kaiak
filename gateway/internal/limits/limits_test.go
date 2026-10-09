@@ -52,7 +52,7 @@ func snapshot(t *testing.T, l limitsDoc) *config.Snapshot {
       "metadata": { "context_length": 32768,
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } } }`
 	doc := `{
-  "format_version": 5,
+  "format_version": 6,
   "global": {` + graceField(l.grace) + ` "limits": ` + list(l.global) + ` },
   "backends": { "b": { "type": "openai-compatible", "base_url": "http://localhost:1/v1" } },
   "models": { "m1": ` + strings.Replace(model, `"metadata"`, `"prices": [{ "effective_from": "2020-01-01",
@@ -117,7 +117,7 @@ func admitN(t *testing.T, l *Limiter, s Subject, n int, tokens int64) []*Reserva
 	t.Helper()
 	var out []*Reservation
 	for i := range n {
-		res, rej := l.Reserve(s, tokens)
+		res, rej := l.Reserve(s, Need{Tokens: tokens})
 		if rej != nil {
 			t.Fatalf("request %d refused: %+v", i+1, rej)
 		}
@@ -128,7 +128,7 @@ func admitN(t *testing.T, l *Limiter, s Subject, n int, tokens int64) []*Reserva
 
 func refused(t *testing.T, l *Limiter, s Subject, tokens int64) *Rejection {
 	t.Helper()
-	res, rej := l.Reserve(s, tokens)
+	res, rej := l.Reserve(s, Need{Tokens: tokens})
 	if rej == nil {
 		t.Fatalf("admitted, want refused (headers %+v)", res.Headers())
 	}
@@ -226,7 +226,7 @@ func TestConcurrentRequestsCannotOvershoot(t *testing.T) {
 	admitted := 0
 	for range 200 {
 		wg.Go(func() {
-			if _, rej := l.Reserve(workload, 7); rej == nil {
+			if _, rej := l.Reserve(workload, Need{Tokens: 7}); rej == nil {
 				mu.Lock()
 				admitted++
 				mu.Unlock()
@@ -515,7 +515,7 @@ func TestRefusalBlockedOnlyByRunningRequestsAnswersAShortRetry(t *testing.T) {
 
 			clk.advance(c.wait)
 			l.Settle(running[0], record(2000, 30000, 0, 500, 0, 0))
-			res, rej := l.Reserve(workload, c.tokens)
+			res, rej := l.Reserve(workload, Need{Tokens: c.tokens})
 			if rej != nil {
 				t.Fatalf("refused again after the first request settled small: %+v", rej)
 			}
@@ -628,7 +628,7 @@ func TestARecreatedGroupKeepsItsSpend(t *testing.T) {
 			if got := used(t, l, "temporary", config.LimitTokensPerHour); got != 105 {
 				t.Errorf("re-created group's hour %d, want 100 + the 5 settled while it was deleted", got)
 			}
-			if _, rejected := l.Reserve(subject, 1); rejected == nil {
+			if _, rejected := l.Reserve(subject, Need{Tokens: 1}); rejected == nil {
 				t.Error("request admitted against the re-created group's spent budget")
 			}
 
@@ -671,7 +671,7 @@ func TestARunningRequestHoldsTheCountsOfADeletedGroup(t *testing.T) {
 			if got := used(t, l, "temporary", config.LimitUSDPerMonth); got != 1_000_000_000 {
 				t.Errorf("re-created group's month %d nano-USD, want the 1 USD its running request settled", got)
 			}
-			if _, rejected := l.Reserve(subject, 1); rejected == nil {
+			if _, rejected := l.Reserve(subject, Need{Tokens: 1}); rejected == nil {
 				t.Error("request admitted against the re-created group's spent budget")
 			}
 		})
@@ -769,7 +769,7 @@ func TestBillabilityComesFromTheRequestsOwnSnapshot(t *testing.T) {
 func treeSnapshot(t *testing.T) *config.Snapshot {
 	t.Helper()
 	doc := `{
-  "format_version": 5,
+  "format_version": 6,
   "global": {},
   "backends": { "b": { "type": "openai-compatible", "base_url": "http://localhost:1/v1" } },
   "models": { "m1": { "deployments": [{ "backend": "b", "model": "x" }],
@@ -835,7 +835,7 @@ func chainSnapshot(t *testing.T, withWorkload bool) *config.Snapshot {
 		workloadGroup = `, "workload": { "parent": "env", ` + limit + ` }`
 	}
 	doc := `{
-  "format_version": 5,
+  "format_version": 6,
   "global": {},
   "backends": { "b": { "type": "openai-compatible", "base_url": "http://localhost:1/v1" } },
   "models": { "m1": { "deployments": [{ "backend": "b", "model": "x" }],

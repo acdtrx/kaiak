@@ -66,7 +66,7 @@ func TestFirstStatusReportsWhatTheGatewayRuns(t *testing.T) {
 	h.boot(c)
 	h.run(c)
 	s := h.nextStatus()
-	if s.Instance != testInstance || s.ProtocolVersion != 5 || s.State != StateReady || !s.StartedAt.Equal(started) ||
+	if s.Instance != testInstance || s.ProtocolVersion != 6 || s.State != StateReady || !s.StartedAt.Equal(started) ||
 		s.AppliedConfigHash == nil || *s.AppliedConfigHash != hash || s.LastRejection != nil ||
 		len(s.Backends) != 2 || len(s.Models) != 1 {
 		t.Errorf("status %+v", s)

@@ -74,6 +74,8 @@ func TestBatchCapsRefuseZero(t *testing.T) {
 		"max-sequences-per-request-zero.json": "max_sequences_per_request",
 		"max-embedding-inputs-zero.json":      "max_embedding_inputs",
 		"max-rerank-documents-zero.json":      "max_rerank_documents",
+		"max-images-per-request-zero.json":    "max_images_per_request",
+		"max-speech-batch-items-zero.json":    "max_speech_batch_items",
 	} {
 		t.Run(file, func(t *testing.T) {
 			_, err := Parse(fixturetest.Read(t, filepath.Join(fixturesDir, "invalid", file)))

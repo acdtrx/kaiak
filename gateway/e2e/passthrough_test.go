@@ -124,7 +124,7 @@ func scenarioConfig(fakeURL, hash string, backends []scenarioBackend) map[string
 		models[b.model] = scenarioModel(map[string]any{"backend": b.name, "model": b.deployed})
 	}
 	return map[string]any{
-		"format_version": 5,
+		"format_version": 6,
 		"global":         map[string]any{},
 		"backends":       entries,
 		"models":         models,

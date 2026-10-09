@@ -202,7 +202,8 @@ func TestAcrossHalves(t *testing.T) {
 			PromptTokens: 100, CompletionTokens: 5, CachedTokens: 40, CacheWriteTokens: 30}})
 		defer backend.SetReply(fakebackend.Reply{})
 		want := accounting.Units{config.UnitTokensIn: 30, config.UnitTokensCached: 40, config.UnitTokensCacheWrite: 30,
-			config.UnitTokensOut: 5, config.UnitTokensReasoning: 0}
+			config.UnitTokensOut: 5, config.UnitTokensReasoning: 0,
+			config.UnitImages: 0, config.UnitAudioSecondsOut: 0, config.UnitAudioSecondsIn: 0}
 		const limitTokens = 65
 
 		// Counted first, on the gateway whose answers follow: a batch holding a later
@@ -275,7 +276,8 @@ func TestAcrossHalves(t *testing.T) {
 		}
 		record := proxy.waitRecord(t, "xh-rerank", waitLimit)
 		want := accounting.Units{config.UnitTokensIn: 40, config.UnitTokensCached: 0, config.UnitTokensCacheWrite: 0,
-			config.UnitTokensOut: 0, config.UnitTokensReasoning: 0}
+			config.UnitTokensOut: 0, config.UnitTokensReasoning: 0,
+			config.UnitImages: 0, config.UnitAudioSecondsOut: 0, config.UnitAudioSecondsIn: 0}
 		if !maps.Equal(record.Units, want) || record.Model != "reranker" || record.Deployment.Backend != "ls" ||
 			record.CostNanoUSD != 40_000 || record.Estimated || record.Partial {
 			t.Errorf("record %+v, want units %v on ls costing 40000 nano-USD, reported", record, want)

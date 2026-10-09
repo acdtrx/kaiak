@@ -15,9 +15,9 @@ import (
 )
 
 // countedFixture is a file of protocol/fixtures/usage/: a usage record's units and
-// cost, and what it counts toward each token and cost limit type, in the type's unit
-// as a decimal string (docs/specs/CONTROL-PROTOCOL.md, Usage intake → Counted
-// toward). kaiak-control's suite checks the control plane counts the same.
+// cost, and what it counts toward each limit type but requests, in the type's unit as
+// a decimal string (docs/specs/CONTROL-PROTOCOL.md, Usage intake → Counted toward).
+// kaiak-control's suite checks the control plane counts the same.
 type countedFixture struct {
 	Reason      string                      `json:"reason"`
 	Units       map[config.Unit]int64       `json:"units"`
@@ -42,8 +42,8 @@ func TestCountedUnitsFixtures(t *testing.T) {
 			if err := dec.Decode(&fixture); err != nil {
 				t.Fatal(err)
 			}
-			if got := slices.Sorted(maps.Keys(fixture.Units)); !slices.Equal(got, slices.Sorted(slices.Values(config.TokenUnits))) {
-				t.Fatalf("units %v, want every token unit %v", got, config.TokenUnits)
+			if got := slices.Sorted(maps.Keys(fixture.Units)); !slices.Equal(got, slices.Sorted(slices.Values(config.RecordUnits))) {
+				t.Fatalf("units %v, want every unit %v", got, config.RecordUnits)
 			}
 			if got := slices.Sorted(maps.Keys(fixture.Expected)); !slices.Equal(got, slices.Sorted(slices.Values(types))) {
 				t.Fatalf("expected types %v, want %v", got, types)

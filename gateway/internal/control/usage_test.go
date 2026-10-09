@@ -32,7 +32,7 @@ func testRecord(n int) accounting.UsageRecord {
 		Model:           "llama",
 		Deployment:      accounting.Deployment{Backend: "local", Model: "llama-3"},
 		Units: accounting.Units{"tokens_in": 10, "tokens_cached": 0, "tokens_cache_write": 0, "tokens_out": 5,
-			"tokens_reasoning": 0},
+			"tokens_reasoning": 0, "images": 0, "audio_seconds_out": 0, "audio_seconds_in": 0},
 		CostNanoUSD: int64(n),
 		GatewayTime: time.Date(2026, 9, 24, 10, 0, 0, n, time.UTC),
 	}

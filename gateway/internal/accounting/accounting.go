@@ -48,9 +48,12 @@ type UsageRecord struct {
 	// plane shows its batch counted.
 	Generation uint64 `json:"-"`
 	// Operation is the request's gen_ai.operation.name, from its endpoint: chat,
-	// text_completion, embeddings or rerank. Never sent: the protocol has no field
-	// for it; the usage metrics label the record with it.
+	// text_completion, embeddings, rerank or generate_content. Never sent: the
+	// protocol has no field for it; the usage metrics label the record with it.
 	Operation string `json:"-"`
+	// OutputType is the request's gen_ai.output.type, from its endpoint: speech or
+	// image for the media endpoints, "" for the others. Never sent, as Operation.
+	OutputType string `json:"-"`
 }
 
 // Deployment is where the request ran: the backend ID and the model name on it.
@@ -114,6 +117,8 @@ type Request struct {
 	Deployment config.Deployment
 	// Operation is the endpoint's gen_ai.operation.name (UsageRecord.Operation).
 	Operation string
+	// OutputType is the endpoint's gen_ai.output.type (UsageRecord.OutputType).
+	OutputType string
 	// Start is when the request arrived; it picks the price entry in force.
 	Start time.Time
 }
@@ -137,6 +142,7 @@ func (r *Recorder) Settle(rq Request, meter *Meter, complete bool) UsageRecord {
 		Partial:         flags.Partial,
 		GatewayTime:     r.now().UTC(),
 		Operation:       rq.Operation,
+		OutputType:      rq.OutputType,
 	}
 	if clamped := clampToProtocol(&rec); len(clamped) > 0 {
 		if r.opts.Logger != nil {
@@ -212,7 +218,9 @@ func tierFor(price config.Price, input int64) config.PriceTier {
 // the cache, and output — at that tier's prices. The priced units are disjoint, so
 // the cost is a sum over config.PricedUnits; tokens_cached or tokens_cache_write
 // without a price of its own is charged at the tier's tokens_in price
-// (config.PriceFallback); tokens_reasoning is inside tokens_out and never priced. An unpriced model, or a date before its first entry, costs 0.
+// (config.PriceFallback); tokens_reasoning is inside tokens_out and never priced, and
+// the media units are not price units: images and seconds of audio cost nothing. An
+// unpriced model, or a date before its first entry, costs 0.
 //
 // Each record's cost is rounded to a whole nano-dollar once, here: records are summed
 // as integers downstream, so totals over any number of records carry no floating-point

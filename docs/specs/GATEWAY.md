@@ -1853,6 +1853,12 @@ own, and a client sending repeats is broken either way.
   A speech request also reserves tokens as above — its input estimate plus its
   output limit once per item — and an image request its input estimate: token
   limits keep seeing both.
+  **An image or audio limit applies only to a request that adds to its measure**
+  (settled 2026-10-09, step 3 review): image limits to image requests, audio-generated
+  limits to speech, audio-processed limits to uploads — as a USD limit applies only to
+  a priced request (Unpriced models, below). Rejected: applying them to every request
+  in the scope — audio generated reserves nothing, so a spent audio window would
+  refuse every chat request there.
 - **Unpriced models** (settled 2026-09-25, D6): a USD limit applies to a request only
   while its model has a price in force (a `prices` entry effective now). A model
   without one costs nothing, so no budget refuses it — not a spent USD limit, not the

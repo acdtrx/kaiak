@@ -17,7 +17,7 @@ func TestRerankUsage(t *testing.T) {
 	const requestBytes = 41 // → 11 tokens
 	results := `"results":[{"index":1,"document":{"text":"` + strings.Repeat("a panda eats bamboo ", 50) + `"},"relevance_score":0.9},` +
 		`{"index":0,"document":{"text":"the sky"},"relevance_score":0.1}]`
-	estimated := withEveryTokenUnit(Units{config.UnitTokensIn: 11})
+	estimated := withEveryUnit(Units{config.UnitTokensIn: 11})
 	for _, c := range []struct {
 		name  string
 		body  string
@@ -25,12 +25,12 @@ func TestRerankUsage(t *testing.T) {
 		flags Flags
 	}{
 		{"reported", `{"id":"rerank-1","model":"m","usage":{"prompt_tokens":40,"total_tokens":40},` + results + `}`,
-			withEveryTokenUnit(Units{config.UnitTokensIn: 40}), Flags{}},
+			withEveryUnit(Units{config.UnitTokensIn: 40}), Flags{}},
 		{"reported after the results", `{"model":"m",` + results + `,"usage":{"prompt_tokens":40,"total_tokens":40}}`,
-			withEveryTokenUnit(Units{config.UnitTokensIn: 40}), Flags{}},
+			withEveryUnit(Units{config.UnitTokensIn: 40}), Flags{}},
 		{"prompt tokens only", `{"model":"m","usage":{"prompt_tokens":40,"completion_tokens":5,` +
 			`"prompt_tokens_details":{"cached_tokens":10}},` + results + `}`,
-			withEveryTokenUnit(Units{config.UnitTokensIn: 40}), Flags{}},
+			withEveryUnit(Units{config.UnitTokensIn: 40}), Flags{}},
 		{"missing", `{"id":"rerank-1","model":"m",` + results + `}`, estimated, Flags{Estimated: true}},
 		{"null", `{"model":"m","usage":null,` + results + `}`, estimated, Flags{Estimated: true}},
 		{"malformed", `{"model":"m","usage":{"prompt_tokens":"many"},` + results + `}`, estimated, Flags{Estimated: true}},

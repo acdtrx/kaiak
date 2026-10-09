@@ -150,7 +150,7 @@ func (u *messagesUsage) reported() (Units, bool) {
 	if u.in == nil && u.out == nil {
 		return nil, false
 	}
-	return withEveryTokenUnit(Units{
+	return withEveryUnit(Units{
 		config.UnitTokensIn:         nonNegative(u.in),
 		config.UnitTokensCached:     nonNegative(u.cacheRead),
 		config.UnitTokensCacheWrite: nonNegative(u.cacheWrite),

@@ -30,7 +30,7 @@ var (
 
 // FormatVersion is the config document format this gateway reads; any other is
 // rejected, never migrated.
-const FormatVersion = 5
+const FormatVersion = 6
 
 // maxPriceTiers bounds a price entry's tiers.
 const maxPriceTiers = 8
@@ -148,6 +148,8 @@ func (c *schemaCheck) global(v any, path string) {
 		"max_sequences_per_request":       {Check: c.IntegerAtLeast(1)},
 		"max_embedding_inputs":            {Check: c.IntegerAtLeast(1)},
 		"max_rerank_documents":            {Check: c.IntegerAtLeast(1)},
+		"max_images_per_request":          {Check: c.IntegerAtLeast(1)},
+		"max_speech_batch_items":          {Check: c.IntegerAtLeast(1)},
 		"max_concurrent_requests_per_key": {Check: c.IntegerAtLeast(1)},
 		"queue":                           {Check: func(v any, path string) { c.queueSettings(v, path) }},
 		"retries":                         {Check: func(v any, path string) { c.retrySettings(v, path) }},
@@ -359,7 +361,7 @@ func (c *schemaCheck) limit(v any, path string) {
 	}
 	limitType, _ := m["type"].(string)
 	value, isNumber := m["value"].(json.Number)
-	// A value counting requests or tokens must be an integer.
+	// A value counting requests, tokens, images or seconds of audio must be an integer.
 	if isNumber && slices.Contains(limitTypeNames, limitType) && LimitType(limitType).Measure() != MeasureCost &&
 		!schemacheck.IsInteger(schemacheck.NumberValue(value)) {
 		c.Fail(schemacheck.Pointer(path, "value"), "must be an integer for "+limitType)

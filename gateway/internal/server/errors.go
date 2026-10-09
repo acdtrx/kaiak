@@ -414,3 +414,24 @@ func errHostedMember(param string) *apiError {
 	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "hosted_tool_unsupported", class: metrics.ErrorInvalidRequest, param: param,
 		message: fmt.Sprintf("'%s' asks the backend to run tools itself; the gateway serves only tools the client runs.", param)}
 }
+
+// errResponseFormatUnsupported refuses a media request asking for an answer format
+// the gateway cannot count (docs/specs/GATEWAY.md, Client API → owned fields: speech,
+// images): speech audio other than WAV or PCM, whose length it cannot measure, and
+// images other than b64_json, whose count it cannot read. param names the member
+// (response_format, items[2].response_format); allowed names the formats served. The
+// message never echoes the value: the client wrote it.
+func errResponseFormatUnsupported(param, allowed string) *apiError {
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "response_format_unsupported", class: metrics.ErrorInvalidRequest, param: param,
+		message: fmt.Sprintf("'%s' asks for a format the gateway cannot count; it serves %s.", param, allowed)}
+}
+
+// errExternalReference refuses a field that would make the backend fetch a URL or
+// read a file on the client's behalf (docs/specs/GATEWAY.md, Client API → owned
+// fields: speech, images): a reference audio that is not inline data, an image
+// request's LoRA adapter path. param names the member (ref_audio[1],
+// references[0].audio_path, lora).
+func errExternalReference(param string) *apiError {
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "external_reference_unsupported", class: metrics.ErrorInvalidRequest, param: param,
+		message: fmt.Sprintf("'%s' names something for the backend to fetch or read (a URL or a file path); the gateway sends only inline data.", param)}
+}

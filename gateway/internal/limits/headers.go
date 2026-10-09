@@ -16,11 +16,12 @@ type Rejection struct {
 	Group   string
 	Type    config.LimitType
 	Measure config.Measure
-	// Limit, Used and Requested are in the limit's unit (requests, tokens, nano-USD).
-	// Limit is what this gateway enforces — a per-minute window's share in
-	// control-plane mode; Max is the limit's full value, which a request above can
-	// never have. Requested is 0 for a cost limit: cost is known only after a
-	// request, so a cost limit refuses once its window has reached the limit.
+	// Limit, Used and Requested are in the limit's unit (requests, tokens, images,
+	// seconds of audio, nano-USD). Limit is what this gateway enforces — a per-minute
+	// window's share in control-plane mode; Max is the limit's full value, which a
+	// request above can never have. Requested is 0 for a cost limit and an
+	// audio-generated limit: their amounts are known only after a request, so such a
+	// limit refuses once its window has reached the limit.
 	Limit, Max, Used, Requested int64
 	// RetryAfter is how long until every refusing limit has room for the request; a
 	// token limit blocked only by requests still running counts inFlightRetry.
@@ -58,8 +59,8 @@ func (r *Rejection) LogAttrs() []slog.Attr {
 
 // Headers are the x-ratelimit-* values for requests and tokens, each from the
 // applicable limit with the least remaining; nil when no such limit applies (a count
-// without a limit has no headers). Cost
-// limits have no headers.
+// without a limit has no headers). Cost, image and audio limits have no headers:
+// OpenAI defines them for requests and tokens only.
 type Headers struct {
 	Requests, Tokens *HeaderValues
 }

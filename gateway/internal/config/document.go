@@ -27,6 +27,8 @@ type globalDoc struct {
 	MaxSequences         *int64      `json:"max_sequences_per_request"`
 	MaxEmbeddingInputs   *int64      `json:"max_embedding_inputs"`
 	MaxRerankDocuments   *int64      `json:"max_rerank_documents"`
+	MaxImagesPerRequest  *int64      `json:"max_images_per_request"`
+	MaxSpeechBatchItems  *int64      `json:"max_speech_batch_items"`
 	MaxConcurrentPerKey  *int64      `json:"max_concurrent_requests_per_key"`
 	Queue                *queueDoc   `json:"queue"`
 	Retries              *retriesDoc `json:"retries"`

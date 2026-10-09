@@ -47,8 +47,8 @@ type PushedWindow struct {
 	// month), UTC, by the control plane's clock.
 	Start time.Time `json:"window_start"`
 	// Used counts tokens (tokens_in + tokens_cache_write + tokens_out; cache reads do
-	// not count) or nano-USD, as the counter does. It travels as a string of digits: a
-	// JavaScript number is exact only up to 2^53.
+	// not count), images, seconds of audio or nano-USD, as the counter does. It travels
+	// as a string of digits: a JavaScript number is exact only up to 2^53.
 	Used int64 `json:"used,string"`
 }
 

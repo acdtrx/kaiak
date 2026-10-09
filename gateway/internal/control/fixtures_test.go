@@ -131,7 +131,8 @@ func TestAccountingRecordEncodesToAValidMessage(t *testing.T) {
 			KeyID: "k-eval-ci", Groups: []string{"research", "rag", "eval-pipeline"},
 			Model: "qwen3-32b", Deployment: accounting.Deployment{Backend: "vllm-a", Model: "Qwen/Qwen3-32B"},
 			Units: accounting.Units{config.UnitTokensIn: 812, config.UnitTokensCached: 0,
-				config.UnitTokensCacheWrite: 0, config.UnitTokensOut: 240, config.UnitTokensReasoning: 96},
+				config.UnitTokensCacheWrite: 0, config.UnitTokensOut: 240, config.UnitTokensReasoning: 96,
+				config.UnitImages: 0, config.UnitAudioSecondsOut: 0, config.UnitAudioSecondsIn: 0},
 			CostNanoUSD: 1234, GatewayTime: time.Date(2026, 9, 24, 10, 0, 0, 123456789, time.UTC),
 		},
 		{
@@ -139,8 +140,29 @@ func TestAccountingRecordEncodesToAValidMessage(t *testing.T) {
 			KeyID: "k-alice", Groups: []string{"alice"},
 			Model: "gpt-4.1-mini", Deployment: accounting.Deployment{Backend: "azure", Model: "gpt-4.1-mini"},
 			Units: accounting.Units{config.UnitTokensIn: 0, config.UnitTokensCached: 0,
-				config.UnitTokensCacheWrite: 0, config.UnitTokensOut: 0, config.UnitTokensReasoning: 0},
+				config.UnitTokensCacheWrite: 0, config.UnitTokensOut: 0, config.UnitTokensReasoning: 0,
+				config.UnitImages: 0, config.UnitAudioSecondsOut: 0, config.UnitAudioSecondsIn: 0},
 			Partial: true, GatewayTime: time.Date(2026, 9, 24, 10, 0, 1, 0, time.UTC),
+		},
+		// A speech record: its tokens and the seconds of audio it generated, apart.
+		{
+			RecordID: "00112233445566778899aabbccddeeff", RequestID: "req-3", GatewayInstance: "gw-1",
+			KeyID: "k-alice", Groups: []string{"users", "alice"},
+			Model: "qwen3-tts", Deployment: accounting.Deployment{Backend: "omni-tts", Model: "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"},
+			Units: accounting.Units{config.UnitTokensIn: 21, config.UnitTokensCached: 0,
+				config.UnitTokensCacheWrite: 0, config.UnitTokensOut: 83, config.UnitTokensReasoning: 0,
+				config.UnitImages: 0, config.UnitAudioSecondsOut: 7, config.UnitAudioSecondsIn: 0},
+			GatewayTime: time.Date(2026, 10, 9, 10, 0, 2, 0, time.UTC),
+		},
+		// An image record: its images, and its prompt estimated.
+		{
+			RecordID: "ffeeddccbbaa99887766554433221100", RequestID: "req-4", GatewayInstance: "gw-1",
+			KeyID: "k-eval-ci", Groups: []string{"research", "rag", "eval-pipeline"},
+			Model: "qwen-image", Deployment: accounting.Deployment{Backend: "omni-image", Model: "Qwen/Qwen-Image"},
+			Units: accounting.Units{config.UnitTokensIn: 30, config.UnitTokensCached: 0,
+				config.UnitTokensCacheWrite: 0, config.UnitTokensOut: 0, config.UnitTokensReasoning: 0,
+				config.UnitImages: 4, config.UnitAudioSecondsOut: 0, config.UnitAudioSecondsIn: 0},
+			Estimated: true, GatewayTime: time.Date(2026, 10, 9, 10, 0, 3, 0, time.UTC),
 		},
 	}
 	for _, rec := range records {
@@ -213,7 +235,7 @@ func TestTotalsAmountBeyondSafeInteger(t *testing.T) {
 
 // Integer fields written with a fraction or exponent are integers, as the schemas say.
 func TestIntegerSpellings(t *testing.T) {
-	status, err := DecodeStatus([]byte(`{"instance":"gw-1","protocol_version":5.0,"state":"ready",
+	status, err := DecodeStatus([]byte(`{"instance":"gw-1","protocol_version":6.0,"state":"ready",
 		"started_at":"2026-09-24T10:00:00Z","applied_config_hash":null,"last_rejection":null,
 		"backends":{"b":{"in_flight":2.0,"max_in_flight":4e0,"deployments":{}}},"models":{"m":{"queued":1.0}}}`))
 	if err != nil {
@@ -291,9 +313,9 @@ func TestTotalsWindowTypesAreTheCountedLimitTypes(t *testing.T) {
 	}
 }
 
-// The walker requires every token unit in a record, and the schema requires the same
-// units, in record order.
-func TestRecordUnitsAreTheTokenUnits(t *testing.T) {
+// The walker requires every unit in a record, and the schema requires the same units,
+// in the schema's order.
+func TestRecordUnitsAreTheSchemaUnits(t *testing.T) {
 	var schema struct {
 		Properties struct {
 			Units struct {
@@ -306,13 +328,13 @@ func TestRecordUnitsAreTheTokenUnits(t *testing.T) {
 		t.Fatal(err)
 	}
 	var units []string
-	for _, unit := range config.TokenUnits {
+	for _, unit := range config.RecordUnits {
 		units = append(units, string(unit))
 	}
 	if required := schema.Properties.Units.Required; !slices.Equal(units, required) {
-		t.Errorf("token units %v, schema required units %v", units, required)
+		t.Errorf("record units %v, schema required units %v", units, required)
 	}
 	if fields := slices.Sorted(maps.Keys(schema.Properties.Units.Properties)); !slices.Equal(slices.Sorted(slices.Values(units)), fields) {
-		t.Errorf("token units %v, schema unit fields %v", units, fields)
+		t.Errorf("record units %v, schema unit fields %v", units, fields)
 	}
 }

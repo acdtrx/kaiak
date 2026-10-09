@@ -41,10 +41,13 @@ func onlyRecord(t *testing.T, g *testGateway) accounting.UsageRecord {
 	return records[0]
 }
 
+// units is a token endpoint's record units: the token units given, and the media
+// units at 0 — every record carries every unit.
 func units(in, cached, cacheWrite, out, reasoning int64) accounting.Units {
 	return accounting.Units{
 		config.UnitTokensIn: in, config.UnitTokensCached: cached, config.UnitTokensCacheWrite: cacheWrite,
 		config.UnitTokensOut: out, config.UnitTokensReasoning: reasoning,
+		config.UnitImages: 0, config.UnitAudioSecondsOut: 0, config.UnitAudioSecondsIn: 0,
 	}
 }
 
@@ -316,7 +319,8 @@ func TestUsageRecordCarriesNothingSensitive(t *testing.T) {
 			t.Errorf("record carries %q: %s", secret, data)
 		}
 	}
-	if !strings.Contains(string(data), `"units":{"tokens_cache_write":0,"tokens_cached":0,"tokens_in":7,"tokens_out":1,"tokens_reasoning":0}`) {
+	if !strings.Contains(string(data), `"units":{"audio_seconds_in":0,"audio_seconds_out":0,"images":0,`+
+		`"tokens_cache_write":0,"tokens_cached":0,"tokens_in":7,"tokens_out":1,"tokens_reasoning":0}`) {
 		t.Errorf("units encoding: %s", data)
 	}
 }

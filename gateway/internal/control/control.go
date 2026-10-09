@@ -9,7 +9,7 @@ package control
 
 // ProtocolVersion is the protocol version this gateway speaks, sent in the
 // Kaiak-Protocol header and in status.
-const ProtocolVersion = 5
+const ProtocolVersion = 6
 
 // Message rule codes: what the schemas cannot express. They are part of the contract;
 // kaiak-control reports the same code for the same message. A rejected message is a

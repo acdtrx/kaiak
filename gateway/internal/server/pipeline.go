@@ -30,6 +30,11 @@ type endpoint struct {
 	// applies ("rerank"), and "" for the model and token-counting endpoints, which have
 	// none and settle no usage record.
 	operation string
+	// outputType is the endpoint's gen_ai.output.type on the log line and on its usage
+	// records: the convention's well-known "speech" or "image" for the media
+	// endpoints, which share their operation; "" for the others, where the gateway
+	// reads no output type.
+	outputType string
 	// body: the endpoint is a POST carrying a JSON request body in api's format,
 	// passed through to a backend serving api; its route is api's path under /v1/
 	// (route).

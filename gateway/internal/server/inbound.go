@@ -29,6 +29,12 @@ type inboundFields struct {
 	// generate, each up to the output limit: n (or best_of, when larger) per
 	// prompt, times a completion's prompts. At least 1.
 	Sequences int64
+	// Media are the media measures the request counts toward, each with what it
+	// reserves before it runs (limits.Need.Media): the images an image request asks
+	// for, nothing for the audio a speech request generates, the measured seconds of
+	// audio a request uploads. nil for a request that produces no media, which no
+	// media limit refuses.
+	Media map[config.Measure]int64
 }
 
 // readInbound parses a body endpoint's request: the raw body, capped by the snapshot's

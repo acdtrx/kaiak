@@ -72,8 +72,8 @@ func (w *walker) hex32() func(v any, path string) {
 }
 
 func (w *walker) usageRecord(v any, path string) {
-	units := make(map[string]schemacheck.Field, len(config.TokenUnits))
-	for _, unit := range config.TokenUnits {
+	units := make(map[string]schemacheck.Field, len(config.RecordUnits))
+	for _, unit := range config.RecordUnits {
 		units[string(unit)] = schemacheck.Field{Required: true, Check: w.count()}
 	}
 	w.Object(v, path, map[string]schemacheck.Field{

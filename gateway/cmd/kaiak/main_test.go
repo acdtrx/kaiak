@@ -208,7 +208,7 @@ func TestRunFailsWithoutAConfigFile(t *testing.T) {
 
 func TestRunFailsOnAnInvalidConfigFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(`{"format_version": 5}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"format_version": 6}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	env := envOf(map[string]string{"KAIAK_CONFIG_FILE": path})

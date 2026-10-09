@@ -212,6 +212,12 @@ func fullScrape(t *testing.T) string {
 	usage.Record(accounting.UsageRecord{KeyID: "k-eval", Groups: group.PathIDs, Model: "chat", Operation: "chat",
 		Deployment: accounting.Deployment{Backend: "capped", Model: "chat-7b"},
 		Units:      accounting.Units{config.UnitTokensIn: 1}})
+	// A media record carrying every media unit, so each media counter shows, with the
+	// output type every usage metric carries for it.
+	usage.Record(accounting.UsageRecord{KeyID: "k-eval", Groups: group.PathIDs, Model: "chat", Operation: "generate_content",
+		OutputType: "speech", Deployment: accounting.Deployment{Backend: "capped", Model: "chat-7b"},
+		Units: accounting.Units{config.UnitTokensIn: 1, config.UnitImages: 1, config.UnitAudioSecondsOut: 2,
+			config.UnitAudioSecondsIn: 3}})
 	usage.RecordClamped()
 	delivery.UsageBatchSent(control.BatchAcked, time.Now())
 	delivery.UsageQueueDepth(1, 1, 100)

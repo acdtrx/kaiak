@@ -17,14 +17,14 @@ func TestResponsesUsage(t *testing.T) {
 		server, name string
 		want         Units
 	}{
-		{"vllm", "responses-stream.sse", withEveryTokenUnit(Units{config.UnitTokensIn: 62, config.UnitTokensOut: 98, config.UnitTokensReasoning: 91})},
-		{"vllm", "responses-stream-tool.sse", withEveryTokenUnit(Units{config.UnitTokensIn: 315, config.UnitTokensOut: 61, config.UnitTokensReasoning: 33})},
+		{"vllm", "responses-stream.sse", withEveryUnit(Units{config.UnitTokensIn: 62, config.UnitTokensOut: 98, config.UnitTokensReasoning: 91})},
+		{"vllm", "responses-stream-tool.sse", withEveryUnit(Units{config.UnitTokensIn: 315, config.UnitTokensOut: 61, config.UnitTokensReasoning: 33})},
 		// vLLM ends a stream cut by max_output_tokens with response.completed.
-		{"vllm", "responses-stream-incomplete.sse", withEveryTokenUnit(Units{config.UnitTokensIn: 56, config.UnitTokensOut: 16, config.UnitTokensReasoning: 16})},
+		{"vllm", "responses-stream-incomplete.sse", withEveryUnit(Units{config.UnitTokensIn: 56, config.UnitTokensOut: 16, config.UnitTokensReasoning: 16})},
 		// llama-server reports no output details: no reasoning share.
-		{"llama-server", "responses-stream.sse", withEveryTokenUnit(Units{config.UnitTokensIn: 24, config.UnitTokensOut: 333})},
-		{"llama-server", "responses-stream-tool.sse", withEveryTokenUnit(Units{config.UnitTokensIn: 4, config.UnitTokensCached: 273, config.UnitTokensOut: 59})},
-		{"llama-server", "responses-stream-incomplete.sse", withEveryTokenUnit(Units{config.UnitTokensIn: 4, config.UnitTokensCached: 10, config.UnitTokensOut: 16})},
+		{"llama-server", "responses-stream.sse", withEveryUnit(Units{config.UnitTokensIn: 24, config.UnitTokensOut: 333})},
+		{"llama-server", "responses-stream-tool.sse", withEveryUnit(Units{config.UnitTokensIn: 4, config.UnitTokensCached: 273, config.UnitTokensOut: 59})},
+		{"llama-server", "responses-stream-incomplete.sse", withEveryUnit(Units{config.UnitTokensIn: 4, config.UnitTokensCached: 10, config.UnitTokensOut: 16})},
 	} {
 		t.Run(c.server+"/"+c.name, func(t *testing.T) {
 			m := recordedStreamMeter(t, provider.Responses, c.server, c.name)
@@ -44,7 +44,7 @@ func TestResponsesUsage(t *testing.T) {
 				`"input_tokens_details":{"cached_tokens":20,"cache_write_tokens":7},"output_tokens":12,`+
 				`"output_tokens_details":{"reasoning_tokens":5}}}}`)
 		units, flags := m.Settle(true)
-		expect(t, units, flags, withEveryTokenUnit(Units{config.UnitTokensIn: 3, config.UnitTokensCached: 20, config.UnitTokensCacheWrite: 7, config.UnitTokensOut: 12, config.UnitTokensReasoning: 5}), Flags{})
+		expect(t, units, flags, withEveryUnit(Units{config.UnitTokensIn: 3, config.UnitTokensCached: 20, config.UnitTokensCacheWrite: 7, config.UnitTokensOut: 12, config.UnitTokensReasoning: 5}), Flags{})
 	})
 	t.Run("clamped", func(t *testing.T) {
 		m := streamMeter(provider.Responses, 40,
@@ -52,13 +52,13 @@ func TestResponsesUsage(t *testing.T) {
 				`"input_tokens_details":{"cached_tokens":8,"cache_write_tokens":9},"output_tokens":3,`+
 				`"output_tokens_details":{"reasoning_tokens":7}}}}`)
 		units, flags := m.Settle(true)
-		expect(t, units, flags, withEveryTokenUnit(Units{config.UnitTokensCached: 8, config.UnitTokensCacheWrite: 2, config.UnitTokensOut: 3, config.UnitTokensReasoning: 3}), Flags{})
+		expect(t, units, flags, withEveryUnit(Units{config.UnitTokensCached: 8, config.UnitTokensCacheWrite: 2, config.UnitTokensOut: 3, config.UnitTokensReasoning: 3}), Flags{})
 	})
 	t.Run("body", func(t *testing.T) {
 		body := `{"id":"r","object":"response","output":[{"type":"message","content":[{"type":"output_text","text":"x"}]}],` +
 			`"usage":{"input_tokens":5,"input_tokens_details":{"cached_tokens":2},"output_tokens":4}}`
 		units, flags := bodyMeter(provider.Responses, 40, 200, body).Settle(true)
-		expect(t, units, flags, withEveryTokenUnit(Units{config.UnitTokensIn: 3, config.UnitTokensCached: 2, config.UnitTokensOut: 4}), Flags{})
+		expect(t, units, flags, withEveryUnit(Units{config.UnitTokensIn: 3, config.UnitTokensCached: 2, config.UnitTokensOut: 4}), Flags{})
 	})
 }
 
@@ -77,7 +77,7 @@ func TestResponsesEstimatedOutput(t *testing.T) {
 			`{"type":"response.completed","response":{"id":"resp_1","status":"completed"}}`)
 		// abcd 4 + {"a":1} 7 + héllo 6 = 17 bytes → 5.
 		units, flags := m.Settle(true)
-		expect(t, units, flags, withEveryTokenUnit(Units{config.UnitTokensIn: 10, config.UnitTokensOut: 5}), Flags{Estimated: true})
+		expect(t, units, flags, withEveryUnit(Units{config.UnitTokensIn: 10, config.UnitTokensOut: 5}), Flags{Estimated: true})
 	})
 	t.Run("body", func(t *testing.T) {
 		body := `{"output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"ab"}],` +
@@ -87,7 +87,7 @@ func TestResponsesEstimatedOutput(t *testing.T) {
 			`{"type":"custom_tool_call","name":"g","input":"xyz"}]}`
 		// ab 2 + cd 2 + efgh 4 + no 2 + f 1 + {"a":1} 7 + g 1 + xyz 3 = 22 bytes → 6.
 		units, flags := bodyMeter(provider.Responses, 40, 200, body).Settle(true)
-		expect(t, units, flags, withEveryTokenUnit(Units{config.UnitTokensIn: 10, config.UnitTokensOut: 6}), Flags{Estimated: true})
+		expect(t, units, flags, withEveryUnit(Units{config.UnitTokensIn: 10, config.UnitTokensOut: 6}), Flags{Estimated: true})
 	})
 }
 

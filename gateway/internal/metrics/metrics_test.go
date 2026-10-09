@@ -105,6 +105,64 @@ func TestUsageMetricsCountsRecords(t *testing.T) {
 	}
 }
 
+// The media counters count the records' images and seconds of audio under the usage
+// labels and the output type; they are fed only by a record whose unit is not 0, so
+// records without media — and a media record's other units — add no series to them.
+func TestUsageMetricsCountMediaUnits(t *testing.T) {
+	holder := &config.Holder{}
+	holder.Swap(&config.Snapshot{KeyIDLabel: true, GroupLabel: true,
+		Backends: map[string]*config.Backend{"omni": {ID: "omni", Type: config.BackendVLLM}}})
+	reg := metric.NewRegistry()
+	usage := NewUsageMetrics(reg, holder)
+	record := func(model, outputType string, units accounting.Units) accounting.UsageRecord {
+		return accounting.UsageRecord{KeyID: "k-ann", Groups: []string{"users", "ann"}, Model: model,
+			Operation: "generate_content", OutputType: outputType, Units: units,
+			Deployment: accounting.Deployment{Backend: "omni", Model: model}}
+	}
+	every := func(units accounting.Units) accounting.Units {
+		for _, unit := range config.RecordUnits {
+			if _, ok := units[unit]; !ok {
+				units[unit] = 0
+			}
+		}
+		return units
+	}
+	speech := record("tts", "speech", every(accounting.Units{config.UnitTokensIn: 21, config.UnitTokensOut: 83,
+		config.UnitAudioSecondsOut: 7}))
+	usage.Record(speech)
+	usage.Record(speech)
+	usage.Record(record("image", "image", every(accounting.Units{config.UnitTokensIn: 30, config.UnitImages: 4})))
+	usage.Record(record("chat", "", every(accounting.Units{config.UnitTokensIn: 10, config.UnitTokensOut: 5})))
+
+	out := text(reg)
+	labels := func(model, outputType string) string {
+		return `kaiak_key_group="ann",kaiak_key_root_group="users",kaiak_key_id="k-ann",gen_ai_request_model="` + model +
+			`",gen_ai_operation_name="generate_content",gen_ai_output_type="` + outputType + `",kaiak_usage_status="complete"`
+	}
+	for _, want := range []string{
+		`kaiak_usage_audio_output_duration_seconds_total{` + labels("tts", "speech") + `} 14`,
+		`kaiak_usage_images_total{` + labels("image", "image") + `} 4`,
+		`kaiak_usage_records_total{` + labels("tts", "speech") + `} 2`,
+		`gen_ai_client_inference_usage_output_tokens_total{` + labels("tts", "speech") + `,gen_ai_token_modality="unknown"} 166`,
+		// No output type: the label is absent.
+		`kaiak_usage_records_total{kaiak_key_group="ann",kaiak_key_root_group="users",kaiak_key_id="k-ann",` +
+			`gen_ai_request_model="chat",gen_ai_operation_name="generate_content",kaiak_usage_status="complete"} 1`,
+	} {
+		if !strings.Contains(out, want+"\n") {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	// Each media counter has exactly the series of the records carrying its unit.
+	for family, want := range map[string]int{
+		"kaiak_usage_images_total": 1, "kaiak_usage_audio_output_duration_seconds_total": 1,
+		"kaiak_usage_audio_input_duration_seconds_total": 0,
+	} {
+		if got := strings.Count(out, "\n"+family+"{"); got != want {
+			t.Errorf("%s has %d series, want %d:\n%s", family, got, want, out)
+		}
+	}
+}
+
 func TestOpsMetrics(t *testing.T) {
 	holder := &config.Holder{}
 	busy := &config.Backend{ID: "busy", MaxInFlight: 1}

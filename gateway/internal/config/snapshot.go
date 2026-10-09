@@ -30,7 +30,13 @@ const (
 	DefaultMaxEmbeddingInputs = 2048
 	// DefaultMaxRerankDocuments is the most documents Cohere's rerank API reference
 	// recommends sending in one request.
-	DefaultMaxRerankDocuments  = 1000
+	DefaultMaxRerankDocuments = 1000
+	// DefaultMaxImagesPerRequest is vLLM-Omni's and OpenAI's own most images per image
+	// generation request.
+	DefaultMaxImagesPerRequest = 10
+	// DefaultMaxSpeechBatchItems is vLLM-Omni's own most items per speech batch
+	// (tts_batch_max_items), which it enforces too.
+	DefaultMaxSpeechBatchItems = 32
 	DefaultMaxConcurrentPerKey = 16
 	DefaultQueueSize           = 100
 	DefaultQueueTimeout        = 30 * time.Second
@@ -48,10 +54,10 @@ const (
 	// MaxGroupDepth is the most levels the group tree holds; a top-level group is
 	// level 1.
 	MaxGroupDepth = 8
-	// MaxCounters is the most counters a config may allocate on every gateway: an hour
-	// and a month counter for global and every group, limited or not, and one per
-	// effective per-minute limit (CONTROL-PROTOCOL.md, Config → The group tree:
-	// Counters are bounded).
+	// MaxCounters is the most counters a config may allocate on every gateway: one per
+	// counted limit type (the hour and month counts) for global and every group, limited
+	// or not, and one per effective per-minute limit (CONTROL-PROTOCOL.md, Config → The
+	// group tree: Counters are bounded).
 	MaxCounters = 50_000
 )
 
@@ -70,10 +76,16 @@ const (
 type LimitType string
 
 const (
-	LimitRequestsPerMinute LimitType = "requests_per_minute"
-	LimitTokensPerMinute   LimitType = "tokens_per_minute"
-	LimitTokensPerHour     LimitType = "tokens_per_hour"
-	LimitUSDPerMonth       LimitType = "usd_per_month"
+	LimitRequestsPerMinute        LimitType = "requests_per_minute"
+	LimitTokensPerMinute          LimitType = "tokens_per_minute"
+	LimitTokensPerHour            LimitType = "tokens_per_hour"
+	LimitImagesPerMinute          LimitType = "images_per_minute"
+	LimitImagesPerHour            LimitType = "images_per_hour"
+	LimitAudioSecondsOutPerMinute LimitType = "audio_seconds_out_per_minute"
+	LimitAudioSecondsOutPerHour   LimitType = "audio_seconds_out_per_hour"
+	LimitAudioSecondsInPerMinute  LimitType = "audio_seconds_in_per_minute"
+	LimitAudioSecondsInPerHour    LimitType = "audio_seconds_in_per_hour"
+	LimitUSDPerMonth              LimitType = "usd_per_month"
 )
 
 // Window is the span a limit type counts over; its value names the span in client
@@ -95,9 +107,33 @@ type Measure int
 const (
 	MeasureRequests Measure = iota
 	MeasureTokens
+	// MeasureImages counts images generated.
+	MeasureImages
+	// MeasureAudioSecondsOut counts seconds of audio generated.
+	MeasureAudioSecondsOut
+	// MeasureAudioSecondsIn counts seconds of audio processed.
+	MeasureAudioSecondsIn
 	// MeasureCost counts USD.
 	MeasureCost
 )
+
+// Units are the record units m counts, summed: CountedUnits for tokens, the unit of
+// the same name for images and for each direction of audio; none for requests (a
+// request counts once, whatever its record) and cost (the record's cost, not a unit).
+// protocol/fixtures/usage/ holds the control plane's counting to the same amounts.
+func (m Measure) Units() []Unit {
+	switch m {
+	case MeasureTokens:
+		return CountedUnits
+	case MeasureImages:
+		return []Unit{UnitImages}
+	case MeasureAudioSecondsOut:
+		return []Unit{UnitAudioSecondsOut}
+	case MeasureAudioSecondsIn:
+		return []Unit{UnitAudioSecondsIn}
+	}
+	return nil
+}
 
 // limitTypeRow is what a limit type is: the window it counts over, what it counts, and
 // whether the control plane counts it.
@@ -111,11 +147,18 @@ type limitTypeRow struct {
 // limitTypeTable is every limit type, in the schema's order (docs/specs/GATEWAY.md,
 // Limits). A counted type is counted for every scope, limited or not, and in
 // control-plane mode its totals come from the control plane; the others are local
-// per-minute shares, counted only for the limits that have them.
+// per-minute shares, counted only for the limits that have them. Each media unit is
+// limited on its own, per minute and per hour, as tokens are.
 var limitTypeTable = []limitTypeRow{
 	{LimitRequestsPerMinute, WindowMinute, MeasureRequests, false},
 	{LimitTokensPerMinute, WindowMinute, MeasureTokens, false},
 	{LimitTokensPerHour, WindowHour, MeasureTokens, true},
+	{LimitImagesPerMinute, WindowMinute, MeasureImages, false},
+	{LimitImagesPerHour, WindowHour, MeasureImages, true},
+	{LimitAudioSecondsOutPerMinute, WindowMinute, MeasureAudioSecondsOut, false},
+	{LimitAudioSecondsOutPerHour, WindowHour, MeasureAudioSecondsOut, true},
+	{LimitAudioSecondsInPerMinute, WindowMinute, MeasureAudioSecondsIn, false},
+	{LimitAudioSecondsInPerHour, WindowHour, MeasureAudioSecondsIn, true},
 	{LimitUSDPerMonth, WindowMonth, MeasureCost, true},
 }
 
@@ -150,11 +193,14 @@ func (t LimitType) Measure() Measure { return t.row().measure }
 func (t LimitType) Counted() bool { return t.row().counted }
 
 // Unit is a usage unit: what usage records, prices and limits count
-// (docs/specs/CONTROL-PROTOCOL.md, Prices). The token units priced are disjoint:
-// tokens_in is input neither read from nor written to the cache, tokens_cached input
-// read from it, tokens_cache_write input written to it, tokens_out all output
-// including reasoning. tokens_reasoning is the reasoning share of tokens_out, recorded
-// for visibility and never priced.
+// (docs/specs/CONTROL-PROTOCOL.md, Config → Units and price units). The token units
+// priced are disjoint: tokens_in is input neither read from nor written to the cache,
+// tokens_cached input read from it, tokens_cache_write input written to it,
+// tokens_out all output including reasoning. tokens_reasoning is the reasoning share
+// of tokens_out, recorded for visibility and never priced. The media units sit beside
+// the tokens, not inside them: images generated, seconds of audio generated
+// (audio_seconds_out) and processed (audio_seconds_in) — recorded and limited, never
+// priced.
 type Unit string
 
 const (
@@ -163,13 +209,20 @@ const (
 	UnitTokensCacheWrite Unit = "tokens_cache_write"
 	UnitTokensOut        Unit = "tokens_out"
 	UnitTokensReasoning  Unit = "tokens_reasoning"
+	UnitImages           Unit = "images"
+	UnitAudioSecondsOut  Unit = "audio_seconds_out"
+	UnitAudioSecondsIn   Unit = "audio_seconds_in"
 )
 
-// The unit sets, each a subset of TokenUnits. Recorded and priced stay distinct sets:
-// tokens_reasoning is recorded but never priced. Read-only.
+// The unit sets. RecordUnits is every unit, TokenUnits the token units among them;
+// every other set is part of TokenUnits. Recorded and priced stay distinct sets:
+// tokens_reasoning and the media units are recorded but never priced. Read-only.
 var (
-	// TokenUnits is every token unit, in record order: a usage record from a token
-	// endpoint carries them all, zeros included.
+	// RecordUnits is every unit, in the usage-record schema's order: a usage record
+	// carries them all, zeros included.
+	RecordUnits = []Unit{UnitAudioSecondsIn, UnitAudioSecondsOut, UnitImages,
+		UnitTokensIn, UnitTokensCached, UnitTokensCacheWrite, UnitTokensOut, UnitTokensReasoning}
+	// TokenUnits is every token unit: every unit but the media ones.
 	TokenUnits = []Unit{UnitTokensIn, UnitTokensCached, UnitTokensCacheWrite, UnitTokensOut, UnitTokensReasoning}
 	// PricedUnits are the units usd_per_million may name, in the order a cost sums
 	// them.
@@ -213,6 +266,10 @@ type Snapshot struct {
 	MaxEmbeddingInputs int64
 	// MaxRerankDocuments is the most documents one rerank request may carry.
 	MaxRerankDocuments int64
+	// MaxImagesPerRequest is the most images one image generation request may ask for.
+	MaxImagesPerRequest int64
+	// MaxSpeechBatchItems is the most items one speech batch request may carry.
+	MaxSpeechBatchItems int64
 	// MaxConcurrentRequestsPerKey is the most requests one key may have in flight on
 	// this gateway at once.
 	MaxConcurrentRequestsPerKey int64
@@ -402,6 +459,8 @@ func resolve(doc *document) *Snapshot {
 		MaxSequencesPerRequest:      valueOr(doc.Global.MaxSequences, DefaultMaxSequencesPerRequest),
 		MaxEmbeddingInputs:          valueOr(doc.Global.MaxEmbeddingInputs, DefaultMaxEmbeddingInputs),
 		MaxRerankDocuments:          valueOr(doc.Global.MaxRerankDocuments, DefaultMaxRerankDocuments),
+		MaxImagesPerRequest:         valueOr(doc.Global.MaxImagesPerRequest, DefaultMaxImagesPerRequest),
+		MaxSpeechBatchItems:         valueOr(doc.Global.MaxSpeechBatchItems, DefaultMaxSpeechBatchItems),
 		MaxConcurrentRequestsPerKey: valueOr(doc.Global.MaxConcurrentPerKey, DefaultMaxConcurrentPerKey),
 		Circuit:                     Circuit{FailureThreshold: DefaultFailureThreshold, ProbeInterval: DefaultProbeInterval},
 		GlobalLimits:                resolveLimits(doc.Global.Limits),

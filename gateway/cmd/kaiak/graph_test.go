@@ -47,7 +47,7 @@ func TestAppliedConfigForgetsADroppedDeploymentsMissingEndpoint(t *testing.T) {
 		if withReranker {
 			models += ", " + model("reranker", "rerank-back")
 		}
-		doc := `{ "format_version": 5, "global": { "circuit": { "probe_interval_ms": 3600000 } },
+		doc := `{ "format_version": 6, "global": { "circuit": { "probe_interval_ms": 3600000 } },
 		  "backends": { "vl": { "type": "vllm", "base_url": "` + backend.URL() + `/v1" } },
 		  "models": { ` + models + ` },
 		  "groups": { "g": { "allowed_models": ["*"] } },

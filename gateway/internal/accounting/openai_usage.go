@@ -122,7 +122,7 @@ func promptOnlyUnits(raw json.RawMessage) (Units, bool) {
 	if !ok || r.PromptTokens == nil {
 		return nil, false
 	}
-	return withEveryTokenUnit(Units{config.UnitTokensIn: nonNegative(r.PromptTokens)}), true
+	return withEveryUnit(Units{config.UnitTokensIn: nonNegative(r.PromptTokens)}), true
 }
 
 // generatedContent is where a choice carries generated text: a chat message (non-

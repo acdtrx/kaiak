@@ -1,16 +1,16 @@
 // Package limits enforces the configured limits locally: window counters checked and
 // reserved before a request is routed, settled with the request's actual usage once it
-// is over (docs/specs/GATEWAY.md, Limits). Every scope — global and each group — has an
-// hour and a month count whether or not it has a limit of that type, and a limit is a
-// check over its scope's count; a scope's counts outlive the config that has it while
-// own usage or a running request holds them. Per-minute windows exist only for the
-// limits that have them. In file mode the counters enforce every window at the full
-// limit, and every count starts from zero at each start. In control-plane mode
-// (NewShared) the hour and month windows
-// enforce the control plane's pushed totals plus this gateway's own usage not yet
-// counted there, per-minute windows enforce the limit's share among the live
-// gateways, and money-limited requests are refused once the control plane has been
-// out of reach past the outage grace.
+// is over (docs/specs/GATEWAY.md, Limits). Every scope — global and each group — has
+// its hour and month counts, one per counted type, whether or not it has a limit of
+// that type, and a limit is a check over its scope's count; a scope's counts outlive
+// the config that has it while own usage or a running request holds them. Per-minute
+// windows exist only for the limits that have them. In file mode the counters enforce
+// every window at the full limit, and every count starts from zero at each start. In
+// control-plane mode (NewShared) the hour and month windows enforce the control
+// plane's pushed totals plus this gateway's own usage not yet counted there,
+// per-minute windows enforce the limit's share among the live gateways, and
+// money-limited requests are refused once the control plane has been out of reach
+// past the outage grace.
 package limits
 
 import (
@@ -43,8 +43,9 @@ func scopeOf(group string) Scope {
 	return ScopeGroup
 }
 
-// maxOf is a configured limit's value in its counter's integer unit: requests and
-// tokens as they are (the schema makes them integers), USD in nano-dollars.
+// maxOf is a configured limit's value in its counter's integer unit: requests,
+// tokens, images and seconds of audio as they are (the schema makes them integers),
+// USD in nano-dollars.
 func maxOf(l config.Limit) int64 {
 	v := l.Value
 	if l.Type.Measure() == config.MeasureCost {
@@ -333,8 +334,9 @@ func identityAttrs(group string) []slog.Attr {
 	return []slog.Attr{scope, slog.String("kaiak.limit.group", group)}
 }
 
-// logValue is an amount in a limit's unit as the logs write it: requests and tokens as
-// they are, nano-USD in dollars, as kaiak.usage.cost_usd.
+// logValue is an amount in a limit's unit as the logs write it: requests, tokens,
+// images and seconds of audio as they are, nano-USD in dollars, as
+// kaiak.usage.cost_usd.
 func logValue(m config.Measure, v int64) any {
 	if m == config.MeasureCost {
 		return float64(v) / 1e9
@@ -411,18 +413,35 @@ type Subject struct {
 	RequestsOnly bool
 }
 
+// Need is what a request reserves on the limits that apply to it, by measure
+// (docs/specs/GATEWAY.md, Limits → Check and reserve). One request is always
+// reserved; cost never is — it is known only once the request is over.
+type Need struct {
+	// Tokens is the request's input estimate plus its effective output limit once
+	// per sequence (the input estimate alone when the output is unbounded).
+	Tokens int64
+	// Media are the media measures the request counts toward, each with what it
+	// reserves before the request runs: an image request's images (the n it asks
+	// for), nothing for the audio a speech request generates (its length is known
+	// only once relayed), the measured seconds of audio a request uploads. A media
+	// limit applies only to a request whose Need names its measure: a full image or
+	// audio window refuses only requests that would add to it.
+	Media map[config.Measure]int64
+}
+
 // applicable lists the counters of every scope the subject belongs to: global and
 // each group on its path, limited or not — a request counts on every one, and only the
 // limited ones are checked. USD counters apply
 // only to a priced request (Subject.Priced): an unpriced model costs nothing, so no
 // budget refuses it or is spent by it (docs/specs/GATEWAY.md, Limits → Unpriced
 // models); a request that generates nothing (Subject.RequestsOnly) meets only request
-// counters. Callers hold l.mu and have synced.
-func (l *Limiter) applicable(s Subject) []*counter {
+// counters; a media counter applies only to a request whose need names its measure
+// (Need.Media). Callers hold l.mu and have synced.
+func (l *Limiter) applicable(s Subject, n Need) []*counter {
 	var out []*counter
 	add := func(cs []*counter) {
 		for _, c := range cs {
-			if (s.Priced || c.measure != config.MeasureCost) && (!s.RequestsOnly || c.measure == config.MeasureRequests) {
+			if applies(c.measure, s, n) {
 				out = append(out, c)
 			}
 		}
@@ -434,17 +453,35 @@ func (l *Limiter) applicable(s Subject) []*counter {
 	return out
 }
 
-// need is what a request reserves on c: one request, its token estimate, or nothing
-// for cost (known only after the request; the check is then that the window is still
-// below its limit).
-func need(c *counter, tokens int64) int64 {
+// applies reports whether a counter of measure m counts the request of subject s
+// needing n.
+func applies(m config.Measure, s Subject, n Need) bool {
+	switch m {
+	case config.MeasureRequests:
+		return true
+	case config.MeasureTokens:
+		return !s.RequestsOnly
+	case config.MeasureCost:
+		return s.Priced && !s.RequestsOnly
+	}
+	_, ok := n.Media[m]
+	return ok && !s.RequestsOnly
+}
+
+// need is what a request needing n reserves on c: one request, its token estimate,
+// its media amount, or nothing for cost (known only after the request; the check is
+// then that the window is still below its limit) and for a media measure reserving
+// nothing (audio generated, checked the same way).
+func need(c *counter, n Need) int64 {
 	switch c.measure {
 	case config.MeasureRequests:
 		return 1
 	case config.MeasureTokens:
-		return tokens
+		return n.Tokens
+	case config.MeasureCost:
+		return 0
 	}
-	return 0
+	return n.Media[c.measure]
 }
 
 // rejection is a refusal by c's limit, its identity and limits filled in.
@@ -470,15 +507,14 @@ type heldCounter struct {
 func (r *Reservation) Headers() Headers { return r.headers }
 
 // Reserve checks the subject's request against every applicable limit and, if all
-// admit it, reserves one request and tokens estimated tokens on each. tokens is the
-// request's input estimate plus its effective output limit. On refusal nothing is
-// reserved and the Rejection says why.
-func (l *Limiter) Reserve(s Subject, tokens int64) (*Reservation, *Rejection) {
+// admit it, reserves what it needs on each: one request, its token estimate, and its
+// media amounts (Need). On refusal nothing is reserved and the Rejection says why.
+func (l *Limiter) Reserve(s Subject, n Need) (*Reservation, *Rejection) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.sync()
 	now := l.now()
-	counters := l.applicable(s)
+	counters := l.applicable(s, n)
 
 	// The outage first: deciding it on every request is what logs its start and end.
 	if l.outageLocked(now) || l.noTotalsLocked() {
@@ -495,20 +531,20 @@ func (l *Limiter) Reserve(s Subject, tokens int64) (*Reservation, *Rejection) {
 	// running are the refusing counters blocked only by requests still running.
 	var running []*counter
 	for _, c := range counters {
-		n := need(c, tokens)
-		if !c.limited || c.admits(now, n) {
+		amount := need(c, n)
+		if !c.limited || c.admits(now, amount) {
 			continue
 		}
 		var wait time.Duration
-		if c.blockedByRunning(now, n) {
+		if c.blockedByRunning(now, amount) {
 			wait = inFlightRetry
 			running = append(running, c)
 		} else {
-			wait = c.w.waitFor(now, n)
+			wait = c.w.waitFor(now, amount)
 		}
 		if rej == nil || wait > rej.RetryAfter {
 			rej = c.rejection()
-			rej.Used, rej.Requested, rej.RetryAfter = c.w.usedAt(now), n, wait
+			rej.Used, rej.Requested, rej.RetryAfter = c.w.usedAt(now), amount, wait
 		}
 	}
 	if rej != nil {
@@ -519,7 +555,7 @@ func (l *Limiter) Reserve(s Subject, tokens int64) (*Reservation, *Rejection) {
 	res := &Reservation{holds: make([]heldCounter, 0, len(counters))}
 	for _, c := range counters {
 		c.refs++
-		res.holds = append(res.holds, heldCounter{c: c, h: c.w.reserve(now, need(c, tokens))})
+		res.holds = append(res.holds, heldCounter{c: c, h: c.w.reserve(now, need(c, n))})
 	}
 	res.headers = headersFor(counters, now, nil)
 	return res, nil
@@ -527,12 +563,13 @@ func (l *Limiter) Reserve(s Subject, tokens int64) (*Reservation, *Rejection) {
 
 // Settle ends a reservation with the request's usage records on the counters it was
 // checked against: token reservations are replaced by the tokens the records
-// processed (amountOf: input read from the cache does not count), their cost is
-// added to cost limits, and the request stays counted — once, however many records
-// it has (one per attempt that produced usage, docs/specs/GATEWAY.md, Usage across
-// attempts). A request that never produced a
-// record passes none; its token reservations are then released, and the request still
-// counts: it took a slot.
+// processed (amountOf: input read from the cache does not count), image reservations
+// by the images they carry, the seconds of audio they carry are added to the audio
+// limits and their cost to cost limits, and the request stays counted — once, however
+// many records it has (one per attempt that produced usage, docs/specs/GATEWAY.md,
+// Usage across attempts). A request that never produced a record passes none; its
+// token and image reservations are then released, and the request still counts: it
+// took a slot.
 // Settle runs once per reservation. A per-minute counter a reload dropped since is
 // settled harmlessly; an hour or month counter a reload removed is retained until its
 // last reservation settles.
@@ -588,20 +625,21 @@ func (l *Limiter) checkCountLocked(c *counter) {
 	}
 }
 
-// amountOf is what rec counts on a token or cost counter: its cost, or its
-// config.CountedUnits, the tokens that load the backend. protocol/fixtures/usage/
-// holds the control plane's counting to the same amounts.
+// amountOf is what rec counts on a counter of measure m other than requests: its
+// cost, or the units m counts (config.Measure.Units) — for tokens, the ones that load
+// the backend. protocol/fixtures/usage/ holds the control plane's counting to the same
+// amounts.
 func amountOf(m config.Measure, rec accounting.UsageRecord) int64 {
 	if m == config.MeasureCost {
 		return rec.CostNanoUSD
 	}
-	return rec.Units.Sum(config.CountedUnits)
+	return rec.Units.Sum(m.Units())
 }
 
 // Used is the count of group's ("" = global) counter of type typ, unsettled
-// reservations included, in the counter's unit — requests, tokens or nano-USD; false
-// when the live config gives the scope no counter of the type. Only tests read it:
-// the gateway reports no count.
+// reservations included, in the counter's unit — requests, tokens, images, seconds of
+// audio or nano-USD; false when the live config gives the scope no counter of the
+// type. Only tests read it: the gateway reports no count.
 func (l *Limiter) Used(group string, typ config.LimitType) (int64, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

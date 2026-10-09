@@ -3,11 +3,14 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"kaiak/internal/accounting"
+	"kaiak/internal/auth"
 	"kaiak/internal/config"
 	"kaiak/internal/fakebackend"
 	"kaiak/internal/limits"
@@ -626,5 +629,89 @@ func TestRefusalsNameTheScopeKindOnly(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The reservation hook: a request states its media amounts (inboundFields.Media, which
+// the media formats' owned fields set), and each meets the limits of its own measure —
+// an image limit refuses an image request's images, 429 type images; a spent
+// audio-generated limit refuses a speech request, 429 type audio_seconds — while a
+// request stating none meets no media limit. Media limits send no rate-limit headers.
+func TestMediaAmountsMeetTheLimitsOfTheirMeasure(t *testing.T) {
+	snap := testSnapshotWith(t, "http://127.0.0.1:1", func(doc string) string {
+		return replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [
+      { "type": "images_per_minute", "value": 4 }, { "type": "audio_seconds_out_per_hour", "value": 10 } ] }`)
+	})
+	holder := &config.Holder{}
+	holder.Swap(snap)
+	limiter := limits.New(holder, time.Now, nil)
+	stating := func(media map[config.Measure]int64) *request {
+		return &request{w: &statusWriter{ResponseWriter: httptest.NewRecorder()}, endpoint: bodyEndpoint(provider.ChatCompletions),
+			snapshot: snap, model: "open", start: time.Now(), identity: auth.Identity{KeyID: "k-eval", Group: snap.Groups["eval"]},
+			inbound: inboundFields{Sequences: 1, Media: media}}
+	}
+	images := func(n int64) map[config.Measure]int64 { return map[config.Measure]int64{config.MeasureImages: n} }
+	speech := map[config.Measure]int64{config.MeasureAudioSecondsOut: 0}
+
+	if apiErr := checkLimits(stating(images(3)), limiter); apiErr != nil {
+		t.Fatalf("3 images refused under 4 per minute: %+v", apiErr)
+	}
+	if got, _ := limiter.Used("research", config.LimitImagesPerMinute); got != 3 {
+		t.Errorf("images reserved %d, want 3", got)
+	}
+	refused := stating(images(2))
+	apiErr := checkLimits(refused, limiter)
+	if apiErr == nil || apiErr.status != http.StatusTooManyRequests || apiErr.errType != "images" ||
+		apiErr.code != "rate_limit_exceeded" ||
+		!strings.Contains(apiErr.message, "group limit of 4 images per minute (used 3, requested 2)") {
+		t.Fatalf("2 more images: %+v, want 429 images naming the group limit", apiErr)
+	}
+	if h := refused.w.Header(); h.Get("Retry-After") == "" || h.Get("x-ratelimit-limit-images") != "" {
+		t.Errorf("refusal headers %v: want Retry-After and no image rate-limit headers", h)
+	}
+	// A request stating no media meets no media limit.
+	if apiErr := checkLimits(stating(nil), limiter); apiErr != nil {
+		t.Errorf("a chat request refused by a media limit: %+v", apiErr)
+	}
+
+	// A speech request reserves no audio; its record settles 12 seconds, spending the
+	// hour's 10: the next speech request is refused, an image request is not.
+	first := stating(speech)
+	if apiErr := checkLimits(first, limiter); apiErr != nil {
+		t.Fatalf("speech refused: %+v", apiErr)
+	}
+	rec := accounting.UsageRecord{Units: units(10, 0, 0, 40, 0)}
+	rec.Units[config.UnitAudioSecondsOut] = 12
+	first.records = []accounting.UsageRecord{rec}
+	first.finish()
+	apiErr = checkLimits(stating(speech), limiter)
+	if apiErr == nil || apiErr.status != http.StatusTooManyRequests || apiErr.errType != "audio_seconds" ||
+		!strings.Contains(apiErr.message, "group limit of 10 seconds of audio generated per hour (used 12)") {
+		t.Errorf("speech after the hour is spent: %+v, want 429 audio_seconds", apiErr)
+	}
+	if apiErr := checkLimits(stating(images(1)), limiter); apiErr != nil {
+		t.Errorf("an image request refused by the audio limit: %+v", apiErr)
+	}
+}
+
+// The media refusals' messages: a request asking for more images, or uploading more
+// seconds, than a limit's whole value is too large; audio processed names what it
+// asked for.
+func TestMediaRefusalMessages(t *testing.T) {
+	for _, c := range []struct {
+		r    limits.Rejection
+		want string
+	}{
+		{limits.Rejection{Type: config.LimitImagesPerHour, Measure: config.MeasureImages, Limit: 5, Max: 10, Requested: 11},
+			"Request too large: it asks for 11 images and the global limit is 10 images per hour."},
+		{limits.Rejection{Type: config.LimitAudioSecondsInPerMinute, Measure: config.MeasureAudioSecondsIn, Group: "g",
+			Limit: 60, Max: 60, Used: 50, Requested: 20, RetryAfter: 10 * time.Second},
+			"Rate limit reached: group limit of 60 seconds of audio processed per minute (used 50, requested 20). Retry after 10s."},
+		{limits.Rejection{Type: config.LimitAudioSecondsInPerHour, Measure: config.MeasureAudioSecondsIn, Max: 60, Requested: 61},
+			"Request too large: its audio is 61 seconds and the global limit is 60 seconds of audio processed per hour."},
+	} {
+		if got := errLimited(&c.r); got.message != c.want || got.errType == "" {
+			t.Errorf("%s: %q (type %q), want %q", c.r.Type, got.message, got.errType, c.want)
+		}
 	}
 }

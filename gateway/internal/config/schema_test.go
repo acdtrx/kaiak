@@ -157,8 +157,9 @@ func TestLimitTypesAreTheSchemaEnum(t *testing.T) {
 	}
 }
 
-// The unit sets: TokenUnits is every Unit constant once; each other set is part of it;
-// the sets and the fallback are what docs/specs/CONTROL-PROTOCOL.md (Units and price
+// The unit sets: RecordUnits is every Unit constant once; TokenUnits is every one but
+// the media units; each other set is part of TokenUnits; the sets, the fallback and
+// what each measure counts are what docs/specs/CONTROL-PROTOCOL.md (Units and price
 // units, Tiered prices → Input size, Totals → used) and GATEWAY.md (Limits → Settle)
 // say.
 func TestUnitSets(t *testing.T) {
@@ -166,8 +167,20 @@ func TestUnitSets(t *testing.T) {
 	for _, name := range constants(t, "Unit") {
 		consts = append(consts, Unit(name))
 	}
-	if !slices.Equal(slices.Sorted(slices.Values(TokenUnits)), slices.Sorted(slices.Values(consts))) {
-		t.Errorf("TokenUnits %v, Unit constants %v", TokenUnits, consts)
+	if !slices.Equal(slices.Sorted(slices.Values(RecordUnits)), slices.Sorted(slices.Values(consts))) {
+		t.Errorf("RecordUnits %v, Unit constants %v", RecordUnits, consts)
+	}
+	// The media units are recorded beside the tokens: no token unit, so no price,
+	// input size or token count takes them.
+	media := slices.DeleteFunc(slices.Clone(RecordUnits), func(u Unit) bool { return slices.Contains(TokenUnits, u) })
+	if want := []Unit{UnitAudioSecondsIn, UnitAudioSecondsOut, UnitImages}; !slices.Equal(media, want) ||
+		len(TokenUnits)+len(media) != len(RecordUnits) {
+		t.Errorf("RecordUnits %v less TokenUnits %v is %v, want the media units %v", RecordUnits, TokenUnits, media, want)
+	}
+	for name, set := range map[string][]Unit{"RecordUnits": RecordUnits, "TokenUnits": TokenUnits} {
+		if len(slices.Compact(slices.Sorted(slices.Values(set)))) != len(set) {
+			t.Errorf("%s %v names a unit twice", name, set)
+		}
 	}
 	for name, set := range map[string][]Unit{"PricedUnits": PricedUnits, "InputUnits": InputUnits, "CountedUnits": CountedUnits} {
 		for _, unit := range set {
@@ -205,6 +218,25 @@ func TestUnitSets(t *testing.T) {
 		if _, chained := PriceFallback[fallback]; chained {
 			t.Errorf("fallback %q → %q: the fallback falls back itself", unit, fallback)
 		}
+	}
+	// Each limit counts its own unit: token limits the tokens that load the backend,
+	// each media limit its media unit alone; a request counts once, and cost is the
+	// record's cost.
+	for m, want := range map[Measure][]Unit{
+		MeasureRequests: nil, MeasureTokens: CountedUnits, MeasureImages: {UnitImages},
+		MeasureAudioSecondsOut: {UnitAudioSecondsOut}, MeasureAudioSecondsIn: {UnitAudioSecondsIn}, MeasureCost: nil,
+	} {
+		if got := m.Units(); !slices.Equal(got, want) {
+			t.Errorf("measure %d counts %v, want %v", m, got, want)
+		}
+	}
+	// Every measure is some limit type's.
+	measures := map[Measure]bool{}
+	for _, typ := range LimitTypes() {
+		measures[typ.Measure()] = true
+	}
+	if len(measures) != 6 {
+		t.Errorf("the limit types count %d measures, want 6", len(measures))
 	}
 }
 
@@ -263,6 +295,8 @@ func TestSchemaDefaultsAreResolved(t *testing.T) {
 		"/$defs/global/properties/max_sequences_per_request":            func(s *Snapshot) any { return s.MaxSequencesPerRequest },
 		"/$defs/global/properties/max_embedding_inputs":                 func(s *Snapshot) any { return s.MaxEmbeddingInputs },
 		"/$defs/global/properties/max_rerank_documents":                 func(s *Snapshot) any { return s.MaxRerankDocuments },
+		"/$defs/global/properties/max_images_per_request":               func(s *Snapshot) any { return s.MaxImagesPerRequest },
+		"/$defs/global/properties/max_speech_batch_items":               func(s *Snapshot) any { return s.MaxSpeechBatchItems },
 		"/$defs/global/properties/max_concurrent_requests_per_key":      func(s *Snapshot) any { return s.MaxConcurrentRequestsPerKey },
 		"/$defs/global/properties/circuit/properties/failure_threshold": func(s *Snapshot) any { return s.Circuit.FailureThreshold },
 		"/$defs/global/properties/circuit/properties/probe_interval_ms": func(s *Snapshot) any { return ms(s.Circuit.ProbeInterval) },

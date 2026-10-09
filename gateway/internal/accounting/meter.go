@@ -9,15 +9,15 @@ import (
 	"kaiak/internal/provider"
 )
 
-// Units maps usage units to amounts (docs/specs/CONTROL-PROTOCOL.md, Prices). Every
-// record from a token endpoint carries every token unit (config.TokenUnits), zeros
+// Units maps usage units to amounts (docs/specs/CONTROL-PROTOCOL.md, Config → Units
+// and price units). Every record carries every unit (config.RecordUnits), zeros
 // included.
 type Units map[config.Unit]int64
 
-// withEveryTokenUnit is units with every token unit (config.TokenUnits) it leaves out
-// added at 0.
-func withEveryTokenUnit(units Units) Units {
-	for _, unit := range config.TokenUnits {
+// withEveryUnit is units with every unit (config.RecordUnits) it leaves out added at
+// 0.
+func withEveryUnit(units Units) Units {
+	for _, unit := range config.RecordUnits {
 		if _, ok := units[unit]; !ok {
 			units[unit] = 0
 		}
@@ -232,11 +232,11 @@ type Flags struct {
 //     from the generated content seen, and the record is flagged estimated.
 func (m *Meter) Settle(complete bool) (Units, Flags) {
 	if m.SentUnanswered() {
-		return withEveryTokenUnit(Units{config.UnitTokensIn: m.input}), Flags{Estimated: true, Partial: true}
+		return withEveryUnit(Units{config.UnitTokensIn: m.input}), Flags{Estimated: true, Partial: true}
 	}
 	flags := Flags{Partial: !complete || !m.answered}
 	if !m.answered || !m.succeeded() {
-		return withEveryTokenUnit(Units{}), flags
+		return withEveryUnit(Units{}), flags
 	}
 	if !m.stream && m.body != nil {
 		if raw, ok := m.body.member("usage"); ok {
@@ -251,7 +251,7 @@ func (m *Meter) Settle(complete bool) (Units, Flags) {
 		return units, flags
 	}
 	flags.Estimated = true
-	return withEveryTokenUnit(Units{
+	return withEveryUnit(Units{
 		config.UnitTokensIn:  m.input,
 		config.UnitTokensOut: EstimateTokens(m.outputBytes()),
 	}), flags
@@ -287,7 +287,7 @@ func inclusiveUnits(input, output *int64, cached, written, reasoning int64) (Uni
 	cached = min(max(cached, 0), in)
 	written = min(max(written, 0), in-cached)
 	reasoning = min(max(reasoning, 0), out)
-	return withEveryTokenUnit(Units{
+	return withEveryUnit(Units{
 		config.UnitTokensIn:         in - cached - written,
 		config.UnitTokensCached:     cached,
 		config.UnitTokensCacheWrite: written,

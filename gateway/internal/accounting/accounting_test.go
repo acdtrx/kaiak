@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"log/slog"
+	"maps"
 	"math"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -377,13 +379,61 @@ func TestRecorderSettlesOneRecordToTheBatcherThenTheMetrics(t *testing.T) {
 	}
 	want := `{"record_id":"` + rec.RecordID + `","request_id":"req-1","gateway_instance":"gw-1","key_id":"k-1",` +
 		`"groups":["users","ann"],"model":"chat","deployment":{"backend":"vllm","model":"org/chat"},` +
-		`"units":{"tokens_cache_write":0,"tokens_cached":0,"tokens_in":10,"tokens_out":2,"tokens_reasoning":0},"cost_nano_usd":18000,` +
+		`"units":{"audio_seconds_in":0,"audio_seconds_out":0,"images":0,"tokens_cache_write":0,"tokens_cached":0,"tokens_in":10,` +
+		`"tokens_out":2,"tokens_reasoning":0},"cost_nano_usd":18000,` +
 		`"estimated":false,"partial":false,"gateway_time":"2025-07-01T11:00:00.000000005Z"}`
 	if string(data) != want {
 		t.Errorf("record\n%s\nwant\n%s", data, want)
 	}
 	if other := r.Settle(Request{Model: model, Deployment: config.Deployment{Backend: &config.Backend{}}}, NewMeter(0, 0), false); other.RecordID == rec.RecordID {
 		t.Error("record IDs repeat")
+	}
+}
+
+// A media request's record carries its output type to the batcher and the metrics,
+// which label it, never on the wire; its units are every unit, the media ones
+// included.
+func TestRecordCarriesItsOutputTypeAndEveryUnit(t *testing.T) {
+	batcher, usage := &recordingBatcher{generation: 1}, &recordingMetrics{}
+	r := NewRecorder(RecorderOptions{Instance: "gw-1", Batcher: batcher, Metrics: usage})
+	rec := r.Settle(Request{RequestID: "req-2", Model: &config.Model{Name: "tts"},
+		Deployment: config.Deployment{Backend: &config.Backend{ID: "omni"}, Model: "org/tts"},
+		Operation:  "generate_content", OutputType: "speech", Start: day("2025-07-01")},
+		bodyMeter(0, 40, 200, `{"usage":{"prompt_tokens":10,"completion_tokens":2}}`), true)
+	if batcher.records[0].OutputType != "speech" || usage.records[0].OutputType != "speech" {
+		t.Errorf("output types: batcher saw %q, metrics %q; want speech", batcher.records[0].OutputType, usage.records[0].OutputType)
+	}
+	if got := slices.Sorted(maps.Keys(rec.Units)); !slices.Equal(got, slices.Sorted(slices.Values(config.RecordUnits))) {
+		t.Errorf("units %v, want every unit %v", got, config.RecordUnits)
+	}
+	data, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "speech") || strings.Contains(string(data), "generate_content") {
+		t.Errorf("the encoded record carries the output type or the operation: %s", data)
+	}
+}
+
+// The media units are not price units: images and seconds of audio cost nothing,
+// and they do not count toward the input size that picks a tier — a speech record's
+// tokens are priced as any other's.
+func TestMediaUnitsCostNothing(t *testing.T) {
+	tokens := Units{config.UnitTokensIn: 1000, config.UnitTokensOut: 500}
+	media := Units{config.UnitTokensIn: 1000, config.UnitTokensOut: 500,
+		config.UnitImages: 4, config.UnitAudioSecondsOut: 30_000, config.UnitAudioSecondsIn: 40_000}
+	for name, prices := range map[string][]config.Price{
+		"flat": priceHistory,
+		// A media unit counted as input would cross the 32k threshold.
+		"tiered": {brackets},
+	} {
+		want := Cost(prices, day("2025-07-01"), tokens)
+		if want == 0 {
+			t.Fatalf("%s: the token units cost nothing", name)
+		}
+		if got := Cost(prices, day("2025-07-01"), media); got != want {
+			t.Errorf("%s: cost %d with media units, want %d (the tokens' alone)", name, got, want)
+		}
 	}
 }
 

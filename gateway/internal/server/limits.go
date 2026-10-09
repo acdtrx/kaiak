@@ -14,16 +14,17 @@ import (
 )
 
 // checkLimits checks a body request against every limit that applies to its scopes
-// (global and each group on its key's path) and model and reserves its share: one request, and its whole input estimate (every
-// prompt of a batch) plus its
-// effective output limit once per sequence it asks for, in tokens (the input estimate
-// alone when the output is unbounded), capped at accounting.MaxAmount — no amount the
-// protocol carries is larger, and the limiter's arithmetic stays far from int64's
-// edge. A token-counting request reserves no tokens and meets only
-// requests-per-minute limits: nothing is generated or billed there, so no token or
-// cost limit — nor an unknown budget — refuses it. The reservation settles in a finisher registered before the attempt
-// loop's, so it runs after settlement and reads the request's usage records — the
-// sum of its attempts'.
+// (global and each group on its key's path) and model and reserves its share: one
+// request; its whole input estimate (every prompt of a batch) plus its effective
+// output limit once per sequence it asks for, in tokens (the input estimate alone when
+// the output is unbounded), capped at accounting.MaxAmount — no amount the protocol
+// carries is larger, and the limiter's arithmetic stays far from int64's edge; and the
+// media amounts its owned fields state (inboundFields.Media), each meeting only the
+// limits of its own measure. A token-counting request reserves no tokens and meets
+// only requests-per-minute limits: nothing is generated or billed there, so no token
+// or cost limit — nor an unknown budget — refuses it. The reservation settles in a
+// finisher registered before the attempt loop's, so it runs after settlement and reads
+// the request's usage records — the sum of its attempts'.
 func checkLimits(rq *request, limiter *limits.Limiter) *apiError {
 	tokens := rq.input.Total
 	if rq.endpoint.counts {
@@ -37,7 +38,7 @@ func checkLimits(rq *request, limiter *limits.Limiter) *apiError {
 	// does (accounting.Cost): a reload since changes neither.
 	_, priced := accounting.PriceAt(rq.snapshot.Models[rq.model].Prices, rq.start)
 	subject := limits.Subject{Groups: rq.identity.Group.PathIDs, Priced: priced, RequestsOnly: rq.endpoint.counts}
-	res, rej := limiter.Reserve(subject, tokens)
+	res, rej := limiter.Reserve(subject, limits.Need{Tokens: tokens, Media: rq.inbound.Media})
 	rq.rejection = rej
 	if rej != nil && rej.Unavailable {
 		return errBudgetUnavailable(rej)
@@ -77,10 +78,11 @@ func ceilSeconds(d time.Duration) int64 {
 }
 
 // errLimited answers a request a limit refused. Request and token limits answer as
-// OpenAI does (type "requests" or "tokens", code rate_limit_exceeded); an exhausted
-// cost limit has its own code, so clients can tell a budget from a rate. The message
-// names the kind of scope ("group limit", "global limit"), never a group's ID or
-// labels: which group refused is the operator's to read in the log line.
+// OpenAI does (type "requests" or "tokens", code rate_limit_exceeded), and image and
+// audio limits the same way with their own types ("images", "audio_seconds"); an
+// exhausted cost limit has its own code, so clients can tell a budget from a rate. The
+// message names the kind of scope ("group limit", "global limit"), never a group's ID
+// or labels: which group refused is the operator's to read in the log line.
 func errLimited(r *limits.Rejection) *apiError {
 	e := &apiError{status: http.StatusTooManyRequests, code: "rate_limit_exceeded", class: metrics.ErrorRateLimited}
 	retry := time.Duration(ceilSeconds(r.RetryAfter)) * time.Second
@@ -95,6 +97,26 @@ func errLimited(r *limits.Rejection) *apiError {
 			r.Scope(), r.Limit, r.Type.Window(), r.Used, r.Requested, retry)
 		if r.Requested > r.Max {
 			e.message = fmt.Sprintf("Request too large: it needs %d tokens (input estimate plus output limit per sequence) and the %s limit is %d tokens per %s.",
+				r.Requested, r.Scope(), r.Max, r.Type.Window())
+		}
+	case config.MeasureImages:
+		e.errType = "images"
+		e.message = fmt.Sprintf("Rate limit reached: %s limit of %d images per %s (used %d, requested %d). Retry after %s.",
+			r.Scope(), r.Limit, r.Type.Window(), r.Used, r.Requested, retry)
+		if r.Requested > r.Max {
+			e.message = fmt.Sprintf("Request too large: it asks for %d images and the %s limit is %d images per %s.",
+				r.Requested, r.Scope(), r.Max, r.Type.Window())
+		}
+	case config.MeasureAudioSecondsOut:
+		e.errType = "audio_seconds"
+		e.message = fmt.Sprintf("Rate limit reached: %s limit of %d seconds of audio generated per %s (used %d). Retry after %s.",
+			r.Scope(), r.Limit, r.Type.Window(), r.Used, retry)
+	case config.MeasureAudioSecondsIn:
+		e.errType = "audio_seconds"
+		e.message = fmt.Sprintf("Rate limit reached: %s limit of %d seconds of audio processed per %s (used %d, requested %d). Retry after %s.",
+			r.Scope(), r.Limit, r.Type.Window(), r.Used, r.Requested, retry)
+		if r.Requested > r.Max {
+			e.message = fmt.Sprintf("Request too large: its audio is %d seconds and the %s limit is %d seconds of audio processed per %s.",
 				r.Requested, r.Scope(), r.Max, r.Type.Window())
 		}
 	default:

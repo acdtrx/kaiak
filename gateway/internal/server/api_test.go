@@ -1,15 +1,22 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"kaiak/internal/accounting"
+	"kaiak/internal/config"
 	"kaiak/internal/fakebackend"
+	"kaiak/internal/provider"
 )
 
 // The request line's keys are the field table's (docs/specs/GATEWAY.md, Observability:
@@ -125,5 +132,59 @@ func TestRequestLineKeysFollowTheFieldTable(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A media endpoint's request line carries its gen_ai.output.type, and its settled
+// usage the media units under their metrics' names — each only when not 0, summed over
+// the request's records; a line without media carries none of them.
+func TestRequestLineCarriesTheOutputTypeAndMediaUsage(t *testing.T) {
+	media := &endpoint{body: true, api: provider.ChatCompletions, name: "media", operation: "generate_content",
+		outputType: "speech"}
+	line := func(ep *endpoint, records ...accounting.UsageRecord) map[string]any {
+		var buf bytes.Buffer
+		a := &API{logger: slog.New(slog.NewJSONHandler(&buf, nil))}
+		rq := &request{r: httptest.NewRequest(http.MethodPost, "/v1/x", nil),
+			w: &statusWriter{ResponseWriter: httptest.NewRecorder(), status: http.StatusOK}, endpoint: ep,
+			id: "req-1", start: time.Now(), records: records}
+		if len(records) > 0 {
+			rq.usage = &records[len(records)-1]
+		}
+		a.logRequest(rq)
+		var fields map[string]any
+		if err := json.Unmarshal(buf.Bytes(), &fields); err != nil {
+			t.Fatal(err)
+		}
+		return fields
+	}
+	record := func(images, audioOut int64) accounting.UsageRecord {
+		rec := accounting.UsageRecord{Units: units(10, 0, 0, 40, 0)}
+		rec.Units[config.UnitImages], rec.Units[config.UnitAudioSecondsOut] = images, audioOut
+		return rec
+	}
+
+	fields := line(media, record(0, 3), record(0, 4))
+	if fields["gen_ai.output.type"] != "speech" || fields["gen_ai.operation.name"] != "generate_content" {
+		t.Errorf("output type %v, operation %v; want speech, generate_content", fields["gen_ai.output.type"],
+			fields["gen_ai.operation.name"])
+	}
+	if fields["kaiak.usage.audio.output.duration"] != float64(7) {
+		t.Errorf("audio generated %v, want the records' 7 s summed", fields["kaiak.usage.audio.output.duration"])
+	}
+	for _, absent := range []string{"kaiak.usage.images", "kaiak.usage.audio.input.duration"} {
+		if v, ok := fields[absent]; ok {
+			t.Errorf("%s = %v on a line whose records carry none", absent, v)
+		}
+	}
+	if fields := line(media, record(4, 0)); fields["kaiak.usage.images"] != float64(4) {
+		t.Errorf("images %v, want 4", fields["kaiak.usage.images"])
+	}
+
+	fields = line(bodyEndpoint(provider.ChatCompletions), record(0, 0))
+	for _, absent := range []string{"gen_ai.output.type", "kaiak.usage.images", "kaiak.usage.audio.output.duration",
+		"kaiak.usage.audio.input.duration"} {
+		if v, ok := fields[absent]; ok {
+			t.Errorf("chat line carries %s = %v", absent, v)
+		}
 	}
 }

@@ -8,13 +8,14 @@ import (
 )
 
 // usageLabels label every usage metric: the key's group, its top-level group, key ID,
-// the public model, the operation, the provider and the status. One fixed label set
-// whatever the tree's depth: intermediate levels are not labels. An empty value (the
-// key's group or key ID switched off, no provider) is absent from the series. No
-// backend: it would multiply every group's series by the backends serving each model;
-// the ops metrics carry the backend. A group's labels never become metric labels.
+// the public model, the operation, the output type, the provider and the status. One
+// fixed label set whatever the tree's depth: intermediate levels are not labels. An
+// empty value (the key's group or key ID switched off, no output type, no provider) is
+// absent from the series. No backend: it would multiply every group's series by the
+// backends serving each model; the ops metrics carry the backend. A group's labels
+// never become metric labels.
 var usageLabels = append(append([]string(nil), keyAttributes...),
-	attrModel, "gen_ai.operation.name", "gen_ai.provider.name", "kaiak.usage.status")
+	attrModel, "gen_ai.operation.name", "gen_ai.output.type", "gen_ai.provider.name", "kaiak.usage.status")
 
 // tokenLabels label the token counters: the usage labels and gen_ai.token.modality,
 // the GenAI convention's required attribute.
@@ -78,6 +79,9 @@ type UsageMetrics struct {
 	cacheWrite *metric.Counter
 	output     *metric.Counter
 	reasoning  *metric.Counter
+	images     *metric.Counter
+	audioOut   *metric.Counter
+	audioIn    *metric.Counter
 }
 
 // NewUsageMetrics registers the usage metrics on reg. The kaiak.key.id and
@@ -107,6 +111,12 @@ func NewUsageMetrics(reg *metric.Registry, holder *config.Holder) *UsageMetrics 
 			"All output tokens: reasoning included."),
 		reasoning: tokens("gen_ai.client.inference.usage.reasoning.output_tokens",
 			"Reasoning output tokens: part of the output count."),
+		images: reg.Counter(metric.Definition{Name: "kaiak.usage.images", Unit: "{image}",
+			Description: "Images generated.", Attributes: usageLabels}),
+		audioOut: reg.Counter(metric.Definition{Name: "kaiak.usage.audio.output.duration", Unit: "s",
+			Description: "Seconds of audio generated.", Attributes: usageLabels}),
+		audioIn: reg.Counter(metric.Definition{Name: "kaiak.usage.audio.input.duration", Unit: "s",
+			Description: "Seconds of audio processed.", Attributes: usageLabels}),
 	}
 	s.clamped.Add(0)
 	return s
@@ -126,14 +136,15 @@ func (s *UsageMetrics) RecordClamped() {
 // never go back). The status is "partial" when the response stopped early (or never
 // came), else "complete". Input counts as the request line's gen_ai.usage.input_tokens
 // does: config.InputUnits, the input neither read from nor written to the cache plus
-// its two cache parts.
+// its two cache parts. The media counters are fed only by a record whose unit is not
+// 0, so traffic without media adds no series to them.
 func (s *UsageMetrics) Record(r accounting.UsageRecord) {
 	snap := s.holder.Current()
 	status := "complete"
 	if r.Partial {
 		status = "partial"
 	}
-	labels := append(keyLabels(snap, r.Groups, r.KeyID), r.Model, r.Operation,
+	labels := append(keyLabels(snap, r.Groups, r.KeyID), r.Model, r.Operation, r.OutputType,
 		providerName(snap, r.Deployment.Backend), status)
 	s.records.Inc(labels...)
 	s.cost.Add(amount(r.CostNanoUSD), labels...)
@@ -143,6 +154,14 @@ func (s *UsageMetrics) Record(r accounting.UsageRecord) {
 	s.cacheWrite.Add(amount(r.Units[config.UnitTokensCacheWrite]), tokens...)
 	s.output.Add(amount(r.Units[config.UnitTokensOut]), tokens...)
 	s.reasoning.Add(amount(r.Units[config.UnitTokensReasoning]), tokens...)
+	media := func(c *metric.Counter, unit config.Unit) {
+		if n := r.Units[unit]; n > 0 {
+			c.Add(amount(n), labels...)
+		}
+	}
+	media(s.images, config.UnitImages)
+	media(s.audioOut, config.UnitAudioSecondsOut)
+	media(s.audioIn, config.UnitAudioSecondsIn)
 }
 
 // amount is a record's amount as a count: amounts are never negative, and one that

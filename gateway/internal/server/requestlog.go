@@ -41,6 +41,9 @@ func (a *API) logRequest(rq *request) {
 	if rq.endpoint != nil && rq.endpoint.operation != "" {
 		attrs = append(attrs, slog.String("gen_ai.operation.name", rq.endpoint.operation))
 	}
+	if rq.endpoint != nil && rq.endpoint.outputType != "" {
+		attrs = append(attrs, slog.String("gen_ai.output.type", rq.endpoint.outputType))
+	}
 	// The upstream fields are the answering attempt's: an attempt that was retried
 	// shows only in kaiak.tried.
 	at := rq.answeringAttempt()
@@ -99,11 +102,30 @@ func (a *API) logRequest(rq *request) {
 			slog.Int64("gen_ai.usage.cache_write.input_tokens", units[config.UnitTokensCacheWrite]),
 			slog.Int64("gen_ai.usage.output_tokens", units[config.UnitTokensOut]),
 			slog.Int64("gen_ai.usage.reasoning.output_tokens", units[config.UnitTokensReasoning]),
-			slog.Float64("kaiak.usage.cost_usd", float64(cost)/1e9),
+			slog.Float64("kaiak.usage.cost_usd", float64(cost)/1e9))
+		// The media units only when not 0, as their metrics are fed.
+		for _, f := range mediaUsageFields {
+			if n := units[f.unit]; n != 0 {
+				attrs = append(attrs, slog.Int64(f.key, n))
+			}
+		}
+		attrs = append(attrs,
 			slog.Bool("kaiak.usage.estimated", u.Estimated),
 			slog.Bool("kaiak.usage.partial", u.Partial))
 	}
 	a.logger.LogAttrs(rq.r.Context(), slog.LevelInfo, "request", attrs...)
+}
+
+// mediaUsageFields are the request line's media usage fields, in line order: each
+// media unit under the name of the metric counting it (docs/specs/GATEWAY.md,
+// Observability → Logs: the request line).
+var mediaUsageFields = []struct {
+	key  string
+	unit config.Unit
+}{
+	{"kaiak.usage.images", config.UnitImages},
+	{"kaiak.usage.audio.output.duration", config.UnitAudioSecondsOut},
+	{"kaiak.usage.audio.input.duration", config.UnitAudioSecondsIn},
 }
 
 // statusSent is the status answered to rq; false for a client that left before any
