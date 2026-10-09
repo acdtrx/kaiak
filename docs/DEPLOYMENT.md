@@ -1311,7 +1311,7 @@ Boot).
   - **The dependency rule changed** (`docs/TECH-STACK.md`, Dependencies): minimal,
     maintained dependencies that are clearly worth their cost, in place of none at
     all. The gateway still has no third-party dependency: this release adds none.
-- **Next release** (unreleased; protocol 5 and config format 5 unchanged):
+- **0.13.0** (protocol 5 and config format 5 unchanged):
   - **Rerank is new**: `POST /v1/rerank` on `vllm` and `llama-server` backends
     (Rerankers), with the usage operation `rerank` (`gen_ai_operation_name` on the
     usage metrics, `gen_ai.operation.name` on the request line).
@@ -1339,6 +1339,9 @@ Boot).
     endpoint its type serves` (with `kaiak.deployment.model` and `kaiak.endpoint`),
     once per probe interval and deployment, replaces `the backend's server lacks an
     endpoint its type serves: an older version?` — update log alerts matching it.
+  - **An embeddings answer whose `usage` has no `prompt_tokens`** (only
+    `completion_tokens`, or `prompt_tokens: null`) is no usage report: the record
+    takes the input estimate, flagged `estimated`, where it settled as zero usage.
 
 ## Images
 
