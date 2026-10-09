@@ -49,10 +49,11 @@ Group entries under headings as themes emerge.
   `usage.cache_creation.ephemeral_5m_input_tokens` and `ephemeral_1h_input_tokens`).
   Revisit trigger: a client needs one of them, or refusing 1-hour caching breaks a
   client in use.
-- **Image and audio models** — OpenAI-shaped `/v1/images/generations`,
-  `/v1/audio/speech`, `/v1/audio/transcriptions`; new usage units (`images`,
-  `audio_seconds`, `characters`). Job-queue APIs (ComfyUI-style) need a separate adapter
-  or gateway. Revisit trigger: a self-hosted image or speech model is deployed.
+- **Image and audio models** — graduated to `docs/plans/media-generation/` (research
+  and direction settled 2026-10-09): on `vllm-omni` backends, speech and image
+  generation first, then uploads with image edits and transcription. Planned after
+  the rerank plan merges. Video and WebSocket endpoints stay out (revisit trigger: a
+  user needs video generation through the gateway).
 - **Reasoning-effort discovery** — read the supported `reasoning_efforts` from backends
   instead of declaring them. No backend reports the list today: llama-server's `/props`
   has only a yes/no (`chat_template_caps.supports_reasoning_effort`), vLLM and cloud
