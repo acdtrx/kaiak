@@ -26,7 +26,8 @@ SSE mode is step 6.
     speech, output-limit key `max_new_tokens`);
   - the inbound parser:
     - the owned fields (OVERVIEW decision 13);
-    - `response_format` other than `wav`/`pcm` refused;
+    - `response_format` other than `wav`/`pcm` refused; `pcm` without `sample_rate`
+      refused (OVERVIEW decision 18);
     - `ref_audio` with a URL or path refused;
     - the mode from `stream`/`stream_format`, which sets the timers and
       `gen_ai.request.stream`;
@@ -39,7 +40,7 @@ SSE mode is step 6.
   - an audio-length reader:
     - WAV: the header's sample rate, channels and bit depth, then the bytes actually
       received — never the header's size fields;
-    - PCM: the rate settled in step 1 and 16-bit mono;
+    - PCM: 16-bit mono at the request's `sample_rate`;
     - `audio_seconds_out` rounded as step 1 says.
 - The fake backend:
   - speech, both modes, with the usage headers;

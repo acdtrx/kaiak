@@ -30,6 +30,9 @@ them directly.
   labels.
 - `gateway/internal/server/limits.go`: the reservation hook — what a request reserves
   per measure. The endpoint-specific amounts come in steps 5–8.
+- `gateway/internal/server/errors.go`: the two new error codes the spec names
+  (`response_format_unsupported`, `external_reference_unsupported`), each with its
+  class, so the error-table test holds; their uses come in steps 5–8.
 - Tests beside each.
 
 ## Decisions made during planning

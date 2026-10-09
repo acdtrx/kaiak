@@ -14,8 +14,8 @@ this one is released. The research and the direction settled with the user are i
 
 ## Scope
 
-- **A backend type, `vllm-omni`:** vLLM-Omni's server, claiming the media endpoints and
-  every endpoint `vllm` claims, with no core endpoints.
+- **A backend type, `vllm-omni`:** vLLM-Omni's server, claiming the media endpoints
+  only, all three of them core endpoints.
 - **Three client API endpoints:** speech, speech batch, image generation — each a format
   of its own, through every pipeline stage.
 - **Three usage units:** `images`, `audio_seconds_out`, `audio_seconds_in` (the last one
@@ -63,17 +63,28 @@ planning):
 6. **Raw-audio streaming is accepted.**
    - Its seconds are measured.
    - Its tokens are estimated from the input text and flagged `estimated`.
-7. **Image `response_format: "file"`** (raw bytes) passes through; images are counted
-   from `n`.
-8. **`vllm-omni` claims the media endpoints plus everything `vllm` claims**, and has no
-   core endpoints.
+7. **Image `response_format` is `b64_json` only** (changed at step 1 review,
+   2026-10-09): `file` answers a ZIP for several images, and layered models answer one
+   image per layer, so a count from `n` would be wrong; `file` and `url` are refused,
+   and `images` is always the answer's `data[]` count. Backlog: image `file` responses.
+8. **`vllm-omni` claims the media endpoints only**, and they are its core endpoints
+   (changed at step 1 review, 2026-10-09). Every vLLM-Omni server registers all three
+   routes whatever model it loaded, so a route-missing `404` there is a wrong
+   `base_url`; a model that cannot serve one answers in the server's own words
+   (`GATEWAY.md`). Chat is not claimed because vLLM-Omni's chat on a diffusion model
+   generates images,
+   and on an Omni model audio, which no media limit would see. Chat, completions,
+   embeddings, Messages, Responses and rerank to a model on `vllm-omni` deployments get
+   kaiak's `400 endpoint_not_served`. Backlog: Omni chat models.
 9. **`gen_ai.operation.name` is `generate_content`**, OpenTelemetry's well-known value,
    with `gen_ai.output.type` naming the kind.
 10. **Model metadata is unchanged and required.**
     - `capabilities.vision` means the model takes images in.
     - `context_length` bounds the prompt and, for speech, the output limit.
-11. **URLs and file paths are refused** in fields that make the server fetch or read
-    (speech `ref_audio`). Inline data only.
+11. **URLs and file paths are refused** in fields that make the server fetch or read:
+    speech's reference audio (`ref_audio` and its variants, step 1) and image
+    generation's `lora` (an adapter path, confirmed at step 1 review). Inline data
+    only.
 12. **New global caps**, as `max_embedding_inputs`:
     - images per request, default 10;
     - speech batch items, default 32.
@@ -99,7 +110,8 @@ Made while planning (confirm in review):
 15. **Image generation's owned fields:**
     - `model`;
     - `n`, against the cap and reserved;
-    - `response_format` (`b64_json` or `file`; `url` refused).
+    - `response_format` (`b64_json` only; decision 7);
+    - `lora` refused (decision 11).
 
     It is never a stream: an event-stream answer is incomplete, as for rerank.
 16. **Usage on a speech answer:**
@@ -110,28 +122,30 @@ Made while planning (confirm in review):
     - every mode: `audio_seconds_out` measured on the audio relayed to the client. A
       client gone mid-answer settles the seconds sent, as tokens do today.
 17. **Image usage:** `images` is the answer's `data[]` count, read while the body streams
-    through without keeping it (decision 7 for `file`).
-18. **The PCM sample rate when the request sets none:** step 1 settles it from vLLM-Omni's
-    sources.
-    - Candidates: OpenAI's PCM definition (24 kHz, 16-bit, mono), which vLLM-Omni's
-      speech models share; or a declared per-model rate.
-    - It must never be guessed silently wrong for a model with another native rate.
+    through without keeping it. Reserving `n` undercounts a layered model's answer; the
+    settle corrects it, and a per-minute image limit can be overshot by that answer.
+18. **PCM output requires `sample_rate`** (settled at step 1 from vLLM-Omni v0.30.0's
+    sources): without it, `400 missing_required_parameter`. Native rates differ (Fish
+    Speech 44.1 kHz, Gepard 22.05 kHz, MiniMax Music 32 kHz stereo), and only the
+    models that accept `sample_rate` (Qwen3-TTS, Breeze-TTS-2, both mono) can answer
+    PCM through kaiak. WAV works on every model.
 19. **The names:**
     - limit types: `images_per_minute`, `images_per_hour`,
       `audio_seconds_out_per_minute`, `audio_seconds_out_per_hour`,
       `audio_seconds_in_per_minute`, `audio_seconds_in_per_hour`;
     - global caps: `max_images_per_request`, `max_speech_batch_items`;
-    - endpoint names: `audio_speech`, `audio_speech_batch`, `images_generations`.
-
-    Step 1 may refine them.
+    - endpoint names: `audio_speech`, `audio_speech_batch`, `images_generations`;
+    - new error codes: `response_format_unsupported`, `external_reference_unsupported`.
 20. **Metrics for the new units:**
-    - OpenTelemetry's GenAI conventions have no image or audio-length metric, so they
-      get `kaiak.*` counters (e.g. `kaiak.usage.images`, `kaiak.usage.audio.duration`,
-      in seconds) beside the token usage counter.
-    - The labels match the usage metrics.
-    - Step 1 checks the pinned conventions first.
+    - OpenTelemetry's GenAI conventions have no image or audio-length metric (checked
+      at the pinned commit and `main`), so they get `kaiak.*` counters:
+      `kaiak.usage.images` (`{image}`), `kaiak.usage.audio.output.duration` and
+      `kaiak.usage.audio.input.duration` (`s`), beside the token usage counter.
+    - The labels match the usage metrics, plus `gen_ai.output.type`.
 21. **Versions:** config `format_version` 6 and protocol 6 — the new units on the usage
     record, the new limit types and totals windows, the new backend type and caps.
+    The 50 000-counter bound stays: each scope now keeps five hour and month counters,
+    and the user expects about 1 000 groups initially (step 1 review, 2026-10-09).
 
 ## Constraints
 
@@ -201,8 +215,9 @@ the step boundary. The release after the merge is the user's call.
 
 Expected reds inside phase 1:
 - After step 1, both halves fail the new fixtures and the version checks.
-- Step 2 clears `kaiak-control`'s, and step 3 the gateway's.
-- The cross-half e2e is red until both halves speak protocol 6 (step 3).
+- Step 2 clears `kaiak-control`'s; step 3 the gateway's, the two new error codes
+  included; step 4 the fixtures that name the `vllm-omni` type.
+- The cross-half e2e is red from step 2 until step 3.
 
 ## Verification
 
@@ -220,7 +235,7 @@ Expected reds inside phase 1:
   - each endpoint and mode, through the whole pipeline;
   - usage records with the new units;
   - each new limit refusing;
-  - wrong endpoints on `vllm-omni` neutral.
+  - chat to a model on `vllm-omni` refused with `400 endpoint_not_served`.
 - **Cross-half e2e:**
   - a speech request and an image request settle at the sample;
   - the hourly image and audio totals limit a second gateway.

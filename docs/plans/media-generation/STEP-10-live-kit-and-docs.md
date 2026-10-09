@@ -21,10 +21,12 @@ Only the kit's `-self-test` runs in the suite.
     - a compressed format refused;
     - `ref_audio` with a URL refused;
   - **batch:** usage summed, the cap;
-  - **images:** an image answered, `images` counted, `n` capped, `url` refused;
+  - **images:** an image answered, `images` counted, `n` capped, `file`, `url` and
+    `lora` refused;
   - **limits:** an image limit and an audio limit refusing;
-  - **wrong endpoints:** chat to the image model is `upstream_endpoint_missing`, then an
-    image request succeeds;
+  - **endpoints:** chat to the image model is kaiak's `400 endpoint_not_served`; speech
+    sent to the image model (vLLM-Omni's answer, which step 1 could not settle from
+    source) is recorded;
   - the self-test against the fakes.
 - `docs/testing/LIVE-BACKENDS.md`: the new kind and checks; vLLM-Omni's start commands.
 - `docs/DEPLOYMENT.md`:

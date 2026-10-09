@@ -12,7 +12,7 @@ Prove phase A through a running gateway and across both halves.
   - each speech mode, the batch and image generation through the whole pipeline;
   - the usage records with their units;
   - the new limits refusing (minute windows) and the caps;
-  - wrong endpoints neutral (chat to an image model; speech to a chat model);
+  - chat to a model on `vllm-omni` refused with `400 endpoint_not_served`;
   - a client gone mid-clip.
 - `gateway/e2e/sample_test.go` (`crosshalf`):
   - a speech request and an image request settle at the sample;

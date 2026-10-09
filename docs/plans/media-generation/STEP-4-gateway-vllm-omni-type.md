@@ -4,14 +4,14 @@
 
 ## Intent
 
-A `vllm-omni` backend serves every endpoint `vllm` serves, with vLLM-Omni's answers
-read correctly:
-- its route-missing answer is the endpoint missing on every endpoint (no core
-  endpoints);
-- its model-mismatch answer is read by the wrong-model rule as step 1 settled;
-- its probe reads its models list.
-
-The media endpoints are added in steps 5–8.
+The `vllm-omni` backend type exists: the config accepts it, its module builds URLs and
+credentials, and its probe reads its models list. It claims the media endpoints only
+(OVERVIEW decision 8), which steps 5–8 add, so until then it serves nothing reachable.
+A request for any other endpoint to a model whose deployments are all on `vllm-omni` is
+kaiak's `400 endpoint_not_served`. Its three media endpoints are core endpoints (a
+route-missing `404` is a wrong `base_url`), and its wrong-endpoint and wrong-model
+readings follow step 1's spec (the image route's `503 No diffusion stage…` is the
+endpoint missing; image generation's `400 Model mismatch` is a missing model).
 
 ## Files likely touched
 
@@ -32,8 +32,9 @@ The media endpoints are added in steps 5–8.
 ## Acceptance criteria
 
 - **Module tests:** each signature on each endpoint.
-- **A chat request to a `vllm-omni` deployment** answering vLLM's route-missing shape is
-  `upstream_endpoint_missing`: neutral, remembered per deployment.
+- **A chat, completions, embeddings, Messages, Responses or rerank request** to a model
+  whose deployments are all on `vllm-omni` answers `400 endpoint_not_served`, before
+  any backend.
 - **Phase 1 end:** `scripts/check-all.sh` green and recorded.
 
 ## Result
