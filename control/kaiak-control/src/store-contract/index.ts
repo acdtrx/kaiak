@@ -17,6 +17,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { describe, test } from "node:test";
 
+import { COUNTED_TYPES } from "../messages/index.ts";
 import type { BatchId, UsageRecord } from "../messages/index.ts";
 import type {
   BatchCursor,
@@ -55,8 +56,17 @@ export interface StoreContractSubject {
 
 const HOUR = Date.UTC(2026, 9, 6, 12);
 const MONTH = Date.UTC(2026, 9, 1);
-const CURRENT: WindowStarts = { tokens_per_hour: HOUR, usd_per_month: MONTH };
-const PREVIOUS: WindowStarts = { tokens_per_hour: HOUR - 3_600_000, usd_per_month: Date.UTC(2026, 8, 1) };
+// Every counted type's window: the per-hour types' starting at `hour`, usd_per_month's
+// at `month`.
+const windowsAt = (hour: number, month: number): WindowStarts => ({
+  tokens_per_hour: hour,
+  images_per_hour: hour,
+  audio_seconds_out_per_hour: hour,
+  audio_seconds_in_per_hour: hour,
+  usd_per_month: month,
+});
+const CURRENT = windowsAt(HOUR, MONTH);
+const PREVIOUS = windowsAt(HOUR - 3_600_000, Date.UTC(2026, 8, 1));
 const BATCH_EPOCH = "b".repeat(32);
 const OTHER_EPOCH = "c".repeat(32);
 
@@ -464,6 +474,37 @@ export function storeContractTests(subject: StoreContractSubject): void {
           assert.equal(windows.find((window) => window.group === "g" && window.type === "tokens_per_hour")?.used, 5n);
           assert.equal(windows.find((window) => window.group === undefined)?.used, 6n);
           assert.equal(windows.find((window) => window.type === "usd_per_month")?.used, 8n);
+        }),
+      );
+
+      test(
+        "every counted type's window is kept apart, read in its current window and dropped past it",
+        withStore(async (a, b) => {
+          await publishConfigs(a, 1);
+          // One window per type and scope, each with its own amount, in the current and
+          // the previous windows; a second batch adds to each current one.
+          const windowsOf = (starts: WindowStarts, base: bigint): WindowTotal[] =>
+            COUNTED_TYPES.flatMap((type, index) => [
+              { type, windowStart: starts[type], used: base + BigInt(index) },
+              { group: "g", type, windowStart: starts[type], used: base + BigInt(10 + index) },
+            ]);
+          const firstCurrent = windowsOf(CURRENT, 100n);
+          const secondCurrent = windowsOf(CURRENT, 1000n);
+          const first = counted("gw-1", 1, { used: 0n });
+          first.additions = [...firstCurrent, ...windowsOf(PREVIOUS, 200n)];
+          const second = counted("gw-2", 1, { used: 0n });
+          second.additions = secondCurrent;
+          assert.ok((await a.saveCountedBatch(first, undefined, 10)).saved);
+          assert.ok((await b.saveCountedBatch(second, undefined, 10)).saved);
+
+          const byWindow = (windows: WindowTotal[]): WindowTotal[] =>
+            [...windows].sort((x, y) => (x.group ?? "").localeCompare(y.group ?? "") || x.type.localeCompare(y.type));
+          const summed = firstCurrent.map((window, index) => ({ ...window, used: window.used + secondCurrent[index]!.used }));
+          assert.deepEqual(byWindow((await a.totalsSnapshot(CURRENT)).windows), byWindow(summed));
+          assert.deepEqual(byWindow((await b.totalsSnapshot(PREVIOUS)).windows), byWindow(windowsOf(PREVIOUS, 200n)));
+          await a.dropPastWindowTotals(CURRENT);
+          assert.deepEqual((await b.totalsSnapshot(PREVIOUS)).windows, []);
+          assert.deepEqual(byWindow((await b.totalsSnapshot(CURRENT)).windows), byWindow(summed));
         }),
       );
 

@@ -62,7 +62,7 @@ test("bad arguments are refused with a message, before anything is sent", async 
   await refused(["--base-url", ""], /--base-url is required/);
   await refused(
     ["--base-url", "http://h/v1", "--type", "bedrock"],
-    /^type must be one of "openai-compatible", "openai", "azure-openai", "vllm", "llama-server", "anthropic", "azure-anthropic"$/,
+    /^type must be one of "openai-compatible", "openai", "azure-openai", "vllm", "vllm-omni", "llama-server", "anthropic", "azure-anthropic"$/,
   );
   await refused(["--base-url", "http://h/v1", "--api-key", "sk-x"], /--api-key/);
   await refused(["--base-url", "http://h/v1", "extra"], /extra/);
@@ -71,9 +71,9 @@ test("bad arguments are refused with a message, before anything is sent", async 
   await refused(["--base-url", "http://h/v1", "--api-key-env", "NOT A NAME"], /--api-key-env takes a variable name/);
 });
 
-test("--type takes each of the five backend types, and the check follows it", async (t) => {
+test("--type takes each of the six backend types, and the check follows it", async (t) => {
   const fake = await fakeLlamaServer(t);
-  for (const type of ["openai-compatible", "openai", "vllm", "llama-server"]) {
+  for (const type of ["openai-compatible", "openai", "vllm", "vllm-omni", "llama-server"]) {
     const result = await runVerify(["--base-url", fake.baseUrl, "--type", type], {});
     assert.ok(result.kind === "report", type);
     assert.equal(result.report.ok, true, type);
@@ -199,5 +199,5 @@ test("the command exits 0 on a passing check, 1 on a failed one or bad arguments
   assert.equal(badType.code, 1);
   assert.equal(badType.stdout, "");
   assert.match(badType.stderr, /^verify: type must be one of [^\n]*\nusage /);
-  assert.match(badType.stderr, /\n {2}--type {9}the backend's type: openai-compatible, openai, azure-openai, vllm, llama-server, anthropic, azure-anthropic /);
+  assert.match(badType.stderr, /\n {2}--type {9}the backend's type: openai-compatible, openai, azure-openai, vllm, vllm-omni, llama-server, anthropic, azure-anthropic /);
 });

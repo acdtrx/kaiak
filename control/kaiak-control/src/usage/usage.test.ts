@@ -28,6 +28,27 @@ function fullConfig(): Config {
   return JSON.parse(readFileSync(path.join(FIXTURES, "config/valid/full.json"), "utf8")) as Config;
 }
 
+// Every counted type's window: the per-hour types' starting at `hour`, usd_per_month's
+// at `month`.
+function windowsAt(hour: number, month: number): WindowStarts {
+  return {
+    tokens_per_hour: hour,
+    images_per_hour: hour,
+    audio_seconds_out_per_hour: hour,
+    audio_seconds_in_per_hour: hour,
+    usd_per_month: month,
+  };
+}
+
+// The window starts a totals read at T0 names, as the protocol writes them.
+const T0_WINDOW_STARTS = {
+  tokens_per_hour: HOUR_10,
+  images_per_hour: HOUR_10,
+  audio_seconds_out_per_hour: HOUR_10,
+  audio_seconds_in_per_hour: HOUR_10,
+  usd_per_month: SEPTEMBER,
+};
+
 // What the store holds for the windows current at `current`, whatever the config limits.
 async function storedWindows(store: ControlPlaneStore, current: WindowStarts): Promise<WindowTotal[]> {
   return (await store.totalsSnapshot(current)).windows;
@@ -64,6 +85,11 @@ function record(
     cost_nano_usd: cost,
     gateway_time: gatewayTime,
   });
+}
+
+// A record with media units besides its tokens.
+function withMedia(base: UsageRecord, media: Partial<Pick<UsageRecord["units"], "images" | "audio_seconds_out" | "audio_seconds_in">>): UsageRecord {
+  return { ...base, units: { ...base.units, ...media } };
 }
 
 function batch(epoch: string, sequence: number, records: UsageRecord[]): UsageBatch {
@@ -171,7 +197,7 @@ describe("aggregation", () => {
     });
     assert.deepEqual(totals, {
       cursors: [{ instance: INSTANCE, epoch: EPOCH_A, sequence: 1 }],
-      windowStarts: { tokens_per_hour: HOUR_10, usd_per_month: SEPTEMBER },
+      windowStarts: T0_WINDOW_STARTS,
       windows: sorted([
         hour(undefined, "5202"),
         month(undefined, "8532003"),
@@ -203,6 +229,68 @@ describe("aggregation", () => {
     const written = record(["users", "carol"], "gpt-4.1-mini", [3, 1024, 1009, 40, 12], 1);
     acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [written])));
     assert.equal(await carolHourUsed(usage), "1052"); // 3 + 1009 + 40
+  });
+
+  test("images and seconds of audio count into their own hour windows, beside tokens and cost", async () => {
+    const { usage } = await harness();
+    const alice = ["users", "alice"];
+    const records = [
+      // Speech: its tokens toward the token windows, its seconds toward the audio
+      // generated windows.
+      withMedia(record(alice, "qwen3-tts", [21, 0, 0, 83, 0], 0), { audio_seconds_out: 7 }),
+      // Images: four images, and the prompt's estimated tokens.
+      withMedia(record(alice, "qwen-image", [30, 0, 0, 0, 0], 0), { images: 4 }),
+      // Audio processed, with a cost of its model's tokens.
+      withMedia(record(["users", "bob"], "qwen3-32b", [5, 0, 0, 5, 0], 9), { audio_seconds_in: 12 }),
+      // A second speech record adds to the same windows.
+      withMedia(record(alice, "qwen3-tts", [0, 0, 0, 0, 0], 0), { audio_seconds_out: 2 }),
+    ];
+    acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, records)));
+
+    const window = (group: string | undefined, type: TotalsWindow["type"], used: string): TotalsWindow => ({
+      ...(group !== undefined && { group }),
+      type,
+      window_start: type === "usd_per_month" ? SEPTEMBER : HOUR_10,
+      used,
+    });
+    const totals = await currentTotals(usage);
+    assert.deepEqual(totals.windowStarts, T0_WINDOW_STARTS);
+    assert.deepEqual(
+      totals.windows,
+      sorted([
+        ...[undefined, "users"].flatMap((group) => [
+          window(group, "tokens_per_hour", "144"),
+          window(group, "images_per_hour", "4"),
+          window(group, "audio_seconds_out_per_hour", "9"),
+          window(group, "audio_seconds_in_per_hour", "12"),
+          window(group, "usd_per_month", "9"),
+        ]),
+        window("alice", "tokens_per_hour", "134"),
+        window("alice", "images_per_hour", "4"),
+        window("alice", "audio_seconds_out_per_hour", "9"),
+        window("bob", "tokens_per_hour", "10"),
+        window("bob", "audio_seconds_in_per_hour", "12"),
+        window("bob", "usd_per_month", "9"),
+      ]),
+    );
+  });
+
+  test("a media window rolls over by the UTC hour, as tokens do", async () => {
+    const { usage, store, setTime } = await harness();
+    const carol = (images: number, at: string): UsageRecord =>
+      withMedia(record(["users", "carol"], "qwen-image", [0, 0, 0, 0, 0], 0, at), { images });
+    setTime(Date.UTC(2026, 8, 24, 11, 5));
+    // One record of the previous hour, one of the current.
+    acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [carol(3, "2026-09-24T10:59:59Z"), carol(2, "2026-09-24T11:00:00Z")])));
+    assert.deepEqual(
+      (await currentTotals(usage)).windows.filter((window) => window.group === "carol"),
+      [{ group: "carol", type: "images_per_hour", window_start: "2026-09-24T11:00:00Z", used: "2" }],
+    );
+    const at10 = await storedWindows(store, windowsAt(Date.UTC(2026, 8, 24, 10), Date.UTC(2026, 7, 1)));
+    assert.deepEqual(
+      at10.filter((total) => total.group === "carol").map((total) => [total.type, total.used]),
+      [["images_per_hour", 3n]],
+    );
   });
 
   test("a deep path counts toward every group on it, and global", async () => {
@@ -260,7 +348,7 @@ describe("aggregation", () => {
     assert.equal(await store.currentConfig(), undefined);
     assert.deepEqual(await currentTotals(usage), {
       cursors: [],
-      windowStarts: { tokens_per_hour: HOUR_10, usd_per_month: SEPTEMBER },
+      windowStarts: T0_WINDOW_STARTS,
       windows: [],
     });
     acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [record(["users", "carol"], "gpt-4.1-mini", [3, 0, 0, 0, 0], 4)])));
@@ -390,7 +478,7 @@ describe("windows by the control plane's clock", () => {
 
     // The 10:00 window is the previous one now: it stays (late records still count
     // there) until a drop of past windows in a later hour (the expiry sweep's).
-    const at10 = { tokens_per_hour: Date.UTC(2026, 8, 24, 10), usd_per_month: Date.UTC(2026, 8, 1) };
+    const at10 = windowsAt(Date.UTC(2026, 8, 24, 10), Date.UTC(2026, 8, 1));
     // global, users and carol: each counted in its hour and its month.
     assert.deepEqual(
       (await storedWindows(store, at10)).map((total) => total.type).sort(),
@@ -435,7 +523,7 @@ describe("windows by the control plane's clock", () => {
         { group: "carol", type: "usd_per_month", window_start: SEPTEMBER, used: "1300" },
       ],
     );
-    const at11 = await storedWindows(store, { tokens_per_hour: Date.UTC(2026, 8, 24, 11), usd_per_month: Date.UTC(2026, 7, 1) });
+    const at11 = await storedWindows(store, windowsAt(Date.UTC(2026, 8, 24, 11), Date.UTC(2026, 7, 1)));
     assert.deepEqual(
       at11.filter((total) => total.group === "carol").map((total) => [total.type, total.used]),
       [["tokens_per_hour", 600n]],
@@ -460,7 +548,7 @@ describe("windows by the control plane's clock", () => {
       (await currentTotals(usage)).windows.filter((window) => window.group === "carol"),
       [{ group: "carol", type: "usd_per_month", window_start: "2026-10-01T00:00:00Z", used: "27" }],
     );
-    const september = await storedWindows(store, { tokens_per_hour: Date.UTC(2026, 8, 30, 23), usd_per_month: Date.UTC(2026, 8, 1) });
+    const september = await storedWindows(store, windowsAt(Date.UTC(2026, 8, 30, 23), Date.UTC(2026, 8, 1)));
     assert.deepEqual(
       september.filter((total) => total.group === "carol").map((total) => [total.type, total.used]),
       [["usd_per_month", 50n]],
@@ -487,7 +575,7 @@ describe("windows by the control plane's clock", () => {
     ]);
     // September is the previous month now: its windows stay while late records can
     // still count there.
-    const september = await storedWindows(store, { tokens_per_hour: Date.UTC(2026, 8, 30, 23), usd_per_month: Date.UTC(2026, 8, 1) });
+    const september = await storedWindows(store, windowsAt(Date.UTC(2026, 8, 30, 23), Date.UTC(2026, 8, 1)));
     assert.deepEqual(
       september.map((total) => [total.group ?? "global", total.type, total.used]).sort(),
       [
@@ -498,12 +586,13 @@ describe("windows by the control plane's clock", () => {
     );
   });
 
-  test("dropping past windows can be run by hand", async () => {
+  test("dropping past windows can be run by hand, every type's", async () => {
     const { usage, store, setTime } = await harness();
-    acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [oneTokenRecord()])));
-    const t0Windows = { tokens_per_hour: Date.UTC(2026, 8, 24, 10), usd_per_month: Date.UTC(2026, 8, 1) };
-    // global, users and carol, each an hour and a month window.
-    assert.equal((await storedWindows(store, t0Windows)).length, 6);
+    const everyUnit = withMedia(oneTokenRecord(), { images: 1, audio_seconds_out: 1, audio_seconds_in: 1 });
+    acked(await usage.acceptUsageBatch(INSTANCE, batch(EPOCH_A, 1, [everyUnit])));
+    const t0Windows = windowsAt(Date.UTC(2026, 8, 24, 10), Date.UTC(2026, 8, 1));
+    // global, users and carol, each a window of every type: four hours and a month.
+    assert.equal((await storedWindows(store, t0Windows)).length, 15);
     // Two months on: September is older than the previous month.
     setTime(Date.UTC(2026, 10, 2));
     await usage.dropPastWindows();

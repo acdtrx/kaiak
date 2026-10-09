@@ -1,5 +1,6 @@
-// The control plane's limit windows (GATEWAY.md, Limits): fixed UTC hours for
-// tokens_per_hour, UTC calendar months for usd_per_month, by its own clock.
+// The control plane's limit windows (GATEWAY.md, Limits): fixed UTC hours for the
+// per-hour types (tokens, images, audio generated, audio processed), UTC calendar
+// months for usd_per_month, by its own clock.
 
 import { COUNTED_TYPES } from "../messages/index.ts";
 import type { TotalsLimitType } from "../messages/index.ts";
@@ -11,18 +12,23 @@ const HOUR_MS = 3_600_000;
 // no leap seconds, so every UTC hour is 3,600,000 of them.
 export function currentWindows(now: number): WindowStarts {
   const date = new Date(now);
-  return {
-    tokens_per_hour: Math.floor(now / HOUR_MS) * HOUR_MS,
-    usd_per_month: Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1),
-  };
+  return windowsAt(Math.floor(now / HOUR_MS) * HOUR_MS, Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1));
 }
 
 // The windows just before `current`: the previous hour and the previous month.
 export function previousWindows(current: WindowStarts): WindowStarts {
   const month = new Date(current.usd_per_month);
+  return windowsAt(current.tokens_per_hour - HOUR_MS, Date.UTC(month.getUTCFullYear(), month.getUTCMonth() - 1, 1));
+}
+
+// Every per-hour type's window starting at `hour`, and usd_per_month's at `month`.
+function windowsAt(hour: number, month: number): WindowStarts {
   return {
-    tokens_per_hour: current.tokens_per_hour - HOUR_MS,
-    usd_per_month: Date.UTC(month.getUTCFullYear(), month.getUTCMonth() - 1, 1),
+    tokens_per_hour: hour,
+    images_per_hour: hour,
+    audio_seconds_out_per_hour: hour,
+    audio_seconds_in_per_hour: hour,
+    usd_per_month: month,
   };
 }
 
@@ -51,6 +57,9 @@ export function formatWindowStart(start: number): string {
 export function formatWindowStarts(windows: WindowStarts): Record<TotalsLimitType, string> {
   return {
     tokens_per_hour: formatWindowStart(windows.tokens_per_hour),
+    images_per_hour: formatWindowStart(windows.images_per_hour),
+    audio_seconds_out_per_hour: formatWindowStart(windows.audio_seconds_out_per_hour),
+    audio_seconds_in_per_hour: formatWindowStart(windows.audio_seconds_in_per_hour),
     usd_per_month: formatWindowStart(windows.usd_per_month),
   };
 }

@@ -3,7 +3,7 @@
 // goes through `html`, which escapes it.
 
 import { isCountedType, resolveScopes, scopeTypeKey } from "kaiak-control";
-import type { Config, ControlPlane, DeploymentStatus, GatewayStatus, GatewayView, Limit, PublishedConfig, ReceivedRecord, ResolvedScope, TotalsRead } from "kaiak-control";
+import type { Config, ControlPlane, DeploymentStatus, GatewayStatus, GatewayView, Limit, LimitType, PublishedConfig, ReceivedRecord, ResolvedScope, TotalsRead } from "kaiak-control";
 
 import type { ConfigFileState } from "../config-file/index.ts";
 
@@ -232,7 +232,7 @@ async function renderTotals({ core }: PageSources): Promise<Markup> {
     const label = group === undefined ? html`global` : groupPath(path);
     for (const limit of limits) rows.push(limitRow(label, group, limit, used, totals.windowStarts));
   }
-  const intro = html`<p class="muted">Current windows: tokens per UTC hour, dollars per UTC month, counted from every gateway's usage (${formatCount(totals.liveGateways)} live). Per-minute limits are enforced by each gateway on its share and not counted here.</p>`;
+  const intro = html`<p class="muted">Current windows: tokens, images and seconds of audio per UTC hour, dollars per UTC month, counted from every gateway's usage (${formatCount(totals.liveGateways)} live). Per-minute limits are enforced by each gateway on its share and not counted here.</p>`;
   if (rows.length === 0) return html`${heading}${intro}<p class="muted">The config sets no limits.</p>`;
   return html`${heading}${intro}
 <div class="scroll"><table>
@@ -255,6 +255,20 @@ function usedByLimit(totals: TotalsRead): Map<string, UsedWindow> {
   return used;
 }
 
+// What a limit type counts, as the page names its value; usd_per_month's is shown as
+// dollars.
+const LIMIT_UNITS: Record<Exclude<LimitType, "usd_per_month">, string> = {
+  requests_per_minute: "requests",
+  tokens_per_minute: "tokens",
+  tokens_per_hour: "tokens",
+  images_per_minute: "images",
+  images_per_hour: "images",
+  audio_seconds_out_per_minute: "audio seconds out",
+  audio_seconds_out_per_hour: "audio seconds out",
+  audio_seconds_in_per_minute: "audio seconds in",
+  audio_seconds_in_per_hour: "audio seconds in",
+};
+
 // A limit with nothing used yet shows the current window, as the totals were read for it.
 function limitRow(
   label: Markup,
@@ -263,18 +277,19 @@ function limitRow(
   usedWindows: ReadonlyMap<string, UsedWindow>,
   windowStarts: TotalsRead["windowStarts"],
 ): Markup {
-  if (!isCountedType(limit.type)) {
-    const unit = limit.type === "requests_per_minute" ? "requests" : "tokens";
-    return html`<tr><td>${label}</td><td>${formatCount(limit.value)} ${unit} / min</td><td colspan="3" class="muted">per gateway share, not counted here</td></tr>`;
+  const { type } = limit;
+  if (!isCountedType(type)) {
+    return html`<tr><td>${label}</td><td>${formatCount(limit.value)} ${LIMIT_UNITS[type]} / min</td><td colspan="3" class="muted">per gateway share, not counted here</td></tr>`;
   }
-  const window = usedWindows.get(scopeTypeKey(group, limit.type));
+  const window = usedWindows.get(scopeTypeKey(group, type));
   const used = window?.used ?? 0n;
-  const money = limit.type === "usd_per_month";
+  const money = type === "usd_per_month";
   const ceiling = money ? usdToNano(limit.value) : BigInt(limit.value);
   const format = (amount: bigint): string => (money ? formatNanoUsd(amount) : formatCount(amount));
-  const windowStart = window?.windowStart ?? windowStarts[limit.type];
+  const windowStart = window?.windowStart ?? windowStarts[type];
   const start = parseTimestamp(windowStart);
-  return html`<tr><td>${label}</td><td>${format(ceiling)} ${money ? "/ month" : "tokens / hour"}</td>
+  const per = type === "usd_per_month" ? "/ month" : `${LIMIT_UNITS[type]} / hour`;
+  return html`<tr><td>${label}</td><td>${format(ceiling)} ${per}</td>
 <td class="num">${format(used)}</td><td class="bar">${share(used, ceiling)}</td><td>${start === undefined ? windowStart : formatAbsolute(start)}</td></tr>`;
 }
 
@@ -294,7 +309,7 @@ async function renderUsage({ core, clock }: PageSources): Promise<Markup> {
   if (records.length === 0) return html`${heading}<p class="muted">No usage received yet.</p>`;
   return html`${heading}
 <div class="scroll"><table>
-<thead><tr><th>Received</th><th>Gateway</th><th>Key ID</th><th>Group</th><th>Model</th><th>Deployment</th><th class="num">In</th><th class="num">Cached</th><th class="num">Cache write</th><th class="num">Out</th><th class="num">Reasoning</th><th class="num">Cost</th><th>Flags</th></tr></thead>
+<thead><tr><th>Received</th><th>Gateway</th><th>Key ID</th><th>Group</th><th>Model</th><th>Deployment</th><th class="num">In</th><th class="num">Cached</th><th class="num">Cache write</th><th class="num">Out</th><th class="num">Reasoning</th><th class="num">Images</th><th class="num">Audio out (s)</th><th class="num">Audio in (s)</th><th class="num">Cost</th><th>Flags</th></tr></thead>
 <tbody>${records.map((received) => usageRow(received, now))}</tbody>
 </table></div>`;
 }
@@ -314,6 +329,9 @@ function usageRow({ receivedAt, record }: ReceivedRecord, now: number): Markup {
 <td class="num">${formatCount(units.tokens_cache_write)}</td>
 <td class="num">${formatCount(units.tokens_out)}</td>
 <td class="num">${formatCount(units.tokens_reasoning)}</td>
+<td class="num">${formatCount(units.images)}</td>
+<td class="num">${formatCount(units.audio_seconds_out)}</td>
+<td class="num">${formatCount(units.audio_seconds_in)}</td>
 <td class="num">${formatNanoUsd(BigInt(record.cost_nano_usd))}</td>
 <td>${flags.map((flag) => html`<span class="tag warn">${flag}</span> `)}</td>
 </tr>`;

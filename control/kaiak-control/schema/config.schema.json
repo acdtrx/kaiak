@@ -9,7 +9,7 @@
   "properties": {
     "format_version": {
       "description": "Version of this document format. A different version is rejected, never migrated.",
-      "const": 5
+      "const": 6
     },
     "global": { "$ref": "#/$defs/global" },
     "backends": {
@@ -118,6 +118,20 @@
           "maximum": 9007199254740991,
           "default": 1000
         },
+        "max_images_per_request": {
+          "description": "The most images one image generation request may ask for (n). A request above it is refused (400 invalid_value, param n). The gateway reserves n against the image limits. The default is vLLM-Omni's and OpenAI's own maximum.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "default": 10
+        },
+        "max_speech_batch_items": {
+          "description": "The most items one speech batch request may carry. A request above it is refused (400 invalid_value, param items). Each item is a speech generation of its own, all within the request's one slot. The default is vLLM-Omni's own (tts_batch_max_items).",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "default": 32
+        },
         "max_concurrent_requests_per_key": {
           "description": "The most requests one key may have in flight on one gateway at once, counted from authentication (before the body is read) to the end of the response. A request above it is refused (429 concurrency_limit_exceeded, Retry-After: 1). Per gateway: not split across gateways.",
           "type": "integer",
@@ -211,11 +225,11 @@
       "required": ["type", "base_url"],
       "properties": {
         "type": {
-          "description": "The server, which picks the gateway's module for it and the client API endpoints it serves: openai (OpenAI's API), azure-openai (Azure's OpenAI-compatible /openai/v1/ API), vllm, llama-server (llama.cpp), anthropic (Anthropic's API), azure-anthropic (Claude in Microsoft Foundry), or openai-compatible for any other server speaking the OpenAI format (SGLang, …). openai and azure-openai run every request on the standard service tier, and the Anthropic types on standard prices; the others pass the client's service_tier untouched (docs/specs/GATEWAY.md, Providers).",
-          "enum": ["openai-compatible", "openai", "azure-openai", "vllm", "llama-server", "anthropic", "azure-anthropic"]
+          "description": "The server, which picks the gateway's module for it and the client API endpoints it serves: openai (OpenAI's API), azure-openai (Azure's OpenAI-compatible /openai/v1/ API), vllm, vllm-omni (vLLM-Omni: vLLM's endpoints plus speech and image generation), llama-server (llama.cpp), anthropic (Anthropic's API), azure-anthropic (Claude in Microsoft Foundry), or openai-compatible for any other server speaking the OpenAI format (SGLang, …). openai and azure-openai run every request on the standard service tier, and the Anthropic types on standard prices; the others pass the client's service_tier untouched (docs/specs/GATEWAY.md, Providers).",
+          "enum": ["openai-compatible", "openai", "azure-openai", "vllm", "vllm-omni", "llama-server", "anthropic", "azure-anthropic"]
         },
         "base_url": {
-          "description": "openai-compatible, openai, vllm, llama-server: the base URL an OpenAI client would use, API version path included (e.g. http://vllm:8000/v1); the gateway appends the endpoint path (/chat/completions). anthropic: the base URL with the version path (https://api.anthropic.com/v1). azure-openai: the resource endpoint (e.g. https://my-resource.openai.azure.com); the gateway appends /openai/v1/. azure-anthropic: the resource endpoint (e.g. https://my-resource.services.ai.azure.com); the gateway appends /anthropic/v1/. No credentials (user:password@ — provider secrets travel only through api_key_env), trailing slash, query or fragment.",
+          "description": "openai-compatible, openai, vllm, vllm-omni, llama-server: the base URL an OpenAI client would use, API version path included (e.g. http://vllm:8000/v1); the gateway appends the endpoint path (/chat/completions). anthropic: the base URL with the version path (https://api.anthropic.com/v1). azure-openai: the resource endpoint (e.g. https://my-resource.openai.azure.com); the gateway appends /openai/v1/. azure-anthropic: the resource endpoint (e.g. https://my-resource.services.ai.azure.com); the gateway appends /anthropic/v1/. No credentials (user:password@ — provider secrets travel only through api_key_env), trailing slash, query or fragment.",
           "type": "string",
           "pattern": "^https?://[^/\\s?#@]+(/[^\\s?#]*[^/\\s?#])?$"
         },
@@ -465,13 +479,38 @@
       "required": ["type", "value"],
       "properties": {
         "type": {
-          "description": "Per-minute windows slide; hours are fixed UTC hours; months are calendar months, UTC.",
-          "enum": ["requests_per_minute", "tokens_per_minute", "tokens_per_hour", "usd_per_month"]
+          "description": "Per-minute windows slide; hours are fixed UTC hours; months are calendar months, UTC. Each counts one measure: requests, tokens, images generated, seconds of audio generated (audio_seconds_out), seconds of audio processed (audio_seconds_in), or USD.",
+          "enum": [
+            "requests_per_minute",
+            "tokens_per_minute",
+            "tokens_per_hour",
+            "images_per_minute",
+            "images_per_hour",
+            "audio_seconds_out_per_minute",
+            "audio_seconds_out_per_hour",
+            "audio_seconds_in_per_minute",
+            "audio_seconds_in_per_hour",
+            "usd_per_month"
+          ]
         },
         "value": { "type": "number", "minimum": 0, "maximum": 9007199254740991 }
       },
       "if": {
-        "properties": { "type": { "enum": ["requests_per_minute", "tokens_per_minute", "tokens_per_hour"] } },
+        "properties": {
+          "type": {
+            "enum": [
+              "requests_per_minute",
+              "tokens_per_minute",
+              "tokens_per_hour",
+              "images_per_minute",
+              "images_per_hour",
+              "audio_seconds_out_per_minute",
+              "audio_seconds_out_per_hour",
+              "audio_seconds_in_per_minute",
+              "audio_seconds_in_per_hour"
+            ]
+          }
+        },
         "required": ["type"]
       },
       "then": { "properties": { "value": { "type": "integer" } } }

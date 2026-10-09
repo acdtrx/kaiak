@@ -21,7 +21,7 @@
       "maximum": 9007199254740991
     },
     "amount": {
-      "description": "A used amount in a limit window, as a string of decimal digits (at most 18, so below 10^18): requests, tokens, or nano-USD for USD limits. A string, not a number, because a month of spend in nano-USD can pass 2^53, where a JavaScript number stops being exact.",
+      "description": "A used amount in a limit window, as a string of decimal digits (at most 18, so below 10^18): tokens, images, seconds of audio, or nano-USD for USD limits. A string, not a number, because a month of spend in nano-USD can pass 2^53, where a JavaScript number stops being exact.",
       "type": "string",
       "pattern": "^(0|[1-9][0-9]{0,17})$"
     }

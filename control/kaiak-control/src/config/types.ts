@@ -8,6 +8,7 @@ export const BACKEND_TYPES = [
   "openai",
   "azure-openai",
   "vllm",
+  "vllm-omni",
   "llama-server",
   "anthropic",
   "azure-anthropic",
@@ -21,17 +22,45 @@ export const MODEL_CAPABILITIES = ["streaming", "tools", "vision", "reasoning"] 
 
 export type ModelCapability = (typeof MODEL_CAPABILITIES)[number];
 
-export type LimitType = "requests_per_minute" | "tokens_per_minute" | "tokens_per_hour" | "usd_per_month";
+// The limit types, as a value the counter bound counts by; a test pins it to the
+// schema's enum. Each counts one measure — requests, tokens, images generated, seconds of
+// audio generated (audio_seconds_out) or processed (audio_seconds_in), or USD — per
+// minute (each gateway's own), per UTC hour or per calendar month (counted by the
+// control plane).
+export const LIMIT_TYPES = [
+  "requests_per_minute",
+  "tokens_per_minute",
+  "tokens_per_hour",
+  "images_per_minute",
+  "images_per_hour",
+  "audio_seconds_out_per_minute",
+  "audio_seconds_out_per_hour",
+  "audio_seconds_in_per_minute",
+  "audio_seconds_in_per_hour",
+  "usd_per_month",
+] as const;
 
-// Usage units a usage record counts. tokens_in is plain input, tokens_cached input read
-// from the cache, tokens_cache_write input written to it (the three add up to the
-// backend's prompt tokens); tokens_out is all output including reasoning;
-// tokens_reasoning is the reasoning share of tokens_out, recorded for visibility and
-// never priced.
-export type UsageUnit = "tokens_in" | "tokens_cached" | "tokens_cache_write" | "tokens_out" | "tokens_reasoning";
+export type LimitType = (typeof LIMIT_TYPES)[number];
 
-// Units a price entry may name.
-export type PriceUnit = Exclude<UsageUnit, "tokens_reasoning">;
+// Usage units a usage record counts, every one on every record. tokens_in is plain
+// input, tokens_cached input read from the cache, tokens_cache_write input written to it
+// (the three add up to the backend's prompt tokens); tokens_out is all output including
+// reasoning; tokens_reasoning is the reasoning share of tokens_out, recorded for
+// visibility and never priced. images are images generated, audio_seconds_out seconds
+// of audio generated and audio_seconds_in seconds of audio processed — beside the
+// tokens, not inside them, and never priced.
+export type UsageUnit =
+  | "tokens_in"
+  | "tokens_cached"
+  | "tokens_cache_write"
+  | "tokens_out"
+  | "tokens_reasoning"
+  | "images"
+  | "audio_seconds_out"
+  | "audio_seconds_in";
+
+// Units a price entry may name: the token units but tokens_reasoning (inside tokens_out).
+export type PriceUnit = "tokens_in" | "tokens_cached" | "tokens_cache_write" | "tokens_out";
 
 // A scope's limit: at most one per type in a scope, so its type is its identity there
 // (docs/specs/CONTROL-PROTOCOL.md, Config → The group tree).
@@ -141,6 +170,8 @@ export interface Global {
   max_sequences_per_request?: number;
   max_embedding_inputs?: number;
   max_rerank_documents?: number;
+  max_images_per_request?: number;
+  max_speech_batch_items?: number;
   max_concurrent_requests_per_key?: number;
   queue?: QueueSettings;
   retries?: RetrySettings;
@@ -149,7 +180,7 @@ export interface Global {
 }
 
 export interface Config {
-  format_version: 5;
+  format_version: 6;
   global: Global;
   backends: Record<string, Backend>;
   models: Record<string, Model>;

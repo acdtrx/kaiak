@@ -1,7 +1,8 @@
 // Which windows a usage record counts toward, and by how much
-// (docs/specs/CONTROL-PROTOCOL.md, Usage intake → Counted toward): the tokens_per_hour
-// and usd_per_month window of global and of every group the record's path lists,
-// whatever limits the config sets — so counting never depends on the config.
+// (docs/specs/CONTROL-PROTOCOL.md, Usage intake → Counted toward): the window of every
+// counted type — tokens, images, audio generated and audio processed per hour, USD per
+// month — of global and of every group the record's path lists, whatever limits the
+// config sets — so counting never depends on the config.
 
 import { COUNTED_TYPES } from "../messages/index.ts";
 import type { TotalsLimitType, UsageRecord } from "../messages/index.ts";
@@ -33,12 +34,24 @@ export function batchAdditions(records: readonly UsageRecord[], windows: WindowS
   return [...additions.values()];
 }
 
-// What the gateway counts against the limit: the cost in nano-USD, or the tokens that
-// load the backend — plain input, input written to the cache and output (reasoning is
-// inside tokens_out). Input read from the cache does not count: a prefix-cache hit
-// costs the backend almost nothing. protocol/fixtures/usage/ holds both halves to it.
+// What the gateway counts against the limit, each type in its own unit. Tokens: those
+// that load the backend — plain input, input written to the cache and output (reasoning
+// is inside tokens_out); input read from the cache does not count, a prefix-cache hit
+// costs the backend almost nothing. Images and seconds of audio: their own unit, apart
+// from the tokens, so a speech record counts toward both. USD: the cost in nano-USD.
+// protocol/fixtures/usage/ holds both halves to it.
 function amountFor(type: TotalsLimitType, record: UsageRecord): bigint {
-  if (type === "usd_per_month") return BigInt(record.cost_nano_usd);
-  const { tokens_in, tokens_cache_write, tokens_out } = record.units;
-  return BigInt(tokens_in) + BigInt(tokens_cache_write) + BigInt(tokens_out);
+  const { units } = record;
+  switch (type) {
+    case "tokens_per_hour":
+      return BigInt(units.tokens_in) + BigInt(units.tokens_cache_write) + BigInt(units.tokens_out);
+    case "images_per_hour":
+      return BigInt(units.images);
+    case "audio_seconds_out_per_hour":
+      return BigInt(units.audio_seconds_out);
+    case "audio_seconds_in_per_hour":
+      return BigInt(units.audio_seconds_in);
+    case "usd_per_month":
+      return BigInt(record.cost_nano_usd);
+  }
 }

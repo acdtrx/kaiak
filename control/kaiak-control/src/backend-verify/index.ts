@@ -158,6 +158,9 @@ type TypeRules =
       listQuery?: string;
       // Recognize the server from the entries' owned_by (Server recognition).
       recognizeServer: boolean;
+      // The server the type's own list is recognized as, when its server serves another
+      // server's list: no note tells such a backend to take that server's type.
+      listedAs?: VerifiedServer;
       // The list entry's field read as context_length, whatever the server.
       entryContextField?: string;
     };
@@ -173,6 +176,9 @@ const TYPE_RULES: Record<BackendType, TypeRules> = {
   "openai-compatible": openAiShaped,
   openai: openAiShaped,
   vllm: openAiShaped,
+  // vLLM-Omni serves vLLM's own models list (owned_by "vllm"), so the list is read as
+  // vLLM's and cannot tell the two apart.
+  "vllm-omni": { ...openAiShaped, listedAs: "vllm" },
   "llama-server": openAiShaped,
   "azure-openai": {
     list: "base-models",
@@ -254,8 +260,10 @@ export async function verifyBackend(options: VerifyBackendOptions): Promise<Back
   });
   const notes: string[] = [];
   // Only the server's own type gets its gateway module's rules; the backend is reached
-  // the same way under either, so this is a note, not a failure.
-  if (server !== "unknown" && server !== settings.type) {
+  // the same way under either, so this is a note, not a failure. A type whose server
+  // serves the recognized server's list gets none: the note would tell the operator to
+  // drop the type that serves what the other cannot.
+  if (server !== "unknown" && server !== settings.type && server !== rules.listedAs) {
     notes.push(`the models list says the server is ${server}: use type "${server}", not "${settings.type}"`);
   }
   if (list.data.length === 0) {

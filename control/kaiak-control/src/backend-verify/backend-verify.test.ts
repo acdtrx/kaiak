@@ -78,6 +78,25 @@ const VLLM_LIST = {
   ],
 };
 
+// vLLM-Omni serves vLLM's own models list (v0.30.0, entrypoints/openai/models/serving.py):
+// shaped as VLLM_LIST, here for a speech model.
+const OMNI_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice";
+const OMNI_LIST = {
+  object: "list",
+  data: [
+    {
+      id: OMNI_MODEL,
+      object: "model",
+      created: 1791547200,
+      owned_by: "vllm",
+      root: OMNI_MODEL,
+      parent: null,
+      max_model_len: 32768,
+      permission: [{ id: "modelperm-5b1e0c7a9d3f4e21", object: "model_permission" }],
+    },
+  ],
+};
+
 const OPENAI_LIST = {
   object: "list",
   data: [
@@ -344,6 +363,33 @@ test("vLLM: an entry without a valid max_model_len has no context_length and a n
   }
 });
 
+test("vLLM-Omni: its list read as vLLM's — context from max_model_len — with no note to take type vllm", async (t) => {
+  const backend = await fakeBackend(t, { "/v1/models": json(200, OMNI_LIST) });
+  const report = await verify({ type: "vllm-omni", baseUrl: `${backend.origin}/v1`, model: OMNI_MODEL });
+  assert.deepEqual(report, {
+    ok: true,
+    server: "vllm",
+    models: [
+      {
+        id: OMNI_MODEL,
+        context_length: 32768,
+        sources: { context_length: { url: `${backend.origin}/v1/models`, field: "max_model_len", hint: false } },
+        notes: [],
+      },
+    ],
+    metadata: { context_length: 32768 },
+    notes: [],
+  });
+  assert.equal(backend.requests.length, 1);
+});
+
+test("vLLM-Omni: a llama-server answer still gets the note naming its type", async (t) => {
+  const llama = await fakeBackend(t, { "/v1/models": json(200, LLAMA_LIST), "/props": json(200, LLAMA_PROPS) });
+  const report = await verify({ type: "vllm-omni", baseUrl: `${llama.origin}/v1`, model: LLAMA_MODEL });
+  assert.equal(report.server, "llama-server");
+  assert.deepEqual(report.notes, ['the models list says the server is llama-server: use type "llama-server", not "vllm-omni"']);
+});
+
 test("OpenAI-style and mixed owned_by: server unknown, ids only, no /props request", async (t) => {
   const mixed = { object: "list", data: [...LLAMA_LIST.data, ...VLLM_LIST.data] };
   for (const list of [OPENAI_LIST, mixed, { object: "list", data: [] }]) {
@@ -504,6 +550,7 @@ test("each type reads its models list at its URL with its credential header", as
     ["openai-compatible", "/v1", "/v1/models", "authorization"],
     ["openai", "/v1", "/v1/models", "authorization"],
     ["vllm", "/v1", "/v1/models", "authorization"],
+    ["vllm-omni", "/v1", "/v1/models", "authorization"],
     ["llama-server", "/v1", "/v1/models", "authorization"],
     ["azure-openai", "", "/openai/v1/models", "api-key"],
     ["anthropic", "/v1", "/v1/models?limit=1000", "x-api-key"],
@@ -612,7 +659,7 @@ test("no type note when the type matches the server, or the server is unknown", 
   assert.deepEqual((await verify({ type: "llama-server", baseUrl: `${llama.origin}/v1` })).notes, []);
 
   const openai = await fakeBackend(t, { "/v1/models": json(200, OPENAI_LIST) });
-  for (const type of ["openai-compatible", "openai", "vllm", "llama-server"] as const) {
+  for (const type of ["openai-compatible", "openai", "vllm", "vllm-omni", "llama-server"] as const) {
     const report = await verify({ type, baseUrl: `${openai.origin}/v1` });
     assert.equal(report.server, "unknown", type);
     assert.ok(report.notes.every((note) => !note.includes("use type")), `${type}: ${report.notes.join("; ")}`);
@@ -787,7 +834,7 @@ test("invalid input throws verify-input-invalid and sends nothing", async (t) =>
   await assert.rejects(verifyBackend({ type: "bedrock" as BackendType, baseUrl: base }), (error: Error) => {
     assert.equal(
       error.message,
-      'type must be one of "openai-compatible", "openai", "azure-openai", "vllm", "llama-server", "anthropic", "azure-anthropic"',
+      'type must be one of "openai-compatible", "openai", "azure-openai", "vllm", "vllm-omni", "llama-server", "anthropic", "azure-anthropic"',
     );
     return true;
   });

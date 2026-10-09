@@ -39,12 +39,13 @@ export interface ConfigEntry {
 export interface WindowKey {
   group?: string;
   type: TotalsLimitType;
-  // Milliseconds since the epoch: the top of a UTC hour (tokens_per_hour) or the first
-  // of a UTC month (usd_per_month).
+  // Milliseconds since the epoch: the top of a UTC hour (the per-hour types) or the
+  // first of a UTC month (usd_per_month).
   windowStart: number;
 }
 
-// The amount used in one limit's window: tokens, or nano-USD for usd_per_month.
+// The amount used in one limit's window, in its type's unit: tokens, images, seconds of
+// audio, or nano-USD for usd_per_month.
 export interface WindowTotal extends WindowKey {
   used: bigint;
 }

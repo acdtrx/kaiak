@@ -42,7 +42,12 @@ function fixtureRecords(): ReceivedRecord[] {
   const batch = readFixture<{ records: UsageRecord[] }>("messages/usage-batch/valid/mixed-groups.json");
   const [workload, user] = batch.records;
   assert.ok(workload && user);
+  const speech = readFixture<UsageRecord>("messages/usage-record/valid/speech.json");
+  // Audio processed of its own, so that column shows a value no other column does.
+  const images = readFixture<UsageRecord>("messages/usage-record/valid/images.json");
   return [
+    { receivedAt: NOW - 1_000, record: { ...speech, units: { ...speech.units, audio_seconds_in: 3 } } },
+    { receivedAt: NOW - 3_000, record: images },
     // Written input of its own, so the cache-write column shows a value no other column does.
     { receivedAt: NOW - 5_000, record: { ...user, key_id: EVIL, units: { ...user.units, tokens_cache_write: 512 } } },
     { receivedAt: NOW - 65_000, record: workload },
@@ -113,15 +118,23 @@ const GATEWAYS: GatewayView[] = [
   },
 ];
 
-// Used amounts for three of the config's counted limits; the rest have used nothing.
+// Used amounts for five of the config's counted limits; the rest have used nothing.
 const TOTALS: TotalsRead = {
   liveGateways: 1,
   cursors: [],
-  windowStarts: { tokens_per_hour: "2026-09-24T10:00:00Z", usd_per_month: "2026-09-01T00:00:00Z" },
+  windowStarts: {
+    tokens_per_hour: "2026-09-24T10:00:00Z",
+    images_per_hour: "2026-09-24T10:00:00Z",
+    audio_seconds_out_per_hour: "2026-09-24T10:00:00Z",
+    audio_seconds_in_per_hour: "2026-09-24T10:00:00Z",
+    usd_per_month: "2026-09-01T00:00:00Z",
+  },
   windows: [
     { type: "usd_per_month", window_start: "2026-09-01T00:00:00Z", used: "1524000" },
     { group: "alice", type: "usd_per_month", window_start: "2026-09-01T00:00:00Z", used: "150000000000" },
     { group: "eval-pipeline", type: "tokens_per_hour", window_start: "2026-09-24T10:00:00Z", used: "1052" },
+    { type: "images_per_hour", window_start: "2026-09-24T10:00:00Z", used: "500" },
+    { group: "alice", type: "audio_seconds_out_per_hour", window_start: "2026-09-24T10:00:00Z", used: "900" },
   ],
 };
 
@@ -248,7 +261,9 @@ test("config: its hash and publish time, the file's rejection with its issues, a
   assert.match(config, /The latest edit was rejected \(config-invalid\)<\/strong> — file-changed/);
   assert.match(config, /Gateways keep the current config/);
   assert.match(config, /<code>\/keys\/k-new\/group<\/code> key-group-unknown/);
-  assert.match(config, /3 backends · 5 models · 7 keys · 8 groups/);
+  assert.match(config, /5 backends · 7 models · 7 keys · 8 groups/);
+  assert.match(config, /qwen3-tts<\/span> → omni-tts\/Qwen\/Qwen3-TTS-12Hz-1.7B-CustomVoice/);
+  assert.match(config, /omni-image<\/span> vllm-omni /);
   assert.match(config, /qwen3-32b<\/span> → vllm-a\/Qwen\/Qwen3-32B/);
   assert.match(config, /k-eval-ci<\/span> → group eval-pipeline/);
   assert.match(config, /k-bob-old<\/span> → group bob <span class="tag bad">disabled<\/span>/);
@@ -278,7 +293,7 @@ test("config: groups as a tree, each with its labels, effective models and keys"
   assert.match(groupItem(tree, "eval-pipeline"), /models:<\/span> <span class="muted">all models<\/span> <span class="muted">keys:<\/span> <span class="id">k-eval-ci<\/span>$/);
   assert.match(groupItem(tree, "support-bot"), /models:<\/span> bge-m3, gpt-4.1-mini /);
   // bob takes the users' default list and has two keys.
-  assert.match(groupItem(tree, "bob"), /models:<\/span> bge-m3, gpt-4.1-mini, qwen3-32b <span class="muted">keys:<\/span> <span class="id">k-bob<\/span>, <span class="id">k-bob-old<\/span>$/);
+  assert.match(groupItem(tree, "bob"), /models:<\/span> bge-m3, gpt-4.1-mini, qwen3-32b, qwen3-tts <span class="muted">keys:<\/span> <span class="id">k-bob<\/span>, <span class="id">k-bob-old<\/span>$/);
   assert.match(groupItem(tree, "alice"), /all models/);
 });
 
@@ -304,15 +319,26 @@ test("totals: every limit of every scope, used against its value, zero included;
   row(/<td><span class="id">research<\/span><\/td><td>\$1,500.00 \/ month<\/td>\s*<td class="num">\$0.00<\/td>/);
   row(/users \/<\/span> <span class="id">bob<\/span><\/td><td>2,000,000 tokens \/ hour<\/td>[\s\S]*?<td class="num">0<\/td>[\s\S]*?2026-09-24 10:00:00 UTC/);
   row(/<td>global<\/td><td>3,000 requests \/ min<\/td>[\s\S]*?per gateway share, not counted here/);
+  // Images and seconds of audio, each in its own unit: 500 of global's 2,000 images,
+  // 900 of alice's 3,600 audio seconds; carol's default of 600 with nothing used.
+  row(/<td>global<\/td><td>2,000 images \/ hour<\/td>\s*<td class="num">500<\/td><td class="bar"><meter [^>]*value="25"><\/meter> <span class="num">25%<\/span><\/td><td>2026-09-24 10:00:00 UTC<\/td>/);
+  row(/<td>global<\/td><td>36,000 audio seconds out \/ hour<\/td>\s*<td class="num">0<\/td>/);
+  row(/users \/<\/span> <span class="id">alice<\/span><\/td><td>3,600 audio seconds out \/ hour<\/td>\s*<td class="num">900<\/td>[\s\S]*?25%/);
+  row(/users \/<\/span> <span class="id">carol<\/span><\/td><td>600 audio seconds out \/ hour<\/td>\s*<td class="num">0<\/td>[\s\S]*?2026-09-24 10:00:00 UTC/);
+  row(/<td><span class="id">research<\/span><\/td><td>20 images \/ min<\/td>[\s\S]*?per gateway share, not counted here/);
 });
 
-test("recent usage: one row per record, newest first, with the group path, tokens, cost and flags", async () => {
+test("recent usage: one row per record, newest first, with the group path, tokens, media units, cost and flags", async () => {
   const usage = section((await fetchPage(PUBLISHED)).body, "usage");
-  assert.match(usage, /last 2/);
+  assert.match(usage, /last 4/);
+  // Speech: tokens, then images, audio out and audio in; images: 4 images, estimated.
+  assert.match(usage, /qwen3-tts[\s\S]*omni-tts\/Qwen\/Qwen3-TTS-12Hz-1.7B-CustomVoice<\/td>\s*<td class="num">21<\/td>\s*<td class="num">0<\/td>\s*<td class="num">0<\/td>\s*<td class="num">83<\/td>\s*<td class="num">0<\/td>\s*<td class="num">0<\/td>\s*<td class="num">7<\/td>\s*<td class="num">3<\/td>\s*<td class="num">\$0.00<\/td>/);
+  assert.match(usage, /omni-image\/Qwen\/Qwen-Image<\/td>\s*<td class="num">30<\/td>(\s*<td class="num">0<\/td>){4}\s*<td class="num">4<\/td>\s*<td class="num">0<\/td>\s*<td class="num">0<\/td>\s*<td class="num">\$0.00<\/td>\s*<td><span class="tag warn">estimated<\/span>/);
+  assert.ok(usage.indexOf("qwen3-tts") < usage.indexOf("qwen-image"), "newest first");
   const alice = usage.indexOf('users /</span> <span class="id">alice</span>');
   const workload = usage.indexOf("eval-pipeline");
   assert.ok(alice !== -1 && workload !== -1 && alice < workload, "newest first");
-  assert.match(usage, /5 s ago[\s\S]*gw-1[\s\S]*<td><span class="muted">users \/<\/span> <span class="id">alice<\/span><\/td>[\s\S]*gpt-4.1-mini[\s\S]*azure-westeurope\/gpt-4.1-mini[\s\S]*2,048<\/td>\s*<td class="num">1,024<\/td>\s*<td class="num">512<\/td>\s*<td class="num">377<\/td>\s*<td class="num">0<\/td>\s*<td class="num">\$0.001524<\/td>[\s\S]*estimated[\s\S]*partial/);
+  assert.match(usage, /5 s ago[\s\S]*gw-1[\s\S]*<td><span class="muted">users \/<\/span> <span class="id">alice<\/span><\/td>[\s\S]*gpt-4.1-mini[\s\S]*azure-westeurope\/gpt-4.1-mini[\s\S]*2,048<\/td>\s*<td class="num">1,024<\/td>\s*<td class="num">512<\/td>\s*<td class="num">377<\/td>\s*<td class="num">0<\/td>(\s*<td class="num">0<\/td>){3}\s*<td class="num">\$0.001524<\/td>[\s\S]*estimated[\s\S]*partial/);
   assert.match(usage, /k-eval-ci[\s\S]*<td><span class="muted">research \/<\/span> <span class="id">eval-pipeline<\/span><\/td>[\s\S]*812<\/td>/);
 });
 

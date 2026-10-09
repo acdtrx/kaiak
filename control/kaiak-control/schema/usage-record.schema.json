@@ -68,10 +68,13 @@
       }
     },
     "units": {
-      "description": "Usage units; every record carries the five token units, zeros included. tokens_in, tokens_cached and tokens_cache_write are disjoint and add up to the backend's prompt tokens; tokens_reasoning is the reasoning share of tokens_out. Other units join when their models do.",
+      "description": "Usage units; every record carries every unit, zeros included. tokens_in, tokens_cached and tokens_cache_write are disjoint and add up to the backend's prompt tokens; tokens_reasoning is the reasoning share of tokens_out. images are images generated; audio_seconds_out seconds of audio generated and audio_seconds_in seconds of audio processed, each measured by the gateway and rounded up to a whole second per record. Media units are disjoint from tokens: a speech record carries both.",
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "audio_seconds_in",
+        "audio_seconds_out",
+        "images",
         "tokens_in",
         "tokens_cached",
         "tokens_cache_write",
@@ -79,6 +82,15 @@
         "tokens_reasoning"
       ],
       "properties": {
+        "audio_seconds_in": {
+          "$ref": "common.schema.json#/$defs/count"
+        },
+        "audio_seconds_out": {
+          "$ref": "common.schema.json#/$defs/count"
+        },
+        "images": {
+          "$ref": "common.schema.json#/$defs/count"
+        },
         "tokens_in": {
           "$ref": "common.schema.json#/$defs/count"
         },

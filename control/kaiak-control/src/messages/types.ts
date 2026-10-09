@@ -32,15 +32,21 @@ export interface ConfigEvent {
 }
 
 // Limit types whose windows the control plane counts; per-minute limits stay local.
-export type TotalsLimitType = "tokens_per_hour" | "usd_per_month";
+export type TotalsLimitType =
+  | "tokens_per_hour"
+  | "images_per_hour"
+  | "audio_seconds_out_per_hour"
+  | "audio_seconds_in_per_hour"
+  | "usd_per_month";
 
 // One scope's current window of one type. group is absent for global.
 export interface TotalsWindow {
   group?: string;
   type: TotalsLimitType;
   window_start: string;
-  // Decimal digits: tokens, or nano-USD for usd_per_month. A string because a month of
-  // nano-USD can pass 2^53; read it with BigInt.
+  // Decimal digits in the type's unit: tokens, images, seconds of audio, or nano-USD for
+  // usd_per_month. A string because a month of nano-USD can pass 2^53; read it with
+  // BigInt.
   used: string;
 }
 

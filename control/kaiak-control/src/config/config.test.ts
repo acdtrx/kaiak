@@ -8,7 +8,7 @@ import { describe, test } from "node:test";
 
 import { fixturePath, readJson, testInvalidFixtures, testValidFixtures } from "../test-support/index.ts";
 
-import { BACKEND_TYPES, MODEL_CAPABILITIES, validateConfig } from "./index.ts";
+import { BACKEND_TYPES, LIMIT_TYPES, MODEL_CAPABILITIES, validateConfig } from "./index.ts";
 
 const VALID_DIR = fixturePath("config", "valid");
 const INVALID_DIR = fixturePath("config", "invalid");
@@ -18,6 +18,11 @@ const CONFIG_SCHEMA = path.resolve(import.meta.dirname, "../../schema/config.sch
 test("BACKEND_TYPES is the schema's backend type enum, in its order", () => {
   const schema = readJson(CONFIG_SCHEMA) as { $defs: { backend: { properties: { type: { enum: unknown } } } } };
   assert.deepEqual(BACKEND_TYPES, schema.$defs.backend.properties.type.enum);
+});
+
+test("LIMIT_TYPES is the schema's limit type enum, in its order", () => {
+  const schema = readJson(CONFIG_SCHEMA) as { $defs: { limit: { properties: { type: { enum: unknown } } } } };
+  assert.deepEqual(LIMIT_TYPES, schema.$defs.limit.properties.type.enum);
 });
 
 test("MODEL_CAPABILITIES is the schema's required metadata capabilities, in its order", () => {
@@ -87,48 +92,67 @@ describe("group tree rules", () => {
     ]);
   });
 
-  test("the counter bound counts two per scope and each group's per-minute limits from its direct parent, reported once at the root", () => {
-    // Exactly 50 000: global's 2, users' 4 (2 and its own 2 per-minute limits), 12 498
-    // children with 4 each (2 and users' 2 per-minute defaults), and spare's 2.
-    const atBound = (): { groups: Record<string, unknown> } =>
-      readJson(path.join(VALID_DIR, "counters-at-bound.json")) as { groups: Record<string, unknown> };
+  test("the counter bound counts five per scope and each group's per-minute limits from its direct parent, reported once at the root", () => {
+    // Exactly 50 000: global's 5, users' 7 (5 and its own 2 per-minute limits), 7 140
+    // children with 7 each (5 and users' 2 per-minute defaults), and spare's 8 (5 and
+    // its own 3 per-minute limits).
+    const atBound = (): { groups: Record<string, { parent?: string; limits?: unknown[]; child_defaults?: unknown }> } =>
+      readJson(path.join(VALID_DIR, "counters-at-bound.json")) as {
+        groups: Record<string, { parent?: string; limits?: unknown[]; child_defaults?: unknown }>;
+      };
     const exceeded = { code: "counters-exceeded", path: "" };
+    const perMinute = (...types: string[]): unknown[] => types.map((type) => ({ type, value: 1 }));
     assert.deepEqual(issuesOf(atBound()), []);
 
-    // A new child of users: 2, and users' 2 per-minute defaults.
+    // A new child of users: 5, and users' 2 per-minute defaults.
     const child = atBound();
     child.groups["u-new"] = { parent: "users" };
     assert.deepEqual(issuesOf(child), [exceeded]);
 
-    // A group with no limits still takes its two counters.
+    // A group with no limits still takes its five counters.
     const empty = atBound();
     empty.groups["also-empty"] = {};
     assert.deepEqual(issuesOf(empty), [exceeded]);
 
-    // A group whose parent has no entry counts its own per-minute limits alone.
+    // A group whose parent has no entry counts its own per-minute limits alone: in
+    // spare's place, three keep the bound and a fourth passes it.
     const stray = atBound();
     delete stray.groups["spare"];
-    stray.groups["stray"] = { parent: "ghost" };
+    stray.groups["stray"] = { parent: "ghost", limits: perMinute("requests_per_minute", "tokens_per_minute", "images_per_minute") };
     assert.deepEqual(issuesOf(stray), [{ code: "group-parent-unknown", path: "/groups/stray/parent" }]);
-    (stray.groups["stray"] as { limits?: unknown[] }).limits = [{ type: "requests_per_minute", value: 1 }];
+    stray.groups["stray"].limits = perMinute("requests_per_minute", "tokens_per_minute", "images_per_minute", "audio_seconds_in_per_minute");
     assert.deepEqual(issuesOf(stray), [{ code: "group-parent-unknown", path: "/groups/stray/parent" }, exceeded]);
 
-    // Hour and month limits add no counter: they check the two every scope has.
+    // Hour and month limits add no counter: they check the five every scope has.
     const hourly = atBound();
-    hourly.groups["spare"] = { limits: [{ type: "tokens_per_hour", value: 1 }, { type: "usd_per_month", value: 1 }] };
+    const spare = hourly.groups["spare"];
+    assert.ok(spare?.limits, "spare has limits");
+    spare.limits.push(
+      ...["tokens_per_hour", "images_per_hour", "audio_seconds_out_per_hour", "audio_seconds_in_per_hour", "usd_per_month"].map(
+        (type) => ({ type, value: 1 }),
+      ),
+    );
     assert.deepEqual(issuesOf(hourly), []);
 
-    // A group on a cycle still takes its direct parent's defaults.
+    // A group on a cycle still takes its direct parent's defaults: spare's own three and
+    // its own default of a fourth type.
     const cycle = atBound();
-    cycle.groups["spare"] = { parent: "spare", child_defaults: { limits: [{ type: "requests_per_minute", value: 1 }] } };
+    cycle.groups["spare"] = {
+      parent: "spare",
+      limits: perMinute("requests_per_minute", "tokens_per_minute", "images_per_minute"),
+      child_defaults: { limits: perMinute("audio_seconds_out_per_minute") },
+    };
     assert.deepEqual(issuesOf(cycle), [{ code: "group-cycle", path: "/groups/spare/parent" }, exceeded]);
   });
 
-  // Groups without limits are counters all the same.
+  // Groups without limits are counters all the same: global's five, "me"'s five and
+  // 9 998 more groups' are exactly the bound; one more group passes it.
   test("a config of groups without limits past the bound is refused", () => {
-    const config = readJson(path.join(VALID_DIR, "minimal.json")) as { groups?: Record<string, unknown> };
-    config.groups ??= {};
-    for (let i = 0; i < 25_000; i += 1) config.groups[`g${i}`] = {};
+    const config = readJson(path.join(VALID_DIR, "minimal.json")) as { groups: Record<string, unknown> };
+    assert.deepEqual(Object.keys(config.groups), ["me"]);
+    for (let i = 0; i < 9_998; i += 1) config.groups[`g${i}`] = {};
+    assert.deepEqual(issuesOf(config), []);
+    config.groups["one-more"] = {};
     assert.deepEqual(issuesOf(config), [{ code: "counters-exceeded", path: "" }]);
   });
 });

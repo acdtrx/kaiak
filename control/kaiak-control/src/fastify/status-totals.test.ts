@@ -8,7 +8,7 @@ import { afterEach, describe, test } from "node:test";
 
 import type { Config } from "../config/index.ts";
 import type { ControlPlane, ControlPlaneOptions, ExpirySweepRun } from "../control-plane/index.ts";
-import type { GatewayStatus, Totals, UsageBatch } from "../messages/index.ts";
+import type { GatewayStatus, Totals, UsageBatch, UsageRecord } from "../messages/index.ts";
 import { PROTOCOL_VERSION } from "../protocol/index.ts";
 import { createMemoryStore } from "../storage/index.ts";
 import type { ControlPlaneStore } from "../storage/index.ts";
@@ -238,6 +238,43 @@ describe("totals on the stream", { timeout: 20_000 }, () => {
     assert.deepEqual(pushed, await completeTotals(controlPlane, [{ epoch: "5d41402abc4b2a76b9719d911017c592", sequence: 18 }]));
     // The stream is gw-1's, and the batch was gw-1's: the push counts it.
     assert.deepEqual(pushed.counted_through, [{ epoch: "5d41402abc4b2a76b9719d911017c592", sequence: 18 }]);
+  });
+
+  test("speech and image usage reach the stream in their own hour windows, beside tokens", async () => {
+    // The fixtures' records: a speech clip (21 + 83 tokens, 7 s) and four images (30
+    // prompt tokens), both alice's (users / alice), settled at 12:00 on 2026-10-09.
+    const speech = fixture("messages/usage-record/valid/speech.json") as UsageRecord;
+    const images = fixture("messages/usage-record/valid/images.json") as UsageRecord;
+    const controlPlane = newControlPlane({ clock: () => Date.UTC(2026, 9, 9, 12, 30) });
+    await publishFixture(controlPlane, "full.json");
+    const app = await startApp(controlPlane, { totalsPushIntervalMs: 10 });
+    const stream = await openStream(app.base);
+    assert.deepEqual((await nextTotals(stream)).windows, []);
+    const response = await fetch(`${app.base}/v1/usage`, {
+      method: "POST",
+      headers: { ...gatewayHeaders(TEST_INSTANCE), "content-type": "application/json" },
+      body: JSON.stringify({ batch: { instance: TEST_INSTANCE, epoch: EPOCH, sequence: 1 }, records: [speech, images] }),
+    });
+    assert.equal(response.status, 200);
+    const pushed = await nextTotals(stream);
+    const hour = "2026-10-09T12:00:00Z";
+    const listed = (group?: string) =>
+      pushed.windows
+        .filter((window) => window.group === group)
+        .map(({ type, window_start, used }) => [type, window_start, used])
+        .sort();
+    for (const group of [undefined, "users", "alice"]) {
+      assert.deepEqual(
+        listed(group),
+        [
+          ["audio_seconds_out_per_hour", hour, "7"],
+          ["images_per_hour", hour, "4"],
+          ["tokens_per_hour", hour, "134"],
+        ],
+        group ?? "global",
+      );
+    }
+    assert.equal(pushed.windows.length, 9);
   });
 
   test("the first totals are complete; later ones list only the windows that changed", async () => {

@@ -8,7 +8,7 @@ import type { ValidationIssue } from "../schemas/index.ts";
 
 import { MAX_GROUP_DEPTH, ancestries } from "./tree.ts";
 import type { Ancestry } from "./tree.ts";
-import { ALL_MODELS } from "./types.ts";
+import { ALL_MODELS, LIMIT_TYPES } from "./types.ts";
 import type { Config, Group, Limit, LimitType, Model } from "./types.ts";
 
 export type SemanticRuleCode =
@@ -31,7 +31,7 @@ export type SemanticRuleCode =
   | "date-invalid"
   | "timestamp-invalid";
 
-// The most counters a config may allocate on every gateway: an hour and a month counter
+// The most counters a config may allocate on every gateway: one per hour and month type
 // for global and every group, limited or not, and one per effective per-minute limit
 // (docs/specs/CONTROL-PROTOCOL.md, Config → The group tree: Counters are bounded).
 const MAX_COUNTERS = 50_000;
@@ -92,7 +92,7 @@ export function checkSemantics(config: Config): ValidationIssue[] {
     report(
       "counters-exceeded",
       "",
-      `${counters} counters (two for global and for every group, one per per-minute limit): a config allocates at most ${MAX_COUNTERS}`,
+      `${counters} counters (${COUNTERS_PER_SCOPE} for global and for every group, one per per-minute limit): a config allocates at most ${MAX_COUNTERS}`,
     );
   }
 
@@ -140,15 +140,25 @@ function checkAncestry(ancestry: Ancestry, path: string, report: Report): void {
   }
 }
 
-// The per-minute limit types: each limit of one is a counter of its own; the hour and
-// month types count on the two counters every scope has.
-const PER_MINUTE_TYPES: ReadonlySet<string> = new Set<LimitType>(["requests_per_minute", "tokens_per_minute"]);
+// The per-minute limit types: each limit of one is a counter of its own.
+const PER_MINUTE_TYPES: ReadonlySet<string> = new Set<LimitType>([
+  "requests_per_minute",
+  "tokens_per_minute",
+  "images_per_minute",
+  "audio_seconds_out_per_minute",
+  "audio_seconds_in_per_minute",
+]);
 
-// How many counters a config allocates, counted without merging each group's list: two
-// for global and two for every group, plus each scope's effective per-minute limits — a
-// group's own plus its parent's child_defaults.limits of a per-minute type none of its
-// own limits has. Only the direct parent matters, so the count stands whatever the tree
-// rules find; a parent with no entry adds no defaults.
+// The counters every scope keeps, limited or not: one per hour and month type, the
+// windows the control plane counts (GATEWAY.md, Limits → Every scope is counted). A
+// limit of one of those types checks its scope's counter and adds none.
+const COUNTERS_PER_SCOPE = LIMIT_TYPES.filter((type) => !PER_MINUTE_TYPES.has(type)).length;
+
+// How many counters a config allocates, counted without merging each group's list:
+// COUNTERS_PER_SCOPE for global and for every group, plus each scope's effective
+// per-minute limits — a group's own plus its parent's child_defaults.limits of a
+// per-minute type none of its own limits has. Only the direct parent matters, so the
+// count stands whatever the tree rules find; a parent with no entry adds no defaults.
 function countCounters(config: Config): number {
   const groups: Readonly<Record<string, Group>> = config.groups ?? {};
   const perMinute = (limits: readonly Limit[] | undefined): Set<string> =>
@@ -162,10 +172,10 @@ function countCounters(config: Config): number {
     }
     return types;
   };
-  let count = 2 + perMinute(config.global.limits).size;
+  let count = COUNTERS_PER_SCOPE + perMinute(config.global.limits).size;
   for (const group of Object.values(groups)) {
     const own = perMinute(group.limits);
-    count += 2 + own.size;
+    count += COUNTERS_PER_SCOPE + own.size;
     if (group.parent === undefined || !Object.hasOwn(groups, group.parent)) continue;
     for (const type of defaultsOf(group.parent)) if (!own.has(type)) count += 1;
   }

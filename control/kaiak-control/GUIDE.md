@@ -2,7 +2,7 @@
 
 > For a coding agent (or a person) building the real kaiak control plane — the app with
 > the UI — in its own repository, on this library. Read it top to bottom before writing
-> code. It matches config format 5 and protocol version 5.
+> code. It matches config format 6 and protocol version 6.
 >
 > Background, in this order: `docs/architecture/control-plane.html` (how gateways and a
 > control plane work together, with diagrams), `docs/specs/CONTROL-PROTOCOL.md` (the
@@ -214,12 +214,15 @@ Per method:
 
 Representation notes:
 
-- **Window totals are `bigint`** (tokens, or nano-USD). Store them as `NUMERIC` /
-  `DECIMAL(20,0)` or `BIGINT` — the protocol caps a window at 18 digits (< 10^18), so a
-  signed 64-bit integer holds it. Never a float.
+- **Window totals are `bigint`** (tokens, images, seconds of audio, or nano-USD).
+  Store them as `NUMERIC` / `DECIMAL(20,0)` or `BIGINT` — the protocol caps a window at
+  18 digits (< 10^18), so a signed 64-bit integer holds it. Never a float.
 - **Window identity** is `(group, type, windowStart)`; `group` is absent for global.
   Normalize it to a stable non-null value for a primary key (primary-key columns
-  cannot be `NULL`): e.g. `''` for global (a group ID is never empty). Usage counts
+  cannot be `NULL`): e.g. `''` for global (a group ID is never empty). `type` is any of
+  the five counted types (the hours of tokens, images, audio generated and audio
+  processed, and the USD month): `totalsSnapshot` and `dropPastWindowTotals` compare
+  each window with its own type's start, and the contract tests write every type. Usage counts
   toward every scope on a record's path whatever the config's limits, so windows exist
   for groups without a limit too, and totals carry them all. Windows are keyed by the
   group **ID**: those of a deleted group age out with their hour or month — and a group
@@ -361,14 +364,16 @@ What a record carries (`UsageRecord`, `schema/usage-record.schema.json`): record
 request IDs, gateway instance, key ID, `groups` (the key's group path, top-level
 first, 1–8 IDs, as the gateway's config had it), public model, deployment (backend +
 backend model), units (`tokens_in`, `tokens_cached`, `tokens_cache_write`,
-`tokens_out`, `tokens_reasoning`), `cost_nano_usd`, flags `estimated` and `partial`,
-`gateway_time`. Raw units travel beside the cost, so you can re-price.
+`tokens_out`, `tokens_reasoning`, and the media units `images`, `audio_seconds_out`,
+`audio_seconds_in` — every one on every record, zeros included), `cost_nano_usd`, flags
+`estimated` and `partial`, `gateway_time`. Raw units travel beside the cost, so you can
+re-price.
 
 ## 7. Publishing config
 
 The config document is the one format everything shares: `schema/config.schema.json`
 in the package, `examples/config.json` in the kaiak repo, field meanings in
-`CONTROL-PROTOCOL.md` → Config. Top level: `format_version: 5`, `global`, `backends`,
+`CONTROL-PROTOCOL.md` → Config. Top level: `format_version: 6`, `global`, `backends`,
 `models`, `keys`, and optional `groups` — each collection an object keyed by ID.
 
 **Backends and models: what a UI must know.** The rules are `CONTROL-PROTOCOL.md` →
@@ -381,7 +386,8 @@ support, Base URLs) and → Model metadata.
   backend answers the same under either, but only its own type gets that server's
   rules — an OpenAI backend left as `openai-compatible` runs on the service tier its
   clients ask for, and priority bills about twice the prices config holds.
-  `verifyBackend` notes a vLLM or llama-server answer under another type (§8).
+  `verifyBackend` notes a vLLM or llama-server answer under another type (§8) — but
+  not a vLLM answer under `vllm-omni`: vLLM-Omni serves vLLM's own models list.
 - The type decides which client APIs reach a model: the gateway passes each request
   through to a backend speaking the same API and translates nothing, so a model gets
   the endpoints its deployments' types serve (a Claude model is Messages-only).
@@ -414,10 +420,11 @@ edit which group or mint keys in it is your app's business, never config.
   `limits`, which bind every group below it. For a `users` group: the models and
   budget no person may exceed are `users`' own; its `child_defaults` are what each
   person gets unless their own group says otherwise.
-- **Counters are bounded**: every gateway keeps an hour and a month counter for
-  global and every group, limited or not, plus one counter per effective per-minute
+- **Counters are bounded**: every gateway keeps five counters for global and every
+  group, limited or not — the hour counts of tokens, images, audio generated and
+  audio processed, and the USD month — plus one counter per effective per-minute
   limit (its own merged with its parent's `child_defaults.limits`); a config may
-  allocate at most **50 000** (`counters-exceeded`) — so at most about 25 000 groups,
+  allocate at most **50 000** (`counters-exceeded`) — so at most about 10 000 groups,
   fewer with per-minute limits. Defaults multiply: D default per-minute limits on a
   group with N children are D × N. Before offering "a default limit for everyone" in
   a UI, check what it costs across the children.
@@ -475,9 +482,10 @@ as `azure/gpt-5`, `azure/eu/gpt-5`).
   `_ultrafast` variants (service tiers the gateway never uses),
   `cache_creation_input_token_cost_above_1hr` and its `_above_1hr_above_<N>k_tokens`
   variants (a one-hour cache lifetime, not a long-context rate: kaiak counts writes
-  as one unit, as Azure reports them), audio, image and per-second rates (endpoints
-  the gateway does not serve), and `search_context_cost_per_query` (a per-search
-  fee).
+  as one unit, as Azure reports them), audio, image and per-second rates (images
+  and seconds of audio are counted and limited, never priced — `CONTROL-PROTOCOL.md`
+  → Config → Units and price units), and `search_context_cost_per_query` (a
+  per-search fee).
 - Azure deployment names are yours, so the mapping from a model to its LiteLLM key is
   a setting in your app, not something to guess from names.
 - The list carries no dates and is community-kept: add an entry dated today only when
@@ -534,7 +542,8 @@ field by field, is `BACKEND-VERIFY.md`.
     for `anthropic` also `context_length`, from the list's `max_input_tokens`).
     Recognized from the answer, whatever `type` was given; a `vllm` or `llama-server` under
     another type adds a note naming the type to use — show it before the operator
-    saves the backend.
+    saves the backend. A `vllm-omni` backend reads as `vllm` and gets no such note: its
+    list is vLLM's, and cannot tell the two apart.
   - `models[]`: every listed model, with what the server reports (`context_length`;
     for llama-server also `capabilities.vision`, `tools`, `reasoning`) and a `sources`
     entry per value: the URL and field it came from, and `hint`.

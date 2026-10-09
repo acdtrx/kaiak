@@ -6,8 +6,14 @@ import type { LimitType } from "../config/index.ts";
 import type { TotalsLimitType } from "./types.ts";
 
 // The limit types whose windows the control plane counts (totals.schema.json's window
-// type); the per-minute ones are each gateway's own.
-export const COUNTED_TYPES: readonly TotalsLimitType[] = ["tokens_per_hour", "usd_per_month"];
+// type, in its order); the per-minute ones are each gateway's own.
+export const COUNTED_TYPES: readonly TotalsLimitType[] = [
+  "tokens_per_hour",
+  "images_per_hour",
+  "audio_seconds_out_per_hour",
+  "audio_seconds_in_per_hour",
+  "usd_per_month",
+];
 
 export function isCountedType(type: LimitType): type is TotalsLimitType {
   return (COUNTED_TYPES as readonly LimitType[]).includes(type);

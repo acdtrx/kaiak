@@ -1,5 +1,5 @@
 {
-  "format_version": 5,
+  "format_version": 6,
   "global": {
     "limits": [{ "type": "requests_per_minute", "value": 600 }]
   },
