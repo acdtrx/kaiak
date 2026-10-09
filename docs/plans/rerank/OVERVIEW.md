@@ -249,4 +249,16 @@ Expected reds inside phase 1:
   - an oversize document refused with `400`;
   - wrong-endpoint requests neutral.
 
-**Verification status:** not started.
+**Review outcome** (step 7, 2026-10-09): two agent reviews of the branch and an
+independent Codex review of a plain copy. Eleven findings: the high one — llama-server
+reads `texts` in place of `documents` and answers it without usage, so the cap and
+the usage could be bypassed — and five lower ones fixed with tests (`texts`
+refused; documents counted without allocating; the endpoint-missing warning once per
+interval; usage without `prompt_tokens` estimated, embeddings included; untested
+helpers and wiring); four doc corrections; two pre-existing llama-server behaviours
+(router mode's missing-model `400`, chat to an encoder model answering `500`) and
+embeddings' `promptCount` allocation recorded in `docs/BACKLOG.md`.
+`STEP-7-review-and-green.md` has the table.
+
+**Verification status:** component, e2e and cross-half tests green, `check-all.sh` 3×
+in a row (2026-10-09). The live run (step 8) waits for the DGX.

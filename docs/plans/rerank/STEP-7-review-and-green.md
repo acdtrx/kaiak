@@ -1,6 +1,6 @@
 # Step 7 — review and green
 
-**Status:** done (awaiting review)
+**Status:** done — reviewed and committed 2026-10-09
 
 ## Intent
 
@@ -100,3 +100,8 @@ de7fa0a (2026-10-08).
 - `scripts/check-all.sh`: green — gateway checks passed (`kaiak/e2e` 119.8 s); control
   `npm test` tests 630, pass 629, fail 0, skipped 1; `npm run lint` `boundaries ok`;
   cross-half e2e `ok kaiak/e2e` (70.5 s); `all checks passed`.
+
+**Green 3× in a row on the final code (24e6248, 2026-10-09):** the run above, then
+two more `scripts/check-all.sh` runs by the main session — each `all checks passed`;
+gateway `kaiak/e2e` 121.1 s and 117.9 s; control tests 630, pass 629, fail 0;
+cross-half e2e `ok` 70.4 s and 74.6 s.
