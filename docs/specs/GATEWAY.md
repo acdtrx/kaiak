@@ -753,7 +753,9 @@ own, and a client sending repeats is broken either way.
     `word_timestamps`, which vLLM-Omni sends only as these headers; settled
     2026-10-09 — never logged: they hold the input's words), plus the gateway's
     own `X-Request-Id`, and on streams `X-Accel-Buffering: no` so nginx-style proxies
-    in front of the gateway pass events through instead of buffering them. Backend request IDs, cookies, server and rate-limit headers
+    in front of the gateway pass events through instead of buffering them — on
+    every body flushed as it is read, audio bodies included (settled 2026-10-09:
+    a raw-audio stream is an audio body). Backend request IDs, cookies, server and rate-limit headers
     stay behind (the gateway's own rate-limit headers are its limits').
 - **Relaying** (settled 2026-09-24): a response is a stream when its content type is
   `text/event-stream`; its events are parsed (WHATWG SSE framing), forwarded byte for
@@ -2211,7 +2213,9 @@ own, and a client sending repeats is broken either way.
     unit is 0. Read from:
     - the whole clip: the response headers `x-vllm-omni-input-tokens` and
       `x-vllm-omni-output-tokens`, both present and decimal integers, else no
-      report (a speech server in pure-diffusion mode sends none);
+      report (a speech server in pure-diffusion mode sends none) — each sent once,
+      digits alone (a header repeated, or carrying a sign, is no report; settled
+      2026-10-09);
     - the SSE stream: `speech.audio.done`'s `usage`, its `input_tokens` and
       `output_tokens` both integers, else no report;
     - the raw-audio stream: no report, ever — estimated and flagged;

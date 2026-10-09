@@ -50,7 +50,8 @@ type endpoint struct {
 	// OpenAI's and Azure's reasoning models require (they refuse max_tokens) — and
 	// still honors the older max_tokens. Completions and Messages have only
 	// max_tokens (Messages requires it, so a model with an output limit always sends
-	// one), Responses only max_output_tokens. Embeddings, rerank and the
+	// one), Responses only max_output_tokens, speech only max_new_tokens (vLLM-Omni's:
+	// the codec tokens a speech model generates). Embeddings, rerank and the
 	// token-counting endpoints generate nothing. The inbound stage reads these keys
 	// alone: another output-limit key the client sends is not the endpoint's and
 	// passes untouched.
@@ -75,6 +76,8 @@ var bodyEndpoints = []*endpoint{
 		outputLimitKeys: []string{"max_output_tokens"}},
 	{body: true, api: provider.ResponsesInputTokens, name: "responses_input_tokens", counts: true},
 	{body: true, api: provider.Rerank, name: "rerank", operation: "rerank"},
+	{body: true, api: provider.AudioSpeech, name: "audio_speech", operation: "generate_content", outputType: "speech",
+		outputLimitKeys: []string{"max_new_tokens"}},
 }
 
 // The model endpoints, answered from the config. The model list and entry answer in

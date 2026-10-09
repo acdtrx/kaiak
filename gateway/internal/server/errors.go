@@ -260,6 +260,23 @@ func errMissingModel() *apiError {
 		code: "missing_required_parameter", class: metrics.ErrorInvalidRequest, param: "model", message: "Missing required parameter: 'model'."}
 }
 
+// errMissingSampleRate refuses a speech request asking for PCM without naming its
+// sample rate (docs/specs/GATEWAY.md, Client API → owned fields: speech): PCM carries
+// no header, and a model's native rate is unknown to the gateway, so its length could
+// not be measured. param names the member (sample_rate).
+func errMissingSampleRate(param string) *apiError {
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "missing_required_parameter", class: metrics.ErrorInvalidRequest,
+		param: param, message: fmt.Sprintf("Missing required parameter: '%s'. PCM audio carries no header: name the sample rate to receive it at.", param)}
+}
+
+// errSpeechEventStream refuses a speech request asking for the SSE stream, which the
+// gateway does not serve; param names the member that asks for it (stream or
+// stream_format).
+func errSpeechEventStream(param string) *apiError {
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "invalid_value", class: metrics.ErrorInvalidRequest, param: param,
+		message: fmt.Sprintf("'%s' asks for speech as server-sent events, which the gateway does not serve; ask for the whole clip, or stream_format \"audio\".", param)}
+}
+
 func errReadBody() *apiError {
 	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "invalid_body", class: metrics.ErrorInvalidRequest,
 		message: "The request body could not be read."}

@@ -274,7 +274,7 @@ func TestEstimatedRecordPicksTheTierByItsEstimatedInput(t *testing.T) {
 		input int64
 		want  int64
 	}{{32_000, 32_000_000}, {32_001, 64_002_000}} {
-		meter := NewMeter(0, c.input)
+		meter := NewMeter(0, c.input, Speech{})
 		meter.Sent() // sent, never answered: the input is estimated
 		rec := r.Settle(Request{Model: model, Deployment: config.Deployment{Backend: &config.Backend{}},
 			Start: day("2025-07-01")}, meter, false)
@@ -385,7 +385,7 @@ func TestRecorderSettlesOneRecordToTheBatcherThenTheMetrics(t *testing.T) {
 	if string(data) != want {
 		t.Errorf("record\n%s\nwant\n%s", data, want)
 	}
-	if other := r.Settle(Request{Model: model, Deployment: config.Deployment{Backend: &config.Backend{}}}, NewMeter(0, 0), false); other.RecordID == rec.RecordID {
+	if other := r.Settle(Request{Model: model, Deployment: config.Deployment{Backend: &config.Backend{}}}, NewMeter(0, 0, Speech{}), false); other.RecordID == rec.RecordID {
 		t.Error("record IDs repeat")
 	}
 }

@@ -14,7 +14,7 @@ import (
 
 // endpointColumns names the endpoint support table's columns
 // (docs/specs/GATEWAY.md, Providers → Endpoint support) by the endpoints they cover.
-// The media column covers the media endpoints the client API serves: none yet.
+// The media column covers the media endpoints the client API serves.
 var endpointColumns = map[string][]Endpoint{
 	"chat, completions, embeddings": {ChatCompletions, Completions, Embeddings},
 	"messages":                      {Messages},
@@ -22,7 +22,7 @@ var endpointColumns = map[string][]Endpoint{
 	"responses":                     {Responses},
 	"responses_input_tokens":        {ResponsesInputTokens},
 	"rerank":                        {Rerank},
-	"audio_speech, audio_speech_batch, images_generations": {},
+	"audio_speech, audio_speech_batch, images_generations": {AudioSpeech},
 }
 
 // Each type serves exactly what the spec's endpoint support table says, the table
@@ -197,12 +197,15 @@ func TestWrongEndpointAnswersByModule(t *testing.T) {
 // Messages and Responses always report usage: a stream to them gets no
 // stream_options edit, and nothing is hidden from the client. A Responses request gets
 // store: false and nothing else. Rerank has no stream: its stream member passes
-// untouched, and the model is its one edit.
+// untouched, and the model is its one edit. Speech's stream is its mode's, passed
+// untouched, and the whole clip reports usage in its headers unasked: the model is its
+// one edit beside its output limit.
 func TestNoUsageEditOutsideTheOpenAIFormat(t *testing.T) {
 	for e, want := range map[Endpoint]string{
-		Messages:  `{"model":"m","stream":true}`,
-		Responses: `{"model":"m","stream":true,"store":false}`,
-		Rerank:    `{"model":"m","stream":true}`,
+		Messages:    `{"model":"m","stream":true}`,
+		Responses:   `{"model":"m","stream":true,"store":false}`,
+		Rerank:      `{"model":"m","stream":true}`,
+		AudioSpeech: `{"model":"m","stream":true}`,
 	} {
 		body, stripUsage, err := passthroughBody(&Request{Endpoint: e, Stream: true,
 			Deployment: config.Deployment{Model: "m"}, Body: []byte(`{"model":"pub","stream":true}`)})

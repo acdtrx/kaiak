@@ -56,6 +56,8 @@ func newStreamFormat(f Format) streamFormat {
 		return &responsesStream{}
 	case FormatRerank:
 		return rerankStream{}
+	case FormatSpeech:
+		return speechStream{}
 	}
 	return &openAIStream{}
 }
@@ -389,5 +391,30 @@ func (rerankStream) nestedModel() string { return "" }
 // relayedError is never reached — the format has no error event; were one relayed,
 // its plain form is an OpenAI error, the shape rerank errors take.
 func (rerankStream) relayedError(payload []byte) []byte {
+	return withGatewayMessage(payload, `{"error":{"message":%s,"type":"server_error","param":null,"code":null}}`)
+}
+
+// speechStream: the gateway serves speech's whole clip and its raw-audio stream, audio
+// bodies whose completeness is their framing (docs/specs/GATEWAY.md, Providers:
+// complete responses); an event stream answering a speech request is none it reads:
+// its events say nothing, and it is never complete.
+type speechStream struct{}
+
+// requestEdits: none — a speech request gets the model edit and its output limit
+// under max_new_tokens alone (docs/specs/GATEWAY.md, Providers: passthrough edits);
+// its stream and stream_format pass untouched, and the whole clip reports usage in
+// its headers unasked.
+func (speechStream) requestEdits(*Request) ([]memberEdit, bool) { return nil, false }
+
+func (speechStream) observe([]byte) observation { return observation{} }
+
+func (speechStream) complete() bool { return false }
+
+func (speechStream) nestedModel() string { return "" }
+
+// relayedError is never reached — no event of a speech stream is read as an error
+// event; were one relayed, its plain form is an OpenAI error, the shape vLLM-Omni's
+// errors take.
+func (speechStream) relayedError(payload []byte) []byte {
 	return withGatewayMessage(payload, `{"error":{"message":%s,"type":"server_error","param":null,"code":null}}`)
 }

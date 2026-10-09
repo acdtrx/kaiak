@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
+	"strings"
 	"time"
 
 	"kaiak/internal/provider"
@@ -12,9 +14,10 @@ import (
 
 // relayResponse writes the backend's answer to the request's last attempt — its
 // status, headers and events — to the client.
-// Stream events are flushed one by one as they arrive; nothing is buffered beyond one
-// event. The first data event of a stream, or a body's first bytes, under a status
-// below 400 tells the circuit breaker the response started. Every event, hidden or not, passes through here: the meter reads each one
+// Stream events are flushed one by one as they arrive, and an audio body's pieces as
+// they are read; nothing is buffered beyond one event. The first data event of a
+// stream, or a body's first bytes, under a status below 400 tells the circuit breaker
+// the response started. Every event, hidden or not, passes through here: the meter reads each one
 // before it is written, so what the backend sent counts even when the client is gone.
 // The request body is dropped first: once a response relays no retry can use it, and
 // the attempts' meters took its size when they opened. A backend 5xx is answered by
@@ -39,9 +42,13 @@ func relayResponse(ctx context.Context, rq *request, resp provider.Response) {
 	for name, values := range resp.Header() {
 		header[name] = values
 	}
-	if resp.Stream() {
+	// A stream's events are flushed one by one, and an audio body after each read, so
+	// a raw-audio stream plays as it is generated (docs/specs/GATEWAY.md, Providers:
+	// relaying).
+	flushEach := resp.Stream() || audioBody(resp.Header())
+	if flushEach {
 		// nginx-style proxies in front of the gateway buffer responses unless told
-		// not to, which would hold stream events back.
+		// not to, which would hold stream events and audio back.
 		header.Set("X-Accel-Buffering", "no")
 	}
 	at.status = resp.Status()
@@ -84,7 +91,9 @@ func relayResponse(ctx context.Context, rq *request, resp provider.Response) {
 				at.slot.ResponseStarted()
 			}
 		}
-		if rq.firstContent.IsZero() && resp.Stream() && at.meter.StreamContentSeen() {
+		// A stream's first content: generated text, or a raw-audio stream's first
+		// audio samples.
+		if rq.firstContent.IsZero() && (resp.Stream() || rq.inbound.Stream) && at.meter.StreamContentSeen() {
 			// Time to first token is the answering attempt's, from its send: an
 			// earlier attempt's failure is not this backend's latency. Published now,
 			// while the stream may run on for minutes.
@@ -99,13 +108,20 @@ func relayResponse(ctx context.Context, rq *request, resp provider.Response) {
 			rq.endRelayCanceled(ctx)
 			return
 		}
-		if resp.Stream() {
+		if flushEach {
 			if err := flusher.Flush(); err != nil {
 				rq.endRelayCanceled(ctx)
 				return
 			}
 		}
 	}
+}
+
+// audioBody reports whether a response's body is audio (audio/*), by the content
+// type relayed.
+func audioBody(h http.Header) bool {
+	mediaType, _, _ := mime.ParseMediaType(h.Get("Content-Type"))
+	return strings.HasPrefix(mediaType, "audio/")
 }
 
 // peekedResponse hands out an event already read from its response (or the error

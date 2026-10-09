@@ -16,6 +16,8 @@ import (
 // inboundFields are the request parameters the gateway owns (docs/specs/GATEWAY.md,
 // Request pipeline). Everything else stays in the raw body, untouched.
 type inboundFields struct {
+	// Stream is the client's stream; for speech, its mode: true for the raw-audio
+	// stream, which takes the stream timers.
 	Stream bool
 	// OutputLimits are the values of the endpoint's output-limit keys, aligned with
 	// endpoint.outputLimitKeys; nil where the request omits the key.
@@ -35,6 +37,9 @@ type inboundFields struct {
 	// audio a request uploads. nil for a request that produces no media, which no
 	// media limit refuses.
 	Media map[config.Measure]int64
+	// Speech is what a speech request says about its answer — the sample rate its PCM
+	// comes at, whether it is the raw-audio stream — which its meters read.
+	Speech accounting.Speech
 }
 
 // readInbound parses a body endpoint's request: the raw body, capped by the snapshot's
@@ -62,11 +67,12 @@ func readInbound(_ context.Context, rq *request, bodies *BodyBudget) *apiError {
 // (docs/specs/GATEWAY.md, Client API → owned fields): the ones every format shares —
 // model; stream, except on the token-counting endpoints and in the rerank format,
 // which has none (a rerank request's stream passes untouched, and the request is never
-// a stream); the endpoint's output-limit keys — then the format's own, then the input
-// estimate. encoding/json matches struct fields case-insensitively, which would read
-// "Model" as model while the backend sees an unknown field; the top-level object is
-// therefore decoded as a map. A null value counts as absent, as it does for OpenAI. A
-// top-level member named twice is refused (docs/specs/GATEWAY.md, Request pipeline):
+// a stream) — speech reads it with stream_format for its mode; the endpoint's
+// output-limit keys — then the format's own, then the input estimate. encoding/json
+// matches struct fields case-insensitively, which would read "Model" as model while
+// the backend sees an unknown field; the top-level object is therefore decoded as a
+// map. A null value counts as absent, as it does for OpenAI. A top-level member named
+// twice is refused (docs/specs/GATEWAY.md, Request pipeline):
 // the gateway and the backend could read different occurrences, and the provider
 // edits each owned member once.
 func parseOwnedFields(rq *request) *apiError {
@@ -103,6 +109,8 @@ func parseOwnedFields(rq *request) *apiError {
 		apiErr = parseResponsesFields(rq, top)
 	case provider.FormatRerank:
 		apiErr = parseRerankFields(rq, top)
+	case provider.FormatSpeech:
+		apiErr = parseSpeechFields(rq, top)
 	default:
 		// The endpoint table routes only the formats the inbound stage reads.
 		panic("server: no inbound parser for the endpoint's format")

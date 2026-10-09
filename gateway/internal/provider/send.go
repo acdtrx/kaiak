@@ -52,6 +52,9 @@ type wireCall struct {
 	// endpoint is missing from it (CodeEndpointMissing). Unset, a 501 is the backend's
 	// 5xx.
 	modeMissing func(answer []byte) bool
+	// relayed are the response headers the module relays to the client for its
+	// server's answer, beside the ones every answer relays (clientHeaders).
+	relayed []string
 }
 
 // sendWire sends call upstream for req and waits for the first event of the response,
@@ -128,7 +131,7 @@ func sendWire(ctx context.Context, req *Request, call wireCall) (Response, error
 	}
 
 	publicModel, _ := json.Marshal(req.PublicModel) // a string always encodes
-	r := newUpstreamResponse(upstreamCtx, cancel, resp, req.Endpoint.Format(), stripUsage, publicModel)
+	r := newUpstreamResponse(upstreamCtx, cancel, resp, req.Endpoint.Format(), call.relayed, stripUsage, publicModel)
 	r.backendID = call.backend.ID
 	preamble, first, err := r.readFirst()
 	if err == nil && r.errorEvent != nil {

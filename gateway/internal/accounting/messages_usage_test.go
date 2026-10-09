@@ -16,8 +16,8 @@ import (
 func recordedStreamMeter(t *testing.T, ep provider.Endpoint, server, name string) *Meter {
 	t.Helper()
 	data := fakebackend.Captured(server, name)
-	m := NewMeter(ep, 99)
-	m.Answered(200, true)
+	m := NewMeter(ep, 99, Speech{})
+	m.Answered(200, true, nil)
 	events := sse.NewReader(bytes.NewReader(data), 1<<20)
 	for {
 		block, err := events.Next()

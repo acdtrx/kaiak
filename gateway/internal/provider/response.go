@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -19,17 +20,21 @@ import (
 // response timers, completeness, the hidden usage chunk, the model name rewritten,
 // error events relayed.
 
-// clientHeaders are the backend response headers relayed to the client. The list is
-// an allowlist: hop-by-hop headers, backend request IDs (the gateway's own
-// X-Request-Id is authoritative), cookies, server identification and backend
-// rate-limit headers stay behind. Retry-After-Ms is Azure's finer Retry-After.
+// clientHeaders are the backend response headers relayed to the client, beside the
+// ones a module relays for its server (wireCall.relayed). The list is an allowlist:
+// hop-by-hop headers, backend request IDs (the gateway's own X-Request-Id is
+// authoritative), cookies, server identification, backend rate-limit headers and
+// usage reported in headers stay behind. Retry-After-Ms is Azure's finer
+// Retry-After.
 var clientHeaders = []string{"Content-Type", "Retry-After", "Retry-After-Ms"}
 
 // upstreamResponse is a response read through the wire core.
 type upstreamResponse struct {
 	status int
 	header http.Header
-	stream bool
+	// backendHeader is the backend's response headers as it sent them (BackendHeader).
+	backendHeader http.Header
+	stream        bool
 
 	body   io.ReadCloser
 	ctx    context.Context
@@ -78,20 +83,23 @@ const maxSSEBlockBytes = 16 << 20
 // pieceSize is how much of a non-stream body is read per event.
 const pieceSize = 32 << 10
 
+// newUpstreamResponse reads resp in format; relayed are the headers the module relays
+// beside clientHeaders.
 func newUpstreamResponse(ctx context.Context, cancel context.CancelCauseFunc, resp *http.Response, format Format,
-	stripUsage bool, publicModel []byte) *upstreamResponse {
+	relayed []string, stripUsage bool, publicModel []byte) *upstreamResponse {
 	r := &upstreamResponse{
-		status:      resp.StatusCode,
-		header:      make(http.Header),
-		body:        resp.Body,
-		ctx:         ctx,
-		cancel:      cancel,
-		stripUsage:  stripUsage,
-		publicModel: publicModel,
+		status:        resp.StatusCode,
+		header:        make(http.Header),
+		backendHeader: resp.Header,
+		body:          resp.Body,
+		ctx:           ctx,
+		cancel:        cancel,
+		stripUsage:    stripUsage,
+		publicModel:   publicModel,
 	}
-	for _, name := range clientHeaders {
+	for _, name := range slices.Concat(clientHeaders, relayed) {
 		if values := resp.Header.Values(name); len(values) > 0 {
-			r.header[name] = values
+			r.header[http.CanonicalHeaderKey(name)] = values
 		}
 	}
 	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
@@ -109,9 +117,10 @@ func newUpstreamResponse(ctx context.Context, cancel context.CancelCauseFunc, re
 	return r
 }
 
-func (r *upstreamResponse) Status() int         { return r.status }
-func (r *upstreamResponse) Header() http.Header { return r.header }
-func (r *upstreamResponse) Stream() bool        { return r.stream }
+func (r *upstreamResponse) Status() int                { return r.status }
+func (r *upstreamResponse) Header() http.Header        { return r.header }
+func (r *upstreamResponse) BackendHeader() http.Header { return r.backendHeader }
+func (r *upstreamResponse) Stream() bool               { return r.stream }
 
 func (r *upstreamResponse) Next() (Event, error) {
 	if len(r.peeked) > 0 {

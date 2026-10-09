@@ -25,7 +25,13 @@ type vLLMOmni struct {
 // so chat, completions, embeddings, Messages, Responses and rerank are not served: a
 // request for them to a model whose deployments are all vllm-omni is
 // endpoint_not_served (docs/specs/GATEWAY.md, Providers → Endpoint support).
-var vLLMOmniEndpoints = []Endpoint{}
+var vLLMOmniEndpoints = []Endpoint{AudioSpeech}
+
+// speechHeaders are the speech answer's headers relayed to the client: the word
+// timing a request asks for with word_timestamps, which vLLM-Omni sends only there
+// (docs/specs/GATEWAY.md, Providers: headers). They hold the input's words: never
+// logged.
+var speechHeaders = []string{"X-Word-Timestamps", "X-Word-Timestamps-Omitted"}
 
 func newVLLMOmni(b *config.Backend, client *http.Client, credential string) backendModule {
 	return &vLLMOmni{backend: b, client: client, credential: credential}
@@ -46,12 +52,17 @@ func (m *vLLMOmni) header() http.Header {
 // whatever model it loaded, so its answer to a path it does not have can only mean a
 // wrong base_url (docs/specs/GATEWAY.md, Providers → An endpoint missing from a
 // server). Speech and the speech batch run vLLM's model check, whose 404 names the
-// model ("The model `…` does not exist.").
+// model ("The model `…` does not exist."). A speech answer relays its word timing
+// (speechHeaders).
 func (m *vLLMOmni) Send(ctx context.Context, req *Request) (Response, error) {
-	return sendWire(ctx, req, wireCall{
+	call := wireCall{
 		backend: m.backend, client: m.client, url: m.url(req.Endpoint.Path()), header: m.header(),
 		missingModel: missingModelNamedOrCoded("model_not_found"), unknownPath: m.unknownPath, core: true,
-	})
+	}
+	if req.Endpoint == AudioSpeech {
+		call.relayed = speechHeaders
+	}
+	return sendWire(ctx, req, call)
 }
 
 // unknownPath: vLLM-Omni is vLLM's FastAPI app, which answers a path it has no route

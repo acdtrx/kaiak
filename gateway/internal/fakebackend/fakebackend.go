@@ -4,9 +4,10 @@
 // /openai/v1/ (Azure OpenAI's) and /anthropic/v1/ (Claude in Foundry's), and rerank
 // under /v1/ alone (vLLM's and llama-server's: neither Azure API has one), in vLLM's
 // answer shape or llama-server's (SetRerankShape), refusing a pair longer than its
-// context (SetRerankContext); it answers as scripted by the test — a path it has no
-// route for (SetNoRoute) and an endpoint it was not started for (SetNotSupported) too —
-// and records every request it receives.
+// context (SetRerankContext), and speech under /v1/ alone (vLLM-Omni's: speech.go); it
+// answers as scripted by the test — a path it has no route for (SetNoRoute), an
+// endpoint it was not started for (SetNotSupported) and a model that does not speak
+// (SetNonSpeechModels) too — and records every request it receives.
 // Test tooling only: nothing in the gateway binary imports it; cmd/fakebackend runs it
 // as a process for the e2e test and the live-test kit.
 package fakebackend
@@ -68,6 +69,9 @@ type Reply struct {
 	// EventDelay, when set, makes a stream wait that long before each event after
 	// the first (a slow model).
 	EventDelay time.Duration
+	// AudioMillis is a speech answer's length in milliseconds (default
+	// DefaultAudioMillis), split across len(Chunks) pieces on the raw-audio stream.
+	AudioMillis int
 	// HonorMaxTokens: generate at most the request's max_completion_tokens,
 	// max_tokens or max_output_tokens chunks (the smallest when several are set), one
 	// token each, and finish with "length" ("max_tokens" in Messages, an incomplete
@@ -183,6 +187,9 @@ type Backend struct {
 	unrouted []string
 	// notSupported are the endpoints the backend answers 501 not_supported_error.
 	notSupported []string
+	// nonSpeech are the models whose speech the backend refuses as a model with no
+	// speech stage (SetNonSpeechModels).
+	nonSpeech []string
 }
 
 // maxQueuedArrivals bounds requests queued for NextRequest; a test that never reads
@@ -377,7 +384,7 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 	b.received = append(b.received, req)
 	reply := b.reply
 	rerankShape, rerankContext := b.rerankShape, b.rerankContext
-	noRoute, unrouted, notSupported := b.noRoute, b.unrouted, b.notSupported
+	noRoute, unrouted, notSupported, nonSpeech := b.noRoute, b.unrouted, b.notSupported, b.nonSpeech
 	if len(b.queued) > 0 {
 		reply = b.queued[0]
 		b.queued = b.queued[1:]
@@ -389,7 +396,7 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	switch endpoint {
 	case chatPath, completionPath, embeddingPath, messagesPath, countTokensPath, responsesPath, inputTokensPath:
-	case rerankPath:
+	case rerankPath, speechPath:
 		ok = strings.HasPrefix(r.URL.Path, "/v1/")
 	default:
 		ok = false
@@ -515,6 +522,8 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 	case endpoint == rerankPath:
 		// Neither server reads stream on rerank: the answer is a JSON body either way.
 		writeRerank(w, rerankShape, rerankContext, top, params.model, usage, reply.OmitUsage)
+	case endpoint == speechPath:
+		b.writeSpeech(w, r, req, reply, top, params.model, chunks, usage, nonSpeech)
 	case params.stream:
 		b.writeStream(w, r, req, reply, endpoint, params.model, chunks, finish, usage, params.includeUsage && !reply.OmitUsage)
 	default:
@@ -585,9 +594,9 @@ func (b *Backend) startStream(w http.ResponseWriter, r *http.Request, req *Reque
 	return s, true
 }
 
-// send writes one event — an "event:" line when name is set, then the data — after
-// the pace and delay the reply asks for; false when the stream must stop.
-func (s *streamWriter) send(name string, payload []byte) bool {
+// await waits out the pace and delay the reply asks for before the next event, and
+// counts it; false when the stream must stop.
+func (s *streamWriter) await() bool {
 	reply, r, req := s.reply, s.r, s.req
 	if (s.sent > 0 || reply.PingFirst) && reply.Pace != nil {
 		select {
@@ -613,6 +622,15 @@ func (s *streamWriter) send(name string, payload []byte) bool {
 		}
 	}
 	s.sent++
+	return true
+}
+
+// send writes one event — an "event:" line when name is set, then the data — after
+// the pace and delay the reply asks for; false when the stream must stop.
+func (s *streamWriter) send(name string, payload []byte) bool {
+	if !s.await() {
+		return false
+	}
 	if name != "" {
 		if _, err := fmt.Fprintf(s.w, "event: %s\n", name); err != nil {
 			return false

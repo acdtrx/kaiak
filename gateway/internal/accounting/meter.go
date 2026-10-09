@@ -2,7 +2,9 @@ package accounting
 
 import (
 	"encoding/json"
+	"maps"
 	"math"
+	"net/http"
 	"sync/atomic"
 
 	"kaiak/internal/config"
@@ -77,15 +79,17 @@ const (
 // Meter watches one routed attempt's response on its way to the client and works out
 // its usage when it is over. It reads responses in the client's format, which every
 // provider hands back: its endpoint's format reader (usageReader) knows where that
-// format reports usage and carries generated content. A Meter belongs to one attempt
-// and is used from that request's goroutine only — except Sent, which the transport
-// calls.
+// format reports usage and carries generated content, and a format whose answer is
+// media (mediaReader) measures the media too. A Meter belongs to one attempt and is
+// used from that request's goroutine only — except Sent, which the transport calls.
 type Meter struct {
 	// input is the request's input estimate (EstimateInput), billed when the backend
 	// reports no usage.
 	input int64
-	// reader reads the endpoint's format.
+	// reader reads the endpoint's format; media is reader when its format's answer is
+	// media, nil otherwise.
 	reader usageReader
+	media  mediaReader
 
 	// sent: the upstream request was written to the backend in full.
 	sent atomic.Bool
@@ -121,9 +125,28 @@ type usageReader interface {
 	streamContentBytes() int64
 }
 
+// mediaReader is the usageReader of a format whose answer is media (speech): it reads
+// a successful answer's response headers, and its body as relayed — audio, not JSON —
+// and adds the media units to the record (docs/specs/GATEWAY.md, Accounting → Media
+// usage).
+type mediaReader interface {
+	usageReader
+	// answered reads a successful answer's response headers, as the backend sent them.
+	answered(header http.Header)
+	// bodyPiece reads a piece of a successful non-stream body, as relayed.
+	bodyPiece(p []byte)
+	// media is the media units the answer counts, and whether they were measured: an
+	// answer whose media cannot be measured counts 0, and its record is estimated.
+	media() (units Units, measured bool)
+	// mediaSeen reports whether generated media were relayed: audio samples, not a WAV
+	// header alone.
+	mediaSeen() bool
+}
+
 // NewMeter returns the meter for a request to ep whose input is estimated at input
-// tokens (EstimateInput).
-func NewMeter(ep provider.Endpoint, input int64) *Meter {
+// tokens (EstimateInput); speech is what a speech request says about its answer, the
+// zero value for any other request.
+func NewMeter(ep provider.Endpoint, input int64, speech Speech) *Meter {
 	var reader usageReader
 	switch ep.Format() {
 	case provider.FormatMessages:
@@ -132,18 +155,27 @@ func NewMeter(ep provider.Endpoint, input int64) *Meter {
 		reader = &responsesUsage{}
 	case provider.FormatRerank:
 		reader = &rerankUsage{}
+	case provider.FormatSpeech:
+		reader = newSpeechUsage(speech)
 	default:
 		reader = &openAIUsage{endpoint: ep}
 	}
-	return &Meter{input: input, reader: reader}
+	m := &Meter{input: input, reader: reader}
+	m.media, _ = reader.(mediaReader)
+	return m
 }
 
-// Answered records that the backend answered with status; stream reports whether the
-// body is an event stream.
-func (m *Meter) Answered(status int, stream bool) {
+// Answered records that the backend answered with status and header, its response
+// headers as it sent them (provider.Response.BackendHeader); stream reports whether
+// the body is an event stream.
+func (m *Meter) Answered(status int, stream bool, header http.Header) {
 	m.answered = true
 	m.status = status
 	m.stream = stream
+	if m.media != nil && m.succeeded() {
+		m.media.answered(header)
+		return
+	}
 	if !stream && m.succeeded() {
 		keep := map[string]int{"usage": maxUsageBytes}
 		if member := m.reader.contentMember(); member != "" {
@@ -188,15 +220,22 @@ func (m *Meter) Observe(ev provider.Event) {
 		}
 		return
 	}
-	if m.body != nil {
+	switch {
+	case m.media != nil:
+		m.media.bodyPiece(ev.Data)
+	case m.body != nil:
 		m.body.feed(ev.Data)
 	}
 }
 
 // StreamContentSeen reports whether a successful stream has carried generated content
-// yet (text, reasoning, refusal or tool calls — not role-only or usage chunks): the
-// moment it turns true is the stream's first token.
+// yet (text, reasoning, refusal or tool calls — not role-only or usage chunks; for
+// media, audio samples — not a WAV header alone): the moment it turns true is the
+// stream's first token.
 func (m *Meter) StreamContentSeen() bool {
+	if m.media != nil {
+		return m.media.mediaSeen()
+	}
 	return m.reader.streamContentBytes() > 0
 }
 
@@ -230,6 +269,8 @@ type Flags struct {
 //     count, and the record is flagged estimated.
 //   - With no report, input is estimated from the client's request body and output
 //     from the generated content seen, and the record is flagged estimated.
+//   - A media answer adds its media units, measured on what was relayed; media it
+//     could not measure count 0 and flag the record estimated.
 func (m *Meter) Settle(complete bool) (Units, Flags) {
 	if m.SentUnanswered() {
 		return withEveryUnit(Units{config.UnitTokensIn: m.input}), Flags{Estimated: true, Partial: true}
@@ -238,6 +279,19 @@ func (m *Meter) Settle(complete bool) (Units, Flags) {
 	if !m.answered || !m.succeeded() {
 		return withEveryUnit(Units{}), flags
 	}
+	units := m.tokens(&flags)
+	if m.media != nil {
+		media, measured := m.media.media()
+		maps.Copy(units, media)
+		flags.Estimated = flags.Estimated || !measured
+	}
+	return units, flags
+}
+
+// tokens are a successful answer's units from the backend's usage report, or
+// estimated (Settle), every unit present; flags.Estimated is set when they are
+// estimated.
+func (m *Meter) tokens(flags *Flags) Units {
 	if !m.stream && m.body != nil {
 		if raw, ok := m.body.member("usage"); ok {
 			m.reader.bodyUsage(raw)
@@ -248,13 +302,13 @@ func (m *Meter) Settle(complete bool) (Units, Flags) {
 			units[config.UnitTokensOut] = max(units[config.UnitTokensOut], EstimateTokens(m.outputBytes()))
 			flags.Estimated = true
 		}
-		return units, flags
+		return units
 	}
 	flags.Estimated = true
 	return withEveryUnit(Units{
 		config.UnitTokensIn:  m.input,
 		config.UnitTokensOut: EstimateTokens(m.outputBytes()),
-	}), flags
+	})
 }
 
 // outputBytes is the generated content seen: stream content, or the content member of

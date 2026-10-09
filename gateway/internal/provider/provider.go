@@ -25,9 +25,10 @@ import (
 // keeping every backend-specific concern behind Send and Response: the pipeline hands
 // over the client's request as received plus the routing decision, and gets back
 // status, headers and events already in the client's format (the endpoint's: OpenAI,
-// Messages or Responses JSON and SSE, or a Rerank JSON body). A translating provider
-// converts on both sides; today's modules pass every request through in its own
-// format with the owned edits only (docs/specs/GATEWAY.md, Client API → Client APIs).
+// Messages or Responses JSON and SSE, a Rerank JSON body, or Speech audio). A
+// translating provider converts on both sides; today's modules pass every request
+// through in its own format with the owned edits only (docs/specs/GATEWAY.md, Client
+// API → Client APIs).
 type Provider interface {
 	// Send sends req upstream and waits for the first event of the response (or for
 	// the whole response to end, when it has no body), so a failure before anything
@@ -52,6 +53,7 @@ const (
 	Responses
 	ResponsesInputTokens
 	Rerank
+	AudioSpeech
 )
 
 // Format is a client API format: the request and response shapes an endpoint speaks
@@ -68,6 +70,9 @@ const (
 	// FormatRerank: rerank, in Jina's rerank API, the shape vLLM and llama-server
 	// serve.
 	FormatRerank
+	// FormatSpeech: speech, OpenAI's speech API as vLLM-Omni serves it: a JSON
+	// request, an audio answer.
+	FormatSpeech
 )
 
 // endpoints holds each Endpoint's path below the API's version prefix
@@ -84,6 +89,7 @@ var endpoints = [...]struct {
 	Responses:            {"responses", FormatResponses},
 	ResponsesInputTokens: {"responses/input_tokens", FormatResponses},
 	Rerank:               {"rerank", FormatRerank},
+	AudioSpeech:          {"audio/speech", FormatSpeech},
 }
 
 // Path is the endpoint's path below the API's version prefix: a backend URL ends with
@@ -104,7 +110,8 @@ type Request struct {
 	// JSON object).
 	Body []byte
 	// Stream and IncludeUsage are the client's stream and
-	// stream_options.include_usage.
+	// stream_options.include_usage; for speech, Stream is its mode: the SSE and the
+	// raw-audio streams take the stream timers.
 	Stream       bool
 	IncludeUsage bool
 	// RequestID is forwarded to the backend as x-request-id.
@@ -138,6 +145,10 @@ type Response interface {
 	// Header holds the headers the client receives from the backend's response
 	// (docs/specs/GATEWAY.md, Providers: headers).
 	Header() http.Header
+	// BackendHeader holds the backend's response headers as it sent them, for the
+	// gateway's own reading — accounting reads the usage a format reports there
+	// (speech's token counts). Never relayed: Header is what the client gets.
+	BackendHeader() http.Header
 	// Stream reports whether the body is a server-sent event stream, whose events the
 	// caller must flush to the client one by one.
 	Stream() bool
