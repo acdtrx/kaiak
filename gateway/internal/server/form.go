@@ -6,6 +6,7 @@ import (
 	"mime"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"kaiak/internal/provider"
 )
@@ -17,11 +18,15 @@ import (
 // multipart body, held strictly — lines end in CRLF, a boundary line ends at its
 // boundary, a header is never folded — so what lenient readers would each guess at
 // differently is refused, and every body the scanner takes reads as the same parts in
-// mime/multipart (the differential tests hold it to that).
+// mime/multipart (the differential tests hold it to that). The parts are held to what
+// the backends' own readers take as written: names and filenames in UTF-8 with no
+// backslash or quote, no empty filename, text parts in UTF-8.
 
 const (
-	// maxFormParts and maxTextPartBytes are Starlette's limits, which vLLM and
-	// vLLM-Omni apply: the gateway refuses no form they would take.
+	// maxFormParts caps a body's parts, files and fields together, within Starlette's
+	// limits — 1000 fields and 1000 files, which vLLM and vLLM-Omni apply — so the
+	// gateway refuses no form they would take; maxTextPartBytes is Starlette's limit on
+	// a field.
 	maxFormParts     = 1000
 	maxTextPartBytes = 1 << 20
 	// maxPartHeaderBytes bounds a part's header block, its blank line included: a
@@ -66,7 +71,9 @@ func validBoundary(b string) bool {
 // order. A preamble and an epilogue are skipped. lists are the names of the parts
 // that may repeat; any other name repeated is refused, 400 duplicate_member — the
 // gateway and the backend could read different occurrences. A body breaking the
-// grammar is refused, 400 invalid_body, its reason never quoting the body.
+// grammar is refused, 400 invalid_body, its reason never quoting the body; so is a
+// text part that is not UTF-8 — llama-server fails on one (500), a failure a client
+// could cause at will.
 func readForm(body []byte, boundary string, lists []string) ([]provider.FormPart, *apiError) {
 	delimiter := []byte("\r\n--" + boundary)
 	pos, apiErr := firstPart(body, delimiter[2:])
@@ -89,6 +96,9 @@ func readForm(body []byte, boundary string, lists []string) ([]provider.FormPart
 		part.Body = body[start:end]
 		if !part.File && len(part.Body) > maxTextPartBytes {
 			return nil, errInvalidForm(fmt.Sprintf("a text part is over %d bytes", maxTextPartBytes))
+		}
+		if !part.File && !utf8.Valid(part.Body) {
+			return nil, errInvalidForm("a text part is not UTF-8")
 		}
 		parts = append(parts, part)
 		if next < 0 {
@@ -216,8 +226,21 @@ func partHeader(line []byte) (name, value []byte, ok bool) {
 
 // readDisposition reads a part's Content-Disposition into part: form-data, with a
 // name, and a filename for a file part — its parameters decoded as mime/multipart
-// decodes them. A name or a filename holding a control character is refused: the
-// rebuilt body could not carry it as read.
+// decodes them. What the rebuilt body could not carry as read, or a backend would read
+// otherwise, is refused:
+//   - a control character in a name or a filename: a header cannot hold it;
+//   - a backslash or a quote: a quoted value carries one only escaped, and the
+//     backends' readers do not read the escape as mime/multipart's writer writes it —
+//     python-multipart (vLLM, vLLM-Omni) ends a name ending in a backslash at the
+//     escaped quote and reads the filename after it as other parameters, a name among
+//     them, so a file part would reach the backend as another field; cpp-httplib
+//     (llama-server) keeps the backslashes;
+//   - a name or a filename that is not UTF-8: llama-server fails on one (500), a
+//     failure a client could cause at will;
+//   - an empty filename: cpp-httplib reads a part with one as a text field, so a
+//     prompt sent that way passes the gateway's reading as a file — uncounted in the
+//     input estimate, past the text part's cap — and a file sent that way is no file
+//     to llama-server.
 func readDisposition(value []byte, part *provider.FormPart) *apiError {
 	kind, params, err := mime.ParseMediaType(string(value))
 	switch {
@@ -231,8 +254,15 @@ func readDisposition(value []byte, part *provider.FormPart) *apiError {
 		return errInvalidForm("a part has no name")
 	}
 	filename, file := params["filename"]
-	if hasControl(name) || hasControl(filename) {
+	switch {
+	case hasControl(name) || hasControl(filename):
 		return errInvalidForm("a part's name or filename holds a control character")
+	case strings.ContainsAny(name, `\"`) || strings.ContainsAny(filename, `\"`):
+		return errInvalidForm("a part's name or filename holds a backslash or a quote")
+	case !utf8.ValidString(name) || !utf8.ValidString(filename):
+		return errInvalidForm("a part's name or filename is not UTF-8")
+	case file && filename == "":
+		return errInvalidForm("a part's filename is empty")
 	}
 	part.Name, part.File, part.Filename = name, file, filename
 	return nil

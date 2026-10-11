@@ -3,7 +3,6 @@ package provider
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"strings"
 )
 
 // FormPart is one part of an upload's body, multipart/form-data, as the inbound stage
@@ -12,8 +11,8 @@ import (
 type FormPart struct {
 	// Name is the part's name, as its Content-Disposition's parameters decode.
 	Name string
-	// File reports a file part: its Content-Disposition names a filename, Filename —
-	// empty when the client named an empty one. A text part names none.
+	// File reports a file part: its Content-Disposition names a filename, Filename,
+	// never empty. A text part names none.
 	File     bool
 	Filename string
 	// ContentType is the part's Content-Type header as the client sent it, without the
@@ -69,19 +68,18 @@ func formBody(req *Request) (*upstreamBody, string) {
 }
 
 // formDisposition is part's Content-Disposition: its name, and its filename for a file
-// part, quoted as mime/multipart's writer quotes them (FileContentDisposition).
+// part, each between quotes as it is. The inbound stage refuses a name or a filename
+// holding a control character, a backslash or a quote, and an empty filename, so
+// neither needs an escape — which the backends' readers do not all read as
+// mime/multipart's writer writes it — and this is the header that writer writes
+// (FileContentDisposition).
 func formDisposition(part FormPart) string {
-	d := `form-data; name="` + formQuoter.Replace(part.Name) + `"`
+	d := `form-data; name="` + part.Name + `"`
 	if part.File {
-		d += `; filename="` + formQuoter.Replace(part.Filename) + `"`
+		d += `; filename="` + part.Filename + `"`
 	}
 	return d
 }
-
-// formQuoter escapes a quoted parameter value as mime/multipart's writer does: a
-// backslash or a quote escaped by a backslash, CR and LF percent-encoded — the inbound
-// stage refuses those in a name or filename, so they never reach a header.
-var formQuoter = strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\r", "%0D", "\n", "%0A")
 
 // formBoundary is a fresh boundary, as mime/multipart's writer makes one: 30 random
 // bytes in hex, which no client can have placed in a part.

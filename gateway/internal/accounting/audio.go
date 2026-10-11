@@ -323,26 +323,33 @@ func (c *wavClip) readHead() {
 	}
 }
 
-// readFormat judges the fmt chunk's format, its fields and extension read (read
-// bytes): a format whose data is sample frames, A-law and μ-law of 8-bit samples, a
-// rate, channels and samples, a block size that is the channels' samples, a byte rate
-// at most maxAudioByteRate. The rest of the chunk is skipped.
+// readFormat judges the fmt chunk's format (wavFormat.byteRate), its fields and
+// extension read (read bytes). The rest of the chunk is skipped.
 func (c *wavClip) readFormat(read int64) {
-	f := c.format
+	byteRate, ok := c.format.byteRate()
+	if !ok {
+		c.state = wavUnreadable
+		return
+	}
+	c.byteRate = byteRate
+	c.skipChunk(c.fmtSize - read + c.fmtSize%2)
+}
+
+// byteRate is the byte rate of audio of format f — its sample rate times its block
+// size — when the gateway reads it: a format whose data is sample frames (its tag, an
+// extensible format's subformat read in its place), A-law and μ-law of 8-bit samples,
+// a rate, channels and samples, a block size that is the channels' samples rounded up
+// to whole bytes, a byte rate at most maxAudioByteRate; ok is false otherwise.
+func (f wavFormat) byteRate() (rate int64, ok bool) {
 	switch {
 	case f.tag != wavFormatPCM && f.tag != wavFormatIEEEFloat && f.tag != wavFormatALaw && f.tag != wavFormatMuLaw,
 		(f.tag == wavFormatALaw || f.tag == wavFormatMuLaw) && f.sampleBits != 8,
 		f.channels == 0 || f.rate == 0 || f.sampleBits == 0,
 		int(f.blockSize) != int(f.channels)*((int(f.sampleBits)+7)/8):
-		c.state = wavUnreadable
-		return
+		return 0, false
 	}
-	c.byteRate = int64(f.rate) * int64(f.blockSize)
-	if c.byteRate > maxAudioByteRate {
-		c.state = wavUnreadable
-		return
-	}
-	c.skipChunk(c.fmtSize - read + c.fmtSize%2)
+	rate = int64(f.rate) * int64(f.blockSize)
+	return rate, rate <= maxAudioByteRate
 }
 
 // skipChunk skips the next n bytes, then reads a chunk header.

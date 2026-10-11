@@ -172,7 +172,7 @@ default; each refusal names the parameter, so the fix is one setting:
   the cache check's two requests of about 8,000 input tokens each. With
   `-rerank-base-url`, a few small rerank requests and one carrying a 1 MB document,
   which the reranker server refuses. With `-asr-base-url`, about five transcriptions
-  of a 3.6-second tone. With `-speech-base-url`, about ten clips of a sentence each;
+  of 3.6 seconds of audio. With `-speech-base-url`, about ten clips of a sentence each;
   with `-image-base-url`, three 512×512 images at 10 steps; with `-edit-base-url`,
   one 512×512 edit at 10 steps. On a paid API a run costs cents (Claude Haiku 4.5 at
   $1 / $5 per million tokens: under $0.05).
@@ -322,8 +322,9 @@ with a bearer key (`-rerank-api-key-env`, `-asr-api-key-env`):
 - the reranker server: it answers rerank in that server's shape and refuses a pair
   over 32,768 words with that server's `400`;
 - the speech-to-text server: it answers in that server's shape — vLLM's seconds, as
-  if it heard every upload 3.6 s long (the length of the kit's tone), llama-server's
-  tokens.
+  if it heard every upload 2.5 s long (3 s rounded up, where the kit's 3.6-second
+  uploads measure 4 s, so a record carrying the gateway's own measurement instead of
+  the server's seconds fails), llama-server's tokens.
 
 Each fake lacks endpoints the way its server does: vLLM's reranker has no chat route
 and vLLM's chat model no rerank or embeddings route (`404 {"detail":"Not Found"}`),
@@ -416,9 +417,9 @@ context length. `go -C scripts/live run . -h` lists them all.
 | `usage-log/edit` | `kaiak.usage.images` equal to the answer's `data[]` count, output type `image`, the input tokens estimated and flagged (vLLM-Omni reports no image usage) |
 | `edit-refused` | `stream=true` (`400 invalid_value`), an input image by `https` URL and a `lora` (`400 external_reference_unsupported`) are refused before routing |
 | `generation-to-edit` | an image generation to `live-edit`, whose list names edits alone, is the gateway's own `400 endpoint_not_served`, never sent — where vLLM-Omni answers a generation on an edit model `500`, a backend failure |
-| `transcribe-wav`, `transcribe-flac`, `transcribe-mp3` | with `-asr-base-url`: a 3.6 s tone the kit writes as 16-bit 16 kHz WAV, as FLAC (verbatim frames with their CRCs, the MD5 in its header) and as silent MPEG-1 Layer III, each uploaded as OpenAI's transcription form; a text comes back, and on vLLM `usage.seconds` 4 — the tone's length rounded up, as vLLM decoded it — on llama-server its token usage |
-| `usage-log/transcribe-*` | operation `generate_content`, output type `text`, `kaiak.usage.audio.input.duration` 4: on vLLM the server's seconds, the tokens estimated and flagged (vLLM reports none); on llama-server the gateway's own measurement of the upload, and the server's tokens exactly |
-| `transcribe-verbose` | vLLM: `verbose_json` answers the decoded `duration` (3.6 s) and no usage; its log line counts it rounded up. Skipped when the server answers `400`: only models with segment timestamps (Whisper, FunASR, FireRedASR2) answer it |
+| `transcribe-wav`, `transcribe-flac`, `transcribe-mp3` | with `-asr-base-url`: 3.6 s of audio the kit writes — a tone as 16-bit 16 kHz WAV and as FLAC (verbatim frames with their CRCs, the MD5 in its header), silence as MPEG-1 Layer III (one unbroken run of frames, nothing else) — each uploaded as OpenAI's transcription form; a text comes back, and on vLLM `usage.seconds` 4 — the upload's length rounded up, as vLLM decoded it — on llama-server its token usage |
+| `usage-log/transcribe-*` | operation `generate_content`, output type `text`, `kaiak.usage.audio.input.duration`: on vLLM the seconds the server reported, the tokens estimated and flagged (vLLM reports none); on llama-server 4, the gateway's own measurement of the upload, and the server's tokens exactly |
+| `transcribe-verbose` | vLLM: `verbose_json` answers the decoded `duration` (3.6 s) and no usage; its log line counts that duration rounded up. Skipped only on vLLM's refusal `Currently do not support verbose_json for <model>` (`400`, relayed): only models with segment timestamps (Whisper, FunASR, FireRedASR2) answer it; any other answer fails the check |
 | `transcribe-refused` | `stream=true` (`400 invalid_value`), and on llama-server an Ogg upload the gateway cannot measure (`400 audio_format_unsupported` on `file`), are refused before routing |
 | `audio-limit` | with the `live-media` key: a first clip is served and fills the 1-second window — audio generated settles after the request — and the next is refused `429 audio_seconds` with `Retry-After`, no `x-ratelimit-*` header, its log line naming `audio_seconds_out_per_minute` |
 | `image-limit` | the same for images: a request reserves its `n`, so the second image in the minute is refused `429 images`, naming `images_per_minute` |
@@ -618,9 +619,11 @@ transcribe`.
 
 - `-asr-model` is the name `curl <asr-base-url>/models` lists.
 - No key by default; `-asr-api-key-env NAME` if the server wants one.
-- The kit writes its own audio: a 3.6-second 440 Hz tone as 16-bit 16 kHz mono WAV,
-  as FLAC and as MP3 (silent frames, which every decoder plays as silence). Any text
-  comes back; the checks are about the seconds counted, not the transcript.
+- The kit writes its own audio, 3.6 seconds long: a 440 Hz tone as 16-bit 16 kHz
+  mono WAV and as FLAC, and silence as MP3 (32 kHz frames of zeros, which every
+  decoder plays as silence: one unbroken run of frames and nothing else, which the
+  gateway measures for llama-server). Any text comes back; the checks are about the
+  seconds counted, not the transcript.
 
 **Start the server.** On vLLM (port 8006), any model it transcribes with — Whisper,
 Voxtral, Qwen3-ASR, Granite Speech, …; Whisper also answers `verbose_json`:
@@ -652,11 +655,14 @@ For llama-server: `-kind llama-server`, its chat server's `-base-url` and `-mode
 and the speech-to-text server's URL and model id.
 
 The checks that matter: `transcribe-wav`, `-flac`, `-mp3` and their `usage-log/*`
-lines. On vLLM the record's seconds are the server's, and the check holds them to the
-tone's length: vLLM decoded the file as the kit wrote it. On llama-server they are the
-gateway's own measurement of the upload, held to the same length — run them on every
-new speech recognition model and every llama.cpp upgrade. `transcribe-refused`
-shows an upload llama-server cannot decode refused before it is sent.
+lines. On vLLM the record's seconds must be the ones the server reported, and the
+check holds those to the upload's length: vLLM decoded the file as the kit wrote it
+(the gateway's own measurement, the fallback, gives the same 4 s here, so the
+self-test is what shows the record follows the server's count). On llama-server
+they are the gateway's own measurement of the upload, held to the same length — run
+them on every new speech recognition model and every llama.cpp upgrade.
+`transcribe-refused` shows an upload llama-server cannot decode refused before it is
+sent.
 
 ## Speech, images and image edits on vLLM-Omni
 
@@ -831,14 +837,18 @@ this way: their answers to a wrong path are taken from their documentation.
   `-asr-model` server's model does not transcribe — vLLM mounts no speech-to-text
   route for it; llama-server has no audio encoder for it (start it with the model's
   `--mmproj`).
-- `transcribe-*` on vLLM with other seconds than 4: vLLM decoded the tone otherwise
+- `transcribe-*` on vLLM with other seconds than 4: vLLM decoded the upload otherwise
   than the kit wrote it — the record carries vLLM's count, so that is what clients
   are billed. Rerun with `-v -keep` and keep the output.
+- `usage-log/transcribe-*` on vLLM with other seconds than the server reported: the
+  gateway did not take the answer's seconds — a metering bug. Rerun with `-v -keep`
+  and keep the log.
 - `usage-log/transcribe-*` on llama-server with other seconds than 4, or
   `kaiak.usage.estimated=true`: the gateway measured the upload otherwise than the
   kit wrote it — a measuring bug. Rerun with `-v -keep` and keep the log.
 - `transcribe-verbose` skipped: the model has no segment timestamps — expected for
-  every model but Whisper, FunASR and FireRedASR2.
+  every model but Whisper, FunASR and FireRedASR2. Failing with a `400`: vLLM refused
+  the request for another reason — its message is in the output.
 - `path-missing` answering `200` (vLLM): the `-base-url` server serves embeddings for
   the chat model — an embedding-capable model, or a proxy routing by model in front
   of it; point the run at a plain chat server.

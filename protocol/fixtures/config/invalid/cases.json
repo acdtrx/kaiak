@@ -2,11 +2,13 @@
   "allowed-model-unknown-child-defaults.json": {
     "kind": "semantic",
     "code": "allowed-model-unknown",
+    "path": "/groups/users/child_defaults/allowed_models/0",
     "reason": "a group's child_defaults allow a model that does not exist"
   },
   "allowed-model-unknown-group.json": {
     "kind": "semantic",
     "code": "allowed-model-unknown",
+    "path": "/groups/app/allowed_models/1",
     "reason": "a group allows a model that does not exist"
   },
   "allowed-models-duplicate.json": {
@@ -16,11 +18,13 @@
   "allowed-models-wildcard-mixed-child-defaults.json": {
     "kind": "semantic",
     "code": "allowed-models-wildcard-mixed",
+    "path": "/groups/users/child_defaults/allowed_models",
     "reason": "\"*\" is listed alongside model names in child_defaults"
   },
   "allowed-models-wildcard-mixed.json": {
     "kind": "semantic",
     "code": "allowed-models-wildcard-mixed",
+    "path": "/groups/app/allowed_models",
     "reason": "\"*\" is listed alongside model names"
   },
   "anthropic-without-api-key-env.json": {
@@ -130,11 +134,13 @@
   "counters-exceeded.json": {
     "kind": "semantic",
     "code": "counters-exceeded",
+    "path": "",
     "reason": "50 001 counters, one over the 50 000 bound: global's five (one per counted type: the hour counts of tokens, images, audio generated and audio processed, and the USD month; no per-minute limits), the users group's 5 plus its 2 per-minute limits, 7 on each of its 7 140 children (5 plus users' 2 per-minute child_defaults; one child overrides a default, still 7), and the top-level group spare's 5 plus its 4 per-minute limits"
   },
   "deployment-backend-unknown.json": {
     "kind": "semantic",
     "code": "deployment-backend-unknown",
+    "path": "/models/chat/deployments/0/backend",
     "reason": "the deployment's backend does not exist"
   },
   "deployment-duplicate.json": {
@@ -156,6 +162,7 @@
   "deployment-types-differ.json": {
     "kind": "semantic",
     "code": "deployment-types-differ",
+    "path": "/models/chat/deployments/2/backend",
     "reason": "a model's deployments are on backends of different types (vllm, then llama-server): every deployment of a model is on a backend of one type"
   },
   "deployments-empty.json": {
@@ -165,6 +172,7 @@
   "endpoints-deployment-backend-unknown.json": {
     "kind": "semantic",
     "code": "deployment-backend-unknown",
+    "path": "/models/tts/deployments/1/backend",
     "reason": "a model with a deployment on an unknown backend reports that rule alone: its one type and its endpoints list are judged only when every deployment's backend is known"
   },
   "endpoints-duplicate.json": {
@@ -187,6 +195,7 @@
   "endpoints-types-differ.json": {
     "kind": "semantic",
     "code": "deployment-types-differ",
+    "path": "/models/chat/deployments/1/backend",
     "reason": "a model whose deployments' types differ reports that rule alone: its endpoints list is judged only against one type (responses_input_tokens, which llama-server serves and vllm does not, is not judged)"
   },
   "endpoints-unknown-name.json": {
@@ -200,16 +209,19 @@
   "expires-at-hour-24.json": {
     "kind": "semantic",
     "code": "timestamp-invalid",
+    "path": "/keys/k-app/expires_at",
     "reason": "expires_at has hour 24"
   },
   "expires-at-leap-second.json": {
     "kind": "semantic",
     "code": "timestamp-invalid",
+    "path": "/keys/k-app/expires_at",
     "reason": "expires_at uses a leap second, which neither side accepts"
   },
   "expires-at-not-a-day.json": {
     "kind": "semantic",
     "code": "timestamp-invalid",
+    "path": "/keys/k-app/expires_at",
     "reason": "expires_at names a day that does not exist"
   },
   "expires-at-offset.json": {
@@ -235,6 +247,7 @@
   "group-cycle-self.json": {
     "kind": "semantic",
     "code": "group-cycle",
+    "path": "/groups/loop/parent",
     "reason": "a group names itself as its parent"
   },
   "group-cycle.json": {
@@ -250,6 +263,7 @@
   "group-depth-exceeded.json": {
     "kind": "semantic",
     "code": "group-depth-exceeded",
+    "path": "/groups/l9",
     "reason": "a group at level 9: a top-level group is level 1, and the tree holds at most 8 levels"
   },
   "group-id-invalid.json": {
@@ -263,6 +277,7 @@
   "group-parent-unknown.json": {
     "kind": "semantic",
     "code": "group-parent-unknown",
+    "path": "/groups/app/parent",
     "reason": "a group's parent does not exist"
   },
   "group-unknown-field.json": {
@@ -288,11 +303,13 @@
   "key-group-unknown.json": {
     "kind": "semantic",
     "code": "key-group-unknown",
+    "path": "/keys/k-alice/group",
     "reason": "a key names a group that does not exist"
   },
   "key-hash-duplicate.json": {
     "kind": "semantic",
     "code": "key-hash-duplicate",
+    "path": "/keys/k-app/hash",
     "reason": "two keys share one hash"
   },
   "key-hash-no-prefix.json": {
@@ -370,16 +387,19 @@
   "limit-duplicate-child-defaults.json": {
     "kind": "semantic",
     "code": "limit-duplicate",
+    "path": "/groups/users/child_defaults/limits/1",
     "reason": "two child_defaults limits share a type"
   },
   "limit-duplicate-group.json": {
     "kind": "semantic",
     "code": "limit-duplicate",
+    "path": "/groups/alice/limits/1",
     "reason": "two of a group's own limits share a type (limits the group overrides from its parent's child_defaults do not count)"
   },
   "limit-duplicate.json": {
     "kind": "semantic",
     "code": "limit-duplicate",
+    "path": "/global/limits/1",
     "reason": "two limits of one type in the global scope"
   },
   "limit-images-per-hour-fractional.json": {
@@ -468,7 +488,7 @@
   },
   "model-defaults.json": {
     "kind": "schema",
-    "reason": "models have no defaults: the backends apply their own (format 5)"
+    "reason": "models have no defaults: the backends apply their own"
   },
   "model-name-props-suffix.json": {
     "kind": "schema",
@@ -497,11 +517,13 @@
   "output-limit-above-context.json": {
     "kind": "semantic",
     "code": "output-limit-above-context",
+    "path": "/models/chat/output_limit/ceiling",
     "reason": "the output-limit ceiling exceeds the context length"
   },
   "output-limit-default-above-ceiling.json": {
     "kind": "semantic",
     "code": "output-limit-default-above-ceiling",
+    "path": "/models/chat/output_limit",
     "reason": "the output-limit default exceeds its ceiling"
   },
   "output-limit-missing-ceiling.json": {
@@ -515,11 +537,13 @@
   "price-date-month-13.json": {
     "kind": "semantic",
     "code": "date-invalid",
+    "path": "/models/chat/prices/0/effective_from",
     "reason": "effective_from names month 13"
   },
   "price-date-not-a-day.json": {
     "kind": "semantic",
     "code": "date-invalid",
+    "path": "/models/chat/prices/0/effective_from",
     "reason": "effective_from names a day that does not exist"
   },
   "price-date-shape.json": {
@@ -529,11 +553,13 @@
   "price-dates-decreasing.json": {
     "kind": "semantic",
     "code": "price-dates-not-increasing",
+    "path": "/models/chat/prices/1/effective_from",
     "reason": "price entries go back in time"
   },
   "price-dates-equal.json": {
     "kind": "semantic",
     "code": "price-dates-not-increasing",
+    "path": "/models/chat/prices/1/effective_from",
     "reason": "two price entries share an effective date"
   },
   "price-empty.json": {
@@ -555,6 +581,7 @@
   "price-tier-first-not-zero.json": {
     "kind": "semantic",
     "code": "price-tier-first-not-zero",
+    "path": "/models/chat/prices/0/tiers/0/above_input_tokens",
     "reason": "the first tier starts above 0 tokens, so smaller requests would have no price"
   },
   "price-tier-prices-missing.json": {
@@ -580,6 +607,7 @@
   "price-tiers-decreasing.json": {
     "kind": "semantic",
     "code": "price-tiers-not-increasing",
+    "path": "/models/chat/prices/0/tiers/2/above_input_tokens",
     "reason": "a tier's threshold is below the one before"
   },
   "price-tiers-empty.json": {
@@ -589,6 +617,7 @@
   "price-tiers-equal.json": {
     "kind": "semantic",
     "code": "price-tiers-not-increasing",
+    "path": "/models/chat/prices/0/tiers/2/above_input_tokens",
     "reason": "two tiers share a threshold"
   },
   "price-tiers-too-many.json": {
@@ -622,6 +651,7 @@
   "reasoning-efforts-without-reasoning.json": {
     "kind": "semantic",
     "code": "reasoning-efforts-without-reasoning",
+    "path": "/models/chat/metadata/reasoning_efforts",
     "reason": "reasoning efforts listed for a model without the reasoning capability"
   },
   "response-timeout-string.json": {

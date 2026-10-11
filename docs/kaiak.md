@@ -90,7 +90,8 @@ The name reads the same both ways (the gateway carries traffic in both direction
   own: of the request's parameters the model's config sets only the output limit
   (settled 2026-10-06; the passthrough edits the gateway owns — the model name, the
   standard service tier, `store: false` — are `GATEWAY.md`'s, Providers). The client
-  APIs a model is reachable through follow from its deployments' backend types.
+  APIs a model is reachable through are its `endpoints` list, each one its backend
+  type serves.
 - **Key** — belongs to one **group**; hashed; can expire or be disabled. Keys are
   created by the control plane and reach the gateway as hashes in config. A key has
   **no limits of its own**: its usage counts toward its group and every ancestor.

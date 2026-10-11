@@ -1,11 +1,11 @@
 // Test support for kaiak-control's suites. The shared fixtures in protocol/fixtures/,
 // which the gateway's suite runs too — a valid fixture passes both halves, an invalid
 // one fails both, and a semantic fixture fails with the rule code its cases.json entry
-// names. The builders of what a gateway sends (headers, usage records and batches,
-// statuses), from the protocol constants and fixtures, so a protocol bump or a new unit
-// edits no test. The harness of the HTTP tests: an app on a real port, a gateway's
-// stream, the cleanups. Test tooling only: not in the package's exports, imported by
-// tests alone.
+// names, at the path it names. The builders of what a gateway sends (headers, usage
+// records and batches, statuses), from the protocol constants and fixtures, so a
+// protocol bump or a new unit edits no test. The harness of the HTTP tests: an app on a
+// real port, a gateway's stream, the cleanups. Test tooling only: not in the package's
+// exports, imported by tests alone.
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -61,12 +61,16 @@ export function fixtureFiles(dir: string): string[] {
 }
 
 // A cases.json entry of an invalid fixture: a schema case breaks the schema and names
-// no code; a semantic case breaks the rule its code names.
+// no code; a semantic case breaks the rule its code names, and may name the JSON
+// Pointer of the issue (path), which both halves then compare.
 export interface InvalidCase {
   kind: "schema" | "semantic";
   code?: string;
+  path?: string;
   reason: string;
 }
+
+const CASE_FIELDS = ["kind", "code", "path", "reason"];
 
 export function readCases(dir: string): Map<string, InvalidCase> {
   const raw = readJson(path.join(dir, CASES_FILE));
@@ -74,18 +78,30 @@ export function readCases(dir: string): Map<string, InvalidCase> {
   const cases = new Map<string, InvalidCase>();
   for (const [file, entry] of Object.entries(raw)) {
     assert.ok(typeof entry === "object" && entry !== null, `${file}: entry is an object`);
-    const { kind, code, reason } = entry as Record<string, unknown>;
+    const fields = entry as Record<string, unknown>;
+    const unknown = Object.keys(fields).filter((field) => !CASE_FIELDS.includes(field));
+    assert.deepEqual(unknown, [], `${file}: no fields but ${CASE_FIELDS.join(", ")}`);
+    const { kind, code, path: pointer, reason } = fields;
     assert.ok(kind === "schema" || kind === "semantic", `${file}: kind is schema or semantic`);
     assert.equal(typeof reason, "string", `${file}: reason is a string`);
     if (kind === "semantic") assert.equal(typeof code, "string", `${file}: semantic case names its code`);
     if (kind === "schema") assert.equal(code, undefined, `${file}: schema case names no code`);
-    cases.set(file, { kind, reason: String(reason), ...(typeof code === "string" ? { code } : {}) });
+    if (kind === "schema") assert.equal(pointer, undefined, `${file}: schema case names no path`);
+    if (pointer !== undefined) assert.equal(typeof pointer, "string", `${file}: path is a string`);
+    cases.set(file, {
+      kind,
+      reason: String(reason),
+      ...(typeof code === "string" ? { code } : {}),
+      ...(typeof pointer === "string" ? { path: pointer } : {}),
+    });
   }
   return cases;
 }
 
 // A validator as the fixture runners call it: a document in, its issues out.
-export type FixtureValidator = (doc: unknown) => { ok: true } | { ok: false; issues: readonly { code: string }[] };
+export type FixtureValidator = (
+  doc: unknown,
+) => { ok: true } | { ok: false; issues: readonly { code: string; path: string }[] };
 
 // One test per fixture in dir, named prefix + file: validate accepts it.
 export function testValidFixtures(dir: string, validate: FixtureValidator, prefix = ""): void {
@@ -100,7 +116,8 @@ export function testValidFixtures(dir: string, validate: FixtureValidator, prefi
 // A test that dir's cases file has an entry for each fixture and no other, then one
 // test per fixture, named prefix + file + its reason: validate refuses it with exactly
 // the schema code (a schema case) or the case's code (a semantic one) — a semantic
-// fixture breaks one rule, so no other code may appear.
+// fixture breaks one rule, so no other code may appear — and, when the case names a
+// path, every issue at exactly that path.
 export function testInvalidFixtures(dir: string, validate: FixtureValidator, prefix = ""): void {
   const cases = readCases(dir);
 
@@ -117,6 +134,9 @@ export function testInvalidFixtures(dir: string, validate: FixtureValidator, pre
       if (result.ok) return;
       const codes = [...new Set(result.issues.map((issue) => issue.code))];
       assert.deepEqual(codes, [expected.kind === "semantic" ? expected.code : "schema"]);
+      if (expected.path !== undefined) {
+        assert.deepEqual([...new Set(result.issues.map((issue) => issue.path))], [expected.path], "the issue's path");
+      }
     });
   }
 }

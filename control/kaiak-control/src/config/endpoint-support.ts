@@ -1,9 +1,8 @@
 // Which client API endpoints each backend type serves, as the endpoint-not-served rule
 // judges a model's endpoints list against the model's one type (docs/specs/GATEWAY.md,
 // Providers → Endpoint support), and as a value for apps that offer a model the
-// endpoints its type serves. The gateway's modules decide it; this table, the gateway's
-// and its config check's are each held to protocol/fixtures/backend-types/
-// (endpoints).
+// endpoints its type serves. The gateway holds the same table, which its config
+// validation reads; both are held to protocol/fixtures/backend-types/ (endpoints).
 
 import type { BackendType, ModelEndpoint } from "./types.ts";
 

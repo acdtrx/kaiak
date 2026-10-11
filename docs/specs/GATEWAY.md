@@ -188,15 +188,15 @@
   | Body is not a JSON object | 400 | `invalid_request_error` | `invalid_json` |
   | An upload endpoint's body is not `multipart/form-data` with a `boundary` — OpenAI's JSON form of image edits included (settled 2026-10-11; Request pipeline → Uploads) | 400 | `invalid_request_error` | `unsupported_content_type` |
   | The top-level object, or `stream_options`, names a member twice — or any member the gateway reads to enforce its rules: a tools entry, a `tool_choice`, a shell's `environment`, a Responses input item or part, a Messages message, block or source, `thinking`, a `cache_control` or its `ttl` on Anthropic types, a speech batch item or a speech `references` entry (`param` names it; Request pipeline → duplicate members; Client API → Hosted tools are refused); or an upload repeats a single-value part (`param` its name; settled 2026-10-11, Request pipeline → Uploads) | 400 | `invalid_request_error` | `duplicate_member` |
-  | Body could not be read; or an upload's body breaks the multipart rules — a part without a `name`, a part with a `Content-Transfer-Encoding`, part headers past their bound, a text part over 1 MiB, more than 1000 parts, no closing boundary (settled 2026-10-11, Request pipeline → Uploads) | 400 | `invalid_request_error` | `invalid_body` |
+  | Body could not be read; or an upload's body breaks the multipart rules — no part, a first line starting with the boundary that is not the boundary line, a part without a `name`, a part with a `Content-Transfer-Encoding`, a header whose name is not a token or whose value holds a control character, part headers past their bound, a text part over 1 MiB, more than 1000 parts, no closing boundary — or holds what a backend would read otherwise: a name or a filename holding a backslash or a quote, an empty filename, a name, a filename or a text part that is not UTF-8 (settled 2026-10-11, Request pipeline → Uploads) | 400 | `invalid_request_error` | `invalid_body` |
   | `model` missing or empty (`param: "model"`); or a speech request, or a speech batch item, whose audio is `pcm` and which sets no `sample_rate` (`param: "sample_rate"`, or the item's: `items[2].sample_rate`; settled 2026-10-09, Client API → owned fields: speech); or a transcription without a `file` part (`param: "file"`; settled 2026-10-11, Client API → owned parts: speech-to-text) | 400 | `invalid_request_error` | `missing_required_parameter` |
   | An owned field or part has the wrong type (`param` names it) — on an upload, an owned text part sent as a file part (`model`, `stream`; an edit's `n` and `response_format`, a transcription's `response_format`), an `n` that is not a whole number, a transcription's `file` that is not a file part (settled 2026-10-11) | 400 | `invalid_request_error` | `invalid_type` |
-  | `n` or `best_of` above `global.max_n` (`param` names it) | 400 | `invalid_request_error` | `n_too_large` |
+  | `n` or `best_of` above `global.max_n` (`param` names it); a transcription's `n` part above it (`param: "n"`; settled 2026-10-11, with the user, Client API → owned parts: speech-to-text) | 400 | `invalid_request_error` | `n_too_large` |
   | `max_tokens`, `max_completion_tokens`, `max_output_tokens` or `max_new_tokens` (speech, its batch and each item; settled 2026-10-09) below 0 or above the model's `context_length` (`param` names it; Limits → Output limit out of range); a `max_new_tokens` above the model's output-limit ceiling (settled 2026-10-10; Limits → Output-limit keys); or a Messages output limit the gateway would set — the model's ceiling or default — at or below `thinking.budget_tokens` (Limits → Output limit) | 400 | `invalid_request_error` | `invalid_value` |
   | More generated sequences than `global.max_sequences_per_request` (`param`: `prompt`, `n` or `best_of`), more embeddings inputs than `global.max_embedding_inputs` (`param: "input"`), more rerank documents than `global.max_rerank_documents` (`param: "documents"`, settled 2026-10-08), more images than `global.max_images_per_request` (`param: "n"`; an image generation or edit) or more speech batch items than `global.max_speech_batch_items` (`param: "items"`, both settled 2026-10-09) — Limits → Output multiplicity: batch caps | 400 | `invalid_request_error` | `invalid_value` |
   | An image edit or a transcription whose `stream` part is other than `false` (`param: "stream"`; settled 2026-10-11, with the user, Client API → owned parts) | 400 | `invalid_request_error` | `invalid_value` |
   | A speech request or batch item asks for audio other than `wav` or `pcm`, or an image generation or edit for a `response_format` other than `b64_json` (`param` names it: `response_format`, `items[2].response_format`; settled 2026-10-09, edits 2026-10-11, Client API → owned fields: speech, images; owned parts: image edits) | 400 | `invalid_request_error` | `response_format_unsupported` |
-  | A transcription for a `llama-server` model whose upload the gateway cannot measure — not WAV, FLAC or MP3, or one whose length its header and frames do not give (`param: "file"`; settled 2026-10-11, Accounting → Media usage: speech-to-text) | 400 | `invalid_request_error` | `audio_format_unsupported` |
+  | A transcription for a `llama-server` model whose upload the gateway cannot measure — not WAV, FLAC or MP3, or one whose decoded length it cannot vouch for (`param: "file"`; settled 2026-10-11, Accounting → Media usage: speech-to-text, Measuring an upload) | 400 | `invalid_request_error` | `audio_format_unsupported` |
   | A field that makes the backend fetch or read something names a URL or a path instead of inline data: speech `ref_audio` (each entry of a list), `ref_audio_2`, a `references` entry's `audio_path`, a batch's or item's `ref_audio`; an image request's `lora`; a speech or image request's `extra_params`, whatever its value; an image edit's `url`, `url[]`, `mask_image` or `reference_image` given as text that is not a `data:` URL, its `lora`; a transcription's `vllm_xargs`, whatever its value (`param` names it; settled 2026-10-09, `extra_params` 2026-10-10, the upload parts 2026-10-11, Client API → owned fields: speech, images; owned parts) | 400 | `invalid_request_error` | `external_reference_unsupported` |
   | Body over `max_request_body_bytes`, or over the whole body budget (`KAIAK_BODY_MEMORY_BYTES`) when that is smaller; an upload over `global.max_upload_bytes`, or over the whole upload budget (`KAIAK_UPLOAD_MEMORY_BYTES`) when that is smaller (settled 2026-10-11, Request pipeline → Uploads) | 413 | `invalid_request_error` | `request_too_large` |
   | A Responses request sets `previous_response_id`, `conversation`, `prompt` or `background: true`, or refers to an item or file stored at the backend (`param` names it; Client API → Responses is stateless) | 400 | `invalid_request_error` | `stateful_responses_unsupported` |
@@ -421,7 +421,9 @@
       vLLM-Omni fetches an `http…` string (60 s, no size cap) and decodes a
       `data:image…` one (`images/helpers.py`); the gateway sends no request that
       makes a backend fetch or read on a client's behalf, as for speech's references.
-      `mask_image` and `reference_image` given as file parts pass;
+      `mask_image` and `reference_image` given as file parts pass, and so do `url`
+      and `url[]` file parts — vLLM-Omni reads those fields as strings only and
+      answers a file there `422`, relayed;
     - `image` and `image[]`, file parts, never inspected — each an input image of the
       input estimate (Limits → The input estimate), as is each `data:` URL of `url`
       and `url[]`. vLLM-Omni takes 1 input image on most pipelines, 4 on
@@ -451,12 +453,19 @@
     - `vllm_xargs`, refused whatever its value, `400 external_reference_unsupported`,
       `param: "vllm_xargs"`, as speech's `extra_params`: vLLM hands its JSON to the
       model as extra arguments, whose keys the gateway cannot judge;
+    - `n` (settled 2026-10-11, with the user), read as chat's is (Limits → Output
+      multiplicity): a whole number in decimal — anything else `400 invalid_type` —
+      at most `global.max_n`, else `400 n_too_large`, `param: "n"`; below 1 counts
+      as 1, for the backend to refuse. vLLM's beam search (`use_beam_search`) takes
+      it as its beam width, and its sampling generates `n` sequences, none of them
+      counted; llama-server copies it into the chat request it builds. Speech-to-text
+      has no output limit, so it multiplies no reservation;
     - `prompt`, read for the input estimate;
     - `timestamp_granularities[]` may repeat; every other part is single-valued;
     - everything else passes untouched: `language`, `temperature`, vLLM's
-      `hotwords`, `to_language`, `max_completion_tokens` and sampling parts,
-      llama-server's `max_tokens` (it copies every part it does not read into the
-      chat request it builds), …
+      `hotwords`, `to_language`, `max_completion_tokens`, `use_beam_search` and
+      sampling parts, llama-server's `max_tokens` (it copies every part it does not
+      read into the chat request it builds), …
 - **Request IDs**: `x-request-id` is accepted (or generated), forwarded to the backend,
   returned to the client, and stamped on the log line and the usage record. A client
   ID is kept when it is 1–128 characters of `[A-Za-z0-9._:-]`; any other value is
@@ -715,28 +724,54 @@ own, and a client sending repeats is broken either way.
   relaying, or when the request ends.
 - **Read deadline**: `KAIAK_UPLOAD_READ_TIMEOUT_MS` (default 300 000) bounds the
   body's arrival on the upload routes in place of `KAIAK_BODY_READ_TIMEOUT_MS`, set
-  once the route is known and before the body is read: 25 MiB in 60 s needs about
-  3.5 Mbit/s of uplink, which mobile clients often lack. A body not in by then
-  answers `400 invalid_body`, as on any route.
+  in the upload path just before the body is read — after auth, the key's
+  concurrency limit, the content type and the declared length's cap, which all run
+  under the body-read deadline the listener set as it took the request: 25 MiB in
+  60 s needs about 3.5 Mbit/s of uplink, which mobile clients often lack. A body not
+  in by then answers `400 invalid_body`, as on any route.
 - **Parts**, held strictly to RFC 7578's grammar — each failure `400 invalid_body`;
   what readers would each guess at differently is refused, so every body the gateway
   takes reads as the same parts in mime/multipart (its tests hold it to that):
+  - a body holds at least one part, and the first line starting with the boundary
+    (after its two dashes) is the first boundary line — a reader skipping it would
+    find another;
   - every part has exactly one `Content-Disposition: form-data` header with a
     `name`, and at most one `Content-Type`; a name or a filename holding a control
     character is refused (the rebuilt body could not carry it as read); a part with a
     `Content-Transfer-Encoding` header is refused (RFC 7578 deprecates it, and servers
     disagree on decoding it); a part's headers are at most 8 KiB, their blank line
     included (a name, a filename and a content type take a few hundred bytes), each
-    one line — a header folded over lines is refused;
+    one line — a header folded over lines is refused — its name a token and its value
+    visible characters, spaces and tabs (RFC 7230);
   - lines end in CRLF, and a boundary line ends at its boundary — transport padding
     after it, which HTTP clients never send and readers disagree on, is refused;
   - the body ends with its closing boundary — a preamble (at most 4 KiB: clients send
     none) and an epilogue are ignored, never sent;
-  - a **text part** (no `filename`) is at most 1 MiB, and a body holds at most 1000
-    parts — Starlette's limits, which vLLM and vLLM-Omni apply, so the gateway
-    refuses no part they would take;
+  - a **text part** (no `filename`) is at most 1 MiB — Starlette's limit on a field —
+    and a body holds at most 1000 parts in all, within Starlette's 1000 fields and
+    1000 files, which vLLM and vLLM-Omni apply, so the gateway refuses no form they
+    would take;
   - a **file part** (with a `filename`) is bounded by the upload cap alone; its bytes
     are read only to measure an uploaded audio's length (Accounting → Media usage).
+
+  **What a backend would read otherwise is refused** too (settled 2026-10-11),
+  `400 invalid_body`, as the backends' own readers were read (python-multipart for
+  vLLM and vLLM-Omni, cpp-httplib for llama-server, at the versions in
+  `docs/plans/media-phase-b/RESEARCH.md`):
+  - **a backslash or a quote in a name or a filename**: a quoted value carries them
+    only escaped, and the readers do not read the escape as mime/multipart's writer
+    writes it — python-multipart reads `name="zzz\\"; filename="; name=url; x="` as
+    a name ending at the escaped quote and `name=url` after it, so a file part would
+    reach the backend as another field (`url`, `lora`, `n`, `vllm_xargs`, …);
+    cpp-httplib keeps the escape's backslashes. Rejected: writing the header another
+    way — no escaping both readers share carries them;
+  - **an empty filename** (`filename=""`): cpp-httplib reads a part with one as a
+    text field — a `prompt` sent so passes the gateway's reading as a file, out of
+    the input estimate and past the text part's cap, and a `file` sent so is no file
+    to llama-server;
+  - **a name or a text part that is not UTF-8**: llama-server answers `500` — a
+    backend failure, toward its circuit, a client could cause at will; a filename is
+    held to the same rule.
 
   **A repeated single-value part is refused**, as a repeated JSON member is (`400
   duplicate_member`, `param` its name): the gateway and the backend could read
@@ -746,9 +781,10 @@ own, and a client sending repeats is broken either way.
   Names compare byte for byte. **Filenames never appear in logs**, nor any part's
   bytes.
 - **The rebuilt body**: the backend gets a body the gateway writes, not the
-  client's edited — every part in order, its bytes as received, with its name, its
-  filename and its `Content-Type` when the client sent one, and no other part
-  header (RFC 7578 defines none); `model`'s value replaced by the deployment's model
+  client's edited — every part in order, its bytes as received, with its name and
+  its filename between quotes as they are (they hold no control character,
+  backslash or quote: Parts, above), its `Content-Type` when the client sent one,
+  and no other part header (RFC 7578 defines none); `model`'s value replaced by the deployment's model
   name; a new boundary. So the backend reads exactly the parts the gateway parsed —
   the reasoning behind refusing repeated JSON members; llama-server's router mode
   rebuilds a form the same way. The body is written as it is sent (settled
@@ -2010,7 +2046,9 @@ own, and a client sending repeats is broken either way.
   (`prompt` as a list of strings or of token-ID lists holds one prompt per element; a
   string or one token-ID list is one prompt). `n` and `best_of` are each at most
   `global.max_n` (default 8), else `400 n_too_large`; a value below 1 counts as 1
-  (the backend refuses it). `best_of` is read on chat as well as completions
+  (the backend refuses it). A transcription's `n` part is held to the same cap
+  (settled 2026-10-11, with the user; Client API → owned parts: speech-to-text) and
+  multiplies no reservation: speech-to-text has no output limit. `best_of` is read on chat as well as completions
   (settled 2026-09-25, N-S4): OpenAI has it on completions only, but vLLM versions
   accept it on chat, so an unowned `best_of` would multiply generation past the
   reservation. The input estimate reserved is the total (The input estimate). The arithmetic
@@ -2526,8 +2564,9 @@ own, and a client sending repeats is broken either way.
       GUID's first two bytes, in an extension of 22 bytes, as dr_wav reads it). The
       block size must be the channels' samples, rounded up to whole bytes. Another
       format (ADPCM, whose data is blocks of its own; MP3 in WAV; an unknown tag or
-      subformat) is not read. vLLM-Omni sends 16-bit PCM; the same reader measures
-      speech-to-text's WAV uploads (Speech-to-text → Measuring an upload, below);
+      subformat) is not read. vLLM-Omni sends 16-bit PCM; speech-to-text's WAV
+      uploads are read by the same format rules, within dr_wav's own checks
+      (Speech-to-text → Measuring an upload, below);
     - PCM (`audio/pcm`): 16-bit mono at the request's `sample_rate`, or the item's
       effective one — the only PCM vLLM-Omni can send, since `sample_rate` is
       required with it (Client API → owned fields: speech);
@@ -2578,7 +2617,9 @@ own, and a client sending repeats is broken either way.
   - **Speech-to-text** (settled 2026-10-11, with the user; vLLM 0.30.0,
     `speech_to_text/base/serving.py`; llama.cpp b11526,
     `tools/server/server-chat.cpp` and `tools/mtmd/mtmd-helper.cpp`):
-    - **`audio_seconds_in`**, by the model's one type:
+    - **`audio_seconds_in`**: the answer's seconds when it reports them, else the
+      measured upload (below), else 0 and the record flagged `estimated` — one rule,
+      which the model's one type turns into these figures:
       - `vllm`: the answer's `usage.seconds` when its `usage.type` is `duration`
         (`json`, `text`, `diarized_json`) — vLLM's count of the decoded audio,
         rounded up (`int(math.ceil(duration))`); a `verbose_json` answer's
@@ -2587,46 +2628,96 @@ own, and a client sending repeats is broken either way.
         when it can be measured, else 0 and the record flagged `estimated`;
       - `llama-server`: the measured upload — llama-server reports no seconds. An
         upload the gateway cannot measure is refused before it is sent, `400
-        audio_format_unsupported`, `param: "file"` (Request pipeline, stage 2):
-        llama-server decodes WAV, MP3 and FLAC only (miniaudio, by magic bytes), so
-        another format would fail there too, and a request whose audio nothing
-        could count is never sent.
+        audio_format_unsupported`, `param: "file"` (Request pipeline, stage 2): a
+        request whose audio nothing could count is never sent. llama-server decodes
+        WAV, FLAC and MP3 alone, so another format would fail there too; a file in
+        one of them that the gateway does not measure is one whose decoded length it
+        cannot vouch for (below) — refused, not worked around.
     - **Tokens**: the answer's when it reports them — llama-server's `usage` of
       type `tokens`, `input_tokens` → `tokens_in`, `output_tokens` → `tokens_out`,
       every other unit 0. Otherwise — vLLM reports none on a whole answer — as on
       images: `tokens_in` the input estimate (the `prompt` part), flagged
       `estimated`, every other token unit 0.
     - **Measuring an upload** (settled 2026-10-11): the `file` part is held whole in
-      memory, so its length is read in one bounded pass, the format chosen by its
-      magic bytes, as llama-server's decoder chooses it — never by the filename or
-      the part's content type. llama-server processes the length its decoder
-      (miniaudio 0.11.25) takes from the file, silence past the samples present, so
-      each length is read where that decoder reads it:
-      - WAV: rate, channels and bit depth from the `fmt ` chunk — PCM, IEEE float,
-        A-law, μ-law, or the extensible format naming one, as audio generated is
-        read (Audio length, above); the `data` chunk's bytes actually present (its
-        declared size bounded by the file) — dr_wav's length too: data bytes over
-        the block size;
-      - FLAC: STREAMINFO's total samples over its sample rate — past leading ID3v2
-        tags too, which the FLAC decoder skips; a total of 0 ("unknown") is
-        unmeasurable, as is a length of 9 223 372 036 s or more (about 292 years,
-        the longest a 64-bit count of nanoseconds holds);
-      - MP3: a frame scan — an ID3v2 tag skipped by its size; each frame's length
-        from its bitrate, sample rate and padding, its samples by MPEG version and
-        layer; past bytes that are no frame of the stream — junk, a second file's
-        tag, ID3v1 and APE tags at the end — the scan resynchronizes as the decoder
-        does, on a valid header whose next header is of the same stream (or whose
-        frame ends the file), so junk hides no frame the decoder plays; a
-        free-format frame (no bitrate in its header; rare, no common encoder writes
-        them by default) is not read; a first frame holding a Xing or Info header is no audio, and the
-        frame count it declares counts when longer than the frames present — the
-        decoder takes its length from it; a stream with no audio frame is
-        unmeasurable.
+      memory, so its length is read in one bounded pass — never by the filename or
+      the part's content type. llama-server takes a file as audio by its first bytes
+      (`RIFF`…`WAVE`, `fLaC`, `ID3` or an MPEG frame sync) and decodes it with
+      miniaudio 0.11.25 (`ma_decoder_init_memory`, `tools/mtmd/mtmd-helper.cpp`),
+      which tries its decoders in turn — dr_wav, then dr_flac, then dr_mp3 — and
+      decodes with the first that opens the file; dr_mp3 searches the whole file for
+      frames, past whatever is no frame of the stream (settled 2026-10-11, the
+      pre-merge reviews: a header the gateway read but dr_wav or dr_flac refused
+      hid MP3 audio the decoder played, `audio_seconds_in` under-counted without
+      bound). llama-server processes the length that decoder takes, silence past the
+      samples present. So **a file is measured only when the decoder that opens it
+      provably reads it as the gateway does**: each reader holds a file to the checks
+      its decoder makes before taking it, and to a shape whose length it reads where
+      that decoder reads it; anything else is unmeasurable, and refused on
+      `llama-server` — not worked around by guessing at the decoder's reading.
+      (When no decoder opens a file from memory, miniaudio tries the three again
+      through stream callbacks; a measured file is always opened in the first round,
+      so that second round never decides a measured length.)
+      - **WAV** — a file starting `RIFF`…`WAVE`, measured only when dr_wav opens it:
+        its chunks walked as dr_wav walks them, each skipped by its size and pad
+        byte, a chunk running past the file's end ending the walk with no `data`
+        chunk; the last `fmt ` chunk before the first `data` chunk — at least its 16
+        bytes of fields; an extension's size field, when the chunk is longer, whose
+        extension lies within the file (dr_wav seeks over it), the extensible
+        format's being the 22 bytes it reads, in a chunk of at least 40; a `fact`
+        chunk at least the 4 bytes dr_wav reads of it — read as audio generated is
+        (Audio length, above) and within dr_wav's limits: a rate of at most 384 000
+        Hz, at most 256 channels, samples of at most 64 bits. The length is the
+        `data` chunk's bytes present (its declared size bounded by the file, as
+        dr_wav bounds it) at the rate times the block size — never less than
+        dr_wav's whole frames. A file starting `RIFF` that dr_wav refuses is
+        unmeasurable: dr_mp3 would search it.
+      - **FLAC** — past every leading ID3v2 tag (dr_flac skips them all), `fLaC`
+        and STREAMINFO (its first block, 34 bytes), measured only when dr_flac opens
+        it: the metadata blocks after STREAMINFO each whole within the file, of at
+        least the size dr_flac takes for its type (APPLICATION 4 bytes,
+        VORBIS_COMMENT 8, CUESHEET 396, PICTURE 32), up to the block flagged last.
+        The length is STREAMINFO's total samples over its sample rate — dr_flac's
+        length, whatever the frames hold. A total of 0 ("unknown") is unmeasurable,
+        as is a length of 9 223 372 036 s or more (about 292 years, the longest a
+        64-bit count of nanoseconds holds).
+      - **MP3** — any other file starting with `ID3` or a frame sync, measured only
+        as **one unbroken run of frames** from the end of the ID3v2 tag that starts
+        the file (if any; dr_mp3 skips one) to the end of the stream as dr_mp3 finds
+        it — before an ID3v1 tag, the file's last 128 bytes when they start `TAG`.
+        Every frame is of the first frame's MPEG version, layer and sample rate and
+        of its channel count (mono, or two channels — stereo, joint stereo and dual
+        channel alike, as the decoder reads them), none free-format (no bitrate in its
+        header), each frame's length from its bitrate, sample rate and padding, the
+        last held whole. On that run dr_mp3 synchronizes on the first frame and plays
+        the frames in order, each once. Anything else is unmeasurable: junk before,
+        between or after the frames, a second ID3v2 tag, an APE tag ending the
+        stream, a frame of another rate, version, layer or channel count (dr_mp3 plays
+        every frame at the first frame's rate), a free-format frame (dr_mp3 finds
+        them by searching), a last frame cut short. The length is the frames' samples
+        (by MPEG version and layer) at the stream's rate.
+        **Xing and Info headers** (kept under this rule): dr_mp3 looks for one past a
+        frame's header, a CRC and Layer III side information, whatever the frame's
+        layer, reading the bytes from the file past the frame's end too. A Layer III
+        stream's first frame holding one is no audio, and the frame count it declares
+        is the length dr_mp3 takes (less the encoder's delay and padding), silence
+        past the frames present — so the length is the longer of it and the frames
+        counted. dr_mp3 reads that header in the first frame that decodes to
+        samples, which a crafted stream can make a later one: one found in any later
+        frame, in a Layer I or II stream's first frame, or whose bytes run past the
+        file's end, is unmeasurable.
+      - A stream with no audio frame is unmeasurable.
 
-      Every size is bounded by the bytes present and a pass only moves forward,
-      each position tried as a frame's start at most once: a zero, absurd or
-      overflowing size ends it as unmeasurable — never a loop, a panic or an
-      allocation. Every upload is measured, on every type; a
+      The readers were checked against miniaudio 0.11.25 itself: every file of a
+      large generated corpus they measure decodes to a length, at the file's own
+      rate, no longer than theirs. miniaudio's length after resampling to the
+      model's rate is one frame longer than the samples it decodes when the file's
+      rate is a multiple of the model's (48 kHz to 16 kHz: its estimate,
+      `ma_calculate_frame_count_after_resampling`, adds one) — a frame of silence,
+      not audio, and not counted.
+
+      Every size is bounded by the bytes present and a pass only moves forward: a
+      zero, absurd or overflowing size ends it as unmeasurable — never a loop, a
+      panic or an allocation. Every upload is measured, on every type; a
       `llama-server` model needs the result, a `vllm` one falls back on it. The
       length is rounded up to a whole second once per record, as
       `audio_seconds_out` is.
@@ -2682,7 +2773,13 @@ own, and a client sending repeats is broken either way.
   backend in full. From then on the backend has the prompt and may process and bill
   it, so any end before the first event — the client gone, the drain's cut, a
   first-event or response timeout, the connection lost — records the input estimated from the
-  client's body, no output, flagged `estimated` and `partial`. Before it (connection
+  client's body, no output, flagged `estimated` and `partial`. No media units either:
+  an image request records 0 images, and **a transcription sent but never answered
+  records 0 `audio_seconds_in`** (settled 2026-10-11, with the user) — its seconds
+  are the answer's count, or the measured upload's for an answer that reports none,
+  so with no answer there is none, as with no images. Rejected: counting the measured
+  upload as input, as `tokens_in` is estimated — consistency with images was
+  preferred. Before it (connection
   failure, the request not written in full) nothing reached a model: the record
   carries zeros, flagged `partial`, and still exists so every routed request settles
   once. A backend that answers by refusing the gateway's credential processed
@@ -3436,8 +3533,9 @@ own, and a client sending repeats is broken either way.
     than `429`, `upstream_refused`, a stream ended by an error event naming the
     caller's fault — settled 2026-10-06), `client_closed`, `shutting_down`
     (`server_shutting_down`, a response the drain cut off), `not_ready`
-    (`config_not_loaded`), `server_busy` (the body budget spent — platform-side; its
-    own class because its remedy is memory, not backend capacity), `internal`. Every
+    (`config_not_loaded`), `server_busy` (the body budget or the upload budget
+    spent — platform-side; its own class because its remedy is memory, not backend
+    capacity), `internal`. Every
     class is present from startup, at 0.
   - **Relayed backend errors are classed by whose problem they are** (settled
     2026-09-24): a backend `4xx` is the caller's (context too long, a bad
@@ -4026,8 +4124,10 @@ own, and a client sending repeats is broken either way.
   - **body read**: a request's body must arrive within 60 s of the handler taking it
     (`KAIAK_BODY_READ_TIMEOUT_MS`) — an upload's within 300 s
     (`KAIAK_UPLOAD_READ_TIMEOUT_MS`, settled 2026-10-11; Request pipeline →
-    Uploads); a body not in by then answers `400 invalid_body`, before any limit or
-    backend work;
+    Uploads), a deadline set in the upload path once auth, the key's concurrency
+    limit, the content type and the declared length's cap have passed — in place of
+    the body-read deadline, which runs until then; a body not in by then answers
+    `400 invalid_body`, before any limit or backend work;
   - **answers before the body was read** (a refusal before the inbound stage:
     missing key, draining, …) close the connection after the answer. net/http would
     otherwise first read and discard the unread body — up to 256 KiB — before

@@ -46,8 +46,9 @@ const (
 // vLLM reports a transcription's seconds and no tokens: audio_seconds_in is its
 // usage's seconds (json, text — JSON too — diarized_json) or, for verbose_json, its
 // duration rounded up to a whole second; the tokens are the input estimate, output 0,
-// flagged estimated. The body is read as it passes, in pieces of any size
-// (docs/specs/GATEWAY.md, Accounting → Media usage: speech-to-text).
+// flagged estimated. Members and values are read after decoding: an escaped name or
+// value is the one it stands for. The body is read as it passes, in pieces of any
+// size (docs/specs/GATEWAY.md, Accounting → Media usage: speech-to-text).
 func TestVLLMTranscriptionSeconds(t *testing.T) {
 	for _, c := range []struct {
 		name    string
@@ -68,7 +69,8 @@ func TestVLLMTranscriptionSeconds(t *testing.T) {
 		{"verbose_json answered with usage: the usage's seconds", true,
 			`{"duration":2.5,"text":"hi","usage":{"type":"duration","seconds":9}}`, 9},
 		{"verbose_json, its duration named twice: the last", true, `{"duration":99,"text":"hi","duration":2}`, 2},
-		{"verbose_json, the name escaped", true, `{"duration":6.5,"text":"hi"}`, 7},
+		{"verbose_json, the name escaped", true, `{"d\u0075ration":6.5,"text":"hi"}`, 7},
+		{"usage and seconds escaped", false, `{"text":"hi","\u0075sage":{"type":"d\u0075ration","sec\u006fnds":5}}`, 5},
 	} {
 		for _, piece := range []int{1, 7, len(c.body)} {
 			units, flags := meterTranscription(Transcription{VerboseJSON: c.verbose}, http.StatusOK, c.body, piece, true)

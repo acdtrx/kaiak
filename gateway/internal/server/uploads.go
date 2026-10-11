@@ -1,6 +1,7 @@
 package server
 
 import (
+	"strconv"
 	"strings"
 	"time"
 
@@ -85,6 +86,22 @@ func uploadText(part provider.FormPart) (string, *apiError) {
 		return "", errInvalidType(part.Name, "a text part")
 	}
 	return string(part.Body), nil
+}
+
+// uploadWholeNumber is part's value as an owned whole-number text part, param: a whole
+// number in decimal, an optional sign then digits. Any other value, one past int64
+// included, is the wrong type, 400 invalid_type: read otherwise, a value the backend
+// reads as a large number could pass a cap as a small one.
+func uploadWholeNumber(part provider.FormPart, param string) (int64, *apiError) {
+	value, apiErr := uploadText(part)
+	if apiErr != nil {
+		return 0, apiErr
+	}
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, errInvalidType(param, "a whole number")
+	}
+	return n, nil
 }
 
 // readStreamPart holds an upload's stream part to the one rule of both upload formats

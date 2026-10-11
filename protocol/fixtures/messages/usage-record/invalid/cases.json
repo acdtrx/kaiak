@@ -86,7 +86,7 @@
   },
   "units-missing-audio-seconds-in.json": {
     "kind": "schema",
-    "reason": "every record carries audio_seconds_in, zeros included (no endpoint produces it yet)"
+    "reason": "every record carries audio_seconds_in, zeros included"
   },
   "units-missing-audio-seconds-out.json": {
     "kind": "schema",

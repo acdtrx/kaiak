@@ -351,11 +351,12 @@ func TestVLLMTranscriptionAndTheMeasuredUpload(t *testing.T) {
 // What the gateway refuses on /v1/audio/transcriptions it refuses before routing, in
 // OpenAI's error shape, naming the part at fault and never echoing its value: no file
 // part, a file given as text, two files; a stream part other than false; vllm_xargs,
-// whatever it holds; an owned text part sent as a file; a single-valued part named
-// twice; no model; OpenAI's JSON body; a model whose endpoints list leaves
-// audio_transcriptions out — on vllm, on vllm-omni, on openai-compatible
-// (docs/specs/GATEWAY.md, Client API → owned parts: speech-to-text; errors; Model
-// metadata → Endpoints per model).
+// whatever it holds; an n above max_n (8 here), or not a whole number; an owned text
+// part sent as a file; a single-valued part named twice; no model; OpenAI's JSON body;
+// a model whose endpoints list leaves audio_transcriptions out — on vllm, on
+// vllm-omni, on openai-compatible (docs/specs/GATEWAY.md, Client API → owned parts:
+// speech-to-text; errors; Limits → Output multiplicity; Model metadata → Endpoints per
+// model).
 func TestTranscriptionRefusals(t *testing.T) {
 	g := newTestGateway(t)
 	withTranscriptionModels(t, g)
@@ -377,6 +378,11 @@ func TestTranscriptionRefusals(t *testing.T) {
 			"external_reference_unsupported", "vllm_xargs"},
 		{"response_format a file", transcription(filePart("response_format", "f.txt", "text/plain", "verbose_json")),
 			"invalid_type", "response_format"},
+		{"n above max_n", transcription(textPart("n", "9")), "n_too_large", "n"},
+		{"n not a whole number", transcription(textPart("n", "2.0")), "invalid_type", "n"},
+		{"n past int64", transcription(textPart("n", "9223372036854775808")), "invalid_type", "n"},
+		{"n a file", transcription(filePart("n", "n.txt", "text/plain", "2")), "invalid_type", "n"},
+		{"n named twice", transcription(textPart("n", "1"), textPart("n", "2")), "duplicate_member", "n"},
 		{"response_format named twice", transcription(textPart("response_format", "json"), textPart("response_format", "srt")),
 			"duplicate_member", "response_format"},
 		{"language named twice", transcription(textPart("language", "en"), textPart("language", "fr")), "duplicate_member", "language"},
@@ -426,24 +432,31 @@ func TestTranscriptionRefusals(t *testing.T) {
 
 // A transcription's parts as the inbound stage reads them: it counts toward the
 // audio-processed limits and reserves nothing there; its meter is told whether it asked
-// for verbose_json — that exact name; it is never a stream; its input estimate is its
-// prompt's text, a prompt sent as a file part none (docs/specs/GATEWAY.md, Client API →
-// owned parts: speech-to-text; Limits → Check and reserve, The input estimate).
+// for verbose_json — that exact name; it is never a stream; its sequences are its n,
+// at most max_n, below 1 counted as 1, absent 1; its input estimate is its prompt's
+// text, a prompt sent as a file part none (docs/specs/GATEWAY.md, Client API → owned
+// parts: speech-to-text; Limits → Check and reserve, The input estimate, Output
+// multiplicity).
 func TestTranscriptionReadsItsParts(t *testing.T) {
 	ep := bodyEndpoint(provider.AudioTranscriptions)
 	for _, c := range []struct {
-		name    string
-		parts   []rawPart
-		verbose bool
-		prompt  int64
+		name      string
+		parts     []rawPart
+		verbose   bool
+		prompt    int64
+		sequences int64
 	}{
-		{"no response_format", nil, false, 0},
-		{"json", []rawPart{textPart("response_format", "json")}, false, 0},
-		{"verbose_json", []rawPart{textPart("response_format", "verbose_json")}, true, 0},
-		{"verbose_json in another case", []rawPart{textPart("response_format", "Verbose_JSON")}, false, 0},
-		{"a prompt", []rawPart{textPart("prompt", "Kaiak and its gateway")}, false, 21},
-		{"a prompt as a file", []rawPart{filePart("prompt", "p.txt", "text/plain", "Kaiak and its gateway")}, false, 0},
-		{"a stream part saying false", []rawPart{textPart("stream", "fAlSe")}, false, 0},
+		{"no response_format", nil, false, 0, 1},
+		{"json", []rawPart{textPart("response_format", "json")}, false, 0, 1},
+		{"verbose_json", []rawPart{textPart("response_format", "verbose_json")}, true, 0, 1},
+		{"verbose_json in another case", []rawPart{textPart("response_format", "Verbose_JSON")}, false, 0, 1},
+		{"a prompt", []rawPart{textPart("prompt", "Kaiak and its gateway")}, false, 21, 1},
+		{"a prompt as a file", []rawPart{filePart("prompt", "p.txt", "text/plain", "Kaiak and its gateway")}, false, 0, 1},
+		{"a stream part saying false", []rawPart{textPart("stream", "fAlSe")}, false, 0, 1},
+		{"n at max_n", []rawPart{textPart("n", "8")}, false, 0, 8},
+		{"n of 3, signed", []rawPart{textPart("n", "+3")}, false, 0, 3},
+		{"n of 0", []rawPart{textPart("n", "0")}, false, 0, 1},
+		{"n below 0", []rawPart{textPart("n", "-4")}, false, 0, 1},
 	} {
 		parts := append([]rawPart{textPart("model", "whisper"), filePart("file", "a.wav", "audio/wav", "RIFF")}, c.parts...)
 		rq, _, apiErr := readTestUpload(ep, uploadRequest(strings.NewReader(formOf(parts...)), formContentType), uploadSnapshot(t, 0),
@@ -462,7 +475,69 @@ func TestTranscriptionReadsItsParts(t *testing.T) {
 		if want := accounting.EstimateUploadInput(c.prompt, 0); rq.input != want {
 			t.Errorf("%s: estimate %+v, want %+v: the prompt's %d bytes", c.name, rq.input, want, c.prompt)
 		}
+		if rq.inbound.Sequences != c.sequences {
+			t.Errorf("%s: %d sequences, want %d", c.name, rq.inbound.Sequences, c.sequences)
+		}
 		rq.finish()
+	}
+}
+
+// A prompt part with an empty filename is refused, 400 invalid_body, before any
+// backend: cpp-httplib reads a part with an empty filename as a text field, so
+// llama-server would take it as the transcription's prompt while the gateway read it
+// as a file — left out of the input estimate the token limits admit the request by,
+// and past the text part's cap. The same prompt as a text part counts: over the
+// group's 100 tokens a minute, 429 (docs/specs/GATEWAY.md, Request pipeline → Uploads;
+// Limits → The input estimate).
+func TestTranscriptionPromptWithAnEmptyFilenameIsRefused(t *testing.T) {
+	g := newTestGateway(t)
+	withTranscriptionModels(t, g, func(doc string) string {
+		return replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [{ "type": "tokens_per_minute", "value": 100 }] }`)
+	})
+	g.backend.SetTranscriptionShape(fakebackend.LlamaServerTranscription)
+	prompt := strings.Repeat("word ", 400)
+	parts := []rawPart{textPart("model", "asr-ls"), filePart("file", "audio.wav", "audio/wav", wavData)}
+	counted := do(t, g.h, transcriptionCall(formOf(append(parts, textPart("prompt", prompt))...), "prompt-as-text"))
+	expectError(t, counted, http.StatusTooManyRequests, "rate_limit_exceeded")
+	hidden := do(t, g.h, transcriptionCall(formOf(append(parts, filePart("prompt", "", "text/plain", prompt))...),
+		"prompt-with-an-empty-filename"))
+	expectError(t, hidden, http.StatusBadRequest, "invalid_body")
+	if n := len(g.backend.Requests()); n != 0 {
+		t.Errorf("%d requests reached the backend, want none", n)
+	}
+}
+
+// A transcription sent but never answered — its backend silent past the response
+// timeout, 504 upstream_timeout — records 0 seconds of audio processed, as an
+// unanswered image request records 0 images: the input estimate is billed as sent, no
+// output, estimated and partial. On llama-server too, whose upload the gateway
+// measured: the measured length counts only for an answer (docs/specs/GATEWAY.md,
+// Accounting → Billed from the moment the request was sent; Media usage:
+// speech-to-text).
+func TestUnansweredTranscriptionRecordsNoAudio(t *testing.T) {
+	const prompt = "Kaiak"
+	estimate := accounting.EstimateUploadInput(int64(len(prompt)), 0).Total
+	for _, c := range []struct {
+		model string
+		shape fakebackend.TranscriptionShape
+	}{
+		{"whisper", fakebackend.VLLMTranscription},
+		{"asr-ls", fakebackend.LlamaServerTranscription},
+	} {
+		t.Run(c.model, func(t *testing.T) {
+			g := newTestGateway(t)
+			withTranscriptionModels(t, g, func(doc string) string {
+				doc = replaceOnce(t, doc, `"type": "vllm", "base_url": "`+g.backend.URL()+`/v1" }`,
+					`"type": "vllm", "base_url": "`+g.backend.URL()+`/v1", "response_timeout_ms": 150 }`)
+				return replaceOnce(t, doc, `"type": "llama-server", "base_url": "`+g.backend.URL()+`/v1" }`,
+					`"type": "llama-server", "base_url": "`+g.backend.URL()+`/v1", "response_timeout_ms": 150 }`)
+			})
+			g.backend.SetTranscriptionShape(c.shape)
+			g.backend.SetReply(fakebackend.Reply{Before: fakebackend.StallFirstByte})
+			form := formOf(textPart("model", c.model), filePart("file", "a.wav", "audio/wav", wavData), textPart("prompt", prompt))
+			expectError(t, do(t, g.h, transcriptionCall(form, "unanswered")), http.StatusGatewayTimeout, "upstream_timeout")
+			expectUnits(t, onlyRecord(t, g), transcriptionUnits(estimate, 0, 0), true, true)
+		})
 	}
 }
 

@@ -192,9 +192,10 @@ func errInvalidForm(reason string) *apiError {
 		message: "The request body is not a valid multipart/form-data body: " + reason + "."}
 }
 
-// errDuplicateMember refuses a body naming a member twice in the top-level object (or
-// in stream_options, the owned object the provider edits); param names the member,
-// clipped: the client chose it.
+// errDuplicateMember refuses a body naming a member twice in the top-level object, in
+// stream_options (the owned object the provider edits) or in an object the gateway
+// reads to enforce its rules, and an upload repeating a single-value part; param names
+// the member or the part, clipped: the client chose it.
 func errDuplicateMember(param string) *apiError {
 	param = clip.String(param)
 	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "duplicate_member", class: metrics.ErrorInvalidRequest,

@@ -1,6 +1,7 @@
 {
   "protocol_version": 7,
   "global": {
+    "max_upload_bytes": 20971520,
     "limits": [
       { "type": "requests_per_minute", "value": 1200 },
       { "type": "usd_per_month", "value": 2000 }
@@ -26,6 +27,10 @@
       "type": "vllm",
       "base_url": "http://vllm-rerank.internal:8000/v1"
     },
+    "vllm-asr": {
+      "type": "vllm",
+      "base_url": "http://vllm-asr.internal:8000/v1"
+    },
     "omni-tts": {
       "type": "vllm-omni",
       "base_url": "http://omni-tts.internal:8091/v1"
@@ -33,6 +38,10 @@
     "omni-image": {
       "type": "vllm-omni",
       "base_url": "http://omni-image.internal:8092/v1"
+    },
+    "omni-edit": {
+      "type": "vllm-omni",
+      "base_url": "http://omni-edit.internal:8093/v1"
     },
     "azure-swedencentral": {
       "type": "azure-openai",
@@ -81,6 +90,14 @@
         "capabilities": { "streaming": false, "tools": false, "vision": false, "reasoning": false }
       }
     },
+    "whisper-large-v3-turbo": {
+      "deployments": [{ "backend": "vllm-asr", "model": "openai/whisper-large-v3-turbo" }],
+      "endpoints": ["audio_transcriptions"],
+      "metadata": {
+        "context_length": 448,
+        "capabilities": { "streaming": false, "tools": false, "vision": false, "reasoning": false }
+      }
+    },
     "qwen3-tts": {
       "deployments": [{ "backend": "omni-tts", "model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice" }],
       "endpoints": ["audio_speech", "audio_speech_batch"],
@@ -96,6 +113,14 @@
       "metadata": {
         "context_length": 1024,
         "capabilities": { "streaming": false, "tools": false, "vision": false, "reasoning": false }
+      }
+    },
+    "qwen-image-edit": {
+      "deployments": [{ "backend": "omni-edit", "model": "Qwen/Qwen-Image-Edit-2511" }],
+      "endpoints": ["images_edits"],
+      "metadata": {
+        "context_length": 1024,
+        "capabilities": { "streaming": false, "tools": false, "vision": true, "reasoning": false }
       }
     },
     "gpt-4.1": {
@@ -189,12 +214,22 @@
     "users": {
       "labels": { "kind": "people" },
       "child_defaults": {
-        "allowed_models": ["qwen3-32b", "gpt-4.1-mini", "bge-m3", "qwen3-reranker-8b", "qwen3-tts", "qwen-image"],
+        "allowed_models": [
+          "qwen3-32b",
+          "gpt-4.1-mini",
+          "bge-m3",
+          "qwen3-reranker-8b",
+          "whisper-large-v3-turbo",
+          "qwen3-tts",
+          "qwen-image",
+          "qwen-image-edit"
+        ],
         "limits": [
           { "type": "requests_per_minute", "value": 30 },
           { "type": "tokens_per_hour", "value": 500000 },
           { "type": "images_per_hour", "value": 40 },
           { "type": "audio_seconds_out_per_hour", "value": 900 },
+          { "type": "audio_seconds_in_per_hour", "value": 3600 },
           { "type": "usd_per_month", "value": 25 }
         ]
       }

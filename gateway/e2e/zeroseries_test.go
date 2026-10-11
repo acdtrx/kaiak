@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -14,7 +15,9 @@ import (
 // Every counter and histogram whose label set the config
 // determines exists at 0 from startup, and a reload's new deployments, models and
 // backends get theirs at once — so an increase() alert sees the first event (two
-// scrapes: 0, then 1), not a series born at 1.
+// scrapes: 0, then 1), not a series born at 1. A deployment's attempt outcomes are
+// exactly the 13 and its retry reasons exactly the 6 listed here: no other series of
+// either is exposed.
 func TestSeriesStartAtZero(t *testing.T) {
 	a, b := fakebackend.New(), fakebackend.New()
 	defer a.Close()
@@ -34,10 +37,31 @@ func TestSeriesStartAtZero(t *testing.T) {
 			t.Errorf("%s = %v (exposed %v), want %v", series, v, ok, value)
 		}
 	}
+	// exposed counts the series whose name and first labels are prefix.
+	exposed := func(prefix string) int {
+		t.Helper()
+		status, body := g.get(t, "/metrics", "")
+		if status != http.StatusOK {
+			t.Fatalf("/metrics = %d", status)
+		}
+		n := 0
+		for line := range strings.SplitSeq(string(body), "\n") {
+			if strings.HasPrefix(line, prefix) {
+				n++
+			}
+		}
+		return n
+	}
 	deploymentSeries := func(model, backend, deploymentModel string) {
 		t.Helper()
 		for _, o := range outcomes {
 			want(fmt.Sprintf(`kaiak_upstream_attempts_total{kaiak_backend_id=%q,kaiak_deployment_model=%q,kaiak_attempt_outcome=%q}`, backend, deploymentModel, o), 0)
+		}
+		if n := exposed(fmt.Sprintf(`kaiak_upstream_attempts_total{kaiak_backend_id=%q,kaiak_deployment_model=%q,`, backend, deploymentModel)); n != len(outcomes) {
+			t.Errorf("%s/%s: %d attempt outcome series, want the %d listed", backend, deploymentModel, n, len(outcomes))
+		}
+		if n := exposed(fmt.Sprintf(`kaiak_retries_total{gen_ai_request_model=%q,kaiak_backend_id=%q,`, model, backend)); n != len(reasons) {
+			t.Errorf("%s on %s: %d retry reason series, want the %d listed", model, backend, n, len(reasons))
 		}
 		for _, to := range []string{"open", "half_open", "closed"} {
 			want(fmt.Sprintf(`kaiak_circuit_transitions_total{kaiak_backend_id=%q,kaiak_deployment_model=%q,kaiak_circuit_state=%q}`, backend, deploymentModel, to), 0)

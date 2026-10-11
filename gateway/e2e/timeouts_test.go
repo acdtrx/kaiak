@@ -1,9 +1,10 @@
 package e2e
 
 // Timeouts on real sockets through the built binary: the client-side deadlines set
-// from the environment (KAIAK_BODY_READ_TIMEOUT_MS, KAIAK_IDLE_TIMEOUT_MS,
-// KAIAK_WRITE_TIMEOUT_MS) and a backend stream's stall timeout. The server tests
-// prove each mechanism on a listener; these prove the binary wires them up.
+// from the environment (KAIAK_BODY_READ_TIMEOUT_MS, KAIAK_UPLOAD_READ_TIMEOUT_MS,
+// KAIAK_IDLE_TIMEOUT_MS, KAIAK_WRITE_TIMEOUT_MS) and a backend stream's stall timeout.
+// The server tests prove each mechanism on a listener; these prove the binary wires
+// them up.
 
 import (
 	"bufio"
@@ -24,8 +25,13 @@ import (
 // (60 s and 120 s, past waitLimit), so a test that passes proves the setting took.
 const clientTimeout = 300 * time.Millisecond
 
+// uploadReadTimeout is the upload read deadline these tests set: far below its default
+// (300 s), and longer than the body-read deadline, so an upload answered after it was
+// read under it, not under the body-read deadline.
+const uploadReadTimeout = 2 * clientTimeout
+
 // startTimeoutGateway runs a file-mode gateway on the e2e config with every client
-// timeout at clientTimeout.
+// timeout at clientTimeout, and the upload read deadline at uploadReadTimeout.
 func startTimeoutGateway(t *testing.T, backendURL string) (*gateway, string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -34,8 +40,8 @@ func startTimeoutGateway(t *testing.T, backendURL string) (*gateway, string) {
 	configFile := filepath.Join(dir, "config.json")
 	writeJSON(t, configFile, testConfig(backendURL, evalHash, annHash, ""))
 	ms := strconv.Itoa(int(clientTimeout.Milliseconds()))
-	env := append(gatewayEnv(configFile),
-		"KAIAK_BODY_READ_TIMEOUT_MS="+ms, "KAIAK_IDLE_TIMEOUT_MS="+ms, "KAIAK_WRITE_TIMEOUT_MS="+ms)
+	env := append(gatewayEnv(configFile), "KAIAK_BODY_READ_TIMEOUT_MS="+ms, "KAIAK_IDLE_TIMEOUT_MS="+ms,
+		"KAIAK_WRITE_TIMEOUT_MS="+ms, "KAIAK_UPLOAD_READ_TIMEOUT_MS="+strconv.Itoa(int(uploadReadTimeout.Milliseconds())))
 	return startGatewayEnv(t, env), evalKey
 }
 
@@ -94,6 +100,27 @@ func TestClientTimeoutsOnARealListener(t *testing.T) {
 		answer := readUntilClosed(t, conn)
 		if elapsed := time.Since(start); elapsed < clientTimeout {
 			t.Errorf("answered after %s, before the %s body-read deadline", elapsed, clientTimeout)
+		}
+		if !strings.HasPrefix(answer, "HTTP/1.1 400") || !strings.Contains(answer, "invalid_body") {
+			t.Errorf("answer %q, want 400 invalid_body", answer)
+		}
+		if n := len(backend.Requests()); n != 0 {
+			t.Errorf("backend got %d requests", n)
+		}
+	})
+
+	t.Run("an authenticated upload that stalls is answered 400 at the upload read deadline", func(t *testing.T) {
+		conn := dialAPI(t, g)
+		start := time.Now()
+		part := "--b0und\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nchat\r\n"
+		if _, err := io.WriteString(conn, "POST /v1/audio/transcriptions HTTP/1.1\r\nHost: kaiak\r\nAuthorization: Bearer "+key+
+			"\r\nContent-Type: multipart/form-data; boundary=b0und\r\nContent-Length: 1000\r\n\r\n"+part); err != nil {
+			t.Fatal(err)
+		}
+		answer := readUntilClosed(t, conn)
+		if elapsed := time.Since(start); elapsed < uploadReadTimeout {
+			t.Errorf("answered after %s, before the %s upload read deadline: the body-read deadline (%s) cut it", elapsed,
+				uploadReadTimeout, clientTimeout)
 		}
 		if !strings.HasPrefix(answer, "HTTP/1.1 400") || !strings.Contains(answer, "invalid_body") {
 			t.Errorf("answer %q, want 400 invalid_body", answer)

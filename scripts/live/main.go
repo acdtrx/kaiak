@@ -12,8 +12,9 @@
 // (vllm or llama-server) serves rerank, and the wrong-endpoint checks send each model
 // the endpoint its server lacks, which its endpoints list leaves out. With
 // -asr-base-url a speech-to-text server of the run's kind (vllm or llama-server)
-// transcribes a tone the kit writes as WAV, FLAC and MP3, its seconds checked against
-// the tone's length. With -speech-base-url, -image-base-url and -edit-base-url
+// transcribes audio the kit writes — a tone as WAV and FLAC, silence of the same length
+// as MP3 — each record's seconds checked against what vLLM reports, or on llama-server
+// against the upload's length. With -speech-base-url, -image-base-url and -edit-base-url
 // vLLM-Omni servers (vllm-omni backends, whatever the run's kind) serve speech, image
 // generation and image edits, and the media checks run: each speech mode, the batch,
 // images, edits, their units on the usage log line, the media limits and caps. A
@@ -127,6 +128,10 @@ type options struct {
 	// run (one image). The self-test asks its fakes for a layered answer of more than
 	// one image, so the count the usage log carries is above 1.
 	imageCheckParams map[string]any
+	// asrHeardMillis is the length a vLLM speech-to-text server must report hearing in
+	// each upload: 0 in a live run, the upload's own (uploadMillis); the self-test's fake
+	// reports another, whose seconds differ from the upload's measured length.
+	asrHeardMillis int
 }
 
 // twoBackends: a second backend serves the model.

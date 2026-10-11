@@ -389,8 +389,9 @@ func selfTestTwoBackends(ctx context.Context, o options, ws *workspace, fakeBin 
 // selfTestServers points o at fakes for the servers beside the kind's own, each
 // started through side with a bearer key in the variable it names:
 //   - the reranker and the speech-to-text server, where the kind serves them, each in
-//     its server's shape; vLLM's speech-to-text hears every upload uploadMillis long,
-//     the length of the kit's;
+//     its server's shape; vLLM's speech-to-text hears every upload selfTestHeardMillis
+//     long, not the upload's own length, so a record that carries the gateway's
+//     measurement instead of the server's seconds fails;
 //   - on vllm, the embeddings server — one model per vLLM process, so the chat server
 //     has no embeddings route (the path-missing check) — and the vLLM-Omni servers: a
 //     speech server whose model does not draw (an image request answered 503, no
@@ -410,8 +411,9 @@ func selfTestServers(o *options, side func(keyEnv string, models []string, flags
 	}
 	if o.serves(epTranscriptions) {
 		o.asrModel, o.asrAPIKeyEnv = selfTestASRModel, "LIVE_SELF_TEST_ASR_KEY"
+		o.asrHeardMillis = selfTestHeardMillis
 		if o.asrBaseURL, err = side(o.asrAPIKeyEnv, []string{o.asrModel}, "-transcription-shape", o.kind,
-			"-audio-millis", strconv.Itoa(uploadMillis)); err != nil {
+			"-audio-millis", strconv.Itoa(selfTestHeardMillis)); err != nil {
 			return err
 		}
 	}
@@ -468,6 +470,10 @@ const (
 	// name, so the kit must expose it under its own.
 	selfTestEmbedPath = "/models/fake-embed-q8_0.gguf"
 )
+
+// selfTestHeardMillis is the audio vLLM's speech-to-text fake hears in every upload:
+// 2.5 s, 3 s rounded up, where the kit's uploads measure 3.6 s, 4 s rounded up.
+const selfTestHeardMillis = 2500
 
 // selfTestCachedTokens is how many prompt tokens the fakes report read from the cache,
 // so the cache check sees a prefix cache answering.

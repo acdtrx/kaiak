@@ -100,14 +100,15 @@ stable).
    It prints the key, its ID, its hash and the entry to paste into the config's `keys`.
 
 3. **Write a config.** Start from [`examples/config.json`](examples/config.json): two
-   vLLM hosts, a vLLM embeddings host, a vLLM reranker host, two vLLM-Omni hosts (a
-   speech model and an image model), an Azure OpenAI resource with priced models, a
-   group tree (a team with a project split into prod and dev, another team, and a
-   `users` group whose `child_defaults` give every person the same models and
-   limits), and example limits. Replace the backend URLs and the placeholder key
-   hashes. A backend's `type` names its server — `vllm`, `vllm-omni`, `llama-server`,
-   `openai`, `azure-openai`, `anthropic`, `azure-anthropic` (Claude in Microsoft
-   Foundry), or `openai-compatible` for any other OpenAI-format server
+   vLLM hosts, a vLLM embeddings host, a vLLM reranker host, a vLLM speech-to-text
+   host, three vLLM-Omni hosts (a speech model, an image model and an image edit
+   model), an Azure OpenAI resource with priced models, a group tree (a team with a
+   project split into prod and dev, another team, and a `users` group whose
+   `child_defaults` give every person the same models and limits), and example
+   limits. Replace the backend URLs and the placeholder key hashes. A backend's
+   `type` names its server — `vllm`, `vllm-omni`, `llama-server`, `openai`,
+   `azure-openai`, `anthropic`, `azure-anthropic` (Claude in Microsoft Foundry), or
+   `openai-compatible` for any other OpenAI-format server
    (`docs/DEPLOYMENT.md` → Config for many hosts). Every model lists the endpoints
    it serves (`docs/DEPLOYMENT.md` → Endpoints per model). Backend credentials are
    named by environment variable (`api_key_env`), never written in the file.

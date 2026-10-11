@@ -3,15 +3,18 @@ package e2e
 // The upload scenarios' shared parts (docs/specs/GATEWAY.md, Request pipeline →
 // Uploads): a form as a client writes it — Go's mime/multipart writer — sent to the
 // gateway, and the form a backend received read back as its server reads one, to
-// compare with what the client sent.
+// compare with what the client sent. And the upload budget the binary takes from
+// KAIAK_UPLOAD_MEMORY_BYTES.
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"path/filepath"
 	"strconv"
 	"testing"
 
@@ -174,3 +177,87 @@ var pngImage = func() string {
 	}
 	return string(append(b, "\r\n--\r\n"...))
 }()
+
+// uploadBudget is the upload budget TestUploadBudgetFromTheEnvironment sets.
+const uploadBudget = 64 << 10
+
+// An upload budget of 64 KiB from KAIAK_UPLOAD_MEMORY_BYTES (docs/specs/GATEWAY.md,
+// Request pipeline → Uploads): a transcription of 40 000 bytes, read whole and sent to
+// a backend that does not answer, holds its share until it ends — so the next upload,
+// of 30 000 bytes, does not fit in what is left and is refused at once, 503
+// server_busy with Retry-After: 1, before any backend; chat, whose bodies take the
+// body budget, is served meanwhile. Once the first one's client goes, its share is
+// given back and the upload is read and answered.
+func TestUploadBudgetFromTheEnvironment(t *testing.T) {
+	asr, chat := fakebackend.New(), fakebackend.New()
+	t.Cleanup(asr.Close)
+	t.Cleanup(chat.Close)
+	asr.SetModels(vllmASRModel)
+	key, hash := newKey()
+	model := func(backend, deployed, endpoint string) map[string]any {
+		return map[string]any{
+			"deployments": []any{map[string]any{"backend": backend, "model": deployed}},
+			"endpoints":   []any{endpoint},
+			"metadata": map[string]any{"context_length": 8192,
+				"capabilities": map[string]any{"streaming": false, "tools": false, "vision": false, "reasoning": false}},
+		}
+	}
+	configFile := filepath.Join(t.TempDir(), "config.json")
+	writeJSON(t, configFile, map[string]any{
+		"protocol_version": 7,
+		"global":           map[string]any{},
+		"backends": map[string]any{
+			"vl":   map[string]any{"type": "vllm", "base_url": asr.URL() + "/v1"},
+			"fake": map[string]any{"type": "openai-compatible", "base_url": chat.URL() + "/v1"},
+		},
+		"models": map[string]any{
+			"whisper": model("vl", vllmASRModel, "audio_transcriptions"),
+			"chat":    model("fake", backendChatModel, "chat_completions"),
+		},
+		"groups": map[string]any{"w": map[string]any{"allowed_models": []any{"*"}}},
+		"keys":   map[string]any{"k": map[string]any{"hash": hash, "group": "w"}},
+	})
+	g := startGatewayEnv(t, append(gatewayEnv(configFile), "KAIAK_UPLOAD_MEMORY_BYTES="+strconv.Itoa(uploadBudget)))
+	transcription := func(size int) (string, []byte) {
+		return writeForm(t, textPart("model", "whisper"), filePart("file", "memo.wav", "audio/wav", wavUpload(8000, size)))
+	}
+
+	asr.SetReply(fakebackend.Reply{Before: fakebackend.StallFirstByte})
+	heldType, heldBody := transcription(40000)
+	ctx, cancel := context.WithCancel(context.Background())
+	held := make(chan error, 1)
+	go func() {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.api+"/v1/audio/transcriptions", bytes.NewReader(heldBody))
+		if err == nil {
+			req.Header.Set("Content-Type", heldType)
+			req.Header.Set("Authorization", "Bearer "+key)
+			var resp *http.Response
+			if resp, err = http.DefaultClient.Do(req); err == nil {
+				resp.Body.Close()
+			}
+		}
+		held <- err
+	}()
+	pollUntil(t, "the held transcription at its backend", waitLimit, func() bool { return len(asr.Requests()) == 1 })
+
+	contentType, body := transcription(30000)
+	refused := g.postForm(t, "/v1/audio/transcriptions", key, "", contentType, body)
+	wantRefusal(t, refused, http.StatusServiceUnavailable, "server_busy")
+	if got := refused.Header.Get("Retry-After"); got != "1" {
+		t.Errorf("Retry-After %q, want 1", got)
+	}
+	if n := len(asr.Requests()); n != 1 {
+		t.Errorf("the backend got %d requests, want the held one alone", n)
+	}
+	if r := g.post(t, "/v1/chat/completions", key, "", chatBody("chat", false, nil)); r.StatusCode != http.StatusOK {
+		t.Errorf("chat with the upload budget held: %d %s, want 200", r.StatusCode, r.body)
+	}
+
+	asr.SetReply(fakebackend.Reply{})
+	cancel()
+	<-held
+	pollUntil(t, "the upload read once the held one's share is given back", waitLimit, func() bool {
+		return g.postForm(t, "/v1/audio/transcriptions", key, "", contentType, body).StatusCode == http.StatusOK
+	})
+	g.stop(t)
+}

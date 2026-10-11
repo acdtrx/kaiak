@@ -560,10 +560,16 @@ func TestAcrossHalves(t *testing.T) {
 		allCounted(t, waitLimit)
 	})
 
-	// Every batch acknowledged before the sample stops: a batch counted by this sample
-	// and resent to the next would count in both stores.
-	for _, g := range []*gateway{a, b} {
-		g.waitMetric(t, "an empty queue", "kaiak_usage_queue_batches", func(v float64) bool { return v == 0 })
+	// Every record the gateways settled is accepted by this sample before it stops: a
+	// batch counted by this sample and resent to the next would count in both stores,
+	// and a record still in a gateway's filling batch — which no queue metric shows —
+	// would reach the next store alone, while tokens below starts empty. The sample's
+	// totals cannot tell: an answer at the top of the hour may count in either hour,
+	// which lets the check of the hour's total pass with as much still to come.
+	for instance, g := range map[string]*gateway{"gw-a": a, "gw-b": b} {
+		pollUntil(t, instance+": every settled record accepted by the sample", waitLimit, func() bool {
+			return proxy.acceptedRecords(instance) == g.settledRecords(t)
+		})
 	}
 	sample.stop(t)
 	proxy.setUpstream(t, "")
@@ -955,6 +961,34 @@ type answerUsage struct {
 // limitTokens is what a token limit counts of the answer: every token but the input
 // read from the cache (GATEWAY.md, Limits → Settle).
 func (u answerUsage) limitTokens() int64 { return u.Total - u.Details.Cached }
+
+// settledRecords is how many usage records g settled and kept for the control plane:
+// its kaiak_usage_records_total over every series, less those it dropped before
+// sending (kaiak_usage_dropped_records_total).
+func (g *gateway) settledRecords(t *testing.T) int {
+	t.Helper()
+	status, body := g.get(t, "/metrics", "")
+	if status != http.StatusOK {
+		t.Fatalf("/metrics = %d", status)
+	}
+	var n float64
+	for line := range strings.SplitSeq(string(body), "\n") {
+		sign := 1.0
+		series, ok := strings.CutPrefix(line, "kaiak_usage_records_total{")
+		if !ok {
+			if series, ok = strings.CutPrefix(line, "kaiak_usage_dropped_records_total{"); !ok {
+				continue
+			}
+			sign = -1
+		}
+		value, err := strconv.ParseFloat(series[strings.LastIndexByte(series, ' ')+1:], 64)
+		if err != nil {
+			t.Fatalf("%s: %v", line, err)
+		}
+		n += sign * value
+	}
+	return int(n)
+}
 
 // servedAmounts are what the answers served add to one hourly total — tokens, images
 // or seconds of audio generated — each with when it was received. The sample's hourly

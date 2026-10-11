@@ -107,7 +107,7 @@ svg .band { stroke: none; }
   </tbody>
 </table>
 </div>
-<div class="callout"><p>The gateway only makes <strong>outbound</strong> calls. There is one shared bearer token (<code>KAIAK_CONTROL_TOKEN</code>), every request and response carries <code>Kaiak-Protocol: 6</code>, and the gateway names itself in <code>Kaiak-Instance</code> (default: the hostname / pod name). A version mismatch is refused on both sides — the halves move together.</p></div>
+<div class="callout"><p>The gateway only makes <strong>outbound</strong> calls. There is one shared bearer token (<code>KAIAK_CONTROL_TOKEN</code>), every request and response carries <code>Kaiak-Protocol: 7</code>, and the gateway names itself in <code>Kaiak-Instance</code> (default: the hostname / pod name). A version mismatch is refused on both sides — the halves move together.</p></div>
 </section>
 
 <section id="endpoints">
@@ -153,7 +153,7 @@ svg .band { stroke: none; }
   <line x1="738" y1="260" x2="212" y2="260" class="edge" marker-end="url(#e-a)"/>
   <text x="474" y="276" text-anchor="middle" class="s">204, no body</text>
 
-  <text x="480" y="324" text-anchor="middle" class="s">Every request: Authorization: Bearer &lt;token&gt; · Kaiak-Protocol: 6 · Kaiak-Instance: &lt;id&gt; — checked in that order (401, 400, 400)</text>
+  <text x="480" y="324" text-anchor="middle" class="s">Every request: Authorization: Bearer &lt;token&gt; · Kaiak-Protocol: 7 · Kaiak-Instance: &lt;id&gt; — checked in that order (401, 400, 400)</text>
 </svg>
 <figcaption>Control plane → gateway is one SSE stream: the current config on connect, then the totals, then every change. Gateway → control plane is plain POSTs. Every body is a JSON message with a schema in <code>protocol/schema/</code>; both halves test against the same fixtures in <code>protocol/fixtures/</code>. Errors use <code>{ error, detail? }</code>.</figcaption>
 </figure>

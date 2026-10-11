@@ -375,7 +375,7 @@ func TestMessagesCountTokens(t *testing.T) {
 }
 
 // With anthropic-version, the model list and entry answer in Anthropic's shape, over
-// the models some deployment serves through Messages; without it, as before.
+// the models whose endpoints list names Messages; without it, in OpenAI's shape.
 func TestAnthropicShapedModelList(t *testing.T) {
 	g := newTestGateway(t)
 	withMessagesModels(t, g, nil)

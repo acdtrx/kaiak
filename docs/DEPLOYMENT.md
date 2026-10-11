@@ -419,7 +419,9 @@ default builder), `KAIAK_IMAGE_REPO` (required: the registry and namespace, e.g.
   (Observability: Wrong model, path or credential). llama-server and vLLM-Omni
   register every route whatever their model, so on them only a wrong `base_url`
   gets this answer; a wrong list gets the server's own (Endpoints per model,
-  below).
+  below). On `vllm` a `405 {"detail": "Method Not Allowed"}` — a POST landing on a
+  route vLLM has for another method only — reads the same way; on every other type a
+  `405` is relayed as it came.
 
 ## Config for many hosts
 
@@ -974,6 +976,16 @@ under rules of their own (`GATEWAY.md` → Request pipeline: Uploads; settled
   1 MiB or more than 1000 parts `400 invalid_body` (Starlette's limits, which vLLM and
   vLLM-Omni apply). The backend gets every part as the client sent it, `model`
   replaced; filenames and the parts' bytes never reach the logs.
+- **Parts the backends would read otherwise are refused**, `400 invalid_body`, so a
+  backend never gets parts other than those the gateway checked:
+  - a part name or filename holding `\` or `"` — the backends' form readers
+    (python-multipart in vLLM and vLLM-Omni, cpp-httplib in llama-server) read the
+    escaped form differently, and a crafted file part would reach the backend as
+    another field;
+  - an empty filename (`filename=""`) — a file part to the gateway, a text field to
+    llama-server;
+  - invalid UTF-8 in a text part, a part name or a filename — llama-server answers
+    it `500`, a backend failure any client could cause at will.
 
 ## Image edits
 
@@ -992,9 +1004,10 @@ under rules of their own (`GATEWAY.md` → Request pipeline: Uploads; settled
   ```
 
   — about 60 GB of weights with its text encoder. Give the model `"endpoints":
-  ["images_edits"]`: vLLM-Omni answers a generation sent to an edit model `500`. Its
-  deployment `model` is the server's first served name, as for image generation
-  (One backend per model, above).
+  ["images_edits"]` (the example's `qwen-image-edit`, `examples/config.json`):
+  vLLM-Omni answers a generation sent to an edit model `500`. Its deployment `model`
+  is the server's first served name, as for image generation (One backend per model,
+  above).
 - **Input images**: vLLM-Omni takes one on most edit pipelines, up to 4 on
   Qwen-Image-Edit-2509 and -2511 (and Flux2 Klein), 3 on HunyuanImage3, and refuses
   more with `400`; no size limit per image but the upload cap. The answer's size
@@ -1049,23 +1062,44 @@ under rules of their own (`GATEWAY.md` → Request pipeline: Uploads; settled
   - **Serving**: `vllm serve <model>` with any model vLLM transcribes with — Whisper,
     Voxtral, Qwen3-ASR, Granite Speech, … — e.g. `vllm serve
     openai/whisper-large-v3-turbo --port 8006`; its own backend, the model
-    `"endpoints": ["audio_transcriptions"]`.
+    `"endpoints": ["audio_transcriptions"]` (the example's `whisper-large-v3-turbo`,
+    `examples/config.json`, with `audio_seconds_in_per_hour` on its `users`
+    defaults).
 - **On llama-server the seconds are the gateway's**, measured from the upload:
-  llama-server reports tokens only. It decodes WAV, FLAC and MP3 alone, and the
-  gateway measures those three — WAV of PCM, IEEE float, A-law or μ-law; FLAC by its
-  header; MP3 frame by frame — and refuses any other upload before it is sent, `400
-  audio_format_unsupported` (`param: "file"`): a request whose audio nothing could
-  count is never sent. The tokens are llama-server's. llama-server refuses
-  `response_format` other than `json` (`400`, relayed).
+  llama-server reports tokens only. Its decoder (miniaudio) tries WAV, then FLAC,
+  then MP3, and its MP3 decoder searches the whole file for frames, so the gateway
+  takes an upload only when that decoder provably reads it as measured:
+  - WAV of PCM, IEEE float, A-law or μ-law, and FLAC with its total samples in its
+    header, each with a header the decoder accepts — on a header it refuses, the
+    decoder goes on to search the file for MP3 frames, so such a file is refused
+    too;
+  - MP3 as one unbroken run of frames of one MPEG version, layer, sample rate and
+    channel count, a leading ID3v2 tag skipped: no free-format frames, no junk,
+    nothing after the last frame but one 128-byte ID3v1 tag — no APE tags, no
+    truncated last frame. Re-encode, or strip the tags of, an MP3 refused for its
+    shape.
+
+  Any other upload is refused before it is sent, `400 audio_format_unsupported`
+  (`param: "file"`): a request whose audio nothing could count is never sent. On
+  `vllm` measuring is only the fallback for an answer without seconds, and no
+  upload is refused for its format. The tokens are llama-server's. llama-server
+  refuses `response_format` other than `json` (`400`, relayed).
   - **Serving**: a GGUF of a model with an audio encoder (Voxtral, Qwen2.5-Omni,
     Qwen3-ASR, Ultravox, …) and its audio projector, `llama-server -m <model>.gguf
     --mmproj <projector>.gguf`; a model without one answers `501`, a backend `5xx`.
+- **A transcription sent and never answered** (no answer within
+  `response_timeout_ms`, a connection lost after sending) records 0
+  `audio_seconds_in` on every type, a measured upload included — the prompt's
+  estimate alone, flagged `estimated` and `partial` — as an unanswered image request
+  records 0 images.
 - **What else the gateway refuses**: `vllm_xargs` (`400
-  external_reference_unsupported`: vLLM hands it to the model as extra arguments).
+  external_reference_unsupported`: vLLM hands it to the model as extra arguments);
+  `n` above `global.max_n` (`400 n_too_large`, as on chat: vLLM takes `n` as the beam
+  width under `use_beam_search`, work no unit counts).
 - **Before go-live, run the live kit** with the speech-to-text server
   (`docs/testing/LIVE-BACKENDS.md`, Speech-to-text on a server of its own): it
-  transcribes a tone of known length in WAV, FLAC and MP3 and checks the seconds
-  counted.
+  transcribes audio of known length — a tone as WAV and FLAC, silence as MP3 — and
+  checks the seconds counted.
 
 ## Azure OpenAI
 
@@ -1806,8 +1840,15 @@ Boot).
       config-apply warning `the backend has no models list at its base_url` and the
       `path_missing` attempts show it;
     - llama-server's `501` (embeddings or rerank without their flag) and
-      vLLM-Omni's image `503` (a speech model) are backend `5xx`s again, retried and
-      counted toward the circuit; the lists keep those requests off such servers;
+      vLLM-Omni's image `503` (a speech model), which 0.14.0 read as endpoint
+      missing, are plain backend `5xx`s, retried and counted toward the circuit; the
+      lists keep those requests off such servers;
+    - vLLM's `405 {"detail": "Method Not Allowed"}`, read as endpoint missing in
+      0.14.0, is `upstream_path_missing` on `vllm` only; another type's `405` is
+      relayed as it came;
+    - `upstream_path_missing` has a new message, naming both causes: `The model
+      backend does not have this endpoint: its address is misconfigured, or its
+      server does not serve this API for the model.`;
     - the endpoint memory is gone, with its warning `the deployment's server does not
       serve an endpoint its type serves` and its field `kaiak.endpoint`;
     - the attempt outcome `endpoint_missing` is gone (thirteen outcomes), and
@@ -1820,19 +1861,25 @@ Boot).
     (default 25 MiB), and the environment variables `KAIAK_UPLOAD_MEMORY_BYTES`
     (default 256 MiB) and `KAIAK_UPLOAD_READ_TIMEOUT_MS` (default 300 000). **Raise
     the memory limit by the upload budget** (Resources: 1.75 GiB at the defaults,
-    `GOMEMLIMIT=1600MiB` for a literal value), whatever the config serves.
+    `GOMEMLIMIT=1600MiB` for a literal value), whatever the config serves. A part
+    name or filename holding `\` or `"`, an empty filename and invalid UTF-8 in a
+    text part, a name or a filename are refused, `400 invalid_body`.
   - **Image edits and speech-to-text are new** (Image edits, Speech-to-text): `POST
     /v1/images/edits` on `vllm-omni` (the endpoint name `images_edits`) and `POST
     /v1/audio/transcriptions` on `vllm` and `llama-server` (`audio_transcriptions`);
     the usage operation `generate_content` with `gen_ai.output.type` `image` and
     `text`. `audio_seconds_in` is now produced, so the `audio_seconds_in_per_minute`
-    and `audio_seconds_in_per_hour` limits now refuse.
+    and `audio_seconds_in_per_hour` limits now refuse. On `llama-server` the gateway
+    takes only an upload it can measure as llama-server's decoder reads it — WAV,
+    FLAC, or an MP3 that is one unbroken run of frames (Speech-to-text); a
+    transcription's `n` is capped by `global.max_n`; a transcription sent and never
+    answered records 0 `audio_seconds_in`.
   - **New error codes**: `400 unsupported_content_type` (an upload endpoint's body
     not a multipart form, OpenAI's JSON form of image edits included), `400
     audio_format_unsupported` (a transcription for a `llama-server` model whose
     upload the gateway cannot measure). The upload endpoints answer the existing
     codes too (`invalid_body`, `duplicate_member`, `missing_required_parameter`,
-    `invalid_type`, `invalid_value`, `response_format_unsupported`,
+    `invalid_type`, `invalid_value`, `n_too_large`, `response_format_unsupported`,
     `external_reference_unsupported`, `request_too_large`, `server_busy`), and `400
     endpoint_not_served` has one message: `The model is not served on /v1/…: its
     configured endpoints do not include this API.`

@@ -680,7 +680,9 @@ the `{ error, detail }` body, `error` being the stable code:
   - `tokens_reasoning` — the reasoning share of `tokens_out`
     (`completion_tokens_details.reasoning_tokens`), recorded for visibility only;
   - `images` — images generated (settled 2026-10-09, with the user): the elements
-    of an image answer's `data[]` (`GATEWAY.md`, Accounting → Media usage);
+    of an image answer's `data[]` (`GATEWAY.md`, Accounting → Media usage) — of an
+    answer cut short, the larger of the elements seen and the request's `n`
+    (`GATEWAY.md`, Accounting → Partial); 0 for a request never answered;
   - `audio_seconds_out` — seconds of audio generated (settled 2026-10-09, with the
     user): measured by the gateway on the speech audio it relays, rounded up to a
     whole second once per record;
@@ -688,7 +690,9 @@ the `{ error, detail }` body, `error` being the stable code:
     user; produced by speech-to-text, settled 2026-10-11, with the user): the seconds
     the backend reports for the audio a transcription uploaded, or the length the
     gateway measures of that upload when the backend reports none, rounded up to a
-    whole second once per record (`GATEWAY.md`, Accounting → Media usage).
+    whole second once per record (`GATEWAY.md`, Accounting → Media usage); 0 for a
+    transcription never answered, as for images (`GATEWAY.md`, Accounting → Billed
+    from the moment the request was sent).
 
   The media units sit beside the tokens, not inside them: a speech record carries
   the tokens its backend reports and the seconds the gateway measured, a

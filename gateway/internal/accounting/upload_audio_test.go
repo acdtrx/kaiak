@@ -3,6 +3,7 @@ package accounting
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"math"
 	"math/big"
 	"testing"
@@ -47,10 +48,12 @@ func lengthOf(n, byteRate int64) time.Duration {
 // — rate × channels × bytes a sample, computed here from the test's own numbers — for
 // every format llama-server's decoder plays: PCM of 8, 16, 24 and 32-bit samples, mono
 // and stereo; IEEE float of 32 and 64-bit samples; 8-bit A-law and μ-law; the
-// extensible format naming each of them in its 22-byte extension. Chunks before the data, odd ones with their pad byte; a data chunk
-// declaring more than the file holds, or the streamed placeholder, counts the bytes
-// present, and one declaring less counts what it declares (docs/specs/GATEWAY.md,
-// Accounting → Media usage: speech-to-text).
+// extensible format naming each of them in its 22-byte extension; a rate, channels and
+// a sample size at dr_wav's limits. Chunks before the data, odd ones with their pad
+// byte; a fmt chunk with an extension of another format, which dr_wav seeks over; two
+// fmt chunks, the last read; a data chunk declaring more than the file holds, or the
+// streamed placeholder, counts the bytes present, and one declaring less counts what
+// it declares (docs/specs/GATEWAY.md, Accounting → Media usage: speech-to-text).
 func TestWAVUploadLength(t *testing.T) {
 	declaring := func(declared uint32, present int) []byte {
 		f := riff(0, wavChunk("fmt ", fmtBody(1, 1, 16000, 2, 16)), dataHeader(declared))
@@ -89,6 +92,13 @@ func TestWAVUploadLength(t *testing.T) {
 		{"the streamed placeholder", declaring(0xFFFFFFFF, 64000), 32000, 64000},
 		{"declared less than present", declaring(16000, 64000), 32000, 16000},
 		{"an empty data chunk", pcmWAV(1, 16000, 16, 0), 32000, 0},
+		{"dr_wav's highest rate", pcmWAV(1, drWAVMaxSampleRate, 8, 1000), drWAVMaxSampleRate, 1000},
+		{"dr_wav's most channels", pcmWAV(drWAVMaxChannels, 8000, 8, 8000*256), 8000 * 256, 8000 * 256},
+		{"dr_wav's largest samples", tagWAV(3, 1, 8000, 64, 8000*8), 8000 * 8, 8000 * 8},
+		{"an extension of another format", riff(0, wavChunk("fmt ", fmtBody(1, 1, 16000, 2, 16, 2, 0, 0xAB, 0xCD)),
+			wavChunk("data", filler(3200))), 32000, 3200},
+		{"two fmt chunks, the last read", riff(0, wavChunk("fmt ", fmtBody(1, 1, 8000, 1, 8)), wavChunk("fmt ", fmtBody(1, 2, 16000, 4, 16)),
+			wavChunk("data", filler(6400))), 64000, 6400},
 	} {
 		got, measured := UploadAudioLength(c.file)
 		if want := lengthOf(c.data, c.byteRate); !measured || got != want {
@@ -102,29 +112,41 @@ func TestWAVUploadLength(t *testing.T) {
 // unknown tag — or the extensible format naming one, or naming none; A-law or μ-law of
 // samples wider than 8 bits; a header cut short, a data chunk before the fmt chunk, a
 // zero rate, a chunk declaring more than the file holds before the data, RIFF of
-// another form type (docs/specs/GATEWAY.md, Accounting → Media usage).
+// another form type. Nor is a header dr_wav refuses — miniaudio then tries its other
+// decoders, and dr_mp3 searches the file for frames: a rate, channels or a sample size
+// past its limits, a fact chunk under the 4 bytes it reads, a fmt chunk under its 16
+// bytes of fields or whose extension runs past the file's end — MP3 audio in its data
+// chunk included (docs/specs/GATEWAY.md, Accounting → Media usage).
 func TestUnmeasurableWAVUploads(t *testing.T) {
 	format := wavChunk("fmt ", fmtBody(1, 1, 16000, 2, 16))
 	data := wavChunk("data", filler(3200))
 	for name, file := range map[string][]byte{
-		"ADPCM":                      riff(0, wavChunk("fmt ", fmtBody(2, 1, 16000, 256, 4, 2, 0, 0xF4, 0x01)), data),
-		"MP3 in WAV":                 riff(0, wavChunk("fmt ", fmtBody(0x55, 1, 16000, 1, 0)), data),
-		"an unknown tag":             tagWAV(0x1234, 1, 16000, 16, 3200),
-		"extensible of an unknown":   tagWAV(0xFFFE, 1, 16000, 16, 3200, extension(16, 0x1234)...),
-		"extensible of ADPCM":        tagWAV(0xFFFE, 1, 16000, 16, 3200, extension(16, 2)...),
-		"extensible of extensible":   tagWAV(0xFFFE, 1, 16000, 16, 3200, extension(16, 0xFFFE)...),
-		"extensible, size 0":         tagWAV(0xFFFE, 1, 16000, 16, 3200, append([]byte{0, 0}, extension(16, 1)[2:]...)...),
-		"extensible, no extension":   tagWAV(0xFFFE, 1, 16000, 16, 3200),
-		"16-bit μ-law":               tagWAV(7, 1, 16000, 16, 3200),
-		"IEEE float, a short block":  riff(0, wavChunk("fmt ", fmtBody(3, 2, 16000, 4, 32)), data),
-		"cut in the fmt chunk":       riff(0, format)[:30],
-		"no data chunk":              riff(0, format),
-		"data before fmt":            riff(0, data, format),
-		"zero rate":                  riff(0, wavChunk("fmt ", fmtBody(1, 1, 0, 2, 16)), data),
-		"a chunk past the end":       append(riff(0, format), "LIST\xff\xff\xff\x7fINFO"...),
-		"a zero-size chunk then end": riff(0, format, wavChunk("JUNK", nil)),
-		"AVI":                        append(append([]byte("RIFF\x00\x00\x00\x00AVI "), format...), data...),
-		"RIFF alone":                 []byte("RIFF\x24\x00\x00\x00WAVE"),
+		"ADPCM":                        riff(0, wavChunk("fmt ", fmtBody(2, 1, 16000, 256, 4, 2, 0, 0xF4, 0x01)), data),
+		"MP3 in WAV":                   riff(0, wavChunk("fmt ", fmtBody(0x55, 1, 16000, 1, 0)), data),
+		"an unknown tag":               tagWAV(0x1234, 1, 16000, 16, 3200),
+		"extensible of an unknown":     tagWAV(0xFFFE, 1, 16000, 16, 3200, extension(16, 0x1234)...),
+		"extensible of ADPCM":          tagWAV(0xFFFE, 1, 16000, 16, 3200, extension(16, 2)...),
+		"extensible of extensible":     tagWAV(0xFFFE, 1, 16000, 16, 3200, extension(16, 0xFFFE)...),
+		"extensible, size 0":           tagWAV(0xFFFE, 1, 16000, 16, 3200, append([]byte{0, 0}, extension(16, 1)[2:]...)...),
+		"extensible, no extension":     tagWAV(0xFFFE, 1, 16000, 16, 3200),
+		"16-bit μ-law":                 tagWAV(7, 1, 16000, 16, 3200),
+		"IEEE float, a short block":    riff(0, wavChunk("fmt ", fmtBody(3, 2, 16000, 4, 32)), data),
+		"cut in the fmt chunk":         riff(0, format)[:30],
+		"no data chunk":                riff(0, format),
+		"data before fmt":              riff(0, data, format),
+		"zero rate":                    riff(0, wavChunk("fmt ", fmtBody(1, 1, 0, 2, 16)), data),
+		"a chunk past the end":         append(riff(0, format), "LIST\xff\xff\xff\x7fINFO"...),
+		"a zero-size chunk then end":   riff(0, format, wavChunk("JUNK", nil)),
+		"AVI":                          append(append([]byte("RIFF\x00\x00\x00\x00AVI "), format...), data...),
+		"RIFF alone":                   []byte("RIFF\x24\x00\x00\x00WAVE"),
+		"a rate past dr_wav's limit":   pcmWAV(1, drWAVMaxSampleRate+1, 8, 3200),
+		"channels past dr_wav's limit": pcmWAV(drWAVMaxChannels+1, 8000, 8, 257*10),
+		"samples past dr_wav's limit":  pcmWAV(1, 8000, 72, 90),
+		"a fact chunk of 2 bytes":      riff(0, format, wavChunk("fact", filler(2)), data),
+		"a fmt chunk of 14 bytes":      riff(0, wavChunk("fmt ", fmtBody(1, 1, 16000, 2, 16)[:14]), data),
+		"an extension past the end":    riff(0, wavChunk("fmt ", fmtBody(1, 1, 16000, 2, 16, 0xFF, 0x7F)), data),
+		"MP3 behind a header dr_wav refuses": riff(0, wavChunk("fmt ", fmtBody(1, 1, drWAVMaxSampleRate+16000, 1, 8)),
+			wavChunk("data", mp3Frames(mpeg1L3, 1000))),
 	} {
 		if d, measured := UploadAudioLength(file); measured || d != 0 {
 			t.Errorf("%s: %v measured %v, want unmeasured", name, d, measured)
@@ -147,6 +169,26 @@ func flacStream(rate uint32, channels, bits uint8, total uint64) []byte {
 	return append(append(b, 0xFF, 0xF8), filler(300)...)
 }
 
+// flacWithBlocks is flacStream with metadata blocks after its STREAMINFO, the last
+// block flagged last: STREAMINFO's own flag cleared.
+func flacWithBlocks(stream []byte, blocks ...[]byte) []byte {
+	head := bytes.Clone(stream[:4+4+flacStreamInfoBytes])
+	head[4] &^= 0x80
+	for i, block := range blocks {
+		if i == len(blocks)-1 {
+			block = bytes.Clone(block)
+			block[0] |= 0x80
+		}
+		head = append(head, block...)
+	}
+	return append(head, stream[4+4+flacStreamInfoBytes:]...)
+}
+
+// flacBlock is a metadata block of type kind holding body, not flagged last.
+func flacBlock(kind byte, body []byte) []byte {
+	return append([]byte{kind, byte(len(body) >> 16), byte(len(body) >> 8), byte(len(body))}, body...)
+}
+
 // id3Tag is an ID3v2.4 tag holding body, its size in four 7-bit bytes, with a footer
 // when footer is set.
 func id3Tag(body []byte, footer bool) []byte {
@@ -164,7 +206,8 @@ func id3Tag(body []byte, footer bool) []byte {
 }
 
 // A FLAC upload's length is STREAMINFO's total samples over its sample rate, whatever
-// the frames hold — also past ID3v2 tags, which llama-server's FLAC decoder skips
+// the frames hold — also past ID3v2 tags, which llama-server's FLAC decoder skips, and
+// before metadata blocks of every type at or above the sizes dr_flac takes
 // (docs/specs/GATEWAY.md, Accounting → Media usage: speech-to-text).
 func TestFLACUploadLength(t *testing.T) {
 	tagged := append(id3Tag(append([]byte("TIT2\x00\x00\x00\x05\x00\x00\x03Kaiak"), 0xFF, 0xFB, 0x90, 0x64), false),
@@ -180,6 +223,9 @@ func TestFLACUploadLength(t *testing.T) {
 		{"one sample", flacStream(96000, 1, 16, 1), 1, 96000},
 		{"the largest total at the largest rate", flacStream(1<<20-1, 8, 32, 1<<36-1), 1<<36 - 1, 1<<20 - 1},
 		{"past ID3v2 tags", append(tagged, flacStream(16000, 1, 16, 16000*7+3)...), 16000*7 + 3, 16000},
+		{"metadata blocks after STREAMINFO", flacWithBlocks(flacStream(48000, 2, 24, 96000), flacBlock(2, filler(4)),
+			flacBlock(3, filler(18*2)), flacBlock(4, filler(8)), flacBlock(5, filler(396)), flacBlock(6, filler(32)),
+			flacBlock(1, nil), flacBlock(127, filler(3)), flacBlock(9, filler(5))), 96000, 48000},
 	} {
 		got, measured := UploadAudioLength(c.file)
 		if want := lengthOf(c.total, c.rate); !measured || got != want {
@@ -191,7 +237,10 @@ func TestFLACUploadLength(t *testing.T) {
 // A FLAC stream whose STREAMINFO does not give a length is not measured: a total of 0
 // ("unknown"), a rate of 0, a first block that is not STREAMINFO or not of its size,
 // a block cut short, a length past the longest time.Duration; nor is an ID3v2 tag
-// running past the file's end.
+// running past the file's end. Nor is a stream dr_flac refuses — miniaudio then tries
+// dr_mp3, which searches the file for frames: a metadata block under the size dr_flac
+// takes for its type, one running past the file's end, metadata ending with no block
+// flagged last — MP3 audio after it included.
 func TestUnmeasurableFLACUploads(t *testing.T) {
 	good := flacStream(44100, 2, 16, 44100)
 	with := func(at int, value byte) []byte {
@@ -200,15 +249,23 @@ func TestUnmeasurableFLACUploads(t *testing.T) {
 		return b
 	}
 	for name, file := range map[string][]byte{
-		"total 0":                 flacStream(44100, 2, 16, 0),
-		"rate 0":                  flacStream(0, 2, 16, 44100),
-		"first block not info":    with(4, 0x84),
-		"info of 33 bytes":        with(7, 33),
-		"info of 35 bytes":        with(7, 35),
-		"cut in the info":         good[:30],
-		"fLaC alone":              []byte("fLaC"),
-		"past the longest length": flacStream(1, 1, 16, 1<<36-1),
-		"a tag past the end":      append(id3Tag(nil, false)[:6], 0, 0, 1, 0, 'f', 'L', 'a', 'C'),
+		"total 0":                   flacStream(44100, 2, 16, 0),
+		"rate 0":                    flacStream(0, 2, 16, 44100),
+		"first block not info":      with(4, 0x84),
+		"info of 33 bytes":          with(7, 33),
+		"info of 35 bytes":          with(7, 35),
+		"cut in the info":           good[:30],
+		"fLaC alone":                []byte("fLaC"),
+		"past the longest length":   flacStream(1, 1, 16, 1<<36-1),
+		"a tag past the end":        append(id3Tag(nil, false)[:6], 0, 0, 1, 0, 'f', 'L', 'a', 'C'),
+		"an application of 3 bytes": flacWithBlocks(good, flacBlock(2, filler(3))),
+		"a comment of 7 bytes":      flacWithBlocks(good, flacBlock(4, filler(7))),
+		"a cue sheet of 395 bytes":  flacWithBlocks(good, flacBlock(5, filler(395))),
+		"a picture of 31 bytes":     flacWithBlocks(good, flacBlock(6, filler(31))),
+		"a block past the end":      flacWithBlocks(good, flacBlock(1, filler(4)))[:4+4+flacStreamInfoBytes+6],
+		"no block flagged last":     flacWithBlocks(good, flacBlock(1, filler(4)), flacBlock(1, nil))[:4+4+flacStreamInfoBytes+8],
+		"MP3 behind a FLAC dr_flac refuses": append(flacWithBlocks(flacStream(8000, 1, 16, 8000)[:4+4+flacStreamInfoBytes],
+			flacBlock(4, filler(2))), mp3Frames(mpeg1L3, 1000)...),
 	} {
 		if d, measured := UploadAudioLength(file); measured || d != 0 {
 			t.Errorf("%s: %v measured %v, want unmeasured", name, d, measured)
@@ -234,9 +291,12 @@ func TestOtherFormatsAreNotMeasured(t *testing.T) {
 	}
 }
 
-// However hostile a WAV upload, its pass ends, never panics, and its data is at most
-// the bytes the file holds past the headers it read — the RIFF header, the fmt and data
-// chunk headers and the fmt chunk's fields — at the fmt chunk's byte rate.
+// However hostile a WAV upload, its pass ends, never panics, and a length it measures
+// is derived again here from the file's own fields, by a walk of the test's own: the
+// last fmt chunk before the first data chunk gives the byte rate — its rate times its
+// block size, within dr_wav's limits on rate, channels and sample size, the block the
+// channels' samples — and the data chunk's bytes present, at most the size it
+// declares, are the audio.
 func FuzzWAVUploadLength(f *testing.F) {
 	f.Add(pcmWAV(2, 44100, 16, 400))
 	f.Add(pcmWAV(1, 8000, 8, 31, wavChunk("JUNK", filler(3))))
@@ -248,6 +308,8 @@ func FuzzWAVUploadLength(f *testing.F) {
 	f.Add(tagWAV(0xFFFE, 2, 44100, 32, 64, extension(32, 3)...))
 	f.Add(tagWAV(0xFFFE, 1, 8000, 8, 9, extension(8, 6)...))
 	f.Add(tagWAV(0xFFFE, 1, 8000, 16, 9, make([]byte, 24)...))
+	f.Add(riff(0, wavChunk("fmt ", fmtBody(1, 1, 16000, 2, 16, 2, 0, 1, 2)), wavChunk("fact", filler(2)), dataHeader(8)))
+	f.Add(pcmWAV(1, drWAVMaxSampleRate, 8, 40))
 	f.Fuzz(func(t *testing.T, file []byte) {
 		d, measured := wavUploadLength(file)
 		if !measured {
@@ -256,45 +318,76 @@ func FuzzWAVUploadLength(f *testing.F) {
 			}
 			return
 		}
-		clip := &wavClip{}
-		clip.write(file)
-		if headers := int64(wavRIFFBytes + 2*wavChunkHeaderBytes + wavFmtFieldBytes); clip.received > int64(len(file))-headers {
-			t.Fatalf("%d data bytes in a file of %d", clip.received, len(file))
+		var fields []byte
+		for at := wavRIFFBytes; at+8 <= len(file); {
+			size := int64(binary.LittleEndian.Uint32(file[at+4 : at+8]))
+			switch string(file[at : at+4]) {
+			case "fmt ":
+				fields = file[at+8 : at+8+16]
+			case "data":
+				if fields == nil {
+					t.Fatal("measured with no fmt chunk before the data")
+				}
+				tag, channels := binary.LittleEndian.Uint16(fields[0:2]), int64(binary.LittleEndian.Uint16(fields[2:4]))
+				rate, block := int64(binary.LittleEndian.Uint32(fields[4:8])), int64(binary.LittleEndian.Uint16(fields[12:14]))
+				bits := int64(binary.LittleEndian.Uint16(fields[14:16]))
+				if rate > drWAVMaxSampleRate || channels > drWAVMaxChannels || bits > drWAVMaxBitsPerSample || block != channels*((bits+7)/8) {
+					t.Fatalf("measured format %d: %d channels of %d bits at %d Hz, blocks of %d", tag, channels, bits, rate, block)
+				}
+				present := min(size, int64(len(file)-at-8))
+				if want := lengthOf(present, rate*block); d != want {
+					t.Fatalf("%v, want %v: %d bytes at %d Hz in blocks of %d", d, want, present, rate, block)
+				}
+				return
+			}
+			at += 8 + int(size+size%2)
 		}
-		if want := lengthOf(clip.received, clip.byteRate); d != want {
-			t.Fatalf("%v, want %v: %d bytes at %d a second", d, want, clip.received, clip.byteRate)
-		}
+		t.Fatal("measured with no data chunk")
 	})
 }
 
 // However hostile a FLAC stream, its length is what its STREAMINFO declares — read
-// here as the decoder reads it, one 64-bit word — or it is not measured: never a
-// panic, never a length of the longest time.Duration's whole seconds or more.
+// here as the decoder reads it, one 64-bit word — when dr_flac would read its metadata
+// blocks, walked here by the test's own walk; else it is not measured: never a panic,
+// never a length of the longest time.Duration's whole seconds or more.
 func FuzzFLACUploadLength(f *testing.F) {
 	f.Add(flacStream(44100, 2, 16, 441000)[4:])
 	f.Add(flacStream(1, 1, 16, 1<<36-1)[4:])
 	f.Add(flacStream(44100, 2, 16, 0)[4:])
 	f.Add([]byte{0, 0, 0, 34})
+	f.Add(flacWithBlocks(flacStream(44100, 2, 16, 441000), flacBlock(4, filler(8)), flacBlock(6, filler(40)))[4:])
 	f.Fuzz(func(t *testing.T, stream []byte) {
 		d, measured := flacLength(stream)
-		if len(stream) < 38 || stream[0]&0x7F != 0 || binary.BigEndian.Uint32(stream[0:4])&0xFFFFFF != 34 {
+		unmeasured := func(why string) {
 			if measured || d != 0 {
-				t.Fatalf("no STREAMINFO, yet %v measured %v", d, measured)
+				t.Fatalf("%s, yet %v measured %v", why, d, measured)
 			}
+		}
+		if len(stream) < 38 || stream[0]&0x7F != 0 || binary.BigEndian.Uint32(stream[0:4])&0xFFFFFF != 34 {
+			unmeasured("no STREAMINFO")
 			return
+		}
+		minimum := map[byte]int{2: 4, 4: 8, 5: 396, 6: 32}
+		for b, last := stream[38:], stream[0]&0x80 != 0; !last; {
+			if len(b) < 4 {
+				unmeasured("metadata cut short")
+				return
+			}
+			kind, size := b[0]&0x7F, int(binary.BigEndian.Uint32(b[0:4])&0xFFFFFF)
+			if size < minimum[kind] || 4+size > len(b) {
+				unmeasured(fmt.Sprintf("a block of type %d and %d bytes", kind, size))
+				return
+			}
+			last, b = b[0]&0x80 != 0, b[4+size:]
 		}
 		props := binary.BigEndian.Uint64(stream[4+10 : 4+18])
 		rate, total := int64(props>>44), int64(props&(1<<36-1))
 		if rate == 0 || total == 0 {
-			if measured || d != 0 {
-				t.Fatalf("rate %d, total %d: %v measured %v", rate, total, d, measured)
-			}
+			unmeasured(fmt.Sprintf("rate %d, total %d", rate, total))
 			return
 		}
 		if total/rate >= math.MaxInt64/int64(time.Second) {
-			if measured || d != 0 {
-				t.Fatalf("%d samples at %d Hz, past the longest length: %v measured %v", total, rate, d, measured)
-			}
+			unmeasured(fmt.Sprintf("%d samples at %d Hz, past the longest length", total, rate))
 			return
 		}
 		if want := lengthOf(total, rate); !measured || d != want {

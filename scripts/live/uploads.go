@@ -1,9 +1,9 @@
 package main
 
 // Uploads: the multipart/form-data bodies of image edits and speech-to-text, and the
-// media they carry, written here from code — a tone of known length as WAV, FLAC and
-// MP3, and a small PNG — so the kit ships no binary files and knows each file's length
-// exactly.
+// media they carry, written here from code — a tone of known length as WAV and FLAC,
+// silence of the same length as MP3, and a small PNG — so the kit ships no binary files
+// and knows each file's length exactly.
 
 import (
 	"bytes"
@@ -79,11 +79,12 @@ func (r *run) postForm(key, path, id string, parts []formPart) (*response, error
 	return r.do(req)
 }
 
-// The audio the speech-to-text checks upload: uploadMillis of a 440 Hz tone, 16-bit
-// mono at uploadRate — the rate ASR models take, so no server resamples it. 3.6 s is
-// a whole number of MP3 frames (100 of 36 ms) and of samples, and rounds up to 4 s
-// with room on both sides: a decoder adding or dropping a frame's delay still counts
-// 4.
+// The audio the speech-to-text checks upload, uploadMillis long: the WAV and FLAC a
+// 440 Hz tone, 16-bit mono at uploadRate — the rate ASR models take, so no server
+// resamples them; the MP3 silence at 32 kHz, MPEG-1's lowest rate, which servers
+// resample. 3.6 s is a whole number of MP3 frames (100 of 36 ms) and of samples, and
+// rounds up to 4 s with room on both sides: a decoder adding or dropping a frame's
+// delay still counts 4.
 const (
 	uploadRate   = 16000
 	uploadMillis = 3600
@@ -99,14 +100,14 @@ type uploadAudio struct {
 	data                          []byte
 }
 
-// uploadAudios are the tone as WAV, FLAC and MP3 — the formats llama-server decodes,
-// and every one vLLM does.
+// uploadAudios are the tone as WAV and FLAC and the silence as MP3 — the formats
+// llama-server decodes, and every one vLLM does.
 func uploadAudios() []uploadAudio {
 	tone := toneSamples()
 	return []uploadAudio{
 		{"wav", "tone.wav", "audio/wav", wavFile(tone)},
 		{"flac", "tone.flac", "audio/flac", flacFile(tone)},
-		{"mp3", "tone.mp3", "audio/mpeg", mp3Silence()},
+		{"mp3", "silence.mp3", "audio/mpeg", mp3Silence()},
 	}
 }
 
@@ -236,7 +237,11 @@ const (
 // mp3Silence is uploadMillis of silent MP3: every frame its header, then zeros — side
 // information of zero (no main data, no scale factors) and a body of zeros, which
 // every decoder plays as silence, as encoders write digital silence. No encoder is
-// needed, and the length is exact: the frames' samples.
+// needed, and the length is exact: the frames' samples. The file is one unbroken run
+// of identical frames and nothing else — no tags, no trailing bytes — which the
+// gateway measures for llama-server, taking an MP3 only when its decoder provably
+// reads it as measured (docs/specs/GATEWAY.md, Accounting → Media usage:
+// speech-to-text).
 func mp3Silence() []byte {
 	frame := make([]byte, mp3FrameSize)
 	// Sync, MPEG-1, Layer III, no CRC; 32 kbps, 32 kHz, no padding; mono.

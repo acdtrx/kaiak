@@ -68,10 +68,12 @@ func Files(t *testing.T, dir string) []string {
 }
 
 // InvalidCase is a cases.json entry of an invalid fixture: a schema case breaks the
-// schema and names no code; a semantic case breaks the rule its code names.
+// schema and names no code; a semantic case breaks the rule its code names, and may
+// name the JSON Pointer (RFC 6901; "" the root) where both halves report it, path.
 type InvalidCase struct {
 	Kind   string  `json:"kind"`
 	Code   *string `json:"code"`
+	Path   *string `json:"path"`
 	Reason string  `json:"reason"`
 }
 
@@ -89,6 +91,8 @@ func InvalidCases(t *testing.T, dir string) map[string]InvalidCase {
 			t.Errorf("%s: semantic case names no code", file)
 		case c.Kind == "schema" && c.Code != nil:
 			t.Errorf("%s: schema case names a code", file)
+		case c.Kind == "schema" && c.Path != nil:
+			t.Errorf("%s: schema case names a path", file)
 		}
 		if c.Reason == "" {
 			t.Errorf("%s: no reason", file)
@@ -114,7 +118,8 @@ func RunValid(t *testing.T, dir string, decode func(data []byte) error) {
 // the cases file has an entry for each fixture and no other: decode must refuse it
 // with a *schemacheck.ValidationError whose codes are exactly [schema] for a schema
 // case, or exactly the case's code for a semantic one — a semantic fixture breaks one
-// rule, so no other code may appear.
+// rule, so no other code may appear — and, when the case names a path, every issue at
+// that path.
 func RunInvalid(t *testing.T, dir string, decode func(data []byte) error) {
 	t.Helper()
 	files := Files(t, dir)
@@ -139,6 +144,14 @@ func RunInvalid(t *testing.T, dir string, decode func(data []byte) error) {
 			}
 			if codes := invalid.Codes(); !slices.Equal(codes, []string{want}) {
 				t.Errorf("codes %v, want [%s] (%s)\n%v", codes, want, expected.Reason, err)
+			}
+			if expected.Path == nil {
+				return
+			}
+			for _, issue := range invalid.Issues {
+				if issue.Path != *expected.Path {
+					t.Errorf("an issue at %q, want every one at %q (%s)\n%v", issue.Path, *expected.Path, expected.Reason, err)
+				}
 			}
 		})
 	}

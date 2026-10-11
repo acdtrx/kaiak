@@ -236,8 +236,8 @@ var endpointColumns = map[string][]EndpointName{
 }
 
 // Each type serves exactly what the spec's endpoint support table says, the table
-// names every type, every column is one endpointColumns knows, and every endpoint name
-// is in a column.
+// names every type, its columns are exactly endpointColumns' — none unknown, none
+// missing — each row has a cell for each, and every endpoint name is in a column.
 func TestEndpointSupportFollowsTheSpec(t *testing.T) {
 	covered := map[EndpointName]bool{}
 	for _, es := range endpointColumns {
@@ -254,6 +254,7 @@ func TestEndpointSupportFollowsTheSpec(t *testing.T) {
 	doc := fixturetest.Read(t, filepath.Join("..", "..", "..", "docs", "specs", "GATEWAY.md"))
 	var header []string
 	seen := map[BackendType]bool{}
+	columns := map[string]bool{}
 	for line := range strings.Lines(string(doc)) {
 		line = strings.TrimSpace(line)
 		cells := strings.Split(strings.Trim(line, "|"), "|")
@@ -264,6 +265,7 @@ func TestEndpointSupportFollowsTheSpec(t *testing.T) {
 		case strings.HasPrefix(line, "| Type | chat, completions, embeddings |"):
 			header = cells
 			for _, column := range header[1:] {
+				columns[column] = true
 				if _, ok := endpointColumns[column]; !ok {
 					t.Errorf("the spec's column %q is not in endpointColumns", column)
 				}
@@ -279,6 +281,10 @@ func TestEndpointSupportFollowsTheSpec(t *testing.T) {
 		}
 		typ := BackendType(strings.Trim(cells[0], "`"))
 		seen[typ] = true
+		if len(cells) != len(header) {
+			t.Errorf("the spec's row for %s has %d cells, its header %d", typ, len(cells), len(header))
+			continue
+		}
 		for i, cell := range cells[1:] {
 			for _, e := range endpointColumns[header[i+1]] {
 				if want := strings.HasPrefix(cell, "yes"); typ.Serves(e) != want {
@@ -290,6 +296,11 @@ func TestEndpointSupportFollowsTheSpec(t *testing.T) {
 	for typ := range endpointSupport {
 		if !seen[typ] {
 			t.Errorf("the spec's endpoint support table has no row for %s", typ)
+		}
+	}
+	for column := range endpointColumns {
+		if !columns[column] {
+			t.Errorf("the spec's endpoint support table has no column %q", column)
 		}
 	}
 }

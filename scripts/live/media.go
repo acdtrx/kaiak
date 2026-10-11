@@ -684,8 +684,10 @@ type mediaLog struct {
 	// images and edits, which vLLM-Omni reports none for, and vLLM's transcriptions.
 	estimated bool
 	// secondsOut, secondsIn and images: the seconds of audio generated and processed
-	// and the images the record must count.
+	// and the images the record must count; secondsInFrom says where secondsIn comes
+	// from.
 	secondsOut, secondsIn, images int64
+	secondsInFrom                 string
 	// tokens, when set, is the usage the answer reported, which the record must
 	// carry exactly.
 	tokens *speechUsage
@@ -731,7 +733,7 @@ func (r *run) checkMediaLog(name, id string, want mediaLog) {
 		r.fail(name, "kaiak.usage.audio.output.duration=%v s, want %d: the audio measured here, rounded up once", secondsOut,
 			want.secondsOut)
 	case int64(secondsIn) != want.secondsIn:
-		r.fail(name, "kaiak.usage.audio.input.duration=%v s, want %d: the upload's length, rounded up", secondsIn, want.secondsIn)
+		r.fail(name, "kaiak.usage.audio.input.duration=%v s, want %d: %s", secondsIn, want.secondsIn, want.secondsInFrom)
 	case int64(images) != want.images:
 		r.fail(name, "kaiak.usage.images=%v, want the answer's %d", images, want.images)
 	default:
@@ -741,7 +743,7 @@ func (r *run) checkMediaLog(name, id string, want mediaLog) {
 		case "image":
 			r.pass(name, fmt.Sprintf("%d image(s); %s", want.images, detail))
 		case "text":
-			r.pass(name, fmt.Sprintf("%d s of audio processed, the upload's length rounded up; %s", want.secondsIn, detail))
+			r.pass(name, fmt.Sprintf("%d s of audio processed, %s; %s", want.secondsIn, want.secondsInFrom, detail))
 		default:
 			r.pass(name, fmt.Sprintf("%d s of audio, as measured here; %s", want.secondsOut, detail))
 		}

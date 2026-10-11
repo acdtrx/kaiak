@@ -91,11 +91,11 @@ var binaryBytes = func() string {
 		"\r\n--\r\n--" + "\r\n\r\n" + testBoundary
 }()
 
-// An upload's parts as clients send them: names, filenames (quoted, escaped, RFC 2231,
-// empty), content types or none, other headers skipped, empty parts in either shape,
-// binary bytes holding pieces of the boundary, a preamble and an epilogue skipped,
-// header names in any case and values without the spaces around them — each part's
-// bytes a slice of the client's body.
+// An upload's parts as clients send them: names, filenames (quoted, unquoted, RFC
+// 2231, with spaces, semicolons and letters past ASCII), content types or none, other
+// headers skipped, empty parts in either shape, binary bytes holding pieces of the
+// boundary, a preamble and an epilogue skipped, header names in any case and values
+// without the spaces around them — each part's bytes a slice of the client's body.
 func TestFormParts(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -103,16 +103,16 @@ func TestFormParts(t *testing.T) {
 		want []wantPart
 	}{
 		{"text and file parts", formOf(textPart("model", "pub"), filePart("image[]", "cat.png", "image/png", "\x89PNG\r\n"),
-			filePart("image[]", "", "application/octet-stream", "")),
+			filePart("image[]", "empty.bin", "application/octet-stream", "")),
 			[]wantPart{{name: "model", body: "pub"}, {name: "image[]", file: true, filename: "cat.png", contentType: ptr("image/png"), body: "\x89PNG\r\n"},
-				{name: "image[]", file: true, contentType: ptr("application/octet-stream")}}},
+				{name: "image[]", file: true, filename: "empty.bin", contentType: ptr("application/octet-stream")}}},
 		{"binary bytes holding pieces of the boundary", formOf(filePart("file", "a.wav", "audio/wav", binaryBytes), textPart("model", "pub")),
 			[]wantPart{{name: "file", file: true, filename: "a.wav", contentType: ptr("audio/wav"), body: binaryBytes}, {name: "model", body: "pub"}}},
-		{"escaped, encoded and unquoted names", formOf(
-			rawPart{[]string{`Content-Disposition: form-data; name="a\"b\\c"; filename="C:\\dir\\x.wav"`}, "1"},
+		{"quoted, encoded and unquoted names", formOf(
+			rawPart{[]string{`Content-Disposition: form-data; name="a b;c=d"; filename="x; name=url.wav"`}, "1"},
 			rawPart{[]string{`Content-Disposition: form-data; name=plain; filename*=UTF-8''%C3%A9t%C3%A9.wav`}, "2"},
 			rawPart{[]string{`Content-Disposition: form-data; name="résumé"`}, "3"}),
-			[]wantPart{{name: `a"b\c`, file: true, filename: `C:\dir\x.wav`, body: "1"}, {name: "plain", file: true, filename: "été.wav", body: "2"},
+			[]wantPart{{name: "a b;c=d", file: true, filename: "x; name=url.wav", body: "1"}, {name: "plain", file: true, filename: "été.wav", body: "2"},
 				{name: "résumé", body: "3"}}},
 		{"header names in any case, values trimmed, other headers skipped", formOf(
 			rawPart{[]string{"content-disposition:\tForm-Data; name=\"a\"  ", "X-Other: anything", "CONTENT-TYPE:   text/plain; charset=utf-8 \t"}, "v"},
@@ -197,7 +197,12 @@ func TestFormBoundsAtTheirEdge(t *testing.T) {
 }
 
 // What breaks the grammar is refused, 400 invalid_body, the message never quoting the
-// body; a repeated single-value part, 400 duplicate_member naming it.
+// body — and what the backends' readers would read otherwise: a backslash or a quote
+// in a name or a filename (a name ending in a backslash made python-multipart and
+// cpp-httplib read the filename after it as parameters, a name among them), an empty
+// filename (a text field to cpp-httplib), a name, a filename or a text part that is
+// not UTF-8 (llama-server fails on it); a repeated single-value part, 400
+// duplicate_member naming it.
 func TestFormRefusals(t *testing.T) {
 	model := textPart("model", "pub")
 	b := testBoundary
@@ -238,6 +243,20 @@ func TestFormRefusals(t *testing.T) {
 		{"an empty body", "", "invalid_body", ""},
 		{"a preamble ending in LF", "preamble\n" + formOf(model), "invalid_body", ""},
 		{"a preamble line starting with the boundary", "--" + b + "x\r\n" + formOf(model), "invalid_body", ""},
+		{"a name ending in a backslash, its filename read as parameters", formOf(model, rawPart{[]string{
+			`Content-Disposition: form-data; name="zzz\\"; filename="; name=url; x="`, "Content-Type: image/png"}, "https://example.com/secret"}),
+			"invalid_body", ""},
+		{"a quote in a name", formOf(rawPart{[]string{`Content-Disposition: form-data; name="a\"b"`}, "v"}), "invalid_body", ""},
+		{"a backslash in a filename", formOf(rawPart{[]string{`Content-Disposition: form-data; name="file"; filename="C:\\dir\\secret.wav"`}, "v"}),
+			"invalid_body", ""},
+		{"a quote in an encoded filename", formOf(rawPart{[]string{`Content-Disposition: form-data; name="file"; filename*=UTF-8''a%22b.wav`}, "v"}),
+			"invalid_body", ""},
+		{"an empty filename", formOf(model, rawPart{[]string{`Content-Disposition: form-data; name="prompt"; filename=""`}, "a prompt"}),
+			"invalid_body", ""},
+		{"a name not UTF-8", formOf(rawPart{[]string{"Content-Disposition: form-data; name*=UTF-8''%FF"}, "v"}), "invalid_body", ""},
+		{"a filename not UTF-8", formOf(rawPart{[]string{"Content-Disposition: form-data; name=\"file\"; filename=\"\xfe.wav\""}, "v"}),
+			"invalid_body", ""},
+		{"a text part not UTF-8", formOf(model, textPart("prompt", "caf\xe9")), "invalid_body", ""},
 		{"a repeated single-value part", formOf(model, textPart("prompt", "a"), textPart("prompt", "b")), "duplicate_member", "prompt"},
 		{"a repeated model", formOf(model, model), "duplicate_member", "model"},
 		{"names compared byte for byte", formOf(textPart("Prompt", "a"), textPart("prompt", "b"), textPart("Prompt", "c")), "duplicate_member", "Prompt"},
@@ -361,7 +380,7 @@ var formPieces = []string{"\r\n--" + testBoundary, "--" + testBoundary, "\r\n--"
 // a preamble, before an epilogue. clean reports a form whose parts hold no piece of a
 // delimiter, which the scanner must take as written (want).
 func randomForm(rng *rand.Rand) (body []byte, want []wantPart, clean bool) {
-	names := []string{"model", "file", "image[]", "prompt", `a"b`, `c\d`, "é", "x y;z"}
+	names := []string{"model", "file", "image[]", "prompt", "a=b", "c,d", "é", "x y;z"}
 	clean = rng.IntN(2) == 0
 	var s strings.Builder
 	if !clean && rng.IntN(4) == 0 {
@@ -379,13 +398,13 @@ func randomForm(rng *rand.Rand) (body []byte, want []wantPart, clean bool) {
 			}
 			s.WriteString(name + ":" + []string{" ", "", "\t ", "  "}[rng.IntN(4)] + value + []string{"", " ", "\t"}[rng.IntN(3)] + "\r\n")
 		}
-		disposition := `form-data; name="` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(w.name) + `"`
+		disposition := `form-data; name="` + w.name + `"`
 		if rng.IntN(4) == 0 {
 			disposition = "form-data; name*=UTF-8''" + percentEncoded(w.name)
 		}
 		if rng.IntN(2) == 0 {
-			w.file, w.filename = true, []string{"a.wav", "", "C:\\x\\y.png", "ü.mp3"}[rng.IntN(4)]
-			disposition += `; filename="` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(w.filename) + `"`
+			w.file, w.filename = true, []string{"a.wav", "b c.png", "x;name=y.png", "ü.mp3"}[rng.IntN(4)]
+			disposition += `; filename="` + w.filename + `"`
 		}
 		header("Content-Disposition", disposition)
 		if rng.IntN(2) == 0 {

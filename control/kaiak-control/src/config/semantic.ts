@@ -99,8 +99,11 @@ export function checkSemantics(config: Config): ValidationIssue[] {
     );
   }
 
+  // Keys in byte order of their IDs, as the gateway reads them: of two keys sharing a
+  // hash, the one reported is the later ID, whatever the document's member order.
   const keyByHash = new Map<string, string>();
-  for (const [id, key] of Object.entries(config.keys)) {
+  const keys = Object.entries(config.keys).sort(([a], [b]) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+  for (const [id, key] of keys) {
     const path = pointer("/keys", id);
     if (!Object.hasOwn(groups, key.group)) {
       report("key-group-unknown", pointer(path, "group"), `group "${key.group}" is not defined`);

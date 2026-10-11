@@ -25,6 +25,9 @@ var transcriptionUpload = &uploadFormat{lists: []string{"timestamp_granularities
 //     (checkUploadMeasured) — and a vllm answer reporting none falls back on it;
 //   - stream, false or absent (readStreamPart): vLLM streams a transcription in chunks
 //     of its own with token usage only, never seconds, and the gateway relays none;
+//   - n, the sequences the backend generates (transcriptionSequences), capped by
+//     max_n as chat's is: vLLM's beam search takes it as its beam width, its sampling
+//     as the sequences it generates, none of them counted;
 //   - response_format, read only to know a verbose_json answer, whose duration is the
 //     audio's seconds; passed as the client sent it, for the backend to refuse what it
 //     cannot answer;
@@ -52,6 +55,8 @@ func readTranscriptionParts(rq *request, parts []provider.FormPart) *apiError {
 			upload, measured = accounting.UploadAudioLength(part.Body)
 		case "stream":
 			apiErr = readStreamPart(part)
+		case "n":
+			rq.inbound.Sequences, apiErr = transcriptionSequences(part, rq.snapshot.MaxN)
 		case "response_format":
 			var format string
 			format, apiErr = uploadText(part)
@@ -76,15 +81,30 @@ func readTranscriptionParts(rq *request, parts []provider.FormPart) *apiError {
 	return nil
 }
 
+// transcriptionSequences is the sequences a transcription's n part asks the backend to
+// generate (uploadWholeNumber), read as chat reads n (sequences): below 1 counted as 1,
+// for the backend to refuse; refused above maxN, max_n, 400 n_too_large.
+func transcriptionSequences(part provider.FormPart, maxN int64) (int64, *apiError) {
+	n, apiErr := uploadWholeNumber(part, "n")
+	if apiErr != nil {
+		return 0, apiErr
+	}
+	if n > maxN {
+		return 0, errNTooLarge("n", maxN)
+	}
+	return max(n, 1), nil
+}
+
 // checkUploadMeasured refuses a transcription on a llama-server model whose upload the
 // gateway could not measure, 400 audio_format_unsupported (docs/specs/GATEWAY.md,
 // Request pipeline, stage 2; Accounting → Media usage: speech-to-text): llama-server
 // reports no seconds, so the measured upload is the record's audio_seconds_in, and a
 // request whose audio nothing could count is not sent — llama-server decodes WAV,
-// FLAC and MP3 alone, so an upload in another format would fail there too. It runs
-// once the model's type is known, after the endpoints list, and before limits spend
-// anything on the request. A vllm model's answer reports its seconds: its upload needs
-// no measure.
+// FLAC and MP3 alone, so an upload in another format would fail there too, and one in
+// those formats left unmeasured is one whose decoded length the gateway cannot vouch
+// for. It runs once the model's type is known, after the endpoints list, and before
+// limits spend anything on the request. A vllm model's answer reports its seconds: its
+// upload needs no measure.
 func checkUploadMeasured(_ context.Context, rq *request) *apiError {
 	if rq.endpoint.api != provider.AudioTranscriptions || rq.inbound.Transcription.UploadMeasured ||
 		rq.snapshot.Models[rq.model].Type() != config.BackendLlamaServer {

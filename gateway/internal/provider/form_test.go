@@ -21,8 +21,9 @@ import (
 )
 
 // clientForm is a client's upload as the inbound stage hands it over: a held body and
-// its parts, slices of it — names and filenames that need quoting, an empty part and
-// an empty filename, a Content-Type sent empty, bytes that look like delimiters.
+// its parts, slices of it — names and filenames with spaces, semicolons, equals signs
+// and letters past ASCII, an empty part, a Content-Type sent empty, bytes that look
+// like delimiters.
 func clientForm() ([]byte, []FormPart) {
 	pieces := []string{"pub", "\x89PNG\r\n--" + "\r\n--boundary\r\n\x00\xff", "a fox", "", "RIFF....WAVE"}
 	body := []byte(strings.Join(pieces, ""))
@@ -34,10 +35,10 @@ func clientForm() ([]byte, []FormPart) {
 	}
 	return body, []FormPart{
 		{Name: "model", Body: slice(0)},
-		{Name: "image[]", File: true, Filename: `a "b" \c.png`, ContentType: []byte("image/png"), Body: slice(1)},
+		{Name: "image[]", File: true, Filename: "a; name=url; b.png", ContentType: []byte("image/png"), Body: slice(1)},
 		{Name: "prompt", ContentType: []byte{}, Body: slice(2)},
-		{Name: "é", File: true, Body: slice(3)},
-		{Name: `q"\`, File: true, Filename: "été.wav", ContentType: []byte("audio/wav; rate=16000"), Body: slice(4)},
+		{Name: "é", File: true, Filename: "x", Body: slice(3)},
+		{Name: "q r=s", File: true, Filename: "été.wav", ContentType: []byte("audio/wav; rate=16000"), Body: slice(4)},
 	}
 }
 

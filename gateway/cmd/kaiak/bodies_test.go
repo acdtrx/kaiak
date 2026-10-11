@@ -42,13 +42,20 @@ func TestBodyMemorySettings(t *testing.T) {
 }
 
 // A config whose body cap exceeds the whole body budget, or whose upload cap exceeds
-// the whole upload budget, is applied, with a warning: bodies above the budget are
-// refused as too large.
+// the whole upload budget, is applied, with a warning naming both sizes in bytes — the
+// config's default caps, 4 MiB and 25 MiB, here: bodies above the budget are refused
+// as too large.
 func TestCapAboveItsBudgetIsWarned(t *testing.T) {
-	for budget, warning := range map[string]string{
-		"KAIAK_BODY_MEMORY_BYTES":   "max_request_body_bytes exceeds the body budget",
-		"KAIAK_UPLOAD_MEMORY_BYTES": "max_upload_bytes exceeds the upload budget",
+	for budget, c := range map[string]struct {
+		warning string
+		attrs   []string
+	}{
+		"KAIAK_BODY_MEMORY_BYTES": {"max_request_body_bytes exceeds the body budget",
+			[]string{"kaiak.config.max_request_body_size=4194304", "kaiak.body_budget.size=1000"}},
+		"KAIAK_UPLOAD_MEMORY_BYTES": {"max_upload_bytes exceeds the upload budget",
+			[]string{"kaiak.config.max_upload_size=26214400", "kaiak.upload_budget.size=1000"}},
 	} {
+		warning := c.warning
 		var logs syncBuffer
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // stop at once: the startup load is what the test reads
@@ -60,6 +67,11 @@ func TestCapAboveItsBudgetIsWarned(t *testing.T) {
 		}
 		if !strings.Contains(logs.String(), warning) {
 			t.Errorf("%s=1000: no warning %q:\n%s", budget, warning, logs.String())
+		}
+		for _, attr := range c.attrs {
+			if !strings.Contains(logs.String(), attr) {
+				t.Errorf("%s=1000: the warning lacks %s:\n%s", budget, attr, logs.String())
+			}
 		}
 		if other := strings.Count(logs.String(), "exceeds the"); other != 1 {
 			t.Errorf("%s=1000: %d budget warnings, want the one:\n%s", budget, other, logs.String())

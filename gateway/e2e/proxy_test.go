@@ -7,7 +7,8 @@ package e2e
 // port, it can lose one usage ack — the batch reaches the control plane and is
 // counted, the answer never reaches the gateway — and it keeps every status report it
 // forwarded with the control plane's answer, and every usage record of the batches the
-// control plane accepted: what the sample received, as sent.
+// control plane accepted: what the sample received, as sent, and how many records of
+// each gateway's batches it accepted, a resent batch once.
 
 import (
 	"bytes"
@@ -38,6 +39,7 @@ type controlProxy struct {
 
 	statuses []forwardedStatus
 	records  map[string]accounting.UsageRecord // by request ID, from accepted batches
+	accepted map[control.BatchID]int           // the records of each accepted batch, by its ID
 	changes  *changes                          // notified on every forwarded status and accepted batch
 }
 
@@ -54,7 +56,7 @@ type upstreamKey struct{}
 func newControlProxy(t *testing.T) *controlProxy {
 	t.Helper()
 	p := &controlProxy{transport: &http.Transport{}, dropped: make(chan int, 1),
-		records: make(map[string]accounting.UsageRecord), changes: newChanges()}
+		records: make(map[string]accounting.UsageRecord), accepted: make(map[control.BatchID]int), changes: newChanges()}
 	p.forward = &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(pr.In.Context().Value(upstreamKey{}).(*url.URL))
@@ -181,8 +183,23 @@ func (p *controlProxy) forwardUsage(w http.ResponseWriter, r *http.Request) {
 	for _, record := range batch.Records {
 		p.records[record.RequestID] = record
 	}
+	p.accepted[batch.Batch] = len(batch.Records)
 	p.mu.Unlock()
 	p.changes.notify()
+}
+
+// acceptedRecords is how many records of instance's batches the control plane
+// accepted: each batch once, however many times it was sent.
+func (p *controlProxy) acceptedRecords(instance string) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := 0
+	for id, records := range p.accepted {
+		if id.Instance == instance {
+			n += records
+		}
+	}
+	return n
 }
 
 // record is the usage record the control plane accepted for a request ID, if any.

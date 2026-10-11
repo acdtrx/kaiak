@@ -1,6 +1,6 @@
 // Runs the shared config fixtures in protocol/fixtures/config/. The gateway's suite runs
 // the same files: a valid fixture passes both, an invalid one fails both, and a semantic
-// fixture fails with the rule code its cases.json entry names.
+// fixture fails with the rule code its cases.json entry names, at the path it names.
 
 import assert from "node:assert/strict";
 import path from "node:path";
@@ -43,7 +43,7 @@ test("MODEL_ENDPOINTS is the schema's endpoint enum, in its order", () => {
 
 // The endpoint-not-served rule's table is the shared one: each backend type serves what
 // protocol/fixtures/backend-types/<type>.json lists in its endpoints. The gateway's
-// modules and its own config check are held to the same files.
+// table, which its config validation reads, is held to the same files.
 test("each backend type serves the endpoints its shared fixture lists (protocol/fixtures/backend-types)", () => {
   const dir = fixturePath("backend-types");
   const types = fixtureFiles(dir).map((file) => path.basename(file, ".json"));

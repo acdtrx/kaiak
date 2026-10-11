@@ -160,8 +160,9 @@ func TestUploadModelPart(t *testing.T) {
 }
 
 // The upload cap is max_upload_bytes, or the whole upload budget when smaller: a body
-// declaring more is refused, 413 request_too_large naming the limit, before it is read;
-// a body of unknown length past it, while it is read.
+// declaring more is refused, 413 request_too_large naming the limit, before it is read
+// (the test's body fails it if read); a body of unknown length past it, while it is
+// read.
 func TestUploadCap(t *testing.T) {
 	ep, _ := uploadEndpoint()
 	over := formOf(textPart("model", "open"), filePart("file", "a.wav", "audio/wav", strings.Repeat("x", 2000)))
@@ -170,16 +171,18 @@ func TestUploadCap(t *testing.T) {
 		maxUpload int64
 		budget    int64
 		body      io.Reader
+		declared  int64
 		limit     string
 	}{
-		{"declared over max_upload_bytes", 2000, DefaultUploadMemory, strings.NewReader(over), "2000"},
-		{"declared over the whole budget", 1 << 20, 1500, strings.NewReader(over), "1500"},
-		{"of unknown length over max_upload_bytes", 2000, DefaultUploadMemory, io.MultiReader(strings.NewReader(over)), "2000"},
+		{"declared over max_upload_bytes", 2000, DefaultUploadMemory, unreadBody{t}, int64(len(over)), "2000"},
+		{"declared over the whole budget", 1 << 20, 1500, unreadBody{t}, int64(len(over)), "1500"},
+		{"of unknown length over max_upload_bytes", 2000, DefaultUploadMemory, io.MultiReader(strings.NewReader(over)), -1, "2000"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			uploads := testUploads(c.budget)
-			rq, _, apiErr := readTestUpload(ep, uploadRequest(c.body, formContentType), uploadSnapshot(t, c.maxUpload),
-				NewBodyBudget(DefaultBodyMemory), uploads)
+			r := uploadRequest(c.body, formContentType)
+			r.ContentLength = c.declared
+			rq, _, apiErr := readTestUpload(ep, r, uploadSnapshot(t, c.maxUpload), NewBodyBudget(DefaultBodyMemory), uploads)
 			if apiErr == nil || apiErr.status != http.StatusRequestEntityTooLarge || apiErr.code != "request_too_large" ||
 				!strings.Contains(apiErr.message, "limit of "+c.limit+" bytes") {
 				t.Fatalf("%v, want 413 request_too_large at %s bytes", apiErr, c.limit)

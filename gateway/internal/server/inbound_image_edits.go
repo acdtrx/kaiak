@@ -1,8 +1,6 @@
 package server
 
 import (
-	"strconv"
-
 	"kaiak/internal/accounting"
 	"kaiak/internal/config"
 	"kaiak/internal/provider"
@@ -70,19 +68,13 @@ func readImageEditParts(rq *request, parts []provider.FormPart) *apiError {
 	return nil
 }
 
-// editImages is the images an edit's n part asks for: a whole number in decimal, an
-// optional sign then digits — below 1 counted as 1, for the backend to refuse —
-// refused above limit, max_images_per_request (vLLM-Omni bounds no edit's n). Any
-// other value, one past int64 included, is the wrong type: read otherwise, a value the
-// backend reads as a large n could pass the cap as a small one.
+// editImages is the images an edit's n part asks for (uploadWholeNumber) — below 1
+// counted as 1, for the backend to refuse — refused above limit,
+// max_images_per_request (vLLM-Omni bounds no edit's n).
 func editImages(part provider.FormPart, limit int64) (int64, *apiError) {
-	value, apiErr := uploadText(part)
+	n, apiErr := uploadWholeNumber(part, "n")
 	if apiErr != nil {
 		return 0, apiErr
-	}
-	n, err := strconv.ParseInt(value, 10, 64)
-	if err != nil {
-		return 0, errInvalidType("n", "a whole number")
 	}
 	images := max(n, 1)
 	if images > limit {
