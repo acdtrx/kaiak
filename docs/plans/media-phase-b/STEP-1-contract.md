@@ -11,7 +11,7 @@ fixtures to protocol 7:
 - one backend type per model.
 
 The specs describe the finished phase B: uploads, image edits, speech-to-text, and the
-wrong-path reading of decision 22. The schemas and fixtures move to protocol 7 only.
+one "not found" reading of decision 22. The schemas and fixtures move to protocol 7 only.
 Each endpoint's names, and `global.max_upload_bytes`, enter the schema in the step that
 builds them (steps 4–6), on both halves at once.
 
@@ -41,10 +41,12 @@ builds them (steps 4–6), on both halves at once.
     edits; `vllm` and `llama-server`: transcriptions); the type-level refusal goes;
   - **An endpoint missing from a server** (decision 22): the section, the
     core-endpoint notion, `vllm`'s no-core rule and the `501` / `503` readings go; a
-    route-missing answer on a listed endpoint is a wrong path on every type, its
+    route-missing answer on a listed endpoint is one reading on every type,
+    `502 upstream_path_missing` at once — neither a circuit failure nor retried — its
     message naming both causes; the endpoint memory goes;
   - **the errors table, the outcome classes and the retry table** follow:
-    `upstream_endpoint_missing` removed; the new error codes (a non-multipart upload;
+    `upstream_endpoint_missing` removed, `upstream_path_missing` neutral and not
+    retried (its retry rule removed); the new error codes (a non-multipart upload;
     an upload that must be measured and cannot be);
   - **Accounting → Media usage:** edits' images; speech-to-text's seconds (the
     backend's, `verbose_json`'s `duration`, the measured upload, the fallback —
@@ -76,7 +78,7 @@ builds them (steps 4–6), on both halves at once.
 - **The specs describe the end state of phase B now;** the schema gains each
   endpoint's names in its own step, so phases 2 and 3 stay green step by step.
 - **Every rule is dated** `(settled 2026-10-11, with the user)`, or, for decisions
-  22–30, as confirmed at review.
+  23–30, as confirmed at review.
 - **Removal discipline:** the endpoint-missing class, the memory and the type-level
   refusal leave the specs entirely — no "formerly", no aliases.
 

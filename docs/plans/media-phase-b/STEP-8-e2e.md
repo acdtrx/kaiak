@@ -16,8 +16,8 @@ against the sample control plane.
     `llama-server` model;
   - the image and `audio_seconds_in` limits refusing;
   - an unlisted endpoint refused before any backend;
-  - a wrong `base_url` read as a wrong path, the circuit opening and the traffic
-    moving to the other backend.
+  - a wrong `base_url` answered `502 upstream_path_missing` at once, the circuit
+    untouched and no retry.
 - `gateway/e2e/` cross-half tests (build tag `crosshalf`):
   - an edit and a transcription settle at the sample;
   - the hourly `audio_seconds_in` total from one gateway's transcriptions limits a

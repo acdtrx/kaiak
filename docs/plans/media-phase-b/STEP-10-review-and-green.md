@@ -20,7 +20,7 @@ suite green three times in a row.
   - fixed with a test when it affects legitimate daily use or is high-impact;
   - design-level findings put to the user;
   - the rest recorded here.
-- Decisions 22–30 (made while planning) confirmed with the user, or changed.
+- Decisions 23–30 (made while planning) confirmed with the user, or changed.
 
 ## Acceptance criteria
 

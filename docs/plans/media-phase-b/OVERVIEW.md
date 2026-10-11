@@ -19,8 +19,8 @@ rests on, read from source, are in `RESEARCH.md` beside this file.
 - **Protocol 7, one version:** the config's `format_version` becomes `protocol_version`
   and carries the protocol version; one version constant per half.
 - **Mandatory `endpoints`** on every model, and **one backend type per model**; routing
-  and refusals simplified to match; the endpoint memory removed; the endpoint-missing
-  class folded into the wrong-path reading (decision 22).
+  and refusals simplified to match; the endpoint memory removed; one "not found"
+  reading, neutral and not retried (decision 22).
 - **Uploads:** a multipart reader, the upload cap, its own memory budget and read
   deadline, the body rebuilt for the backend.
 - **Image edits** on `vllm-omni`.
@@ -115,28 +115,25 @@ Settled with the user (2026-10-11):
     a text part is capped at 1 MiB and a body at 1000 parts (Starlette's limits);
     filenames never appear in logs.
 
+22. **One "not found" reading on every type, neutral and not retried** (settled with
+    the user at plan review, 2026-10-11): a backend's route-missing answer on a listed
+    endpoint answers the client `502 upstream_path_missing` at once — not a circuit
+    failure, not retried, its message naming both causes left with mandatory lists and
+    identical instances (a wrong `base_url`, or a list naming an endpoint the server
+    does not serve). Both are operator errors: the gateway errors out and logs it, and
+    does not work around them. This is the fewest lines: the endpoint-missing class
+    (`upstream_endpoint_missing`) goes, with each type's core endpoints, `vllm`'s "no
+    core endpoints" rule, and the wrong path's retry rule (every deployment on that
+    backend refused for the request); llama-server's `501` and vLLM-Omni's image `503`
+    lose their special readings and are plain `5xx`, as any server error. The cost: a
+    mistyped `base_url` — on any type, where today it trips the circuit on the OpenAI
+    and Anthropic types — fails its share of requests until fixed; the config-apply
+    warning (the backend has no models list at its `base_url`) and the log show it.
+    This replaces the 2026-10-08 rulings on the endpoint-missing reading and on the
+    wrong path as a circuit failure.
+
 Made while planning (confirm in review):
 
-22. **A route-missing answer on a listed endpoint is a wrong path, on every type** — a
-    circuit failure (`upstream_path_missing`), retried on the model's other
-    backends. The endpoint-missing class (`upstream_endpoint_missing`, neutral) goes,
-    with each type's core endpoints, `vllm`'s "no core endpoints" rule, and the
-    special readings of llama-server's `501` and vLLM-Omni's image `503`, which become
-    plain `5xx` failures. **This reverses the 2026-10-08 ruling** (neutral, so chat on
-    a healthy server keeps working when another endpoint is missing). With mandatory
-    lists and identical instances, the answer has two causes left:
-    - **a wrong `base_url`** on one backend — usually a single host. As a failure, the
-      circuit takes it out of rotation and the probe keeps it out. Kept neutral and
-      without the memory, a wrong `base_url` on `vllm` (whose every route-missing
-      answer reads as the endpoint missing) would fail its share of requests forever,
-      never trip the circuit, and never be retried around;
-    - **a list naming an endpoint the server lacks** — an operator error. The cost of
-      this decision: the deployments' circuits open and close as the failing endpoint
-      and the working ones alternate, so the model's other endpoints fail
-      intermittently until the list is fixed. The log and the circuit metrics say so
-      loudly.
-
-    The `upstream_path_missing` message names both causes.
 23. **One refusal for an unlisted endpoint:** `400 endpoint_not_served`, the message
     "The model is not served on /v1/…: its configured endpoints do not include this
     API." The type-level refusal ("none of its backends serves this API") goes: config
@@ -195,8 +192,10 @@ Made while planning (confirm in review):
   chains).
   - Mitigation: bounded single passes over the in-memory file; fuzz-style tests, as
     phase A's WAV reader had.
-- **The circuit flapping on a wrong list** (decision 22).
-  - Mitigation: confirmed with the user at review; documented in DEPLOYMENT.
+- **A mistyped `base_url` is no longer taken out of rotation** (decision 22): its
+  share of requests fails until it is fixed.
+  - Mitigation: the config-apply warning, the `502 upstream_path_missing` on the
+    request line and in the error metrics; documented in DEPLOYMENT.
 - **The DGX's memory and disk:** Qwen-Image-Edit-2511 with its text encoder is about
   60 GB.
   - Mitigation: the live run stops and restores the user's model, as before; the
@@ -261,7 +260,8 @@ fixtures and both halves at once, so phases 2 and 3 stay green step by step.
   - usage: edit images, vLLM's seconds (`usage.seconds`, `verbose_json` duration),
     llama-server's tokens and measured seconds;
   - the WAV, FLAC and MP3 readers over valid, odd and hostile files;
-  - the wrong-path reading on every type, and the circuit counting it.
+  - the one "not found" reading on every type: `502` at once, neither retried nor
+    counted by the circuit.
 - **Gateway e2e** against the fake backend: each endpoint through the whole pipeline,
   the usage records, the new limits refusing, an unlisted endpoint refused before any
   backend.

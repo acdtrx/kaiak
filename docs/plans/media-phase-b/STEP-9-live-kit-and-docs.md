@@ -26,8 +26,9 @@ real servers. Bring every operator-facing doc to phase B.
     - `format_version` becomes `protocol_version: 7`;
     - a list on every model;
     - one type per model (split a model that mixed providers into two names);
-    - `upstream_endpoint_missing` gone, now `upstream_path_missing` and a circuit
-      failure — update alerts matching it;
+    - `upstream_endpoint_missing` gone, merged into `upstream_path_missing`, which is
+      no longer retried nor a circuit failure — a mistyped `base_url` fails its
+      requests until fixed; update alerts matching either;
     - the new config field and environment variables;
     - the new endpoints, codes, metrics and fields;
   - **Uploads:** the cap, the budget, the deadline, sizing `GOMEMLIMIT`;
