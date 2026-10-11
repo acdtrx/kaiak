@@ -2,6 +2,7 @@ package accounting
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"maps"
 	"net/http"
 	"runtime"
@@ -90,6 +91,34 @@ func TestImagesCountTheAnswersData(t *testing.T) {
 			}
 		}
 	}
+}
+
+// The images counted in a valid answer are the elements a JSON decoder finds in its
+// top-level data — the last one named, by its exact name after decoding — whatever
+// they hold, however the answer is split (docs/specs/GATEWAY.md, Accounting → Media
+// usage).
+func FuzzImagesCountIsTheDecodersCount(f *testing.F) {
+	f.Add([]byte(`{"data":[{},{}]}`))
+	f.Add([]byte(`{"data":[{},{}],"data":[{"b64_json":"abc\\def\"ghi"}],"nested":{"data":[1,2,3]}}`))
+	f.Add([]byte(`{"\u0064ata":[null,[1,2],{"data":[]}],"Data":[{}]}`))
+	f.Add([]byte(`{"data":null}`))
+	f.Add(imagesBody(3, 64))
+	f.Fuzz(func(t *testing.T, body []byte) {
+		if len(body) > 64<<10 {
+			t.Skip()
+		}
+		var answer map[string]json.RawMessage
+		if json.Unmarshal(body, &answer) != nil || answer == nil {
+			return
+		}
+		var data []json.RawMessage
+		_ = json.Unmarshal(answer["data"], &data) // anything but a list holds none
+		for _, piece := range []int{1, 7, 32 << 10} {
+			if units, _ := meterImages(1, body, piece, true); units[config.UnitImages] != int64(len(data)) {
+				t.Fatalf("pieces of %d: %d images, the decoder finds %d", piece, units[config.UnitImages], len(data))
+			}
+		}
+	})
 }
 
 // An image answer cut short counts the larger of the elements seen and the images

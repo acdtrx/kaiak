@@ -414,24 +414,26 @@ type speechStream struct {
 // clip in its headers, the SSE stream in speech.audio.done.
 func (e *speechStream) requestEdits(*Request) ([]memberEdit, bool) { return nil, false }
 
+// observe reads the event's type and its error's code by their exact names. JSON names
+// are case-sensitive, but encoding/json matches a struct's fields case-insensitively:
+// a member "Type" beside type would decide what the gateway takes the event for — an
+// error event read as a delta, its text relayed and the stream counted complete. A
+// member named twice counts as its last.
 func (e *speechStream) observe(payload []byte) observation {
-	var event struct {
-		Type  string          `json:"type"`
-		Error json.RawMessage `json:"error"`
-	}
+	var event map[string]json.RawMessage
 	// An event that does not decode says nothing about the end.
 	if json.Unmarshal(payload, &event) != nil {
 		return observation{}
 	}
-	switch event.Type {
+	var eventType string
+	_ = json.Unmarshal(event["type"], &eventType) // a type that is not a string is none
+	switch eventType {
 	case "speech.audio.done":
 		e.done = true
 	case "speech.audio.error":
-		var detail struct {
-			Code json.RawMessage `json:"code"`
-		}
-		_ = json.Unmarshal(event.Error, &detail) // an error that is not an object names no code
-		return observation{errorEvent: &ErrorEvent{Kind: ErrorEventFailure, Code: detail.Code}}
+		var detail map[string]json.RawMessage
+		_ = json.Unmarshal(event["error"], &detail) // an error that is not an object names no code
+		return observation{errorEvent: &ErrorEvent{Kind: ErrorEventFailure, Code: detail["code"]}}
 	}
 	return observation{}
 }

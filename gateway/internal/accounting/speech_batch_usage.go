@@ -392,8 +392,9 @@ func (u *speechBatchUsage) audioRun(p []byte) []byte {
 	a := &u.result.audio
 	for len(p) > 0 {
 		if a.escaping {
-			a.escape(p[0])
-			p = p[1:]
+			if a.escape(p[0]) {
+				p = p[1:]
+			}
 			continue
 		}
 		n := stringRun(p)
@@ -437,16 +438,23 @@ func decodeCapture[T any](c *memberCapture) (T, bool) {
 // data counted (wav), and by its decoded size alone (size), which is PCM's length at
 // the item's rate — and the media_type picks one (length). The characters are read a
 // window of whole four-character groups at a time, so nothing of the audio is held
-// beyond the window, and nothing but a WAV header is decoded.
+// beyond the window, and nothing but a WAV header is decoded. The characters are the
+// JSON string's, decoded as a client decodes them before base64: an escaped character
+// enters the window as the character it stands for (escape).
 type itemAudio struct {
 	wav wavClip
 	// size is the audio's decoded size so far (base64Size).
 	size int64
 	// wavBad: bytes the WAV header needed were not base64.
 	wavBad bool
-	// unreadable: the string carried an escape other than \/, so its characters are
-	// not at hand; escaping: the last character read began an escape.
-	unreadable, escaping bool
+	// unreadable: the string carried an escape standing for no base64 character, so
+	// its characters are not at hand.
+	unreadable bool
+	// escaping: an escape is being read, its backslash read; unicode: it is a \u
+	// escape, digits of its hex digits read, making code.
+	escaping, unicode bool
+	digits            int
+	code              uint16
 	// text holds the n characters not yet read.
 	text [itemAudioWindow]byte
 	n    int
@@ -459,7 +467,7 @@ const itemAudioWindow = 4 << 10
 // start readies the audio for a result's audio_data.
 func (a *itemAudio) start() {
 	a.wav = wavClip{head: a.wav.head[:0]}
-	a.size, a.wavBad, a.unreadable, a.escaping, a.n = 0, false, false, false, 0
+	a.size, a.wavBad, a.unreadable, a.escaping, a.unicode, a.n = 0, false, false, false, false, 0
 }
 
 // write takes the string's next characters. A full window is read only once more
@@ -476,18 +484,64 @@ func (a *itemAudio) write(p []byte) {
 	}
 }
 
-// slash is the character the escape \/ stands for.
-var slash = []byte{'/'}
-
-// escape reads the character after a backslash: \/ is a slash, which some encoders
-// escape; any other escape has no place in base64, and leaves the audio unmeasured.
-func (a *itemAudio) escape(c byte) {
-	a.escaping = false
-	if c == '/' {
-		a.write(slash)
-		return
+// escape reads the next character of an escape, past its backslash, and reports
+// whether it took it. JSON is decoded before base64, so an escaped character is the
+// character it stands for: \/ (a slash, which some encoders escape) and a \uXXXX
+// naming a base64 character or its padding (\u0041 is A; \u002B a plus, which some
+// encoders escape) enter the window as that character. Any other escape — \n, \", a
+// \uXXXX naming any other character or half a surrogate pair — stands for a character
+// base64 has no place for, and leaves the audio unmeasured. A \uXXXX's digits are
+// plain characters to the readers around it (valueSkip): one that is not a hex digit
+// — JSON that is not valid — ends the escape, the audio unmeasured, and is not taken.
+func (a *itemAudio) escape(c byte) bool {
+	if !a.unicode {
+		switch c {
+		case 'u':
+			a.unicode, a.digits, a.code = true, 0, 0
+			return true
+		case '/':
+			a.write([]byte{'/'})
+		default:
+			a.unreadable = true
+		}
+		a.escaping = false
+		return true
 	}
-	a.unreadable = true
+	digit, ok := hexDigit(c)
+	if !ok {
+		a.unreadable, a.escaping, a.unicode = true, false, false
+		return false
+	}
+	a.code = a.code<<4 | uint16(digit)
+	if a.digits++; a.digits < 4 {
+		return true
+	}
+	a.escaping, a.unicode = false, false
+	if a.code > 0x7F || !isBase64Char(byte(a.code)) {
+		a.unreadable = true
+		return true
+	}
+	a.write([]byte{byte(a.code)})
+	return true
+}
+
+// hexDigit is the value of the hex digit c, in either case.
+func hexDigit(c byte) (byte, bool) {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0', true
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10, true
+	case c >= 'A' && c <= 'F':
+		return c - 'A' + 10, true
+	}
+	return 0, false
+}
+
+// isBase64Char reports whether c is a character of standard base64 — its alphabet,
+// or the padding "=".
+func isBase64Char(c byte) bool {
+	return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '+' || c == '/' || c == '='
 }
 
 // end reads the string's last characters, without their padding.

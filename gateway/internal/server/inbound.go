@@ -232,19 +232,23 @@ func parseImagesFields(rq *request, top map[string]json.RawMessage) *apiError {
 }
 
 // rerankDocuments is how many documents a rerank request's documents holds: one per
-// element of a list; any other value — a string, a multimodal object — and an absent
-// or null one count as one, and the backend judges its shape. A document list holds
-// no token IDs, unlike an embeddings input (promptCount).
-//
-// The list is counted, not decoded, so the count costs no allocation however long the
-// list: raw is a member value objectMembers has read whole, so its strings close and
-// its brackets balance, and its elements are the commas between them outside strings
-// and nested values, plus one. A body at the size cap holding a long list of small
-// values costs one pass over the list to refuse, nothing held.
+// element of a list (listElements); any other value — a string, a multimodal object —
+// and an absent or null one count as one, and the backend judges its shape. A
+// document list holds no token IDs, unlike an embeddings input (promptCount).
 func rerankDocuments(raw json.RawMessage) int64 {
 	if !startsWith(raw, '[') {
 		return 1
 	}
+	return listElements(raw)
+}
+
+// listElements is how many elements a JSON list holds — raw, a member value
+// objectMembers has read whole, which starts with '['. The list is counted, not
+// decoded, so the count costs no allocation however long the list: its strings close
+// and its brackets balance, and its elements are the commas between them outside
+// strings and nested values, plus one. A body at the size cap holding a long list of
+// small values costs one pass over the list to refuse against a cap, nothing held.
+func listElements(raw json.RawMessage) int64 {
 	inside := bytes.TrimLeft(bytes.TrimLeft(raw, " \t\r\n")[1:], " \t\r\n")
 	if len(inside) == 0 || inside[0] == ']' {
 		return 0

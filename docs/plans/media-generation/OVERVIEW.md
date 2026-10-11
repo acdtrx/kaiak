@@ -255,4 +255,17 @@ Expected reds inside phase 1:
   - The real answers match the fake's shapes.
   - The user's model is restored.
 
-**Verification status:** not started.
+**Review outcome** (step 11, 2026-10-09 to 10-11): two agent reviews of the worktree
+and an independent Codex review of a plain copy. The user ruled three findings —
+`extra_params` refused (speech, then images), no `max_new_tokens` of the gateway's
+making on speech, batch item error text replaced — and the rest were fixed with
+tests: image `Retry-After` while a request runs, absurd WAV byte rates, untested
+paths, the batch cap counted before decoding, speech members read by exact name, JSON
+escapes in batch base64. `STEP-11-review-and-green.md` has the table.
+
+**Verification status:** component, e2e and cross-half tests green, `check-all.sh` 3×
+in a row (2026-10-11). Live on the DGX (step 12, 2026-10-09/10): vLLM-Omni 0.30.0 with
+Qwen3-TTS and Qwen-Image — the kit's 50 checks pass, the real answers match the fake
+backend in every field the gateway reads, the measured audio seconds equal the decoded
+clips; speech sent to an image model answers `400` after a full image generation
+(`docs/BACKLOG.md`, Endpoints per model).

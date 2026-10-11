@@ -402,8 +402,7 @@
   information, derived from the config; it says nothing about health. It follows the
   backend types, not the model a server loaded: a vLLM chat model lists `embeddings`
   and `rerank`, a vLLM reranker `chat_completions`, a vLLM-Omni speech model
-  `images_generations` (`docs/BACKLOG.md`, `/v1/models` `endpoints` per loaded
-  model).
+  `images_generations` (`docs/BACKLOG.md`, Endpoints per model).
 - **Anthropic-shaped model list** (settled 2026-10-06): `GET /v1/models` and
   `GET /v1/models/{id}` with an `anthropic-version` request header (Anthropic's SDKs
   always send it; OpenAI's never do) answer in Anthropic's shape, over the models
@@ -1078,16 +1077,22 @@ own, and a client sending repeats is broken either way.
     their `{"detail": "Not Found"}` is a wrong `base_url` (Wrong path to a host).
     What a model that cannot serve one of them answers is the server's own:
     - image generation on a model with no diffusion stage — a speech model —
-      answers `503` with the message `No diffusion stage found in multi-stage
-      pipeline.` (`_get_engine_and_model`). That answer reads as the endpoint
-      missing: without the reading, a few image requests sent to a speech model's
-      name would open its circuit for every key;
+      answers `503` at once, with the message `No diffusion stage found in
+      multi-stage pipeline.` (`_get_engine_and_model`). That answer reads as the
+      endpoint missing: without the reading, a few image requests sent to a speech
+      model's name would open its circuit for every key;
     - speech on a model with no speech stage answers `400` (`TTS model did not
-      produce audio output.`), and the batch on a pure-diffusion server `400` —
-      the caller's, relayed, never retried, neutral, as they stand. What speech
-      answers on an image model (vLLM-Omni's diffusion-speech path) the source does
-      not decide; the live run records it
-      (`docs/plans/media-generation/STEP-12-live-run.md`).
+      produce audio output.`), and the batch on a pure-diffusion server `400` at
+      once (`Batch speech is not supported in diffusion mode`) — the caller's,
+      relayed, never retried, neutral, as they stand;
+    - speech on an image model answers that same `400` (`BadRequestError`, `TTS
+      model did not produce audio output.`; relayed, neutral) — but only **after a
+      whole image generation**: vLLM-Omni's diffusion-speech path runs the pipeline
+      with the text as the prompt, at its defaults (1024×1024; about 60 s of the GPU
+      on a GB10), and only then finds no audio (the live run, 2026-10-09,
+      `docs/plans/media-generation/STEP-12-live-run.md`). The gateway records it as
+      nothing — no tokens, seconds or images, cost 0 — and no image limit sees it,
+      its output being speech (`docs/BACKLOG.md`, Endpoints per model).
   - **llama-server registers every route whatever its model or flags**
     (`tools/server/server.cpp`), so its `File Not Found` keeps its reading: a wrong
     path on the core endpoints. On its other endpoints it reads as the endpoint
@@ -1159,7 +1164,9 @@ own, and a client sending repeats is broken either way.
   `response.incomplete` — vLLM ends a stream cut by `max_output_tokens` with
   `response.completed` whose `status` is `incomplete`, OpenAI with
   `response.incomplete`; both are whole. Neither format sends `[DONE]`. A speech
-  stream is complete once it carried `speech.audio.done`; an audio body — the whole
+  stream is complete once it carried `speech.audio.done` — each speech event is
+  named by its data's `type`, read by its exact name as an error event's `code` is:
+  a member `Type` is another member (settled 2026-10-10); an audio body — the whole
   clip, the raw-audio stream — once the body ended by its framing
   (`Content-Length`, or the chunked end), since audio bytes have no closing mark of
   their own (settled 2026-10-09). A stream that carries an
@@ -1852,7 +1859,9 @@ own, and a client sending repeats is broken either way.
   vLLM-Omni's and OpenAI's own maximum), `param: "n"`; a speech batch's items are
   at most `global.max_speech_batch_items` (default 32 — vLLM-Omni's
   `tts_batch_max_items` default, which it enforces too), `param: "items"`; above
-  either, `400 invalid_value`, in the embeddings cap's wording. A speech batch's
+  either, `400 invalid_value`, in the embeddings cap's wording. The items are
+  counted before any is decoded: a long list of small items within the body cap
+  costs one pass to refuse, none of them held (settled 2026-10-10). A speech batch's
   items are its sequences — its reservation counts each item's effective output
   limit — capped by their own cap, not `max_sequences_per_request`: vLLM-Omni runs
   every item as a speech request of its own, all within the request's one slot.
@@ -2322,7 +2331,12 @@ own, and a client sending repeats is broken either way.
       `media_type`, wherever the item puts it (vLLM-Omni writes it after the
       audio), PCM at the rate of the item its `index` names; an item whose audio it
       cannot measure counts 0 and flags the record `estimated`, the others still
-      count; a successful item without audio relayed none (settled 2026-10-09);
+      count; a successful item without audio relayed none (settled 2026-10-09).
+      `audio_data` is a JSON string, read as a client decodes it before its base64:
+      an escaped character is the character it stands for (`\/`, `\u0041`), and
+      an escape standing for one base64 has no place for (`\n`, `\u0021`, a
+      surrogate pair) makes the item's audio one it cannot measure (settled
+      2026-10-10);
     - an answer it cannot measure (a WAV header it cannot read, another content
       type) counts 0 seconds and flags the record `estimated` — and so does audio
       said to play faster than 100 MB/s, a WAV header's rate times its block size
@@ -2330,6 +2344,11 @@ own, and a client sending repeats is broken either way.
       below it (768 kHz, the highest rate in use, of 32 channels of 32-bit samples
       is 98.3 MB/s), and a header naming more (a rate of `0xFFFFFFFF`) made its
       samples measure a few nanoseconds — 0 s, counted as measured.
+
+    Every member — an event's `type`, `audio`, `response_format` and `usage`, a
+    result's, a usage's counts — is read by its exact name after decoding, as the
+    owned fields are: JSON names are case-sensitive, so a member `Audio` or
+    `OUTPUT_TOKENS` is another member, never the API's (settled 2026-10-10).
 
     A record's seconds are its audio's exact length, summed over its chunks and
     items, rounded up to a whole second once — as vLLM reports the seconds of a

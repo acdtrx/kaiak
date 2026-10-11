@@ -58,27 +58,23 @@ func newSpeechUsage(request Speech) *speechUsage {
 	return &speechUsage{request: request, clip: emptyClip{}}
 }
 
-// speechEvent is what the meter reads of one SSE stream event: a delta's audio and
-// format, done's usage.
-type speechEvent struct {
-	Type           string          `json:"type"`
-	Audio          string          `json:"audio"`
-	ResponseFormat string          `json:"response_format"`
-	Usage          json.RawMessage `json:"usage"`
-}
-
-// streamEvent reads one SSE stream event by its data's type: a speech.audio.delta's
-// audio into the clip, speech.audio.done's usage.
+// streamEvent reads one SSE stream event by its data's type, each member by its exact
+// name (exactMembers): a speech.audio.delta's audio, decoded as a JSON string, into the
+// clip, in its response_format; speech.audio.done's usage. A member of an unexpected
+// type is skipped, the others still read; data that is not a JSON object says nothing.
 func (u *speechUsage) streamEvent(payload []byte) {
-	var ev speechEvent
-	// A member of an unexpected type is skipped; the others are still read. Invalid
-	// JSON fills nothing.
-	_ = json.Unmarshal(payload, &ev)
-	switch ev.Type {
+	ev, ok := exactMembers(payload)
+	if !ok {
+		return
+	}
+	eventType, _ := memberValue[string](ev, "type")
+	switch eventType {
 	case "speech.audio.delta":
-		u.delta(ev.Audio, ev.ResponseFormat)
+		audio, _ := memberValue[string](ev, "audio")
+		format, _ := memberValue[string](ev, "response_format")
+		u.delta(audio, format)
 	case "speech.audio.done":
-		u.keep(speechEventUnits(ev.Usage))
+		u.keep(speechEventUnits(ev["usage"]))
 	}
 }
 
@@ -133,19 +129,47 @@ func (u *speechUsage) media(bool) (Units, bool) {
 func (u *speechUsage) mediaSeen() bool { return u.clip.samplesSeen() }
 
 // speechEventUnits reads the SSE stream's token usage, speech.audio.done's usage
-// object: input_tokens and output_tokens both integers, else no report (a null,
+// object — a batch result's has its shape — by its members' exact names
+// (exactMembers): input_tokens and output_tokens both integers, else no report (a null,
 // missing or malformed usage, a count missing, null or not an integer). A negative
 // count is 0, as in every usage object the gateway reads.
 func speechEventUnits(raw json.RawMessage) (Units, bool) {
-	var r struct {
-		InputTokens  *int64 `json:"input_tokens"`
-		OutputTokens *int64 `json:"output_tokens"`
-	}
-	if len(raw) == 0 || raw[0] != '{' || json.Unmarshal(raw, &r) != nil || r.InputTokens == nil || r.OutputTokens == nil {
+	usage, ok := exactMembers(raw)
+	if !ok {
 		return nil, false
 	}
-	return withEveryUnit(Units{config.UnitTokensIn: nonNegative(r.InputTokens),
-		config.UnitTokensOut: nonNegative(r.OutputTokens)}), true
+	in, inOK := memberValue[int64](usage, "input_tokens")
+	out, outOK := memberValue[int64](usage, "output_tokens")
+	if !inOK || !outOK {
+		return nil, false
+	}
+	return withEveryUnit(Units{config.UnitTokensIn: max(in, 0), config.UnitTokensOut: max(out, 0)}), true
+}
+
+// exactMembers decodes raw, a JSON object, into its members' raw values by their exact
+// names after decoding, as the inbound stage reads a request's. JSON names are
+// case-sensitive, but encoding/json matches a struct's fields case-insensitively: a
+// member "Audio" or "OUTPUT_TOKENS" would be read as audio or output_tokens, over the
+// API's own. A member named twice counts as its last, as encoding/json reads it. ok is
+// false when raw is not a JSON object.
+func exactMembers(raw []byte) (map[string]json.RawMessage, bool) {
+	var members map[string]json.RawMessage
+	if json.Unmarshal(raw, &members) != nil || members == nil {
+		return nil, false
+	}
+	return members, true
+}
+
+// memberValue decodes the member named name into a T; ok is false when it is absent,
+// null or not a T.
+func memberValue[T any](members map[string]json.RawMessage, name string) (T, bool) {
+	var v *T
+	raw, present := members[name]
+	if !present || json.Unmarshal(raw, &v) != nil || v == nil {
+		var zero T
+		return zero, false
+	}
+	return *v, true
 }
 
 // speechHeaderUnits reads the whole clip's token usage from its headers: both counts

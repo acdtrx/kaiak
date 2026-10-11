@@ -717,7 +717,11 @@ the document (a script, or the control plane) rather than editing it by hand.
   `502 upstream_model_missing`, a circuit failure (`GATEWAY.md` → Providers: wrong
   model on a host). An image request sent to a speech model's server answers `503` (no
   diffusion stage), read as the endpoint missing — neutral, the deployment keeps
-  serving speech (Clients).
+  serving speech (Clients). The other way costs: speech sent to an image model's
+  name runs a whole image generation (about a minute of the GPU on a GB10) before
+  vLLM-Omni answers `400`, and the gateway records it as nothing — no seconds, no
+  images — so let only the keys meant for image models reach them
+  (`docs/BACKLOG.md`, Endpoints per model).
 - **What the gateway accepts** (`GATEWAY.md` → Client API: owned fields; the rest of
   a request passes through — `voice`, `instructions`, `language`, `task_type`,
   `seed`, `size`, `negative_prompt`, `num_inference_steps`, …):

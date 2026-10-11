@@ -215,18 +215,22 @@ func parseSpeechBatchFields(rq *request, top map[string]json.RawMessage) *apiErr
 
 // speechBatchItems is a speech batch's items, each an element of the list: none when
 // it is absent or null (the backend refuses that); a value that is not a list is
-// refused, and so is a list longer than max_speech_batch_items — counted before any
-// item's members are read.
+// refused, and so is a list longer than max_speech_batch_items — counted without
+// decoding (listElements), so a long list of small items costs one pass to refuse,
+// none of them held; only a list within the cap is decoded into its items.
 func speechBatchItems(raw json.RawMessage, limit int64) ([]json.RawMessage, *apiError) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil, nil
 	}
+	if !startsWith(raw, '[') {
+		return nil, errInvalidType("items", "an array")
+	}
+	if n := listElements(raw); n > limit {
+		return nil, errTooManyItems(n, limit)
+	}
 	var items []json.RawMessage
 	if json.Unmarshal(raw, &items) != nil {
 		return nil, errInvalidType("items", "an array")
-	}
-	if n := int64(len(items)); n > limit {
-		return nil, errTooManyItems(n, limit)
 	}
 	return items, nil
 }

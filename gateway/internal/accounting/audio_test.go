@@ -1,6 +1,7 @@
 package accounting
 
 import (
+	"encoding/base64"
 	"encoding/binary"
 	"math"
 	"testing"
@@ -119,6 +120,40 @@ func TestWAVCutShortCountsWhatArrived(t *testing.T) {
 	if d, measured := clip.length(); !measured || d != audioDuration(24001, 48000) || !clip.samplesSeen() {
 		t.Errorf("after 24001 bytes: %v measured %v", d, measured)
 	}
+}
+
+// However a WAV clip's bytes arrive — whole, a byte at a time, or as base64 text read by
+// its decoded size, only the header decoded (writeBase64, as a delta's or a batch
+// item's audio is read) — its length, whether it is measured and whether samples were
+// seen are the same. The seeds walk chunk boundaries: a chunk before fmt, an odd-sized
+// one and its pad byte before a data chunk declaring the placeholder, a streamed
+// header with audio, a data chunk declaring nothing, a data chunk before any fmt
+// chunk, a header cut short (docs/specs/GATEWAY.md, Accounting → Media usage).
+func FuzzWAVLengthIsTheSameHoweverRead(f *testing.F) {
+	format := wavChunk("fmt ", fmtBody(1, 1, 8000, 2, 16))
+	f.Add(riff(0, wavChunk("JUNK", nil), format, wavChunk("data", make([]byte, 32))))
+	f.Add(riff(0, wavChunk("JUNK", []byte{1}), format, dataHeader(0xFFFFFFFF)))
+	f.Add(append(riff(0xFFFFFFFF, format, dataHeader(0xFFFFFFFF)), make([]byte, 101)...))
+	f.Add(riff(0, format, dataHeader(0)))
+	f.Add(riff(0, dataHeader(0xFFFFFFFF)))
+	f.Add([]byte("RIFF"))
+	f.Fuzz(func(t *testing.T, body []byte) {
+		if len(body) > 64<<10 {
+			t.Skip()
+		}
+		whole := measure("audio/wav", 0, body, 0)
+		want, measured := whole.length()
+		encoded := &wavClip{}
+		if !writeBase64(encoded, base64.StdEncoding.EncodeToString(body)) {
+			t.Fatal("base64 text refused")
+		}
+		for name, clip := range map[string]audioClip{"a byte at a time": measure("audio/wav", 0, body, 1), "base64": encoded} {
+			if got, ok := clip.length(); got != want || ok != measured || clip.samplesSeen() != whole.samplesSeen() {
+				t.Fatalf("%s: %v measured %v samples %v; whole: %v measured %v samples %v", name, got, ok, clip.samplesSeen(),
+					want, measured, whole.samplesSeen())
+			}
+		}
+	})
 }
 
 // A WAV header the gateway cannot read is not measured: not RIFF and WAVE, a format

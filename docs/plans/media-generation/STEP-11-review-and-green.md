@@ -1,6 +1,6 @@
 # Step 11 — review and green
 
-**Status:** in progress — review fixes done; the Codex review may add findings
+**Status:** done — reviewed and committed 2026-10-11
 
 ## Intent
 
@@ -33,7 +33,10 @@ Two agent reviews of the worktree over `v0.13.1..media-a` ("speech"; "images,
 limits, control"), the user's rulings on three of their findings (2026-10-10), each
 finding re-checked against the code, its repro turned into a test. vLLM-Omni read at
 the pinned `a8576ccb` (v0.30.0) and, for the batch's fields, on `main` at `b65107d`
-(2026-10-09). The Codex review of a plain copy is still to come.
+(2026-10-09). Then the Codex review of a plain copy (2026-10-10): three medium
+findings, each with a reproduction under the build tag `auditb` that failed on the
+code it reviewed (rows 17–19); no finding in its other areas. Then the user's
+decision on what the live run (step 12) found (row 20).
 
 | # | Severity | Source | Finding | Done / recorded |
 |---|---|---|---|---|
@@ -53,13 +56,17 @@ the pinned `a8576ccb` (v0.30.0) and, for the batch's fields, on `main` at `b6510
 | 14 | low | agent review: images, limits, control | `CONTROL-PROTOCOL.md` → Matching totals to limits: "an hour and a month count for every scope and type" | The four hour counts and the month count, by type, as `GATEWAY.md` → Every scope is counted |
 | 15 | ruling | the main session (2026-10-10), from ruling 2 | Speech `max_new_tokens` above the model's ceiling was lowered to it — a value of the gateway's making, which a Base clone needing more than the ceiling reaches and answers `500` | Refused, not lowered, on speech and the batch — the batch's value (even when every item sets its own) and each item's: `400 invalid_value`, `param` naming the member, in the out-of-range wording ("… at most 1000 tokens (its output-limit ceiling) …"; `errors.go` `errOutputLimitAboveCeiling`, `params.go`). Chat, completions, Messages and Responses still lower. With nothing ever written into a speech request or item, the provider's item-edit mechanism (`ItemParams`, `elementEdits`, `editElements`, `indexArray`, the pipeline's `itemParams`) had no user and is removed, with its test; `editObject`'s comma fix for several inserts stays, tested on its own. `GATEWAY.md` → errors table, Passthrough edits (speech gets the model edit alone), Output limit, Output-limit keys (dated, the reason, rejected), Output limit out of range; `DEPLOYMENT.md` → Output limit |
 | 16 | ruling | the main session (2026-10-10), from ruling 1 | Image generation passed `extra_params` into the diffusion pipeline's `extra_args` (`api_server.py`, `generate_images`, at `a8576ccb`); which keys a pipeline fetches or reads the gateway cannot know | Refused as speech's is, any presence and value: `400 external_reference_unsupported`, `param: "extra_params"` (`server/inbound.go` `parseImagesFields`; the error renamed `errExtraParams`, shared by both). `GATEWAY.md` → errors table, owned fields: images (dated); `DEPLOYMENT.md` → What the gateway accepts; `BACKLOG.md` entry renamed vLLM-Omni `extra_params`, covering both; the kit's `image-refused` check and `LIVE-BACKENDS.md` |
+| 17 | medium | Codex review | The speech batch's items cap was checked after `json.Unmarshal` had decoded every item into a `[]json.RawMessage`: 200 000 empty items (600 001 bytes, within the default body cap) allocated about 28 MB before the refusal — outside the body budget, and before authorization and the limits | Counted without decoding: `server/inbound.go` `listElements` (the count `rerankDocuments` made, now shared), used by `inbound_speech.go` `speechBatchItems` — a value that is not a list is refused by its first byte, a list over the cap by its count, and only a list within the cap is decoded. `GATEWAY.md` → Limits → Output multiplicity: batch caps (dated) |
+| 18 | medium | Codex review | The speech readers decoded into structs, whose tags `encoding/json` matches case-insensitively: an SSE delta's `"Audio":""` after its `audio` counted 0 s while the client got the audio; a usage's `"OUTPUT_TOKENS":0` counted 0 output tokens as reported (the SSE stream and each batch result); a `speech.audio.error` also naming `"Type":"speech.audio.delta"` was not taken for an error — its backend text relayed, and a `done` after it made the stream complete | Read by exact names after decoding: `accounting/speech_usage.go` `exactMembers` and `memberValue` — the event's `type`, `audio`, `response_format` and `usage`, and the usage's counts, which each batch result's usage goes through too; `provider/stream_format.go` `speechStream.observe` — the type and the error's `code`, from maps. The plan's other readers already compare decoded names exactly: the batch and image scanners (`scannedName`) and the batch error rewriter (`keyIs`). `GATEWAY.md` → Complete responses (speech), Media usage (dated) |
+| 19 | medium | Codex review | A batch item's `audio_data` holding any JSON escape but `\/` — `\u0041`, a valid way to write `A` — left the whole clip unmeasured: 0 s, `estimated`, while the client decodes all its audio. The test case "an escape" expected that | Escapes are decoded into the same window (`accounting/speech_batch_usage.go` `itemAudio.escape`, no allocation): `\/` and a `\uXXXX` naming a base64 character or `=` enter it as that character. Chosen: every other escape — `\n`, `\"`, `\\`, a `\uXXXX` naming any other character, either half of a surrogate pair — leaves the item unmeasured, as before: base64 has no place for them (a line break, which lenient base64 decoders skip, included); a `\u` digit that is not hex (invalid JSON) ends the escape, unmeasured, and is read as the string's own character, as the skip readers read it. The SSE delta's `audio` was already decoded as a JSON string (`encoding/json`): tested, unchanged. `GATEWAY.md` → Media usage: Audio length (dated) |
+| 20 | ruling | the user's decision (2026-10-10), from the live run (step 12) | Speech sent to a vLLM-Omni image model's name runs a whole image generation (about 60 s of the GB10) before its `400`, and is recorded as nothing | Documented; the code unchanged. `GATEWAY.md` → Providers (vLLM-Omni): the live answer in place of "the source does not decide", the batch's `400` and image-to-speech's `503` both "at once"; `BACKLOG.md`: the `/v1/models` entry retitled **Endpoints per model**, holding this cost and the recommendation — an optional per-model endpoint list in config, the others refused `400 endpoint_not_served` before any backend, `/v1/models` listing it — its trigger the user's decision or a wasted generation seen; `DEPLOYMENT.md` → Speech and images, One backend per model: the warning to let only the keys meant for image models reach them |
 
 The sources of findings 4–14 are given by their subject.
 
-**Open for step 12:** what vLLM-Omni answers to a speech request sent to an image
-model is unknown: `_create_diffusion_speech` turns a `ValueError` into `400`
-(neutral) but any other exception into `500` (a circuit failure). The kit's
-`speech-to-image` check records it live.
+**Asked of step 12** (answered there; row 20): what vLLM-Omni answers to a speech
+request sent to an image model was unknown: `_create_diffusion_speech` turns a
+`ValueError` into `400` (neutral) but any other exception into `500` (a circuit
+failure). The kit's `speech-to-image` check recorded it live.
 
 **Tests added or changed** (each new test fails without its fix — checked by
 reverting each fix in turn):
@@ -114,6 +121,43 @@ reverting each fix in turn):
   image limits back on the slot's expiry; either name read undecoded; the speech
   ceiling lowered again, an item's ceiling unchecked, image `extra_params` passed.
 
+**Tests for rows 17–19** (each new or changed test fails without its fix — checked
+by reverting each fix in turn):
+- `server`: new `TestSpeechBatchCapCountsItemsBeforeDecodingThem` — refusing 200 000
+  empty items allocates as often as refusing 1 000 (`testing.AllocsPerRun`; the old
+  code: 200 044 against 1 015), the message naming the count; a list within the cap
+  decoded into its three items.
+- `provider`: new `TestSpeechEventsAreReadByExactNames` — an error event naming
+  `"Type":"speech.audio.delta"`: as the first event an error event, code 500; after a
+  delta, relayed with the gateway's message (the backend's text gone) and ending the
+  stream incomplete though `done` follows; deltas naming `"Type"` done leave it
+  incomplete; a `done` naming `"TYPE"` a delta completes it.
+- `accounting`: new `TestSpeechEventsAreReadByExactNames` — `Audio`,
+  `RESPONSE_FORMAT`, `Type`, `Usage`, `OUTPUT_TOKENS` beside the API's members change
+  nothing, and named alone are absent; `speechEventUnits` with `OUTPUT_TOKENS` 0 beside
+  `output_tokens` 40 reports 40. `TestSpeechBatchUsage` + a count in another case
+  beside it, and the counts in another case alone; `TestSpeechBatchReadsWhereTheAnswerPutsThem`
+  + names in another case. New `TestSpeechBatchEscapedAudioReadsAsItsCharacters`
+  (the Codex reproduction, widened) — PCM and WAV of every byte value, the first
+  character or every character escaped (`\uXXXX` in either case, `\/`), the same
+  JSON value as the plain answer, 1 s measured in every split. `TestSpeechBatchUnmeasurableAudio`:
+  the case "an escape" (`\u0041`, which encoded the defect) replaced by escapes base64
+  has no place for — `\n`, `\"`, `\u0021`, `\u00e9`, `\u0141` (past one byte, its
+  last byte `A`), a surrogate pair — and an escape cut short by a quote.
+  `TestSpeechDeltaLength` + escaped characters in PCM and in a WAV header.
+- Fuzz functions, their seed corpora run by `go test`: `FuzzWAVLengthIsTheSameHoweverRead`
+  (a WAV read whole, a byte at a time and as base64 by `writeBase64` gives the same
+  length, measured flag and samples seen; the seeds walk chunk boundaries) and
+  `FuzzImagesCountIsTheDecodersCount` (the image count against `encoding/json`'s, in
+  pieces of 1, 7 and 32 KiB) — differential checks no existing test made. Fuzzed
+  10 s each here: 1.5 M and 1.3 M executions, no failure.
+- The Codex reproductions (`auditb`) copied into the packages and run with `-race`:
+  all pass; removed again.
+- Mutants reverted one at a time, each killed by its test: the cap checked after
+  decoding; the usage, the delta and the speech stream's `observe` read by struct;
+  escapes back to `\/` alone; a `\uXXXX` naming no base64 character written; a code
+  past one byte read by its last byte; a digit that is not hex taken into the escape.
+
 **Suite (2026-10-10):** `scripts/check-gateway.sh`, then `scripts/check-all.sh`
 twice, each green, exit 0 — and again after rows 15–16: `scripts/check-gateway.sh`,
 then `scripts/check-all.sh` twice (the second after this record was written), each
@@ -127,3 +171,9 @@ green, exit 0, with the same counts:
 - **Control `npm test`:** 655 tests, 654 pass, 0 fail, 1 skipped; **`npm run
   lint`:** `boundaries ok`.
 - **Cross-half e2e:** `ok kaiak/e2e` (≈76 s); `all checks passed`.
+
+**Green 3× in a row after the Codex fixes (2026-10-11, run by the main session; the
+fixing subagent was cut off by a usage limit as its own runs started):**
+`scripts/check-all.sh` three times — each exit 0, `all checks passed`; gateway
+`kaiak/e2e` 125.2 s, 120.3 s, 123.9 s; control `npm test` 655 tests, 654 pass, 0 fail,
+1 skipped; cross-half e2e `ok` 75.4 s each.

@@ -262,6 +262,75 @@ func TestSpeechEventStreamPassesThrough(t *testing.T) {
 	}
 }
 
+// A speech event is read by its members' exact names, as the client reads it: a member
+// "Type" beside type is another member. An error event naming "Type" a delta is still
+// the backend failing — as the first event, the attempt loop's; after it, relayed with
+// the gateway's message and ending the stream incomplete, though done follows — and a
+// delta naming "Type" done does not complete the stream (docs/specs/GATEWAY.md,
+// Providers: complete responses, error events).
+func TestSpeechEventsAreReadByExactNames(t *testing.T) {
+	const (
+		delta = "data: {\"type\":\"speech.audio.delta\",\"audio\":\"AAAA\",\"response_format\":\"pcm\",\"Type\":\"speech.audio.done\"}\n\n"
+		fault = "data: {\"type\":\"speech.audio.error\",\"Type\":\"speech.audio.delta\"," +
+			"\"error\":{\"code\":500,\"message\":\"private engine details\",\"Code\":400}}\n\n"
+		done = "data: {\"type\":\"speech.audio.done\",\"TYPE\":\"speech.audio.delta\"}\n\n"
+	)
+	send := func(t *testing.T, stream string) (Response, error) {
+		t.Helper()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, stream)
+		}))
+		t.Cleanup(srv.Close)
+		return sendSpeech(omniBackend(srv.URL+"/v1"), `{"model":"pub","input":"hello","stream":true}`, true)
+	}
+	relay := func(resp Response) (relayed []byte, end error) {
+		defer resp.Close()
+		for end == nil {
+			var ev Event
+			ev, end = resp.Next()
+			relayed = append(relayed, ev.Data...)
+		}
+		return relayed, end
+	}
+
+	_, err := send(t, fault+done)
+	var perr *Error
+	if !errors.As(err, &perr) || perr.Code != CodeErrorEvent || perr.Event.Kind != ErrorEventFailure || string(perr.Event.Code) != "500" {
+		t.Errorf("first event an error naming Type a delta: %v, want a failure error event, code 500", err)
+	}
+
+	resp, err := send(t, delta+fault+done)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayed, end := relay(resp)
+	var errorEnd *ErrorEventEnd
+	if !errors.As(end, &errorEnd) || !errors.Is(end, ErrIncomplete) || errorEnd.Event.Kind != ErrorEventFailure {
+		t.Errorf("ended %v, want an error event end, incomplete, a failure", end)
+	}
+	if strings.Contains(string(relayed), "private engine details") || !strings.Contains(string(relayed), errorEventMessage) ||
+		strings.Contains(string(relayed), `"type":"speech.audio.done"`) {
+		t.Errorf("relayed %q: want the error event with the gateway's message, nothing after it", relayed)
+	}
+
+	resp, err = send(t, delta+delta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, end := relay(resp); !errors.Is(end, ErrIncomplete) {
+		t.Errorf("deltas naming Type done: ended %v, want incomplete", end)
+	}
+
+	resp, err = send(t, delta+done)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, end := relay(resp); !errors.Is(end, io.EOF) {
+		t.Errorf("done naming TYPE a delta: ended %v, want complete", end)
+	}
+}
+
 // speech.audio.error as the first event is the backend failing before anything
 // reached the client: an error event the attempt loop answers. After the first event
 // it is relayed — its type and code kept, the backend's message replaced by the

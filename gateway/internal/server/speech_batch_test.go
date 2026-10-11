@@ -206,6 +206,32 @@ func TestSpeechBatchRefusals(t *testing.T) {
 	}
 }
 
+// The items cap counts a batch's items before it decodes any: refusing 200 000 empty
+// items — 600 001 bytes, within the default body size cap — allocates what refusing
+// 1 000 does, none of the items held (decoding them first costs an allocation per
+// item; the margin is other goroutines' allocations meanwhile, which the count takes
+// in); a list within the cap is decoded into its items (docs/specs/GATEWAY.md, Limits →
+// Output multiplicity: batch caps).
+func TestSpeechBatchCapCountsItemsBeforeDecodingThem(t *testing.T) {
+	allocs := func(n int) float64 {
+		raw := json.RawMessage(`[` + strings.Repeat(`{},`, n-1) + `{}]`)
+		if _, apiErr := speechBatchItems(raw, 32); apiErr == nil || apiErr.code != "invalid_value" ||
+			!strings.Contains(apiErr.message, "holds "+strconv.Itoa(n)+" items") {
+			t.Fatalf("%d items over a cap of 32: %+v, want invalid_value naming %d", n, apiErr, n)
+		}
+		return testing.AllocsPerRun(5, func() { _, _ = speechBatchItems(raw, 32) })
+	}
+	const margin = 1_000
+	if few, many := allocs(1_000), allocs(200_000); many > few+margin {
+		t.Errorf("refusing 1 000 items allocates %v times, 200 000 items %v: the items are decoded before the cap", few, many)
+	}
+
+	items, apiErr := speechBatchItems(json.RawMessage(` [ {"input":"a"} , "b", [1,{"c":"]"}] ] `), 32)
+	if apiErr != nil || len(items) != 3 || string(items[0]) != `{"input":"a"}` || string(items[2]) != `[1,{"c":"]"}]` {
+		t.Errorf("three items within the cap: %q %+v", items, apiErr)
+	}
+}
+
 // What the gateway does not own passes untouched, and so do the values it reads
 // when they keep to the rules: the batch's defaults where items override them all, a
 // rate an item's PCM inherits from the batch, inline reference audio at either level,

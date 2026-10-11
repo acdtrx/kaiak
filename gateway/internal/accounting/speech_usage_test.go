@@ -1,10 +1,12 @@
 package accounting
 
 import (
+	"bytes"
 	"encoding/base64"
 	"maps"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -212,6 +214,55 @@ func TestSpeechEventStreamUsage(t *testing.T) {
 	}
 }
 
+// A speech event's members are read by their exact names, as a client reads them: a
+// member named in another case — "Audio", "Type", "RESPONSE_FORMAT", "Usage",
+// "OUTPUT_TOKENS" — is another member, and changes nothing; a member named only in
+// another case is absent (docs/specs/GATEWAY.md, Accounting → Media usage).
+func TestSpeechEventsAreReadByExactNames(t *testing.T) {
+	second := b64(make([]byte, 16000)) // 1 s at 8 kHz
+	delta := []byte(`{"type":"speech.audio.delta","response_format":"pcm","audio":"` + second + `"}`)
+	done := []byte(`{"type":"speech.audio.done","usage":{"input_tokens":7,"output_tokens":40}}`)
+	for _, c := range []struct {
+		name      string
+		events    []string
+		want      Units
+		estimated bool
+	}{
+		{"Audio after audio", []string{`{"type":"speech.audio.delta","response_format":"pcm","audio":"` + second + `","Audio":""}`,
+			string(done)}, speechUnits(7, 40, 1), false},
+		{"Audio alone", []string{`{"type":"speech.audio.delta","response_format":"pcm","Audio":"` + second + `"}`, string(done)},
+			speechUnits(7, 40, 0), false},
+		{"RESPONSE_FORMAT beside response_format", []string{`{"type":"speech.audio.delta","response_format":"pcm","audio":"` + second +
+			`","RESPONSE_FORMAT":"mp3"}`, string(done)}, speechUnits(7, 40, 1), false},
+		{"Type beside type", []string{`{"type":"speech.audio.delta","Type":"speech.audio.done","response_format":"pcm","audio":"` +
+			second + `","usage":{"input_tokens":1,"output_tokens":1}}`, string(done)}, speechUnits(7, 40, 1), false},
+		{"Type alone", []string{`{"Type":"speech.audio.delta","response_format":"pcm","audio":"` + second + `"}`, string(done)},
+			speechUnits(7, 40, 0), false},
+		{"OUTPUT_TOKENS beside output_tokens", []string{string(delta),
+			`{"type":"speech.audio.done","usage":{"input_tokens":7,"output_tokens":40,"OUTPUT_TOKENS":0,"Input_Tokens":99}}`},
+			speechUnits(7, 40, 1), false},
+		{"the counts in another case alone", []string{string(delta),
+			`{"type":"speech.audio.done","usage":{"INPUT_TOKENS":7,"Output_Tokens":40}}`}, speechUnits(33, 0, 1), true},
+		{"Usage beside usage", []string{string(delta),
+			`{"type":"speech.audio.done","usage":{"input_tokens":7,"output_tokens":40},"Usage":null}`}, speechUnits(7, 40, 1), false},
+		{"Usage alone", []string{string(delta), `{"type":"speech.audio.done","Usage":{"input_tokens":7,"output_tokens":40}}`},
+			speechUnits(33, 0, 1), true},
+	} {
+		var events [][]byte
+		for _, ev := range c.events {
+			events = append(events, []byte(ev))
+		}
+		units, flags := meterSpeechEvents(Speech{SampleRate: 8000}, nil, events, true)
+		if !maps.Equal(units, c.want) || flags.Estimated != c.estimated || flags.Partial {
+			t.Errorf("%s: %v %+v, want %v estimated %v", c.name, units, flags, c.want, c.estimated)
+		}
+	}
+	if units, ok := speechEventUnits([]byte(`{"input_tokens":7,"output_tokens":40,"OUTPUT_TOKENS":0}`)); !ok ||
+		units[config.UnitTokensOut] != 40 {
+		t.Errorf("a usage naming OUTPUT_TOKENS 0 beside output_tokens 40: %v reported %v, want 40 out", units, ok)
+	}
+}
+
 // eventClip reads an SSE answer's deltas into a speech reader and returns its audio's
 // exact length.
 func eventClip(speech Speech, deltas ...[]byte) (time.Duration, bool) {
@@ -228,8 +279,9 @@ func eventClip(speech Speech, deltas ...[]byte) (time.Duration, bool) {
 // sample_rate; WAV from its own header, the only bytes decoded, then the data
 // received, at most the size the data chunk declares. vLLM-Omni sends a WAV stream's
 // header as a delta of its own; a header split across deltas, or sharing one with its
-// audio, reads the same; a chunk before the data is skipped by its size, not decoded
-// (docs/specs/GATEWAY.md, Accounting → Media usage).
+// audio, reads the same; a chunk before the data is skipped by its size, not decoded;
+// characters written as JSON escapes (\/, \u0041) read as the characters they stand
+// for (docs/specs/GATEWAY.md, Accounting → Media usage).
 func TestSpeechDeltaLength(t *testing.T) {
 	streamed := riff(0xFFFFFFFF, wavChunk("fmt ", fmtBody(1, 1, 24000, 2, 16)), dataHeader(0xFFFFFFFF))
 	data := make([]byte, 30001) // 0.625 s and one byte: 30 001 bytes at 48 000 bytes a second
@@ -272,6 +324,11 @@ func TestSpeechDeltaLength(t *testing.T) {
 		{"wav, at most the declared size", Speech{}, wav(b64(sized[:44]), b64(sized[44:])), time.Second},
 		{"wav, the header alone", Speech{}, wav(b64(streamed)), 0},
 		{"no delta", Speech{}, nil, 0},
+		// The audio is a JSON string, decoded as a client decodes it: an escaped
+		// character is that character, in the header or past it.
+		{"pcm, characters escaped", Speech{SampleRate: 8000}, [][]byte{speechDelta("pcm", `\u0041`+b64(make([]byte, 10000))[1:]),
+			speechDelta("pcm", strings.ReplaceAll(b64(bytes.Repeat([]byte{0xFF}, 20000)), "/", `\/`))}, 1875 * time.Millisecond},
+		{"wav, the header escaped", Speech{}, wav(`\u0055`+b64(streamed)[1:], `\u0041\u0041`+b64(data)[2:]), 625020833 * time.Nanosecond},
 	} {
 		d, measured := eventClip(c.speech, c.deltas...)
 		if d != c.want || !measured {

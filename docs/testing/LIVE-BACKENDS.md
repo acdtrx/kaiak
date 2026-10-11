@@ -631,7 +631,9 @@ The checks that matter for the servers:
   reads as the endpoint missing.
 - `audio-limit` and `image-limit`: the media limits refuse.
 - `speech-to-image` is a record, not a check: copy its line into the run's notes —
-  it is how vLLM-Omni answers speech sent to an image model.
+  it is how vLLM-Omni answers speech sent to an image model (at v0.30.0, `400` after
+  a whole image generation, about a minute of the GPU: `GATEWAY.md` → Providers,
+  vLLM-Omni).
 
 ## Reading failures
 

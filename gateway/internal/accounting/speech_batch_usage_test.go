@@ -74,9 +74,9 @@ func batchLength(speech Speech, body []byte, piece int) (time.Duration, bool) {
 var pieceSizes = []int{1, 3, 4096, 32 << 10, 1 << 30}
 
 // A speech batch's tokens are its successful results' usage summed — each usage
-// speech.audio.done's shape — and an errored result adds nothing, its usage unread; a
-// successful result without usage, or with one that is not both counts as integers,
-// leaves the batch with no report: the input estimated, no output, flagged. An answer
+// speech.audio.done's shape, its counts read by their exact names — and an errored
+// result adds nothing, its usage unread; a successful result without usage, or with
+// one that is not both counts as integers, leaves the batch with no report: the input estimated, no output, flagged. An answer
 // with no result is no report either. The seconds are the results' exact lengths
 // summed, rounded up once — three results of 0.4 s count 2, not 3
 // (docs/specs/GATEWAY.md, Accounting → Media usage). Every case reads the same split
@@ -102,6 +102,9 @@ func TestSpeechBatchUsage(t *testing.T) {
 		{"a result's usage null", batchBody(ok(0, batchUsage(7, 40)), ok(1, "null")), speechUnits(33, 0, 1), true},
 		{"a count as text", batchBody(ok(0, `{"input_tokens":"7","output_tokens":40}`)), speechUnits(33, 0, 1), true},
 		{"a count missing", batchBody(ok(0, `{"input_tokens":7}`)), speechUnits(33, 0, 1), true},
+		{"a count named in another case beside it", batchBody(ok(0, `{"input_tokens":7,"output_tokens":40,"OUTPUT_TOKENS":0}`)),
+			speechUnits(7, 40, 1), false},
+		{"the counts in another case alone", batchBody(ok(0, `{"Input_Tokens":7,"OUTPUT_TOKENS":40}`)), speechUnits(33, 0, 1), true},
 		{"no results", batchBody(), speechUnits(33, 0, 0), true},
 		{"results null", []byte(`{"id":"b","results":null}`), speechUnits(33, 0, 0), true},
 		{"not a batch answer", []byte(`[{"index":0,"status":"success"}]`), speechUnits(33, 0, 0), true},
@@ -177,13 +180,80 @@ func TestSpeechBatchAudioLength(t *testing.T) {
 	}
 }
 
+// A result's audio_data is a JSON string, decoded before its base64 as a client
+// decodes it: characters written as escapes — \u0041 for A, \u002b for a plus, \/ for
+// a slash, the digits in either case, the first character alone or every one — read
+// as the characters they stand for, PCM and WAV alike, the answer the same JSON value,
+// however it is split (docs/specs/GATEWAY.md, Accounting → Media usage).
+func TestSpeechBatchEscapedAudioReadsAsItsCharacters(t *testing.T) {
+	pattern := make([]byte, 16000) // 1 s at 8 kHz; every byte value, so every base64 character
+	for i := range pattern {
+		pattern[i] = byte(i)
+	}
+	escapeAudio := func(body []byte, escape func(i int, c byte) string) []byte {
+		at := bytes.Index(body, []byte(`"audio_data":"`)) + len(`"audio_data":"`)
+		end := at + bytes.IndexByte(body[at:], '"')
+		escaped := bytes.Clone(body[:at])
+		for i, c := range body[at:end] {
+			escaped = append(escaped, escape(i, c)...)
+		}
+		return append(escaped, body[end:]...)
+	}
+	first := func(i int, c byte) string {
+		if i == 0 {
+			return fmt.Sprintf(`\u%04x`, c)
+		}
+		return string(c)
+	}
+	every := func(i int, c byte) string {
+		switch {
+		case c == '/' && i%3 == 0:
+			return `\/`
+		case i%2 == 0:
+			return fmt.Sprintf(`\u%04X`, c)
+		}
+		return fmt.Sprintf(`\u%04x`, c)
+	}
+	for format, audio := range map[string][]byte{
+		"pcm": pattern,
+		"wav": riff(0, wavChunk("fmt ", fmtBody(1, 1, 8000, 2, 16)), wavChunk("data", pattern)),
+	} {
+		body := batchBody(okResult(0, "audio/"+format, audio, batchUsage(7, 40)))
+		for name, escape := range map[string]func(int, byte) string{"the first character": first, "every character": every} {
+			escaped := escapeAudio(body, escape)
+			var plain, decoded any
+			if json.Unmarshal(body, &plain) != nil || json.Unmarshal(escaped, &decoded) != nil {
+				t.Fatalf("%s, %s: not JSON", format, name)
+			}
+			p, _ := json.Marshal(plain)
+			if d, _ := json.Marshal(decoded); !bytes.Equal(p, d) {
+				t.Fatalf("%s, %s: the escaped answer is not the same JSON value", format, name)
+			}
+			for _, piece := range pieceSizes {
+				units, flags := meterBatch(Speech{ItemSampleRates: []int64{8000}}, escaped, piece, true)
+				if !maps.Equal(units, speechUnits(7, 40, 1)) || flags.Estimated {
+					t.Errorf("%s, %s, pieces of %d: %v %+v, want 1 s measured", format, name, piece, units, flags)
+				}
+			}
+		}
+	}
+}
+
+// escapedPCM is a successful result for item 1 holding pcm, its audio_data with escape
+// after its first four characters.
+func escapedPCM(pcm []byte, escape, usage string) string {
+	return `{"index":1,"status":"success","audio_data":"` + b64(pcm)[:4] + escape + b64(pcm)[4:] +
+		`","media_type":"audio/pcm","usage":` + usage + `}`
+}
+
 // A successful result whose audio cannot be measured counts 0 and leaves the record
 // estimated, its tokens kept; the others still count: PCM at no rate — the item gets
 // none, or the result names no index, a negative one or one past the items — a
 // format the gateway cannot measure or none named, a WAV header it cannot read or
-// that is not base64, an escape base64 has no place for. PCM is counted by its size,
-// never decoded: any characters count (docs/specs/GATEWAY.md, Accounting → Media
-// usage).
+// that is not base64, an escape standing for a character base64 has no place for — a
+// line break, a quote, "!", a character past ASCII, a surrogate pair — or cut short.
+// PCM is counted by its size, never decoded: any characters count
+// (docs/specs/GATEWAY.md, Accounting → Media usage).
 func TestSpeechBatchUnmeasurableAudio(t *testing.T) {
 	wav := wav16(24000, 19200) // 0.4 s
 	pcm := make([]byte, 6400)  // 0.4 s at 8 kHz
@@ -206,8 +276,17 @@ func TestSpeechBatchUnmeasurableAudio(t *testing.T) {
 		{"a WAV that is not one", Speech{}, okResult(1, "audio/wav", pcm, usage)},
 		{"a WAV header that is not base64", Speech{},
 			`{"index":1,"status":"success","audio_data":"!!!!` + b64(wav)[4:] + `","media_type":"audio/wav","usage":` + usage + `}`},
-		{"an escape", Speech{ItemSampleRates: []int64{8000, 8000}},
-			`{"index":1,"status":"success","audio_data":"\u0041` + b64(pcm)[1:] + `","media_type":"audio/pcm","usage":` + usage + `}`},
+		{"an escaped line break", Speech{ItemSampleRates: []int64{8000, 8000}}, escapedPCM(pcm, `\n`, usage)},
+		{"an escaped quote", Speech{ItemSampleRates: []int64{8000, 8000}}, escapedPCM(pcm, `\"`, usage)},
+		{"an escape naming a character base64 has none of", Speech{ItemSampleRates: []int64{8000, 8000}},
+			escapedPCM(pcm, `\u0021`, usage)},
+		{"an escape naming a character past ASCII", Speech{ItemSampleRates: []int64{8000, 8000}}, escapedPCM(pcm, `\u00e9`, usage)},
+		{"an escape naming a character past one byte, its last byte base64's", Speech{ItemSampleRates: []int64{8000, 8000}},
+			escapedPCM(pcm, `\u0141`, usage)},
+		{"a surrogate pair", Speech{ItemSampleRates: []int64{8000, 8000}}, escapedPCM(pcm, `\ud83d\ude00`, usage)},
+		// Not valid JSON: the quote ends the string, as every reader of the answer reads it.
+		{"an escape cut short by a quote", Speech{ItemSampleRates: []int64{8000, 8000}},
+			`{"index":1,"status":"success","audio_data":"AAAA\u00","media_type":"audio/pcm","usage":` + usage + `}`},
 	} {
 		for _, piece := range pieceSizes {
 			body := batchBody(measured, c.result)
@@ -230,7 +309,8 @@ func TestSpeechBatchUnmeasurableAudio(t *testing.T) {
 
 // Members are read where the answer puts them: the top-level results, each result's
 // own members — not a member of the same name elsewhere, nested or at the top. Names
-// match after decoding; text holding brackets and quotes is passed over; an element
+// match exactly after decoding — a name in another case is another member; text
+// holding brackets and quotes is passed over; an element
 // of the list that is not an object is no result; a results list named twice counts
 // as its last, as a client reads it; nothing after the answer's object is read;
 // whitespace anywhere reads the same.
@@ -248,6 +328,9 @@ func TestSpeechBatchReadsWhereTheAnswerPutsThem(t *testing.T) {
 			batchUsage(100, 100) + `,"results":[` + ok + `]}`)},
 		{"escaped names", batchBody(`{"index":0,"st\u0061tus":"success","audio\u005fdata":"` + b64(wav) +
 			`","media_type":"audio\/wav","usage":` + batchUsage(7, 40) + `}`)},
+		{"names in another case", batchBody(`{"index":0,"status":"success","Status":"error","audio_data":"` + b64(wav) +
+			`","Audio_Data":"` + b64(wav16(24000, 96000)) + `","media_type":"audio/wav","MEDIA_TYPE":"audio/mpeg","usage":` +
+			batchUsage(7, 40) + `,"Usage":` + batchUsage(100, 100) + `}`)},
 		{"brackets and quotes in text", []byte(`{"id":"a\"]}{[","results":[{"index":1,"status":"error","error":"x\"}]{\\"},` + ok +
 			`],"note":"]}"}`)},
 		{"elements that are not results", batchBody(`null`, `"x"`, `3`, `[1,{"status":"success"}]`, `true`, ok)},
