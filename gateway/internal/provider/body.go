@@ -194,70 +194,86 @@ func standardServiceTier(e Endpoint) memberEdit {
 	}}
 }
 
-// upstreamBody is the edited request body an upstream request sends. The transport
-// may read it more than once (GetBody: a pooled connection found dead as the request
-// was written) until the response arrives; release then drops it, so a response that
-// streams for minutes holds no copy of the prompt. A reader handed out before release
-// keeps the bytes only until the transport has read or closed it.
+// upstreamBody is the request body an upstream request sends: the edited JSON body,
+// or an upload's rebuilt form — pieces sent one after the other, so a form is sent
+// from the client's own bytes (formBody). The transport may read it more than once
+// (GetBody: a pooled connection found dead as the request was written) until the
+// response arrives; release then drops it, so a response that streams for minutes
+// holds no copy of the prompt. A reader handed out before release keeps the bytes
+// only until the transport has read or closed it.
 type upstreamBody struct {
 	size int64
 
-	mu   sync.Mutex
-	data []byte
+	mu     sync.Mutex
+	pieces [][]byte
 }
 
 // errBodyReleased: the transport asked to send the body again after the response
 // arrived.
 var errBodyReleased = errors.New("request body already released")
 
-func newUpstreamBody(data []byte) *upstreamBody {
-	return &upstreamBody{size: int64(len(data)), data: data}
+// newUpstreamBody is the body of pieces, sent in order.
+func newUpstreamBody(pieces ...[]byte) *upstreamBody {
+	size := 0
+	for _, p := range pieces {
+		size += len(p)
+	}
+	return &upstreamBody{size: int64(size), pieces: pieces}
 }
 
 // reader returns a reader over the body.
 func (b *upstreamBody) reader() *upstreamBodyReader {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return &upstreamBodyReader{data: b.data}
+	return &upstreamBodyReader{pieces: b.pieces}
 }
 
 // getBody is the upstream request's GetBody.
 func (b *upstreamBody) getBody() (io.ReadCloser, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.data == nil {
+	if b.pieces == nil {
 		return nil, errBodyReleased
 	}
-	return &upstreamBodyReader{data: b.data}, nil
+	return &upstreamBodyReader{pieces: b.pieces}, nil
 }
 
 // release drops the body.
 func (b *upstreamBody) release() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.data = nil
+	b.pieces = nil
 }
 
 // upstreamBodyReader reads an upstream body once and drops its bytes as soon as the
 // last one is read, or when it is closed. The transport may close it from another
-// goroutine than the one reading.
+// goroutine than the one reading. The pieces are shared with the body and with the
+// other readers it handed out: a reader moves through its own view of them and never
+// writes to them.
 type upstreamBodyReader struct {
-	mu   sync.Mutex
-	data []byte
-	off  int
+	mu     sync.Mutex
+	pieces [][]byte
+	// off is how far the first of pieces has been read.
+	off int
 }
 
 func (r *upstreamBodyReader) Read(p []byte) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.off >= len(r.data) {
-		r.data = nil
-		return 0, io.EOF
+	n := 0
+	for n < len(p) && len(r.pieces) > 0 {
+		c := copy(p[n:], r.pieces[0][r.off:])
+		n += c
+		r.off += c
+		if r.off == len(r.pieces[0]) {
+			r.pieces, r.off = r.pieces[1:], 0
+		}
 	}
-	n := copy(p, r.data[r.off:])
-	r.off += n
-	if r.off == len(r.data) {
-		r.data = nil
+	if len(r.pieces) == 0 {
+		r.pieces = nil
+		if n == 0 {
+			return 0, io.EOF
+		}
 	}
 	return n, nil
 }
@@ -265,7 +281,7 @@ func (r *upstreamBodyReader) Read(p []byte) (int, error) {
 func (r *upstreamBodyReader) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.data = nil
+	r.pieces = nil
 	return nil
 }
 

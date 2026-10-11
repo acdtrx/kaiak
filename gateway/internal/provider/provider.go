@@ -122,8 +122,12 @@ type Request struct {
 	// on it.
 	Deployment config.Deployment
 	// Body is the client's request body exactly as received (the endpoint's format, a
-	// JSON object).
+	// JSON object; for an upload, the form Form's parts are slices of).
 	Body []byte
+	// Form is an upload's body as the inbound stage read it — its parts, in the
+	// client's order — which the backend gets rebuilt (formBody) instead of Body; nil
+	// for a JSON body.
+	Form []FormPart
 	// Stream and IncludeUsage are the client's stream and
 	// stream_options.include_usage; for speech, Stream is its mode: the SSE and the
 	// raw-audio streams take the stream timers.

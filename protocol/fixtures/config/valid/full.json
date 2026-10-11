@@ -8,6 +8,7 @@
       { "type": "usd_per_month", "value": 5000 }
     ],
     "max_request_body_bytes": 8388608,
+    "max_upload_bytes": 52428800,
     "control_outage_grace_ms": 600000,
     "max_n": 4,
     "max_sequences_per_request": 32,

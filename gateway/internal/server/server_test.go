@@ -189,6 +189,7 @@ type testGateway struct {
 	metrics *metric.Registry
 	drain   *Drain
 	bodies  *BodyBudget
+	uploads Uploads
 }
 
 // recordedUsage keeps every usage record the gateway settles, after handing it to the
@@ -282,9 +283,10 @@ func buildTestGateway(t *testing.T, opts testOptions) *testGateway {
 	recorder := accounting.NewRecorder(accounting.RecorderOptions{Instance: "gw-test", Batcher: batcher, Metrics: usage,
 		Logger: logger})
 	drain := NewDrain()
-	h := NewAPI(holder, drain, bodies, providers, limiter, router, recorder, metrics.NewOps(reg, router, circuits, holder), logger)
+	uploads := Uploads{Budget: NewBodyBudget(DefaultUploadMemory), ReadTimeout: DefaultUploadReadTimeout}
+	h := NewAPI(holder, drain, bodies, uploads, providers, limiter, router, recorder, metrics.NewOps(reg, router, circuits, holder), logger)
 	return &testGateway{h: h, logs: &logs, log: log, backend: backend, holder: holder, router: router,
-		limiter: limiter, usage: usage, metrics: reg, drain: drain, bodies: bodies}
+		limiter: limiter, usage: usage, metrics: reg, drain: drain, bodies: bodies, uploads: uploads}
 }
 
 // apply swaps in the test config with edit applied (nil = none) and hands it to

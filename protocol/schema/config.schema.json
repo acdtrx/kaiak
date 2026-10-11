@@ -93,11 +93,18 @@
           "$ref": "#/$defs/limits"
         },
         "max_request_body_bytes": {
-          "description": "Largest client request body accepted.",
+          "description": "Largest JSON request body accepted. An upload has its own cap, max_upload_bytes.",
           "type": "integer",
           "minimum": 1,
           "maximum": 9007199254740991,
           "default": 4194304
+        },
+        "max_upload_bytes": {
+          "description": "Largest upload body accepted: the multipart/form-data body of an image edit or a transcription, every part included. A body above it is refused (413 request_too_large). The default is vLLM's and OpenAI's limit on an uploaded audio file.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "default": 26214400
         },
         "control_outage_grace_ms": {
           "description": "Control-plane mode: how long a gateway keeps serving priced models covered by a usd_per_month limit while their spend cannot be known — no contact with the control plane (no open config stream and no stream bytes), or usage batches waiting that long for an answer; past it, requests to them are refused (503 budget_unavailable) until that ends. Unpriced models and models no USD limit covers keep serving. Ignored in file mode.",

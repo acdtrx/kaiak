@@ -154,6 +154,7 @@ func (c *schemaCheck) global(v any, path string) {
 	c.Object(v, path, map[string]schemacheck.Field{
 		"limits":                          {Check: c.limits},
 		"max_request_body_bytes":          {Check: c.IntegerAtLeast(1)},
+		"max_upload_bytes":                {Check: c.IntegerAtLeast(1)},
 		"control_outage_grace_ms":         {Check: c.IntegerAtLeast(0)},
 		"max_n":                           {Check: c.IntegerAtLeast(1)},
 		"max_sequences_per_request":       {Check: c.IntegerAtLeast(1)},

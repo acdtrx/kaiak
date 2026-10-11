@@ -22,6 +22,7 @@ type document struct {
 type globalDoc struct {
 	Limits               []limitDoc  `json:"limits"`
 	MaxRequestBodyBytes  *int64      `json:"max_request_body_bytes"`
+	MaxUploadBytes       *int64      `json:"max_upload_bytes"`
 	ControlOutageGraceMS *int64      `json:"control_outage_grace_ms"`
 	MaxN                 *int64      `json:"max_n"`
 	MaxSequences         *int64      `json:"max_sequences_per_request"`

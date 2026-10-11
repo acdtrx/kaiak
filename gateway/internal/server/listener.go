@@ -32,7 +32,8 @@ type ClientTimeouts struct {
 	// Idle: a keep-alive connection waiting for its next request is closed after it.
 	Idle time.Duration
 	// BodyRead: a request's body must have arrived within it of the handler taking
-	// the request. It also bounds the server's disposal of a body the handler left
+	// the request — an upload's within its own deadline instead, set once its route is
+	// known (Uploads). It also bounds the server's disposal of a body the handler left
 	// unread (an early refusal): until it runs out the answer waits for that body.
 	BodyRead time.Duration
 	// Write: each write to the client (a stream event, a flush, a piece of a body)
@@ -189,8 +190,9 @@ func (l *Listener) cut() {
 }
 
 // withClientDeadlines applies the body-read and write deadlines to every request
-// handler serves. The body-read deadline is set as a request with a body is taken
-// and cleared once the handler read the body (clearBodyDeadline): a read deadline
+// handler serves. The body-read deadline is set as a request with a body is taken —
+// an upload route sets its own in its place (setBodyDeadline) — and cleared once the
+// handler read the body (clearBodyDeadline): a read deadline
 // left on the connection would also end net/http's background read — which watches
 // for the client leaving — and cancel the request while a response streams. A
 // request without a body gets none, since that background read is already running.
@@ -211,6 +213,14 @@ func withClientDeadlines(handler http.Handler, timeouts ClientTimeouts) http.Han
 		r.Body = body
 		handler.ServeHTTP(&deadlineWriter{ResponseWriter: w, rc: rc, timeout: timeouts.Write, req: r, body: body}, r)
 	})
+}
+
+// setBodyDeadline gives the request's body timeout from now to arrive, in place of the
+// body-read deadline the listener set: an upload's (docs/specs/GATEWAY.md, Request
+// pipeline → Uploads). It is set before the body is read, and cleared as any
+// (clearBodyDeadline).
+func setBodyDeadline(w http.ResponseWriter, timeout time.Duration) {
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(timeout))
 }
 
 // clearBodyDeadline removes the body-read deadline once the handler has read the

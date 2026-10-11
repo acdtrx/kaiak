@@ -71,7 +71,7 @@ func TestSendKeepsNoRequestBodyOnceTheFirstEventIsIn(t *testing.T) {
 	r, ok := upstream.Body.(*upstreamBodyReader)
 	if ok {
 		r.mu.Lock()
-		ok = r.data == nil
+		ok = r.pieces == nil
 		r.mu.Unlock()
 	}
 	if !ok {

@@ -186,6 +186,7 @@
   | Not `Bearer <key>`; unknown, disabled or expired key | 401 | `invalid_request_error` | `invalid_api_key` |
   | Unknown model, or model not allowed for the key | 404 | `invalid_request_error` | `model_not_found` |
   | Body is not a JSON object | 400 | `invalid_request_error` | `invalid_json` |
+  | An upload endpoint's body is not `multipart/form-data` with a `boundary` — OpenAI's JSON form of image edits included (settled 2026-10-11; Request pipeline → Uploads) | 400 | `invalid_request_error` | `unsupported_content_type` |
   | The top-level object, or `stream_options`, names a member twice — or any member the gateway reads to enforce its rules: a tools entry, a `tool_choice`, a shell's `environment`, a Responses input item or part, a Messages message, block or source, `thinking`, a `cache_control` or its `ttl` on Anthropic types, a speech batch item or a speech `references` entry (`param` names it; Request pipeline → duplicate members; Client API → Hosted tools are refused); or an upload repeats a single-value part (`param` its name; settled 2026-10-11, Request pipeline → Uploads) | 400 | `invalid_request_error` | `duplicate_member` |
   | Body could not be read; or an upload's body breaks the multipart rules — a part without a `name`, a part with a `Content-Transfer-Encoding`, part headers past their bound, a text part over 1 MiB, more than 1000 parts, no closing boundary (settled 2026-10-11, Request pipeline → Uploads) | 400 | `invalid_request_error` | `invalid_body` |
   | `model` missing or empty (`param: "model"`); or a speech request, or a speech batch item, whose audio is `pcm` and which sets no `sample_rate` (`param: "sample_rate"`, or the item's: `items[2].sample_rate`; settled 2026-10-09, Client API → owned fields: speech); or a transcription without a `file` part (`param: "file"`; settled 2026-10-11, Client API → owned parts: speech-to-text) | 400 | `invalid_request_error` | `missing_required_parameter` |
@@ -690,9 +691,11 @@ own, and a client sending repeats is broken either way.
 
 **Uploads** (settled 2026-10-11, with the user). Image edits and speech-to-text take
 `multipart/form-data` bodies, a body kind beside JSON, read under rules of their own:
-- **Content type**: `multipart/form-data` with a `boundary` parameter. Anything else
-  — JSON (OpenAI's JSON form of image edits), a form without a boundary, no content
-  type — is refused before the body is read, `400 unsupported_content_type`.
+- **Content type**: `multipart/form-data` with a `boundary` parameter — 1 to 70 of
+  RFC 2046's boundary characters, as every client sends: a longer one breaks readers
+  (mime/multipart's among them). Anything else — JSON (OpenAI's JSON form of image
+  edits), a form without a boundary, no content type — is refused before the body is
+  read, `400 unsupported_content_type`.
 - **Cap**: `global.max_upload_bytes` (default 25 MiB — vLLM's limit on an uploaded
   audio file, `VLLM_MAX_AUDIO_CLIP_FILESIZE_MB`, and OpenAI's), one cap for both
   upload endpoints; `max_request_body_bytes` stays the cap on JSON bodies, so
@@ -714,12 +717,20 @@ own, and a client sending repeats is broken either way.
   once the route is known and before the body is read: 25 MiB in 60 s needs about
   3.5 Mbit/s of uplink, which mobile clients often lack. A body not in by then
   answers `400 invalid_body`, as on any route.
-- **Parts**, held strictly to RFC 7578's grammar — each failure `400 invalid_body`:
+- **Parts**, held strictly to RFC 7578's grammar — each failure `400 invalid_body`;
+  what readers would each guess at differently is refused, so every body the gateway
+  takes reads as the same parts in mime/multipart (its tests hold it to that):
   - every part has exactly one `Content-Disposition: form-data` header with a
-    `name`; a part with a `Content-Transfer-Encoding` header is refused (RFC 7578
-    deprecates it, and servers disagree on decoding it); a part's headers are bounded
-    in size; the body ends with its closing boundary — a preamble and an epilogue are
-    ignored, never sent;
+    `name`, and at most one `Content-Type`; a name or a filename holding a control
+    character is refused (the rebuilt body could not carry it as read); a part with a
+    `Content-Transfer-Encoding` header is refused (RFC 7578 deprecates it, and servers
+    disagree on decoding it); a part's headers are at most 8 KiB, their blank line
+    included (a name, a filename and a content type take a few hundred bytes), each
+    one line — a header folded over lines is refused;
+  - lines end in CRLF, and a boundary line ends at its boundary — transport padding
+    after it, which HTTP clients never send and readers disagree on, is refused;
+  - the body ends with its closing boundary — a preamble (at most 4 KiB: clients send
+    none) and an epilogue are ignored, never sent;
   - a **text part** (no `filename`) is at most 1 MiB, and a body holds at most 1000
     parts — Starlette's limits, which vLLM and vLLM-Omni apply, so the gateway
     refuses no part they would take;

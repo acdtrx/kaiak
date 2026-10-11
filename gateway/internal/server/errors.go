@@ -176,6 +176,22 @@ func errInvalidJSON() *apiError {
 		message: "The request body is not a JSON object."}
 }
 
+// errUnsupportedContentType refuses an upload whose body is not multipart/form-data
+// with a boundary (docs/specs/GATEWAY.md, Request pipeline → Uploads) — OpenAI's JSON
+// form of image edits among them — before the body is read.
+func errUnsupportedContentType() *apiError {
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "unsupported_content_type", class: metrics.ErrorInvalidRequest,
+		message: "This endpoint takes an upload: a multipart/form-data body, its Content-Type naming a boundary of 1 to 70 characters."}
+}
+
+// errInvalidForm refuses an upload whose body breaks the multipart rules
+// (docs/specs/GATEWAY.md, Request pipeline → Uploads); reason says which, never quoting
+// the body: its names and filenames are the client's.
+func errInvalidForm(reason string) *apiError {
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "invalid_body", class: metrics.ErrorInvalidRequest,
+		message: "The request body is not a valid multipart/form-data body: " + reason + "."}
+}
+
 // errDuplicateMember refuses a body naming a member twice in the top-level object (or
 // in stream_options, the owned object the provider edits); param names the member,
 // clipped: the client chose it.

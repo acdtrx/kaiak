@@ -37,6 +37,9 @@ const (
 	// DefaultMaxSpeechBatchItems is vLLM-Omni's own most items per speech batch
 	// (tts_batch_max_items), which it enforces too.
 	DefaultMaxSpeechBatchItems = 32
+	// DefaultMaxUploadBytes is vLLM's limit on an uploaded audio file
+	// (VLLM_MAX_AUDIO_CLIP_FILESIZE_MB), and OpenAI's.
+	DefaultMaxUploadBytes      = 25 << 20
 	DefaultMaxConcurrentPerKey = 16
 	DefaultQueueSize           = 100
 	DefaultQueueTimeout        = 30 * time.Second
@@ -291,7 +294,10 @@ var (
 // and must not modify anything reachable from it. A request takes the current
 // snapshot once (Holder.Current) and uses it until it finishes.
 type Snapshot struct {
+	// MaxRequestBodyBytes caps a JSON request body; MaxUploadBytes an upload's
+	// (multipart/form-data) body.
 	MaxRequestBodyBytes int64
+	MaxUploadBytes      int64
 	// KeyIDLabel: label usage metrics with the key ID; GroupLabel: with the key's
 	// group, kaiak.key.group (the top-level group labels them either way).
 	KeyIDLabel bool
@@ -508,6 +514,7 @@ func Parse(data []byte) (*Snapshot, error) {
 func resolve(doc *document) *Snapshot {
 	s := &Snapshot{
 		MaxRequestBodyBytes:         valueOr(doc.Global.MaxRequestBodyBytes, DefaultMaxRequestBodyBytes),
+		MaxUploadBytes:              valueOr(doc.Global.MaxUploadBytes, DefaultMaxUploadBytes),
 		KeyIDLabel:                  DefaultKeyIDLabel,
 		GroupLabel:                  DefaultGroupLabel,
 		ControlOutageGrace:          millisecondsOr(doc.Global.ControlOutageGraceMS, DefaultControlOutageGrace),

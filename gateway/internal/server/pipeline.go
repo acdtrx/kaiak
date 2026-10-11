@@ -32,11 +32,15 @@ type endpoint struct {
 	// endpoints, which share their operation; "" for the others, where the gateway
 	// reads no output type.
 	outputType string
-	// body: the endpoint is a POST carrying a JSON request body in api's format,
-	// passed through to a backend serving api; its route is api's path under /v1/
-	// (route).
+	// body: the endpoint is a POST carrying a request body in api's format — JSON, or
+	// an upload's form (upload) — passed through to a backend serving api; its route
+	// is api's path under /v1/ (route).
 	body bool
 	api  provider.Endpoint
+	// upload marks an upload endpoint (docs/specs/GATEWAY.md, Request pipeline →
+	// Uploads): its body is multipart/form-data, read under the upload cap, budget and
+	// deadline, and its format reads its parts; nil for a JSON body.
+	upload *uploadFormat
 	// counts: the endpoint only counts a request's tokens: nothing is generated or
 	// billed there, so it reserves no tokens and settles into no usage record
 	// (docs/specs/GATEWAY.md, Client API → token-counting endpoints).
@@ -68,8 +72,8 @@ type endpoint struct {
 	anthropicOnHeader bool
 }
 
-// bodyEndpoints are the endpoints served as a POST carrying a JSON request body, one
-// row per provider.Endpoint the client API serves.
+// bodyEndpoints are the endpoints served as a POST carrying a request body, one row per
+// provider.Endpoint the client API serves.
 var bodyEndpoints = []*endpoint{
 	newBodyEndpoint(provider.ChatCompletions, endpoint{operation: "chat",
 		outputLimitKeys: []string{"max_completion_tokens", "max_tokens"}}),
@@ -151,8 +155,10 @@ type request struct {
 	body    []byte
 	inbound inboundFields
 	input   accounting.InputEstimate
-	// bodies is the budget the body's bytes are taken from; bodyHeld the bytes taken
-	// and not yet given back.
+	// form is an upload's parts, slices of body; nil for a JSON body.
+	form []provider.FormPart
+	// bodies is the budget the body's bytes are taken from — the upload budget for an
+	// upload; bodyHeld the bytes taken and not yet given back.
 	bodies   *BodyBudget
 	bodyHeld int64
 
@@ -259,14 +265,14 @@ func (rq *request) finish() {
 // Limits run after model_params (they reserve the effective output limit) and before
 // routing — once per client request, whatever the attempts; their finisher is
 // registered before the attempt loop's, so it runs after settlement.
-func newPipeline(drain *Drain, keys *keyInFlight, bodies *BodyBudget, providers *provider.Registry, limiter *limits.Limiter,
-	router *routing.Router, recorder *accounting.Recorder) []stage {
+func newPipeline(drain *Drain, keys *keyInFlight, bodies *BodyBudget, uploads Uploads, providers *provider.Registry,
+	limiter *limits.Limiter, router *routing.Router, recorder *accounting.Recorder) []stage {
 	loop := &attempts{router: router, recorder: recorder, providers: providers, budget: newRetryBudget(time.Now)}
 	return []stage{
 		{"admission", func(_ context.Context, rq *request) *apiError { return admit(drain, rq) }, everyRequest},
 		{"auth", authenticateKey, everyRequest},
 		{"key_concurrency", func(_ context.Context, rq *request) *apiError { return limitKeyConcurrency(rq, keys) }, everyRequest},
-		{"inbound", func(ctx context.Context, rq *request) *apiError { return readInbound(ctx, rq, bodies) }, bodyRequests},
+		{"inbound", func(ctx context.Context, rq *request) *apiError { return readInbound(ctx, rq, bodies, uploads) }, bodyRequests},
 		{"model_access", authorizeModel, everyRequest},
 		{"endpoint_list", checkEndpointListed, bodyRequests},
 		{"model_params", applyModelParams, bodyRequests},

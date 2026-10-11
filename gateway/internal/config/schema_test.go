@@ -345,6 +345,7 @@ func TestSchemaDefaultsAreResolved(t *testing.T) {
 	ms := func(d time.Duration) int64 { return d.Milliseconds() }
 	resolved := map[string]func(s *Snapshot) any{
 		"/$defs/global/properties/max_request_body_bytes":               func(s *Snapshot) any { return s.MaxRequestBodyBytes },
+		"/$defs/global/properties/max_upload_bytes":                     func(s *Snapshot) any { return s.MaxUploadBytes },
 		"/$defs/global/properties/control_outage_grace_ms":              func(s *Snapshot) any { return ms(s.ControlOutageGrace) },
 		"/$defs/global/properties/max_n":                                func(s *Snapshot) any { return s.MaxN },
 		"/$defs/global/properties/max_sequences_per_request":            func(s *Snapshot) any { return s.MaxSequencesPerRequest },

@@ -84,6 +84,9 @@ func TestDefaultsAppliedForOmittedFields(t *testing.T) {
 	if s.MaxRequestBodyBytes != 4<<20 {
 		t.Errorf("MaxRequestBodyBytes = %d, want 4 MiB", s.MaxRequestBodyBytes)
 	}
+	if s.MaxUploadBytes != 25<<20 {
+		t.Errorf("MaxUploadBytes = %d, want 25 MiB", s.MaxUploadBytes)
+	}
 	if !s.KeyIDLabel {
 		t.Error("KeyIDLabel = false, want the default true")
 	}
@@ -167,6 +170,9 @@ func TestExplicitValuesOverrideDefaults(t *testing.T) {
 	s := parseFixture(t, "full.json")
 	if s.MaxRequestBodyBytes != 8388608 {
 		t.Errorf("MaxRequestBodyBytes = %d", s.MaxRequestBodyBytes)
+	}
+	if s.MaxUploadBytes != 52428800 {
+		t.Errorf("MaxUploadBytes = %d, want 50 MiB", s.MaxUploadBytes)
 	}
 	if s.ControlOutageGrace != 10*time.Minute {
 		t.Errorf("ControlOutageGrace = %v, want 10m", s.ControlOutageGrace)

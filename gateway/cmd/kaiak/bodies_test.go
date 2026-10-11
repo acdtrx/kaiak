@@ -10,44 +10,60 @@ import (
 	"kaiak/internal/server"
 )
 
-// KAIAK_BODY_MEMORY_BYTES sets the body budget: whole bytes above 0.
-func TestBodyMemorySetting(t *testing.T) {
+// KAIAK_BODY_MEMORY_BYTES sets the body budget, KAIAK_UPLOAD_MEMORY_BYTES the upload
+// budget apart from it: whole bytes above 0.
+func TestBodyMemorySettings(t *testing.T) {
 	base := map[string]string{"KAIAK_CONFIG_FILE": "c.json", "KAIAK_INSTANCE_ID": "i"}
-	with := func(value string) map[string]string {
-		m := map[string]string{"KAIAK_BODY_MEMORY_BYTES": value}
+	with := func(name, value string) map[string]string {
+		m := map[string]string{name: value}
 		for k, v := range base {
 			m[k] = v
 		}
 		return m
 	}
 	s, err := readSettings(envOf(base))
-	if err != nil || s.bodyMemory != server.DefaultBodyMemory {
-		t.Errorf("default %d, %v; want %d", s.bodyMemory, err, server.DefaultBodyMemory)
+	if err != nil || s.bodyMemory != server.DefaultBodyMemory || s.uploadMemory != server.DefaultUploadMemory {
+		t.Errorf("defaults %d and %d, %v; want %d and %d", s.bodyMemory, s.uploadMemory, err, server.DefaultBodyMemory,
+			server.DefaultUploadMemory)
 	}
-	if s, err := readSettings(envOf(with("1048576"))); err != nil || s.bodyMemory != 1<<20 {
-		t.Errorf("set %d, %v; want 1048576", s.bodyMemory, err)
-	}
-	for _, bad := range []string{"0", "-1", "1.5", "1MiB", "99999999999999999999"} {
-		if _, err := readSettings(envOf(with(bad))); err == nil || !strings.Contains(err.Error(), "KAIAK_BODY_MEMORY_BYTES") {
-			t.Errorf("KAIAK_BODY_MEMORY_BYTES=%q: got %v, want an error naming it", bad, err)
+	for name, got := range map[string]func(settings) int64{
+		"KAIAK_BODY_MEMORY_BYTES":   func(s settings) int64 { return s.bodyMemory },
+		"KAIAK_UPLOAD_MEMORY_BYTES": func(s settings) int64 { return s.uploadMemory },
+	} {
+		if s, err := readSettings(envOf(with(name, "1048576"))); err != nil || got(s) != 1<<20 {
+			t.Errorf("%s set %d, %v; want 1048576", name, got(s), err)
+		}
+		for _, bad := range []string{"0", "-1", "1.5", "1MiB", "99999999999999999999"} {
+			if _, err := readSettings(envOf(with(name, bad))); err == nil || !strings.Contains(err.Error(), name) {
+				t.Errorf("%s=%q: got %v, want an error naming it", name, bad, err)
+			}
 		}
 	}
 }
 
-// A config whose body cap exceeds the whole body budget is applied, with a
-// warning: bodies above the budget are refused as too large.
-func TestBodyCapAboveTheBudgetIsWarned(t *testing.T) {
-	var logs syncBuffer
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // stop at once: the startup load is what the test reads
-	env := envOf(map[string]string{"KAIAK_CONFIG_FILE": minimalFixture,
-		"KAIAK_INSTANCE_ID": "test-1", "KAIAK_LISTEN_ADDR": "127.0.0.1:0", "KAIAK_ADMIN_ADDR": "127.0.0.1:0",
-		"KAIAK_BODY_MEMORY_BYTES": "1000"})
-	if err := run(ctx, slog.New(slog.NewTextHandler(&logs, nil)), env, make(chan os.Signal), make(chan os.Signal)); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(logs.String(), "max_request_body_bytes exceeds the body budget") {
-		t.Errorf("no warning:\n%s", logs.String())
+// A config whose body cap exceeds the whole body budget, or whose upload cap exceeds
+// the whole upload budget, is applied, with a warning: bodies above the budget are
+// refused as too large.
+func TestCapAboveItsBudgetIsWarned(t *testing.T) {
+	for budget, warning := range map[string]string{
+		"KAIAK_BODY_MEMORY_BYTES":   "max_request_body_bytes exceeds the body budget",
+		"KAIAK_UPLOAD_MEMORY_BYTES": "max_upload_bytes exceeds the upload budget",
+	} {
+		var logs syncBuffer
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // stop at once: the startup load is what the test reads
+		env := envOf(map[string]string{"KAIAK_CONFIG_FILE": minimalFixture,
+			"KAIAK_INSTANCE_ID": "test-1", "KAIAK_LISTEN_ADDR": "127.0.0.1:0", "KAIAK_ADMIN_ADDR": "127.0.0.1:0",
+			budget: "1000"})
+		if err := run(ctx, slog.New(slog.NewTextHandler(&logs, nil)), env, make(chan os.Signal), make(chan os.Signal)); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(logs.String(), warning) {
+			t.Errorf("%s=1000: no warning %q:\n%s", budget, warning, logs.String())
+		}
+		if other := strings.Count(logs.String(), "exceeds the"); other != 1 {
+			t.Errorf("%s=1000: %d budget warnings, want the one:\n%s", budget, other, logs.String())
+		}
 	}
 }
 

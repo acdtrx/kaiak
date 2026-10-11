@@ -56,13 +56,15 @@ func TestClientTimeoutSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.client != server.DefaultClientTimeouts {
-		t.Errorf("defaults = %+v, want %+v", s.client, server.DefaultClientTimeouts)
+	if s.client != server.DefaultClientTimeouts || s.uploadRead != server.DefaultUploadReadTimeout {
+		t.Errorf("defaults = %+v and %v, want %+v and %v", s.client, s.uploadRead, server.DefaultClientTimeouts,
+			server.DefaultUploadReadTimeout)
 	}
 	for name, got := range map[string]func(settings) time.Duration{
-		"KAIAK_IDLE_TIMEOUT_MS":      func(s settings) time.Duration { return s.client.Idle },
-		"KAIAK_BODY_READ_TIMEOUT_MS": func(s settings) time.Duration { return s.client.BodyRead },
-		"KAIAK_WRITE_TIMEOUT_MS":     func(s settings) time.Duration { return s.client.Write },
+		"KAIAK_IDLE_TIMEOUT_MS":        func(s settings) time.Duration { return s.client.Idle },
+		"KAIAK_BODY_READ_TIMEOUT_MS":   func(s settings) time.Duration { return s.client.BodyRead },
+		"KAIAK_UPLOAD_READ_TIMEOUT_MS": func(s settings) time.Duration { return s.uploadRead },
+		"KAIAK_WRITE_TIMEOUT_MS":       func(s settings) time.Duration { return s.client.Write },
 	} {
 		s, err := readSettings(envOf(with(name, "1500")))
 		if err != nil || got(s) != 1500*time.Millisecond {

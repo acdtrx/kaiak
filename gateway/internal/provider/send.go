@@ -67,7 +67,7 @@ type answerReading struct {
 // error when the client's body cannot be edited or the upstream request cannot be
 // built — a gateway fault.
 func sendWire(ctx context.Context, req *Request, call wireCall) (Response, error) {
-	body, stripUsage, err := passthroughBody(req, call.edits...)
+	upstreamBody, contentType, stripUsage, err := wireBody(req, call)
 	if err != nil {
 		return nil, editError(err)
 	}
@@ -75,7 +75,6 @@ func sendWire(ctx context.Context, req *Request, call wireCall) (Response, error
 	// transport will not send it again. req is not captured by anything that outlives
 	// the send (the trace below lives as long as the response), so the client's body is
 	// released with the pipeline's copy.
-	upstreamBody := newUpstreamBody(body)
 	defer upstreamBody.release()
 
 	upstreamCtx, cancel := context.WithCancelCause(ctx)
@@ -123,7 +122,7 @@ func sendWire(ctx context.Context, req *Request, call wireCall) (Response, error
 	upstream.ContentLength = upstreamBody.size
 	upstream.GetBody = upstreamBody.getBody
 	upstream.Header = call.header.Clone()
-	wireHeaders(upstream.Header, req)
+	wireHeaders(upstream.Header, req, contentType)
 
 	resp, err := call.client.Do(upstream)
 	if err != nil {
@@ -182,6 +181,27 @@ func sendWire(ctx context.Context, req *Request, call wireCall) (Response, error
 		r.peeked = append(r.peeked, first)
 	}
 	return r, nil
+}
+
+// wireBody is the body sendWire sends for req, and its Content-Type: the client's JSON
+// body with the owned edits (passthroughBody), or an upload's form rebuilt with the
+// deployment's model (formBody). stripUsage is passthroughBody's. A form takes no
+// member edit: the modules serving uploads edit nothing but the model, and the
+// pipeline sets no parameter on an upload (no output limit) — one asked for is a
+// gateway fault.
+func wireBody(req *Request, call wireCall) (*upstreamBody, string, bool, error) {
+	if req.Form != nil {
+		if len(call.edits) > 0 || len(req.Params) > 0 {
+			return nil, "", false, errors.New("an upload's form takes no member edits")
+		}
+		body, contentType := formBody(req)
+		return body, contentType, false, nil
+	}
+	edited, stripUsage, err := passthroughBody(req, call.edits...)
+	if err != nil {
+		return nil, "", false, err
+	}
+	return newUpstreamBody(edited), "application/json", stripUsage, nil
 }
 
 // deploymentFailure is the error for an answer that is not the request's to relay —
@@ -281,11 +301,11 @@ func apiKey(credential string) http.Header {
 }
 
 // wireHeaders sets the headers every upstream request carries beside the module's
-// credential. Nothing from the client's headers is forwarded except the request ID,
-// so the client's Authorization (its kaiak key), cookies and anything else never reach
-// a backend.
-func wireHeaders(h http.Header, req *Request) {
-	h.Set("Content-Type", "application/json")
+// credential, contentType the body's (wireBody). Nothing from the client's headers is
+// forwarded except the request ID, so the client's Authorization (its kaiak key),
+// cookies and anything else never reach a backend.
+func wireHeaders(h http.Header, req *Request, contentType string) {
+	h.Set("Content-Type", contentType)
 	if req.Stream {
 		h.Set("Accept", "text/event-stream")
 	} else {

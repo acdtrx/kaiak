@@ -37,6 +37,11 @@ type settings struct {
 	client server.ClientTimeouts
 	// bodyMemory is the body budget: the request body bytes held at once.
 	bodyMemory int64
+	// uploadMemory is the upload budget, the upload bytes held at once, apart from the
+	// body budget; uploadRead bounds an upload's arrival, in place of the client's
+	// body-read deadline.
+	uploadMemory int64
+	uploadRead   time.Duration
 	// usageMemory bounds the encoded usage records held in memory waiting for
 	// delivery (control-plane mode).
 	usageMemory int64
@@ -69,7 +74,8 @@ const (
 func readSettings(lookupEnv func(string) (string, bool)) (settings, error) {
 	s := settings{listenAddr: defaultListenAddr, adminAddr: defaultAdminAddr,
 		drain: server.DrainTimes{Grace: defaultDrainGrace, Timeout: defaultDrainTimeout}, client: server.DefaultClientTimeouts,
-		bodyMemory: server.DefaultBodyMemory, usageMemory: control.DefaultUsageMemoryBytes}
+		bodyMemory: server.DefaultBodyMemory, uploadMemory: server.DefaultUploadMemory, uploadRead: server.DefaultUploadReadTimeout,
+		usageMemory: control.DefaultUsageMemoryBytes}
 	var err error
 	s.configFile, _ = lookupEnv("KAIAK_CONFIG_FILE")
 	seedFile, _ := lookupEnv("KAIAK_SEED_CONFIG_FILE")
@@ -108,6 +114,7 @@ func readSettings(lookupEnv func(string) (string, bool)) (settings, error) {
 	}{
 		{"KAIAK_IDLE_TIMEOUT_MS", &s.client.Idle},
 		{"KAIAK_BODY_READ_TIMEOUT_MS", &s.client.BodyRead},
+		{"KAIAK_UPLOAD_READ_TIMEOUT_MS", &s.uploadRead},
 		{"KAIAK_WRITE_TIMEOUT_MS", &s.client.Write},
 	} {
 		if *t.d, err = durationMS(lookupEnv, t.name, *t.d, 1); err != nil {
@@ -120,6 +127,7 @@ func readSettings(lookupEnv func(string) (string, bool)) (settings, error) {
 		least int64
 	}{
 		{"KAIAK_BODY_MEMORY_BYTES", &s.bodyMemory, 1},
+		{"KAIAK_UPLOAD_MEMORY_BYTES", &s.uploadMemory, 1},
 		{"KAIAK_USAGE_MEMORY_BYTES", &s.usageMemory, 1},
 		{"KAIAK_MAX_CONNECTIONS", &s.maxConnections, 0},
 	} {

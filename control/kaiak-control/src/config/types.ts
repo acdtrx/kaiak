@@ -191,6 +191,7 @@ export interface Key {
 export interface Global {
   limits?: Limit[];
   max_request_body_bytes?: number;
+  max_upload_bytes?: number;
   control_outage_grace_ms?: number;
   max_n?: number;
   max_sequences_per_request?: number;

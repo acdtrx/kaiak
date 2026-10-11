@@ -55,11 +55,15 @@ func (f *inboundFields) mediaRequest() accounting.MediaRequest {
 	return accounting.MediaRequest{Speech: f.Speech, Images: f.Media[config.MeasureImages]}
 }
 
-// readInbound parses a body endpoint's request: the raw body, capped by the snapshot's
+// readInbound parses a body endpoint's request: an upload's under its own rules
+// (readUpload); else the raw JSON body, capped by the snapshot's
 // max_request_body_bytes and by the whole body budget (a larger body could never be
 // held), and the owned fields. The body holds its share of the budget until it is
 // dropped (releaseBody, also a finisher).
-func readInbound(_ context.Context, rq *request, bodies *BodyBudget) *apiError {
+func readInbound(_ context.Context, rq *request, bodies *BodyBudget, uploads Uploads) *apiError {
+	if rq.endpoint.upload != nil {
+		return readUpload(rq, uploads)
+	}
 	limit := min(rq.snapshot.MaxRequestBodyBytes, bodies.Limit())
 	if rq.r.ContentLength > limit {
 		return errBodyTooLarge(limit)

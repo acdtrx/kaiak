@@ -176,6 +176,7 @@ func (l *attempts) send(ctx context.Context, rq *request, at *attempt) (provider
 		Endpoint:     rq.endpoint.api,
 		Deployment:   at.deployment,
 		Body:         rq.body,
+		Form:         rq.form,
 		Stream:       rq.inbound.Stream,
 		IncludeUsage: rq.inbound.IncludeUsage,
 		RequestID:    rq.id,

@@ -152,7 +152,7 @@ func (rq *request) serverBusy() *apiError {
 // runs once the response starts relaying, and again (doing nothing more) as the
 // request ends.
 func (rq *request) releaseBody() {
-	rq.body = nil
+	rq.body, rq.form = nil, nil
 	if rq.bodyHeld > 0 {
 		rq.bodies.give(rq.bodyHeld)
 		rq.bodyHeld = 0

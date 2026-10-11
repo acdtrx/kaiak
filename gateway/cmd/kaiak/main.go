@@ -182,7 +182,8 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 	recorder := accounting.NewRecorder(accounting.RecorderOptions{Instance: s.instanceID, Batcher: batcher,
 		Metrics: g.usage, Logger: logger})
 	drain := server.NewDrain()
-	apiHandler := server.NewAPI(g.holder, drain, server.NewBodyBudget(s.bodyMemory), g.providers, limiter, g.router,
+	uploads := server.Uploads{Budget: server.NewBodyBudget(s.uploadMemory), ReadTimeout: s.uploadRead}
+	apiHandler := server.NewAPI(g.holder, drain, server.NewBodyBudget(s.bodyMemory), uploads, g.providers, limiter, g.router,
 		recorder, g.ops, logger)
 	api, err := server.Listen("api", s.listenAddr, apiHandler, s.client, logger)
 	if err != nil {
@@ -290,6 +291,10 @@ func newGraph(s settings, reported string, lookupEnv func(string) (string, bool)
 			if bodyCap := applied.MaxRequestBodyBytes; bodyCap > s.bodyMemory {
 				logger.Warn("max_request_body_bytes exceeds the body budget: bodies above the budget are refused as too large",
 					"kaiak.config.max_request_body_size", bodyCap, "kaiak.body_budget.size", s.bodyMemory)
+			}
+			if uploadCap := applied.MaxUploadBytes; uploadCap > s.uploadMemory {
+				logger.Warn("max_upload_bytes exceeds the upload budget: uploads above the budget are refused as too large",
+					"kaiak.config.max_upload_size", uploadCap, "kaiak.upload_budget.size", s.uploadMemory)
 			}
 		}
 		g.ops.ConfigLoaded(load)
