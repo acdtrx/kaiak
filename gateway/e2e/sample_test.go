@@ -42,9 +42,10 @@ func TestAcrossHalves(t *testing.T) {
 
 	backend := fakebackend.New()
 	defer backend.Close()
-	// The reranker is deployed on the llama-server backend ls: rerank answers in
-	// llama-server's shape.
+	// The reranker and the speech-to-text model are deployed on the llama-server backend
+	// ls: rerank and speech-to-text answer in llama-server's shape.
 	backend.SetRerankShape(fakebackend.LlamaServerRerank)
+	backend.SetTranscriptionShape(fakebackend.LlamaServerTranscription)
 	// Answers every request with a 400 and no usage: requests routed to it spend
 	// nothing, so they show a gateway's budget decision without changing any total.
 	refuser := fakebackend.New()
@@ -89,6 +90,9 @@ func TestAcrossHalves(t *testing.T) {
 	// answer's tokens a token limit counts — its total less the input read from the
 	// cache — which the sample's hourly token total must equal once counted.
 	tokens := servedAmounts{typ: config.LimitTokensPerHour}
+	// images holds the images the gateways generated and edited, which the sample's
+	// hourly image total must equal once counted.
+	images := servedAmounts{typ: config.LimitImagesPerHour}
 	served := func(t *testing.T, what string, r *response) {
 		t.Helper()
 		if r.StatusCode != http.StatusOK {
@@ -324,7 +328,6 @@ func TestAcrossHalves(t *testing.T) {
 			t.Fatalf("images on gw-a: %d %.300s, want 200 with images", r.StatusCode, r.body)
 		}
 		estimate := accounting.EstimateInput(provider.ImagesGenerations, imageBody).Total
-		images := servedAmounts{typ: config.LimitImagesPerHour}
 		images.add(2)
 		audio := servedAmounts{typ: config.LimitAudioSecondsOutPerHour}
 		audio.add(3)
@@ -385,6 +388,82 @@ func TestAcrossHalves(t *testing.T) {
 			}
 		}
 		served(t, "chat on gw-b, outside the media limits", chat(t, b, "chat"))
+	})
+
+	t.Run("an edit and a transcription settle at the sample; the hourly audio-processed total limits the other gateway", func(t *testing.T) {
+		// As above, gw-b must learn an hour's count: the subtest starts with half a
+		// minute of the hour left at least.
+		sample.totals.wait(t, "half a minute of the hour left", time.Minute, func(control.Totals) bool {
+			return time.Until(time.Now().UTC().Truncate(time.Hour).Add(time.Hour)) >= 30*time.Second
+		})
+
+		// transcribers' hour spent on gw-a: an edit of one image, its prompt and input
+		// image estimated, and a transcription of a 4.5 s WAV — 5 s, transcribers'
+		// audio_seconds_in_per_hour, and not the 3 s of audio the speech above generated —
+		// measured by the gateway, its 7 tokens in and 4 out reported by the llama-server
+		// backend.
+		const prompt = "make the fox red"
+		editType, editBody := writeForm(t, textPart("model", "painter"), textPart("prompt", prompt),
+			filePart("image", "fox.png", "image/png", pngImage))
+		if _, edited := imageAnswer(t, a.postForm(t, "/v1/images/edits", transcribersKey, "xh-edit", editType, editBody)); len(edited) != 1 {
+			t.Fatalf("an edit on gw-a: %d images, want 1", len(edited))
+		}
+		transcription := func(model string) (string, []byte) {
+			return writeForm(t, textPart("model", model), filePart("file", "memo.wav", "audio/wav", wavUpload(8000, 72000)))
+		}
+		sttType, sttBody := transcription("asr")
+		transcriptionAnswer(t, a.postForm(t, "/v1/audio/transcriptions", transcribersKey, "xh-transcription", sttType, sttBody))
+		estimate := accounting.EstimateUploadInput(int64(len(prompt)), 1).Total
+		images.add(1)
+		audioIn := servedAmounts{typ: config.LimitAudioSecondsInPerHour}
+		audioIn.add(5)
+		tokens.add(estimate + 7 + 4)
+
+		// Each record reaches the sample with its media units, and the sample's hourly
+		// totals count them: images, seconds of audio processed, tokens.
+		edit := proxy.waitRecord(t, "xh-edit", waitLimit)
+		want := accounting.Units{config.UnitTokensIn: estimate, config.UnitTokensCached: 0, config.UnitTokensCacheWrite: 0,
+			config.UnitTokensOut: 0, config.UnitTokensReasoning: 0,
+			config.UnitImages: 1, config.UnitAudioSecondsOut: 0, config.UnitAudioSecondsIn: 0}
+		if !maps.Equal(edit.Units, want) || edit.Model != "painter" ||
+			edit.Deployment != (accounting.Deployment{Backend: "omni", Model: omniImageModel}) ||
+			edit.CostNanoUSD != 0 || !edit.Estimated || edit.Partial {
+			t.Errorf("edit record %+v, want units %v on omni, the input estimated, free", edit, want)
+		}
+		stt := proxy.waitRecord(t, "xh-transcription", waitLimit)
+		want = accounting.Units{config.UnitTokensIn: 7, config.UnitTokensCached: 0, config.UnitTokensCacheWrite: 0,
+			config.UnitTokensOut: 4, config.UnitTokensReasoning: 0,
+			config.UnitImages: 0, config.UnitAudioSecondsOut: 0, config.UnitAudioSecondsIn: 5}
+		if !maps.Equal(stt.Units, want) || stt.Model != "asr" ||
+			stt.Deployment != (accounting.Deployment{Backend: "ls", Model: llamaASRModel}) ||
+			stt.CostNanoUSD != 0 || stt.Estimated || stt.Partial {
+			t.Errorf("transcription record %+v, want units %v on ls, reported, free", stt, want)
+		}
+		sample.totals.wait(t, "the hourly image total", waitLimit, images.counted)
+		sample.totals.wait(t, "the hourly audio-processed total at 5", waitLimit, audioIn.counted)
+		allCounted(t, waitLimit)
+
+		// gw-b learns transcribers' hour from the sample's totals: until then it admits
+		// the probes — measurable uploads sent to a backend that refuses them, so they
+		// spend nothing — and then refuses them, 429 audio_seconds (5 spent).
+		pollUntil(t, "gw-b refusing transcribers' transcriptions", waitLimit, func() bool {
+			probeType, probeBody := transcription("asr-probe")
+			r := b.postForm(t, "/v1/audio/transcriptions", transcribersKey, "", probeType, probeBody)
+			e, _ := r.json(t)["error"].(map[string]any)
+			switch {
+			case r.StatusCode == http.StatusTooManyRequests && e["type"] == "audio_seconds" && e["code"] == "rate_limit_exceeded":
+				return true
+			case r.StatusCode != http.StatusBadRequest:
+				t.Fatalf("probe on gw-b: %d %s, want the backend's 400 or 429 audio_seconds", r.StatusCode, r.body)
+			}
+			return false
+		})
+		series := `kaiak_limit_rejections_total{kaiak_limit_scope="group",kaiak_limit_type="audio_seconds_in_per_hour"}`
+		if got := b.metric(t, series); got < 1 {
+			t.Errorf("gw-b: %s = %v, want its refusals counted", series, got)
+		}
+		served(t, "chat on gw-b, outside the audio-processed limit",
+			b.post(t, "/v1/chat/completions", transcribersKey, "", chatBody("chat", false, nil)))
 	})
 
 	t.Run("a group's budget spent through one gateway is enforced on the other", func(t *testing.T) {
@@ -551,9 +630,12 @@ func TestAcrossHalves(t *testing.T) {
 // global.max_rerank_documents of 2; the working backend and the refusing one again as
 // vllm-omni backends, serving the unpriced media models "tts" and "painter" and their
 // probes "tts-probe" and "painter-probe", under eval's images_per_hour of 2 and
-// audio_seconds_out_per_hour of 3; for the reliability status, a backend refusing
-// connections (the "down" model; a circuit opens on its first failure) and one taking
-// one request at a time (the "held" model).
+// audio_seconds_out_per_hour of 3; the speech-to-text model "asr" on ls and its probe
+// "asr-probe" on the refusing backend again as a llama-server, under the group
+// transcribers' audio_seconds_in_per_hour of 5 (its key transcribersKey; no image
+// limit); for the reliability status, a backend refusing connections (the "down"
+// model; a circuit opens on its first failure) and one taking one request at a time
+// (the "held" model).
 func crossHalfConfig(backendURL, refuserURL, downURL, cappedURL, evalHash, annHash string) map[string]any {
 	cfg := testConfig(backendURL, evalHash, annHash, "")
 	backends := cfg["backends"].(map[string]any)
@@ -592,6 +674,15 @@ func crossHalfConfig(backendURL, refuserURL, downURL, cappedURL, evalHash, annHa
 				"capabilities": map[string]any{"streaming": true, "tools": false, "vision": false, "reasoning": false}},
 		}
 	}
+	backends["ls-refuser"] = map[string]any{"type": "llama-server", "base_url": refuserURL + "/v1"}
+	for name, backend := range map[string]string{"asr": "ls", "asr-probe": "ls-refuser"} {
+		models[name] = map[string]any{
+			"deployments": []any{map[string]any{"backend": backend, "model": llamaASRModel}},
+			"endpoints":   []any{"audio_transcriptions"},
+			"metadata": map[string]any{"context_length": 8192,
+				"capabilities": map[string]any{"streaming": false, "tools": false, "vision": false, "reasoning": false}},
+		}
+	}
 	global := cfg["global"].(map[string]any)
 	global["max_rerank_documents"] = 2
 	global["control_outage_grace_ms"] = 1000
@@ -607,8 +698,15 @@ func crossHalfConfig(backendURL, refuserURL, downURL, cappedURL, evalHash, annHa
 		map[string]any{"type": "images_per_hour", "value": 2},
 		map[string]any{"type": "audio_seconds_out_per_hour", "value": 3},
 	}
+	groups["transcribers"] = map[string]any{"allowed_models": []any{"painter", "asr", "asr-probe", "chat"},
+		"limits": []any{map[string]any{"type": "audio_seconds_in_per_hour", "value": 5}}}
+	cfg["keys"].(map[string]any)["k-transcribers"] = map[string]any{"hash": transcribersHash, "group": "transcribers"}
 	return cfg
 }
+
+// transcribersKey is the one key of the cross-half config's group transcribers, whose
+// audio_seconds_in_per_hour of 5 one transcription spends.
+var transcribersKey, transcribersHash = newKey()
 
 // writeConfigFile replaces the config file in one rename, as an editor saving it
 // does: the sample never reads half a file.
