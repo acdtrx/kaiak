@@ -1543,7 +1543,7 @@ Boot).
   - **An embeddings answer whose `usage` has no `prompt_tokens`** (only
     `completion_tokens`, or `prompt_tokens: null`) is no usage report: the record
     takes the input estimate, flagged `estimated`, where it settled as zero usage.
-- **Next release** (protocol 6 and config format 6):
+- **0.14.0** (protocol 6 and config format 6):
   - **Protocol 6 and config format 6 — gateways and the control plane upgrade
     together.** Every usage record carries the media units (`images`,
     `audio_seconds_out`, `audio_seconds_in`) and totals carry their hour windows,
