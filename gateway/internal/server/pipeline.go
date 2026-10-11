@@ -278,6 +278,7 @@ func newPipeline(drain *Drain, keys *keyInFlight, bodies *BodyBudget, uploads Up
 		{"inbound", func(ctx context.Context, rq *request) *apiError { return readInbound(ctx, rq, bodies, uploads) }, bodyRequests},
 		{"model_access", authorizeModel, everyRequest},
 		{"endpoint_list", checkEndpointListed, bodyRequests},
+		{"upload_measured", checkUploadMeasured, bodyRequests},
 		{"model_params", applyModelParams, bodyRequests},
 		{"limits", func(_ context.Context, rq *request) *apiError { return checkLimits(rq, limiter) }, bodyRequests},
 		{"attempts", loop.run, bodyRequests},

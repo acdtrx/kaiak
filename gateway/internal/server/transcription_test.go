@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/binary"
 	"io"
 	"maps"
 	"net/http"
@@ -64,16 +65,22 @@ func transcriptionUnits(in, out, seconds int64) accounting.Units {
 	return u
 }
 
-// wavData is an audio file part's bytes: a WAV file's opening, then every byte value,
-// CR and LF among them.
+// wavData is an audio file part's bytes: a WAV file of 8-bit mono PCM at 32 Hz whose
+// data is every byte value, CR and LF among them — 256 bytes, wavSeconds long.
 var wavData = func() string {
 	var b strings.Builder
-	b.WriteString("RIFF\x24\x01\x00\x00WAVEfmt ")
+	b.WriteString("RIFF\x24\x01\x00\x00WAVEfmt \x10\x00\x00\x00")
+	// PCM, 1 channel, 32 Hz, 32 bytes a second, 1-byte blocks, 8 bits a sample.
+	b.WriteString("\x01\x00\x01\x00\x20\x00\x00\x00\x20\x00\x00\x00\x01\x00\x08\x00")
+	b.WriteString("data\x00\x01\x00\x00")
 	for c := range 256 {
 		b.WriteByte(byte(c))
 	}
 	return b.String()
 }()
+
+// wavSeconds is wavData's length: 256 bytes at 32 bytes a second.
+const wavSeconds = 8
 
 // A transcription passes the whole pipeline to a vllm and a llama-server deployment:
 // its form rebuilt with the deployment's model — every other part as the client wrote
@@ -81,8 +88,8 @@ var wavData = func() string {
 // part and an unknown one included, no output limit of the gateway's added though the
 // model declares one — answered with the backend's JSON as sent, its content type
 // kept, never a stream. vLLM's answer settles its seconds and the prompt's estimate,
-// flagged estimated; llama-server's its tokens, and — its seconds measured from the
-// upload, which nothing measures yet — 0 seconds, flagged estimated. The token limits
+// flagged estimated; llama-server's its tokens and the upload's measured seconds,
+// nothing estimated. The token limits
 // reserve the input estimate alone; operation generate_content and output type text on
 // the record, the request line and the usage metrics, the seconds on the audio-input
 // counter; never timed to a first token (docs/specs/GATEWAY.md, Client API → owned
@@ -97,12 +104,14 @@ func TestTranscriptionThroughThePipeline(t *testing.T) {
 		limitPart                        rawPart
 		answer                           string
 		want                             accounting.Units
+		estimated                        bool
 	}{
 		{fakebackend.VLLMTranscription, "whisper", "openai/whisper-large-v3", "vllm", textPart("max_completion_tokens", "500"),
-			`{"text":"Hello from the fake","usage":{"seconds":3,"type":"duration"}}`, transcriptionUnits(estimate, 0, 3)},
+			`{"text":"Hello from the fake","usage":{"seconds":3,"type":"duration"}}`, transcriptionUnits(estimate, 0, 3), true},
 		{fakebackend.LlamaServerTranscription, "asr-ls", "qwen3-asr.gguf", "llama-server", textPart("max_tokens", "500"),
 			`{"text":"Hello from the fake","type":"transcript.text.done","usage":{"input_tokens":7,"input_tokens_details":` +
-				`{"audio_tokens":7,"text_tokens":0},"output_tokens":4,"total_tokens":11,"type":"tokens"}}`, transcriptionUnits(7, 4, 0)},
+				`{"audio_tokens":7,"text_tokens":0},"output_tokens":4,"total_tokens":11,"type":"tokens"}}`,
+			transcriptionUnits(7, 4, wavSeconds), false},
 	} {
 		t.Run(c.backendType, func(t *testing.T) {
 			g := newTestGateway(t)
@@ -132,7 +141,7 @@ func TestTranscriptionThroughThePipeline(t *testing.T) {
 			expectRebuilt(t, reqs[0], form, c.backendModel)
 
 			rec := onlyRecord(t, g)
-			expectUnits(t, rec, c.want, true, false)
+			expectUnits(t, rec, c.want, c.estimated, false)
 			if got := w.Header().Get("x-ratelimit-remaining-tokens"); got != strconv.FormatInt(100000-estimate, 10) {
 				t.Errorf("remaining tokens at admission %s, want the input estimate of %d reserved alone", got, estimate)
 			}
@@ -140,16 +149,15 @@ func TestTranscriptionThroughThePipeline(t *testing.T) {
 				t.Errorf("record operation %q, output type %q; want generate_content, text", rec.Operation, rec.OutputType)
 			}
 			line := logLine(t, g, "stt-1")
+			seconds := strconv.FormatInt(c.want[config.UnitAudioSecondsIn], 10)
 			for _, want := range []string{`"gen_ai.operation.name":"generate_content"`, `"gen_ai.output.type":"text"`,
-				`"gen_ai.request.stream":false`, `"kaiak.backend.type":"` + c.backendType + `"`, `"kaiak.usage.estimated":true`,
-				`"gen_ai.usage.input_tokens":` + strconv.FormatInt(c.want[config.UnitTokensIn], 10)} {
+				`"gen_ai.request.stream":false`, `"kaiak.backend.type":"` + c.backendType + `"`,
+				`"kaiak.usage.estimated":` + strconv.FormatBool(c.estimated),
+				`"gen_ai.usage.input_tokens":` + strconv.FormatInt(c.want[config.UnitTokensIn], 10),
+				`"kaiak.usage.audio.input.duration":` + seconds} {
 				if !strings.Contains(line, want) {
 					t.Errorf("log line lacks %s: %s", want, line)
 				}
-			}
-			seconds := c.want[config.UnitAudioSecondsIn]
-			if field := `"kaiak.usage.audio.input.duration":3`; strings.Contains(line, field) != (seconds == 3) {
-				t.Errorf("log line holds %s: %v, want %v: %s", field, !(seconds == 3), seconds == 3, line)
 			}
 			usage := `{kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",gen_ai_request_model="` +
 				c.model + `",gen_ai_operation_name="generate_content",gen_ai_output_type="text",kaiak_usage_status="complete"}`
@@ -157,11 +165,8 @@ func TestTranscriptionThroughThePipeline(t *testing.T) {
 			expectMetricLines(t, text,
 				`http_server_request_duration_seconds_count{http_request_method="POST",url_scheme="http",`+
 					`http_route="/v1/audio/transcriptions",http_response_status_code="200",gen_ai_request_model="`+c.model+`"} 1`,
-				`kaiak_usage_records_total`+usage+` 1`)
-			audioIn := `kaiak_usage_audio_input_duration_seconds_total` + usage + ` 3`
-			if strings.Contains(text, audioIn) != (seconds == 3) {
-				t.Errorf("metrics hold %s: %v, want %v", audioIn, !(seconds == 3), seconds == 3)
-			}
+				`kaiak_usage_records_total`+usage+` 1`,
+				`kaiak_usage_audio_input_duration_seconds_total`+usage+` `+seconds)
 			if strings.Contains(text, `kaiak_time_to_first_token_seconds_count{gen_ai_request_model="`+c.model+`"`) {
 				t.Error("a transcription was timed to a first token")
 			}
@@ -171,7 +176,7 @@ func TestTranscriptionThroughThePipeline(t *testing.T) {
 
 // vLLM's seconds by response_format: json and text — JSON too — and diarized_json
 // report them in their usage; verbose_json in its duration, rounded up to a whole
-// second. Each answer is relayed as the backend sent it, response_format passed as the
+// second; llama-server's json reports tokens, and its seconds are the upload's. Each answer is relayed as the backend sent it, response_format passed as the
 // client wrote it; the formats a server cannot answer — vLLM's srt and vtt,
 // llama-server's anything but json — are the backend's to refuse: its 400 relayed, no
 // units settled (docs/specs/GATEWAY.md, Client API → owned parts: speech-to-text;
@@ -192,7 +197,7 @@ func TestTranscriptionResponseFormats(t *testing.T) {
 		{fakebackend.VLLMTranscription, "whisper", "verbose_json", 4000, 200, `"duration":4`, transcriptionUnits(0, 0, 4)},
 		{fakebackend.VLLMTranscription, "whisper", "srt", 2500, 400, "srt", transcriptionUnits(0, 0, 0)},
 		{fakebackend.VLLMTranscription, "whisper", "vtt", 2500, 400, "vtt", transcriptionUnits(0, 0, 0)},
-		{fakebackend.LlamaServerTranscription, "asr-ls", "json", 2500, 200, `"input_tokens":7`, transcriptionUnits(7, 4, 0)},
+		{fakebackend.LlamaServerTranscription, "asr-ls", "json", 2500, 200, `"input_tokens":7`, transcriptionUnits(7, 4, wavSeconds)},
 		{fakebackend.LlamaServerTranscription, "asr-ls", "text", 2500, 400, "text", transcriptionUnits(0, 0, 0)},
 		{fakebackend.LlamaServerTranscription, "asr-ls", "verbose_json", 2500, 400, "verbose_json", transcriptionUnits(0, 0, 0)},
 	} {
@@ -209,8 +214,136 @@ func TestTranscriptionResponseFormats(t *testing.T) {
 			}
 			expectRebuilt(t, g.backend.Requests()[0], form, map[string]string{"whisper": "openai/whisper-large-v3",
 				"asr-ls": "qwen3-asr.gguf"}[c.model])
-			// vLLM's tokens are estimated: no prompt, an estimate of nothing.
-			expectUnits(t, onlyRecord(t, g), c.want, c.status == http.StatusOK, false)
+			// vLLM's tokens are estimated: no prompt, an estimate of nothing; llama-server's
+			// are reported, its seconds measured.
+			expectUnits(t, onlyRecord(t, g), c.want, c.status == http.StatusOK && c.shape == fakebackend.VLLMTranscription, false)
+		})
+	}
+}
+
+// flacData is a FLAC stream declaring total samples at rate, mono 16-bit: STREAMINFO
+// alone, then a frame's sync and filler, which nothing reads.
+func flacData(rate, total uint64) string {
+	info := []byte{0x10, 0x00, 0x10, 0x00, 0, 0, 0, 0, 0, 0}
+	info = binary.BigEndian.AppendUint64(info, rate<<44|15<<36|total)
+	info = append(info, make([]byte, 16)...)
+	return "fLaC\x80\x00\x00\x22" + string(info) + "\xff\xf8" + strings.Repeat("\x00", 64)
+}
+
+// mp3Data is n frames of MPEG-1 Layer III, 32 kbit/s mono at 48 kHz: 96 bytes and 1152
+// samples each.
+func mp3Data(n int) string {
+	return strings.Repeat("\xff\xfb\x14\xc0"+strings.Repeat("\x00", 92), n)
+}
+
+// m4aData is the opening of an M4A file, a format llama-server does not decode.
+const m4aData = "\x00\x00\x00\x20ftypM4A \x00\x00\x00\x00M4A mp42isom\x00\x00\x00\x08free"
+
+// A llama-server transcription counts its upload's measured length, rounded up to a
+// whole second — WAV, FLAC and MP3, told apart by their bytes, never by the filename
+// or the content type the client gives them — with the answer's tokens, nothing
+// estimated (docs/specs/GATEWAY.md, Accounting → Media usage: speech-to-text).
+func TestLlamaServerTranscriptionCountsTheMeasuredUpload(t *testing.T) {
+	for _, c := range []struct {
+		name, filename, contentType, file string
+		seconds                           int64
+	}{
+		{"WAV", "memo.wav", "audio/wav", wavData, wavSeconds},
+		{"WAV named an MP3", "memo.mp3", "audio/mpeg", wavData, wavSeconds},
+		{"FLAC, 30.5 s", "memo.flac", "audio/flac", flacData(16000, 16000*61/2), 31},
+		{"MP3, 2.4 s, named a WAV", "memo.wav", "audio/wav", mp3Data(100), 3},
+		{"MP3 of 125 frames, 3 s", "memo.mp3", "application/octet-stream", mp3Data(125), 3},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			g := newTestGateway(t)
+			withTranscriptionModels(t, g)
+			g.backend.SetTranscriptionShape(fakebackend.LlamaServerTranscription)
+			form := formOf(textPart("model", "asr-ls"), filePart("file", c.filename, c.contentType, c.file))
+			if w := do(t, g.h, transcriptionCall(form, "measured")); w.Code != http.StatusOK {
+				t.Fatalf("%d %s", w.Code, w.Body.String())
+			}
+			expectRebuilt(t, g.backend.Requests()[0], form, "qwen3-asr.gguf")
+			expectUnits(t, onlyRecord(t, g), transcriptionUnits(7, 4, c.seconds), false, false)
+		})
+	}
+}
+
+// An upload the gateway cannot measure, sent to a llama-server model, is refused 400
+// audio_format_unsupported, naming the file part — never its filename or its bytes —
+// once the model's type is known: after the endpoints list, so a llama-server model
+// that does not list speech-to-text answers endpoint_not_served; before limits, so the
+// group's one request a minute is still free for a measurable upload after the
+// refusals; before any backend, and with no usage record (docs/specs/GATEWAY.md,
+// Request pipeline, stage 2; Accounting → Media usage: speech-to-text).
+func TestUnmeasurableUploadRefusedOnLlamaServer(t *testing.T) {
+	g := newTestGateway(t)
+	withTranscriptionModels(t, g, func(doc string) string {
+		doc = replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [{ "type": "requests_per_minute", "value": 1 }] }`)
+		return replaceOnce(t, doc, `"models": {`, `"models": {
+    "chat-ls": { "deployments": [{ "backend": "ls", "model": "qwen3-asr.gguf" }], "endpoints": ["chat_completions"],
+      "metadata": { "context_length": 8192, "capabilities": { "streaming": false, "tools": false, "vision": false, "reasoning": false } } },`)
+	})
+	g.backend.SetTranscriptionShape(fakebackend.LlamaServerTranscription)
+	upload := func(model, file string) string {
+		return formOf(textPart("model", model), filePart("file", "secret-recording.wav", "audio/wav", file))
+	}
+	for name, file := range map[string]string{
+		"M4A":                       m4aData,
+		"Ogg":                       "OggS\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00",
+		"text":                      "not audio at all",
+		"a frame sync and no frame": "\xff\xfbno frame follows",
+		"an empty file":             "",
+		"a WAV header cut short":    wavData[:30],
+		"an ID3 tag and no frame":   "ID3\x04\x00\x00\x00\x00\x00\x02ab",
+		"a FLAC of unknown length":  flacData(16000, 0),
+	} {
+		w := do(t, g.h, transcriptionCall(upload("asr-ls", file), "unmeasurable"))
+		expectError(t, w, http.StatusBadRequest, "audio_format_unsupported")
+		if _, _, param := openAIError(t, w); param == nil || *param != "file" {
+			t.Errorf("%s: param %v, want file", name, param)
+		}
+		if msg := errorMessage(t, w); strings.Contains(msg, "secret-recording") || strings.Contains(msg, "audio/wav") {
+			t.Errorf("%s: message %q names the client's file", name, msg)
+		}
+	}
+	expectError(t, do(t, g.h, transcriptionCall(upload("chat-ls", m4aData), "unlisted")), http.StatusBadRequest,
+		"endpoint_not_served")
+	if n, u := len(g.backend.Requests()), len(g.usage.all()); n != 0 || u != 0 {
+		t.Fatalf("%d backend requests and %d usage records, want none", n, u)
+	}
+	if w := do(t, g.h, transcriptionCall(upload("asr-ls", wavData), "measurable")); w.Code != http.StatusOK {
+		t.Fatalf("a measurable upload after the refusals: %d %s, want the request slot free", w.Code, w.Body.String())
+	}
+	expectError(t, do(t, g.h, transcriptionCall(upload("asr-ls", wavData), "spent")), http.StatusTooManyRequests,
+		"rate_limit_exceeded")
+}
+
+// A vllm transcription is not refused for an upload the gateway cannot measure, and
+// its answer's seconds win over a measured upload's. An answer reporting none — none
+// is expected — counts the measured upload, else 0; the record is estimated either
+// way, as its tokens are (docs/specs/GATEWAY.md, Accounting → Media usage:
+// speech-to-text).
+func TestVLLMTranscriptionAndTheMeasuredUpload(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		file      string
+		omitUsage bool
+		seconds   int64
+	}{
+		{"measured, the answer's seconds", wavData, false, 3},
+		{"not measured, the answer's seconds", m4aData, false, 3},
+		{"measured, no seconds in the answer", wavData, true, wavSeconds},
+		{"not measured, no seconds in the answer", m4aData, true, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			g := newTestGateway(t)
+			withTranscriptionModels(t, g)
+			g.backend.SetReply(fakebackend.Reply{OmitUsage: c.omitUsage})
+			form := formOf(textPart("model", "whisper"), filePart("file", "memo.m4a", "audio/mp4", c.file))
+			if w := do(t, g.h, transcriptionCall(form, "vllm")); w.Code != http.StatusOK {
+				t.Fatalf("%d %s", w.Code, w.Body.String())
+			}
+			expectUnits(t, onlyRecord(t, g), transcriptionUnits(0, 0, c.seconds), true, false)
 		})
 	}
 }
@@ -379,8 +512,8 @@ func TestTranscriptionLimits(t *testing.T) {
 }
 
 // A transcription's answer cut short before its usage settles as one that reported no
-// seconds — 0, estimated, the upload measured by nothing yet — with the input estimate,
-// flagged partial; the client's connection is cut (docs/specs/GATEWAY.md, Accounting →
+// seconds — the measured upload's — with the input estimate, flagged estimated and
+// partial; the client's connection is cut (docs/specs/GATEWAY.md, Accounting →
 // Partial).
 func TestTranscriptionCutShort(t *testing.T) {
 	g := newTestGateway(t)
@@ -402,8 +535,8 @@ func TestTranscriptionCutShort(t *testing.T) {
 			t.Errorf("status %d, read error %v: want the answer cut short", resp.StatusCode, err)
 		}
 	}
-	expectUnits(t, settledRecord(t, g), transcriptionUnits(accounting.EstimateUploadInput(int64(len(prompt)), 0).Total, 0, 0),
-		true, true)
+	expectUnits(t, settledRecord(t, g), transcriptionUnits(accounting.EstimateUploadInput(int64(len(prompt)), 0).Total, 0,
+		wavSeconds), true, true)
 }
 
 // The servers' own answers on a transcription: vLLM's model check naming the

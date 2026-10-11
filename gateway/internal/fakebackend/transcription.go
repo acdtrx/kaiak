@@ -15,8 +15,8 @@ import (
 // (readUploadForm); one sent without its Content-Length is refused 400, as on image
 // edits, and one without a file part 400, as both servers refuse it. Stream true is
 // refused 400: both servers stream a transcription, and the gateway never asks for
-// one. The text is the reply's chunks joined, the audio heard AudioMillis long, the
-// tokens the reply's usage; OmitUsage leaves usage out. The reply's stream fault stops
+// one. The text is the reply's chunks joined, the audio vLLM's shape hears AudioMillis
+// long, the tokens the reply's usage; OmitUsage leaves usage out. The reply's stream fault stops
 // the answer halfway: Cut drops the connection, Hang waits for the request's end, End
 // ends the body there.
 
@@ -42,8 +42,10 @@ const (
 	// response_format json only (absent means it), else 400; the answer
 	// {"type": "transcript.text.done", "text", "usage": {"type": "tokens",
 	// "input_tokens", "output_tokens", "total_tokens", "input_tokens_details"}}, no
-	// seconds. A model without an audio encoder (SetNonAudioModels) is answered 501
-	// not_supported_error "The current model does not support audio input.".
+	// seconds: the audio is not read, nor AudioMillis — the gateway measures the upload
+	// itself, so a test sends a file of the length it wants counted. A model without an
+	// audio encoder (SetNonAudioModels) is answered 501 not_supported_error "The current
+	// model does not support audio input.".
 	LlamaServerTranscription
 )
 

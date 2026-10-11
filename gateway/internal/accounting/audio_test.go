@@ -31,6 +31,17 @@ func fmtBody(tag, channels uint16, rate uint32, blockSize, bits uint16, extra ..
 	return append(b, extra...)
 }
 
+// extension is the extensible format's extension: its size (22), valid bits, channel
+// mask, then the subformat GUID of format tag subTag — {0000XXXX-0000-0010-8000-
+// 00AA00389B71}, written as Windows writes a GUID, its first two bytes the tag.
+func extension(validBits uint16, subTag uint16) []byte {
+	b := binary.LittleEndian.AppendUint16(nil, 22)
+	b = binary.LittleEndian.AppendUint16(b, validBits)
+	b = binary.LittleEndian.AppendUint32(b, 0x3) // front left and right
+	b = binary.LittleEndian.AppendUint16(b, subTag)
+	return append(b, 0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xAA, 0, 0x38, 0x9B, 0x71)
+}
+
 // riff is a RIFF WAVE file of chunks, its size field size (the whole when 0).
 func riff(size uint32, chunks ...[]byte) []byte {
 	var body []byte
@@ -67,10 +78,11 @@ func measure(contentType string, sampleRate int64, data []byte, piece int) audio
 // A WAV clip's length is its data chunk's bytes received at the fmt chunk's rate and
 // block size — never a size field: a whole file with its real sizes, a streamed one
 // declaring the placeholder 0xFFFFFFFF, chunks before and between fmt and data (odd
-// sizes with their pad byte) walked by their size, the extensible format, stereo and
-// 24-bit; at most the size the data chunk declares, so a chunk after it is not
-// audio. The result is the same however the bytes are split across reads, a header
-// split byte by byte included (docs/specs/GATEWAY.md, Accounting → Media usage).
+// sizes with their pad byte) walked by their size, stereo and 24-bit; IEEE float,
+// A-law and μ-law, and the extensible format naming PCM or IEEE float; at most the
+// size the data chunk declares, so a chunk after it is not audio. The result is the
+// same however the bytes are split across reads, a header split byte by byte
+// included (docs/specs/GATEWAY.md, Accounting → Media usage).
 func TestWAVLengthIsTheDataReceived(t *testing.T) {
 	mono16 := wavChunk("fmt ", fmtBody(1, 1, 24000, 2, 16))
 	audio := func(n int) []byte { return make([]byte, n) }
@@ -84,8 +96,14 @@ func TestWAVLengthIsTheDataReceived(t *testing.T) {
 			1500 * time.Millisecond},
 		{"chunks before and between", riff(0, wavChunk("LIST", []byte("INFOISFTsoundfile")), mono16,
 			wavChunk("JUNK", audio(27)), wavChunk("data", audio(48000))), time.Second},
-		{"extensible format", riff(0, wavChunk("fmt ", fmtBody(0xFFFE, 2, 48000, 4, 16, make([]byte, 24)...)),
+		{"extensible format", riff(0, wavChunk("fmt ", fmtBody(0xFFFE, 2, 48000, 4, 16, extension(16, 1)...)),
 			wavChunk("data", audio(192000/4))), 250 * time.Millisecond},
+		{"extensible IEEE float", riff(0, wavChunk("fmt ", fmtBody(0xFFFE, 2, 24000, 8, 32, extension(32, 3)...)),
+			wavChunk("data", audio(24000*8*2))), 2 * time.Second},
+		{"IEEE float", riff(0, wavChunk("fmt ", fmtBody(3, 1, 24000, 4, 32, 0, 0)), wavChunk("fact", audio(4)),
+			wavChunk("data", audio(24000*4))), time.Second},
+		{"A-law", riff(0, wavChunk("fmt ", fmtBody(6, 1, 8000, 1, 8, 0, 0)), wavChunk("data", audio(4000))),
+			500 * time.Millisecond},
 		{"stereo 24-bit", riff(0, wavChunk("fmt ", fmtBody(1, 2, 44100, 6, 24)), wavChunk("data", audio(44100*6))),
 			time.Second},
 		{"fmt longer than its fields, odd", riff(0, wavChunk("fmt ", fmtBody(1, 1, 8000, 2, 16, 0, 0, 7)),
@@ -128,7 +146,8 @@ func TestWAVCutShortCountsWhatArrived(t *testing.T) {
 // seen are the same. The seeds walk chunk boundaries: a chunk before fmt, an odd-sized
 // one and its pad byte before a data chunk declaring the placeholder, a streamed
 // header with audio, a data chunk declaring nothing, a data chunk before any fmt
-// chunk, a header cut short (docs/specs/GATEWAY.md, Accounting → Media usage).
+// chunk, a header cut short; IEEE float, the extensible format's extension whole and
+// cut short (docs/specs/GATEWAY.md, Accounting → Media usage).
 func FuzzWAVLengthIsTheSameHoweverRead(f *testing.F) {
 	format := wavChunk("fmt ", fmtBody(1, 1, 8000, 2, 16))
 	f.Add(riff(0, wavChunk("JUNK", nil), format, wavChunk("data", make([]byte, 32))))
@@ -137,6 +156,9 @@ func FuzzWAVLengthIsTheSameHoweverRead(f *testing.F) {
 	f.Add(riff(0, format, dataHeader(0)))
 	f.Add(riff(0, dataHeader(0xFFFFFFFF)))
 	f.Add([]byte("RIFF"))
+	f.Add(riff(0, wavChunk("fmt ", fmtBody(3, 2, 8000, 16, 64)), dataHeader(0xFFFFFFFF)))
+	f.Add(riff(0, wavChunk("fmt ", fmtBody(0xFFFE, 1, 8000, 1, 8, extension(8, 7)...)), wavChunk("data", make([]byte, 9))))
+	f.Add(riff(0, wavChunk("fmt ", fmtBody(0xFFFE, 1, 8000, 2, 16, extension(16, 1)[:21]...)), dataHeader(8)))
 	f.Fuzz(func(t *testing.T, body []byte) {
 		if len(body) > 64<<10 {
 			t.Skip()
@@ -157,8 +179,10 @@ func FuzzWAVLengthIsTheSameHoweverRead(f *testing.F) {
 }
 
 // A WAV header the gateway cannot read is not measured: not RIFF and WAVE, a format
-// whose data is not sample frames of its block size (IEEE float's tag, a compressed
-// one), a block size that is not the channels' samples, a zero rate or channel count,
+// whose data is not sample frames of its block size (ADPCM, MP3) — or the extensible
+// format naming one, or naming none (an extension of another size, none at all) — A-law
+// of 16-bit samples, a block size that is not the channels' samples, a zero rate or
+// channel count,
 // a byte rate above any real format's (maxAudioByteRate) — its samples would measure a
 // few nanoseconds, 0 s — a fmt chunk shorter than its fields, a data chunk before any
 // fmt chunk, a header cut short before its data chunk. A byte rate at the bound is
@@ -166,20 +190,25 @@ func FuzzWAVLengthIsTheSameHoweverRead(f *testing.F) {
 func TestUnreadableWAVIsNotMeasured(t *testing.T) {
 	data := wavChunk("data", make([]byte, 4800))
 	for name, wav := range map[string][]byte{
-		"RIFX":                 append([]byte("RIFX"), riff(0, wavChunk("fmt ", fmtBody(1, 1, 24000, 2, 16)), data)[4:]...),
-		"not WAVE":             append(append([]byte("RIFF\x00\x00\x00\x00AVI "), wavChunk("fmt ", fmtBody(1, 1, 24000, 2, 16))...), data...),
-		"IEEE float tag":       riff(0, wavChunk("fmt ", fmtBody(3, 1, 24000, 4, 32)), data),
-		"MP3 tag":              riff(0, wavChunk("fmt ", fmtBody(0x55, 1, 24000, 1, 0)), data),
-		"block size mismatch":  riff(0, wavChunk("fmt ", fmtBody(1, 2, 24000, 2, 16)), data),
-		"zero rate":            riff(0, wavChunk("fmt ", fmtBody(1, 1, 0, 2, 16)), data),
-		"zero channels":        riff(0, wavChunk("fmt ", fmtBody(1, 0, 24000, 0, 16)), data),
-		"an absurd rate":       riff(0, wavChunk("fmt ", fmtBody(1, 8, 0xFFFFFFFF, 32, 32)), data),
-		"past the bound":       riff(0, wavChunk("fmt ", fmtBody(1, 1, 50_000_001, 2, 16)), data),
-		"short fmt":            riff(0, wavChunk("fmt ", fmtBody(1, 1, 24000, 2, 16)[:14]), data),
-		"data before fmt":      riff(0, data, wavChunk("fmt ", fmtBody(1, 1, 24000, 2, 16))),
-		"cut in the fmt chunk": riff(0, wavChunk("fmt ", fmtBody(1, 1, 24000, 2, 16)))[:30],
-		"no data chunk":        riff(0, wavChunk("fmt ", fmtBody(1, 1, 24000, 2, 16))),
-		"empty":                nil,
+		"RIFX":                         append([]byte("RIFX"), riff(0, wavChunk("fmt ", fmtBody(1, 1, 24000, 2, 16)), data)[4:]...),
+		"not WAVE":                     append(append([]byte("RIFF\x00\x00\x00\x00AVI "), wavChunk("fmt ", fmtBody(1, 1, 24000, 2, 16))...), data...),
+		"ADPCM tag":                    riff(0, wavChunk("fmt ", fmtBody(2, 1, 24000, 256, 4, 2, 0, 0xF4, 0x01)), data),
+		"MP3 tag":                      riff(0, wavChunk("fmt ", fmtBody(0x55, 1, 24000, 1, 0)), data),
+		"extensible ADPCM":             riff(0, wavChunk("fmt ", fmtBody(0xFFFE, 1, 24000, 2, 16, extension(16, 2)...)), data),
+		"extensible, no GUID":          riff(0, wavChunk("fmt ", fmtBody(0xFFFE, 1, 24000, 2, 16, make([]byte, 24)...)), data),
+		"extensible, short":            riff(0, wavChunk("fmt ", fmtBody(0xFFFE, 1, 24000, 2, 16, extension(16, 1)[:20]...)), data),
+		"extensible, no fmt extension": riff(0, wavChunk("fmt ", fmtBody(0xFFFE, 1, 24000, 2, 16)), data),
+		"16-bit A-law":                 riff(0, wavChunk("fmt ", fmtBody(6, 1, 24000, 2, 16)), data),
+		"block size mismatch":          riff(0, wavChunk("fmt ", fmtBody(1, 2, 24000, 2, 16)), data),
+		"zero rate":                    riff(0, wavChunk("fmt ", fmtBody(1, 1, 0, 2, 16)), data),
+		"zero channels":                riff(0, wavChunk("fmt ", fmtBody(1, 0, 24000, 0, 16)), data),
+		"an absurd rate":               riff(0, wavChunk("fmt ", fmtBody(1, 8, 0xFFFFFFFF, 32, 32)), data),
+		"past the bound":               riff(0, wavChunk("fmt ", fmtBody(1, 1, 50_000_001, 2, 16)), data),
+		"short fmt":                    riff(0, wavChunk("fmt ", fmtBody(1, 1, 24000, 2, 16)[:14]), data),
+		"data before fmt":              riff(0, data, wavChunk("fmt ", fmtBody(1, 1, 24000, 2, 16))),
+		"cut in the fmt chunk":         riff(0, wavChunk("fmt ", fmtBody(1, 1, 24000, 2, 16)))[:30],
+		"no data chunk":                riff(0, wavChunk("fmt ", fmtBody(1, 1, 24000, 2, 16))),
+		"empty":                        nil,
 	} {
 		clip := measure("audio/wav", 0, wav, 0)
 		if d, measured := clip.length(); measured || d != 0 || clip.samplesSeen() {

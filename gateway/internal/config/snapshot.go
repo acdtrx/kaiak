@@ -405,6 +405,13 @@ func (m *Model) Admits(e EndpointName) bool {
 	return slices.Contains(m.Endpoints, e)
 }
 
+// Type is the backend type of the model's deployments, which share one
+// (docs/specs/GATEWAY.md, Model metadata → One backend type per model); a model has at
+// least one deployment.
+func (m *Model) Type() BackendType {
+	return m.Deployments[0].Backend.Type
+}
+
 type Deployment struct {
 	Backend *Backend
 	// Model is the model name on that backend.

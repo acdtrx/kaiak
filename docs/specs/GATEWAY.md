@@ -196,6 +196,7 @@
   | More generated sequences than `global.max_sequences_per_request` (`param`: `prompt`, `n` or `best_of`), more embeddings inputs than `global.max_embedding_inputs` (`param: "input"`), more rerank documents than `global.max_rerank_documents` (`param: "documents"`, settled 2026-10-08), more images than `global.max_images_per_request` (`param: "n"`; an image generation or edit) or more speech batch items than `global.max_speech_batch_items` (`param: "items"`, both settled 2026-10-09) — Limits → Output multiplicity: batch caps | 400 | `invalid_request_error` | `invalid_value` |
   | An image edit or a transcription whose `stream` part is other than `false` (`param: "stream"`; settled 2026-10-11, with the user, Client API → owned parts) | 400 | `invalid_request_error` | `invalid_value` |
   | A speech request or batch item asks for audio other than `wav` or `pcm`, or an image generation or edit for a `response_format` other than `b64_json` (`param` names it: `response_format`, `items[2].response_format`; settled 2026-10-09, edits 2026-10-11, Client API → owned fields: speech, images; owned parts: image edits) | 400 | `invalid_request_error` | `response_format_unsupported` |
+  | A transcription for a `llama-server` model whose upload the gateway cannot measure — not WAV, FLAC or MP3, or one whose length its header and frames do not give (`param: "file"`; settled 2026-10-11, Accounting → Media usage: speech-to-text) | 400 | `invalid_request_error` | `audio_format_unsupported` |
   | A field that makes the backend fetch or read something names a URL or a path instead of inline data: speech `ref_audio` (each entry of a list), `ref_audio_2`, a `references` entry's `audio_path`, a batch's or item's `ref_audio`; an image request's `lora`; a speech or image request's `extra_params`, whatever its value; an image edit's `url`, `url[]`, `mask_image` or `reference_image` given as text that is not a `data:` URL, its `lora`; a transcription's `vllm_xargs`, whatever its value (`param` names it; settled 2026-10-09, `extra_params` 2026-10-10, the upload parts 2026-10-11, Client API → owned fields: speech, images; owned parts) | 400 | `invalid_request_error` | `external_reference_unsupported` |
   | Body over `max_request_body_bytes`, or over the whole body budget (`KAIAK_BODY_MEMORY_BYTES`) when that is smaller; an upload over `global.max_upload_bytes`, or over the whole upload budget (`KAIAK_UPLOAD_MEMORY_BYTES`) when that is smaller (settled 2026-10-11, Request pipeline → Uploads) | 413 | `invalid_request_error` | `request_too_large` |
   | A Responses request sets `previous_response_id`, `conversation`, `prompt` or `background: true`, or refers to an item or file stored at the backend (`param` names it; Client API → Responses is stateless) | 400 | `invalid_request_error` | `stateful_responses_unsupported` |
@@ -2516,9 +2517,17 @@ own, and a client sending repeats is broken either way.
     still counts (settled 2026-10-10) — from the bytes actually sent, never from a
     size a header declares:
     - WAV (`audio/wav`, a delta's `response_format: "wav"`, an item's
-      `media_type`): rate, channels and block size from the `fmt ` chunk (PCM or
-      the extensible format), then the `data` chunk's bytes received, at most the
-      size it declares — a streamed WAV declares a placeholder;
+      `media_type`): rate, channels and block size from the `fmt ` chunk, then the
+      `data` chunk's bytes received, at most the size it declares — a streamed WAV
+      declares a placeholder. Read for every format whose data is sample frames of
+      the block size, as llama-server's decoder (miniaudio's dr_wav, 0.11.25) plays
+      them (settled 2026-10-11): PCM, IEEE float, A-law and μ-law — the last two of
+      8-bit samples — and the extensible format whose subformat is one of them (its
+      GUID's first two bytes, in an extension of 22 bytes, as dr_wav reads it). The
+      block size must be the channels' samples, rounded up to whole bytes. Another
+      format (ADPCM, whose data is blocks of its own; MP3 in WAV; an unknown tag or
+      subformat) is not read. vLLM-Omni sends 16-bit PCM; the same reader measures
+      speech-to-text's WAV uploads (Speech-to-text → Measuring an upload, below);
     - PCM (`audio/pcm`): 16-bit mono at the request's `sample_rate`, or the item's
       effective one — the only PCM vLLM-Omni can send, since `sample_rate` is
       required with it (Client API → owned fields: speech);
@@ -2590,19 +2599,34 @@ own, and a client sending repeats is broken either way.
     - **Measuring an upload** (settled 2026-10-11): the `file` part is held whole in
       memory, so its length is read in one bounded pass, the format chosen by its
       magic bytes, as llama-server's decoder chooses it — never by the filename or
-      the part's content type:
-      - WAV: rate, channels and bit depth from the `fmt ` chunk; the `data` chunk's
-        bytes actually present (its declared size bounded by the file);
-      - FLAC: STREAMINFO's total samples over its sample rate; a total of 0
-        ("unknown") is unmeasurable;
-      - MP3: a frame scan — an ID3v2 tag skipped by its size, ID3v1 and APE tags
-        ignored; each frame's length from its bitrate, sample rate and padding, its
-        samples by MPEG version and layer; a stream with no valid frame is
+      the part's content type. llama-server processes the length its decoder
+      (miniaudio 0.11.25) takes from the file, silence past the samples present, so
+      each length is read where that decoder reads it:
+      - WAV: rate, channels and bit depth from the `fmt ` chunk — PCM, IEEE float,
+        A-law, μ-law, or the extensible format naming one, as audio generated is
+        read (Audio length, above); the `data` chunk's bytes actually present (its
+        declared size bounded by the file) — dr_wav's length too: data bytes over
+        the block size;
+      - FLAC: STREAMINFO's total samples over its sample rate — past leading ID3v2
+        tags too, which the FLAC decoder skips; a total of 0 ("unknown") is
+        unmeasurable, as is a length of 9 223 372 036 s or more (about 292 years,
+        the longest a 64-bit count of nanoseconds holds);
+      - MP3: a frame scan — an ID3v2 tag skipped by its size; each frame's length
+        from its bitrate, sample rate and padding, its samples by MPEG version and
+        layer; past bytes that are no frame of the stream — junk, a second file's
+        tag, ID3v1 and APE tags at the end — the scan resynchronizes as the decoder
+        does, on a valid header whose next header is of the same stream (or whose
+        frame ends the file), so junk hides no frame the decoder plays; a
+        free-format frame (no bitrate in its header; rare, no common encoder writes
+        them by default) is not read; a first frame holding a Xing or Info header is no audio, and the
+        frame count it declares counts when longer than the frames present — the
+        decoder takes its length from it; a stream with no audio frame is
         unmeasurable.
 
-      Every size is bounded by the bytes present and a pass never revisits a byte:
-      a zero, absurd or overflowing size ends it as unmeasurable — never a loop, a
-      panic or an allocation. Every upload is measured, on every type; a
+      Every size is bounded by the bytes present and a pass only moves forward,
+      each position tried as a frame's start at most once: a zero, absurd or
+      overflowing size ends it as unmeasurable — never a loop, a panic or an
+      allocation. Every upload is measured, on every type; a
       `llama-server` model needs the result, a `vllm` one falls back on it. The
       length is rounded up to a whole second once per record, as
       `audio_seconds_out` is.

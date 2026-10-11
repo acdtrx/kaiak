@@ -119,25 +119,32 @@ func (emptyClip) samplesSeen() bool             { return false }
 func (emptyClip) count(n int64) int64           { return n }
 
 // wavClip reads a WAV file (RIFF, form type WAVE) as its bytes stream through. Its
-// chunks are walked up to the data chunk — the fmt chunk's sample rate, channels and
-// block size read, any other chunk skipped by its size and pad byte (a writer may put
-// more than fmt and data before the audio) — then the data chunk's bytes received
-// are its audio, at most the size the chunk declares. A streamed WAV declares a
-// placeholder there (vLLM-Omni's raw-audio stream writes 0xFFFFFFFF in both size
-// fields), so the length is never read from a size field. A WAV whose header cannot
-// be read — not RIFF and WAVE, a format whose data is not sample frames of its block
-// size, a byte rate above maxAudioByteRate, a data chunk before the fmt chunk, a
-// header cut short before its data chunk — is not measured.
+// chunks are walked up to the data chunk — the fmt chunk's format, sample rate,
+// channels and block size read, any other chunk skipped by its size and pad byte (a
+// writer may put more than fmt and data before the audio) — then the data chunk's
+// bytes received are its audio, at most the size the chunk declares. A streamed WAV
+// declares a placeholder there (vLLM-Omni's raw-audio stream writes 0xFFFFFFFF in both
+// size fields), so the length is never read from a size field.
+//
+// The formats read are those whose data is sample frames of the block size, which
+// llama-server's decoder plays (miniaudio's dr_wav, 0.11.25): PCM, IEEE float, A-law
+// and μ-law — 8-bit, as dr_wav reads them — and the extensible format whose subformat
+// is one of them, named by its GUID's first two bytes as dr_wav reads it (an extension
+// of 22 bytes). A WAV whose header cannot be read — not RIFF and WAVE, another format
+// (ADPCM's data is blocks of its own), a block size that is not its channels' samples,
+// a byte rate above maxAudioByteRate, a data chunk before the fmt chunk, a header cut
+// short before its data chunk — is not measured.
 type wavClip struct {
 	state wavState
 	// head holds the bytes of the part being read: the RIFF header, a chunk header,
-	// the fmt chunk's fields.
+	// the fmt chunk's fields, the extensible format's extension.
 	head []byte
 	// skip is how many bytes are left to skip: the rest of a chunk the clip does not
 	// read, its pad byte included.
 	skip int64
-	// fmtRest is what the fmt chunk holds past its fields, its pad byte included.
-	fmtRest int64
+	// fmtSize is the size the fmt chunk declares; format its fields, once read.
+	fmtSize int64
+	format  wavFormat
 	// byteRate is the audio's bytes per second — the fmt chunk's sample rate times its
 	// block size (the bytes of one sample frame, every channel); 0 before the fmt chunk.
 	byteRate int64
@@ -156,6 +163,9 @@ const (
 	wavChunkHeader
 	// wavFmt: the fmt chunk's fields.
 	wavFmt
+	// wavFmtExtension: the extensible format's extension — its size, valid bits,
+	// channel mask and subformat GUID.
+	wavFmtExtension
 	// wavSkip: a chunk the clip does not read, or the fmt chunk past its fields.
 	wavSkip
 	// wavData: the data chunk's audio.
@@ -173,19 +183,33 @@ const (
 	// wavFmtFieldBytes: the format tag, channels, sample rate, byte rate, block size
 	// and bits per sample — the fields every fmt chunk holds.
 	wavFmtFieldBytes = 16
+	// wavFmtExtensionBytes: the extensible format's extension past them — its size,
+	// then the 22 bytes it declares.
+	wavFmtExtensionBytes = 24
+	// wavExtensionSize is the size the extensible format's extension declares.
+	wavExtensionSize = 22
 )
 
-// The format tags whose data is sample frames of the fmt chunk's block size: PCM and
-// the extensible format.
+// The format tags whose data is sample frames of the fmt chunk's block size — PCM,
+// IEEE float, A-law and μ-law — and the extensible format, whose subformat names one.
 const (
 	wavFormatPCM        = 1
+	wavFormatIEEEFloat  = 3
+	wavFormatALaw       = 6
+	wavFormatMuLaw      = 7
 	wavFormatExtensible = 0xFFFE
 )
+
+// wavFormat is a fmt chunk's fields the clip reads.
+type wavFormat struct {
+	tag, channels, blockSize, sampleBits uint16
+	rate                                 uint32
+}
 
 func (c *wavClip) write(p []byte) {
 	for len(p) > 0 {
 		switch c.state {
-		case wavRIFF, wavChunkHeader, wavFmt:
+		case wavRIFF, wavChunkHeader, wavFmt, wavFmtExtension:
 			need := c.headBytes()
 			n := min(need-len(c.head), len(p))
 			c.head = append(c.head, p[:n]...)
@@ -235,6 +259,8 @@ func (c *wavClip) headBytes() int {
 		return wavRIFFBytes
 	case wavChunkHeader:
 		return wavChunkHeaderBytes
+	case wavFmtExtension:
+		return wavFmtExtensionBytes
 	}
 	return wavFmtFieldBytes
 }
@@ -257,7 +283,7 @@ func (c *wavClip) readHead() {
 				c.state = wavUnreadable
 				return
 			}
-			c.fmtRest = size - wavFmtFieldBytes + size%2
+			c.fmtSize = size
 			c.state = wavFmt
 		case "data":
 			if c.byteRate == 0 {
@@ -273,23 +299,50 @@ func (c *wavClip) readHead() {
 			c.skipChunk(size + size%2)
 		}
 	case wavFmt:
-		tag := binary.LittleEndian.Uint16(h[0:2])
-		channels := binary.LittleEndian.Uint16(h[2:4])
-		rate := binary.LittleEndian.Uint32(h[4:8])
-		blockSize := binary.LittleEndian.Uint16(h[12:14])
-		sampleBits := binary.LittleEndian.Uint16(h[14:16])
-		if (tag != wavFormatPCM && tag != wavFormatExtensible) || channels == 0 || rate == 0 || sampleBits == 0 ||
-			int(blockSize) != int(channels)*((int(sampleBits)+7)/8) {
+		c.format = wavFormat{tag: binary.LittleEndian.Uint16(h[0:2]), channels: binary.LittleEndian.Uint16(h[2:4]),
+			rate: binary.LittleEndian.Uint32(h[4:8]), blockSize: binary.LittleEndian.Uint16(h[12:14]),
+			sampleBits: binary.LittleEndian.Uint16(h[14:16])}
+		if c.format.tag != wavFormatExtensible {
+			c.readFormat(wavFmtFieldBytes)
+			return
+		}
+		if c.fmtSize < wavFmtFieldBytes+wavFmtExtensionBytes {
 			c.state = wavUnreadable
 			return
 		}
-		c.byteRate = int64(rate) * int64(blockSize)
-		if c.byteRate > maxAudioByteRate {
+		c.state = wavFmtExtension
+	case wavFmtExtension:
+		// The extension's size, valid bits (2 bytes), channel mask (4), then the
+		// subformat GUID, whose first two bytes are the format tag it names.
+		if binary.LittleEndian.Uint16(h[0:2]) != wavExtensionSize {
 			c.state = wavUnreadable
 			return
 		}
-		c.skipChunk(c.fmtRest)
+		c.format.tag = binary.LittleEndian.Uint16(h[8:10])
+		c.readFormat(wavFmtFieldBytes + wavFmtExtensionBytes)
 	}
+}
+
+// readFormat judges the fmt chunk's format, its fields and extension read (read
+// bytes): a format whose data is sample frames, A-law and μ-law of 8-bit samples, a
+// rate, channels and samples, a block size that is the channels' samples, a byte rate
+// at most maxAudioByteRate. The rest of the chunk is skipped.
+func (c *wavClip) readFormat(read int64) {
+	f := c.format
+	switch {
+	case f.tag != wavFormatPCM && f.tag != wavFormatIEEEFloat && f.tag != wavFormatALaw && f.tag != wavFormatMuLaw,
+		(f.tag == wavFormatALaw || f.tag == wavFormatMuLaw) && f.sampleBits != 8,
+		f.channels == 0 || f.rate == 0 || f.sampleBits == 0,
+		int(f.blockSize) != int(f.channels)*((int(f.sampleBits)+7)/8):
+		c.state = wavUnreadable
+		return
+	}
+	c.byteRate = int64(f.rate) * int64(f.blockSize)
+	if c.byteRate > maxAudioByteRate {
+		c.state = wavUnreadable
+		return
+	}
+	c.skipChunk(c.fmtSize - read + c.fmtSize%2)
 }
 
 // skipChunk skips the next n bytes, then reads a chunk header.
@@ -313,7 +366,7 @@ func (c *wavClip) length() (time.Duration, bool) {
 func (c *wavClip) samplesSeen() bool { return c.received > 0 }
 
 // base64Window is how many bytes of base64 audio are decoded at a time while a clip
-// reads them — a WAV header, whose fixed parts are 8 to 16 bytes.
+// reads them — a WAV header, whose fixed parts are 8 to 24 bytes.
 const base64Window = 48
 
 // writeBase64 reads base64 text b64 — a speech.audio.delta's audio — into clip without

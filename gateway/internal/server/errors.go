@@ -491,6 +491,15 @@ func errResponseFormatUnsupported(param, allowed string) *apiError {
 		message: fmt.Sprintf("'%s' asks for a format the gateway cannot count; it serves %s.", param, allowed)}
 }
 
+// errAudioFormatUnsupported refuses a transcription whose upload the gateway cannot
+// measure on a model whose server reports no seconds (docs/specs/GATEWAY.md, Accounting
+// → Media usage: speech-to-text): llama-server decodes WAV, FLAC and MP3 alone, so
+// another format would fail there too, and audio nothing could count is never sent.
+func errAudioFormatUnsupported() *apiError {
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "audio_format_unsupported", class: metrics.ErrorInvalidRequest, param: "file",
+		message: "'file' holds audio whose length the gateway cannot measure, and this model's server reports none: send WAV, FLAC or MP3."}
+}
+
 // errExternalReference refuses a field or part that would make the backend fetch a
 // URL or read a file on the client's behalf (docs/specs/GATEWAY.md, Client API → owned
 // fields: speech, images; owned parts: image edits): a reference audio, or an image
