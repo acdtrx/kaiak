@@ -35,6 +35,13 @@ it is sent (OVERVIEW decisions 8 and 30).
   - on `vllm`, the fallback when an answer reports none (decision 29).
 - `gateway/internal/fakebackend/`: llama-server's handler measures nothing; the tests
   pick files of known length.
+- `docs/specs/GATEWAY.md`, the errors table: the `audio_format_unsupported` row,
+  which lands with the code that answers it (step 1 wrote it, the review moved it
+  here):
+
+  ```
+  | A transcription for a `llama-server` model whose upload the gateway cannot measure — not WAV, FLAC or MP3, or one whose length its header and frames do not give (`param: "file"`; settled 2026-10-11, Accounting → Media usage: speech-to-text) | 400 | `invalid_request_error` | `audio_format_unsupported` |
+  ```
 - Tests beside each, with small generated files (no binary fixtures beyond a few KiB).
 
 ## Decisions made during planning

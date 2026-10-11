@@ -1,5 +1,5 @@
 {
-  "format_version": 6,
+  "protocol_version": 7,
   "global": {},
   "backends": {
     "generic": { "type": "openai-compatible", "base_url": "http://sglang:30000/v1" },
@@ -18,14 +18,41 @@
     "llama": { "type": "llama-server", "base_url": "http://llama:8080/v1", "max_in_flight": 4 }
   },
   "models": {
-    "chat": {
-      "deployments": [
-        { "backend": "generic", "model": "org/chat-model" },
-        { "backend": "openai", "model": "gpt-chat" },
-        { "backend": "azure", "model": "chat-deployment" },
-        { "backend": "vllm", "model": "org/chat-model" },
-        { "backend": "llama", "model": "chat-model" }
-      ],
+    "generic-chat": {
+      "deployments": [{ "backend": "generic", "model": "org/chat-model" }],
+      "endpoints": ["chat_completions", "completions"],
+      "metadata": {
+        "context_length": 32768,
+        "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": false }
+      }
+    },
+    "openai-chat": {
+      "deployments": [{ "backend": "openai", "model": "gpt-chat" }],
+      "endpoints": ["chat_completions", "responses"],
+      "metadata": {
+        "context_length": 32768,
+        "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": false }
+      }
+    },
+    "azure-chat": {
+      "deployments": [{ "backend": "azure", "model": "chat-deployment" }],
+      "endpoints": ["chat_completions", "responses"],
+      "metadata": {
+        "context_length": 32768,
+        "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": false }
+      }
+    },
+    "vllm-chat": {
+      "deployments": [{ "backend": "vllm", "model": "org/chat-model" }],
+      "endpoints": ["chat_completions", "messages", "responses"],
+      "metadata": {
+        "context_length": 32768,
+        "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": false }
+      }
+    },
+    "llama-chat": {
+      "deployments": [{ "backend": "llama", "model": "chat-model" }],
+      "endpoints": ["chat_completions", "messages", "responses"],
       "metadata": {
         "context_length": 32768,
         "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": false }
@@ -33,6 +60,7 @@
     },
     "speech": {
       "deployments": [{ "backend": "omni", "model": "org/speech-model" }],
+      "endpoints": ["audio_speech", "audio_speech_batch"],
       "metadata": {
         "context_length": 32768,
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }

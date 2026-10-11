@@ -12,13 +12,18 @@
   `POST /v1/embeddings`, `POST /v1/messages`, `POST /v1/messages/count_tokens`,
   `POST /v1/responses`, `POST /v1/responses/input_tokens`, `POST /v1/rerank`,
   `POST /v1/audio/speech`, `POST /v1/audio/speech/batch`,
-  `POST /v1/images/generations`, `GET /v1/models`, `GET /v1/models/{id}`,
+  `POST /v1/images/generations`, `POST /v1/images/edits`,
+  `POST /v1/audio/transcriptions`, `GET /v1/models`, `GET /v1/models/{id}`,
   `GET /v1/models/{id}/props`. Streaming responses are SSE, exactly as the API's
   own server streams them — and speech's raw-audio stream, audio bytes as the
-  server sends them (Client API → owned fields: speech). Messages and Responses
-  settled 2026-10-06; rerank 2026-10-08; speech and image generation 2026-10-09.
+  server sends them (Client API → owned fields: speech). Request bodies are JSON,
+  but on the two **upload endpoints**, image edits and speech-to-text, which take
+  `multipart/form-data` (Request pipeline → Uploads). Messages and Responses
+  settled 2026-10-06; rerank 2026-10-08; speech and image generation 2026-10-09;
+  image edits and speech-to-text 2026-10-11, with the user.
 - **Client APIs** (settled 2026-10-06; rerank 2026-10-08; speech and images
-  2026-10-09): seven formats, each endpoint in one of them — **OpenAI** (chat
+  2026-10-09; image edits and speech-to-text 2026-10-11, with the user): nine
+  formats, each endpoint in one of them — **OpenAI** (chat
   completions, completions, embeddings, the model endpoints), **Anthropic Messages**
   (`/v1/messages`, `/v1/messages/count_tokens`, and the Anthropic-shaped model list
   below), **OpenAI Responses** (`/v1/responses`, `/v1/responses/input_tokens`),
@@ -26,17 +31,19 @@
   API, the shape vLLM and llama-server both serve and both name as Jina's),
   **Speech** (`/v1/audio/speech`: OpenAI's speech API as vLLM-Omni serves it, with
   its extensions), **Speech batch** (`/v1/audio/speech/batch`: vLLM-Omni's own,
-  `items` sharing the request's defaults) and **Images** (`/v1/images/generations`:
-  OpenAI's image generation API as vLLM-Omni serves it). Every request is
+  `items` sharing the request's defaults), **Images** (`/v1/images/generations`:
+  OpenAI's image generation API as vLLM-Omni serves it), **Image edits**
+  (`/v1/images/edits`: OpenAI's image edit API in its multipart form, as vLLM-Omni
+  serves it) and **Speech-to-text** (`/v1/audio/transcriptions`: OpenAI's
+  transcription API as vLLM and llama-server serve it). Every request is
   **passed through** to a backend that serves its endpoint natively; the gateway
   never translates between formats. So a model is reachable through the endpoints
-  its deployments' backends serve (Providers → Endpoint support): a Claude model on
-  `anthropic` backends through Messages only, an OpenAI model through the OpenAI and
-  Responses endpoints, a vLLM or llama-server model through the first four, a
-  vLLM-Omni model through the last three — which of them its server answers
-  depends on the model it loaded (Providers → An endpoint missing from a server),
-  and a model's `endpoints` list narrows them to what it serves (Model metadata →
-  Endpoints per model, settled 2026-10-11). Rejected: translating through Chat Completions — it loses each
+  its `endpoints` list names, each one its backend type serves (Model metadata →
+  Endpoints per model; Providers → Endpoint support): a Claude model on `anthropic`
+  backends through Messages only, an OpenAI model through the OpenAI and Responses
+  endpoints, a vLLM or llama-server model through what the model it loaded answers
+  among the first four and speech-to-text, a vLLM-Omni model through speech or
+  images. Rejected: translating through Chat Completions — it loses each
   format's own fields (thinking signatures, cache markers, typed output items) and
   the backends serving self-hosted models already speak Chat Completions, Messages
   and Responses; translation stays
@@ -44,21 +51,28 @@
   in its format.
   **Rerank is a format of its own** (settled 2026-10-08), not OpenAI's: it has no
   `stream`, no output limit and no sequences, and its owned fields are its own
-  (below). Rejected: rerank as one more OpenAI endpoint — the OpenAI format's
-  endpoints are the core endpoints of the OpenAI-format types, so a server without
-  rerank would read as a wrong `base_url` and count toward the circuit (Providers →
-  An endpoint missing from a server), and the format's `stream` and output-limit
-  rules mean nothing there.
+  (below). Rejected: rerank as one more OpenAI endpoint — the format's `stream` and
+  output-limit rules mean nothing there.
   **Speech, speech batch and images are formats of their own** (settled
   2026-10-09), for the same reasons: their answers are audio or images, counted in
   units of their own (Accounting → Media usage), speech's output-limit key is
   `max_new_tokens` and its modes are not the OpenAI format's `stream`, an image
   request's `n` is images, not sequences, and the batch is vLLM-Omni's alone. They
-  are served on `vllm-omni` backends only, which serve nothing else (Providers →
-  Endpoint support). Rejected:
+  are served on `vllm-omni` backends only, which serve nothing else but image edits
+  (Providers → Endpoint support). Rejected:
   speech and images as OpenAI-format endpoints — that format's owned fields would
-  read their bodies wrongly (`n` as sequences, `stream` as SSE), and its core
-  endpoints are a type's wrong-path signal.
+  read their bodies wrongly (`n` as sequences, `stream` as SSE).
+  **Image edits and speech-to-text are formats of their own** (settled 2026-10-11,
+  with the user): their bodies are uploads, `multipart/form-data` parts rather than
+  JSON members (Request pipeline → Uploads), their owned parts are their own (below),
+  and their answers are counted in media units — an edit's images as a generation's
+  are, a transcription's seconds of audio processed (Accounting → Media usage).
+  Image edits are served on `vllm-omni` backends only, speech-to-text on `vllm` and
+  `llama-server` (Providers → Endpoint support). Neither is a stream: a `stream`
+  part asking for one is refused (owned parts, below). **OpenAI's JSON form of image
+  edits** (`images[]` of `image_url` or `file_id`) is refused, `400
+  unsupported_content_type`: vLLM-Omni takes multipart only — it reads a JSON body
+  as an empty form — and a `file_id` names a stored object (Stored objects, below).
 - **Responses is stateless** (settled 2026-10-06): the gateway keeps no conversation
   and lets no backend keep one. Every Responses request is sent with `store: false`
   (a client's `true` is replaced, not refused: clients default to it and work
@@ -75,7 +89,7 @@
   part naming a `file_id`; on Messages, a block whose `source` is of type `file`, or
   a block naming a `file_id` (a container upload), in a message's, a tool result's or
   a content source's content, answer `400 stored_object_unsupported`. The gateway
-  stores nothing and has no upload endpoint, so such an ID can only name another
+  stores nothing and has no Files API, so such an ID can only name another
   application's object in the shared provider account; complete inline items that
   carry their own IDs pass. Rejected: allowing file IDs — a leaked ID would read
   another application's file, and its content would escape the input estimate. Rejected: a conversation store in the gateway — it would hold
@@ -123,8 +137,8 @@
   no tokens, no token or USD limit refuses them, nor does an unknown budget
   (`budget_unavailable`), and they produce **no usage record** — nothing is
   generated or billed (settled 2026-10-06, the pre-merge review's L1). They
-  are logged and counted in the ops metrics like any request, and routed only to
-  deployments whose backend has them (Providers → Endpoint support).
+  are logged and counted in the ops metrics like any request, and served only for a
+  model whose `endpoints` list names them (Model metadata → Endpoints per model).
 - **Auth**: `Authorization: Bearer <key>` (scheme case-insensitive), or `x-api-key:
   <key>` when the request has no `Authorization` header (settled 2026-10-06: the
   Anthropic SDKs send it, on every endpoint; with both headers `Authorization` is the
@@ -160,7 +174,8 @@
   and so does rerank (settled 2026-10-08): vLLM answers its rerank errors in it, and
   llama-server in its own `{"error": {"code", "message", "type"}}`. So do speech,
   speech batch and images (settled 2026-10-09): vLLM-Omni answers their errors in
-  it, its `code` the status.
+  it, its `code` the status — and image edits and speech-to-text (settled
+  2026-10-11): vLLM and vLLM-Omni answer theirs in it, llama-server in its own.
   Rejected: carrying kaiak's code in a header only — clients log the body. Codes the
   gateway answers with so far (settled 2026-09-24, later rows as dated where they
   are specified):
@@ -171,29 +186,29 @@
   | Not `Bearer <key>`; unknown, disabled or expired key | 401 | `invalid_request_error` | `invalid_api_key` |
   | Unknown model, or model not allowed for the key | 404 | `invalid_request_error` | `model_not_found` |
   | Body is not a JSON object | 400 | `invalid_request_error` | `invalid_json` |
-  | The top-level object, or `stream_options`, names a member twice — or any member the gateway reads to enforce its rules: a tools entry, a `tool_choice`, a shell's `environment`, a Responses input item or part, a Messages message, block or source, `thinking`, a `cache_control` or its `ttl` on Anthropic types, a speech batch item or a speech `references` entry (`param` names it; Request pipeline → duplicate members; Client API → Hosted tools are refused) | 400 | `invalid_request_error` | `duplicate_member` |
-  | Body could not be read | 400 | `invalid_request_error` | `invalid_body` |
-  | `model` missing or empty (`param: "model"`); or a speech request, or a speech batch item, whose audio is `pcm` and which sets no `sample_rate` (`param: "sample_rate"`, or the item's: `items[2].sample_rate`; settled 2026-10-09, Client API → owned fields: speech) | 400 | `invalid_request_error` | `missing_required_parameter` |
-  | An owned field has the wrong type (`param` names it) | 400 | `invalid_request_error` | `invalid_type` |
+  | The top-level object, or `stream_options`, names a member twice — or any member the gateway reads to enforce its rules: a tools entry, a `tool_choice`, a shell's `environment`, a Responses input item or part, a Messages message, block or source, `thinking`, a `cache_control` or its `ttl` on Anthropic types, a speech batch item or a speech `references` entry (`param` names it; Request pipeline → duplicate members; Client API → Hosted tools are refused); or an upload repeats a single-value part (`param` its name; settled 2026-10-11, Request pipeline → Uploads) | 400 | `invalid_request_error` | `duplicate_member` |
+  | Body could not be read; or an upload's body breaks the multipart rules — a part without a `name`, a part with a `Content-Transfer-Encoding`, part headers past their bound, a text part over 1 MiB, more than 1000 parts, no closing boundary (settled 2026-10-11, Request pipeline → Uploads) | 400 | `invalid_request_error` | `invalid_body` |
+  | `model` missing or empty (`param: "model"`); or a speech request, or a speech batch item, whose audio is `pcm` and which sets no `sample_rate` (`param: "sample_rate"`, or the item's: `items[2].sample_rate`; settled 2026-10-09, Client API → owned fields: speech); or a transcription without a `file` part (`param: "file"`; settled 2026-10-11, Client API → owned parts: speech-to-text) | 400 | `invalid_request_error` | `missing_required_parameter` |
+  | An owned field or part has the wrong type (`param` names it) — on an upload, an `n` that is not a whole number, a transcription's `file` that is not a file part (settled 2026-10-11) | 400 | `invalid_request_error` | `invalid_type` |
   | `n` or `best_of` above `global.max_n` (`param` names it) | 400 | `invalid_request_error` | `n_too_large` |
   | `max_tokens`, `max_completion_tokens`, `max_output_tokens` or `max_new_tokens` (speech, its batch and each item; settled 2026-10-09) below 0 or above the model's `context_length` (`param` names it; Limits → Output limit out of range); a `max_new_tokens` above the model's output-limit ceiling (settled 2026-10-10; Limits → Output-limit keys); or a Messages output limit the gateway would set — the model's ceiling or default — at or below `thinking.budget_tokens` (Limits → Output limit) | 400 | `invalid_request_error` | `invalid_value` |
-  | More generated sequences than `global.max_sequences_per_request` (`param`: `prompt`, `n` or `best_of`), more embeddings inputs than `global.max_embedding_inputs` (`param: "input"`), more rerank documents than `global.max_rerank_documents` (`param: "documents"`, settled 2026-10-08), more images than `global.max_images_per_request` (`param: "n"`) or more speech batch items than `global.max_speech_batch_items` (`param: "items"`, both settled 2026-10-09) — Limits → Output multiplicity: batch caps | 400 | `invalid_request_error` | `invalid_value` |
-  | A speech request or batch item asks for audio other than `wav` or `pcm`, or an image request for a `response_format` other than `b64_json` (`param` names it: `response_format`, `items[2].response_format`; settled 2026-10-09, Client API → owned fields: speech, images) | 400 | `invalid_request_error` | `response_format_unsupported` |
-  | A field that makes the backend fetch or read something names a URL or a path instead of inline data: speech `ref_audio` (each entry of a list), `ref_audio_2`, a `references` entry's `audio_path`, a batch's or item's `ref_audio`; an image request's `lora`; a speech or image request's `extra_params`, whatever its value (`param` names it; settled 2026-10-09, `extra_params` 2026-10-10, Client API → owned fields: speech, images) | 400 | `invalid_request_error` | `external_reference_unsupported` |
-  | Body over `max_request_body_bytes`, or over the whole body budget (`KAIAK_BODY_MEMORY_BYTES`) when that is smaller | 413 | `invalid_request_error` | `request_too_large` |
+  | More generated sequences than `global.max_sequences_per_request` (`param`: `prompt`, `n` or `best_of`), more embeddings inputs than `global.max_embedding_inputs` (`param: "input"`), more rerank documents than `global.max_rerank_documents` (`param: "documents"`, settled 2026-10-08), more images than `global.max_images_per_request` (`param: "n"`; an image generation or edit) or more speech batch items than `global.max_speech_batch_items` (`param: "items"`, both settled 2026-10-09) — Limits → Output multiplicity: batch caps | 400 | `invalid_request_error` | `invalid_value` |
+  | An image edit or a transcription whose `stream` part is other than `false` (`param: "stream"`; settled 2026-10-11, with the user, Client API → owned parts) | 400 | `invalid_request_error` | `invalid_value` |
+  | A speech request or batch item asks for audio other than `wav` or `pcm`, or an image generation or edit for a `response_format` other than `b64_json` (`param` names it: `response_format`, `items[2].response_format`; settled 2026-10-09, edits 2026-10-11, Client API → owned fields: speech, images; owned parts: image edits) | 400 | `invalid_request_error` | `response_format_unsupported` |
+  | A field that makes the backend fetch or read something names a URL or a path instead of inline data: speech `ref_audio` (each entry of a list), `ref_audio_2`, a `references` entry's `audio_path`, a batch's or item's `ref_audio`; an image request's `lora`; a speech or image request's `extra_params`, whatever its value; an image edit's `url`, `url[]`, `mask_image` or `reference_image` given as text that is not a `data:` URL, its `lora`; a transcription's `vllm_xargs`, whatever its value (`param` names it; settled 2026-10-09, `extra_params` 2026-10-10, the upload parts 2026-10-11, Client API → owned fields: speech, images; owned parts) | 400 | `invalid_request_error` | `external_reference_unsupported` |
+  | Body over `max_request_body_bytes`, or over the whole body budget (`KAIAK_BODY_MEMORY_BYTES`) when that is smaller; an upload over `global.max_upload_bytes`, or over the whole upload budget (`KAIAK_UPLOAD_MEMORY_BYTES`) when that is smaller (settled 2026-10-11, Request pipeline → Uploads) | 413 | `invalid_request_error` | `request_too_large` |
   | A Responses request sets `previous_response_id`, `conversation`, `prompt` or `background: true`, or refers to an item or file stored at the backend (`param` names it; Client API → Responses is stateless) | 400 | `invalid_request_error` | `stateful_responses_unsupported` |
   | A Messages request refers to a file stored at the backend (`param` names it; Client API → Responses is stateless: stored objects) | 400 | `invalid_request_error` | `stored_object_unsupported` |
   | A rerank request names `texts`, TEI's rerank format, whatever its value (`param: "texts"`; Client API → owned fields: rerank; settled 2026-10-09) | 400 | `invalid_request_error` | `tei_format_unsupported` |
   | A tool type the backend would run, a shell running in the backend's container, `mcp_servers`, `container`, or a Responses `tool_choice` or input item naming such a tool (`param` names it; Client API → Hosted tools are refused) | 400 | `invalid_request_error` | `hosted_tool_unsupported` |
   | A Messages request to an `anthropic` or `azure-anthropic` deployment asks for a price option the gateway does not price (`param` names it; Providers → Standard price on Anthropic types) | 400 | `invalid_request_error` | `price_option_unsupported` |
-  | No deployment of the model is on a backend that serves the endpoint (Providers → Endpoint support; the message: `The model is not served on /v1/…: none of its backends serves this API.`), or the model's `endpoints` list leaves the endpoint out (settled 2026-10-11, Model metadata → Endpoints per model; the message: `The model is not served on /v1/…: its configured endpoints do not include this API.`) | 400 | `invalid_request_error` | `endpoint_not_served` |
+  | The model's `endpoints` list leaves the endpoint out (settled 2026-10-11, Model metadata → Endpoints per model; the message: `The model is not served on /v1/…: its configured endpoints do not include this API.`) | 400 | `invalid_request_error` | `endpoint_not_served` |
   | Path matches no endpoint | 404 | `invalid_request_error` | `unknown_url` |
   | Known path, wrong method (`Allow` header set) | 405 | `invalid_request_error` | `method_not_allowed` |
   | Backend unreachable: connect refused or timed out, DNS, TLS, connection lost before the first event | 502 | `server_error` | `upstream_unavailable` |
   | Backend refused the gateway's own credential (backend `401`/`403`) | 502 | `server_error` | `upstream_auth_failed` |
-  | Backend answered `404` saying the deployment's model does not exist there, or (`vllm-omni`, image generation) `400` naming it in a model mismatch (Providers: wrong model on a host) | 502 | `server_error` | `upstream_model_missing` |
-  | Backend answered `404` the way its server answers a path it does not have — the backend's `base_url` is wrong (Providers: wrong path to a host) | 502 | `server_error` | `upstream_path_missing` |
-  | The server does not serve an endpoint its type serves: the same answer on an endpoint beyond the type's core ones (every endpoint on `vllm`), llama-server's `501` on embeddings or rerank, or vLLM-Omni's `503` for an image request to a model with no image stage (Providers → An endpoint missing from a server) | 502 | `server_error` | `upstream_endpoint_missing` |
+  | Backend answered `404` saying the deployment's model does not exist there, or (`vllm-omni`, image generation and edits) `400` naming it in a model mismatch (Providers: wrong model on a host) | 502 | `server_error` | `upstream_model_missing` |
+  | Backend answered the way its server answers a path it does not have, on an endpoint the model lists — a wrong `base_url`, or a list naming an endpoint the server does not serve; the message names both: `The model backend does not have this endpoint: its address is misconfigured, or its server does not serve this API for the model.` (settled 2026-10-11, with the user; Providers → A path the server does not have) | 502 | `server_error` | `upstream_path_missing` |
   | A stream got no first event within the backend's first-event timeout, or a non-stream response did not arrive within its response timeout | 504 | `server_error` | `upstream_timeout` |
   | Backend answered a `5xx` (its error code and type logged, its text neither logged nor relayed; its `Retry-After` kept) | the backend's `5xx` | `server_error` | `upstream_error` |
   | Backend answered `529` (Anthropic's `overloaded_error`), or a successful stream's first event was an error event naming the backend busy (settled 2026-10-06; Providers: error events) | `529`, or `503` for the event | `server_error` | `upstream_overloaded` |
@@ -208,7 +223,7 @@
   | No eligible deployment has a free slot and the model's queue is full or has size 0 (`Retry-After: 1`) | 429 | `server_error` | `queue_full` |
   | Waited the model's queue timeout without a slot | 429 | `server_error` | `queue_timeout` |
   | Every deployment of the model has its circuit open | 503 | `server_error` | `no_healthy_deployment` |
-  | The body does not fit in what the requests in flight leave of the body budget (`Retry-After: 1`; Request pipeline → request bodies) | 503 | `server_error` | `server_busy` |
+  | The body does not fit in what the requests in flight leave of the body budget — an upload, of the upload budget (`Retry-After: 1`; Request pipeline → request bodies, Uploads) | 503 | `server_error` | `server_busy` |
   | The gateway is draining and refuses new requests; or a request the drain cut off before its response started | 503 | `server_error` | `server_shutting_down` |
   | No config in force (the admission stage's guard; the binary binds its listeners only once a config is in force, in both modes) | 503 | `server_error` | `config_not_loaded` |
   | A USD limit covers the request's priced model and the control plane has been out of reach past `control_outage_grace_ms` (no stream bytes, or usage waiting that long for an answer or to be shown counted), or no totals have arrived since the start (control-plane mode) | 503 | `server_error` | `budget_unavailable` |
@@ -374,6 +389,72 @@
     - Everything else passes untouched: `prompt`, `negative_prompt`, `size`,
       `layers`, `seed`, `num_inference_steps`, `guidance_scale`, `true_cfg_scale`,
       `output_format`, `output_compression`, …
+  - **Owned parts** of the two upload formats (settled 2026-10-11; refusing streams
+    and references a backend would fetch, with the user), read by exact name; a part
+    is a text part or, with a filename, a file part (Request pipeline → Uploads). A
+    `stream` part is held to one rule on both:
+    absent, or `false` in any case — anything else is refused, `400 invalid_value`,
+    `param: "stream"`, since vLLM and vLLM-Omni read a form boolean in several
+    spellings (`true`, `1`, `on`, `yes`) and the gateway relays neither format's
+    stream (an allowlist: a spelling a server learns later is refused until judged).
+    Neither is ever a stream: the non-stream timers apply (Routing and reliability →
+    Timeouts) and the request line's `gen_ai.request.stream` is `false`.
+  - Image edits (vLLM-Omni read at v0.30.0, `api_server.py` and `images/helpers.py`;
+    `docs/plans/media-phase-b/RESEARCH.md`):
+    - `model` (required, replaced in the rebuilt body);
+    - `n`, a whole number in decimal (absent: 1, vLLM-Omni's default; below 1 counts
+      as 1), capped by `global.max_images_per_request` and reserved against the image
+      limits, as on generations — vLLM-Omni puts no bound on an edit's `n`;
+    - `response_format`: `b64_json` only (absent means it), else `400
+      response_format_unsupported`, as on generations: images are counted from the
+      answer's `data[]`;
+    - `stream`, as above: vLLM-Omni streams an edit only on a multi-stage pipeline
+      (an AR stage, then diffusion), in events of its own, and a single-stage one
+      refuses it (settled with the user: streaming edits are refused);
+    - `lora`, refused whatever its value, `400 external_reference_unsupported`, as on
+      generations: it names a server path the backend loads;
+    - `url`, `url[]`, `mask_image` and `reference_image` given as text parts must
+      each be a `data:` URL (the prefix in any case) — inline data; anything else is
+      refused, `400 external_reference_unsupported`, `param` the part's name.
+      vLLM-Omni fetches an `http…` string (60 s, no size cap) and decodes a
+      `data:image…` one (`images/helpers.py`); the gateway sends no request that
+      makes a backend fetch or read on a client's behalf, as for speech's references.
+      `mask_image` and `reference_image` given as file parts pass;
+    - `image` and `image[]`, file parts, never inspected — each an input image of the
+      input estimate (Limits → The input estimate), as is each `data:` URL of `url`
+      and `url[]`. vLLM-Omni takes 1 input image on most pipelines, 4 on
+      Qwen-Image-Edit-2509 and -2511 and Flux2 Klein, 3 on HunyuanImage3, and refuses
+      more (`400`); no size limit per image but the upload cap;
+    - `prompt`, read for the input estimate;
+    - OpenAI's `mask` passes untouched: vLLM-Omni ignores it (its field is
+      `mask_image`), and the gateway does not translate it;
+    - `image`, `image[]` and `url[]` may repeat; every other part is single-valued;
+    - everything else passes untouched: `size`, `negative_prompt`,
+      `num_inference_steps`, `guidance_scale`, `true_cfg_scale`, `strength`, `seed`,
+      `output_format`, `background`, `layers`, …
+  - Speech-to-text (vLLM read at 0.30.0, `speech_to_text/transcription/protocol.py`
+    and `api_router.py`; llama.cpp at b11526, `tools/server/server-chat.cpp`;
+    `docs/plans/media-phase-b/RESEARCH.md`):
+    - `model` (required, replaced in the rebuilt body);
+    - `file`: exactly one file part, required — absent `400
+      missing_required_parameter`, a text part `400 invalid_type`, a second one `400
+      duplicate_member`, `param: "file"`. Its bytes pass untouched; the gateway reads
+      them only to measure the audio's length (Accounting → Media usage);
+    - `stream`, as above: vLLM streams a transcription in chunks of its own with
+      token usage only, never seconds (`docs/BACKLOG.md`, Streaming transcription);
+    - `response_format`, read only to know a `verbose_json` answer (Accounting →
+      Media usage) and passed as the client sent it: each backend refuses what it
+      cannot answer (`400`, relayed) — vLLM `srt` and `vtt`, llama-server anything
+      but `json`;
+    - `vllm_xargs`, refused whatever its value, `400 external_reference_unsupported`,
+      `param: "vllm_xargs"`, as speech's `extra_params`: vLLM hands its JSON to the
+      model as extra arguments, whose keys the gateway cannot judge;
+    - `prompt`, read for the input estimate;
+    - `timestamp_granularities[]` may repeat; every other part is single-valued;
+    - everything else passes untouched: `language`, `temperature`, vLLM's
+      `hotwords`, `to_language`, `max_completion_tokens` and sampling parts,
+      llama-server's `max_tokens` (it copies every part it does not read into the
+      chat request it builds), …
 - **Request IDs**: `x-request-id` is accepted (or generated), forwarded to the backend,
   returned to the client, and stamped on the log line and the usage record. A client
   ID is kept when it is 1–128 characters of `[A-Za-z0-9._:-]`; any other value is
@@ -388,31 +469,25 @@
    "context_length": 32768,
    "capabilities": {"streaming": true, "tools": true, "vision": false, "reasoning": true},
    "reasoning_efforts": ["low", "high"],
-   "endpoints": ["chat_completions", "completions", "embeddings", "messages",
-                 "messages_count_tokens", "rerank", "responses",
-                 "responses_input_tokens"]}
+   "endpoints": ["chat_completions", "completions", "messages",
+                 "messages_count_tokens", "responses"]}
   ```
 
   `id` is the public model name; `created` is always `0` — models are declared, not
   created at a moment the gateway knows, and a fixed value keeps listings identical
   across reloads and replicas; `owned_by` is always `"kaiak"`; `reasoning_efforts` is
-  `[]` when none are declared. `endpoints` (settled 2026-10-06) lists the body
-  endpoints some deployment of the model serves (Providers → Endpoint support), by
-  their metric names, sorted — how a client sees which API reaches the model; the
-  media endpoints are `audio_speech`, `audio_speech_batch` and `images_generations`
-  (settled 2026-10-09). A model with an `endpoints` list shows the endpoints it
-  lists (settled 2026-10-11; Model metadata → Endpoints per model) — `qwen-image`
-  with `["images_generations"]` lists that alone. It is
-  information, derived from the config; it says nothing about health. Without a list
-  it follows the backend types, not the model a server loaded: a vLLM chat model
-  lists `embeddings` and `rerank`, a vLLM reranker `chat_completions`, a vLLM-Omni
-  speech model `images_generations` — the list is how config makes it say what the
-  server serves.
+  `[]` when none are declared. `endpoints` (settled 2026-10-06; the model's own list
+  2026-10-11, with the user) is the model's `endpoints` list (Model metadata →
+  Endpoints per model), by the endpoints' metric names, sorted — how a client sees
+  which API reaches the model; the media endpoints are `audio_speech`,
+  `audio_speech_batch`, `images_generations` (settled 2026-10-09), `images_edits` and
+  `audio_transcriptions` (settled 2026-10-11) — `qwen-image` with
+  `["images_generations"]` lists that alone. It is information, derived from the
+  config; it says nothing about health.
 - **Anthropic-shaped model list** (settled 2026-10-06): `GET /v1/models` and
   `GET /v1/models/{id}` with an `anthropic-version` request header (Anthropic's SDKs
   always send it; OpenAI's never do) answer in Anthropic's shape, over the models
-  the key may use **whose `endpoints` include `messages`** — the listed set, for a
-  model with an `endpoints` list (settled 2026-10-11):
+  the key may use **whose `endpoints` list names `messages`** (settled 2026-10-11):
   `{"data": [<entry>, …], "has_more": false, "first_id", "last_id"}` (the ids `null`
   for an empty list), an entry `{"type": "model", "id", "display_name", "created_at",
   …kaiak's fields}` with `display_name` the public name and `created_at`
@@ -445,39 +520,70 @@
   is translation; and the backends already own defaults. What an app wants to show
   as suggested settings belongs to the app. The cost: no gateway-side lever for a
   cloud model's settings (a lower reasoning effort, say) — the client sets them.
-- **Endpoints per model** (settled 2026-10-11, with the user): a model's optional
-  `endpoints` lists the client API endpoints it serves, by the names `/v1/models`
-  lists (`CONTROL-PROTOCOL.md`, Config). Absent, the model serves every endpoint some
-  deployment's backend type serves (Providers → Endpoint support), as before.
-  Present, it **narrows** that set:
-  - a request for any other endpoint answers `400 endpoint_not_served` — the existing
-    code, status and shape per API, with a message of its own saying the model's
-    configured endpoints do not include the API (the errors table; the model passed
-    its access check, so naming the endpoint leaks nothing) — before routing: no
-    backend request, no request-limit slot, no usage record (Request pipeline,
-    stage 2);
-  - a listed endpoint routes as before, among the deployments whose type serves it;
-  - `/v1/models` and the Anthropic-shaped list show the listed set (Client API).
+- **Endpoints per model** (settled 2026-10-11, with the user): every model has an
+  `endpoints` list — required, non-empty, unique — naming the client API endpoints
+  it serves, by the names `/v1/models` lists (`CONTROL-PROTOCOL.md`, Config →
+  Endpoints per model). The model serves exactly what it lists:
+  - a request for any other endpoint answers `400 endpoint_not_served`, in each
+    API's error shape, with the message `The model is not served on /v1/…: its
+    configured endpoints do not include this API.` (the errors table; the model
+    passed its access check, so naming the endpoint leaks nothing) — before routing:
+    no backend request, no request-limit slot, no usage record (Request pipeline,
+    stage 2). It is the one refusal for an endpoint a model does not serve: config
+    validation keeps every listed endpoint within the model's type's set
+    (`endpoint-not-served`, on both halves);
+  - a listed endpoint routes among all the model's deployments (One backend type per
+    model, below);
+  - `/v1/models` and the Anthropic-shaped list show the list (Client API).
 
-  Every entry must be served by at least one of the model's deployments' types
-  (`endpoint-not-served`, on both halves). It sits beside `deployments`, not in
-  `metadata`: the gateway enforces it, where metadata is information. It is for a
-  model whose server answers fewer endpoints than its type serves — routes follow
-  the model a server loaded (Providers → An endpoint missing from a server): a
-  vLLM-Omni image model, whose server runs a whole image generation for a speech
-  request before refusing it; a speech model; a reranker (llama-server answers chat
-  sent to one with `500` for an encoder reranker, nonsense for a causal one); an
-  embedding model. The endpoint-missing memory and readings stay for models
-  without a list, and for a server lacking an endpoint its list names (its version,
-  its flags) — a different case, not a second safety net. Rejected:
+  **Why every model needs one**: a type's set (Providers → Endpoint support) is what
+  its server can answer; what one server answers follows the model it loaded and the
+  flags it started with, which the gateway cannot see:
+  - vLLM creates its routes from the loaded model's tasks
+    (`vllm/entrypoints/launchers/api_server/routers.py` and
+    `vllm/entrypoints/pooling/factories.py`, alike in 0.30.0, 0.31.0 and `main` on
+    2026-10-08): chat completions, completions, Messages and Responses only for a
+    model that generates; embeddings only for an embedding model; rerank for an
+    embedding model (scored by similarity) and a classifier with one label — a
+    reranker such as Qwen3-Reranker; speech-to-text only for a model whose tasks
+    include transcription (0.30.0);
+  - vLLM-Omni registers its media routes whatever model it loaded: a speech request
+    to an image model runs a whole image generation — about 60 s of the GPU on a
+    GB10 — before answering `400` (the live run, 2026-10-09,
+    `docs/plans/media-generation/STEP-12-live-run.md`), and an image request to a
+    speech model answers `503` at once (`No diffusion stage found in multi-stage
+    pipeline.`, `api_server.py`, v0.30.0);
+  - llama-server registers every route whatever its model or flags, then answers
+    embeddings and rerank without `--embeddings` with `501`, speech-to-text on a model
+    without an audio encoder with `501`, and chat sent to an encoder model (a
+    BERT-style reranker or embedding model) with `500` (`tools/server/`, read at
+    build b11513, the audio answer at b11526).
+
+  So the list stops a client's request for an endpoint the model's server lacks
+  before any backend. A list naming one is an operator error, answered as one
+  (Providers → A path the server does not have; a `5xx` like those above is a
+  backend failure, Routing and reliability). It sits beside `deployments`, not in
+  `metadata`: the gateway enforces it, where metadata is information. Rejected:
+  - an optional list, absent meaning every endpoint the type serves — a model without
+    one would send clients' requests for endpoints its server lacks to that server,
+    which runs or fails them, and the gateway would have to read each server's
+    answer to tell an endpoint missing from a wrong `base_url`;
   - a per-backend list — settled against on 2026-10-06 (Providers → Endpoint
     support): a backend can serve several models (llama-server's router mode, one
     `base_url`), and what a server answers follows the model it loaded, so the list
     belongs to the model;
   - a list that widens what a type serves: the type's module is what speaks an
-    endpoint — a list cannot teach `openai-compatible` Messages (A type per server);
-  - a default-deny list (no list, no endpoint): every model would need one before it
-    served anything, though the types give the right set for most models.
+    endpoint — a list cannot teach `openai-compatible` Messages (A type per server).
+- **One backend type per model** (settled 2026-10-11, with the user): every
+  deployment of a model is on a backend of the same type (`deployment-types-differ`,
+  on both halves; `CONTROL-PROTOCOL.md`, Config → One backend type per model) —
+  identical instances, the same server and the same model on each, differing only
+  in capacity (each backend's `max_in_flight`). So a model's list is judged against
+  one type's set, routing takes any of its deployments for any listed endpoint, and
+  a server's answer means the same on each: an endpoint missing on one is missing
+  on all. The cost: a model name cannot fail over between providers — Claude on
+  Anthropic and on Microsoft Foundry, a GPT model on OpenAI and on Azure are two
+  names.
 
 ## Request pipeline
 
@@ -494,29 +600,30 @@ prompt logging later plug in:
    settled 2026-09-25): the request counts against its key from here, still before
    the body is read, to its end.
 2. **Inbound format** — parse the request in its endpoint's format (Client API →
-   Client APIs: OpenAI, Messages, Responses, Rerank, Speech, Speech batch or
-   Images; settled 2026-10-06, each format one plug): read the body up to the cap
-   (request bodies, below), parse only the fields that format's owned fields name,
-   keep the raw bytes for passthrough, refuse what the gateway does not serve
-   (stateful Responses fields, stored objects, hosted tools, audio it cannot
-   measure, references the backend would fetch or read). Then the model-access check (Client API) — the second half of auth, which
-   needs the model — and whether the model serves the endpoint: its `endpoints`
-   list, when it has one, names it (Model metadata → Endpoints per model, settled
-   2026-10-11), and one of its deployments is on a backend that serves it (Providers
-   → Endpoint support; either missing: `400 endpoint_not_served`, settled
-   2026-10-06 here, before limits — the pre-merge review's L2: a request no
-   deployment can answer spends no request slot and gets the answer that says what
-   is wrong), and the model's output limit (Model
-   metadata, Limits), which fixes the request's effective output limit before limits
-   reserve it.
+   Client APIs: OpenAI, Messages, Responses, Rerank, Speech, Speech batch, Images,
+   Image edits or Speech-to-text; settled 2026-10-06, each format one plug): read the
+   body up to the cap (request bodies, below; an upload under its own cap, budget and
+   deadline, Uploads, below), parse only the fields or parts that format's owned
+   fields name, keep the raw bytes for passthrough, refuse what the gateway does not
+   serve (stateful Responses fields, stored objects, hosted tools, audio it cannot
+   measure, references the backend would fetch or read, streams it does not relay).
+   Then the model-access check (Client API) — the second half of auth, which
+   needs the model — and whether the model's `endpoints` list names the endpoint
+   (Model metadata → Endpoints per model, settled 2026-10-11, with the user; else
+   `400 endpoint_not_served`, settled 2026-10-06 here, before limits — the
+   pre-merge review's L2: a request the model does not serve spends no request slot
+   and gets the answer that says what is wrong); for a transcription on a
+   `llama-server` model, whether its upload could be measured (else `400
+   audio_format_unsupported`; Accounting → Media usage, settled 2026-10-11); and the
+   model's output limit (Model metadata, Limits), which fixes the request's
+   effective output limit before limits reserve it.
 3. **Limits** — check every applicable scope; reserve the output limit (below). The
    reservation settles in a request finisher that runs after accounting's settlement
    and reads its usage record (settled 2026-09-24).
-4. **Routing** — resolve alias → deployment, among the deployments whose backend
-   serves the endpoint (Providers → Endpoint support) — an endpoint the model's
-   `endpoints` list leaves out never gets here (stage 2) — less those found lacking
-   it within the probe interval (Providers → An endpoint missing from a server);
-   queue for a concurrency slot.
+4. **Routing** — resolve alias → deployment, among all the model's deployments: they
+   share one backend type, which serves every endpoint the model lists (Model
+   metadata → One backend type per model; an endpoint the list leaves out never gets
+   here, stage 2); queue for a concurrency slot.
 5. **Provider** — send upstream. Every request passes through in its own format
    (principle 4); translating providers (Bedrock) are later plugs.
 6. **Accounting** — settle usage, compute cost, emit metrics and a usage record (from
@@ -533,7 +640,8 @@ client request — one limits reservation, however many attempts.
 **Request bodies** (settled 2026-09-25; the audit's M2). A body is capped by
 `global.max_request_body_bytes` (default 4 MiB: chat and completion bodies are KiB
 to hundreds of KiB; 4 MiB still carries long contexts and base64 images, and a
-larger default only raises what one request can pin). Every body also takes its
+larger default only raises what one request can pin; an upload has a cap and a
+budget of its own, Uploads, below). Every body also takes its
 size from one gateway-wide **body budget**, `KAIAK_BODY_MEMORY_BYTES` (default
 512 MiB — 128 bodies at the default cap, thousands of ordinary requests): taken
 step by step as the body arrives — the buffer doubles from 4 KiB, each step taken
@@ -580,6 +688,65 @@ are held to the same rule (Client API → every member the gateway reads is read
 Rejected: collapsing repeats to one member — it rewrites bytes the gateway does not
 own, and a client sending repeats is broken either way.
 
+**Uploads** (settled 2026-10-11, with the user). Image edits and speech-to-text take
+`multipart/form-data` bodies, a body kind beside JSON, read under rules of their own:
+- **Content type**: `multipart/form-data` with a `boundary` parameter. Anything else
+  — JSON (OpenAI's JSON form of image edits), a form without a boundary, no content
+  type — is refused before the body is read, `400 unsupported_content_type`.
+- **Cap**: `global.max_upload_bytes` (default 25 MiB — vLLM's limit on an uploaded
+  audio file, `VLLM_MAX_AUDIO_CLIP_FILESIZE_MB`, and OpenAI's), one cap for both
+  upload endpoints; `max_request_body_bytes` stays the cap on JSON bodies, so
+  raising what an upload may carry raises nothing a chat request can pin. Checked
+  against `Content-Length` first, then while reading, as the JSON cap is: over it,
+  `413 request_too_large`.
+- **Budget**: `KAIAK_UPLOAD_MEMORY_BYTES` (default 256 MiB), a pool of its own,
+  taken step by step as the body budget is (Request bodies, above) — so uploads
+  cannot starve chat of body memory. A body that does not fit in what is left is
+  refused at once, `503 server_busy` with `Retry-After: 1`. The effective cap is the
+  smaller of `max_upload_bytes` and the budget; a config whose cap exceeds the budget
+  is applied with a warning, as for the body cap.
+- **Held in memory**, whole, never spooled to disk: the gateway writes nothing
+  (Configuration sources → Nothing is written to disk), and a retry resends the
+  whole body. Given back to the budget as a JSON body is: when a response starts
+  relaying, or when the request ends.
+- **Read deadline**: `KAIAK_UPLOAD_READ_TIMEOUT_MS` (default 300 000) bounds the
+  body's arrival on the upload routes in place of `KAIAK_BODY_READ_TIMEOUT_MS`, set
+  once the route is known and before the body is read: 25 MiB in 60 s needs about
+  3.5 Mbit/s of uplink, which mobile clients often lack. A body not in by then
+  answers `400 invalid_body`, as on any route.
+- **Parts**, held strictly to RFC 7578's grammar — each failure `400 invalid_body`:
+  - every part has exactly one `Content-Disposition: form-data` header with a
+    `name`; a part with a `Content-Transfer-Encoding` header is refused (RFC 7578
+    deprecates it, and servers disagree on decoding it); a part's headers are bounded
+    in size; the body ends with its closing boundary — a preamble and an epilogue are
+    ignored, never sent;
+  - a **text part** (no `filename`) is at most 1 MiB, and a body holds at most 1000
+    parts — Starlette's limits, which vLLM and vLLM-Omni apply, so the gateway
+    refuses no part they would take;
+  - a **file part** (with a `filename`) is bounded by the upload cap alone; its bytes
+    are read only to measure an uploaded audio's length (Accounting → Media usage).
+
+  **A repeated single-value part is refused**, as a repeated JSON member is (`400
+  duplicate_member`, `param` its name): the gateway and the backend could read
+  different occurrences. Each format names the parts that may repeat — lists:
+  `image`, `image[]` and `url[]` on image edits, `timestamp_granularities[]` on
+  speech-to-text (Client API → owned parts); every other name is single-valued.
+  Names compare byte for byte. **Filenames never appear in logs**, nor any part's
+  bytes.
+- **The rebuilt body**: the backend gets a body the gateway writes, not the
+  client's edited — every part in order, its bytes as received, with its name, its
+  filename and its `Content-Type` when the client sent one, and no other part
+  header (RFC 7578 defines none); `model`'s value replaced by the deployment's model
+  name; a new boundary. So the backend reads exactly the parts the gateway parsed —
+  the reasoning behind refusing repeated JSON members; llama-server's router mode
+  rebuilds a form the same way. The body is written as it is sent (settled
+  2026-10-11), from slices of the client's held body, with its `Content-Length`
+  computed from the parts: no second copy is held, so the upload budget bounds upload
+  memory, and a server that checks an upload's size from its length (vLLM) can.
+  Rejected: editing the client's body in place, as JSON bodies are — the backend would
+  parse bytes the gateway did not judge (a preamble, an epilogue, other part headers),
+  with a parser that may read them otherwise.
+
 ## Providers
 
 - **Backend types**, one per server (OpenAI streams get `stream_options.include_usage`
@@ -590,10 +757,9 @@ own, and a client sending repeats is broken either way.
     deployment-in-URL API is not supported.
   - **vllm** — vLLM.
   - **vllm-omni** — vLLM-Omni (`vllm serve <model> --omni`; settled 2026-10-09):
-    vLLM's server with speech and image generation, one model per process, served
-    for those endpoints alone (Endpoint support, below). A type of its own: its
-    routes, its answers to a model that lacks an endpoint and its model check
-    differ from vLLM's (below).
+    vLLM's server with speech and image generation and image edits, one model per
+    process, served for those endpoints alone (Endpoint support, below). A type of
+    its own: its routes and its model check differ from vLLM's (below).
   - **llama-server** — llama.cpp's server.
   - **anthropic** — Anthropic's API (settled 2026-10-06).
   - **azure-anthropic** — Claude in Microsoft Foundry: Anthropic's Messages API on
@@ -627,9 +793,10 @@ own, and a client sending repeats is broken either way.
   | `azure-anthropic` | — | yes | yes | — | — | — | — |
   | `openai-compatible` | yes | — | — | — | — | — | — |
 
-  Routing takes only the deployments whose backend's type serves the request's
-  endpoint (Request pipeline, stage 4); a type gains an endpoint when its server
-  does, in its module. Rejected: a per-backend `endpoints` config field — the
+  Config validation holds every model's list to its type's set (Model metadata →
+  Endpoints per model); a model's deployments share its type, so routing filters
+  none of them by endpoint. A type gains an endpoint when its server does, in its
+  module. Rejected: a per-backend `endpoints` config field — the
   operator would declare what the type already knows, and `openai-compatible`
   servers that serve more deserve their own type. **Rerank** (settled 2026-10-08):
   `vllm` and `llama-server` serve it; OpenAI, Azure OpenAI, Anthropic and Claude in
@@ -641,27 +808,33 @@ own, and a client sending repeats is broken either way.
   gateway would count only as tokens: on an image model every chat request
   generates images, on an Omni model with a talker stage chat speaks by default
   (`serving_chat.py`, v0.30.0) — a way around the image and audio limits and caps.
-  So a request for chat, completions, embeddings, Messages, Responses or rerank to
-  a model whose deployments are all `vllm-omni` answers `400 endpoint_not_served`.
-  Rejected: claiming every endpoint `vllm` claims, so one type covers an Omni model
-  that chats and speaks — counting media in chat answers needs them parsed for it
-  (`docs/BACKLOG.md`, Omni chat models). A `vllm` backend pointed at a vLLM-Omni
-  server would serve its chat with that media uncounted: chat models belong on vLLM
-  itself. A type serves an endpoint; whether a server
-  answers it also depends on the model it loaded and the flags it started with (An
-  endpoint missing from a server, below).
-  **A model narrows its types' set** (settled 2026-10-11, with the user): its
-  `endpoints` list (Model metadata → Endpoints per model) keeps the endpoints its
-  server answers and refuses the rest before routing. It never widens the set: a
-  listed endpoint none of the model's deployments' types serves is a config error.
+  So a `vllm-omni` model lists media endpoints only (`endpoint-not-served` refuses
+  any other). Rejected: claiming every endpoint `vllm` claims, so one type covers an
+  Omni model that chats and speaks — counting media in chat answers needs them
+  parsed for it (`docs/BACKLOG.md`, Omni chat models). A `vllm` backend pointed at a
+  vLLM-Omni server would serve its chat with that media uncounted: chat models
+  belong on vLLM itself. **Image edits** (settled 2026-10-11, with the user):
+  `vllm-omni` only — vLLM-Omni serves them (`/v1/images/edits`, multipart only), no
+  other type's server does. **Speech-to-text** (settled 2026-10-11, with the user):
+  `vllm` and `llama-server`. vLLM-Omni never serves it — its engine reports the tasks
+  `generate` and `speech` only, so the transcription routes are never mounted (a
+  plain `vllm serve` of an Omni model gets them) — and the cloud types stay out:
+  self-hosted models are the focus, and `openai-compatible` keeps OpenAI's three.
+  A type serves an endpoint; whether a server answers it also depends on the model
+  it loaded and the flags it started with, which the model's list says.
+  **A model names what it serves from its type's set** (settled 2026-10-11, with the
+  user): its required `endpoints` list (Model metadata → Endpoints per model) keeps
+  the endpoints its server answers and refuses the rest before routing. It never
+  widens the set: a listed endpoint the model's type does not serve is a config
+  error (`endpoint-not-served`).
   **The table is shared data** (settled 2026-10-11): config validation reads it on
   both halves, so `protocol/fixtures/backend-types/<type>.json` lists each type's
   endpoints (`endpoints`), and the modules, the gateway's config check and
   `kaiak-control` are each tested against it. The modules stay the source of what
   routing does; a type gaining an endpoint changes its module, its fixture and both
   halves' config tables in one change. Rejected: the table in the config schema —
-  JSON Schema cannot relate a model's list to its deployments' backend types, so
-  code would read it as data all the same.
+  JSON Schema cannot relate a model's list to its backend type, so code would read
+  it as data all the same.
 - **A module per backend type over one OpenAI wire core** (settled 2026-09-29): each
   backend type is a module that is the provider for that type — its URL layout,
   credential, body edits, what its models list says, which error code means a
@@ -683,8 +856,8 @@ own, and a client sending repeats is broken either way.
   nowhere to go — the 2026-09-30 review found three (llama-server's usage and error
   quirks, `docs/BACKLOG.md`). Rejected: keeping one type until a difference needs
   its own — the differences were already there, and a fix made inside the generic
-  module reaches every server under it. Adding a type changes neither the config
-  format nor the protocol version (`CONTROL-PROTOCOL.md`, Config → Backend types).
+  module reaches every server under it. Adding a type is an addition: it bumps no
+  version (`CONTROL-PROTOCOL.md`, Shape → One version; Config → Backend types).
 - **Base URLs** (settled 2026-09-24): an `openai-compatible`, `openai`, `vllm`,
   `vllm-omni` or `llama-server` `base_url` is what an OpenAI client would use, API version path
   included (`http://vllm:8000/v1`, `https://api.openai.com/v1` — no type has a default
@@ -697,12 +870,14 @@ own, and a client sending repeats is broken either way.
   appends `/anthropic/v1/` (settled 2026-10-06, the two Azure types alike). The
   endpoint paths are `chat/completions`, `completions`, `embeddings`, `messages`,
   `messages/count_tokens`, `responses`, `responses/input_tokens`, `rerank`,
-  `audio/speech`, `audio/speech/batch`, `images/generations`, `models`. `rerank`
+  `audio/speech`, `audio/speech/batch`, `images/generations`, `images/edits`,
+  `audio/transcriptions`, `models`. `rerank`
   lands on `/v1/rerank`, which both servers serve (settled 2026-10-08): vLLM also at
   `/rerank` and `/v2/rerank`, logging once that it prefers `/rerank`; llama-server
-  also at `/rerank`, `/reranking` and `/v1/reranking`. Those other routes are not
-  the gateway's, nor are vLLM-Omni's other media routes (image edits, video jobs,
-  voices, its WebSocket endpoints).
+  also at `/rerank`, `/reranking` and `/v1/reranking` (and speech-to-text at
+  `/audio/transcriptions`). Those other routes are not the gateway's, nor are
+  vLLM-Omni's other media routes (video jobs, voices, its WebSocket endpoints), nor
+  `/v1/audio/translations` (`docs/BACKLOG.md`, Audio translations).
 - Credentials are referenced by environment-variable name in config, never inline:
   azure-openai and azure-anthropic send `api-key: <value>`, anthropic `x-api-key:
   <value>`, every other type `Authorization: Bearer <value>` (nothing when the backend
@@ -757,7 +932,10 @@ own, and a client sending repeats is broken either way.
   other byte (unknown fields, their values, key order, whitespace) reaches the backend
   unchanged. Each owned key is edited once: a body repeating a top-level member never
   gets here (Request pipeline → duplicate members), and the editor refuses a repeated
-  key it edits as a gateway fault (settled 2026-09-25).
+  key it edits as a gateway fault (settled 2026-09-25). An image edit or a
+  transcription gets the model edit alone, in the body rebuilt from its parts —
+  every part's bytes as received, `model`'s value replaced (settled 2026-10-11, with
+  the user; Request pipeline → Uploads).
 - **Service tier** (settled 2026-09-29; by type 2026-09-30): on `openai` and
   `azure-openai`, every request runs on the backend's standard tier. Prices are
   standard-tier rates, and OpenAI and Azure bill priority processing at about twice
@@ -820,7 +998,9 @@ own, and a client sending repeats is broken either way.
   withheld from the client; accounting still sees it. Other chunks may carry
   `"usage": null` (OpenAI adds it once `include_usage` is set); they pass as they are.
 - **Headers** (settled 2026-09-24), both ways an allowlist:
-  - to the backend: `Content-Type: application/json`, `Accept`, `User-Agent: kaiak`,
+  - to the backend: `Content-Type: application/json` — on an upload,
+    `multipart/form-data` with the rebuilt body's boundary, and its `Content-Length`
+    (settled 2026-10-11; Request pipeline → Uploads) — `Accept`, `User-Agent: kaiak`,
     `X-Request-Id`, the backend credential, and on Anthropic types
     `anthropic-version`. No client header is forwarded — the client's
     `Authorization` or `x-api-key` (its kaiak key), cookies and vendor headers never
@@ -895,13 +1075,26 @@ own, and a client sending repeats is broken either way.
   - images: a JSON body, `{"created", "data": [{"b64_json", "url": null,
     "revised_prompt": null}], "output_format", "size", "cot_output", "metrics"}` —
     `b64_json` is the only `response_format` the gateway sends (Client API → owned
-    fields: images).
+    fields: images);
+  - image edits (settled 2026-10-11): the images' body, as generations answer it,
+    with no usage;
+  - speech-to-text (settled 2026-10-11; vLLM 0.30.0,
+    `speech_to_text/base/serving.py` and `api_router.py`; llama.cpp b11526,
+    `tools/server/server-chat.cpp`), a JSON body:
+    - vLLM, `json` and `text`: `{"text", "usage": {"type": "duration", "seconds"}}`
+      — `text` answers JSON too, never plain text; `diarized_json` (MOSS models) the
+      same usage; `verbose_json`: `{"duration", "language", "text", "segments",
+      "words"}`, no usage — only models with segment timestamps (Whisper, FunASR,
+      FireRedASR2) answer it, the others `400`;
+    - llama-server: `{"type": "transcript.text.done", "text", "usage": {"type":
+      "tokens", "input_tokens", "output_tokens", "total_tokens",
+      "input_tokens_details"}}`.
 
-  None of them carries a top-level `model` at v0.30.0; one that does gets it
-  rewritten (Response model name, above). An event stream answering a batch or an
-  image request is no answer: it never completes, so once relayed it ends
-  `upstream_incomplete`, as rerank's does (Complete responses, below). Rejected: one
-  envelope for the audio of every mode — translating answers.
+  None of them carries a top-level `model` at the versions read; one that does gets
+  it rewritten (Response model name, above). An event stream answering a batch, an
+  image request, an edit or a transcription is no answer: it never completes, so
+  once relayed it ends `upstream_incomplete`, as rerank's does (Complete responses,
+  below). Rejected: one envelope for the audio of every mode — translating answers.
   **A batch's item errors are the gateway's** (settled 2026-10-10, with the user): in
   a successful batch answer, the `error` of each object in the top-level `results`
   — a string, an object or an array; `null`, a number or a boolean carries no text
@@ -984,17 +1177,18 @@ own, and a client sending repeats is broken either way.
     Messages endpoints answer it in Anthropic's shape, type `NotFoundError`, run on
     0.30.0), or the code is `model_not_found`. vLLM-Omni answers so on speech and
     the speech batch, which run vLLM's model check (`_check_model`, v0.30.0); a
-    speech server in pure-diffusion mode checks no model name at all;
-  - `vllm-omni`, image generation (settled 2026-10-09): not a `404` — the route
-    compares the request's `model` with the server's first served name and answers
-    `400` `Model mismatch: request specifies '<model>' but server is running
-    '<name>'.` (`api_server.py`, v0.30.0). A `400` whose message begins `Model
-    mismatch: request specifies '` followed by the deployment's backend-side model
-    and `'` reads as the wrong model. The message is safe to read here: the name it
-    quotes first is the request's `model`, which the gateway wrote, and no other
-    request text reaches it. (vLLM's error sanitizer rewrites a path-like name —
-    two `/` segments and a file extension — to `<path>`; a mismatch on such a name
-    stays a relayed `400`.) So a deployment's `model` must be its server's first
+    speech server in pure-diffusion mode checks no model name at all. vLLM's
+    speech-to-text runs the same check (`serve/engine/serving.py`, 0.30.0);
+  - `vllm-omni`, image generation and edits (settled 2026-10-09; edits 2026-10-11):
+    not a `404` — the route compares the request's `model` with the server's first
+    served name and answers `400` `Model mismatch: request specifies '<model>' but
+    server is running '<name>'.` (`api_server.py`, v0.30.0). A `400` whose message
+    begins `Model mismatch: request specifies '` followed by the deployment's
+    backend-side model and `'` reads as the wrong model. The message is safe to read
+    here: the name it quotes first is the request's `model`, which the gateway wrote,
+    and no other request text reaches it. (vLLM's error sanitizer rewrites a path-like
+    name — two `/` segments and a file extension — to `<path>`; a mismatch on such a
+    name stays a relayed `400`.) So a deployment's `model` must be its server's first
     `--served-model-name` (or the model path when none is given);
   - the cloud types, by structured fields only (settled 2026-10-06, the pre-merge
     review's M1): `openai`, code `model_not_found`; `azure-openai` (OpenAI's shape),
@@ -1014,7 +1208,8 @@ own, and a client sending repeats is broken either way.
   once, off the request path, never delaying or refusing the config) and each
   deployment whose model is not listed gets a warning
   (`the backend does not list the deployment's model`: backend, deployment model);
-  one whose models list answers `404` gets a warning (Wrong path to a host, below).
+  one whose models list answers `404` gets a warning (A path the server does not
+  have, below).
   A backend that does not answer at all (DNS failure, connection refused, timeout,
   any other failure) gets a warning too, `model check skipped: the backend did not
   answer` (backend, error — never a credential) (settled 2026-10-01; the 2026-09-30
@@ -1024,47 +1219,63 @@ own, and a client sending repeats is broken either way.
   model name (llama-server) must still be configured with a name it lists.
   Rejected: relaying the `404` — the client would read its own model name as wrong,
   and a fast `404` made the wrong host the least loaded one, so it drew traffic.
-- **Wrong path to a host** (settled 2026-10-01; the 2026-09-30 review's O1): a
-  backend `404` that the backend's module recognizes as its server's answer to a
-  path it does not have is the deployment's failure, as a missing model is — the
-  backend's `base_url` is wrong (typically the API version path left out). It answers
-  `502 upstream_path_missing` (the backend's text is not relayed), is retried on
-  another deployment, counts toward the circuit and produces no usage, with its own
-  retry reason and attempt outcome, `path_missing`. Like a refused credential it
-  belongs to the backend, not the deployment: every deployment of the model on that
-  backend shares its `base_url` and would hit the same wrong path, so all of them are
-  refused for the request's retries (a missing model stays per deployment). A missing
-  model is read first.
+- **A path the server does not have** (settled 2026-10-11, with the user; the
+  signatures 2026-10-01, the 2026-09-30 review's O1): a backend answer that the
+  backend's module recognizes as its server's answer to a path it does not have, on
+  an endpoint the model lists, has two causes once every model lists its endpoints
+  and its deployments are identical instances (Model metadata → Endpoints per model,
+  One backend type per model):
+  - the backend's `base_url` is wrong — typically the API version path left out;
+  - the model's list names an endpoint its server does not serve — the server's
+    version predates it (an older vLLM without `/v1/messages`), or the model it
+    loaded or the flags it started with leave it out.
+
+  Both are operator errors, and the gateway errors out on them rather than work
+  around them: the client gets `502 upstream_path_missing` at once, its message
+  naming both causes (the errors table; the backend's text is not relayed). It is
+  **not retried** — the model's other deployments are identical instances, which
+  would answer the same — and **neutral for the circuit**: the deployment keeps
+  serving the model's other endpoints, and what is wrong shows on the request line
+  and the error metrics (`error.type` `upstream_path_missing`, attempt outcome
+  `path_missing`) and, for a wrong `base_url`, in the config-apply warning (below),
+  not as an open circuit. It produces no usage (nothing was processed). The reading
+  is the same on every type and every endpoint; a missing model is read first. The
+  cost: a mistyped `base_url` fails its share of the model's requests until it is
+  fixed, where a circuit would take the deployment out of rotation. Rejected:
+  reading the answer by endpoint — a wrong `base_url` on some endpoints (a circuit
+  failure, retried, every deployment on that backend refused for the request) and an
+  endpoint missing on the others (neutral, retried on the model's other deployments,
+  the deployment kept out of that endpoint's routing for a while). With mandatory
+  lists and identical instances both are operator errors the gateway cannot work
+  around, and that reading needed a rule per type and state per deployment.
   The signatures, per module:
-  - `vllm`: none (settled 2026-10-08). vLLM's answer to a route it does not have is
-    `{"detail": "Not Found"}` — FastAPI's: vLLM's own errors take the OpenAI shape;
-    its handler is registered for FastAPI's `HTTPException`, which the router's
-    Starlette `404` does not match, so the framework's default answer stands (vLLM's
-    source, `main` on 2026-10-01; run on vLLM serving Qwen3.8-27B-NVFP4,
-    2026-10-01). But vLLM creates its routes from the model it loaded, so that answer
-    reads as an endpoint missing on every endpoint (below), and a wrong `base_url`
-    on a `vllm` backend shows as the config-apply warning (below) and the
-    endpoint-missing warning instead.
+  - `vllm` (settled 2026-10-11): `{"detail": "Not Found"}` — FastAPI's: vLLM's own
+    errors take the OpenAI shape; its handler is registered for FastAPI's
+    `HTTPException`, which the router's Starlette `404` does not match, so the
+    framework's default answer stands (vLLM's source, `main` on 2026-10-01; run on
+    vLLM serving Qwen3.8-27B-NVFP4, 2026-10-01) — and the `405` `{"detail": "Method
+    Not Allowed"}` where a POST lands on a route vLLM has for another method only
+    (0.30.0's `POST /v1/responses/input_tokens` lands on `GET /v1/responses/{id}`,
+    which is why `vllm` does not claim that endpoint). vLLM creates its routes from
+    the model it loaded (Model metadata → Endpoints per model), so on `vllm` the
+    answer is as often the list's error as the URL's; the config-apply warning
+    (below) tells them apart — vLLM serves its models list whatever it loaded.
   - `vllm-omni` (settled 2026-10-09): `{"detail": "Not Found"}`, FastAPI's answer
-    as on `vllm`, on every endpoint it serves. vLLM-Omni registers its speech,
-    speech batch and image routes whatever model it loaded (its own router,
-    included on every server: `api_server.py`, v0.18.0 through v0.30.0), so that
-    answer there can only mean the URL is wrong.
+    as on `vllm`. vLLM-Omni registers its speech, speech batch and image routes
+    whatever model it loaded (its own router, included on every server:
+    `api_server.py`, v0.18.0 through v0.30.0), so there the answer means the URL is
+    wrong.
   - `llama-server`: `{"error": {"message": "File Not Found", "type":
     "not_found_error", "code": 404}}` (run on build 11146); its HTTP layer gives
-    every `404` that body. It reads as a wrong path on the core endpoints only: on
-    its other endpoints (Messages, Responses, the token-counting endpoints, rerank)
-    the same body reads as an endpoint missing (below), neutral for the circuit —
-    so a wrong `base_url` on a `llama-server` backend counts toward the circuit
-    through its core endpoints alone, and shows on the others as `endpoint_missing`
-    attempts with the endpoint-missing warning (settled 2026-10-09). A model a
-    router-mode server does not have (or has not loaded, with autoload off) is not a
-    `404`: the router answers `400 invalid_request_error`, `model '<name>' not
-    found` (`tools/server/server-models.cpp`, `router_validate_model`, `master` on
-    2026-10-09), relayed to the client as its own mistake — naming the backend-side
-    model, with no failover and no circuit count (`docs/BACKLOG.md`, llama-server
-    router mode). llama-server serves chat completions and its models list without
-    `/v1` as well, so a `base_url` missing it gives no `404` there
+    every `404` that body, and it registers every route whatever its model or flags
+    (`tools/server/server.cpp`), so there too the answer means the URL is wrong. A
+    model a router-mode server does not have (or has not loaded, with autoload off)
+    is not a `404`: the router answers `400 invalid_request_error`, `model '<name>'
+    not found` (`tools/server/server-models.cpp`, `router_validate_model`, `master`
+    on 2026-10-09), relayed to the client as its own mistake — naming the
+    backend-side model, with no failover and no circuit count (`docs/BACKLOG.md`,
+    llama-server router mode). llama-server serves chat completions and its models
+    list without `/v1` as well, so a `base_url` missing it gives no `404` there
     (`docs/BACKLOG.md`, llama-server quirks).
   - `openai`: an `invalid_request_error` whose message starts `Invalid URL` (`Invalid
     URL (POST /chat/completions)`) — OpenAI's known answer, not verified live.
@@ -1082,122 +1293,19 @@ own, and a client sending repeats is broken either way.
     body. A server speaking the OpenAI format answers in that shape; anything else
     came from below the API — a web framework, a proxy.
 
-  Any other `404` stays the caller's, relayed as it came. The check at config apply
-  (Wrong model on a host) logs a models list answering `404` as a warning, `the
-  backend has no models list at its base_url` (backend, `base_url`, `hint`): the
-  hint says `base_url` should end in the API version path (e.g. `/v1`), or, for
-  `azure-openai`, that it is the resource endpoint with no path (the gateway adds
-  `/openai/v1`). Rejected: folding it into `upstream_model_missing` and its label —
-  one alert either way, but the operator could not tell a wrong URL from a wrong
-  model; reading every `openai-compatible` `404` as the deployment's — a caller's
-  `404` (an unknown adapter) would fail over and open the circuit.
-- **An endpoint missing from a server** (settled 2026-10-06; `vllm`, llama-server's
-  `501` and the memory per deployment 2026-10-08): each type has core endpoints —
-  OpenAI's three for `openai`, `azure-openai`, `llama-server` and
-  `openai-compatible`, `messages` for the Anthropic types, none for `vllm`, all
-  three of its endpoints for `vllm-omni` — whose wrong-path answer means a wrong
-  `base_url` (above). On any other endpoint the type
-  serves, the same answer means the server does not serve the endpoint: its version
-  predates it (an older vLLM without `/v1/messages` answers `{"detail": "Not
-  Found"}` there while chat works), or the model it loaded or the flags it started
-  with leave it out (below). It answers `502 upstream_endpoint_missing` (the
-  backend's text not relayed), is retried on the model's other deployments, produces
-  no usage and is **not a circuit failure** — the deployment keeps serving its other
-  endpoints. vLLM's `405 {"detail": "Method Not Allowed"}` reads the same way: its
-  `POST /v1/responses/input_tokens` lands on the `GET /v1/responses/{id}` route
-  (0.30.0), which is why `vllm` does not claim that endpoint. Rejected: a circuit
-  failure — chat on a healthy server would stop for want of an endpoint it never
-  had; a wrong-path answer — the operator would look for a URL mistake that is not
-  there.
-  - **vLLM creates its routes from the loaded model's tasks** (settled 2026-10-08;
-    `vllm/entrypoints/launchers/api_server/routers.py` and
-    `vllm/entrypoints/pooling/factories.py`, alike in 0.30.0, 0.31.0 and `main` on
-    2026-10-08): chat completions, completions, Messages and Responses only for a
-    model that generates; embeddings only for an embedding model; rerank for an
-    embedding model (scored by similarity) and for a classifier with one label — a
-    reranker such as Qwen3-Reranker. A reranker or embedding server has no chat
-    route and a chat server no embeddings or rerank route, so on `vllm` the
-    route-missing answer names the model, not the URL, on every endpoint: **`vllm`
-    has no core endpoints**. Rejected: OpenAI's three as `vllm`'s core endpoints — a
-    chat request sent to a reranker model would count as a failure of a healthy
-    deployment, and five of them would open its circuit for every key. The cost: a
-    wrong `base_url` on a `vllm` backend does not count toward the circuit. It shows
-    as the config-apply warning (`the backend has no models list at its base_url`:
-    vLLM serves its models list whatever it loaded) and as the endpoint-missing
-    warning on requests, and the memory below keeps traffic off it.
-  - **vLLM-Omni** (settled 2026-10-09; `api_server.py`, `serving_speech.py` at
-    v0.30.0) registers its speech, speech batch and image routes on every server,
-    whatever model it loaded, so **`vllm-omni`'s core endpoints are all three**:
-    their `{"detail": "Not Found"}` is a wrong `base_url` (Wrong path to a host).
-    What a model that cannot serve one of them answers is the server's own:
-    - image generation on a model with no diffusion stage — a speech model —
-      answers `503` at once, with the message `No diffusion stage found in
-      multi-stage pipeline.` (`_get_engine_and_model`). That answer reads as the
-      endpoint missing: without the reading, a few image requests sent to a speech
-      model's name would open its circuit for every key;
-    - speech on a model with no speech stage answers `400` (`TTS model did not
-      produce audio output.`), and the batch on a pure-diffusion server `400` at
-      once (`Batch speech is not supported in diffusion mode`) — the caller's,
-      relayed, never retried, neutral, as they stand;
-    - speech on an image model answers that same `400` (`BadRequestError`, `TTS
-      model did not produce audio output.`; relayed, neutral) — but only **after a
-      whole image generation**: vLLM-Omni's diffusion-speech path runs the pipeline
-      with the text as the prompt, at its defaults (1024×1024; about 60 s of the GPU
-      on a GB10), and only then finds no audio (the live run, 2026-10-09,
-      `docs/plans/media-generation/STEP-12-live-run.md`). The gateway records it as
-      nothing — no tokens, seconds or images, cost 0 — and no image limit sees it,
-      its output being speech. So an image model's `endpoints` list names
-      `images_generations` alone, and a speech model's the two speech endpoints
-      (Model metadata → Endpoints per model, settled 2026-10-11): a request for the
-      other kind is then refused before its server, and the server's own answers
-      above reach only a model without a list.
-  - **llama-server registers every route whatever its model or flags**
-    (`tools/server/server.cpp`), so its `File Not Found` keeps its reading: a wrong
-    path on the core endpoints. On its other endpoints it reads as the endpoint
-    missing, so a wrong `base_url` reads that way there too (Wrong path to a host).
-    On two of the gateway's endpoints it answers `501`, type `not_supported_error`,
-    when it was not started in their mode: embeddings without `--embeddings` (`This
-    server does not support embeddings. Start it with --embeddings`) and rerank
-    without `--embeddings` and pooling `rank` (`This server does not support
-    reranking. Start it with --reranking`). That answer reads as
-    the endpoint missing (settled 2026-10-08), matched by status and type on those
-    two endpoints; the message is not read. They are the only `501`s llama-server
-    answers on the gateway's endpoints (`master` at build b11513, as in b9917 and
-    b11146); its others are on routes the gateway does not serve (`/metrics`,
-    `/slots`, `POST /props`, `/infill`, `/v1/audio/transcriptions`, its decision
-    endpoint). A `501` anywhere else stays a backend `5xx`. None is the caller's: a
-    part the model cannot take (an image, audio or video with no projector for it)
-    answers `500 server_error` on chat, Messages and Responses, not `501` — one of
-    llama-server's client errors answered `500` (`docs/BACKLOG.md`, llama-server
-    quirks). So does a generating request — chat, completions, Messages, Responses —
-    sent to an encoder model (a BERT-style reranker such as bge-reranker-v2-m3, or a
-    BERT embedding model), whose context keeps no memory: `500 server_error`, `the
-    current context does not support logits computation` (`tools/server/
-    server-context.cpp`, `master` on 2026-10-09), read as a backend failure —
-    retried and counted toward the circuit, so a few such requests open the
-    deployment's circuit for every client. Keep chat clients off such a model's
-    name, or serve it on vLLM (same backlog entry).
-  - **Remembered per deployment for a probe interval** (settled 2026-10-06, the
-    pre-merge review's M3; per deployment 2026-10-08): the deployment is left out of
-    routing for that endpoint until the interval passes — unless every deployment of
-    the model whose type serves the endpoint is remembered so; then they are tried
-    again (a server may have been upgraded, or restarted with another model) — so
-    its instant answer, which made it look least loaded, no longer draws the
-    endpoint's traffic and spends the retry budget while a working deployment sits
-    idle. Once the interval passes, a server that gained the endpoint is found again
-    by its next request. Per deployment, not per backend: llama-server's router mode
-    serves several models behind one `base_url`, each in a process of its own
-    started with its own flags (a preset per model, `--models-preset`;
-    `tools/server/server-models.cpp`), so one model's `501` on rerank says nothing of
-    the reranker beside it; a vLLM server serves one model, and its other names
-    (LoRA adapters) each learn the same at the cost of one attempt per interval.
-    The interval runs from the answer that set it: answers inside it — when every
-    deployment is remembered and tried — do not extend it (settled 2026-10-09), so
-    the first answer after it remembers the deployment afresh. Logged at warning
-    level with the backend, the deployment's model and the endpoint, once per
-    interval, steady traffic or not, attempt outcome `endpoint_missing`. Rejected:
-    remembering per backend — a chat model's `501` on a router-mode llama-server
-    would keep the reranker on the same backend out of rerank routing.
+  Any other `404` stays the caller's, relayed as it came. A server's other answers
+  to an endpoint it lacks are not read: they are its own statuses, a `4xx` relayed
+  and a `5xx` a backend failure (llama-server's `501`, vLLM-Omni's `503` for an image
+  request to a speech model; Model metadata → Endpoints per model). The check at
+  config apply (Wrong model on a host) logs a models list answering `404` as a
+  warning, `the backend has no models list at its base_url` (backend, `base_url`,
+  `hint`): the hint says `base_url` should end in the API version path (e.g. `/v1`),
+  or, for `azure-openai`, that it is the resource endpoint with no path (the gateway
+  adds `/openai/v1`). Rejected: folding it into `upstream_model_missing` and its
+  label — one alert either way, but the operator could not tell a wrong URL from a
+  wrong model; reading every `openai-compatible` `404` as the deployment's — a
+  caller's `404` (an unknown adapter) would read as an operator error, its own
+  answer lost.
 - **Complete responses** (settled 2026-09-25; the audit's M13): HTTP framing ending
   cleanly does not make an answer whole — a backend whose generator dies can end its
   response on an event boundary. A successful (`2xx`) stream is complete once it
@@ -1285,10 +1393,10 @@ own, and a client sending repeats is broken either way.
   the config-time model check once its probe answered, `model check not available
   for this backend type` (settled 2026-10-08: it covers `azure-openai` too, whose
   check could warn about nothing and said nothing; an `azure-openai` models list
-  answering `404` still gets its warning, Wrong path to a host). A better check is in
-  `docs/BACKLOG.md`. `vllm-omni` (settled 2026-10-09) lists its models as `vllm`
-  does, at `GET <base_url>/models`, OpenAI's list in both its modes — vLLM's for a
-  model with a text stage, a list of its served names for a pure-diffusion one
+  answering `404` still gets its warning, A path the server does not have). A better
+  check is in `docs/BACKLOG.md`. `vllm-omni` (settled 2026-10-09) lists its models as
+  `vllm` does, at `GET <base_url>/models`, OpenAI's list in both its modes — vLLM's
+  for a model with a text stage, a list of its served names for a pure-diffusion one
   (`entrypoints/openai/models/serving.py`, v0.30.0).
 - **Connections** (settled 2026-09-24): one connection pool per backend, kept across
   config reloads (a new pool only when the connect timeout changes), up to 256 idle
@@ -1299,9 +1407,11 @@ own, and a client sending repeats is broken either way.
 ## Routing and reliability
 
 - A model maps to one or more deployments — identical copies of that model (e.g. the
-  same model on several vLLM hosts); load balancing across the healthy ones with
-  capacity. **No fallback** to another model or provider (settled 2026-09-24): a
-  request for a model is served by that model's deployments or not at all.
+  same model on several vLLM hosts), on backends of one type (settled 2026-10-11,
+  with the user; Model metadata → One backend type per model); load balancing across
+  the healthy ones with capacity. **No fallback** to another model or provider
+  (settled 2026-09-24): a request for a model is served by that model's deployments
+  or not at all.
 - **Load balancing** (settled 2026-09-24): the deployment with the fewest requests in
   flight wins; deployments tied on that count take turns (round-robin per model). A
   request counts as in flight from the moment it is routed until its response has
@@ -1332,13 +1442,12 @@ own, and a client sending repeats is broken either way.
     | Connect error, connection lost before the first event (`upstream_unavailable`) | yes — reason `unavailable` |
     | A stream's first-event timeout (`upstream_timeout`) | yes — `timeout` |
     | A non-stream response timeout (`upstream_timeout`) | no — the backend was working on a long answer; another would take as long (D2, 2026-09-25) |
-    | Backend `5xx` (but `529`, and the `5xx`s that read as an endpoint missing: llama-server's `501`, vLLM-Omni's image `503`), or a successful stream whose first event is an error event naming a failure (answered `502 upstream_error`, settled 2026-10-06) | yes — `server_error` |
+    | Backend `5xx` (but `529`), or a successful stream whose first event is an error event naming a failure (answered `502 upstream_error`, settled 2026-10-06) | yes — `server_error` |
     | Backend `429`, Anthropic's `529` (`overloaded_error`), or a first error event naming the backend busy (answered `503 upstream_overloaded`) — settled 2026-10-06 for the last two | yes — `rate_limited`; the deployment cools down (429 cooldown, below) |
     | A first error event naming the caller's fault (`400 upstream_refused`, settled 2026-10-06) | no |
     | Backend `401`/`403` (`upstream_auth_failed`) | yes — `auth_failed`; every deployment of the model on that backend is refused for the request |
     | Backend `404` naming the deployment's model, or `vllm-omni`'s image `400` naming it in a model mismatch (`upstream_model_missing`; the `400` settled 2026-10-09) | yes — `model_missing` |
-    | Backend `404` at a path its server does not have (`upstream_path_missing`) | yes — `path_missing`; every deployment of the model on that backend is refused for the request |
-    | The server does not serve the endpoint: the same on an endpoint beyond the type's core ones, llama-server's `501` on embeddings or rerank, or vLLM-Omni's image `503` (`upstream_endpoint_missing`, settled 2026-10-06; the `501` 2026-10-08; the `503` 2026-10-09) | yes — `endpoint_missing`; the deployment is remembered (Providers → An endpoint missing from a server) |
+    | The server's answer to a path it does not have (`upstream_path_missing`; Providers → A path the server does not have) | no — the model's other deployments are identical instances and would answer the same (settled 2026-10-11, with the user) |
     | A response relayed (`2xx`, a caller's `4xx`), anything after the first event | no |
     | Client gone, the drain's cut, a gateway fault | no |
 
@@ -1420,9 +1529,10 @@ own, and a client sending repeats is broken either way.
   breaker**; while open, the gateway probes it on an interval and closes the circuit
   when a probe succeeds. No always-on active checks (deferred). Settled 2026-09-24:
   backend failures count (connect errors, stream first-event and stall timeouts,
-  5xx, a refused credential, a missing model, a wrong path, broken-off responses — the full list
-  is the outcome-class table below); backend 429 (busy, not broken) and
-  caller-caused 4xx do not. The circuit opens after 5 consecutive failures (config).
+  5xx, a refused credential, a missing model, broken-off responses — the full list
+  is the outcome-class table below); backend 429 (busy, not broken), caller-caused
+  4xx and a path the server does not have (an operator error, settled 2026-10-11) do
+  not. The circuit opens after 5 consecutive failures (config).
   The probe is a cheap `GET …/models` on the backend every 10 s (config) — no tokens,
   works for vLLM, OpenAI and Azure; the first success makes the circuit half-open,
   and one real request (the trial) decides: its first data event (or first body
@@ -1434,11 +1544,10 @@ own, and a client sending repeats is broken either way.
   |---|---|
   | Connect error (refused, DNS, connect timeout, TLS), connection lost before the first event (`upstream_unavailable`) | failure |
   | A stream's first-event timeout (`upstream_timeout`) | failure |
-  | Backend `5xx` but `529` and the `5xx`s that read as an endpoint missing (llama-server's `501`, vLLM-Omni's image `503`) (answered `upstream_error`), or a successful stream opening with an error event naming a failure (settled 2026-10-06) | failure |
+  | Backend `5xx` but `529` (answered `upstream_error`), or a successful stream opening with an error event naming a failure (settled 2026-10-06) | failure |
   | Backend `401`/`403` (`upstream_auth_failed`) | failure |
   | Backend `404` naming the deployment's model, or `vllm-omni`'s image `400` naming it (`upstream_model_missing`) | failure |
-  | Backend `404` at a path its server does not have (`upstream_path_missing`) | failure |
-  | The server does not serve the endpoint: the same on an endpoint beyond the type's core ones (every endpoint on `vllm`), llama-server's `501` on embeddings or rerank, or vLLM-Omni's image `503` (`upstream_endpoint_missing`, settled 2026-10-06; `vllm` and the `501` 2026-10-08; the `503` 2026-10-09) | neutral — the deployment serves its other endpoints |
+  | The server's answer to a path it does not have (`upstream_path_missing`; settled 2026-10-11, with the user) | neutral — an operator error, a wrong `base_url` or a list naming an endpoint the server lacks; the deployment serves the model's other endpoints |
   | A provider's refusal before sending (`price_option_unsupported`) | neutral — nothing was sent |
   | Response broken off upstream after the first event (`kaiak.relay_end=upstream_failed`) | failure |
   | Stream silent for the stall timeout after the first event (`kaiak.relay_end=upstream_stalled`) | failure |
@@ -1657,7 +1766,8 @@ own, and a client sending repeats is broken either way.
   settled 2026-10-09): the SSE stream and the raw-audio stream take the stream
   timers, the raw-audio stream counting its first body bytes as its first event and
   each read of body bytes as progress, since it has no events; the whole clip, the
-  speech batch and image generation take the response timeout. Rejected: the
+  speech batch, image generation, image edits and speech-to-text (the last two
+  settled 2026-10-11: never a stream) take the response timeout. Rejected: the
   response timeout for the raw-audio stream — a hung engine would hold its slot for
   the 30-minute bound with no stall caught. Rejected: one first-byte timeout for both kinds of request —
   a non-stream generation needs a bound in minutes, a stream's first event one in
@@ -1765,6 +1875,12 @@ own, and a client sending repeats is broken either way.
     tokens plus, for voice cloning, the reference audio's codec frames
     (`speech_usage.py`), which the flat figure stands in for. A speech batch counts
     as a completion batch does: its items are its prompts (the two figures, below).
+  - **Image edits and speech-to-text** (settled 2026-10-11, with the user): only the
+    parts the format reads — the `prompt` part's text by bytes, and on an edit a
+    flat 1000 tokens per input image (each `image` or `image[]` file part, and each
+    `data:` URL in `url` or `url[]`). No other part is read for it; a
+    transcription's audio is counted in its own unit, seconds (Accounting → Media
+    usage), not as input tokens.
   - The estimate has two figures: the **total** (every prompt of a completion batch —
     what limits reserve and estimated records bill) and the **input one sequence
     sees** (the request less every prompt of a batch but the largest — what the
@@ -1836,7 +1952,11 @@ own, and a client sending repeats is broken either way.
   item (Output multiplicity, below). vLLM-Omni bounds `max_new_tokens` per model (1
   to 4096 for most, 9000 for MiniMax Music 3) and defaults to 2048: a model's
   ceiling above its server's bound makes the server refuse the requests that reach
-  it. **Image generation** has no output limit.
+  it. **Image generation** has no output limit, nor have **image edits** and
+  **speech-to-text** (settled 2026-10-11, with the user): the gateway reads and
+  writes no output-limit key there — neither it nor OpenAI's API sets one —
+  and vLLM's `max_completion_tokens` and llama-server's `max_tokens` parts pass
+  untouched. A transcription reserves its input estimate alone.
 - **Output limit out of range** — above the context (settled 2026-09-25, E9; the
   follow-up audit's N-M1): a key the client set (chat: either key, each checked on its own;
   completions: `max_tokens`) above the model's `context_length` is refused — `400`,
@@ -1913,9 +2033,10 @@ own, and a client sending repeats is broken either way.
   size cap in the gateway — the backend's check is exact (the pair in tokens, its
   template included) and its refusal says what to change, where the gateway's would
   be a guess from bytes. **Images and speech batch items** (settled 2026-10-09): an
-  image request's `n` is at most `global.max_images_per_request` (default 10 —
-  vLLM-Omni's and OpenAI's own maximum), `param: "n"`; a speech batch's items are
-  at most `global.max_speech_batch_items` (default 32 — vLLM-Omni's
+  image generation's or edit's `n` (edits settled 2026-10-11) is at most
+  `global.max_images_per_request` (default 10 — vLLM-Omni's and OpenAI's own maximum
+  for generations; vLLM-Omni bounds no edit's `n`), `param: "n"`; a speech batch's
+  items are at most `global.max_speech_batch_items` (default 32 — vLLM-Omni's
   `tts_batch_max_items` default, which it enforces too), `param: "items"`; above
   either, `400 invalid_value`, in the embeddings cap's wording. The items are
   counted before any is decoded: a long list of small items within the body cap
@@ -1975,28 +2096,33 @@ own, and a client sending repeats is broken either way.
   - USD: nothing is reserved (cost is known only afterwards); refused once the window
     has reached its value;
   - images (settled 2026-10-09, with the user): the request's `n` (absent: 1) for an
-    image request, nothing for any other; admitted while it fits, as tokens are, and
-    settled to the answer's exact count. A layered model answers one image per
-    layer, more than `n`, so its answer can take an image window past its value —
-    a per-minute limit by that one answer;
+    image generation or edit (edits settled 2026-10-11), nothing for any other;
+    admitted while it fits, as tokens are, and settled to the answer's exact count.
+    A layered model answers one image per layer, more than `n`, so its answer can
+    take an image window past its value — a per-minute limit by that one answer;
   - seconds of audio generated (settled 2026-10-09, with the user): nothing is
     reserved — the length is unknown until the audio is relayed — so, as USD, an
     audio limit refuses once its window has reached its value, and a request
     running when it does is not cut: a window can be passed by what the requests in
     flight generate;
-  - seconds of audio processed: reserved from the length of the audio the request
-    uploads, measured before it runs (settled with the user, 2026-10-09; no endpoint
-    takes audio in yet, so nothing reserves or counts it — the uploads plan's).
+  - seconds of audio processed (settled 2026-10-11, with the user): nothing is
+    reserved — counted after the request, as audio generated is: the seconds are
+    the backend's when it reports them, known only from its answer (Accounting →
+    Media usage) — so an audio-processed limit refuses once its window has reached
+    its value, and a request running when it does is not cut. Rejected: reserving
+    the upload's measured length — vLLM takes formats the gateway does not measure
+    (MP4, WebM, Ogg), so a reservation would hold for some requests only, and one
+    rule for both audio directions is simpler.
 
   A speech request also reserves tokens as above — its input estimate plus its
-  output limit once per item — and an image request its input estimate: token
-  limits keep seeing both.
+  output limit once per item — and an image generation or edit and a transcription
+  their input estimate: token limits keep seeing them all.
   **An image or audio limit applies only to a request that adds to its measure**
-  (settled 2026-10-09, step 3 review): image limits to image requests, audio-generated
-  limits to speech, audio-processed limits to uploads — as a USD limit applies only to
-  a priced request (Unpriced models, below). Rejected: applying them to every request
-  in the scope — audio generated reserves nothing, so a spent audio window would
-  refuse every chat request there.
+  (settled 2026-10-09, step 3 review): image limits to image generations and edits,
+  audio-generated limits to speech, audio-processed limits to speech-to-text — as a
+  USD limit applies only to a priced request (Unpriced models, below). Rejected:
+  applying them to every request in the scope — audio generated reserves nothing, so
+  a spent audio window would refuse every chat request there.
 - **Unpriced models** (settled 2026-09-25, D6): a USD limit applies to a request only
   while its model has a price in force (a `prices` entry effective now). A model
   without one costs nothing, so no budget refuses it — not a spent USD limit, not the
@@ -2277,6 +2403,8 @@ own, and a client sending repeats is broken either way.
     layer;
   - audio generated (minute, hour): the audio of the requests in flight when the
     window fills (its length is known only after);
+  - audio processed (minute, hour; settled 2026-10-11): likewise, the audio of the
+    transcriptions in flight when the window fills (counted after the request);
   - restarts: every window starts empty (File mode keeps nothing across a restart).
 - Control-plane outage handling: see `CONTROL-PROTOCOL.md`.
 
@@ -2413,14 +2541,59 @@ own, and a client sending repeats is broken either way.
     transcription (`int(math.ceil(duration))`, vLLM 0.30.0) — 0 only when no audio
     was relayed. Rejected: rounding each chunk or item (a stream of many chunks
     would count far more than its length); a finer unit — the unit is whole
-    seconds, as OpenAI and vLLM report audio. `audio_seconds_in` is produced by no
-    endpoint yet (0 on every record).
+    seconds, as OpenAI and vLLM report audio.
   - **Images** (with the user, 2026-10-09): `images` is the number of elements of
     the answer's top-level `data[]`, counted as the JSON streams through, never
     kept (up to 10 base64 images of several MiB each) — always the answer's count,
     which a layered model makes larger than `n` (one image per layer). vLLM-Omni
     reports no usage for images, so `tokens_in` is the input estimate (the prompt), flagged
     `estimated`, every other token unit 0; a `usage` an answer carries is ignored.
+    **Image edits** count the same way (settled 2026-10-11, with the user): `images`
+    the answer's `data[]` count, `tokens_in` the input estimate — the prompt and the
+    input images (Limits → The input estimate) — flagged `estimated`.
+  - **Speech-to-text** (settled 2026-10-11, with the user; vLLM 0.30.0,
+    `speech_to_text/base/serving.py`; llama.cpp b11526,
+    `tools/server/server-chat.cpp` and `tools/mtmd/mtmd-helper.cpp`):
+    - **`audio_seconds_in`**, by the model's one type:
+      - `vllm`: the answer's `usage.seconds` when its `usage.type` is `duration`
+        (`json`, `text`, `diarized_json`) — vLLM's count of the decoded audio,
+        rounded up (`int(math.ceil(duration))`); a `verbose_json` answer's
+        `duration`, a number of seconds, rounded up to a whole second; an answer with
+        neither (none is expected; settled 2026-10-11) the measured upload (below)
+        when it can be measured, else 0 and the record flagged `estimated`;
+      - `llama-server`: the measured upload — llama-server reports no seconds. An
+        upload the gateway cannot measure is refused before it is sent, `400
+        audio_format_unsupported`, `param: "file"` (Request pipeline, stage 2):
+        llama-server decodes WAV, MP3 and FLAC only (miniaudio, by magic bytes), so
+        another format would fail there too, and a request whose audio nothing
+        could count is never sent.
+    - **Tokens**: the answer's when it reports them — llama-server's `usage` of
+      type `tokens`, `input_tokens` → `tokens_in`, `output_tokens` → `tokens_out`,
+      every other unit 0. Otherwise — vLLM reports none on a whole answer — as on
+      images: `tokens_in` the input estimate (the `prompt` part), flagged
+      `estimated`, every other token unit 0.
+    - **Measuring an upload** (settled 2026-10-11): the `file` part is held whole in
+      memory, so its length is read in one bounded pass, the format chosen by its
+      magic bytes, as llama-server's decoder chooses it — never by the filename or
+      the part's content type:
+      - WAV: rate, channels and bit depth from the `fmt ` chunk; the `data` chunk's
+        bytes actually present (its declared size bounded by the file);
+      - FLAC: STREAMINFO's total samples over its sample rate; a total of 0
+        ("unknown") is unmeasurable;
+      - MP3: a frame scan — an ID3v2 tag skipped by its size, ID3v1 and APE tags
+        ignored; each frame's length from its bitrate, sample rate and padding, its
+        samples by MPEG version and layer; a stream with no valid frame is
+        unmeasurable.
+
+      Every size is bounded by the bytes present and a pass never revisits a byte:
+      a zero, absurd or overflowing size ends it as unmeasurable — never a loop, a
+      panic or an allocation. Every upload is measured, on every type; a
+      `llama-server` model needs the result, a `vllm` one falls back on it. The
+      length is rounded up to a whole second once per record, as
+      `audio_seconds_out` is.
+    - Every member — the usage's `type`, `seconds` and token counts, a
+      `verbose_json` answer's `duration` — is read by its exact name after
+      decoding, as speech's usage is.
 - **The record's scopes** (settled 2026-09-27): a record carries the key's group
   path (`groups`, top-level first) as the request's config snapshot had it at
   authentication — the control plane counts it toward those groups and global
@@ -2444,9 +2617,11 @@ own, and a client sending repeats is broken either way.
   answer generates nothing, so its estimated output is 0 (settled 2026-10-08), and
   so is a speech or image answer's (settled 2026-10-09): its output is audio or
   images, counted in their own units, and a model's codec-token rate is unknown to
-  the gateway. A non-stream body's choices are kept up to
-  4 MiB to be read; past that their raw size counts. The estimated input is all
-  `tokens_in`; `tokens_cached`, `tokens_cache_write` and `tokens_reasoning` are 0.
+  the gateway — and a transcription's (settled 2026-10-11, with the user): with no
+  tokens reported it counts as an image answer does, the input estimate alone. A
+  non-stream body's choices are kept up to 4 MiB to be read; past that their raw size
+  counts. The estimated input is all `tokens_in`; `tokens_cached`,
+  `tokens_cache_write` and `tokens_reasoning` are 0.
 - **Partial** (settled 2026-09-24): a response that stopped early (client disconnect,
   backend failure mid-response, cut off by the drain) is **flagged `partial`** and counts what was relayed
   up to then — the backend's report when one arrived, else the estimate (for
@@ -2455,9 +2630,11 @@ own, and a client sending repeats is broken either way.
   seconds the backend sent until then, the last piece read included (with the user;
   Media usage → Audio length, above); a whole clip keeps its token headers, which came
   with its status; a batch cut short counts the items relayed whole — their usage
-  and audio — or the estimate when none was; an image answer cut short counts the
-  larger of the `data[]` elements seen and `n` — its images were generated before
-  the answer's first byte.
+  and audio — or the estimate when none was; an image answer cut short — a
+  generation's or an edit's — counts the larger of the `data[]` elements seen and
+  `n` — its images were generated before the answer's first byte; a transcription
+  cut short counts the seconds its answer reported, else as one that reported none
+  (Media usage → Speech-to-text; settled 2026-10-11).
   **Client disconnect** cancels the upstream request; tokens generated so far are
   billed. Events are read before they are written, so what the backend sent counts
   even when writing to the client fails.
@@ -2547,6 +2724,9 @@ own, and a client sending repeats is broken either way.
   priced for.
 - `KAIAK_BODY_MEMORY_BYTES` (default `536870912`, 512 MiB; whole bytes above 0) —
   the body budget (Request pipeline → request bodies).
+- `KAIAK_UPLOAD_MEMORY_BYTES` (default `268435456`, 256 MiB; whole bytes above 0) —
+  the upload budget, apart from the body budget (Request pipeline → Uploads; settled
+  2026-10-11, with the user).
 - `KAIAK_INSTANCE_ID` — defaults to the hostname (the pod name on Kubernetes). In
   control-plane mode it must have the instance ID shape (`CONTROL-PROTOCOL.md`,
   Messages) — a startup error otherwise, naming the value: a control plane refuses
@@ -2642,9 +2822,11 @@ own, and a client sending repeats is broken either way.
   default keeps short drains (tests, `docker stop -t`) valid without setting it.
   File mode ignores it: it has no usage to flush.
 - `KAIAK_IDLE_TIMEOUT_MS` (default `120000`), `KAIAK_BODY_READ_TIMEOUT_MS` (default
-  `60000`), `KAIAK_WRITE_TIMEOUT_MS` (default `60000`) — the client timeouts
-  (Lifecycle), whole milliseconds above 0 (a bound of 0 would be none); anything else
-  is a startup error.
+  `60000`), `KAIAK_UPLOAD_READ_TIMEOUT_MS` (default `300000`; the upload routes' body
+  read, Request pipeline → Uploads, settled 2026-10-11, with the user),
+  `KAIAK_WRITE_TIMEOUT_MS` (default `60000`) — the client timeouts (Lifecycle), whole
+  milliseconds above 0 (a bound of 0 would be none); anything else is a startup
+  error.
 - `KAIAK_USAGE_MEMORY_BYTES` (default `67108864`, 64 MiB; whole bytes above 0) —
   control-plane mode: the bound on the usage records held in memory waiting for
   delivery, counted as their encoded size (Control-plane mode → Usage batches in
@@ -2886,7 +3068,8 @@ own, and a client sending repeats is broken either way.
     for `kaiak-control`'s validation in the cross-half e2e — that loses the fast
     per-fixture check of the Go side.
 - Omitted optional fields get their documented defaults at load time (backend
-  timeouts, body cap, `key_id_label`, `group_label`, `control_outage_grace_ms` — 15 minutes, `max_n` — 8,
+  timeouts, body cap, upload cap — 25 MiB, `key_id_label`, `group_label`,
+  `control_outage_grace_ms` — 15 minutes, `max_n` — 8,
   `max_concurrent_requests_per_key` — 16; the
   settings of Routing and reliability → Reliability settings and Timeouts); nothing past
   loading sees an unset value.
@@ -2946,7 +3129,7 @@ own, and a client sending repeats is broken either way.
   | `kaiak.queue.size` | up-down counter, read at collect | `{request}` | `gen_ai.request.model` | `kaiak_queue_size` | Requests waiting in the model's queue; every configured model present, 0 when empty | `kaiak_queued_requests` |
   | `kaiak.queue.wait_duration` | histogram | `s` | `gen_ai.request.model` | `kaiak_queue_wait_duration_seconds` | Time queued requests waited before getting a slot (refused ones are counted below instead) | `kaiak_queue_wait_seconds` |
   | `kaiak.queue.rejections` | counter | `{request}` | `gen_ai.request.model`, `error.type` | `kaiak_queue_rejections_total` | Requests the model's queue refused, by the error code answered: `queue_full`, `queue_timeout` | same; `reason` (`full`, `timeout`) |
-  | `kaiak.retries` | counter | `{attempt}` | `gen_ai.request.model`, `kaiak.backend.id`, `kaiak.attempt.outcome` | `kaiak_retries_total` | Retries sent — attempts after an earlier attempt of the same request failed, counted as each is sent — by that attempt's backend and outcome: `unavailable`, `timeout`, `server_error`, `rate_limited`, `auth_failed`, `model_missing`, `path_missing`, `endpoint_missing` | same; `reason` |
+  | `kaiak.retries` | counter | `{attempt}` | `gen_ai.request.model`, `kaiak.backend.id`, `kaiak.attempt.outcome` | `kaiak_retries_total` | Retries sent — attempts after an earlier attempt of the same request failed, counted as each is sent — by that attempt's backend and outcome: `unavailable`, `timeout`, `server_error`, `rate_limited`, `auth_failed`, `model_missing` | same; `reason` |
   | `kaiak.upstream.attempts` | counter | `{attempt}` | `kaiak.backend.id`, `kaiak.deployment.model`, `kaiak.attempt.outcome` | `kaiak_upstream_attempts_total` | Every upstream attempt (first attempts and retries) by its outcome — the circuit breaker's classification, named (below) | same; `outcome` |
   | `kaiak.upstream.attempt.duration` | histogram | `s` | `kaiak.backend.id` | `kaiak_upstream_attempt_duration_seconds` | Every upstream attempt from its send to its end: a relayed response to the end of its relay (stream or not), a retried or failed attempt to its failure (a held backend error: its status and first event) | same |
   | `kaiak.request.attempts` | histogram | `{attempt}` | `gen_ai.request.model` | `kaiak_request_attempts` | Attempts per routed request, the first included (buckets 1–10) | same |
@@ -2982,7 +3165,7 @@ own, and a client sending repeats is broken either way.
   | `gen_ai.client.inference.usage.reasoning.output_tokens` | counter | `{token}` | as above | `gen_ai_client_inference_usage_reasoning_output_tokens_total` | Reasoning output — part of the output count | `kaiak_usage_tokens_total{unit="tokens_reasoning"}` |
   | `kaiak.usage.images` | counter | `{image}` | usage labels | `kaiak_usage_images_total` | Images generated: the records' `images`, fed only by records that carry some (settled 2026-10-09) | — (added) |
   | `kaiak.usage.audio.output.duration` | counter | `s` | usage labels | `kaiak_usage_audio_output_duration_seconds_total` | Seconds of audio generated: the records' `audio_seconds_out`, fed only by records that carry some | — (added) |
-  | `kaiak.usage.audio.input.duration` | counter | `s` | usage labels | `kaiak_usage_audio_input_duration_seconds_total` | Seconds of audio processed: the records' `audio_seconds_in` (no endpoint produces it yet), fed only by records that carry some | — (added) |
+  | `kaiak.usage.audio.input.duration` | counter | `s` | usage labels | `kaiak_usage_audio_input_duration_seconds_total` | Seconds of audio processed: the records' `audio_seconds_in` (speech-to-text), fed only by records that carry some | — (added) |
   | `otel.sdk.processor.log.processed` | counter, read at collect | `{log_record}` | `otel.component.type`, `otel.component.name`, `error.type` | `otel_sdk_processor_log_processed_total` | With OTLP log export on: log records the export's queue is done with — handed to the exporter (no `error.type`), or dropped: `queue_full` (refused by the full queue), `shutdown` (still queued when the final flush ended) (Exporters' own counts, below) | `kaiak_log_export_records_total{outcome="dropped"}` |
   | `otel.sdk.exporter.log.exported` | counter, read at collect | `{log_record}` | `otel.component.type`, `otel.component.name`, `error.type` | `otel_sdk_exporter_log_exported_total` | With OTLP log export on: log records the exporter sent — accepted by the collector (no `error.type`), or failed, by how (Exporters' own counts) | `kaiak_log_export_records_total{outcome="exported"}`, `{outcome="failed"}` |
   | `otel.sdk.exporter.metric_data_point.exported` | counter, read at collect | `{data_point}` | `otel.component.type`, `otel.component.name`, `error.type` | `otel_sdk_exporter_metric_data_point_exported_total` | With OTLP metric export on: data points the exporter sent — accepted (no `error.type`), or failed, by how (Exporters' own counts) | — (added) |
@@ -3072,6 +3255,7 @@ own, and a client sending repeats is broken either way.
     `/v1/messages/count_tokens`, `/v1/responses`, `/v1/responses/input_tokens`,
     `/v1/rerank` (settled 2026-10-08), `/v1/audio/speech`,
     `/v1/audio/speech/batch`, `/v1/images/generations` (settled 2026-10-09),
+    `/v1/images/edits`, `/v1/audio/transcriptions` (settled 2026-10-11),
     `/v1/models`, `/v1/models/{model}`,
     `/v1/models/{model}/props` (`{model}`
     literal; the Anthropic-shaped model list and entry count under `/v1/models` and
@@ -3107,9 +3291,10 @@ own, and a client sending repeats is broken either way.
     on the log line), `gen_ai.operation.name` (`chat`, `text_completion`,
     `embeddings`, `rerank`, `generate_content` — the request line's, from the endpoint: the usage record carries
     it inside the gateway and never on the wire, since the protocol has no field for
-    it), `gen_ai.output.type` (`speech`, `image`; absent for the other operations —
-    the request line's, from the endpoint, settled 2026-10-09: speech and images
-    share their operation), `gen_ai.provider.name` (from the record's deployment's backend type in the
+    it), `gen_ai.output.type` (`speech`, `image`, `text`; absent for the other
+    operations — the request line's, from the endpoint, settled 2026-10-09: speech,
+    images and, settled 2026-10-11, speech-to-text share their operation),
+    `gen_ai.provider.name` (from the record's deployment's backend type in the
     live config, as on the request line; absent for the self-hosted types and for a
     backend the config has since dropped), `kaiak.usage.status` — `complete`, or
     `partial` when the record is flagged partial. The token counters add
@@ -3136,12 +3321,11 @@ own, and a client sending repeats is broken either way.
     independent daily-operations review's finding 5), and exactly once however the
     request then ends. `kaiak.attempt.outcome`, a fixed set: success — `success`;
     failures — `unavailable`, `timeout` (a stream's first-event timeout),
-    `auth_failed`, `model_missing`, `path_missing`, `server_error` (a backend `5xx`
-    but `529` and the `5xx`s that read as an endpoint missing — llama-server's
-    `501`, vLLM-Omni's image `503` — or a stream opening with an
-    error event naming a failure),
+    `auth_failed`, `model_missing`, `server_error` (a backend `5xx` but `529`, or a
+    stream opening with an error event naming a failure),
     `broke_off` (broken off, stalled or incomplete after the first event); neutral
-    — `endpoint_missing` (settled 2026-10-06), `response_timeout` (a non-stream
+    — `path_missing` (the server's answer to a path it does not have, settled
+    2026-10-11, with the user), `response_timeout` (a non-stream
     response timeout, before or after the first bytes; before them it is a failure
     for a half-open trial and from the 3rd in a row — Routing and reliability:
     outcome classes), `rate_limited` (a backend `429` or `529`, or an error event
@@ -3150,7 +3334,7 @@ own, and a client sending repeats is broken either way.
     error event naming the caller's fault), `canceled` (the client left, or the
     drain cut, before the first event), `internal` (a gateway fault building the
     upstream request). Attribute values are config names and the fixed outcomes
-    only, never client input; every configured deployment has all fourteen series
+    only, never client input; every configured deployment has all thirteen series
     from the start, at 0 (Series at 0).
   - **Circuit state, one family** (settled 2026-10-08): `kaiak.circuit.state` has a
     series per deployment and state — `closed`, `open`, `half_open` — 1 on the
@@ -3205,15 +3389,17 @@ own, and a client sending repeats is broken either way.
     `no_healthy_deployment` (every deployment's circuit open — platform-side: the
     backends are failing; its own class because nothing was sent upstream),
     `upstream_unavailable`,
-    `upstream_timeout`, `upstream_error` (`upstream_auth_failed`, `upstream_model_missing`, `upstream_path_missing`, `upstream_endpoint_missing`, a backend
-    `5xx` — answered `upstream_error` —, a response that broke off upstream), `upstream_rate_limited` (a relayed
-    backend `429`, `upstream_overloaded`, a stream ended by an error event naming the
-    backend busy), `upstream_client_error` (a relayed backend `4xx` other than
-    `429`, `upstream_refused`, a stream ended by an error event naming the caller's
-    fault — settled 2026-10-06), `client_closed`, `shutting_down` (`server_shutting_down`, a response the
-    drain cut off), `not_ready` (`config_not_loaded`), `server_busy` (the body
-    budget spent — platform-side; its own class because its remedy is memory, not
-    backend capacity), `internal`. Every class is present from startup, at 0.
+    `upstream_timeout`, `upstream_error` (`upstream_auth_failed`,
+    `upstream_model_missing`, `upstream_path_missing`, a backend `5xx` — answered
+    `upstream_error` —, a response that broke off upstream), `upstream_rate_limited`
+    (a relayed backend `429`, `upstream_overloaded`, a stream ended by an error event
+    naming the backend busy), `upstream_client_error` (a relayed backend `4xx` other
+    than `429`, `upstream_refused`, a stream ended by an error event naming the
+    caller's fault — settled 2026-10-06), `client_closed`, `shutting_down`
+    (`server_shutting_down`, a response the drain cut off), `not_ready`
+    (`config_not_loaded`), `server_busy` (the body budget spent — platform-side; its
+    own class because its remedy is memory, not backend capacity), `internal`. Every
+    class is present from startup, at 0.
   - **Relayed backend errors are classed by whose problem they are** (settled
     2026-09-24): a backend `4xx` is the caller's (context too long, a bad
     parameter) — nothing the platform can fix, so it must not read as a platform
@@ -3236,53 +3422,51 @@ own, and a client sending repeats is broken either way.
     the media). Usage series
     per replica ≈ `label sets × models × operations × providers × statuses × 7`,
     where 7 = records 1 + cost 1 + the 5 token counters (`gen_ai.token.modality`
-    is one value, `unknown`) — 8 for a model used for images or speech, which feeds
-    its media counter too — statuses ≤ 2 (`complete`, `partial`), models = the
-    models each label set actually used, operations and providers = those each
-    such key × model pair actually used — at most 5 operations (`chat`,
-    `text_completion`, `embeddings`, `rerank`, `generate_content`; settled
+    is one value, `unknown`) — 8 for a model used for images, speech or
+    speech-to-text, which feeds its media counter too — statuses ≤ 2 (`complete`,
+    `partial`), models = the models each label set actually used, operations and
+    providers = those each such key × model pair actually used — at most 5 operations
+    (`chat`, `text_completion`, `embeddings`, `rerank`, `generate_content`; settled
     2026-10-08, `generate_content` 2026-10-09; `gen_ai.output.type` follows the
     endpoint, as the operation does, and adds no series of its own) and the provider
     kinds among the model's deployments, but usually one each: an embedding model is
     used for `embeddings` (on vLLM it can serve `rerank` too), a reranker for
     `rerank`, a chat model for `chat` (`text_completion` only through the completions
     endpoint), and a model's deployments usually share one backend type or are all
-    self-hosted (no provider at all). Label sets = the distinct group/key
-    combinations seen: the keys used with `key_id_label` on (a key belongs to one
-    group, and a group to one top-level group, so the group labels add nothing);
-    with it off, the groups that own keys; with `group_label` off as well, the
-    top-level groups (every key under one top-level group in one set).
-    **`kaiak.key.root_group` bounds series only when the top-level groups are few**
-    (settled 2026-09-27): a tree whose top-level groups are themselves many —
-    people as top-level groups, each with a key — has as many `kaiak.key.root_group`
-    values as groups, and `group_label` off saves nothing; such a tree puts them
-    under one parent (a `users` group) to gain from the switch. Hosts do not enter:
-    usage carries no backend. Worked example — 20 hosts, 500 keys: 450 personal
-    keys, one per person, each person a group under a top-level `users` group, and
-    50 workload keys, one per workload group, in team → project → env → workload
-    branches under 5 top-level team groups; 3 models per key, each used for one
-    operation through one provider: both labels on, 500 × 3 × 2 × 7 = 21,000
-    series; `key_id_label` off, 500 groups — the same 21,000 here, since every key
-    has its own group; `group_label` off too, 6 top-level groups (5 teams +
-    `users`), 6 × 3 × 2 × 7 = 252. A model reached through both `chat` and
-    `text_completion`, or served by two providers, doubles its share. Multiply by
-    the gateway replicas for the metrics store's total, and switch `key_id_label`
-    off first, then `group_label`, when the total outgrows what the store is sized
-    for. Series stay until restart once written (below). Ops series: request
-    duration routes × models × the status / `error.type` pairs actually answered ×
-    18 lines (15 buckets + `+Inf`, sum, count) — a success is one pair (`200`, no
-    `error.type`), each error code answers with its status (Client API table), a
-    relayed backend error is its status and class; a route a model is not used
-    through has no series, the method varies only on `405` refusals, the scheme
-    never, and a refusal before the route or model is known has neither;
-    first-token and decode-rate histograms model × backend × 15 and 13 lines; queue
-    wait model × 17 lines; attempts model × 13 lines; retries model × backend × 8
-    outcomes; limit rejections 20 (2 scope kinds × 10 types); upstream attempts
-    deployments × ≤ 14 outcomes; circuit state deployments × 3; cooling down
-    deployments; attempt duration backends × 18 lines; config apply duration 8 ×
-    18 lines (4 triggers × 2 results) and limiter sync 18; the exporters' own counts
-    a handful per export (accepted, and the failures met) — all bounded by the
-    config, never by clients or keys.
+    self-hosted (no provider at all). Label sets = the distinct group/key combinations
+    seen: the keys used with `key_id_label` on (a key belongs to one group, and a
+    group to one top-level group, so the group labels add nothing); with it off, the
+    groups that own keys; with `group_label` off as well, the top-level groups (every
+    key under one top-level group in one set). **`kaiak.key.root_group` bounds series
+    only when the top-level groups are few** (settled 2026-09-27): a tree whose
+    top-level groups are themselves many — people as top-level groups, each with a key
+    — has as many `kaiak.key.root_group` values as groups, and `group_label` off saves
+    nothing; such a tree puts them under one parent (a `users` group) to gain from the
+    switch. Hosts do not enter: usage carries no backend. Worked example — 20 hosts,
+    500 keys: 450 personal keys, one per person, each person a group under a top-level
+    `users` group, and 50 workload keys, one per workload group, in team → project →
+    env → workload branches under 5 top-level team groups; 3 models per key, each used
+    for one operation through one provider: both labels on, 500 × 3 × 2 × 7 = 21,000
+    series; `key_id_label` off, 500 groups — the same 21,000 here, since every key has
+    its own group; `group_label` off too, 6 top-level groups (5 teams + `users`), 6 ×
+    3 × 2 × 7 = 252. A model reached through both `chat` and `text_completion`, or
+    served by two providers, doubles its share. Multiply by the gateway replicas for
+    the metrics store's total, and switch `key_id_label` off first, then
+    `group_label`, when the total outgrows what the store is sized for. Series stay
+    until restart once written (below). Ops series: request duration routes × models ×
+    the status / `error.type` pairs actually answered × 18 lines (15 buckets + `+Inf`,
+    sum, count) — a success is one pair (`200`, no `error.type`), each error code
+    answers with its status (Client API table), a relayed backend error is its status
+    and class; a route a model is not used through has no series, the method varies
+    only on `405` refusals, the scheme never, and a refusal before the route or model
+    is known has neither; first-token and decode-rate histograms model × backend × 15
+    and 13 lines; queue wait model × 17 lines; attempts model × 13 lines; retries
+    model × backend × 6 outcomes; limit rejections 20 (2 scope kinds × 10 types);
+    upstream attempts deployments × ≤ 13 outcomes; circuit state deployments × 3;
+    cooling down deployments; attempt duration backends × 18 lines; config apply
+    duration 8 × 18 lines (4 triggers × 2 results) and limiter sync 18; the exporters'
+    own counts a handful per export (accepted, and the failures met) — all bounded by
+    the config, never by clients or keys.
 - **Config load cost** (settled 2026-10-01): large configs (some 20 models over 30
   deployments, thousands of keys) are measured before anything about loading them
   is optimized — `kaiak.config.size`, `kaiak.config.apply.duration`,
@@ -3478,12 +3662,12 @@ own, and a client sending repeats is broken either way.
     | `kaiak.key.group` | `group` | once authenticated (settled 2026-09-27) | The key's group: its config ID, as on the usage metrics; never its `labels` |
     | `kaiak.auth.failure` | `auth_failure` | a `401` | `missing_key`, `malformed_key`, `unknown_key`, `disabled_key`, `expired_key` |
     | `gen_ai.request.model` | `model` | once known | The model the client asked for — the public name, or a refused name — clipped |
-    | `gen_ai.request.stream` | `stream` | once the model passed its access check (body endpoints) | The client's `stream` flag; for speech, `true` for the SSE and the raw-audio stream (settled 2026-10-09; Client API → owned fields: speech) |
-    | `gen_ai.operation.name` | — (added) | once the path matched a body endpoint | `chat` (chat completions, Messages, Responses), `text_completion` (completions), `embeddings`, `generate_content` (speech, speech batch, image generation; settled 2026-10-09, with the user: "Multimodal content generation operation such as Gemini Generate Content", at `4f85037` as at `06ec68e` — `gen_ai.output.type` names the kind) — the convention's well-known values — and `rerank` (rerank), kaiak's own. The model endpoints and the token-counting endpoints have none (settled 2026-10-06: the convention's `chat` is a chat operation in any of its APIs; counting tokens is no GenAI operation it names). **A custom value where none applies** (settled 2026-10-08, amending the rule of well-known values only): reranking is a GenAI operation with usage, cost and limits, as embeddings is, and the usage metrics need a value that names it; the convention's rule is "If one of them applies, then the respective value MUST be used; otherwise, a custom value MAY be used", and none applies — `retrieval` is a retrieval operation "such as OpenAI Search Vector Store API", a search of a store, where reranking scores the documents the client sends, and `embeddings` returns vectors, not scores (`semantic-conventions-genai`, `main` at `06ec68e`, 2026-10-07, as at `4f85037`). Rejected: `retrieval` — another operation's name; no value — rerank usage would show in the usage metrics as an operation with no name |
+    | `gen_ai.request.stream` | `stream` | once the model passed its access check (body endpoints) | The client's `stream` flag; for speech, `true` for the SSE and the raw-audio stream (settled 2026-10-09; Client API → owned fields: speech); `false` on image edits and speech-to-text, never a stream (settled 2026-10-11) |
+    | `gen_ai.operation.name` | — (added) | once the path matched a body endpoint | `chat` (chat completions, Messages, Responses), `text_completion` (completions), `embeddings`, `generate_content` (speech, speech batch, image generation, settled 2026-10-09, with the user; image edits and speech-to-text, settled 2026-10-11 — "Multimodal content generation operation such as Gemini Generate Content", at `4f85037` as at `06ec68e`; `gen_ai.output.type` names the kind) — the convention's well-known values — and `rerank` (rerank), kaiak's own. The model endpoints and the token-counting endpoints have none (settled 2026-10-06: the convention's `chat` is a chat operation in any of its APIs; counting tokens is no GenAI operation it names). **A custom value where none applies** (settled 2026-10-08, amending the rule of well-known values only): reranking is a GenAI operation with usage, cost and limits, as embeddings is, and the usage metrics need a value that names it; the convention's rule is "If one of them applies, then the respective value MUST be used; otherwise, a custom value MAY be used", and none applies — `retrieval` is a retrieval operation "such as OpenAI Search Vector Store API", a search of a store, where reranking scores the documents the client sends, and `embeddings` returns vectors, not scores (`semantic-conventions-genai`, `main` at `06ec68e`, 2026-10-07, as at `4f85037`). Rejected: `retrieval` — another operation's name; no value — rerank usage would show in the usage metrics as an operation with no name |
     | `error.type` | `error_code` | the request ended in an error | The gateway's error code (Client API table); a relayed backend error status has no gateway error code, so its class: `upstream_client_error`, `upstream_rate_limited` (settled 2026-09-25, D6). A response broken off after it started has `kaiak.relay_end` instead. Low-cardinality, as the convention requires |
     | `kaiak.limit.scope` | `limit_scope` | a limit refusal: `rate_limit_exceeded`, `budget_exceeded`, `budget_unavailable` (settled 2026-09-25, D6 — the line held only the code, and the operator could not tell which of the scopes' limits refused) | `global` or `group` (settled 2026-09-27) |
     | `kaiak.limit.group` | `limit_id` | a refusal by a group's limit | The group's ID — never a key. Absent for a global limit: `kaiak.limit.scope` says `global` (settled 2026-10-05, the 2026-10-05 review's L5): one key for a limit's group on every line, operational ones included, and one way to say "global". Rejected: `kaiak.limit.id`, with `global` for a global limit, beside the operational lines' `kaiak.limit.group` — one concept under two keys and two spellings |
-    | `gen_ai.output.type` | — (added 2026-10-09) | once the path matched speech, the speech batch or image generation | `speech` or `image`, the convention's well-known values for "the content type requested by the client" (`text`, `json`, `image`, `speech` at `4f85037`, as at `06ec68e`). Not set on the other endpoints: the gateway reads no output type there |
+    | `gen_ai.output.type` | — (added 2026-10-09) | once the path matched speech, the speech batch, image generation or edits, or speech-to-text | `speech`, `image` or `text` (speech-to-text, settled 2026-10-11), the convention's well-known values for "the content type requested by the client" (`text`, `json`, `image`, `speech` at `4f85037`, as at `06ec68e`). Not set on the other endpoints: the gateway reads no output type there |
     | `kaiak.limit.type` | `limit_type` | a limit refusal | `requests_per_minute`, `tokens_per_minute`, `tokens_per_hour`, `images_per_minute`, `images_per_hour`, `audio_seconds_out_per_minute`, `audio_seconds_out_per_hour`, `audio_seconds_in_per_minute`, `audio_seconds_in_per_hour`, `usd_per_month` |
     | `kaiak.limit.enforced` | `limit` | a limit refusal | The value this gateway enforces — a per-minute limit's share among the live gateways |
     | `kaiak.limit.configured` | `limit_configured` | a limit refusal | The config's value |
@@ -3541,6 +3725,7 @@ own, and a client sending repeats is broken either way.
     | `kaiak.metric_export.endpoint` | — (added 2026-10-08) | `kaiak starting` with OTLP metric export on: the endpoint's `host:port`, as `kaiak.log_export.endpoint`; absent when export is off |
     | `kaiak.signal` | `signal` | `second stop signal: skipping the remaining drain` |
     | `kaiak.config.max_request_body_size`, `kaiak.body_budget.size` | `max_request_body_bytes`, `body_memory_bytes` | The warning that the config's body cap (`max_request_body_bytes`) exceeds the body budget (`KAIAK_BODY_MEMORY_BYTES`) — both in bytes |
+    | `kaiak.config.max_upload_size`, `kaiak.upload_budget.size` | — (added 2026-10-11) | The warning that the config's upload cap (`max_upload_bytes`) exceeds the upload budget (`KAIAK_UPLOAD_MEMORY_BYTES`) — both in bytes (Request pipeline → Uploads) |
     | `kaiak.control.totals_wait` | `wait_ms` | `waiting for the first totals`: the wait's bound, in seconds |
     | `kaiak.control.totals_waited` | `waited_ms` | `first totals received`, `first totals not received within the boot wait…`: the time waited, in seconds |
     | `kaiak.config.hash` | — (added 2026-10-07) | A control-plane config's `config_hash`: control-plane loads, skipped `config` events |
@@ -3568,7 +3753,6 @@ own, and a client sending repeats is broken either way.
     | `kaiak.circuit.open_duration` | `open_ms` | `circuit half-open`, `circuit closed`: how long it was open, in seconds |
     | `kaiak.circuit.half_opened` | `circuits_half_open` | `probe succeeded`: circuits it made half-open |
     | `kaiak.backend.base_url`, `kaiak.backend.base_url_hint` | `base_url`, `hint` | `the backend has no models list at its base_url`: the URL and the suggested fix |
-    | `kaiak.endpoint`, `kaiak.request.id` | — (added 2026-10-06) | `the deployment's server does not serve an endpoint its type serves` (settled 2026-10-08: once per probe interval and deployment — the server's version, the model it loaded or its flags can leave the endpoint out; Providers → An endpoint missing from a server): the endpoint, by its name (`messages`, `responses`, `rerank`, `audio_speech`, `audio_speech_batch`, `images_generations`, …; the names `/v1/models` lists, Client API), and the request that found it — with `kaiak.backend.id` and `kaiak.deployment.model` |
     | `kaiak.backend.type` | — (added 2026-10-06) | `model check not available for this backend type` (`azure-anthropic` and `azure-openai`, whose probe cannot tell which models they serve): the type — with `kaiak.backend.id`; the request line's field of the same name (above) |
     | `kaiak.drain.grace`, `kaiak.drain.timeout`, `kaiak.drain.flush_reserve`, `kaiak.drain.cut_after` | `grace`, `timeout`, `flush_reserve`, `cut_after` (duration strings) | `draining`: the times in force, in seconds (Lifecycle → Draining) |
     | `kaiak.drain.in_flight` | `in_flight`; `requests` on `drain: cutting off in-flight requests` | Requests in flight |
@@ -3801,8 +3985,10 @@ own, and a client sending repeats is broken either way.
     connection, authenticated or not; a key and a few short headers need far less);
   - **idle** keep-alive connections closed after 120 s (`KAIAK_IDLE_TIMEOUT_MS`);
   - **body read**: a request's body must arrive within 60 s of the handler taking it
-    (`KAIAK_BODY_READ_TIMEOUT_MS`); a body not in by then answers
-    `400 invalid_body`, before any limit or backend work;
+    (`KAIAK_BODY_READ_TIMEOUT_MS`) — an upload's within 300 s
+    (`KAIAK_UPLOAD_READ_TIMEOUT_MS`, settled 2026-10-11; Request pipeline →
+    Uploads); a body not in by then answers `400 invalid_body`, before any limit or
+    backend work;
   - **answers before the body was read** (a refusal before the inbound stage:
     missing key, draining, …) close the connection after the answer. net/http would
     otherwise first read and discard the unread body — up to 256 KiB — before

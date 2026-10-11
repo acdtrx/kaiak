@@ -247,7 +247,9 @@ Expected reds inside phase 1:
 - The cross-half e2e is red from step 2 until step 3.
 
 Each later step lands its endpoint's names in the shared schema, the backend-type
-fixtures and both halves at once, so phases 2 and 3 stay green step by step.
+fixtures and both halves at once — and its rows in `GATEWAY.md`'s endpoint-support
+and errors tables, which gateway tests read — so phases 2 and 3 stay green step by
+step.
 
 ## Verification
 

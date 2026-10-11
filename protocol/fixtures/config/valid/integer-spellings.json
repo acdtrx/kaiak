@@ -1,10 +1,11 @@
 {
-  "format_version": 6,
+  "protocol_version": 7,
   "global": { "max_request_body_bytes": 1e6, "queue": { "size": 1E2, "timeout_ms": 30000.0 } },
   "backends": { "local": { "type": "openai-compatible", "base_url": "http://localhost:8080/v1" } },
   "models": {
     "llama": {
       "deployments": [{ "backend": "local", "model": "llama" }],
+      "endpoints": ["chat_completions"],
       "metadata": {
         "context_length": 8192.0,
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }

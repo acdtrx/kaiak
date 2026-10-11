@@ -1,7 +1,7 @@
 {
   "config_hash": "38c71f699860b72490cad7109f6c39fe7c091ac9a5f4d9a07b23fa6ed1d6d2eb",
   "config": {
-    "format_version": 6,
+    "protocol_version": 7,
     "global": {},
     "backends": {
       "local": {
@@ -16,6 +16,9 @@
             "backend": "local",
             "model": "llama"
           }
+        ],
+        "endpoints": [
+          "chat_completions"
         ],
         "metadata": {
           "context_length": 8192,

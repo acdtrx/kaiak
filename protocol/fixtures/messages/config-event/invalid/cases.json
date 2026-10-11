@@ -18,6 +18,6 @@
   },
   "protocol-version-field.json": {
     "kind": "schema",
-    "reason": "the protocol version travels in the Kaiak-Protocol header, not the body"
+    "reason": "the protocol version travels in the Kaiak-Protocol header, and in the config's own protocol_version: the event's envelope carries none"
   }
 }

@@ -38,6 +38,12 @@ counted in `images` as generations are.
   - the image count reused from generations (the answer's `data[]`, never kept).
 - `gateway/internal/fakebackend/`: an edits handler that parses the rebuilt body and
   checks it (the model replaced, the parts intact), answering like vLLM-Omni.
+- `docs/specs/GATEWAY.md`, Providers → Endpoint support: `images_edits` joins the
+  table's media column (`audio_speech, audio_speech_batch, images_generations,
+  images_edits`), and the sentence before the table gains its source ("`images_edits`
+  on 2026-10-11 from vLLM-Omni's source (v0.30.0; `docs/plans/media-phase-b/
+  RESEARCH.md` records it)") — with the code, as `TestEndpointSupportFollowsTheSpec`
+  reads the table.
 - Tests beside each.
 
 ## Decisions made during planning

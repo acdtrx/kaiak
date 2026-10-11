@@ -1,5 +1,5 @@
 {
-  "format_version": 6,
+  "protocol_version": 7,
   "global": {},
   "backends": {
     "anthropic": {
@@ -15,10 +15,29 @@
   },
   "models": {
     "claude": {
-      "deployments": [
-        { "backend": "anthropic", "model": "claude-sonnet-5-5" },
-        { "backend": "foundry", "model": "claude-sonnet-5-5" }
-      ],
+      "deployments": [{ "backend": "anthropic", "model": "claude-sonnet-5-5" }],
+      "endpoints": ["messages", "messages_count_tokens"],
+      "metadata": {
+        "context_length": 1000000,
+        "capabilities": { "streaming": true, "tools": true, "vision": true, "reasoning": true },
+        "reasoning_efforts": ["low", "medium", "high", "xhigh", "max"]
+      },
+      "output_limit": { "default": 16384, "ceiling": 128000 },
+      "prices": [
+        {
+          "effective_from": "2026-01-01",
+          "tiers": [
+            {
+              "above_input_tokens": 0,
+              "usd_per_million": { "tokens_in": 2, "tokens_cached": 0.2, "tokens_cache_write": 2.5, "tokens_out": 10 }
+            }
+          ]
+        }
+      ]
+    },
+    "claude-foundry": {
+      "deployments": [{ "backend": "foundry", "model": "claude-sonnet-5-5" }],
+      "endpoints": ["messages", "messages_count_tokens"],
       "metadata": {
         "context_length": 1000000,
         "capabilities": { "streaming": true, "tools": true, "vision": true, "reasoning": true },

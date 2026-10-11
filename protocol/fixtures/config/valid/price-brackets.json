@@ -1,5 +1,5 @@
 {
-  "format_version": 6,
+  "protocol_version": 7,
   "global": {},
   "backends": {
     "qwen": {
@@ -11,6 +11,7 @@
   "models": {
     "qwen-plus": {
       "deployments": [{ "backend": "qwen", "model": "qwen-plus" }],
+      "endpoints": ["chat_completions"],
       "metadata": {
         "context_length": 1000000,
         "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": false }
@@ -29,6 +30,7 @@
     },
     "eight-brackets": {
       "deployments": [{ "backend": "qwen", "model": "eight-brackets" }],
+      "endpoints": ["chat_completions"],
       "metadata": {
         "context_length": 1000000,
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }

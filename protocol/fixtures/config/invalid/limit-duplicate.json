@@ -1,5 +1,5 @@
 {
-  "format_version": 6,
+  "protocol_version": 7,
   "global": {
     "limits": [{ "type": "usd_per_month", "value": 100 }, { "type": "usd_per_month", "value": 200 }]
   },
@@ -7,6 +7,7 @@
   "models": {
     "chat": {
       "deployments": [{ "backend": "vllm", "model": "org/chat-model" }],
+      "endpoints": ["chat_completions"],
       "metadata": {
         "context_length": 32768,
         "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": false }

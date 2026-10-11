@@ -1,0 +1,30 @@
+{
+  "protocol_version": 7,
+  "global": {},
+  "backends": {
+    "vllm": { "type": "vllm", "base_url": "http://vllm:8000/v1" },
+    "vllm-b": { "type": "vllm", "base_url": "http://vllm-b:8000/v1" },
+    "llama": { "type": "llama-server", "base_url": "http://llama:8080/v1" }
+  },
+  "models": {
+    "chat": {
+      "deployments": [
+        { "backend": "vllm", "model": "org/chat-model" },
+        { "backend": "vllm-b", "model": "org/chat-model" },
+        { "backend": "llama", "model": "chat-model" }
+      ],
+      "endpoints": ["chat_completions", "messages"],
+      "metadata": {
+        "context_length": 32768,
+        "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": false }
+      }
+    }
+  },
+  "groups": { "me": {} },
+  "keys": {
+    "k-me": {
+      "hash": "sha256:59f8f6709d858b919a10541cd215a0de7b4299bbc6c11a2e0bf4ca03ec6df717",
+      "group": "me"
+    }
+  }
+}

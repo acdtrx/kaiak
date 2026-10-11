@@ -122,20 +122,24 @@ The name reads the same both ways (the gateway carries traffic in both direction
   on vLLM and llama-server backends only (added 2026-10-08); speech
   `/v1/audio/speech` (the whole clip, an SSE stream or raw audio; WAV and PCM) and
   vLLM-Omni's `/v1/audio/speech/batch`, and image generation
-  `/v1/images/generations`, on vLLM-Omni backends only (added 2026-10-09). Every
-  API is passed through only to backends that speak it; tools a backend would run,
-  and references a backend would fetch or read, are refused.
+  `/v1/images/generations`, on vLLM-Omni backends only (added 2026-10-09); uploads
+  (`multipart/form-data`): image edits `/v1/images/edits` on vLLM-Omni, and
+  speech-to-text `/v1/audio/transcriptions` on vLLM and llama-server (added
+  2026-10-11). Every API is passed through only to backends that speak it; tools a
+  backend would run, and references a backend would fetch or read, are refused.
 - Providers: a module per server — OpenAI, Azure OpenAI (its OpenAI-compatible
   `/openai/v1/` API), vLLM, vLLM-Omni, llama-server, Anthropic, Claude in Microsoft Foundry —
   and a generic OpenAI-compatible type for any other server speaking the OpenAI
   format (SGLang, …).
-- Routing: aliases, multiple deployments, load balancing, retries before the
+- Routing: aliases, multiple deployments (identical instances on one backend type,
+  each model listing the endpoints it serves), load balancing, retries before the
   first byte, circuit breaker driven by real-traffic failures (probing only while open),
   per-backend concurrency cap with a bounded queue.
 - Keys, the group tree, global limits; output-limit default and ceiling
   per model; output limit reserved against the allowance while a request runs.
 - Accounting: token usage from the backend (estimated and flagged when missing),
-  images counted and seconds of audio measured by the gateway (added 2026-10-09),
+  images counted and seconds of audio measured by the gateway (added 2026-10-09) or
+  reported by the backend (speech-to-text, added 2026-10-11),
   each limited in its own unit, cost from the price table, billing of partial
   output on client disconnect.
 - Control-plane protocol; file mode (local and development use); seed config.
@@ -145,8 +149,7 @@ The name reads the same both ways (the gateway carries traffic in both direction
 ## Out of v1 (see `docs/BACKLOG.md`)
 
 Bedrock; translation between client APIs (Messages or Responses to a backend that
-does not speak them); uploads — image edits and transcription (the media plan's
-second phase) — and video;
+does not speak them); video; streaming transcription and audio translations;
 response caching, guardrails, prompt templating, prompt logging; output limit derived
 from remaining budget; cloud workload identity (AWS IRSA / Azure managed identity);
 reasoning-effort discovery; interim usage reports for long streams; always-on active

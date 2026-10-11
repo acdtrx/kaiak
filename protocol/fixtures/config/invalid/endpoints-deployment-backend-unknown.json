@@ -1,5 +1,5 @@
 {
-  "format_version": 6,
+  "protocol_version": 7,
   "global": {},
   "backends": { "vllm": { "type": "vllm", "base_url": "http://vllm:8000/v1" } },
   "models": {

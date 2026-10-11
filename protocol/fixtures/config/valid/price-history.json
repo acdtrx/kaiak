@@ -1,5 +1,5 @@
 {
-  "format_version": 6,
+  "protocol_version": 7,
   "global": {},
   "backends": {
     "openai": {
@@ -11,6 +11,7 @@
   "models": {
     "o4-mini": {
       "deployments": [{ "backend": "openai", "model": "o4-mini" }],
+      "endpoints": ["chat_completions"],
       "metadata": {
         "context_length": 200000,
         "capabilities": { "streaming": true, "tools": true, "vision": true, "reasoning": true },
@@ -46,6 +47,7 @@
     },
     "free-model": {
       "deployments": [{ "backend": "openai", "model": "free-model" }],
+      "endpoints": ["chat_completions"],
       "metadata": {
         "context_length": 8192,
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }

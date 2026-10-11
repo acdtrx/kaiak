@@ -1,10 +1,11 @@
 {
-  "format_version": 6,
+  "protocol_version": 7,
   "global": {},
   "backends": { "local": { "type": "openai-compatible", "base_url": "http://localhost:8000/v1" } },
   "models": {
     "small": {
       "deployments": [{ "backend": "local", "model": "small" }],
+      "endpoints": ["chat_completions"],
       "metadata": {
         "context_length": 4096,
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }
@@ -13,6 +14,7 @@
     },
     "large": {
       "deployments": [{ "backend": "local", "model": "large" }],
+      "endpoints": ["chat_completions"],
       "metadata": {
         "context_length": 131072,
         "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": false }

@@ -37,6 +37,13 @@ No endpoint uses uploads until step 5, so this step is tested at the component l
   - `send.go`: the upstream `Content-Type` from the body kind (today always
     `application/json`);
   - `body.go`: the `model` replacement for multipart.
+- `docs/specs/GATEWAY.md`, the errors table: the `unsupported_content_type` row, which
+  lands with the code that answers it (`TestEveryErrorCodeHasItsClass` reads the
+  table). Step 1 wrote it and the review moved it here:
+
+  ```
+  | An upload endpoint's body is not `multipart/form-data` with a `boundary` — OpenAI's JSON form of image edits included (settled 2026-10-11; Request pipeline → Uploads) | 400 | `invalid_request_error` | `unsupported_content_type` |
+  ```
 - Tests beside each.
 
 ## Decisions made during planning

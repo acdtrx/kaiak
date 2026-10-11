@@ -1,10 +1,11 @@
 {
-  "format_version": 6,
+  "protocol_version": 7,
   "global": {},
   "backends": {
     "vllm-chat": { "type": "vllm", "base_url": "http://vllm-chat:8000/v1" },
     "vllm-embed": { "type": "vllm", "base_url": "http://vllm-embed:8000/v1" },
     "vllm-rerank": { "type": "vllm", "base_url": "http://vllm-rerank:8000/v1" },
+    "vllm-rerank-b": { "type": "vllm", "base_url": "http://vllm-rerank-b:8000/v1" },
     "llama": { "type": "llama-server", "base_url": "http://llama:8080/v1" },
     "omni-tts": { "type": "vllm-omni", "base_url": "http://omni-tts:8091/v1" },
     "omni-image": { "type": "vllm-omni", "base_url": "http://omni-image:8092/v1" },
@@ -13,6 +14,7 @@
   "models": {
     "chat": {
       "deployments": [{ "backend": "vllm-chat", "model": "org/chat-model" }],
+      "endpoints": ["chat_completions", "completions", "messages", "messages_count_tokens", "responses"],
       "metadata": {
         "context_length": 32768,
         "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": false }
@@ -29,7 +31,7 @@
     "reranker": {
       "deployments": [
         { "backend": "vllm-rerank", "model": "org/reranker" },
-        { "backend": "llama", "model": "reranker" }
+        { "backend": "vllm-rerank-b", "model": "org/reranker" }
       ],
       "endpoints": ["rerank"],
       "metadata": {
@@ -53,12 +55,17 @@
         "capabilities": { "streaming": false, "tools": false, "vision": false, "reasoning": false }
       }
     },
-    "mixed": {
-      "deployments": [
-        { "backend": "claude", "model": "claude-model" },
-        { "backend": "llama", "model": "chat-model" }
-      ],
+    "llama-chat": {
+      "deployments": [{ "backend": "llama", "model": "chat-model" }],
       "endpoints": ["messages", "messages_count_tokens", "responses_input_tokens", "chat_completions"],
+      "metadata": {
+        "context_length": 32768,
+        "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": false }
+      }
+    },
+    "claude": {
+      "deployments": [{ "backend": "claude", "model": "claude-model" }],
+      "endpoints": ["messages"],
       "metadata": {
         "context_length": 32768,
         "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": false }

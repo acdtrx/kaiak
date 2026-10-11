@@ -1,10 +1,11 @@
 {
-  "format_version": 6,
+  "protocol_version": 7,
   "global": { "control_outage_grace_ms": 1500.5 },
   "backends": { "vllm": { "type": "openai-compatible", "base_url": "http://vllm:8000/v1" } },
   "models": {
     "chat": {
       "deployments": [{ "backend": "vllm", "model": "org/chat-model" }],
+      "endpoints": ["chat_completions"],
       "metadata": {
         "context_length": 32768,
         "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": false }

@@ -1,12 +1,13 @@
 {
   "reason": "allowed_models intersect down the path: a level is the group's own list, else its parent's child_defaults list, else unrestricted; [\"*\"] is an explicit unrestricted level; an empty child_defaults list allows a child no model unless the child lists its own; no restricting level anywhere = every model; child_defaults reach direct children only",
   "config": {
-    "format_version": 6,
+    "protocol_version": 7,
     "global": {},
     "backends": { "local": { "type": "openai-compatible", "base_url": "http://localhost:8000/v1" } },
     "models": {
       "a": {
         "deployments": [{ "backend": "local", "model": "a" }],
+        "endpoints": ["chat_completions"],
         "metadata": {
           "context_length": 4096,
           "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }
@@ -14,6 +15,7 @@
       },
       "b": {
         "deployments": [{ "backend": "local", "model": "b" }],
+        "endpoints": ["chat_completions"],
         "metadata": {
           "context_length": 4096,
           "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }
@@ -21,6 +23,7 @@
       },
       "c": {
         "deployments": [{ "backend": "local", "model": "c" }],
+        "endpoints": ["chat_completions"],
         "metadata": {
           "context_length": 4096,
           "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }

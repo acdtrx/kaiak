@@ -153,6 +153,11 @@
     "kind": "schema",
     "reason": "a backend model name holds no spaces"
   },
+  "deployment-types-differ.json": {
+    "kind": "semantic",
+    "code": "deployment-types-differ",
+    "reason": "a model's deployments are on backends of different types (vllm, then llama-server): every deployment of a model is on a backend of one type"
+  },
   "deployments-empty.json": {
     "kind": "schema",
     "reason": "a model needs at least one deployment"
@@ -160,7 +165,7 @@
   "endpoints-deployment-backend-unknown.json": {
     "kind": "semantic",
     "code": "deployment-backend-unknown",
-    "reason": "a model with a deployment on an unknown backend reports that rule alone: its endpoints list is judged only when every deployment's backend type is known"
+    "reason": "a model with a deployment on an unknown backend reports that rule alone: its one type and its endpoints list are judged only when every deployment's backend is known"
   },
   "endpoints-duplicate.json": {
     "kind": "schema",
@@ -168,16 +173,25 @@
   },
   "endpoints-empty.json": {
     "kind": "schema",
-    "reason": "a model's endpoints list names at least one endpoint (omit it for every endpoint its deployments' types serve)"
+    "reason": "a model's endpoints list names at least one endpoint"
+  },
+  "endpoints-missing.json": {
+    "kind": "schema",
+    "reason": "every model lists its endpoints"
   },
   "endpoints-not-served.json": {
     "kind": "semantic",
     "code": "endpoint-not-served",
-    "reason": "a model lists an endpoint none of its deployments' backend types serves (chat on vllm-omni, speech on vllm)"
+    "reason": "a model lists an endpoint its backend type does not serve (chat on vllm-omni, speech on vllm)"
+  },
+  "endpoints-types-differ.json": {
+    "kind": "semantic",
+    "code": "deployment-types-differ",
+    "reason": "a model whose deployments' types differ reports that rule alone: its endpoints list is judged only against one type (responses_input_tokens, which llama-server serves and vllm does not, is not judged)"
   },
   "endpoints-unknown-name.json": {
     "kind": "schema",
-    "reason": "a model's endpoints are the gateway's endpoint names"
+    "reason": "a model's endpoints are the gateway's endpoint names (chat is an operation, not an endpoint)"
   },
   "expires-at-date-only.json": {
     "kind": "schema",
@@ -206,13 +220,9 @@
     "kind": "schema",
     "reason": "the first-event timeout is a positive integer"
   },
-  "format-version-5.json": {
+  "format-version-member.json": {
     "kind": "schema",
-    "reason": "format_version must be 6"
-  },
-  "format-version-missing.json": {
-    "kind": "schema",
-    "reason": "format_version is required"
+    "reason": "format_version is not a member, beside protocol_version or in its place: the document states its version in protocol_version alone"
   },
   "global-default-user.json": {
     "kind": "schema",
@@ -584,6 +594,14 @@
   "price-unknown-unit.json": {
     "kind": "schema",
     "reason": "price units are tokens_in, tokens_cached, tokens_cache_write, tokens_out: images and audio seconds are counted, not priced"
+  },
+  "protocol-version-6.json": {
+    "kind": "schema",
+    "reason": "protocol_version must be 7, the protocol version: a document of another version is refused, never migrated"
+  },
+  "protocol-version-missing.json": {
+    "kind": "schema",
+    "reason": "protocol_version is required"
   },
   "queue-size-negative.json": {
     "kind": "schema",

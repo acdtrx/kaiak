@@ -1,5 +1,5 @@
 {
-  "format_version": 6,
+  "protocol_version": 7,
   "global": {
     "limits": [
       { "type": "requests_per_minute", "value": 1200 },
@@ -46,6 +46,7 @@
         { "backend": "vllm-gpu-1", "model": "Qwen/Qwen3-32B" },
         { "backend": "vllm-gpu-2", "model": "Qwen/Qwen3-32B" }
       ],
+      "endpoints": ["chat_completions", "completions", "messages", "messages_count_tokens", "responses"],
       "metadata": {
         "context_length": 32768,
         "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": true }
@@ -57,6 +58,7 @@
         { "backend": "vllm-gpu-1", "model": "Qwen/Qwen3-32B" },
         { "backend": "vllm-gpu-2", "model": "Qwen/Qwen3-32B" }
       ],
+      "endpoints": ["chat_completions", "completions", "messages", "messages_count_tokens", "responses"],
       "metadata": {
         "context_length": 32768,
         "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": true }
@@ -98,6 +100,7 @@
     },
     "gpt-4.1": {
       "deployments": [{ "backend": "azure-swedencentral", "model": "gpt-4.1-prod" }],
+      "endpoints": ["chat_completions", "responses"],
       "metadata": {
         "context_length": 1047576,
         "capabilities": { "streaming": true, "tools": true, "vision": true, "reasoning": false }
@@ -117,6 +120,7 @@
     },
     "gpt-4.1-mini": {
       "deployments": [{ "backend": "azure-swedencentral", "model": "gpt-4.1-mini-prod" }],
+      "endpoints": ["chat_completions", "responses"],
       "metadata": {
         "context_length": 1047576,
         "capabilities": { "streaming": true, "tools": true, "vision": true, "reasoning": false }

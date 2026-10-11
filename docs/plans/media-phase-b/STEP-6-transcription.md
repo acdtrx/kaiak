@@ -52,6 +52,11 @@ Tokens follow OVERVIEW decision 9.
   usage), each parsing the rebuilt body.
 - Metrics and the request line: `kaiak.usage.audio.input.duration` now produced;
   `gen_ai.output.type` `text`.
+- `docs/specs/GATEWAY.md`, Providers → Endpoint support: a last column
+  `audio_transcriptions` — `yes` for `vllm` and `llama-server`, `—` for every other
+  type — and its source in the sentence before the table ("vLLM 0.30.0; llama.cpp at
+  b11526; `docs/plans/media-phase-b/RESEARCH.md` records them") — with the code, as
+  `TestEndpointSupportFollowsTheSpec` reads the table.
 - Tests beside each.
 
 ## Decisions made during planning

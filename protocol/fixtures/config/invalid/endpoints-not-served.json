@@ -1,5 +1,5 @@
 {
-  "format_version": 6,
+  "protocol_version": 7,
   "global": {},
   "backends": {
     "omni-image": { "type": "vllm-omni", "base_url": "http://omni-image:8092/v1" },

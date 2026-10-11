@@ -1,7 +1,7 @@
 {
-  "config_hash": "f978193e15a37a6ab81064b9aef41938201268878ded1d1e324e2fe7dc3ca8e6",
+  "config_hash": "0224353673f59520ba3ca0161511e9dfb1fa6a0f7e5814cd2e72bcc94229413d",
   "config": {
-    "format_version": 6,
+    "protocol_version": 7,
     "global": {
       "limits": [
         {
@@ -59,6 +59,9 @@
             "model": "Qwen/Qwen3-32B"
           }
         ],
+        "endpoints": [
+          "chat_completions"
+        ],
         "metadata": {
           "context_length": 32768,
           "capabilities": {
@@ -84,6 +87,10 @@
             "backend": "azure-westeurope",
             "model": "gpt-4.1-prod"
           }
+        ],
+        "endpoints": [
+          "chat_completions",
+          "responses"
         ],
         "metadata": {
           "context_length": 1047576,
@@ -134,6 +141,10 @@
             "model": "gpt-4.1-mini"
           }
         ],
+        "endpoints": [
+          "chat_completions",
+          "responses"
+        ],
         "metadata": {
           "context_length": 1047576,
           "capabilities": {
@@ -169,6 +180,9 @@
             "backend": "vllm-b",
             "model": "BAAI/bge-m3"
           }
+        ],
+        "endpoints": [
+          "embeddings"
         ],
         "metadata": {
           "context_length": 8192,

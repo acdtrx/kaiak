@@ -1,5 +1,5 @@
 {
-  "format_version": 6,
+  "protocol_version": 7,
   "global": {
     "limits": [
       { "type": "tokens_per_hour", "value": 1000 },
@@ -20,6 +20,9 @@
           "model": "a"
         }
       ],
+      "endpoints": [
+        "chat_completions"
+      ],
       "metadata": {
         "context_length": 4096,
         "capabilities": {
@@ -36,6 +39,9 @@
           "backend": "local",
           "model": "b"
         }
+      ],
+      "endpoints": [
+        "chat_completions"
       ],
       "metadata": {
         "context_length": 4096,
@@ -54,6 +60,9 @@
           "model": "c"
         }
       ],
+      "endpoints": [
+        "chat_completions"
+      ],
       "metadata": {
         "context_length": 4096,
         "capabilities": {
@@ -71,6 +80,9 @@
           "model": "d"
         }
       ],
+      "endpoints": [
+        "chat_completions"
+      ],
       "metadata": {
         "context_length": 4096,
         "capabilities": {
@@ -87,6 +99,9 @@
           "backend": "local",
           "model": "e"
         }
+      ],
+      "endpoints": [
+        "chat_completions"
       ],
       "metadata": {
         "context_length": 4096,

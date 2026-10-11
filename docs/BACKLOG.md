@@ -50,16 +50,34 @@ Group entries under headings as themes emerge.
   Revisit trigger: a client needs one of them, or refusing 1-hour caching breaks a
   client in use.
 - **Image and audio models** — graduated to `docs/plans/media-generation/` (research
-  and direction settled 2026-10-09): on `vllm-omni` backends, speech and image
-  generation first, then uploads with image edits and transcription. Planned after
-  the rerank plan merges. Video and WebSocket endpoints stay out (revisit trigger: a
+  and direction settled 2026-10-09: speech and image generation on `vllm-omni`
+  backends) and `docs/plans/media-phase-b/` (uploads, image edits and speech-to-text,
+  settled 2026-10-11). Video and WebSocket endpoints stay out (revisit trigger: a
   user needs video generation through the gateway).
 - **Measuring compressed speech audio** — speech output is WAV or PCM only, because
   kaiak measures `audio_seconds_out` from the header or sample rate and the bytes
   (ruled 2026-10-09, `docs/plans/media-generation/RESEARCH.md`); MP3, FLAC, Opus and
-  AAC are refused. Accepting them needs a small parser per format for its length
-  (MP3 frame headers, FLAC's STREAMINFO, Ogg Opus's last granule position), standard
-  library only. Revisit trigger: someone asks for a compressed speech format.
+  AAC are refused. Accepting them needs a small parser per format for its length,
+  standard library only: the readers that measure uploaded audio for speech-to-text
+  (MP3 frame headers, FLAC's STREAMINFO; `docs/specs/GATEWAY.md`, Accounting → Media
+  usage) cover two, so Opus (Ogg's last granule position) and AAC remain. Revisit
+  trigger: someone asks for a compressed speech format.
+- **Streaming transcription** — `stream: true` on `/v1/audio/transcriptions` is
+  refused (settled 2026-10-11, `docs/specs/GATEWAY.md`, Client API → owned parts:
+  speech-to-text). vLLM streams `transcription.chunk` events whose usage carries
+  tokens only, never seconds, and only when the request asks for it
+  (`stream_include_usage`); llama-server streams `transcript.text.delta` events,
+  then a `transcript.text.done` event with token usage (vLLM 0.30.0, llama.cpp
+  b11526; `docs/plans/media-phase-b/RESEARCH.md`). Serving it needs each server's
+  stream relayed and judged complete by its own end event, the stream timers, and
+  `audio_seconds_in` from the measured upload on vLLM too — which then refuses an
+  upload it cannot measure, as on llama-server. Revisit trigger: someone asks for
+  live transcripts.
+- **Audio translations** — `POST /v1/audio/translations` (speech to English text) is
+  not served (settled 2026-10-11). vLLM serves it on the models that transcribe but
+  reports no usage at all, so its seconds would come from the measured upload alone
+  (WAV, FLAC, MP3, the rest refused); llama-server does not serve it. Revisit
+  trigger: someone asks for it.
 - **Reasoning-effort discovery** — read the supported `reasoning_efforts` from backends
   instead of declaring them. No backend reports the list today: llama-server's `/props`
   has only a yes/no (`chat_template_caps.supports_reasoning_effort`), vLLM and cloud
@@ -139,13 +157,6 @@ Group entries under headings as themes emerge.
   they stream — since `n` undercounts a layered model, which answers one image per
   layer. Revisit trigger: a client needs image bytes rather than base64 (a large
   image where base64's third more matters, or a client that cannot decode it).
-- **vLLM-Omni quirks** — an image request to a model with no diffusion stage (a
-  speech model) answers `503 No diffusion stage found in multi-stage pipeline.`, a
-  server status for a request no deployment of that model can serve; the gateway
-  reads it as the endpoint missing by that message (`docs/specs/GATEWAY.md`,
-  Providers → An endpoint missing from a server). Worth an upstream report (a
-  `404` or `400` would say what it is). Revisit trigger: a vLLM-Omni release
-  changes that answer, and the reading needs its update. (recorded 2026-10-09.)
 - **vLLM-Omni `extra_params`** — the gateway refuses `extra_params` on speech and
   image generation, whatever it holds, because vLLM-Omni hands it to the model — a
   speech model's adapter, a diffusion pipeline's extra arguments — and some fetch
@@ -189,8 +200,9 @@ Group entries under headings as themes emerge.
     sent to an encoder model, a BERT-style reranker (bge-reranker-v2-m3,
     jina-reranker) or embedding model, whose context keeps no memory (`the current
     context does not support logits computation`, `tools/server/server-context.cpp`,
-    `master` on 2026-10-09: a chat client pointed at a reranker's name); five
-    such requests open the circuit for every key, and one per probe interval keeps it
+    `master` on 2026-10-09: refused before the server once the model's `endpoints`
+    list names `rerank` or `embeddings` alone, settled 2026-10-11); five such
+    requests open the circuit for every key, and one per probe interval keeps it
     open, billed $0. Fix: treat a llama-server `500` as the client's error (relayed,
     not retried, not a circuit failure); a dead server still opens the circuit
     through refused connections, timeouts and 502/503/504.
@@ -200,11 +212,12 @@ Group entries under headings as themes emerge.
     `{"content": …}` and `[{"embedding": [[…]]}]`, no OpenAI `usage`), so chat works,
     the models list and the config-apply check pass, and completions and embeddings
     reach clients in a shape they cannot read, with usage estimated. No `404`, so the
-    wrong-path rule (`GATEWAY.md`, Wrong path to a host) cannot see it. Fix: the
-    module refuses (config issue) or warns about a `base_url` not ending in `/v1`.
+    path-missing rule (`GATEWAY.md`, A path the server does not have) cannot see it.
+    Fix: the module refuses (config issue) or warns about a `base_url` not ending in
+    `/v1`.
   Until then: `global.max_n: 1` and `max_sequences_per_request: 1` refuse prompt lists
-  and `n` > 1 on every backend (not `n_cmpl`); keep chat clients off an encoder
-  reranker's model name, or serve it on vLLM (`docs/DEPLOYMENT.md`, Rerankers).
+  and `n` > 1 on every backend (not `n_cmpl`); an encoder reranker's `endpoints`
+  list names `rerank` alone (`docs/DEPLOYMENT.md`, Rerankers).
   Revisit trigger: llama-server serves a
   priced or limited model to clients that are not fully trusted, or a circuit opens
   on a llama-server model without the server being down, or a llama-server
@@ -228,9 +241,9 @@ Group entries under headings as themes emerge.
   `docs/plans/media-generation/`; `docs/specs/CONTROL-PROTOCOL.md`, Config → Units
   and price units). Pricing them needs price units of their own — USD per image,
   likely by size and quality as the cloud APIs price images, and per second of
-  audio — beside the token prices of a tier, and a format and protocol change on
-  both halves. Revisit trigger: a priced image or speech model is needed (a cloud
-  backend for them, or an internal charge per image or per minute of audio).
+  audio — beside the token prices of a tier, on both halves at once. Revisit
+  trigger: a priced image or speech model is needed (a cloud backend for them, or an
+  internal charge per image or per minute of audio).
 - **Cost identical across CPU architectures** — `accounting.Cost` multiplies units by
   per-unit prices and rounds once per record; the Go compiler fuses multiply-add on
   arm64 but not on amd64, so the same record can cost 1 nano-USD more or less at a

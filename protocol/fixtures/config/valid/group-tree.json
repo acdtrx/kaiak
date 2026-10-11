@@ -1,5 +1,5 @@
 {
-  "format_version": 6,
+  "protocol_version": 7,
   "global": {
     "limits": [
       { "type": "requests_per_minute", "value": 3000 },
@@ -17,6 +17,7 @@
   "models": {
     "qwen3-32b": {
       "deployments": [{ "backend": "vllm", "model": "Qwen/Qwen3-32B" }],
+      "endpoints": ["chat_completions"],
       "metadata": {
         "context_length": 32768,
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }
@@ -24,6 +25,7 @@
     },
     "bge-m3": {
       "deployments": [{ "backend": "vllm", "model": "BAAI/bge-m3" }],
+      "endpoints": ["embeddings"],
       "metadata": {
         "context_length": 8192,
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }
@@ -31,6 +33,7 @@
     },
     "gpt-4.1": {
       "deployments": [{ "backend": "openai", "model": "gpt-4.1" }],
+      "endpoints": ["chat_completions"],
       "metadata": {
         "context_length": 1047576,
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }
@@ -46,6 +49,7 @@
     },
     "gpt-4.1-mini": {
       "deployments": [{ "backend": "openai", "model": "gpt-4.1-mini" }],
+      "endpoints": ["chat_completions"],
       "metadata": {
         "context_length": 1047576,
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }

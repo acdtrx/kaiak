@@ -32,9 +32,26 @@
   whatever its port or scheme — and logs the 3xx as an error;
   `KAIAK_CONTROL_URL` must be the address that answers.
 - **Protocol version** travels as a `Kaiak-Protocol` header on every request and
-  response (the SSE stream's response included); the current version is `6`
-  (settled 2026-10-09, with config format 6: the media units, Config → Units and
-  price units).
+  response (the SSE stream's response included); the current version is `7`
+  (settled 2026-10-11, with the user: mandatory `endpoints` and one backend type per
+  model, Config).
+- **One version** (settled 2026-10-11, with the user): the protocol version covers
+  the whole contract — the config document, the usage record, the messages and the
+  endpoints. The config states it too, in `protocol_version` (Config → Top-level
+  shape), since a config file or seed config has no connection to carry a header.
+  - **A change bumps it** when it makes the other half, or an existing document,
+    unreadable or invalid: a new usage unit (every record carries every unit, so an
+    older control plane would refuse the records — the batch dropped, billing data
+    lost), a new totals window type (an older gateway cannot read it), a field made
+    required (a model's `endpoints`).
+  - **An addition bumps nothing**: an optional field (`global.max_rerank_documents`,
+    `global.max_upload_bytes`), a backend type, an endpoint name. Every existing
+    document stays valid, and a half that does not know the addition refuses a
+    document using it as it refuses any invalid one — a gateway reports a config
+    rejection, which the control plane sees in status.
+  - Rejected: a version of the config document's own beside the protocol version —
+    every bump moved both numbers together (versions 2 to 6), and no mix of an older
+    and a newer half works across either.
 
 ## Endpoints (provisional)
 
@@ -63,11 +80,11 @@ the `{ error, detail }` body, `error` being the stable code:
 | Check | Code | Status |
 | --- | --- | --- |
 | `Authorization: Bearer <token>` carries the token (missing, not a bearer token, or wrong) | `unauthorized` | 401 |
-| `Kaiak-Protocol` is the current version, `6` (other or missing) | `protocol-version-mismatch` | 400 |
+| `Kaiak-Protocol` is the current version, `7` (other or missing) | `protocol-version-mismatch` | 400 |
 | `Kaiak-Instance` is an instance ID (Messages; missing or malformed) | `instance-invalid` | 400 |
 
 - **Repeated headers** (settled 2026-09-25): Node's HTTP layer joins a repeated
-  `Kaiak-Protocol` or `Kaiak-Instance` into one value (`6, 6`), which fails its check
+  `Kaiak-Protocol` or `Kaiak-Instance` into one value (`7, 7`), which fails its check
   as any other wrong value does, and keeps only the first of repeated `Authorization`
   headers — so the checks see one value per header and have no "repeated" case of
   their own.
@@ -244,9 +261,11 @@ the `{ error, detail }` body, `error` being the stable code:
   lets the files `$ref` each other (`config.schema.json` included) by relative name.
   This section is the summary; the conventions of Config (snake_case, strict, UTC
   timestamps) hold.
-- **No protocol version in bodies**: it travels in the `Kaiak-Protocol` header. The
-  one exception is status, which states the version the gateway speaks so the control
-  plane can store and show it with the rest of the report.
+- **No protocol version in message bodies**: it travels in the `Kaiak-Protocol`
+  header. The one exception is status, which states the version the gateway speaks so
+  the control plane can store and show it with the rest of the report. The config
+  document a config event carries states its own `protocol_version` (Config); the
+  event's envelope carries none.
 - **Integers** in messages stay at or below 2^53 − 1, so a JavaScript number holds them
   exactly — except usage totals, which are strings (Totals, below).
 - **Instance ID** (`KAIAK_INSTANCE_ID`, default the hostname): a letter or digit, then
@@ -439,45 +458,50 @@ the `{ error, detail }` body, `error` being the stable code:
   ceiling, prices, queue and retry overrides — no request defaults: `GATEWAY.md`,
   Model metadata → No model defaults, settled 2026-10-06), the group tree (groups with their allowed models, limits, defaults for
   their children and labels), keys (hashes, each in one group), global settings
-  (global limits, and the queue, retry and circuit-breaker settings — their defaults
-  and bounds: `GATEWAY.md`, Routing and reliability). The schema is the source of
+  (global limits; the caps on JSON bodies, on uploads — `max_upload_bytes`, settled
+  2026-10-11: `GATEWAY.md`, Request pipeline → Uploads — and on batches; and the
+  queue, retry and circuit-breaker settings — their defaults and bounds:
+  `GATEWAY.md`, Routing and reliability). The schema is the source of
   truth for every field: `protocol/schema/config.schema.json`; fixtures in
   `protocol/fixtures/config/` (settled 2026-09-24): `valid/`, `invalid/` (with
   `cases.json`: kind, code, reason) and `resolved/` (The group tree → Resolution
   fixtures).
-- **Top-level shape**: `format_version` (the integer `6`; settled 2026-10-09, with
-  the media units — a format-5 document is refused as another version), `global`,
-  `backends`, `models`, `keys` (required), `groups`
-  (optional, omitted = none). Adding `global.max_rerank_documents` (the cap on a
-  rerank request's documents, `GATEWAY.md`, Limits) bumps neither the format nor
-  the protocol (settled 2026-10-08): an optional field is additive, as a backend
-  type is (Backend types → Types bump no version). **The media units bump both**
-  (settled 2026-10-09, with the user): every usage record carries every unit, so a
-  record with `images` is one an older control plane refuses — its batch dropped,
-  billing data lost — and totals gain window types an older gateway cannot read. A
-  version mismatch makes the two halves refuse to talk instead, which an upgrade of
-  both ends. The limit types, `global.max_images_per_request`,
-  `global.max_speech_batch_items` and the `vllm-omni` type ride with the bump.
-  **A model's `endpoints` list bumps neither** (settled 2026-10-11, with the user):
-  an optional field is additive (Endpoints per model, below); it ships inside
-  format 6.
-  Collections are **objects keyed by ID** — uniqueness comes for free; the model key is
-  the public model name clients send.
+- **Top-level shape**: `protocol_version`, `global`, `backends`, `models`, `keys`
+  (required), `groups` (optional, omitted = none). **`protocol_version`** (settled
+  2026-10-11, with the user) is the integer `7`, the protocol version this document
+  is written for — the `Kaiak-Protocol` value, which it must equal (Shape → One
+  version): a document of another version, or with none, is refused as invalid, never
+  migrated. A config file and a seed config have no connection to carry the header,
+  so the document states it, wherever it comes from. Collections are **objects keyed
+  by ID** — uniqueness comes for free; the model key is the public model name clients
+  send.
 - **Conventions**: snake_case field names (as in the OpenAI API); durations are integer
   milliseconds named `*_ms`; timestamps are RFC 3339 in UTC (`Z`); price dates are
   `YYYY-MM-DD`, read as UTC; key hashes are `sha256:` + 64 lowercase hex.
-- **Endpoints per model** (settled 2026-10-11, with the user): a model's optional
-  `endpoints` is a list of client API endpoint names — the names `/v1/models` lists
-  (`$defs.endpoint`: `chat_completions`, `completions`, `embeddings`, `messages`,
-  `messages_count_tokens`, `responses`, `responses_input_tokens`, `rerank`,
-  `audio_speech`, `audio_speech_batch`, `images_generations`) — unique, at least one.
-  Absent, the model serves every endpoint some deployment's backend type serves;
-  present, it serves only those it lists, each of which one of its deployments'
-  types must serve (`endpoint-not-served`, below). What the gateway does with it:
+- **Endpoints per model** (settled 2026-10-11, with the user): a model's
+  `endpoints` is **required** — a list of client API endpoint names, the names
+  `/v1/models` lists (`$defs.endpoint`: `chat_completions`, `completions`,
+  `embeddings`, `messages`, `messages_count_tokens`, `responses`,
+  `responses_input_tokens`, `rerank`, `audio_speech`, `audio_speech_batch`,
+  `images_generations`, `images_edits`, `audio_transcriptions`), unique, at least one.
+  The model serves exactly the endpoints it lists, each of which its backend type
+  must serve (`endpoint-not-served`, below). What the gateway does with it:
   `GATEWAY.md`, Model metadata → Endpoints per model. Which types serve which
   endpoints is `GATEWAY.md`'s table (Providers → Endpoint support), which both
   halves hold as data: `protocol/fixtures/backend-types/<type>.json` lists each
   type's `endpoints`, and each half's rule is tested against it.
+- **One backend type per model** (settled 2026-10-11, with the user): every
+  deployment of a model is on a backend of the same type (`deployment-types-differ`,
+  below) — identical instances, the same server and the same model on each,
+  differing only in capacity (each backend's `max_in_flight`). So a model has one
+  type, its `endpoints` are judged against that type's set, and a backend's answer
+  means the same on every deployment (`GATEWAY.md`, Model metadata → Endpoints per
+  model). The cost: one model name cannot fail over between providers — Claude on
+  Anthropic and on Microsoft Foundry, a GPT model on OpenAI and on Azure are two
+  names. Rejected: deployments of several types under one name — routing would pick,
+  per request, the deployments whose type serves its endpoint, a list would be judged
+  against the union of their types, and a route missing on one deployment would say
+  nothing of the others.
 - **Strict everywhere** (settled 2026-10-06): every object but the ID-keyed
   collections and a group's `labels` (an open map whose keys follow a pattern) has a
   closed set of fields. A model names no request parameters: the one its config sets
@@ -504,12 +528,12 @@ the `{ error, detail }` body, `error` being the stable code:
   `azure-anthropic` — what each does and which client API endpoints it serves:
   `GATEWAY.md`, Providers. `openai`,
   `azure-openai`, `anthropic` and `azure-anthropic` require `api_key_env`. **Types bump no version** (settled
-  2026-10-01): adding types is additive — every config of the current format stays
-  valid — and a gateway that does not know a type rejects the config with a schema
-  error, which the control plane sees like any rejection; no protocol message
+  2026-10-01): a type is an addition (Shape → One version) — every existing config
+  stays valid — and a gateway that does not know a type rejects the config with a
+  schema error, which the control plane sees like any rejection; no protocol message
   changes. A bump would not catch an OpenAI backend left as `openai-compatible`
-  either: the operator edits the number, not the type. Rejected: a config format and
-  protocol bump for the types — churn across every fixture for no check that helps.
+  either: the operator edits the number, not the type. Rejected: a version bump for
+  each type — churn across every fixture for no check that helps.
 - **`api_key_env`** names an environment variable (`^[A-Za-z_][A-Za-z0-9_]*$`) that
   does not start with `KAIAK_` (settled 2026-09-25, N-S2): the gateway's own tokens
   live there, and a config author could otherwise have them sent to any backend URL.
@@ -661,11 +685,14 @@ the `{ error, detail }` body, `error` being the stable code:
     user): measured by the gateway on the speech audio it relays, rounded up to a
     whole second once per record;
   - `audio_seconds_in` — seconds of audio processed (settled 2026-10-09, with the
-    user): measured from audio a request uploads; no endpoint produces it yet (it
-    enters with the others so the uploads plan needs no version of its own).
+    user; produced by speech-to-text, settled 2026-10-11, with the user): the seconds
+    the backend reports for the audio a transcription uploaded, or the length the
+    gateway measures of that upload when the backend reports none, rounded up to a
+    whole second once per record (`GATEWAY.md`, Accounting → Media usage).
 
   The media units sit beside the tokens, not inside them: a speech record carries
-  the tokens its backend reports and the seconds the gateway measured, and each
+  the tokens its backend reports and the seconds the gateway measured, a
+  transcription record its tokens and the seconds of audio it processed, and each
   limit counts its own unit (`GATEWAY.md`, Limits). Rejected: one `audio_seconds`
   for both directions — audio generated and audio processed are limited and, when
   priced, priced apart, as input and output tokens are.
@@ -707,11 +734,19 @@ the `{ error, detail }` body, `error` being the stable code:
     tree rules find; a group whose `parent` has no entry counts its own per-minute
     limits alone.
   - `deployment-backend-unknown` — a deployment's `backend` has no entry.
-  - `endpoint-not-served` — an `endpoints` entry names an endpoint none of the
-    model's deployments' backend types serves (settled 2026-10-11). Path: the entry
-    (`/models/<model>/endpoints/<i>`). Judged only for a model all of whose
+  - `deployment-types-differ` — a model's deployments are on backends of different
+    types (settled 2026-10-11, with the user; Config → One backend type per model).
+    Reported once per model. Path: the `backend` of the first deployment whose
+    backend's type differs from the first deployment's
+    (`/models/<model>/deployments/<i>/backend`). Judged only for a model all of whose
     deployments name a defined backend: one on an unknown backend reports
     `deployment-backend-unknown` alone.
+  - `endpoint-not-served` — an `endpoints` entry names an endpoint the model's
+    backend type does not serve (settled 2026-10-11, with the user). Path: the entry
+    (`/models/<model>/endpoints/<i>`). Judged only for a model whose deployments all
+    name a defined backend of one type: one on an unknown backend reports
+    `deployment-backend-unknown` alone, one whose types differ
+    `deployment-types-differ` alone.
   - `allowed-model-unknown` — an `allowed_models` entry (a group's or a
     `child_defaults`') names no model.
   - `allowed-models-wildcard-mixed` — `"*"` listed alongside model names (a group's
@@ -749,8 +784,8 @@ the `{ error, detail }` body, `error` being the stable code:
 - Provider credentials appear only as environment-variable names. A backend's
   `base_url` carries no userinfo (`user:password@`; settled 2026-09-25): a URL
   credential would travel in config events and host pages.
-- The same document format is used by file mode and by the sample control plane's
-  config file.
+- File mode, the seed config and the sample control plane's config file use the same
+  document, at the same `protocol_version`.
 
 ## Usage records
 
