@@ -3,7 +3,9 @@ package main
 // The speech and image checks, with -speech-base-url and -image-base-url: vLLM-Omni
 // servers beside the run's chat backend, each a vllm-omni backend serving one model.
 // Audio lengths are measured here from the bytes the client got, and compared with
-// the seconds the gateway counted.
+// the seconds the gateway counted. The media checks' order, the limits and the
+// metrics are here too, for image edits (edits.go) and speech-to-text
+// (transcription.go) as well.
 
 import (
 	"bytes"
@@ -66,19 +68,32 @@ func imageBody(model string, extra map[string]any) map[string]any {
 		"num_inference_steps": 10, "seed": 7}, extra)
 }
 
-// mediaChecks are the speech and image checks, for the vLLM-Omni servers given: each
-// server's own, then the media limits, then each model sent the other's endpoint,
-// which its endpoints list leaves out.
+// mediaChecks are the speech, image and edit checks, for the vLLM-Omni servers given,
+// and the speech-to-text checks, for a speech-to-text server on a kind serving it:
+// each server's own, then the media limits, then each vLLM-Omni model sent the
+// other's endpoint, which its endpoints list leaves out.
 func (r *run) mediaChecks() {
-	speech, image := r.o.speechServer(), r.o.imageServer()
+	speech, image, edit, asr := r.o.speechServer(), r.o.imageServer(), r.o.editServer(), r.o.transcriber()
+	if !speech && !image && !edit {
+		r.skip("speech, image, edit", "no -speech-base-url, -image-base-url or -edit-base-url")
+	} else {
+		for _, s := range []struct {
+			on         bool
+			name, flag string
+		}{{speech, "speech", "-speech-base-url"}, {image, "image", "-image-base-url"}, {edit, "edit", "-edit-base-url"}} {
+			if !s.on {
+				r.skip(s.name, "no "+s.flag)
+			}
+		}
+	}
 	switch {
-	case !speech && !image:
-		r.skip("speech, image", "no -speech-base-url or -image-base-url")
+	case r.o.serves(epTranscriptions) && !asr:
+		r.skip("transcribe", "no -asr-base-url")
+	case !r.o.serves(epTranscriptions) && r.o.asrBaseURL != "":
+		r.skip("transcribe", r.o.kind+" serves no speech-to-text: only vllm and llama-server do")
+	}
+	if !speech && !image && !edit && !asr {
 		return
-	case !speech:
-		r.skip("speech", "no -speech-base-url")
-	case !image:
-		r.skip("image", "no -image-base-url")
 	}
 	if speech {
 		r.speechChecks()
@@ -86,11 +101,20 @@ func (r *run) mediaChecks() {
 	if image {
 		r.imageChecks()
 	}
+	if edit {
+		r.editChecks()
+	}
+	if asr {
+		r.transcriptionChecks()
+	}
 	if speech {
 		r.checkAudioLimit()
 	}
 	if image {
 		r.checkImageLimit()
+	}
+	if asr {
+		r.checkTranscriptionLimit()
 	}
 	if speech {
 		r.checkImageToSpeech()
@@ -103,22 +127,22 @@ func (r *run) mediaChecks() {
 
 func (r *run) speechChecks() {
 	if clip, ok := r.checkSpeechClip("speech-wav", idSpeechWAV, "wav"); ok {
-		r.checkMediaLog("usage-log/speech-wav", idSpeechWAV, mediaLog{outputType: "speech", seconds: clip.wholeSeconds()})
+		r.checkMediaLog("usage-log/speech-wav", idSpeechWAV, mediaLog{outputType: "speech", secondsOut: clip.wholeSeconds()})
 	}
 	if clip, ok := r.checkSpeechClip("speech-pcm", idSpeechPCM, "pcm"); ok {
-		r.checkMediaLog("usage-log/speech-pcm", idSpeechPCM, mediaLog{outputType: "speech", seconds: clip.wholeSeconds()})
+		r.checkMediaLog("usage-log/speech-pcm", idSpeechPCM, mediaLog{outputType: "speech", secondsOut: clip.wholeSeconds()})
 	}
 	if clip, ok := r.checkSpeechRaw(); ok {
 		r.checkMediaLog("usage-log/speech-raw", idSpeechRaw, mediaLog{outputType: "speech", stream: true, estimated: true,
-			seconds: clip.wholeSeconds()})
+			secondsOut: clip.wholeSeconds()})
 	}
 	if clip, usage, ok := r.checkSpeechSSE(); ok {
 		r.checkMediaLog("usage-log/speech-sse", idSpeechSSE, mediaLog{outputType: "speech", stream: true,
-			seconds: clip.wholeSeconds(), tokens: &usage})
+			secondsOut: clip.wholeSeconds(), tokens: &usage})
 	}
 	r.checkSpeechRefused()
 	if seconds, usage, ok := r.checkSpeechBatch(); ok {
-		r.checkMediaLog("usage-log/batch", idBatch, mediaLog{outputType: "speech", seconds: seconds, tokens: &usage})
+		r.checkMediaLog("usage-log/batch", idBatch, mediaLog{outputType: "speech", secondsOut: seconds, tokens: &usage})
 	}
 	r.checkSpeechBatchCap()
 }
@@ -352,11 +376,12 @@ func (r *run) checkSpeechSSE() (audioLength, speechUsage, bool) {
 	return length, *usage, true
 }
 
-// refusalCase is a request the gateway must refuse before routing: the status, code
-// and param it answers with.
+// refusalCase is a request the gateway must refuse before routing — its body a JSON
+// body's members (a map) or an upload's parts ([]formPart) — and the status, code and
+// param it answers with.
 type refusalCase struct {
 	what, path, id string
-	body           map[string]any
+	body           any
 	status         int
 	code, param    string
 }
@@ -366,7 +391,13 @@ type refusalCase struct {
 func (r *run) checkRefusals(name string, refusals []refusalCase) {
 	var refused []string
 	for _, f := range refusals {
-		resp, err := r.post(r.key, f.path, f.id, f.body)
+		var resp *response
+		var err error
+		if parts, upload := f.body.([]formPart); upload {
+			resp, err = r.postForm(r.key, f.path, f.id, parts)
+		} else {
+			resp, err = r.post(r.key, f.path, f.id, f.body)
+		}
 		if err != nil {
 			r.fail(name, "%s: %v", f.what, err)
 			return
@@ -483,27 +514,36 @@ func (r *run) checkImage() (int64, bool) {
 	if !r.ok(name, resp, err, idImage) {
 		return 0, false
 	}
+	formats, problem := imagesAnswer(resp.body)
+	if problem != "" {
+		r.fail(name, "%s", problem)
+		return 0, false
+	}
+	r.pass(name, fmt.Sprintf("%d image(s): %s", len(formats), strings.Join(formats, ", ")))
+	return int64(len(formats)), true
+}
+
+// imagesAnswer reads an image generation's or edit's answer: its data, each element
+// base64 of a PNG, JPEG or WebP. It returns each image's format and size, or what is
+// wrong.
+func imagesAnswer(body []byte) (formats []string, problem string) {
 	var answer struct {
 		Data []struct {
 			B64JSON string `json:"b64_json"`
 		}
 	}
-	if err := json.Unmarshal(resp.body, &answer); err != nil || len(answer.Data) == 0 {
-		r.fail(name, "no data: %s", clip(string(resp.body)))
-		return 0, false
+	if err := json.Unmarshal(body, &answer); err != nil || len(answer.Data) == 0 {
+		return nil, "no data: " + clip(string(body))
 	}
-	var formats []string
 	for i, d := range answer.Data {
 		image, err := base64.StdEncoding.DecodeString(d.B64JSON)
 		format := imageFormat(image)
 		if err != nil || format == "" {
-			r.fail(name, "image %d: not base64 of a PNG, JPEG or WebP (%v)", i, err)
-			return 0, false
+			return nil, fmt.Sprintf("image %d: not base64 of a PNG, JPEG or WebP (%v)", i, err)
 		}
 		formats = append(formats, fmt.Sprintf("%s of %d bytes", format, len(image)))
 	}
-	r.pass(name, fmt.Sprintf("%d image(s): %s", len(answer.Data), strings.Join(formats, ", ")))
-	return int64(len(answer.Data)), true
+	return formats, ""
 }
 
 // checkImageCap asks for one image more than global.max_images_per_request.
@@ -540,12 +580,12 @@ func (r *run) checkChatToImage() {
 		r.chatBody(modelImage, false, nil), http.StatusBadRequest, "endpoint_not_served", ""}})
 }
 
-// checkMediaLimit sends body to path twice with the media key, whose group allows
+// checkMediaLimit sends the same request twice with the media key, whose group allows
 // limit of the limit's unit a minute: the first is served and settles; the second is
 // refused 429 with errType and Retry-After, no x-ratelimit-* header (media limits send
 // none), and a log line naming limitType.
-func (r *run) checkMediaLimit(name, path, firstID, secondID string, body map[string]any, errType, limitType string) {
-	resp, err := r.post(r.mediaKey, path, firstID, body)
+func (r *run) checkMediaLimit(name string, send func(id string) (*response, error), firstID, secondID, errType, limitType string) {
+	resp, err := send(firstID)
 	if !r.ok(name, resp, err, firstID) {
 		return
 	}
@@ -555,7 +595,7 @@ func (r *run) checkMediaLimit(name, path, firstID, secondID string, body map[str
 		r.fail(name, "no log line for the first request: %v", err)
 		return
 	}
-	resp, err = r.post(r.mediaKey, path, secondID, body)
+	resp, err = send(secondID)
 	if err != nil {
 		r.fail(name, "%v", err)
 		return
@@ -596,6 +636,9 @@ func (r *run) checkMediaLimit(name, path, firstID, secondID string, body map[str
 	if v, ok := first["kaiak.usage.audio.output.duration"]; ok {
 		used = fmt.Sprintf("%v s of audio", v)
 	}
+	if v, ok := first["kaiak.usage.audio.input.duration"]; ok {
+		used = fmt.Sprintf("%v s of audio processed", v)
+	}
 	r.pass(name, fmt.Sprintf("first served, counted %s; second → 429 %s, %s %v, Retry-After %s",
 		used, errType, limitType, line["kaiak.limit.configured"], resp.header.Get("Retry-After")))
 }
@@ -603,15 +646,17 @@ func (r *run) checkMediaLimit(name, path, firstID, secondID string, body map[str
 // checkAudioLimit: audio generated settles after the request, so a first clip fills a
 // 1-second window and the next is refused.
 func (r *run) checkAudioLimit() {
-	r.checkMediaLimit("audio-limit", "/v1/audio/speech", idAudioLimit, idAudioRefused,
-		speechBody(modelSpeech, map[string]any{"response_format": "wav"}), "audio_seconds", "audio_seconds_out_per_minute")
+	r.checkMediaLimit("audio-limit", func(id string) (*response, error) {
+		return r.post(r.mediaKey, "/v1/audio/speech", id, speechBody(modelSpeech, map[string]any{"response_format": "wav"}))
+	}, idAudioLimit, idAudioRefused, "audio_seconds", "audio_seconds_out_per_minute")
 }
 
 // checkImageLimit: an image request reserves its n, so with 1 image a minute the
 // second is refused.
 func (r *run) checkImageLimit() {
-	r.checkMediaLimit("image-limit", "/v1/images/generations", idImageLimit, idImageRefused,
-		imageBody(modelImage, nil), "images", "images_per_minute")
+	r.checkMediaLimit("image-limit", func(id string) (*response, error) {
+		return r.post(r.mediaKey, "/v1/images/generations", id, imageBody(modelImage, nil))
+	}, idImageLimit, idImageRefused, "images", "images_per_minute")
 }
 
 // checkImageToSpeech sends an image request to the speech model, whose endpoints list
@@ -635,11 +680,12 @@ func (r *run) checkSpeechToImage() {
 type mediaLog struct {
 	outputType string
 	stream     bool
-	// estimated: the record's tokens are the gateway's estimate — the raw-audio stream
-	// and images, which vLLM-Omni reports none for.
+	// estimated: the record's tokens are the gateway's estimate — the raw-audio stream,
+	// images and edits, which vLLM-Omni reports none for, and vLLM's transcriptions.
 	estimated bool
-	// seconds and images: the audio seconds and images the record must count.
-	seconds, images int64
+	// secondsOut, secondsIn and images: the seconds of audio generated and processed
+	// and the images the record must count.
+	secondsOut, secondsIn, images int64
 	// tokens, when set, is the usage the answer reported, which the record must
 	// carry exactly.
 	tokens *speechUsage
@@ -655,7 +701,8 @@ func (r *run) checkMediaLog(name, id string, want mediaLog) {
 		return
 	}
 	num := func(k string) float64 { v, _ := line[k].(float64); return v }
-	seconds, images := num("kaiak.usage.audio.output.duration"), num("kaiak.usage.images")
+	secondsOut, secondsIn := num("kaiak.usage.audio.output.duration"), num("kaiak.usage.audio.input.duration")
+	images := num("kaiak.usage.images")
 	switch {
 	case line["http.response.status_code"] != 200.0:
 		r.fail(name, "request %s ended with status %v", id, line["http.response.status_code"])
@@ -669,34 +716,41 @@ func (r *run) checkMediaLog(name, id string, want mediaLog) {
 	case line["kaiak.usage.estimated"] != want.estimated:
 		why := "the backend reported no usage, or audio the gateway could not measure"
 		if want.estimated {
-			why = "vLLM-Omni reports no usage here, so the gateway must estimate it"
+			why = "the server reports no token usage here, so the gateway must estimate it"
 		}
 		r.fail(name, "kaiak.usage.estimated=%v: %s", line["kaiak.usage.estimated"], why)
 	case num("gen_ai.usage.input_tokens") == 0:
 		r.fail(name, "no input tokens")
-	case !want.estimated && num("gen_ai.usage.output_tokens") == 0:
+	case !want.estimated && want.tokens == nil && num("gen_ai.usage.output_tokens") == 0:
 		r.fail(name, "no output tokens")
 	case want.tokens != nil && (int64(num("gen_ai.usage.input_tokens")) != want.tokens.InputTokens ||
 		int64(num("gen_ai.usage.output_tokens")) != want.tokens.OutputTokens):
 		r.fail(name, "tokens %v+%v, the answer reported %d+%d", line["gen_ai.usage.input_tokens"],
 			line["gen_ai.usage.output_tokens"], want.tokens.InputTokens, want.tokens.OutputTokens)
-	case int64(seconds) != want.seconds:
-		r.fail(name, "kaiak.usage.audio.output.duration=%v s, want %d: the audio measured here, rounded up once", seconds, want.seconds)
+	case int64(secondsOut) != want.secondsOut:
+		r.fail(name, "kaiak.usage.audio.output.duration=%v s, want %d: the audio measured here, rounded up once", secondsOut,
+			want.secondsOut)
+	case int64(secondsIn) != want.secondsIn:
+		r.fail(name, "kaiak.usage.audio.input.duration=%v s, want %d: the upload's length, rounded up", secondsIn, want.secondsIn)
 	case int64(images) != want.images:
 		r.fail(name, "kaiak.usage.images=%v, want the answer's %d", images, want.images)
 	default:
 		detail := fmt.Sprintf("in %v, out %v, estimated %v, cost %v", line["gen_ai.usage.input_tokens"],
 			line["gen_ai.usage.output_tokens"], line["kaiak.usage.estimated"], line["kaiak.usage.cost_usd"])
-		if want.outputType == "image" {
+		switch want.outputType {
+		case "image":
 			r.pass(name, fmt.Sprintf("%d image(s); %s", want.images, detail))
-			return
+		case "text":
+			r.pass(name, fmt.Sprintf("%d s of audio processed, the upload's length rounded up; %s", want.secondsIn, detail))
+		default:
+			r.pass(name, fmt.Sprintf("%d s of audio, as measured here; %s", want.secondsOut, detail))
 		}
-		r.pass(name, fmt.Sprintf("%d s of audio, as measured here; %s", want.seconds, detail))
 	}
 }
 
-// checkMediaMetrics reads the admin /metrics: images and seconds of audio generated
-// under their own counters, by output type, and the media limits' refusals.
+// checkMediaMetrics reads the admin /metrics: images, edited images, and seconds of
+// audio generated and processed under their own counters, by output type, and the
+// media limits' refusals.
 func (r *run) checkMediaMetrics() {
 	const name = "media-metrics"
 	status, body, err := httpGet(r.ctx, r.client, r.gw.admin+"/metrics", "")
@@ -721,6 +775,12 @@ func (r *run) checkMediaMetrics() {
 			[]string{`gen_ai_request_model="` + modelImage + `"`, `gen_ai_output_type="image"`}, "images", 1},
 		{r.o.imageServer(), "kaiak_limit_rejections_total{", []string{`kaiak_limit_type="images_per_minute"`},
 			"image limit refusals", 1},
+		{r.o.editServer(), "kaiak_usage_images_total{",
+			[]string{`gen_ai_request_model="` + modelEdit + `"`, `gen_ai_output_type="image"`}, "edited images", 1},
+		{r.o.transcriber(), "kaiak_usage_audio_input_duration_seconds_total{",
+			[]string{`gen_ai_request_model="` + modelASR + `"`, `gen_ai_output_type="text"`}, "seconds of audio processed", 1},
+		{r.o.transcriber(), "kaiak_limit_rejections_total{", []string{`kaiak_limit_type="audio_seconds_in_per_minute"`},
+			"audio processed limit refusals", 1},
 	} {
 		if !c.on {
 			continue

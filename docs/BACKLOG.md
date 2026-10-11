@@ -237,13 +237,13 @@ Group entries under headings as themes emerge.
 - **Pricing media units** — `images`, `audio_seconds_out` and `audio_seconds_in` are
   counted and limited but not priced: `usd_per_million` takes the token units only,
   so images and seconds of audio cost nothing, and a priced model's token prices
-  apply to a speech request's tokens (ruled 2026-10-09,
+  apply to a media request's tokens (ruled 2026-10-09,
   `docs/plans/media-generation/`; `docs/specs/CONTROL-PROTOCOL.md`, Config → Units
   and price units). Pricing them needs price units of their own — USD per image,
   likely by size and quality as the cloud APIs price images, and per second of
   audio — beside the token prices of a tier, on both halves at once. Revisit
-  trigger: a priced image or speech model is needed (a cloud backend for them, or an
-  internal charge per image or per minute of audio).
+  trigger: a priced image, speech or speech-to-text model is needed (a cloud backend
+  for them, or an internal charge per image or per minute of audio).
 - **Cost identical across CPU architectures** — `accounting.Cost` multiplies units by
   per-unit prices and rounds once per record; the Go compiler fuses multiply-add on
   arm64 but not on amd64, so the same record can cost 1 nano-USD more or less at a

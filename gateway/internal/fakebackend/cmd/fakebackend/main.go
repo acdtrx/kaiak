@@ -6,8 +6,9 @@
 // "listening <url>" on stdout once it accepts connections, and stops on SIGINT or
 // SIGTERM. Answers honor max_completion_tokens / max_tokens (finish_reason "length"
 // when they cut the answer short). Rerank answers in vLLM's shape or llama-server's;
-// the server played can lack endpoints the way each server lacks them. Speech, the
-// speech batch and image generation answer as vLLM-Omni does, and a model can be
+// the server played can lack endpoints the way each server lacks them, and answer a
+// path it has no route for as vLLM or llama-server does. Speech, the speech batch,
+// image generation and image edits answer as vLLM-Omni does, and a model can be
 // played as one that does not speak or does not draw, as vLLM-Omni answers for it.
 // Speech-to-text answers in vLLM's shape or llama-server's, and a model can be played
 // as one that does not hear audio, as each server answers for it.
@@ -44,13 +45,15 @@ func main() {
 		"comma-separated model IDs the models list lists (completions serve any model name)")
 	rerankShape := flag.String("rerank-shape", "vllm", "the server whose rerank answers and errors the backend sends: vllm, llama-server")
 	rerankContext := flag.Int("rerank-context", 0, "the most words a rerank query and one document may hold together; a longer pair is refused 400 in the server's error (0: no limit)")
-	noRoute := flag.String("no-route", "", `comma-separated endpoints (paths below /v1/, e.g. chat/completions) the server has no route for, answered as vLLM answers one: 404 {"detail":"Not Found"} (a vLLM reranker has no chat route, a vLLM chat model no rerank route)`)
+	noRoute := flag.String("no-route", "", `comma-separated endpoints (paths below /v1/, e.g. chat/completions) the server has no route for, answered as any path it has no route for (-no-route-shape; a vLLM reranker has no chat route, a vLLM chat model no rerank or embeddings route)`)
+	noRouteShape := flag.String("no-route-shape", "", `the server whose 404 answers a path the backend has no route for — one it does not serve, or an endpoint in -no-route: vllm, FastAPI's {"detail":"Not Found"} (vLLM, vLLM-Omni); llama-server, {"error":{"message":"File Not Found","type":"not_found_error","code":404}} (default: vllm with -no-route, else an OpenAI-shaped error)`)
 	notSupported := flag.String("not-supported", "", "comma-separated endpoints answered as llama-server answers one it was not started for: 501 not_supported_error (rerank without --reranking, embeddings without --embeddings)")
 	nonSpeech := flag.String("non-speech-models", "", `comma-separated models whose speech is answered as vLLM-Omni answers it on a model with no speech stage: 400 "TTS model did not produce audio output." (the speech batch: 400, as on a pure-diffusion server)`)
 	nonImage := flag.String("non-image-models", "", `comma-separated models whose image generation is answered as vLLM-Omni answers it on a model with no diffusion stage: 503 "No diffusion stage found in multi-stage pipeline."`)
 	imageServed := flag.String("image-served-model", "", `the server's served model name, which image generation compares a request's model with, as vLLM-Omni does: another model is answered 400 "Model mismatch" ("": none compared)`)
 	transcriptionShape := flag.String("transcription-shape", "vllm", "the server whose speech-to-text answers and errors the backend sends: vllm, llama-server")
 	nonAudio := flag.String("non-audio-models", "", `comma-separated models whose transcription is answered as each server answers one on a model that does not hear audio: vLLM 404 {"detail":"Not Found"}, llama-server 501 not_supported_error`)
+	audioMillis := flag.Int("audio-millis", 0, "the length in milliseconds of each speech clip and batch item generated, and of the audio vLLM's speech-to-text shape hears in every upload (0: 2500)")
 	flag.Parse()
 
 	if *cachedTokens < 0 || *cachedTokens > 7 {
@@ -58,6 +61,17 @@ func main() {
 	}
 	if *rerankContext < 0 {
 		log.Fatalf("fakebackend: -rerank-context %d: want 0 or more", *rerankContext)
+	}
+	if *audioMillis < 0 {
+		log.Fatalf("fakebackend: -audio-millis %d: want 0 or more", *audioMillis)
+	}
+	if *noRouteShape == "" && *noRoute != "" {
+		*noRouteShape = "vllm"
+	}
+	noRouteBody, ok := map[string]string{"": "", "vllm": `{"detail":"Not Found"}`,
+		"llama-server": `{"error":{"message":"File Not Found","type":"not_found_error","code":404}}`}[*noRouteShape]
+	if !ok {
+		log.Fatalf("fakebackend: unknown -no-route-shape %q", *noRouteShape)
 	}
 	shape, ok := map[string]fakebackend.RerankShape{"vllm": fakebackend.VLLMRerank, "llama-server": fakebackend.LlamaServerRerank}[*rerankShape]
 	if !ok {
@@ -68,7 +82,7 @@ func main() {
 	if !ok {
 		log.Fatalf("fakebackend: unknown -transcription-shape %q", *transcriptionShape)
 	}
-	reply := fakebackend.Reply{Chunks: words(answer), HonorMaxTokens: true, CachedTokens: *cachedTokens}
+	reply := fakebackend.Reply{Chunks: words(answer), HonorMaxTokens: true, CachedTokens: *cachedTokens, AudioMillis: *audioMillis}
 	switch *profile {
 	case "normal":
 	case "no-usage":
@@ -98,8 +112,12 @@ func main() {
 	backend.SetModels(strings.Split(*models, ",")...)
 	backend.SetRerankShape(shape)
 	backend.SetRerankContext(*rerankContext)
-	if *noRoute != "" {
-		backend.SetNoRoute(`{"detail":"Not Found"}`, strings.Split(*noRoute, ",")...)
+	if noRouteBody != "" {
+		var unrouted []string
+		if *noRoute != "" {
+			unrouted = strings.Split(*noRoute, ",")
+		}
+		backend.SetNoRoute(noRouteBody, unrouted...)
 	}
 	if *notSupported != "" {
 		backend.SetNotSupported(strings.Split(*notSupported, ",")...)

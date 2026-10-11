@@ -250,8 +250,10 @@ func (r *run) checkServiceTier() {
 
 // checkNotServed: the APIs the kind's backend type does not serve — which the chat
 // model's endpoints list cannot name — are refused with endpoint_not_served, each in
-// its API's error shape (rerank's and the media endpoints' are OpenAI's). No kind
-// serves the media endpoints: vllm-omni does.
+// its API's error shape (rerank's and the media endpoints' are OpenAI's), and so is
+// speech-to-text, which a chat model's list leaves out where the kind serves it. No
+// kind serves vllm-omni's media endpoints. The uploads are sent as uploads: a body of
+// another type is refused before the model is known.
 func (r *run) checkNotServed() {
 	const name = "endpoint-not-served"
 	openAI := func(path string, body map[string]any) func() string {
@@ -292,11 +294,23 @@ func (r *run) checkNotServed() {
 	if !r.o.serves(epRerank) {
 		want = append(want, refusal{"/v1/rerank", openAI("/v1/rerank", rerankBody(modelChat, relevanceDocuments))})
 	}
+	upload := func(path string, parts []formPart) func() string {
+		return func() string {
+			resp, err := r.postForm(r.key, path, "", parts)
+			if err != nil {
+				return err.Error()
+			}
+			return openAIError(resp, http.StatusBadRequest, "endpoint_not_served")
+		}
+	}
 	want = append(want,
 		refusal{"/v1/audio/speech", openAI("/v1/audio/speech", speechBody(modelChat, nil))},
 		refusal{"/v1/audio/speech/batch", openAI("/v1/audio/speech/batch",
 			map[string]any{"model": modelChat, "items": []any{map[string]any{"input": speechText}}})},
-		refusal{"/v1/images/generations", openAI("/v1/images/generations", imageBody(modelChat, nil))})
+		refusal{"/v1/images/generations", openAI("/v1/images/generations", imageBody(modelChat, nil))},
+		refusal{"/v1/images/edits", upload("/v1/images/edits", editForm(modelChat, nil))},
+		refusal{"/v1/audio/transcriptions", upload("/v1/audio/transcriptions",
+			transcriptionForm(modelChat, uploadAudios()[0], nil))})
 	var refused []string
 	for _, w := range want {
 		if problem := w.check(); problem != "" {

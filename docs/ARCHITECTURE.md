@@ -24,7 +24,7 @@
 
 ```mermaid
 flowchart LR
-    client[Clients<br/>OpenAI chat/completions/embeddings,<br/>Anthropic Messages, OpenAI Responses,<br/>rerank, speech, image generation] -->|requests, SSE streams,<br/>audio| gw[kaiak gateway<br/>N replicas]
+    client[Clients<br/>OpenAI chat/completions/embeddings,<br/>Anthropic Messages, OpenAI Responses,<br/>rerank, speech, image generation and edits,<br/>speech-to-text] -->|requests and uploads,<br/>SSE streams, audio| gw[kaiak gateway<br/>N replicas]
     gw -->|passthrough: the same API<br/>at both ends| be[Backends<br/>vLLM, vLLM-Omni, llama-server,<br/>SGLang, OpenAI, Azure OpenAI,<br/>Anthropic, Claude in Foundry]
     cp[Control plane<br/>kaiak-control] -->|SSE stream: current config,<br/>usage totals, live count| gw
     gw -->|usage records, status| cp
@@ -36,12 +36,18 @@ flowchart LR
 
 - Client → gateway → backend is the only request path. A request reaches only a
   backend that speaks its client API natively (Anthropic Messages, OpenAI Responses,
-  OpenAI's chat, completions and embeddings, rerank — vLLM's and llama-server's — or
-  speech, the speech batch and image generation — vLLM-Omni's):
-  the gateway passes it through with the edits it owns and never translates between
-  APIs (settled 2026-10-06; translation is in `docs/BACKLOG.md`). Each backend type
-  fixes the endpoints it serves (`docs/specs/GATEWAY.md`, Providers → Endpoint
-  support).
+  OpenAI's chat, completions and embeddings, rerank and speech-to-text — vLLM's and
+  llama-server's — or speech, the speech batch, image generation and image edits —
+  vLLM-Omni's): the gateway passes it through with the edits it owns and never
+  translates between APIs (settled 2026-10-06; translation is in
+  `docs/BACKLOG.md`). Each backend type fixes the endpoints it can serve
+  (`docs/specs/GATEWAY.md`, Providers → Endpoint support); each model lists those it
+  serves, its deployments all on one type (Model metadata → Endpoints per model).
+- Image edits and speech-to-text are **uploads** (`multipart/form-data`): the gateway
+  holds the body in memory under its own cap, budget and read deadline, reads the
+  parts it owns, and sends the backend a form it writes from the client's parts as
+  they were (`docs/specs/GATEWAY.md`, Request pipeline → Uploads). Nothing is written
+  to disk.
 - The control plane feeds the gateways config and receives usage and status in the
   background; a gateway with no control plane reachable keeps serving (file mode; in
   control-plane mode once booted, or from the seed config at boot) — except models
@@ -90,24 +96,28 @@ enforce the boundaries.
 
 - `config` — the config document: strict decoding, validation, resolution into an
   immutable snapshot (each group's path, effective allowed models and limits —
-  `child_defaults` merged, `"*"` resolved), the holder that swaps
-  it atomically, the one apply path every source uses (validate, swap, log, count),
-  and the file-mode loader (startup and SIGHUP reload).
+  `child_defaults` merged, `"*"` resolved), the one table of which endpoints each
+  backend type serves (which validation holds every model's list to), the holder
+  that swaps it atomically, the one apply path every source uses (validate, swap,
+  log, count), and the file-mode loader (startup and SIGHUP reload).
 - `server` — the API and admin listeners (health, readiness, `/metrics`), the drain
   (admission, in-flight count, the shutdown sequence `cmd/kaiak` triggers on
   SIGTERM/SIGINT) and the request pipeline: a fixed ordered list of stages over one
   per-request struct (admission → auth → key concurrency → inbound → model access →
-  endpoint support → model parameters → limits → attempts), plus the model endpoints'
-  answers; each stage names the requests it applies to (every request, the body
-  endpoints or the model endpoints). Each endpoint is one row of `server`'s endpoint
-  table; a body endpoint's identity is the `provider.Endpoint` it serves, whose path,
-  client API format and name are `provider`'s — the name one of `config`'s endpoint
-  names, which a model's `endpoints` list holds. The format decides the owned fields
-  the inbound stage reads and the error shape of every answer the gateway gives on
-  that route; the row holds the rest (its output-limit keys and operation name,
-  whether it only counts tokens). The attempts stage is routing → accounting →
-  provider run once per attempt: an attempt that failed before
-  anything reached the client is retried — through all three again, the queue
+  endpoint list → upload measured → model parameters → limits → attempts), plus the
+  model endpoints' answers; each stage names the requests it applies to (every
+  request, the body endpoints or the model endpoints). Each endpoint is one row of
+  `server`'s endpoint table; a body endpoint's identity is the `provider.Endpoint` it
+  serves, whose path, client API format and name are `provider`'s — the name one of
+  `config`'s endpoint names, which a model's `endpoints` list holds. The format
+  decides the owned fields the inbound stage reads and the error shape of every
+  answer the gateway gives on that route; the row holds the rest (its output-limit
+  keys and operation name, whether it only counts tokens, and for an upload endpoint
+  its upload format: the parts that may repeat and the owned parts' reader). An
+  upload is read under the upload cap, budget and read deadline into parts that are
+  slices of the held body, by the gateway's own form reader. The attempts stage is
+  routing → accounting → provider run once per attempt: an attempt that failed
+  before anything reached the client is retried — through all three again, the queue
   included — on another deployment when there is one; limits reserve once per client
   request and settle the sum of its attempts' records. Work that must happen however
   a request ends (the last attempt's slot release and circuit report, usage
@@ -142,8 +152,10 @@ enforce the boundaries.
 - `provider` — the only code that talks to backends: a module per backend type
   (openai, azure-openai, vllm, vllm-omni, llama-server, anthropic, azure-anthropic,
   and the generic openai-compatible), each self-contained over a shared wire core,
-  the one table of which endpoints each type serves, passthrough body edits per
-  client API, when a stream is whole per format, per-backend connection pools, the
+  the one reading of a server's answer to a path it does not have, passthrough body
+  edits per client API, an upload's form rebuilt for the backend (every part as
+  received, `model` replaced, a fresh boundary, written as it is sent with its exact
+  length), when a stream is whole per format, per-backend connection pools, the
   circuit breaker's probe (`GET …/models`; none for azure-anthropic, which has no
   models list), and the `ModelChecker` (goroutine run by `cmd/kaiak`), which probes each
   applied config's backends once, off the request path, and warns about deployments
@@ -152,8 +164,9 @@ enforce the boundaries.
   read them on the way.
 - `accounting` — meters each attempt's response as it is relayed — reading usage as
   each client API reports it (OpenAI, Messages, Responses, Rerank, Speech, Speech
-  batch, Images) into the same units, measuring the length of the WAV and PCM audio
-  it relays and counting the images of an answer without holding them —, settles usage and
+  batch, Images, Image edits, Speech-to-text) into the same units, measuring the
+  length of the WAV and PCM audio it relays and of the WAV, FLAC and MP3 audio
+  uploaded, and counting the images of an answer without holding them —, settles usage and
   cost into usage records (each naming the key's group path) — one per routed
   request, plus one per retried attempt whose request reached the backend and got
   no answer — clamps them to the
@@ -259,17 +272,20 @@ enforce the boundaries.
   Anthropic Messages and OpenAI Responses (with recorded answers of real servers in
   `captures/` for tests that need their exact bytes), rerank in vLLM's answer
   shape or llama-server's (refusing a pair longer than its context in that server's
-  error), and vLLM-Omni's speech (WAV or PCM, whole, streamed raw or as SSE, its
-  usage in headers or events), speech batch and image generation (answering as
-  vLLM-Omni does for a model that does not speak, does not draw or is not the one it
-  serves), that can stream, stall, hang, cut, lack an endpoint as vLLM or llama-server
-  lacks one, fail (also for a scripted sequence of requests) and omit usage on demand,
-  serves a models list whose status the test sets, and records every request it
-  receives; used by tests only. `fakebackend/cmd/fakebackend` runs it as a process
-  (listen address, behavior profile, credential check, the server whose rerank
-  answers it plays and the endpoints that server lacks, the models that do not speak
-  or draw and the image server's served name) for scripts and the live-test kit's
-  self-test.
+  error), vLLM-Omni's speech (WAV or PCM, whole, streamed raw or as SSE, its
+  usage in headers or events), speech batch, image generation and image edits
+  (answering as vLLM-Omni does for a model that does not speak, does not draw or is
+  not the one it serves), and speech-to-text in vLLM's or llama-server's shape
+  (answering as each does for a model that does not hear audio), that can stream,
+  stall, hang, cut, lack an endpoint or a path as vLLM or llama-server lacks one,
+  fail (also for a scripted sequence of requests) and omit usage on demand, serves a
+  models list whose status the test sets, and records every request it receives;
+  used by tests only. `fakebackend/cmd/fakebackend` runs it as a process (listen
+  address, behavior profile, credential check, the server whose rerank and
+  speech-to-text answers it plays, the endpoints that server lacks and its answer
+  to a path it has no route for, the models that do not speak, draw or hear, the
+  image server's served name and the audio's length) for scripts and the live-test
+  kit's self-test.
 - `fakecontrol` — a control plane for tests: the stream of the current config the
   test publishes, the request checks, and scripted events, outages, restarts and
   protocol versions; takes usage batches (de-duplicated by batch ID as the protocol
@@ -299,7 +315,10 @@ Test tooling outside the binary:
   backends queueing, `queue_full`, `queue_timeout`, a queued request served during
   the drain), the binary's timeouts on real sockets (`timeouts_test.go`: body-read,
   idle and write deadlines from the environment, a stalled stream counted toward the
-  circuit), every metric series at 0 from startup and each config apply
+  circuit), uploads (`image_edits_test.go`, `transcription_test.go`: the form rebuilt
+  for the backend, the units, the refusals before any backend, a wrong `base_url`
+  answered once and the circuit left closed), every metric series at 0 from startup
+  and each config apply
   (`zeroseries_test.go`), OTLP log and metric export to a fake collector
   (`logexport_test.go`, `metricexport_test.go`: one endpoint feeding both signals,
   the push equal to the scrape, the final exports at exit), and the stateless
@@ -316,7 +335,9 @@ Test tooling outside the binary:
   from the protocol's own stream (an observer instance decoding `totals` events),
   what the sample received as status (an open circuit, a queued model) from the
   reports the proxy forwarded and the sample accepted, and the gateways' state from
-  logs, metrics and headers. `TestAcrossHalvesReplicas` (`replicas_test.go`) runs two
+  logs, metrics and headers — an edit and a transcription settling at the sample
+  among them, the hourly audio-processed total limiting the other gateway.
+  `TestAcrossHalvesReplicas` (`replicas_test.go`) runs two
   gateways against two control-plane cores over one store (the sample with a protocol
   replica, each gateway behind a proxy of its own): usage counted once in totals both
   cores serve, a publish reaching the other core's gateway, a gateway moved to the
@@ -326,8 +347,11 @@ Test tooling outside the binary:
   imports nothing from the gateway): generates a config for a real vLLM,
   llama-server, OpenAI, Azure OpenAI, Anthropic or Foundry backend — or two backends
   serving one model (load spread, the cap, a failover the user drives), with
-  embeddings, reranker and vLLM-Omni speech and image servers beside it — runs the
-  built binary and checks it end to end (`docs/testing/LIVE-BACKENDS.md`).
+  embeddings, reranker and speech-to-text servers and vLLM-Omni speech, image and
+  image edit servers beside it, and models misconfigured on purpose to read a real
+  server's answer to a path it does not have — runs the built binary and checks it
+  end to end, uploading audio and an image it writes itself
+  (`docs/testing/LIVE-BACKENDS.md`).
 
 ## Control-plane packages
 

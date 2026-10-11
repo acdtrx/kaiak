@@ -67,9 +67,10 @@ const (
 
 // checks runs every check the kind's backend type allows: the chat completions checks,
 // then the embeddings, rerank, Messages and Responses checks where it serves them, the
-// speech and image checks on the vLLM-Omni servers given, the refusal of the APIs the
-// kind does not serve, and the checks across APIs (output ceiling, rate limit,
-// metrics) through the first API it serves.
+// media checks — speech, images and edits on the vLLM-Omni servers given,
+// speech-to-text on the kind's server for it — the refusal of the APIs the chat model
+// does not serve, the misconfigured models' answers, and the checks across APIs
+// (output ceiling, rate limit, metrics) through the first API it serves.
 func (r *run) checks() {
 	r.checkAuth()
 	r.checkModels()
@@ -102,6 +103,7 @@ func (r *run) checks() {
 	}
 	r.mediaChecks()
 	r.checkNotServed()
+	r.pathMissingChecks()
 	if r.o.serves(epChat) {
 		r.checkCeiling()
 		r.checkRateLimit()
@@ -179,17 +181,25 @@ func (r *run) checkModels() {
 	for _, m := range []string{modelCapped, modelChat, modelRPM} {
 		lists[m] = chatEndpoints(r.o.kind)
 	}
-	if r.o.embeddingsModel != "" {
-		lists[modelEmbed] = embedEndpoints
+	for _, m := range []struct {
+		on        bool
+		model     string
+		endpoints []string
+	}{{r.o.embeddingsModel != "", modelEmbed, embedEndpoints}, {r.o.reranker(), modelRerank, rerankEndpoints},
+		{r.o.transcriber(), modelASR, asrEndpoints}, {r.o.speechServer(), modelSpeech, speechEndpoints},
+		{r.o.imageServer(), modelImage, imageEndpoints}, {r.o.editServer(), modelEdit, editEndpoints}} {
+		if m.on {
+			lists[m.model] = m.endpoints
+		}
 	}
-	if r.o.reranker() {
-		lists[modelRerank] = rerankEndpoints
+	switch r.o.pathMissing() {
+	case pathMissingByList:
+		lists[modelPathMissing] = []string{pathMissingListEndpoint}
+	case pathMissingByBaseURL:
+		lists[modelPathMissing] = []string{epChat}
 	}
-	if r.o.speechServer() {
-		lists[modelSpeech] = speechEndpoints
-	}
-	if r.o.imageServer() {
-		lists[modelImage] = imageEndpoints
+	if omni, ok := r.o.omniWrongPathServer(); ok {
+		lists[modelOmniPathMissing] = []string{omni.endpoint}
 	}
 	if want := slices.Sorted(maps.Keys(lists)); !slices.Equal(ids, want) {
 		r.fail("models", "lists %v, want %v", ids, want)
@@ -202,7 +212,7 @@ func (r *run) checkModels() {
 			r.fail("models", "%s lists endpoints %v, want its endpoints list %v", m, endpoints[m], want)
 			return
 		}
-		if m != modelCapped && m != modelRPM {
+		if m != modelCapped && m != modelRPM && m != modelPathMissing && m != modelOmniPathMissing {
 			detail += "; " + m + ": " + strings.Join(want, ", ")
 		}
 	}

@@ -409,8 +409,9 @@ support, Base URLs) and → Model metadata.
   each entry must be one the model's type serves (`endpoint-not-served`; a Claude
   model is Messages-only). List what the model's server answers, which follows the
   model it loaded: a chat model its chat endpoints, an embedding model `embeddings`, a
-  reranker `rerank`, a vLLM-Omni model its speech or image endpoints (`GATEWAY.md` →
-  Model metadata: Endpoints per model).
+  reranker `rerank`, a speech recognition model `audio_transcriptions`, a vLLM-Omni
+  model its speech, image or image edit endpoints (`GATEWAY.md` → Model metadata:
+  Endpoints per model; `docs/DEPLOYMENT.md` → Endpoints per model has a table).
 - **What a model form needs**: its deployments' backends offered from one type, the
   first deployment's; then `ENDPOINT_SUPPORT[type]` — the endpoints that type serves,
   by the names `MODEL_ENDPOINTS` lists — as the endpoint choices, from which the

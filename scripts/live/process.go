@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -236,17 +237,19 @@ func msg(message string, fields ...string) func(map[string]any) bool {
 }
 
 // runSelfTest runs every check against the fake backend standing in for each kind
-// (or only o.kind) — with a second fake as the reranker server, with a key, where the
-// kind serves rerank, and on vllm two more as the vLLM-Omni speech and image servers
-// — then, when vllm is among them, the two-backend checks against two fakes, the
-// failover check stopping and restarting the second: the kit's own acceptance test,
-// no real backend needed.
+// (or only o.kind) — with more fakes, each with a key, as the servers beside the
+// kind's own (selfTestServers) — then, when vllm is among them, the two-backend
+// checks against two fakes, the failover check stopping and restarting the second:
+// the kit's own acceptance test, no real backend needed.
 func runSelfTest(ctx context.Context, o options) error {
-	// The reranker and vLLM-Omni servers are the self-test's own fakes, whatever the
+	// The servers beside the kind's own are the self-test's own fakes, whatever the
 	// flags or the environment name.
+	o.embeddingsBaseURL, o.embeddingsAPIKeyEnv = "", ""
 	o.rerankBaseURL, o.rerankModel, o.rerankAPIKeyEnv = "", "", ""
+	o.asrBaseURL, o.asrModel, o.asrAPIKeyEnv = "", "", ""
 	o.speechBaseURL, o.speechModel, o.speechAPIKeyEnv = "", "", ""
 	o.imageBaseURL, o.imageModel, o.imageAPIKeyEnv = "", "", ""
+	o.editBaseURL, o.editModel, o.editAPIKeyEnv = "", "", ""
 	kinds := allKinds
 	if o.kind != "" {
 		if _, ok := defaultAPIKeyEnv[o.kind]; !ok {
@@ -301,27 +304,19 @@ func runSelfTest(ctx context.Context, o options) error {
 				stopFake(f)
 			}
 		}
-		if k.serves(epRerank) {
-			const rerankKeyEnv = "LIVE_SELF_TEST_RERANK_KEY"
-			rerankSecret, _ := newKey()
-			reranker, rootRerank, err := startFake(ctx, fakeBin, "127.0.0.1:0", "bearer", rerankSecret,
-				[]string{selfTestRerankModel}, fakeFlags(kind, true)...)
+		side := func(keyEnv string, models []string, flags ...string) (string, error) {
+			secret, _ := newKey()
+			f, root, err := startFake(ctx, fakeBin, "127.0.0.1:0", "bearer", secret, models, flags...)
 			if err != nil {
-				stopFakes()
-				return err
+				return "", err
 			}
-			fakes = append(fakes, reranker)
-			k.rerankBaseURL, k.rerankModel, k.rerankAPIKeyEnv = rootRerank+"/v1", selfTestRerankModel, rerankKeyEnv
-			extraEnv = append(extraEnv, rerankKeyEnv+"="+rerankSecret)
+			fakes = append(fakes, f)
+			extraEnv = append(extraEnv, keyEnv+"="+secret)
+			return root + "/v1", nil
 		}
-		if kind == kindVLLM {
-			media, mediaEnv, err := startMediaFakes(ctx, fakeBin, &k)
-			fakes = append(fakes, media...)
-			if err != nil {
-				stopFakes()
-				return err
-			}
-			extraEnv = append(extraEnv, mediaEnv...)
+		if err := selfTestServers(&k, side); err != nil {
+			stopFakes()
+			return err
 		}
 		err = runKind(ctx, k, ws, extraEnv)
 		stopFakes()
@@ -391,32 +386,62 @@ func selfTestTwoBackends(ctx context.Context, o options, ws *workspace, fakeBin 
 	return runKind(ctx, o, ws, []string{embedKeyEnv + "=" + embedSecret})
 }
 
-// startMediaFakes starts the vLLM-Omni fakes of a self-test run and points o at them,
-// each with a bearer key (-speech-api-key-env, -image-api-key-env): a speech server
-// whose model does not draw — an image request answered 503, no diffusion stage — and
-// an image server comparing a request's model with its own, whose model does not
-// speak, as the real servers answer what the media models' endpoints lists refuse
-// should it reach them; its image check asks for a layered answer of several images. It returns
-// the fakes started (when it fails too) and the keys' environment.
-func startMediaFakes(ctx context.Context, fakeBin string, o *options) ([]*exec.Cmd, []string, error) {
-	const speechKeyEnv, imageKeyEnv = "LIVE_SELF_TEST_SPEECH_KEY", "LIVE_SELF_TEST_IMAGE_KEY"
-	speechSecret, _ := newKey()
-	imageSecret, _ := newKey()
-	speech, rootSpeech, err := startFake(ctx, fakeBin, "127.0.0.1:0", "bearer", speechSecret,
-		[]string{selfTestSpeechModel}, "-non-image-models", selfTestSpeechModel)
-	if err != nil {
-		return nil, nil, err
+// selfTestServers points o at fakes for the servers beside the kind's own, each
+// started through side with a bearer key in the variable it names:
+//   - the reranker and the speech-to-text server, where the kind serves them, each in
+//     its server's shape; vLLM's speech-to-text hears every upload uploadMillis long,
+//     the length of the kit's;
+//   - on vllm, the embeddings server — one model per vLLM process, so the chat server
+//     has no embeddings route (the path-missing check) — and the vLLM-Omni servers: a
+//     speech server whose model does not draw (an image request answered 503, no
+//     diffusion stage), an image server comparing a request's model with its own,
+//     whose model does not speak, as the real servers answer what the media models'
+//     endpoints lists refuse should it reach them, and an image edit server comparing
+//     a request's model with its own. Each answers a path it has no route for as
+//     FastAPI does (the omni-path-missing check), and the image and edit checks ask
+//     for a layered answer of several images.
+func selfTestServers(o *options, side func(keyEnv string, models []string, flags ...string) (string, error)) error {
+	var err error
+	if o.serves(epRerank) {
+		o.rerankModel, o.rerankAPIKeyEnv = selfTestRerankModel, "LIVE_SELF_TEST_RERANK_KEY"
+		if o.rerankBaseURL, err = side(o.rerankAPIKeyEnv, []string{o.rerankModel}, fakeFlags(o.kind, true)...); err != nil {
+			return err
+		}
 	}
-	image, rootImage, err := startFake(ctx, fakeBin, "127.0.0.1:0", "bearer", imageSecret, []string{selfTestImageModel},
-		"-non-speech-models", selfTestImageModel, "-image-served-model", selfTestImageModel)
-	if err != nil {
-		return []*exec.Cmd{speech}, nil, err
+	if o.serves(epTranscriptions) {
+		o.asrModel, o.asrAPIKeyEnv = selfTestASRModel, "LIVE_SELF_TEST_ASR_KEY"
+		if o.asrBaseURL, err = side(o.asrAPIKeyEnv, []string{o.asrModel}, "-transcription-shape", o.kind,
+			"-audio-millis", strconv.Itoa(uploadMillis)); err != nil {
+			return err
+		}
 	}
-	o.speechBaseURL, o.speechModel, o.speechAPIKeyEnv = rootSpeech+"/v1", selfTestSpeechModel, speechKeyEnv
-	o.imageBaseURL, o.imageModel, o.imageAPIKeyEnv = rootImage+"/v1", selfTestImageModel, imageKeyEnv
+	if o.kind != kindVLLM {
+		return nil
+	}
+	o.embeddingsAPIKeyEnv = "LIVE_SELF_TEST_EMBEDDINGS_KEY"
+	if o.embeddingsBaseURL, err = side(o.embeddingsAPIKeyEnv, []string{o.embeddingsModel}); err != nil {
+		return err
+	}
+	for _, m := range []struct {
+		baseURL, model, keyEnv *string
+		name, env              string
+		flags                  []string
+	}{
+		{&o.speechBaseURL, &o.speechModel, &o.speechAPIKeyEnv, selfTestSpeechModel, "LIVE_SELF_TEST_SPEECH_KEY",
+			[]string{"-non-image-models", selfTestSpeechModel}},
+		{&o.imageBaseURL, &o.imageModel, &o.imageAPIKeyEnv, selfTestImageModel, "LIVE_SELF_TEST_IMAGE_KEY",
+			[]string{"-non-speech-models", selfTestImageModel, "-image-served-model", selfTestImageModel}},
+		{&o.editBaseURL, &o.editModel, &o.editAPIKeyEnv, selfTestEditModel, "LIVE_SELF_TEST_EDIT_KEY",
+			[]string{"-image-served-model", selfTestEditModel}},
+	} {
+		*m.model, *m.keyEnv = m.name, m.env
+		if *m.baseURL, err = side(m.env, []string{m.name}, append(m.flags, "-no-route-shape", "vllm")...); err != nil {
+			return err
+		}
+	}
 	// Two images of two layers each: four in the answer, more than n.
 	o.imageCheckParams = map[string]any{"n": 2, "layers": 2}
-	return []*exec.Cmd{speech, image}, []string{speechKeyEnv + "=" + speechSecret, imageKeyEnv + "=" + imageSecret}, nil
+	return nil
 }
 
 // stopFake stops a fake backend process and waits for it; a stopped one is left as
@@ -437,6 +462,8 @@ const (
 	selfTestRerankModel = "fake-rerank"
 	selfTestSpeechModel = "fake-tts"
 	selfTestImageModel  = "fake-image"
+	selfTestEditModel   = "fake-edit"
+	selfTestASRModel    = "fake-asr"
 	// selfTestEmbedPath is the embeddings server's model: a path, not a valid public
 	// name, so the kit must expose it under its own.
 	selfTestEmbedPath = "/models/fake-embed-q8_0.gguf"
@@ -454,18 +481,19 @@ const selfTestRerankContext = "32768"
 // model, or with reranker for the reranker: rerank in that server's shape, and the
 // endpoints its model lacks answered as the server answers them — vLLM creates no
 // route for them, llama-server answers rerank with 501 unless started with
-// --reranking. Other kinds: none.
+// --reranking — as is a path it has no route for (a wrong base_url: llama-server's
+// own 404). Other kinds: none.
 func fakeFlags(kind string, reranker bool) []string {
 	switch {
 	case kind == kindVLLM && reranker:
 		return []string{"-rerank-shape", "vllm", "-rerank-context", selfTestRerankContext,
 			"-no-route", "chat/completions,completions,embeddings,messages,messages/count_tokens,responses"}
 	case kind == kindVLLM:
-		return []string{"-no-route", "rerank"}
+		return []string{"-no-route", "rerank,embeddings"}
 	case kind == kindLlamaServer && reranker:
 		return []string{"-rerank-shape", "llama-server", "-rerank-context", selfTestRerankContext}
 	case kind == kindLlamaServer:
-		return []string{"-not-supported", "rerank"}
+		return []string{"-not-supported", "rerank", "-no-route-shape", "llama-server"}
 	}
 	return nil
 }

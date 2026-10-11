@@ -10,14 +10,21 @@
 // the embeddings model is served by a server of its own (openai-compatible), a third
 // backend in the config. With -rerank-base-url a reranker server of the run's kind
 // (vllm or llama-server) serves rerank, and the wrong-endpoint checks send each model
-// the endpoint its server lacks, which its endpoints list leaves out. With -speech-base-url and -image-base-url vLLM-Omni
-// servers (vllm-omni backends, whatever the run's kind) serve speech and image
-// generation, and the media checks run: each speech mode, the batch, images, their
-// units on the usage log line, the media limits and caps. -self-test runs every check
-// against the fake backend standing in for each kind (and a second fake as the
-// reranker server where the kind serves rerank, and two more as the vLLM-Omni servers
-// on vllm), and the two-backend checks against two fakes, stopping and restarting the
-// second itself, with a third fake as the embeddings server.
+// the endpoint its server lacks, which its endpoints list leaves out. With
+// -asr-base-url a speech-to-text server of the run's kind (vllm or llama-server)
+// transcribes a tone the kit writes as WAV, FLAC and MP3, its seconds checked against
+// the tone's length. With -speech-base-url, -image-base-url and -edit-base-url
+// vLLM-Omni servers (vllm-omni backends, whatever the run's kind) serve speech, image
+// generation and image edits, and the media checks run: each speech mode, the batch,
+// images, edits, their units on the usage log line, the media limits and caps. A
+// model deliberately misconfigured shows how the gateway answers a real server's
+// answer to a path it does not have: on vllm a chat model whose list names
+// embeddings, on llama-server and vLLM-Omni a backend whose base_url has a wrong path.
+// -self-test runs every check against the fake backend standing in for each kind
+// (with more fakes as the reranker and speech-to-text servers where the kind serves
+// them, and on vllm as the embeddings server and the vLLM-Omni servers), and the
+// two-backend checks against two fakes, stopping and restarting the second itself,
+// with a third fake as the embeddings server.
 //
 // Standard library only, and a module of its own: nothing here is part of the
 // gateway. Runbook: docs/testing/LIVE-BACKENDS.md.
@@ -74,12 +81,23 @@ type options struct {
 	imageBaseURL    string
 	imageModel      string
 	imageAPIKeyEnv  string
-	apiKeyEnv       string
-	maxOutput       int
-	ceiling         int
-	contextLength   int
-	priceIn         float64
-	priceOut        float64
+	// editBaseURL, when set, is a vLLM-Omni server serving editModel, an image edit
+	// model, authenticated by editAPIKeyEnv ("" = no key).
+	editBaseURL   string
+	editModel     string
+	editAPIKeyEnv string
+	// asrBaseURL, when set, is a speech-to-text server of the run's kind serving
+	// asrModel, a speech recognition model, authenticated by asrAPIKeyEnv ("" = no
+	// key).
+	asrBaseURL    string
+	asrModel      string
+	asrAPIKeyEnv  string
+	apiKeyEnv     string
+	maxOutput     int
+	ceiling       int
+	contextLength int
+	priceIn       float64
+	priceOut      float64
 	// chatParams are extra parameters added to every chat request the kit sends (the
 	// gateway sets none of its own); parsed from -chat-params by resolve.
 	chatParams    string
@@ -105,9 +123,9 @@ type options struct {
 	// run, where the check asks the user to do it.
 	stopSecond, startSecond func() error
 
-	// imageCheckParams are added to the image check's request; nil in a live run (one
-	// image). The self-test asks its fake for a layered answer of more than one
-	// image, so the count the usage log carries is above 1.
+	// imageCheckParams are added to the image and edit checks' requests; nil in a live
+	// run (one image). The self-test asks its fakes for a layered answer of more than
+	// one image, so the count the usage log carries is above 1.
 	imageCheckParams map[string]any
 }
 
@@ -121,10 +139,16 @@ func (o options) embeddingsServer() bool { return o.embeddingsBaseURL != "" }
 // config deploys live-rerank there.
 func (o options) reranker() bool { return o.rerankBaseURL != "" && o.serves(epRerank) }
 
-// speechServer and imageServer: a vLLM-Omni server is given for speech, for images —
-// the config deploys live-tts, live-image there.
+// speechServer, imageServer and editServer: a vLLM-Omni server is given for speech,
+// for images, for image edits — the config deploys live-tts, live-image, live-edit
+// there.
 func (o options) speechServer() bool { return o.speechBaseURL != "" }
 func (o options) imageServer() bool  { return o.imageBaseURL != "" }
+func (o options) editServer() bool   { return o.editBaseURL != "" }
+
+// transcriber: a speech-to-text server is given and the run's kind serves
+// speech-to-text — the config deploys live-asr there.
+func (o options) transcriber() bool { return o.asrBaseURL != "" && o.serves(epTranscriptions) }
 
 // label names the run's files and gateway instance.
 func (o options) label() string {
@@ -163,6 +187,12 @@ func main() {
 	flag.StringVar(&o.imageBaseURL, "image-base-url", os.Getenv("LIVE_IMAGE_BASE_URL"), "a vLLM-Omni server for -image-model (env LIVE_IMAGE_BASE_URL), e.g. http://host:8092/v1, beside a run of any kind: the image checks")
 	flag.StringVar(&o.imageModel, "image-model", os.Getenv("LIVE_IMAGE_MODEL"), "with -image-base-url: the image model's name on that server (env LIVE_IMAGE_MODEL), e.g. Qwen/Qwen-Image")
 	flag.StringVar(&o.imageAPIKeyEnv, "image-api-key-env", "", "with -image-base-url: name of the environment variable holding that server's key (default: none)")
+	flag.StringVar(&o.editBaseURL, "edit-base-url", os.Getenv("LIVE_EDIT_BASE_URL"), "a vLLM-Omni server for -edit-model (env LIVE_EDIT_BASE_URL), e.g. http://host:8093/v1, beside a run of any kind: the image edit checks")
+	flag.StringVar(&o.editModel, "edit-model", os.Getenv("LIVE_EDIT_MODEL"), "with -edit-base-url: the image edit model's name on that server (env LIVE_EDIT_MODEL), e.g. Qwen/Qwen-Image-Edit-2511")
+	flag.StringVar(&o.editAPIKeyEnv, "edit-api-key-env", "", "with -edit-base-url: name of the environment variable holding that server's key (default: none)")
+	flag.StringVar(&o.asrBaseURL, "asr-base-url", os.Getenv("LIVE_ASR_BASE_URL"), "a speech-to-text server of the run's kind, vllm or llama-server, for -asr-model (env LIVE_ASR_BASE_URL), e.g. http://host:8006/v1: the speech-to-text checks")
+	flag.StringVar(&o.asrModel, "asr-model", os.Getenv("LIVE_ASR_MODEL"), "with -asr-base-url: the speech recognition model's name on that server (env LIVE_ASR_MODEL), e.g. openai/whisper-large-v3-turbo")
+	flag.StringVar(&o.asrAPIKeyEnv, "asr-api-key-env", "", "with -asr-base-url: name of the environment variable holding that server's key (default: none)")
 	flag.StringVar(&o.apiKeyEnv, "api-key-env", "-", "name of the environment variable holding the backend key (default: none for vllm and llama-server, OPENAI_API_KEY, AZURE_OPENAI_API_KEY, ANTHROPIC_API_KEY, ANTHROPIC_FOUNDRY_API_KEY)")
 	flag.IntVar(&o.maxOutput, "max-output", 1024, "output-limit default and ceiling of the chat model (raise it for reasoning models)")
 	flag.IntVar(&o.ceiling, "ceiling", 16, "output-limit ceiling of the model the ceiling check uses")
@@ -288,30 +318,23 @@ func resolve(o *options) error {
 			return fmt.Errorf("%s is not set: export the embeddings server's key there", o.embeddingsAPIKeyEnv)
 		}
 	}
-	if (o.rerankBaseURL == "") != (o.rerankModel == "") {
-		return errors.New("-rerank-base-url and -rerank-model go together: the reranker server and the model name on it")
-	}
-	if o.reranker() {
-		o.rerankBaseURL = normalizeBaseURL(o.kind, o.rerankBaseURL)
-	}
-	if o.rerankAPIKeyEnv != "" {
-		if o.rerankBaseURL == "" {
-			return errors.New("-rerank-api-key-env needs -rerank-base-url")
-		}
-		if os.Getenv(o.rerankAPIKeyEnv) == "" {
-			return fmt.Errorf("%s is not set: export the reranker server's key there", o.rerankAPIKeyEnv)
-		}
-	}
+	// The servers beside the run's own: a reranker and a speech-to-text server of the
+	// run's kind, and the vLLM-Omni media servers.
 	for _, m := range []struct {
 		what, flag           string
 		baseURL, model, keys *string
-	}{{"speech", "-speech", &o.speechBaseURL, &o.speechModel, &o.speechAPIKeyEnv},
-		{"image", "-image", &o.imageBaseURL, &o.imageModel, &o.imageAPIKeyEnv}} {
+		kind                 string
+		used                 bool
+	}{{"reranker", "-rerank", &o.rerankBaseURL, &o.rerankModel, &o.rerankAPIKeyEnv, o.kind, o.reranker()},
+		{"speech-to-text", "-asr", &o.asrBaseURL, &o.asrModel, &o.asrAPIKeyEnv, o.kind, o.transcriber()},
+		{"vLLM-Omni speech", "-speech", &o.speechBaseURL, &o.speechModel, &o.speechAPIKeyEnv, "vllm-omni", o.speechServer()},
+		{"vLLM-Omni image", "-image", &o.imageBaseURL, &o.imageModel, &o.imageAPIKeyEnv, "vllm-omni", o.imageServer()},
+		{"vLLM-Omni image edit", "-edit", &o.editBaseURL, &o.editModel, &o.editAPIKeyEnv, "vllm-omni", o.editServer()}} {
 		if (*m.baseURL == "") != (*m.model == "") {
-			return fmt.Errorf("%s-base-url and %s-model go together: the vLLM-Omni %s server and the model name on it", m.flag, m.flag, m.what)
+			return fmt.Errorf("%s-base-url and %s-model go together: the %s server and the model name on it", m.flag, m.flag, m.what)
 		}
-		if *m.baseURL != "" {
-			*m.baseURL = normalizeBaseURL("vllm-omni", *m.baseURL)
+		if m.used {
+			*m.baseURL = normalizeBaseURL(m.kind, *m.baseURL)
 		}
 		if *m.keys == "" {
 			continue
@@ -384,6 +407,12 @@ func runKind(ctx context.Context, o options, ws *workspace, extraEnv []string) e
 	}
 	if o.imageServer() {
 		fmt.Printf(", images %s on %s", o.imageModel, o.imageBaseURL)
+	}
+	if o.editServer() {
+		fmt.Printf(", image edits %s on %s", o.editModel, o.editBaseURL)
+	}
+	if o.transcriber() {
+		fmt.Printf(", speech-to-text %s on %s", o.asrModel, o.asrBaseURL)
 	}
 	fmt.Println()
 

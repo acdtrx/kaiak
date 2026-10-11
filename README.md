@@ -2,11 +2,11 @@
 
 A self-contained LLM gateway. One static Go binary sits between your clients and your
 model backends: it speaks the **OpenAI API**, **Anthropic Messages** and **OpenAI
-Responses** to clients, along with rerank, speech and image generation, routes to
-self-hosted model servers (vLLM, vLLM-Omni, llama-server, SGLang) and cloud providers
-(OpenAI, Azure OpenAI, Anthropic, Claude in Microsoft Foundry), and enforces **access
-keys, rate limits and budgets** while counting every token, image, second of audio
-and dollar.
+Responses** to clients, along with rerank, speech, image generation and edits, and
+speech-to-text, routes to self-hosted model servers (vLLM, vLLM-Omni, llama-server,
+SGLang) and cloud providers (OpenAI, Azure OpenAI, Anthropic, Claude in Microsoft
+Foundry), and enforces **access keys, rate limits and budgets** while counting every
+token, image, second of audio and dollar.
 
 kaiak has no UI and no admin API of its own. Its config comes either from a file or
 from a **control plane** that pushes changes live and receives usage and status back.
@@ -24,9 +24,9 @@ a small sample control plane shows how.
 - **The contract** (`protocol/`): JSON Schemas and shared fixtures both halves test
   against.
 
-> **Status:** pre-1.0. Config format and protocol are at version 6. There is no
-> backwards compatibility between versions yet: gateways and control plane upgrade
-> together.
+> **Status:** pre-1.0. The protocol, the config document included, is at version 7.
+> There is no backwards compatibility between versions yet: gateways and control
+> plane upgrade together.
 
 ## Documentation map
 
@@ -51,29 +51,32 @@ from a clone, or serve `docs/` with GitHub Pages.
 
 - **Backends and models.** A backend is a serving endpoint. A model is the public
   name clients send, served by one or more deployments (backend + backend-side model
-  name). Requests are load-balanced across deployments, retried on another deployment
-  before the first byte, and kept away from failing deployments by a circuit breaker.
+  name), all on backends of one type. Requests are load-balanced across deployments,
+  retried on another deployment before the first byte, and kept away from failing
+  deployments by a circuit breaker.
 - **Client APIs.** OpenAI's chat completions, completions and embeddings, Anthropic
   Messages, OpenAI Responses (stateless), rerank (`/v1/rerank`, on vLLM and
-  llama-server), speech (`/v1/audio/speech` and vLLM-Omni's `/v1/audio/speech/batch`)
-  and image generation (`/v1/images/generations`), both on vLLM-Omni, on one port
-  with one key (`Authorization: Bearer` or `x-api-key`). A request is passed through
-  to a backend that speaks its API — never translated — so the backend types behind a
-  model decide which APIs reach it, and a model's optional `endpoints` list narrows
-  them to what its server answers (`docs/DEPLOYMENT.md` → Clients).
+  llama-server), speech (`/v1/audio/speech` and vLLM-Omni's `/v1/audio/speech/batch`),
+  image generation and edits (`/v1/images/generations`, `/v1/images/edits`), all
+  three on vLLM-Omni, and speech-to-text (`/v1/audio/transcriptions`, on vLLM and
+  llama-server), on one port with one key (`Authorization: Bearer` or `x-api-key`). A
+  request is passed through to a backend that speaks its API — never translated — so
+  a model's backend type decides which APIs can reach it, and every model lists the
+  endpoints its server answers (`docs/DEPLOYMENT.md` → Endpoints per model).
 - **Groups.** Who may use which models, and under which limits, is a tree of groups
   of any depth: team → project → env → workload, or whatever shape your organization
   has. A key belongs to one group. A request must pass the limits of every group on
   its key's path, plus the global limits, and its usage counts toward each of them.
-- **Limits.** requests/min, tokens/min, images/min and seconds of audio/min (enforced
-  per gateway on a share), tokens/hour, images/hour, seconds of audio/hour and
-  USD/month (from totals the control plane pushes to every gateway), at most one of
-  each per scope, each over all of the scope's usage.
+- **Limits.** requests/min, tokens/min, images/min and seconds of audio generated or
+  processed/min (enforced per gateway on a share), tokens/hour, images/hour, seconds
+  of audio generated or processed/hour and USD/month (from totals the control plane
+  pushes to every gateway), at most one of each per scope, each over all of the
+  scope's usage.
 - **Usage.** Every routed request settles into a usage record: tokens by kind, images
   and seconds of audio, and cost in nano-USD. Records go to the control plane in
   batches, delivered at least once and counted exactly once.
 
-The config format: [`examples/config.json`](examples/config.json) (a realistic tree),
+The config document: [`examples/config.json`](examples/config.json) (a realistic tree),
 the schema, and CONTROL-PROTOCOL.md → Config.
 
 ## Quick start: the gateway alone
@@ -105,8 +108,9 @@ stable).
    hashes. A backend's `type` names its server — `vllm`, `vllm-omni`, `llama-server`,
    `openai`, `azure-openai`, `anthropic`, `azure-anthropic` (Claude in Microsoft
    Foundry), or `openai-compatible` for any other OpenAI-format server
-   (`docs/DEPLOYMENT.md` → Config for many hosts). Backend credentials are named by
-   environment variable (`api_key_env`), never written in the file.
+   (`docs/DEPLOYMENT.md` → Config for many hosts). Every model lists the endpoints
+   it serves (`docs/DEPLOYMENT.md` → Endpoints per model). Backend credentials are
+   named by environment variable (`api_key_env`), never written in the file.
 
 4. **Run**
 

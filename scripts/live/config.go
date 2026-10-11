@@ -22,18 +22,29 @@ const (
 	modelRerank = "live-rerank" // only with -rerank-base-url on a kind serving rerank
 	modelSpeech = "live-tts"    // only with -speech-base-url
 	modelImage  = "live-image"  // only with -image-base-url
+	modelEdit   = "live-edit"   // only with -edit-base-url
+	modelASR    = "live-asr"    // only with -asr-base-url on a kind serving speech-to-text
+	// modelPathMissing and modelOmniPathMissing are misconfigured on purpose, so
+	// their requests reach a real server on a path it does not have (pathmissing.go).
+	modelPathMissing     = "live-path-missing"
+	modelOmniPathMissing = "live-omni-path-missing"
 )
 
 // Backend IDs in the generated config: the -base-url backend, the -base-url-2
 // backend when there is one, the -embeddings-base-url, -rerank-base-url,
-// -speech-base-url and -image-base-url backends when there are.
+// -asr-base-url, -speech-base-url, -image-base-url and -edit-base-url backends when
+// there are, and the backends whose base_url has a wrong path (pathmissing.go).
 const (
-	backendFirst  = "live"
-	backendSecond = "live-2"
-	backendEmbed  = "live-embeddings"
-	backendRerank = "live-reranker"
-	backendSpeech = "live-speech"
-	backendImages = "live-images"
+	backendFirst         = "live"
+	backendSecond        = "live-2"
+	backendEmbed         = "live-embeddings"
+	backendRerank        = "live-reranker"
+	backendASR           = "live-transcriber"
+	backendSpeech        = "live-speech"
+	backendImages        = "live-images"
+	backendEdits         = "live-edits"
+	backendWrongPath     = "live-wrong-path"
+	backendOmniWrongPath = "live-omni-wrong-path"
 )
 
 // rerankDocumentsCap is global.max_rerank_documents with a reranker: above every
@@ -49,8 +60,8 @@ const (
 	speechBatchItemsCap = 3
 )
 
-// The media limit checks' group: a minute's window holds 1 image, and 1 second of
-// audio generated — any clip fills it.
+// The media limit checks' group: a minute's window holds 1 image, 1 second of audio
+// generated and 1 second of audio processed — any clip, any transcription fills it.
 const (
 	groupMedia        = "live-media"
 	mediaLimitImages  = 1
@@ -64,8 +75,10 @@ const (
 var (
 	embedEndpoints  = []string{epEmbeddings}
 	rerankEndpoints = []string{epRerank}
+	asrEndpoints    = []string{epTranscriptions}
 	speechEndpoints = []string{epSpeech, epSpeechBatch}
 	imageEndpoints  = []string{epImages}
+	editEndpoints   = []string{epEdits}
 )
 
 // The speech model's metadata: Qwen3-TTS's talker context in vLLM-Omni's bundled
@@ -89,13 +102,16 @@ const (
 // buildConfig is the config document for one run, at protocol 7: one backend (two
 // with -base-url-2, each deploying the chat models; one more with
 // -embeddings-base-url, deploying the embeddings model, with -rerank-base-url,
-// deploying the reranker, and with -speech-base-url and -image-base-url, vllm-omni
-// backends deploying the speech and image models), the models above, each with its
-// endpoints list, and groups with every model allowed: live
+// deploying the reranker, with -asr-base-url, deploying the speech recognition model,
+// and with -speech-base-url, -image-base-url and -edit-base-url, vllm-omni backends
+// deploying the speech, image and image edit models; one more for each wrong
+// base_url, pathmissing.go), the models above, each with its endpoints list, all of a
+// model's deployments on one backend type, and groups with every model allowed: live
 // holds the checks' key (hash), live-metered the rate-limit checks' key (meteredHash)
 // under 1 request a minute — a limit counts every request of its group — and, with a
-// vLLM-Omni server, live-media the media limit checks' key (mediaHash) under 1 image
-// and 1 second of audio a minute.
+// vLLM-Omni or speech-to-text server, live-media the media limit checks' key
+// (mediaHash) under 1 image, 1 second of audio generated and 1 second of audio
+// processed a minute.
 func buildConfig(o options, hash, meteredHash, mediaHash string) ([]byte, error) {
 	timeout := o.requestTimeout.Milliseconds()
 	backendOf := func(backendType, baseURL, apiKeyEnv string) map[string]any {
@@ -176,28 +192,60 @@ func buildConfig(o options, hash, meteredHash, mediaHash string) ([]byte, error)
 		models[modelRerank] = rerank
 		global["max_rerank_documents"] = rerankDocumentsCap
 	}
-	media := func(backend, baseURL, apiKeyEnv, model string, endpoints []string, contextLength int, streaming bool) map[string]any {
-		backends[backend] = backendOf("vllm-omni", baseURL, apiKeyEnv)
+	// A model of its own on a server of its own: one deployment, its endpoints list,
+	// its capabilities (vision: images taken in).
+	served := func(backend, model string, endpoints []string, contextLength int, streaming, vision bool) map[string]any {
 		m := map[string]any{
 			"deployments": []any{map[string]any{"backend": backend, "model": model}},
 			"endpoints":   endpoints,
 			"metadata": map[string]any{"context_length": contextLength,
-				"capabilities": map[string]any{"streaming": streaming, "tools": false, "vision": false, "reasoning": false}},
+				"capabilities": map[string]any{"streaming": streaming, "tools": false, "vision": vision, "reasoning": false}},
 		}
 		if prices != nil {
 			m["prices"] = prices
 		}
 		return m
 	}
+	if o.transcriber() {
+		backends[backendASR] = backendOf(o.kind, o.asrBaseURL, o.asrAPIKeyEnv)
+		models[modelASR] = served(backendASR, o.asrModel, asrEndpoints, 8192, false, false)
+	}
 	if o.speechServer() {
-		speech := media(backendSpeech, o.speechBaseURL, o.speechAPIKeyEnv, o.speechModel, speechEndpoints, speechContextLength, true)
+		backends[backendSpeech] = backendOf("vllm-omni", o.speechBaseURL, o.speechAPIKeyEnv)
+		speech := served(backendSpeech, o.speechModel, speechEndpoints, speechContextLength, true, false)
 		speech["output_limit"] = map[string]any{"default": speechOutputDefault, "ceiling": speechOutputCeiling}
 		models[modelSpeech] = speech
 		global["max_speech_batch_items"] = speechBatchItemsCap
 	}
 	if o.imageServer() {
-		models[modelImage] = media(backendImages, o.imageBaseURL, o.imageAPIKeyEnv, o.imageModel, imageEndpoints, imageContextLength, false)
+		backends[backendImages] = backendOf("vllm-omni", o.imageBaseURL, o.imageAPIKeyEnv)
+		models[modelImage] = served(backendImages, o.imageModel, imageEndpoints, imageContextLength, false, false)
+	}
+	if o.editServer() {
+		backends[backendEdits] = backendOf("vllm-omni", o.editBaseURL, o.editAPIKeyEnv)
+		models[modelEdit] = served(backendEdits, o.editModel, editEndpoints, imageContextLength, false, true)
+	}
+	if o.imageServer() || o.editServer() {
 		global["max_images_per_request"] = imagesPerRequestCap
+	}
+
+	// The misconfigured models (pathmissing.go), unpriced: they produce no usage.
+	misconfigured := func(deployments []any, endpoint string) map[string]any {
+		return map[string]any{"deployments": deployments, "endpoints": []string{endpoint},
+			"metadata": map[string]any{"context_length": o.contextLength,
+				"capabilities": map[string]any{"streaming": false, "tools": false, "vision": false, "reasoning": false}}}
+	}
+	switch o.pathMissing() {
+	case pathMissingByList:
+		models[modelPathMissing] = misconfigured(chatDeployments, pathMissingListEndpoint)
+	case pathMissingByBaseURL:
+		backends[backendWrongPath] = backend(wrongBaseURL(o.baseURL))
+		models[modelPathMissing] = misconfigured([]any{map[string]any{"backend": backendWrongPath, "model": o.model}}, epChat)
+	}
+	if omni, ok := o.omniWrongPathServer(); ok {
+		backends[backendOmniWrongPath] = backendOf("vllm-omni", wrongBaseURL(omni.baseURL), omni.apiKeyEnv)
+		models[modelOmniPathMissing] = misconfigured([]any{map[string]any{"backend": backendOmniWrongPath, "model": omni.model}},
+			omni.endpoint)
 	}
 
 	groups := map[string]any{
@@ -210,10 +258,11 @@ func buildConfig(o options, hash, meteredHash, mediaHash string) ([]byte, error)
 		"k-live":         map[string]any{"hash": hash, "group": "live"},
 		"k-live-metered": map[string]any{"hash": meteredHash, "group": "live-metered"},
 	}
-	if o.speechServer() || o.imageServer() {
+	if o.speechServer() || o.imageServer() || o.editServer() || o.transcriber() {
 		groups[groupMedia] = map[string]any{"limits": []any{
 			map[string]any{"type": "images_per_minute", "value": mediaLimitImages},
 			map[string]any{"type": "audio_seconds_out_per_minute", "value": mediaLimitSeconds},
+			map[string]any{"type": "audio_seconds_in_per_minute", "value": mediaLimitSeconds},
 		}}
 		keys["k-"+groupMedia] = map[string]any{"hash": mediaHash, "group": groupMedia}
 	}
