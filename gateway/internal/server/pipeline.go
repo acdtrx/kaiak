@@ -54,8 +54,8 @@ type endpoint struct {
 	// one), Responses only max_output_tokens, speech and the speech batch only
 	// max_new_tokens (vLLM-Omni's: the codec tokens a speech model generates; a batch's
 	// items carry it too). Embeddings, rerank and the
-	// token-counting endpoints generate nothing, and image generation has no output
-	// limit. The inbound stage reads these keys
+	// token-counting endpoints generate nothing, and image generation and edits have no
+	// output limit. The inbound stage reads these keys
 	// alone: another output-limit key the client sends is not the endpoint's and
 	// passes untouched.
 	outputLimitKeys []string
@@ -89,6 +89,7 @@ var bodyEndpoints = []*endpoint{
 	newBodyEndpoint(provider.AudioSpeechBatch, endpoint{operation: "generate_content", outputType: "speech",
 		outputLimitKeys: []string{"max_new_tokens"}, writesNoOutputLimit: true}),
 	newBodyEndpoint(provider.ImagesGenerations, endpoint{operation: "generate_content", outputType: "image"}),
+	newBodyEndpoint(provider.ImagesEdits, endpoint{operation: "generate_content", outputType: "image", upload: imageEditsUpload}),
 }
 
 // newBodyEndpoint is row e of the body endpoint passing api through.

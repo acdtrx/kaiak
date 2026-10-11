@@ -16,8 +16,9 @@ import (
 	"kaiak/internal/provider"
 )
 
-// uploadEndpoint is an upload endpoint row for the tests, as no format serves uploads
-// yet: image[] may repeat, and its format's read records the parts it is handed.
+// uploadEndpoint is an upload endpoint row of the tests' own, its format standing in
+// for a real one's, so the upload machinery is tested apart from any format: image[]
+// may repeat, and its read records the parts it is handed.
 func uploadEndpoint() (*endpoint, *[]provider.FormPart) {
 	read := new([]provider.FormPart)
 	ep := &endpoint{body: true, api: provider.ImagesGenerations, operation: "generate_content", outputType: "image",

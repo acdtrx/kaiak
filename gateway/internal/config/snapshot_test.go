@@ -241,7 +241,7 @@ func TestModelResolution(t *testing.T) {
 func TestModelEndpointsResolve(t *testing.T) {
 	s := parseFixture(t, "model-endpoints.json")
 	for name, want := range map[string][]EndpointName{
-		"image": {EndpointImagesGenerations},
+		"image": {EndpointImagesGenerations, EndpointImagesEdits},
 		"chat": {EndpointChatCompletions, EndpointCompletions, EndpointMessages, EndpointMessagesCountTokens,
 			EndpointResponses},
 	} {

@@ -143,6 +143,16 @@ func EstimateInput(ep provider.Endpoint, body []byte) InputEstimate {
 	}
 }
 
+// EstimateUploadInput is the input estimate of an upload from the parts its format
+// reads (docs/specs/GATEWAY.md, Limits → The input estimate): textBytes of text by the
+// text rule (EstimateTokens), and mediaItems at InlineMediaTokens each — an image
+// edit's prompt and its input images. No other part counts. An upload has one prompt,
+// so the two figures are equal.
+func EstimateUploadInput(textBytes, mediaItems int64) InputEstimate {
+	total := SaturatingAdd(EstimateTokens(textBytes), SaturatingMul(mediaItems, InlineMediaTokens))
+	return InputEstimate{Total: total, LargestPrompt: total}
+}
+
 // valueOffset is where the value of the member whose name ends at off begins in body:
 // past the colon and the whitespace around it, which the decoder reads only with the
 // value.

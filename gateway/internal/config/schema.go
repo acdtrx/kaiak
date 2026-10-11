@@ -114,7 +114,7 @@ var (
 		string(EndpointChatCompletions), string(EndpointCompletions), string(EndpointEmbeddings),
 		string(EndpointMessages), string(EndpointMessagesCountTokens), string(EndpointResponses),
 		string(EndpointResponsesInputTokens), string(EndpointRerank), string(EndpointAudioSpeech),
-		string(EndpointAudioSpeechBatch), string(EndpointImagesGenerations),
+		string(EndpointAudioSpeechBatch), string(EndpointImagesGenerations), string(EndpointImagesEdits),
 	}
 	limitTypeNames = limitTypeEnum()
 )

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"kaiak/internal/accounting"
 	"kaiak/internal/config"
@@ -475,6 +476,17 @@ func optionalField[T any](object map[string]json.RawMessage, key, param, want st
 		return nil, errInvalidType(param, want)
 	}
 	return value, nil
+}
+
+// inlineData reports whether a reference the backend would resolve — a speech
+// request's reference audio, an image edit's input image or mask given as text — is
+// inline data: a data: URL, its scheme in any case, as URL schemes are read. An
+// allowlist: whatever else a backend learns to fetch or read is refused until it is
+// judged (docs/specs/GATEWAY.md, Client API → owned fields: speech; owned parts: image
+// edits).
+func inlineData(s string) bool {
+	const scheme = "data:"
+	return len(s) >= len(scheme) && strings.EqualFold(s[:len(scheme)], scheme)
 }
 
 // startsWith reports whether a JSON value, past leading whitespace, begins with c.

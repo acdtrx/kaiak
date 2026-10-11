@@ -3,7 +3,6 @@ package server
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"kaiak/internal/config"
 )
@@ -106,7 +105,7 @@ func refuseExternalAudio(top map[string]json.RawMessage) *apiError {
 	if apiErr != nil {
 		return apiErr
 	}
-	if second != nil && !inlineAudio(*second) {
+	if second != nil && !inlineData(*second) {
 		return errExternalReference("ref_audio_2")
 	}
 	return eachObjectStrict(top["references"], "references", func(at string, entry map[string]json.RawMessage) *apiError {
@@ -115,7 +114,7 @@ func refuseExternalAudio(top map[string]json.RawMessage) *apiError {
 		if apiErr != nil {
 			return apiErr
 		}
-		if path != nil && !inlineAudio(*path) {
+		if path != nil && !inlineData(*path) {
 			return errExternalReference(param)
 		}
 		return nil
@@ -134,7 +133,7 @@ func refuseExternalRefAudio(raw json.RawMessage) *apiError {
 		if json.Unmarshal(raw, &one) != nil {
 			return errInvalidType("ref_audio", want)
 		}
-		if !inlineAudio(one) {
+		if !inlineData(one) {
 			return errExternalReference("ref_audio")
 		}
 		return nil
@@ -149,19 +148,11 @@ func refuseExternalRefAudio(raw json.RawMessage) *apiError {
 		if json.Unmarshal(entry, &one) != nil || one == nil {
 			return errInvalidType(param, "a string")
 		}
-		if !inlineAudio(*one) {
+		if !inlineData(*one) {
 			return errExternalReference(param)
 		}
 	}
 	return nil
-}
-
-// inlineAudio reports whether a reference audio is inline data: a data: URL, its
-// scheme in any case, as URL schemes are read. An allowlist: whatever else a
-// connector learns to fetch is refused until it is judged.
-func inlineAudio(s string) bool {
-	const scheme = "data:"
-	return len(s) >= len(scheme) && strings.EqualFold(s[:len(scheme)], scheme)
 }
 
 // parseSpeechBatchFields reads a speech batch's own owned fields
@@ -271,7 +262,7 @@ func readSpeechBatchLevel(members map[string]json.RawMessage, at string) (speech
 	if apiErr != nil {
 		return l, apiErr
 	}
-	if ref != nil && !inlineAudio(*ref) {
+	if ref != nil && !inlineData(*ref) {
 		return l, errExternalReference(l.param("ref_audio"))
 	}
 	return l, nil

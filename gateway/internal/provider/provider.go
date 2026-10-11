@@ -24,8 +24,8 @@ import (
 // keeping every backend-specific concern behind Send and Response: the pipeline hands
 // over the client's request as received plus the routing decision, and gets back
 // status, headers and events already in the client's format (the endpoint's: OpenAI,
-// Messages or Responses JSON and SSE, a Rerank, Speech batch or Images JSON body, or
-// Speech audio). A
+// Messages or Responses JSON and SSE, a Rerank, Speech batch or Images JSON body — an
+// image edit's too — or Speech audio). A
 // translating provider converts on both sides; today's modules pass every request
 // through in its own format with the owned edits only (docs/specs/GATEWAY.md, Client
 // API → Client APIs).
@@ -56,6 +56,7 @@ const (
 	AudioSpeech
 	AudioSpeechBatch
 	ImagesGenerations
+	ImagesEdits
 )
 
 // Format is a client API format: the request and response shapes an endpoint speaks
@@ -81,6 +82,9 @@ const (
 	// FormatImages: image generation, OpenAI's image generation API as vLLM-Omni serves
 	// it: a JSON request, a JSON answer carrying each image in base64.
 	FormatImages
+	// FormatImageEdits: image edits, OpenAI's image edit API in its multipart form as
+	// vLLM-Omni serves it: an upload (Request.Form), answered as image generation is.
+	FormatImageEdits
 )
 
 // endpoints holds each Endpoint's path below the API's version prefix
@@ -101,6 +105,7 @@ var endpoints = [...]struct {
 	AudioSpeech:          {"audio/speech", FormatSpeech, config.EndpointAudioSpeech},
 	AudioSpeechBatch:     {"audio/speech/batch", FormatSpeechBatch, config.EndpointAudioSpeechBatch},
 	ImagesGenerations:    {"images/generations", FormatImages, config.EndpointImagesGenerations},
+	ImagesEdits:          {"images/edits", FormatImageEdits, config.EndpointImagesEdits},
 }
 
 // Path is the endpoint's path below the API's version prefix: a backend URL ends with
@@ -214,8 +219,8 @@ const (
 	// CodeAuthFailed: the backend refused the gateway's own credential (401 or 403).
 	CodeAuthFailed Code = "upstream_auth_failed"
 	// CodeModelMissing: the backend answered 404 saying the deployment's model does
-	// not exist there, or vLLM-Omni's image generation answered 400 naming it in a
-	// model mismatch — the host serves another model (docs/specs/GATEWAY.md,
+	// not exist there, or vLLM-Omni's image generation or edits answered 400 naming it
+	// in a model mismatch — the host serves another model (docs/specs/GATEWAY.md,
 	// Providers: wrong model on a host).
 	CodeModelMissing Code = "upstream_model_missing"
 	// CodePathMissing: the backend answered the way its server answers a path it does

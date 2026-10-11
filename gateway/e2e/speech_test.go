@@ -410,7 +410,7 @@ func TestSpeech(t *testing.T) {
 	// Model metadata → Endpoints per model).
 	t.Run("the model entry lists the media endpoints", func(t *testing.T) {
 		for model, want := range map[string]string{
-			"tts":     "audio_speech,audio_speech_batch,images_generations",
+			"tts":     "audio_speech,audio_speech_batch,images_edits,images_generations",
 			"painter": "images_generations",
 		} {
 			status, body := g.get(t, "/v1/models/"+model, key)

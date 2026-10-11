@@ -1,6 +1,7 @@
 package server
 
 import (
+	"strings"
 	"time"
 
 	"kaiak/internal/provider"
@@ -75,6 +76,31 @@ func readUpload(rq *request, uploads Uploads) *apiError {
 	}
 	rq.inbound.Sequences = 1
 	return format.read(rq, rq.form)
+}
+
+// uploadText is part's value as an owned text part: a file part in its place is the
+// wrong type, 400 invalid_type naming it (docs/specs/GATEWAY.md, Client API → errors).
+func uploadText(part provider.FormPart) (string, *apiError) {
+	if part.File {
+		return "", errInvalidType(part.Name, "a text part")
+	}
+	return string(part.Body), nil
+}
+
+// readStreamPart holds an upload's stream part to the one rule of both upload formats
+// (docs/specs/GATEWAY.md, Client API → owned parts): false, in any case — anything
+// else is refused, 400 invalid_value. vLLM and vLLM-Omni read a form boolean in several
+// spellings (true, 1, on, yes), and the gateway relays neither format's stream: an
+// allowlist, so a spelling a server learns later is refused until it is judged.
+func readStreamPart(part provider.FormPart) *apiError {
+	value, apiErr := uploadText(part)
+	if apiErr != nil {
+		return apiErr
+	}
+	if !strings.EqualFold(value, "false") {
+		return errStreamPart()
+	}
+	return nil
 }
 
 // readModelPart reads the model an upload names: its model part — a text part, one

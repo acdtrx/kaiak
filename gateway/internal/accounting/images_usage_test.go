@@ -174,6 +174,32 @@ func TestImagesCutShortAndUnanswered(t *testing.T) {
 	}
 }
 
+// An image edit is answered as a generation is, and metered the same way: the answer's
+// data counted — a layered answer past n — the tokens the input estimate, flagged
+// estimated; cut short, at least the images asked for, flagged partial
+// (docs/specs/GATEWAY.md, Accounting → Media usage: image edits; Partial).
+func TestImageEditsCountAsGenerations(t *testing.T) {
+	whole := imagesBody(3, 100)
+	firstElement := strings.Index(string(whole), `{"b64_json"`)
+	for _, c := range []struct {
+		name     string
+		body     []byte
+		complete bool
+		images   int64
+	}{
+		{"a layered answer", whole, true, 3},
+		{"cut within the first image", whole[:firstElement+50], false, 2},
+	} {
+		m := NewMeter(provider.ImagesEdits, 33, MediaRequest{Images: 2})
+		m.Answered(http.StatusOK, false, http.Header{"Content-Type": {"application/json"}})
+		m.Observe(provider.Event{Data: c.body})
+		units, flags := m.Settle(c.complete)
+		if !maps.Equal(units, imageUnits(c.images)) || !flags.Estimated || flags.Partial == c.complete {
+			t.Errorf("%s: %v %+v, want %v, estimated, partial %v", c.name, units, flags, imageUnits(c.images), !c.complete)
+		}
+	}
+}
+
 // An image answer of many MiB is counted in one pass, nothing of it held: metering
 // four images of 3 MiB each (a body of 16 MiB) allocates about what metering four tiny
 // ones does (docs/specs/GATEWAY.md, Accounting → Media usage: never kept).

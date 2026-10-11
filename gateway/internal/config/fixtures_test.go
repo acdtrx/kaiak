@@ -230,8 +230,8 @@ var endpointColumns = map[string][]EndpointName{
 	"responses":                     {EndpointResponses},
 	"responses_input_tokens":        {EndpointResponsesInputTokens},
 	"rerank":                        {EndpointRerank},
-	"audio_speech, audio_speech_batch, images_generations": {EndpointAudioSpeech, EndpointAudioSpeechBatch,
-		EndpointImagesGenerations},
+	"audio_speech, audio_speech_batch, images_generations, images_edits": {EndpointAudioSpeech,
+		EndpointAudioSpeechBatch, EndpointImagesGenerations, EndpointImagesEdits},
 }
 
 // Each type serves exactly what the spec's endpoint support table says, the table

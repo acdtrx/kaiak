@@ -1,9 +1,13 @@
 package fakebackend
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"slices"
 	"strconv"
@@ -24,9 +28,24 @@ import (
 // model answers one image per layer. The reply's stream fault stops the answer within
 // image At's base64: Cut drops the connection, Hang waits for the request's end, End
 // ends the body there.
+//
+// Image edits, as vLLM-Omni serves them (api_server.py and images/helpers.py, v0.30.0;
+// docs/plans/media-phase-b/RESEARCH.md), at /v1/images/edits: multipart/form-data only
+// — a body that is no form with a boundary reads as an empty form, refused 400 for its
+// missing prompt; the fake also refuses an upload sent without its Content-Length (400),
+// which a server checking an upload's size from its length could not read. Its model
+// part is compared with the server's first served name as on generations; prompt is
+// required (400); the input images are the image file parts — else the image[] ones,
+// ignored when image is present — and the url and url[] text parts, none at all 422;
+// n is at least 1 (absent 1), with no upper bound on edits; response_format b64_json
+// only; stream true refused 400, as a single-stage pipeline refuses it; layers as on
+// generations. It is answered as a generation is.
 
 // imagesPath is the image generation endpoint, below the version prefix.
 const imagesPath = "images/generations"
+
+// imageEditsPath is the image edit endpoint, below the version prefix.
+const imageEditsPath = "images/edits"
 
 // DefaultImageBytes is each image's size when the Reply sets no ImageBytes.
 const DefaultImageBytes = 1024
@@ -38,8 +57,8 @@ const imagesMaxN = 10
 const pngSignature = "\x89PNG\r\n\x1a\n"
 
 // SetImageServedModel scripts, from now on, the server's first served name, which
-// image generation compares a request's model with: another model is answered 400
-// "Model mismatch" ("": every model is the server's).
+// image generation and edits compare a request's model with: another model is
+// answered 400 "Model mismatch" ("": every model is the server's).
 func (b *Backend) SetImageServedModel(name string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -89,14 +108,132 @@ func (b *Backend) writeImages(w http.ResponseWriter, r *http.Request, req *Reque
 	}
 	size := "1024x1024"
 	_ = json.Unmarshal(top["size"], &size) // a size that is not a string: the default
+	b.writeImagesAnswer(w, r, req, reply, n*layers, size)
+}
 
+// editForm is an image edit's form as vLLM-Omni's route reads it: its text parts'
+// values by name, and how many file parts each name holds.
+type editForm struct {
+	text  map[string][]string
+	files map[string]int
+}
+
+// value is the form's text part name, and whether it has one.
+func (f editForm) value(name string) (string, bool) {
+	if v := f.text[name]; len(v) > 0 {
+		return v[0], true
+	}
+	return "", false
+}
+
+// readEditForm reads an upload's body as a multipart/form-data form under the boundary
+// its Content-Type names: a body of another type reads as an empty form, as
+// Starlette's does; ok is false for a form that does not parse. A part is a file part
+// when its Content-Disposition names a filename, even an empty one, as Starlette reads
+// it.
+func readEditForm(contentType string, body []byte) (form editForm, ok bool) {
+	form = editForm{text: map[string][]string{}, files: map[string]int{}}
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil || mediaType != "multipart/form-data" || params["boundary"] == "" {
+		return form, true
+	}
+	reader := multipart.NewReader(bytes.NewReader(body), params["boundary"])
+	for {
+		part, err := reader.NextRawPart()
+		if err == io.EOF {
+			return form, true
+		}
+		if err != nil {
+			return form, false
+		}
+		data, err := io.ReadAll(part)
+		if err != nil {
+			return form, false
+		}
+		_, disposition, err := mime.ParseMediaType(part.Header.Get("Content-Disposition"))
+		if err != nil {
+			return form, false
+		}
+		name := disposition["name"]
+		if _, file := disposition["filename"]; file {
+			form.files[name]++
+		} else {
+			form.text[name] = append(form.text[name], string(data))
+		}
+	}
+}
+
+// writeImageEdits answers an image edit, its body req.Body as received.
+func (b *Backend) writeImageEdits(w http.ResponseWriter, r *http.Request, req *Request, reply Reply, imageModel string) {
+	if r.ContentLength < 0 {
+		writeJSON(w, http.StatusBadRequest, omniError(http.StatusBadRequest, "BadRequestError",
+			"the fake takes an upload with its Content-Length"))
+		return
+	}
+	form, ok := readEditForm(r.Header.Get("Content-Type"), req.Body)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, omniError(http.StatusBadRequest, "BadRequestError", "the form does not parse"))
+		return
+	}
+	if model, ok := form.value("model"); ok && imageModel != "" && model != imageModel {
+		writeJSON(w, http.StatusBadRequest, omniError(http.StatusBadRequest, "Bad Request",
+			fmt.Sprintf("Model mismatch: request specifies '%s' but server is running '%s'.", model, imageModel)))
+		return
+	}
+	if _, ok := form.value("prompt"); !ok {
+		writeJSON(w, http.StatusBadRequest, omniError(http.StatusBadRequest, "BadRequestError", "prompt: Field required"))
+		return
+	}
+	inputs := form.files["image"]
+	if inputs == 0 {
+		inputs = form.files["image[]"]
+	}
+	if inputs+len(form.text["url"])+len(form.text["url[]"]) == 0 {
+		writeJSON(w, http.StatusUnprocessableEntity, omniError(http.StatusUnprocessableEntity, "BadRequestError",
+			"Either 'image' or 'url' must be provided"))
+		return
+	}
+	n := 1
+	if v, ok := form.value("n"); ok {
+		var err error
+		if n, err = strconv.Atoi(v); err != nil || n < 1 {
+			writeJSON(w, http.StatusBadRequest, omniError(http.StatusBadRequest, "BadRequestError", "n: Input should be at least 1"))
+			return
+		}
+	}
+	if v, ok := form.value("response_format"); ok && v != "b64_json" {
+		writeJSON(w, http.StatusBadRequest, omniError(http.StatusBadRequest, "BadRequestError",
+			fmt.Sprintf("the fake does not play response_format %q", v)))
+		return
+	}
+	if v, ok := form.value("stream"); ok && strings.EqualFold(v, "true") {
+		writeJSON(w, http.StatusBadRequest, omniError(http.StatusBadRequest, "BadRequestError",
+			"Streaming is only supported for multi-stage pipelines"))
+		return
+	}
+	layers := 1
+	if v, ok := form.value("layers"); ok {
+		if l, err := strconv.Atoi(v); err == nil && l > 1 {
+			layers = l
+		}
+	}
+	size, ok := form.value("size")
+	if !ok || size == "auto" {
+		size = "1024x1024"
+	}
+	b.writeImagesAnswer(w, r, req, reply, n*layers, size)
+}
+
+// writeImagesAnswer writes an image answer holding images, of size, as Reply scripts
+// it: each image ImageBytes of PNG-signed filler, its fault breaking it within image At.
+func (b *Backend) writeImagesAnswer(w http.ResponseWriter, r *http.Request, req *Request, reply Reply, images int,
+	size string) {
 	imageBytes := reply.ImageBytes
 	if imageBytes == 0 {
 		imageBytes = DefaultImageBytes
 	}
 	image := []byte(pngSignature + strings.Repeat("\x00", max(imageBytes-len(pngSignature), 0)))
 	element := `{"b64_json":"` + base64.StdEncoding.EncodeToString(image[:imageBytes]) + `","url":null,"revised_prompt":null}`
-	images := n * layers
 	head := `{"created":` + strconv.Itoa(created) + `,"data":[`
 	sizeJSON, _ := json.Marshal(size) // a string always encodes
 	tail := `],"output_format":"png","size":` + string(sizeJSON) + `,"cot_output":null,"metrics":{}}`

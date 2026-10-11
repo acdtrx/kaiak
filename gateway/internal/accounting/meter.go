@@ -126,10 +126,10 @@ type usageReader interface {
 }
 
 // mediaReader is the usageReader of a format whose answer is media (speech, the speech
-// batch, image generation): it reads a successful answer's response headers, and its
-// body as relayed — audio, or JSON carrying audio or images — or its stream events,
-// and adds the media units to the record (docs/specs/GATEWAY.md, Accounting → Media
-// usage).
+// batch, image generation and edits): it reads a successful answer's response headers,
+// and its body as relayed — audio, or JSON carrying audio or images — or its stream
+// events, and adds the media units to the record (docs/specs/GATEWAY.md, Accounting →
+// Media usage).
 type mediaReader interface {
 	usageReader
 	// answered reads a successful answer's response headers, as the backend sent them;
@@ -150,11 +150,11 @@ type mediaReader interface {
 
 // MediaRequest is what a media request says about the answer it gets, which its meter
 // reads (docs/specs/GATEWAY.md, Client API → owned fields: speech, speech batch,
-// images); the zero value for any other request.
+// images; owned parts: image edits); the zero value for any other request.
 type MediaRequest struct {
 	// Speech is a speech request's or a speech batch's.
 	Speech Speech
-	// Images are the images an image request asks for (its n, at least 1).
+	// Images are the images an image generation or edit asks for (its n, at least 1).
 	Images int64
 }
 
@@ -173,7 +173,7 @@ func NewMeter(ep provider.Endpoint, input int64, media MediaRequest) *Meter {
 		reader = newSpeechUsage(media.Speech)
 	case provider.FormatSpeechBatch:
 		reader = newSpeechBatchUsage(media.Speech)
-	case provider.FormatImages:
+	case provider.FormatImages, provider.FormatImageEdits:
 		reader = &imagesUsage{requested: media.Images}
 	default:
 		reader = &openAIUsage{endpoint: ep}

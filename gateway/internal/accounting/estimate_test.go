@@ -1,6 +1,7 @@
 package accounting
 
 import (
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -117,6 +118,27 @@ func TestInlineMediaEstimateIgnoresTheEncodedSize(t *testing.T) {
 	small, large := EstimateInput(provider.ChatCompletions, body(1_000)), EstimateInput(provider.ChatCompletions, body(1_400_000))
 	if small != large {
 		t.Errorf("estimates differ by encoded size: %+v, %+v", small, large)
+	}
+}
+
+// An upload's estimate is what its format reads: the text by bytes, each media item
+// at the flat figure, the two figures equal, saturating rather than wrapping
+// (docs/specs/GATEWAY.md, Limits → The input estimate).
+func TestEstimateUploadInput(t *testing.T) {
+	for _, c := range []struct {
+		text, media int64
+		want        int64
+	}{
+		{0, 0, 0},
+		{17, 0, EstimateTokens(17)},
+		{0, 1, InlineMediaTokens},
+		{40, 3, EstimateTokens(40) + 3*InlineMediaTokens},
+		{1, math.MaxInt64, math.MaxInt64},
+	} {
+		got := EstimateUploadInput(c.text, c.media)
+		if got.Total != c.want || got.LargestPrompt != c.want {
+			t.Errorf("text %d, media %d: %+v, want %d for both", c.text, c.media, got, c.want)
+		}
 	}
 }
 

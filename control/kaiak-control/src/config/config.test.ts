@@ -206,6 +206,13 @@ describe("one backend type per model and its endpoints", () => {
     assert.deepEqual(issuesOf(withDeployments(["vllm-a", "vllm-b"], ["chat_completions", "messages", "rerank"])), []);
   });
 
+  test("image edits are served by vllm-omni alone", () => {
+    assert.deepEqual(issuesOf(withDeployments(["omni"], ["images_generations", "images_edits"])), []);
+    assert.deepEqual(issuesOf(withDeployments(["vllm-a"], ["chat_completions", "images_edits"])), [
+      { code: "endpoint-not-served", path: "/models/llama/endpoints/1" },
+    ]);
+  });
+
   test("each entry the model's type does not serve is reported at its index", () => {
     assert.deepEqual(issuesOf(withDeployments(["vllm-a", "vllm-b"], ["rerank", "responses_input_tokens", "audio_speech"])), [
       { code: "endpoint-not-served", path: "/models/llama/endpoints/1" },

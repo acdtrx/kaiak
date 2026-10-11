@@ -698,6 +698,7 @@ func errorAnswers() []struct {
 		{"errInvalidForm", errInvalidForm("a part has no name")},
 		{"errDuplicateMember", errDuplicateMember("model")},
 		{"errInvalidType", errInvalidType("stream", "a boolean")},
+		{"errStreamPart", errStreamPart()},
 		{"errNTooLarge", errNTooLarge("n", 1)},
 		{"errTooManySequences", errTooManySequences("n", 2, 1)},
 		{"errTooManyInputs", errTooManyInputs(2, 1)},

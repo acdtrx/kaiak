@@ -93,6 +93,7 @@ const (
 	EndpointAudioSpeech          EndpointName = "audio_speech"
 	EndpointAudioSpeechBatch     EndpointName = "audio_speech_batch"
 	EndpointImagesGenerations    EndpointName = "images_generations"
+	EndpointImagesEdits          EndpointName = "images_edits"
 )
 
 // endpointSupport is which client API endpoints each backend type serves
@@ -106,7 +107,7 @@ var endpointSupport = map[BackendType][]EndpointName{
 	BackendAzureOpenAI: {EndpointChatCompletions, EndpointCompletions, EndpointEmbeddings, EndpointResponses},
 	BackendVLLM: {EndpointChatCompletions, EndpointCompletions, EndpointEmbeddings, EndpointMessages,
 		EndpointMessagesCountTokens, EndpointResponses, EndpointRerank},
-	BackendVLLMOmni: {EndpointAudioSpeech, EndpointAudioSpeechBatch, EndpointImagesGenerations},
+	BackendVLLMOmni: {EndpointAudioSpeech, EndpointAudioSpeechBatch, EndpointImagesGenerations, EndpointImagesEdits},
 	BackendLlamaServer: {EndpointChatCompletions, EndpointCompletions, EndpointEmbeddings, EndpointMessages,
 		EndpointMessagesCountTokens, EndpointResponses, EndpointResponsesInputTokens, EndpointRerank},
 	BackendAnthropic:        {EndpointMessages, EndpointMessagesCountTokens},

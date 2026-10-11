@@ -243,11 +243,19 @@ func errTooManyItems(items, limit int64) *apiError {
 		message: fmt.Sprintf("'items' holds %d items; the gateway's maximum is %d per request.", items, limit)}
 }
 
-// errTooManyImages refuses an image request asking for more images than
+// errTooManyImages refuses an image generation or edit asking for more images than
 // global.max_images_per_request allows.
 func errTooManyImages(images, limit int64) *apiError {
 	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "invalid_value", class: metrics.ErrorInvalidRequest, param: "n",
 		message: fmt.Sprintf("'n' asks for %d images; the gateway's maximum is %d per request.", images, limit)}
+}
+
+// errStreamPart refuses an upload whose stream part asks for a stream: image edits and
+// speech-to-text are never relayed as one (docs/specs/GATEWAY.md, Client API → owned
+// parts). The message never echoes the value: the client wrote it.
+func errStreamPart() *apiError {
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "invalid_value", class: metrics.ErrorInvalidRequest, param: "stream",
+		message: "'stream' asks for a streamed answer, which the gateway does not relay here: send false, or leave it out."}
 }
 
 // errRerankTEIFormat refuses a rerank request carrying texts, TEI's rerank format
@@ -467,20 +475,21 @@ func errHostedMember(param string) *apiError {
 
 // errResponseFormatUnsupported refuses a media request asking for an answer format
 // the gateway cannot count (docs/specs/GATEWAY.md, Client API → owned fields: speech,
-// images): speech audio other than WAV or PCM, whose length it cannot measure, and
-// images other than b64_json, whose count it cannot read. param names the member
-// (response_format, items[2].response_format); allowed names the formats served. The
-// message never echoes the value: the client wrote it.
+// images; owned parts: image edits): speech audio other than WAV or PCM, whose length
+// it cannot measure, and images other than b64_json, whose count it cannot read.
+// param names the member (response_format, items[2].response_format); allowed names
+// the formats served. The message never echoes the value: the client wrote it.
 func errResponseFormatUnsupported(param, allowed string) *apiError {
 	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "response_format_unsupported", class: metrics.ErrorInvalidRequest, param: param,
 		message: fmt.Sprintf("'%s' asks for a format the gateway cannot count; it serves %s.", param, allowed)}
 }
 
-// errExternalReference refuses a field that would make the backend fetch a URL or
-// read a file on the client's behalf (docs/specs/GATEWAY.md, Client API → owned
-// fields: speech, images): a reference audio that is not inline data, an image
-// request's LoRA adapter path. param names the member (ref_audio[1],
-// references[0].audio_path, lora).
+// errExternalReference refuses a field or part that would make the backend fetch a
+// URL or read a file on the client's behalf (docs/specs/GATEWAY.md, Client API → owned
+// fields: speech, images; owned parts: image edits): a reference audio, or an image
+// edit's input image or mask given as text, that is not inline data, an image
+// request's LoRA adapter path. param names the member or part (ref_audio[1],
+// references[0].audio_path, lora, url[]).
 func errExternalReference(param string) *apiError {
 	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "external_reference_unsupported", class: metrics.ErrorInvalidRequest, param: param,
 		message: fmt.Sprintf("'%s' names something for the backend to fetch or read (a URL or a file path); the gateway sends only inline data.", param)}

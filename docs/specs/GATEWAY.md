@@ -190,7 +190,7 @@
   | The top-level object, or `stream_options`, names a member twice — or any member the gateway reads to enforce its rules: a tools entry, a `tool_choice`, a shell's `environment`, a Responses input item or part, a Messages message, block or source, `thinking`, a `cache_control` or its `ttl` on Anthropic types, a speech batch item or a speech `references` entry (`param` names it; Request pipeline → duplicate members; Client API → Hosted tools are refused); or an upload repeats a single-value part (`param` its name; settled 2026-10-11, Request pipeline → Uploads) | 400 | `invalid_request_error` | `duplicate_member` |
   | Body could not be read; or an upload's body breaks the multipart rules — a part without a `name`, a part with a `Content-Transfer-Encoding`, part headers past their bound, a text part over 1 MiB, more than 1000 parts, no closing boundary (settled 2026-10-11, Request pipeline → Uploads) | 400 | `invalid_request_error` | `invalid_body` |
   | `model` missing or empty (`param: "model"`); or a speech request, or a speech batch item, whose audio is `pcm` and which sets no `sample_rate` (`param: "sample_rate"`, or the item's: `items[2].sample_rate`; settled 2026-10-09, Client API → owned fields: speech); or a transcription without a `file` part (`param: "file"`; settled 2026-10-11, Client API → owned parts: speech-to-text) | 400 | `invalid_request_error` | `missing_required_parameter` |
-  | An owned field or part has the wrong type (`param` names it) — on an upload, an `n` that is not a whole number, a transcription's `file` that is not a file part (settled 2026-10-11) | 400 | `invalid_request_error` | `invalid_type` |
+  | An owned field or part has the wrong type (`param` names it) — on an upload, an owned text part sent as a file part (`model`, `stream`; an edit's `n` and `response_format`), an `n` that is not a whole number, a transcription's `file` that is not a file part (settled 2026-10-11) | 400 | `invalid_request_error` | `invalid_type` |
   | `n` or `best_of` above `global.max_n` (`param` names it) | 400 | `invalid_request_error` | `n_too_large` |
   | `max_tokens`, `max_completion_tokens`, `max_output_tokens` or `max_new_tokens` (speech, its batch and each item; settled 2026-10-09) below 0 or above the model's `context_length` (`param` names it; Limits → Output limit out of range); a `max_new_tokens` above the model's output-limit ceiling (settled 2026-10-10; Limits → Output-limit keys); or a Messages output limit the gateway would set — the model's ceiling or default — at or below `thinking.budget_tokens` (Limits → Output limit) | 400 | `invalid_request_error` | `invalid_value` |
   | More generated sequences than `global.max_sequences_per_request` (`param`: `prompt`, `n` or `best_of`), more embeddings inputs than `global.max_embedding_inputs` (`param: "input"`), more rerank documents than `global.max_rerank_documents` (`param: "documents"`, settled 2026-10-08), more images than `global.max_images_per_request` (`param: "n"`; an image generation or edit) or more speech batch items than `global.max_speech_batch_items` (`param: "items"`, both settled 2026-10-09) — Limits → Output multiplicity: batch caps | 400 | `invalid_request_error` | `invalid_value` |
@@ -791,9 +791,11 @@ own, and a client sending repeats is broken either way.
   `main`; llama.cpp `master` at build b11513; `docs/plans/rerank/STEP-1-contract.md`
   records them), the media column and the `vllm-omni` row on 2026-10-09 from
   vLLM-Omni's source (v0.30.0, commit `a8576ccb`; vLLM 0.30.0, the version it pins;
-  `docs/plans/media-generation/STEP-1-contract.md` records them):
+  `docs/plans/media-generation/STEP-1-contract.md` records them), `images_edits` on
+  2026-10-11 from vLLM-Omni's source (v0.30.0; `docs/plans/media-phase-b/RESEARCH.md`
+  records it):
 
-  | Type | chat, completions, embeddings | messages | messages_count_tokens | responses | responses_input_tokens | rerank | audio_speech, audio_speech_batch, images_generations |
+  | Type | chat, completions, embeddings | messages | messages_count_tokens | responses | responses_input_tokens | rerank | audio_speech, audio_speech_batch, images_generations, images_edits |
   |---|---|---|---|---|---|---|---|
   | `openai` | yes | — | — | yes | yes | — | — |
   | `azure-openai` | yes | — | — | yes | — (Azure's v1 API answers `404` for it) | — | — |

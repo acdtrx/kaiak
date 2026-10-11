@@ -12,7 +12,7 @@ export const ENDPOINT_SUPPORT: Readonly<Record<BackendType, readonly ModelEndpoi
   openai: ["chat_completions", "completions", "embeddings", "responses", "responses_input_tokens"],
   "azure-openai": ["chat_completions", "completions", "embeddings", "responses"],
   vllm: ["chat_completions", "completions", "embeddings", "messages", "messages_count_tokens", "responses", "rerank"],
-  "vllm-omni": ["audio_speech", "audio_speech_batch", "images_generations"],
+  "vllm-omni": ["audio_speech", "audio_speech_batch", "images_generations", "images_edits"],
   "llama-server": [
     "chat_completions",
     "completions",

@@ -7,10 +7,10 @@ import (
 	"kaiak/internal/config"
 )
 
-// imagesUsage reads an image generation answer (docs/specs/GATEWAY.md, Accounting →
-// Media usage): a JSON body, {"created", "data": [{"b64_json", "url",
-// "revised_prompt"}, …], "output_format", "size", …}, whose top-level data elements
-// are the images. They are counted in one pass as the body streams through, never
+// imagesUsage reads an image generation or edit answer — an edit is answered as a
+// generation is (docs/specs/GATEWAY.md, Accounting → Media usage): a JSON body,
+// {"created", "data": [{"b64_json", "url", "revised_prompt"}, …], "output_format",
+// "size", …}, whose top-level data elements are the images. They are counted in one pass as the body streams through, never
 // kept: up to ten base64 images of several MiB each. The count is the answer's — a
 // layered model answers one image per layer, more than the request's n — and the data
 // an answer names last is the one read, as a client reads it. vLLM-Omni reports no

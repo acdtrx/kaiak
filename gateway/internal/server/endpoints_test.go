@@ -130,7 +130,7 @@ func TestEndpointsListShowsInTheModelLists(t *testing.T) {
 		"chat-listed":   `"endpoints":["chat_completions"]`,
 		"claude-msg":    `"endpoints":["messages"]`,
 		"claude-counts": `"endpoints":["messages_count_tokens"]`,
-		"tts":           `"endpoints":["audio_speech","audio_speech_batch","images_generations"]`,
+		"tts":           `"endpoints":["audio_speech","audio_speech_batch","images_edits","images_generations"]`,
 		"open":          `"endpoints":["chat_completions","completions","embeddings"]`,
 	} {
 		w := do(t, g.h, call{method: "GET", path: "/v1/models/" + model, key: workloadKey})
@@ -206,7 +206,8 @@ var listedRequests = map[provider.Endpoint]struct{ path, body string }{
 // model_not_found, nothing about its endpoints; one with access gets
 // endpoint_not_served in the route's error shape with the one message, nothing sent,
 // nothing settled, and the group's one request a minute still free for the listed
-// endpoint.
+// endpoint. An upload carries a form, and is never a stream: its stream part asking for
+// one is refused as the body is read, before the model is known.
 func TestEndpointsListIsJudgedOnEveryRoute(t *testing.T) {
 	for _, ep := range bodyEndpoints {
 		typ := config.BackendLlamaServer
@@ -222,6 +223,9 @@ func TestEndpointsListIsJudgedOnEveryRoute(t *testing.T) {
 			t.Fatalf("%s: no type in the test serves it", ep.route())
 		}
 		for _, stream := range []bool{false, true} {
+			if stream && ep.upload != nil {
+				continue
+			}
 			t.Run(fmt.Sprintf("%s/stream=%t", ep.api.Name(), stream), func(t *testing.T) {
 				g := newTestGateway(t)
 				g.apply(t, func(doc string) string {
@@ -235,9 +239,14 @@ func TestEndpointsListIsJudgedOnEveryRoute(t *testing.T) {
 				if ep.api.Format() == provider.FormatResponses {
 					body = fmt.Sprintf(`{"model":"secret","stream":%t,"input":"hi"}`, stream)
 				}
+				var header map[string]string
+				if ep.upload != nil {
+					body = formOf(textPart("model", "secret"), textPart("prompt", "hi"), filePart("image", "a.png", "image/png", "\x89PNG"))
+					header = map[string]string{"Content-Type": formContentType}
+				}
 				anthropic := ep.api.Format() == provider.FormatMessages
 
-				c := call{method: "POST", path: ep.route(), key: userKey, body: body}
+				c := call{method: "POST", path: ep.route(), key: userKey, body: body, header: header}
 				w := do(t, g.h, c)
 				if anthropic {
 					expectAnthropicError(t, w, http.StatusNotFound, "not_found_error", "model_not_found")

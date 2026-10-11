@@ -37,7 +37,7 @@ func TestVLLMOmniURLCredentialAndProbe(t *testing.T) {
 		if !ok {
 			t.Fatalf("vllm-omni's module is %T", r.module(b))
 		}
-		for _, path := range []string{"audio/speech", "audio/speech/batch", "images/generations"} {
+		for _, path := range []string{"audio/speech", "audio/speech/batch", "images/generations", "images/edits"} {
 			if got := m.url(path); got != fb.URL()+"/v1/"+path {
 				t.Errorf("url(%s) = %s, want %s/v1/%s", path, got, fb.URL(), path)
 			}
@@ -178,13 +178,14 @@ func TestVLLMOmniImageReadings(t *testing.T) {
 	}
 }
 
-// Image generation's own answers through Send (docs/specs/GATEWAY.md, Providers →
-// Wrong model on a host, A path the server does not have): its 400 "Model mismatch"
-// quoting the deployment's model is upstream_model_missing, not carrying the
-// backend's text; a mismatch quoting another model and any other 400 are relayed
-// whole, as the caller's; a 503 — "No diffusion stage", an image request to a speech
-// model, among them — is relayed for the pipeline to answer as the backend's 5xx.
-// Speech and the speech batch read none of them: there the same answers are relayed.
+// Image generation's and edits' own answers through Send (docs/specs/GATEWAY.md,
+// Providers → Wrong model on a host, A path the server does not have): their 400
+// "Model mismatch" quoting the deployment's model is upstream_model_missing, not
+// carrying the backend's text; a mismatch quoting another model and any other 400 are
+// relayed whole, as the caller's; a 503 — "No diffusion stage", an image request to a
+// speech model, among them — is relayed for the pipeline to answer as the backend's
+// 5xx. Speech and the speech batch read none of them: there the same answers are
+// relayed.
 func TestVLLMOmniImageAnswersThroughSend(t *testing.T) {
 	// relayed: the answer is not the deployment's failure; the provider returns it.
 	const relayed = Code("")
@@ -213,10 +214,10 @@ func TestVLLMOmniImageAnswersThroughSend(t *testing.T) {
 	b := wireBackend(s, config.BackendVLLMOmni)
 	for _, a := range answers {
 		s.set(a.status, a.body)
-		for _, e := range []Endpoint{ImagesGenerations, AudioSpeech, AudioSpeechBatch} {
+		for _, e := range []Endpoint{ImagesGenerations, ImagesEdits, AudioSpeech, AudioSpeechBatch} {
 			t.Run(a.name+"/"+e.Path(), func(t *testing.T) {
 				want := a.want
-				if e != ImagesGenerations {
+				if e != ImagesGenerations && e != ImagesEdits {
 					want = relayed
 				}
 				resp, err := sendTo(r, b, e, `{"model":"pub"}`)

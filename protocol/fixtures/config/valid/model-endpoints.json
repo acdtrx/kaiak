@@ -49,7 +49,7 @@
     },
     "image": {
       "deployments": [{ "backend": "omni-image", "model": "org/image-model" }],
-      "endpoints": ["images_generations"],
+      "endpoints": ["images_generations", "images_edits"],
       "metadata": {
         "context_length": 1024,
         "capabilities": { "streaming": false, "tools": false, "vision": false, "reasoning": false }
