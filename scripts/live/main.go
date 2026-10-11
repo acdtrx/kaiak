@@ -10,7 +10,7 @@
 // the embeddings model is served by a server of its own (openai-compatible), a third
 // backend in the config. With -rerank-base-url a reranker server of the run's kind
 // (vllm or llama-server) serves rerank, and the wrong-endpoint checks send each model
-// the endpoint its server lacks. With -speech-base-url and -image-base-url vLLM-Omni
+// the endpoint its server lacks, which its endpoints list leaves out. With -speech-base-url and -image-base-url vLLM-Omni
 // servers (vllm-omni backends, whatever the run's kind) serve speech and image
 // generation, and the media checks run: each speech mode, the batch, images, their
 // units on the usage log line, the media limits and caps. -self-test runs every check

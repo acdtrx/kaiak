@@ -92,6 +92,30 @@ const (
 	EndpointImagesGenerations    EndpointName = "images_generations"
 )
 
+// endpointSupport is which client API endpoints each backend type serves
+// (docs/specs/GATEWAY.md, Providers → Endpoint support): the gateway's one table,
+// which config validation reads (endpoint-not-served). It and kaiak-control's are each
+// held to protocol/fixtures/backend-types/ (endpoints), and this one to the spec's
+// table too.
+var endpointSupport = map[BackendType][]EndpointName{
+	BackendOpenAI: {EndpointChatCompletions, EndpointCompletions, EndpointEmbeddings, EndpointResponses,
+		EndpointResponsesInputTokens},
+	BackendAzureOpenAI: {EndpointChatCompletions, EndpointCompletions, EndpointEmbeddings, EndpointResponses},
+	BackendVLLM: {EndpointChatCompletions, EndpointCompletions, EndpointEmbeddings, EndpointMessages,
+		EndpointMessagesCountTokens, EndpointResponses, EndpointRerank},
+	BackendVLLMOmni: {EndpointAudioSpeech, EndpointAudioSpeechBatch, EndpointImagesGenerations},
+	BackendLlamaServer: {EndpointChatCompletions, EndpointCompletions, EndpointEmbeddings, EndpointMessages,
+		EndpointMessagesCountTokens, EndpointResponses, EndpointResponsesInputTokens, EndpointRerank},
+	BackendAnthropic:        {EndpointMessages, EndpointMessagesCountTokens},
+	BackendAzureAnthropic:   {EndpointMessages, EndpointMessagesCountTokens},
+	BackendOpenAICompatible: {EndpointChatCompletions, EndpointCompletions, EndpointEmbeddings},
+}
+
+// Serves reports whether backends of type t serve endpoint e (endpointSupport).
+func (t BackendType) Serves(e EndpointName) bool {
+	return slices.Contains(endpointSupport[t], e)
+}
+
 type LimitType string
 
 const (
@@ -345,11 +369,12 @@ type Circuit struct {
 
 type Model struct {
 	// Name is the public model name clients send.
-	Name        string
+	Name string
+	// Deployments are identical instances of the model, on backends of one type
+	// (docs/specs/GATEWAY.md, Model metadata → One backend type per model).
 	Deployments []Deployment
 	// Endpoints is the model's endpoints list: the client API endpoints it serves,
-	// narrowing those its deployments' backend types serve; nil when it has none
-	// (Admits).
+	// each one its deployments' type serves (Admits).
 	Endpoints        []EndpointName
 	ContextLength    int64
 	Capabilities     Capabilities
@@ -363,12 +388,12 @@ type Model struct {
 	MaxAttempts int
 }
 
-// Admits reports whether the model's endpoints list admits endpoint e: every endpoint
-// when the model has no list, else those it names (docs/specs/GATEWAY.md, Model
-// metadata → Endpoints per model). Which of its deployments serve e is their backend
-// types' to say.
+// Admits reports whether the model serves endpoint e: its endpoints list names it
+// (docs/specs/GATEWAY.md, Model metadata → Endpoints per model). Every deployment of
+// the model then serves e: they share one backend type, which serves every endpoint
+// the list names.
 func (m *Model) Admits(e EndpointName) bool {
-	return m.Endpoints == nil || slices.Contains(m.Endpoints, e)
+	return slices.Contains(m.Endpoints, e)
 }
 
 type Deployment struct {

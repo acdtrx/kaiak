@@ -62,11 +62,10 @@ const (
 	AttemptTimeout      AttemptOutcome = "timeout"       // a stream's first-event timeout
 	AttemptAuthFailed   AttemptOutcome = "auth_failed"   // the backend refused the gateway's credential
 	AttemptModelMissing AttemptOutcome = "model_missing" // the backend does not serve the model
-	AttemptPathMissing  AttemptOutcome = "path_missing"  // the backend's base_url leads to no endpoint
 	AttemptServerError  AttemptOutcome = "server_error"  // a backend 5xx
 	AttemptBrokeOff     AttemptOutcome = "broke_off"     // broken off, stalled or incomplete after the first event
 	// Neutral: they leave the circuit as it is.
-	AttemptEndpointMissing AttemptOutcome = "endpoint_missing" // the deployment's server does not serve an endpoint its type serves
+	AttemptPathMissing     AttemptOutcome = "path_missing"     // the server's answer to a path it does not have
 	AttemptResponseTimeout AttemptOutcome = "response_timeout" // a non-stream response timeout
 	AttemptRateLimited     AttemptOutcome = "rate_limited"     // a backend 429
 	AttemptClientError     AttemptOutcome = "client_error"     // another backend 4xx, or the provider's refusal before sending
@@ -75,14 +74,14 @@ const (
 )
 
 var attemptOutcomes = []AttemptOutcome{AttemptSuccess, AttemptUnavailable, AttemptTimeout, AttemptAuthFailed,
-	AttemptModelMissing, AttemptPathMissing, AttemptServerError, AttemptBrokeOff, AttemptEndpointMissing,
+	AttemptModelMissing, AttemptServerError, AttemptBrokeOff, AttemptPathMissing,
 	AttemptResponseTimeout, AttemptRateLimited, AttemptClientError, AttemptCanceled, AttemptInternal}
 
 // RetryableOutcomes are the outcomes after which an attempt that relayed nothing may
 // be retried (docs/specs/GATEWAY.md, Routing and reliability: retries): the
 // kaiak.attempt.outcome values of kaiak.retries.
 var RetryableOutcomes = []AttemptOutcome{AttemptUnavailable, AttemptTimeout, AttemptServerError, AttemptRateLimited,
-	AttemptAuthFailed, AttemptModelMissing, AttemptPathMissing, AttemptEndpointMissing}
+	AttemptAuthFailed, AttemptModelMissing}
 
 // Bucket bounds. Durations span quick refusals to a long generation (longer ones,
 // up to the default 30 min response timeout, fall in +Inf); decode rates span a busy CPU backend to a

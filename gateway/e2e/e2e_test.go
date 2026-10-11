@@ -32,8 +32,26 @@ var (
 	budgetKey, budgetHash = newKey()
 )
 
-// testConfig is the config document the gateway runs with; extraModel, when set,
-// adds one more chat model (the reload scenario).
+// everyEndpoint names every endpoint backends of type typ serve, as the shared
+// backend-type fixture lists them (protocol/fixtures/backend-types): the endpoints
+// list of a test model whose endpoints are not the test's point.
+func everyEndpoint(typ string) []any {
+	data, err := os.ReadFile(filepath.Join("..", "..", "protocol", "fixtures", "backend-types", typ+".json"))
+	var fixture struct {
+		Endpoints []any `json:"endpoints"`
+	}
+	if err == nil {
+		err = json.Unmarshal(data, &fixture)
+	}
+	if err != nil || len(fixture.Endpoints) == 0 {
+		panic(fmt.Sprintf("the %s backend-type fixture lists no endpoints: %v", typ, err))
+	}
+	return fixture.Endpoints
+}
+
+// testConfig is the config document the gateway runs with, every model listing every
+// endpoint its type serves; extraModel, when set, adds one more chat model (the reload
+// scenario).
 func testConfig(backendURL, evalHash, annHash, extraModel string) map[string]any {
 	chatMeta := map[string]any{
 		"context_length": 8192,
@@ -42,6 +60,7 @@ func testConfig(backendURL, evalHash, annHash, extraModel string) map[string]any
 	chatModel := func(prices []any) map[string]any {
 		m := map[string]any{
 			"deployments":  []any{map[string]any{"backend": "fake", "model": backendChatModel}},
+			"endpoints":    everyEndpoint("openai-compatible"),
 			"metadata":     chatMeta,
 			"output_limit": map[string]any{"default": 64, "ceiling": 128},
 		}
@@ -61,6 +80,7 @@ func testConfig(backendURL, evalHash, annHash, extraModel string) map[string]any
 		"priced": chatModel(price(10, 20)),
 		"embed": map[string]any{
 			"deployments": []any{map[string]any{"backend": "fake", "model": backendEmbedModel}},
+			"endpoints":   everyEndpoint("openai-compatible"),
 			"metadata": map[string]any{"context_length": 512,
 				"capabilities": map[string]any{"streaming": false, "tools": false, "vision": false, "reasoning": false}},
 		},
@@ -69,10 +89,10 @@ func testConfig(backendURL, evalHash, annHash, extraModel string) map[string]any
 		models[extraModel] = chatModel(nil)
 	}
 	return map[string]any{
-		"format_version": 6,
-		"global":         map[string]any{},
-		"backends":       map[string]any{"fake": map[string]any{"type": "openai-compatible", "base_url": backendURL + "/v1"}},
-		"models":         models,
+		"protocol_version": 7,
+		"global":           map[string]any{},
+		"backends":         map[string]any{"fake": map[string]any{"type": "openai-compatible", "base_url": backendURL + "/v1"}},
+		"models":           models,
 		"groups": map[string]any{
 			"research": map[string]any{},
 			"eval":     map[string]any{"parent": "research", "allowed_models": []any{"*"}},
@@ -299,7 +319,7 @@ func TestGatewayEndToEnd(t *testing.T) {
 	})
 
 	t.Run("SIGHUP reload keeps a bad config out and applies a good one", func(t *testing.T) {
-		if err := os.WriteFile(configFile, []byte(`{"format_version": 6,`), 0o600); err != nil {
+		if err := os.WriteFile(configFile, []byte(`{"protocol_version": 7,`), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		g.signal(t, syscall.SIGHUP)
@@ -428,6 +448,7 @@ func TestTieredPrices(t *testing.T) {
 	cfg := testConfig(backend.URL(), evalHash, annHash, "")
 	cfg["models"].(map[string]any)["tiered"] = map[string]any{
 		"deployments": []any{map[string]any{"backend": "fake", "model": backendChatModel}},
+		"endpoints":   everyEndpoint("openai-compatible"),
 		"metadata": map[string]any{"context_length": 8192,
 			"capabilities": map[string]any{"streaming": true, "tools": false, "vision": false, "reasoning": false}},
 		"prices": []any{map[string]any{"effective_from": "2026-01-01", "tiers": []any{
@@ -487,6 +508,7 @@ func TestInputWrittenToTheCache(t *testing.T) {
 	chatModel := func(tiers ...any) map[string]any {
 		return map[string]any{
 			"deployments": []any{map[string]any{"backend": "fake", "model": backendChatModel}},
+			"endpoints":   everyEndpoint("openai-compatible"),
 			"metadata": map[string]any{"context_length": 8192,
 				"capabilities": map[string]any{"streaming": true, "tools": false, "vision": false, "reasoning": false}},
 			"prices": []any{map[string]any{"effective_from": "2026-01-01", "tiers": tiers}},

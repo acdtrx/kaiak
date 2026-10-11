@@ -302,9 +302,8 @@ func TestSelfHostedTypesPassPriceOptions(t *testing.T) {
 
 // What the Anthropic types read in their backends' 404s: a missing model (the
 // message naming it, or Azure's DeploymentNotFound), and the route a server does not
-// have — on Messages, the core endpoint, a wrong base_url; on token counting, a server
-// without the endpoint. A 529 is relayed as the backend's answer, a 5xx for the
-// pipeline.
+// have, the same on Messages and on token counting. A 529 is relayed as the backend's
+// answer, a 5xx for the pipeline.
 func TestAnthropicTypesReadTheirBackendsAnswers(t *testing.T) {
 	cases := []struct {
 		typ                     config.BackendType
@@ -342,8 +341,8 @@ func TestAnthropicTypesReadTheirBackendsAnswers(t *testing.T) {
 			if got := code(Messages); got != CodePathMissing {
 				t.Errorf("wrong path on messages: %q, want %s", got, CodePathMissing)
 			}
-			if got := code(MessagesCountTokens); got != CodeEndpointMissing {
-				t.Errorf("wrong path on count_tokens: %q, want %s", got, CodeEndpointMissing)
+			if got := code(MessagesCountTokens); got != CodePathMissing {
+				t.Errorf("wrong path on count_tokens: %q, want %s", got, CodePathMissing)
 			}
 			s.set(529, `{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`)
 			resp, err := sendTo(r, b, Messages, messagesBody)

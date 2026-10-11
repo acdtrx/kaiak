@@ -7,6 +7,7 @@ package e2e
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -100,14 +101,16 @@ func scenarioBackends[R apiRow](rows []R) []scenarioBackend {
 	return out
 }
 
-// scenarioModel is a public model of the scenarios on deployments.
-func scenarioModel(deployments ...map[string]any) map[string]any {
+// scenarioModel is a public model of the scenarios on deployments, on backends of type
+// typ, listing every endpoint the type serves.
+func scenarioModel(typ string, deployments ...map[string]any) map[string]any {
 	ds := []any{}
 	for _, d := range deployments {
 		ds = append(ds, d)
 	}
 	return map[string]any{
 		"deployments": ds,
+		"endpoints":   everyEndpoint(typ),
 		"metadata": map[string]any{"context_length": 8192,
 			"capabilities": map[string]any{"streaming": true, "tools": true, "vision": false, "reasoning": true}},
 		"output_limit": map[string]any{"default": 64, "ceiling": 128},
@@ -121,32 +124,32 @@ func scenarioConfig(fakeURL, hash string, backends []scenarioBackend) map[string
 	models := map[string]any{}
 	for _, b := range backends {
 		entries[b.name] = backendEntry(b.typ, fakeURL)
-		models[b.model] = scenarioModel(map[string]any{"backend": b.name, "model": b.deployed})
+		models[b.model] = scenarioModel(b.typ, map[string]any{"backend": b.name, "model": b.deployed})
 	}
 	return map[string]any{
-		"format_version": 6,
-		"global":         map[string]any{},
-		"backends":       entries,
-		"models":         models,
-		"groups":         map[string]any{"w": map[string]any{"allowed_models": []any{"*"}}},
-		"keys":           map[string]any{"k": map[string]any{"hash": hash, "group": "w"}},
+		"protocol_version": 7,
+		"global":           map[string]any{},
+		"backends":         entries,
+		"models":           models,
+		"groups":           map[string]any{"w": map[string]any{"allowed_models": []any{"*"}}},
+		"keys":             map[string]any{"k": map[string]any{"hash": hash, "group": "w"}},
 	}
 }
 
 // The tight group's key.
 var tightKey, tightHash = newKey()
 
-// apiScenarioConfig is scenarioConfig plus what an API's scenario refuses and fails
-// over: a vllm backend "old" at oldURL whose server lacks the API's endpoint, a model
-// "pair" on it and on the backend "vl", a model "rpm" on "vl", and the group tight —
-// allowed rpm alone, 10 tokens a minute — with the key tightKey.
+// apiScenarioConfig is scenarioConfig plus what an API's scenario refuses: a vllm
+// backend "old" at oldURL whose server lacks the API's endpoint, a model "pair" on it
+// and on the vllm backend "vl", a model "rpm" on "vl", and the group tight — allowed
+// rpm alone, 10 tokens a minute — with the key tightKey.
 func apiScenarioConfig(fakeURL, oldURL, hash string, backends []scenarioBackend) map[string]any {
 	cfg := scenarioConfig(fakeURL, hash, backends)
 	cfg["backends"].(map[string]any)["old"] = backendEntry("vllm", oldURL)
 	models := cfg["models"].(map[string]any)
-	models["pair"] = scenarioModel(map[string]any{"backend": "old", "model": "Qwen/Qwen3-8B"},
+	models["pair"] = scenarioModel("vllm", map[string]any{"backend": "old", "model": "Qwen/Qwen3-8B"},
 		map[string]any{"backend": "vl", "model": "Qwen/Qwen3-8B"})
-	models["rpm"] = scenarioModel(map[string]any{"backend": "vl", "model": "Qwen/Qwen3-8B"})
+	models["rpm"] = scenarioModel("vllm", map[string]any{"backend": "vl", "model": "Qwen/Qwen3-8B"})
 	cfg["groups"].(map[string]any)["tight"] = map[string]any{"allowed_models": []any{"rpm"},
 		"limits": []any{map[string]any{"type": "tokens_per_minute", "value": 10}}}
 	cfg["keys"].(map[string]any)["k-tight"] = map[string]any{"hash": tightHash, "group": "tight"}
@@ -234,3 +237,38 @@ func (p passthrough[R]) run(t *testing.T, g *gateway, fake *fakebackend.Backend,
 
 // streamCases are a request streamed and not, asking for the auto tier.
 var streamCases = []passthroughCase{{name: "stream=false", tier: "auto"}, {name: "stream=true", stream: true, tier: "auto"}}
+
+// pairPathMissing sends n requests to model "pair" on path — on old, whose server
+// answers its framework's 404 there, and on vl — and checks the one "not found"
+// reading (docs/specs/GATEWAY.md, Providers → A path the server does not have): a
+// request routed to old is answered 502 upstream_path_missing at once, its code read
+// by code, and not retried on vl; one routed to vl is answered; old's circuit stays
+// closed whatever the number of such answers, each counted as path_missing.
+func pairPathMissing(t *testing.T, g *gateway, old *fakebackend.Backend, path string, n int,
+	send func(t *testing.T, id string) *response, code func(t *testing.T, r *response) string) {
+	t.Helper()
+	refused := 0
+	for i := range n {
+		id := fmt.Sprintf("old-%d", i)
+		r := send(t, id)
+		switch {
+		case r.StatusCode == http.StatusBadGateway && code(t, r) == "upstream_path_missing" &&
+			!strings.Contains(string(r.body), "Not Found"):
+			refused++
+		case r.StatusCode != http.StatusOK:
+			t.Fatalf("%s: %d %s, want 200 from vl or 502 upstream_path_missing from old", path, r.StatusCode, r.body)
+		}
+		g.settled(t, id)
+	}
+	if got := len(old.Requests()); refused == 0 || got != refused {
+		t.Errorf("old got %d requests and %d were answered upstream_path_missing, want them equal and not 0: none retried",
+			got, refused)
+	}
+	const deployment = `kaiak_backend_id="old",kaiak_deployment_model="Qwen/Qwen3-8B"`
+	if v := g.metric(t, `kaiak_circuit_state{`+deployment+`,kaiak_circuit_state="open"}`); v != 0 {
+		t.Errorf("old's circuit open = %v, want closed", v)
+	}
+	if v := g.metric(t, `kaiak_upstream_attempts_total{`+deployment+`,kaiak_attempt_outcome="path_missing"}`); v != float64(refused) {
+		t.Errorf("path_missing attempts = %v, want %d", v, refused)
+	}
+}

@@ -415,9 +415,10 @@ func TestSpeechBatchAudioLimits(t *testing.T) {
 	}
 }
 
-// A batch to a model whose server cannot speak is the backend's 400, relayed as the
-// caller's: not retried, nothing settled but zeros (docs/specs/GATEWAY.md, Providers →
-// An endpoint missing from a server).
+// A batch to a model whose server cannot speak — its list should leave the endpoint
+// out — is the backend's 400, relayed as the caller's: not retried, nothing settled but
+// zeros (docs/specs/GATEWAY.md, Model metadata → Endpoints per model; Providers → A
+// path the server does not have).
 func TestSpeechBatchToAModelThatDoesNotSpeak(t *testing.T) {
 	g := newTestGateway(t)
 	withSpeechModels(t, g)

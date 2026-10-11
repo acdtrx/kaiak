@@ -1,10 +1,9 @@
 package provider
 
 // The backend types against what both halves must agree on with them
-// (protocol/fixtures/backend-types/): the endpoints each serves, which config's
-// endpoint-not-served rule reads on both halves, and the models-list request
-// kaiak-control's backend-verify sends; and against the config schema's type and
-// endpoint enums.
+// (protocol/fixtures/backend-types/): the models-list request kaiak-control's
+// backend-verify sends — the endpoints each type serves are the config package's
+// table's to match; and against the config schema's type and endpoint enums.
 
 import (
 	"bytes"
@@ -24,7 +23,8 @@ import (
 )
 
 // backendTypeFixture is a file of protocol/fixtures/backend-types/, named for its type:
-// the endpoints the type serves, by name; and for a sample base_url and credential,
+// the endpoints the type serves, by name (held to the config package's table there);
+// and for a sample base_url and credential,
 // the models-list request a backend of that type gets — its URL, and the headers it
 // carries besides each half's own Accept and User-Agent — or null when the type has
 // no models list.
@@ -68,15 +68,6 @@ func TestBackendTypeFixtures(t *testing.T) {
 			if err := dec.Decode(&fixture); err != nil {
 				t.Fatal(err)
 			}
-			var served []config.EndpointName
-			for _, e := range kindOf(config.BackendType(typ)).serves {
-				served = append(served, e.Name())
-			}
-			slices.Sort(served)
-			if want := slices.Sorted(slices.Values(fixture.Endpoints)); !slices.Equal(served, want) {
-				t.Errorf("the module serves %v, the shared table says %v", served, want)
-			}
-
 			b := &config.Backend{ID: "b", Type: config.BackendType(typ), BaseURL: fixture.BaseURL, ConnectTimeout: time.Second}
 			transport := &recordingTransport{}
 			module := kindOf(b.Type).build(b, &http.Client{Transport: transport}, fixture.Credential)

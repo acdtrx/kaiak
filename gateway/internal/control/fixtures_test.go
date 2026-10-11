@@ -235,7 +235,7 @@ func TestTotalsAmountBeyondSafeInteger(t *testing.T) {
 
 // Integer fields written with a fraction or exponent are integers, as the schemas say.
 func TestIntegerSpellings(t *testing.T) {
-	status, err := DecodeStatus([]byte(`{"instance":"gw-1","protocol_version":6.0,"state":"ready",
+	status, err := DecodeStatus([]byte(`{"instance":"gw-1","protocol_version":7.0,"state":"ready",
 		"started_at":"2026-09-24T10:00:00Z","applied_config_hash":null,"last_rejection":null,
 		"backends":{"b":{"in_flight":2.0,"max_in_flight":4e0,"deployments":{}}},"models":{"m":{"queued":1.0}}}`))
 	if err != nil {

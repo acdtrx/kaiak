@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"kaiak/internal/config"
 )
 
 // nextStatus waits for the next status report the control plane accepts, checked
@@ -66,7 +68,7 @@ func TestFirstStatusReportsWhatTheGatewayRuns(t *testing.T) {
 	h.boot(c)
 	h.run(c)
 	s := h.nextStatus()
-	if s.Instance != testInstance || s.ProtocolVersion != 6 || s.State != StateReady || !s.StartedAt.Equal(started) ||
+	if s.Instance != testInstance || s.ProtocolVersion != config.ProtocolVersion || s.State != StateReady || !s.StartedAt.Equal(started) ||
 		s.AppliedConfigHash == nil || *s.AppliedConfigHash != hash || s.LastRejection != nil ||
 		len(s.Backends) != 2 || len(s.Models) != 1 {
 		t.Errorf("status %+v", s)

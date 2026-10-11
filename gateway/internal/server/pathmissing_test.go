@@ -2,179 +2,200 @@ package server
 
 import (
 	"net/http"
-	"regexp"
 	"strings"
 	"testing"
 
+	"kaiak/internal/config"
 	"kaiak/internal/fakebackend"
+	"kaiak/internal/provider"
 )
 
-// pathModules are the backend types with their server's answer to a path it does not
-// have (docs/specs/GATEWAY.md, Providers: wrong path to a host); suffix is what the
-// type's base_url adds to the fake backend's address. vllm has none: its answer reads
-// as the endpoint missing (TestVLLMRouteMissingIsTheEndpointMissing).
-var pathModules = []struct {
-	typ, suffix, answer string
-}{
-	{"openai", "/v1", `{"error":{"message":"Invalid URL (POST /chat/completions)","type":"invalid_request_error","param":null,"code":null}}`},
-	{"azure-openai", "", `{"error":{"code":"404","message":"Resource not found"}}`},
-	{"llama-server", "/v1", `{"error":{"message":"File Not Found","type":"not_found_error","code":404}}`},
-	{"openai-compatible", "/v1", "404 page not found\n"},
+// twinRequests are a request to model "twin" on an endpoint of each kind the tests
+// below send: its route and body.
+var twinRequests = map[provider.Endpoint]struct{ path, body string }{
+	provider.ChatCompletions:   {"/v1/chat/completions", `{"model":"twin","messages":[{"role":"user","content":"hi"}]}`},
+	provider.Embeddings:        {"/v1/embeddings", `{"model":"twin","input":"hi"}`},
+	provider.Messages:          {"/v1/messages", `{"model":"twin","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`},
+	provider.Rerank:            {"/v1/rerank", `{"model":"twin","query":"q","documents":["a"]}`},
+	provider.ImagesGenerations: {"/v1/images/generations", `{"model":"twin","prompt":"a fox"}`},
 }
 
-// localEntry is the test config's backend "local" up to its base_url's /v1.
-var localEntry = regexp.MustCompile(`"local": \{ "type": "openai-compatible", "base_url": "([^"]*)/v1"`)
-
-// localAs makes backend "local" one of type typ, its base_url ending in suffix (it
-// keeps its api_key_env, which openai and azure-openai require).
-func localAs(t *testing.T, typ, suffix string) func(string) string {
-	return func(doc string) string {
-		return replaceMatch(t, doc, localEntry, `"local": { "type": "`+typ+`", "base_url": "${1}`+suffix+`"`)
-	}
+// withTwins edits the test config so that model "twin" has two deployments on
+// backends of type typ — twin-a on "p1" (g's fake backend), twin-b on "p2" (other) —
+// listing endpoint alone; suffix is what the type's base_url adds to a fake backend's
+// address. A circuit opens at its first failure.
+func withTwins(t *testing.T, g *testGateway, other *fakebackend.Backend, typ config.BackendType, suffix string,
+	endpoint provider.Endpoint) {
+	t.Helper()
+	g.apply(t, func(doc string) string {
+		doc = withGlobal(t, `"circuit": { "failure_threshold": 1, "probe_interval_ms": 3600000 }`)(doc)
+		doc = replaceOnce(t, doc, `"backends": {`, `"backends": {
+    "p1": { "type": "`+string(typ)+`", "base_url": "`+g.backend.URL()+suffix+`", "api_key_env": "LOCAL_KEY" },
+    "p2": { "type": "`+string(typ)+`", "base_url": "`+other.URL()+suffix+`", "api_key_env": "LOCAL_KEY" },`)
+		return replaceOnce(t, doc, `"models": { `, `"models": {
+    "twin": { "deployments": [{ "backend": "p1", "model": "twin-a" }, { "backend": "p2", "model": "twin-b" }],
+      "endpoints": ["`+string(endpoint.Name())+`"],
+      "metadata": { "context_length": 8192,
+        "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } } },
+    `)
+	})
 }
 
-// Per module: the server's unknown-path answer is the deployment's failure — retried
-// on another deployment, a circuit failure, no usage record of its own, counted as
-// path_missing — and with no deployment left the client gets 502
-// upstream_path_missing without the backend's text, and its record no usage.
-func TestUnknownPathIsTheDeploymentsFailure(t *testing.T) {
-	for _, m := range pathModules {
-		t.Run(m.typ+"/retried", func(t *testing.T) {
-			circuit := withGlobal(t, `"circuit": { "failure_threshold": 1, "probe_interval_ms": 3600000 }`)
-			g, other := newRetryGateway(t, "local", "local-b", func(doc string) string {
-				return circuit(localAs(t, m.typ, m.suffix)(doc))
-			})
-			if got := g.holder.Current().Backends["local"].Type; string(got) != m.typ {
-				t.Fatalf("backend local is %s, want %s", got, m.typ)
-			}
-			g.backend.QueueReplies(fakebackend.Reply{Status: http.StatusNotFound, Body: m.answer})
-			w := post(t, g, "r", `{"model":"retry"}`)
-			if w.Code != http.StatusOK {
-				t.Fatalf("status %d, want 200 from the second deployment: %s", w.Code, w.Body.String())
-			}
-			if len(other.Requests()) != 1 {
-				t.Errorf("second deployment got %d requests, want 1", len(other.Requests()))
-			}
-			line := logLine(t, g, "r")
-			if want := `"kaiak.tried":"local/first:upstream_path_missing,local-b/second:200"`; !strings.Contains(line, want) {
-				t.Errorf("log line misses %s:\n%s", want, line)
-			}
-			records := recordsOf(g, "r")
-			if len(records) != 1 || records[0].Deployment.Backend != "local-b" {
-				t.Errorf("records %+v, want the second deployment's alone", records)
-			}
-			if !circuitOpen(g, "local", "first") {
-				t.Error("circuit of local/first closed, want open: the outcome is a failure")
-			}
-			expectMetricLines(t, scrape(g),
-				`kaiak_retries_total{gen_ai_request_model="retry",kaiak_backend_id="local",kaiak_attempt_outcome="path_missing"} 1`,
-				`kaiak_upstream_attempts_total{kaiak_backend_id="local",kaiak_deployment_model="first",kaiak_attempt_outcome="path_missing"} 1`)
-		})
-		t.Run(m.typ+"/no deployment left", func(t *testing.T) {
+// pathMissingMessage is upstream_path_missing's message, naming both causes.
+const pathMissingMessage = "The model backend does not have this endpoint: its address is misconfigured, " +
+	"or its server does not serve this API for the model."
+
+// One "not found" reading on every type (docs/specs/GATEWAY.md, Providers → A path
+// the server does not have): each type's signature of a path its server does not have
+// answers the client 502 upstream_path_missing at once, in the endpoint's error shape,
+// with the message naming both causes and not the backend's text. It is not retried —
+// the model's other deployment, an identical instance, gets nothing — it is neutral
+// for the circuit, counted as the attempt outcome path_missing and in the
+// upstream_error class, and its record carries no usage.
+func TestPathMissingAnswersAtOnce(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		typ      config.BackendType
+		suffix   string
+		endpoint provider.Endpoint
+		status   int
+		answer   string
+	}{
+		{"route missing", config.BackendVLLM, "/v1", provider.ChatCompletions, http.StatusNotFound, `{"detail":"Not Found"}`},
+		{"method not allowed", config.BackendVLLM, "/v1", provider.Rerank, http.StatusMethodNotAllowed,
+			`{"detail":"Method Not Allowed"}`},
+		{"route missing", config.BackendVLLMOmni, "/v1", provider.ImagesGenerations, http.StatusNotFound, `{"detail":"Not Found"}`},
+		{"file not found", config.BackendLlamaServer, "/v1", provider.Embeddings, http.StatusNotFound,
+			`{"error":{"message":"File Not Found","type":"not_found_error","code":404}}`},
+		{"invalid URL", config.BackendOpenAI, "/v1", provider.ChatCompletions, http.StatusNotFound,
+			`{"error":{"message":"Invalid URL (POST /chat/completions)","type":"invalid_request_error","param":null,"code":null}}`},
+		{"resource not found", config.BackendAzureOpenAI, "", provider.ChatCompletions, http.StatusNotFound,
+			`{"error":{"code":"404","message":"Resource not found"}}`},
+		{"not found", config.BackendAnthropic, "/v1", provider.Messages, http.StatusNotFound,
+			`{"type":"error","error":{"type":"not_found_error","message":"Not Found"}}`},
+		{"resource not found", config.BackendAzureAnthropic, "", provider.Messages, http.StatusNotFound,
+			`{"error":{"code":"404","message":"Resource not found"}}`},
+		{"page not found", config.BackendOpenAICompatible, "/v1", provider.ChatCompletions, http.StatusNotFound,
+			"404 page not found\n"},
+	} {
+		t.Run(string(c.typ)+"/"+c.name, func(t *testing.T) {
+			other := fakebackend.New()
+			t.Cleanup(other.Close)
 			g := newTestGateway(t)
-			g.apply(t, localAs(t, m.typ, m.suffix))
-			g.backend.SetReply(fakebackend.Reply{Status: http.StatusNotFound, Body: m.answer})
-			w := post(t, g, "r", `{"model":"open"}`)
-			expectError(t, w, http.StatusBadGateway, "upstream_path_missing")
-			for _, text := range []string{"Invalid URL", "Not Found", "not found"} {
+			withTwins(t, g, other, c.typ, c.suffix, c.endpoint)
+			for _, b := range []*fakebackend.Backend{g.backend, other} {
+				b.SetReply(fakebackend.Reply{Status: c.status, Body: c.answer})
+			}
+
+			r := twinRequests[c.endpoint]
+			w := do(t, g.h, call{method: "POST", path: r.path, key: workloadKey, body: r.body,
+				header: map[string]string{"X-Request-Id": "r"}})
+			if c.endpoint.Format() == provider.FormatMessages {
+				expectAnthropicError(t, w, http.StatusBadGateway, "api_error", "upstream_path_missing")
+			} else {
+				expectError(t, w, http.StatusBadGateway, "upstream_path_missing")
+			}
+			if msg := errorMessage(t, w); msg != pathMissingMessage {
+				t.Errorf("message %q, want %q", msg, pathMissingMessage)
+			}
+			for _, text := range []string{"Invalid URL", "Not Found", "not found", "Not Allowed"} {
 				if strings.Contains(w.Body.String(), text) {
 					t.Errorf("the backend's answer reached the client: %s", w.Body.String())
 				}
 			}
-			if n := len(g.backend.Requests()); n != 1 {
-				t.Errorf("backend got %d requests, want 1", n)
+
+			sentA, sentB := len(g.backend.Requests()), len(other.Requests())
+			if sentA+sentB != 1 {
+				t.Fatalf("the deployments got %d and %d requests, want one in all: not retried", sentA, sentB)
 			}
-			// The request's record carries no usage: nothing was processed.
+			backend, model := "p1", "twin-a"
+			if sentB == 1 {
+				backend, model = "p2", "twin-b"
+			}
+			if circuitOpen(g, backend, model) {
+				t.Errorf("circuit of %s/%s open after a failure threshold of 1, want closed: the outcome is neutral",
+					backend, model)
+			}
+			if line := logLine(t, g, "r"); !strings.Contains(line, `"kaiak.attempts":1`) {
+				t.Errorf("log line, want one attempt:\n%s", line)
+			}
 			records := recordsOf(g, "r")
 			if len(records) != 1 {
 				t.Fatalf("%d records, want the request's one", len(records))
 			}
-			expectUnits(t, records[0], units(0, 0, 0, 0, 0), false, true)
-			expectMetricLines(t, scrape(g), `kaiak_errors_total{kaiak_error_class="upstream_error"} 1`)
+			for unit, n := range records[0].Units {
+				if n != 0 {
+					t.Errorf("record %s = %d, want no usage: nothing was processed", unit, n)
+				}
+			}
+			if records[0].Estimated {
+				t.Errorf("record estimated, want the backend's answer: %+v", records[0])
+			}
+			metricsText := scrape(g)
+			expectMetricLines(t, metricsText,
+				`kaiak_upstream_attempts_total{kaiak_backend_id="`+backend+`",kaiak_deployment_model="`+model+`",kaiak_attempt_outcome="path_missing"} 1`,
+				`kaiak_errors_total{kaiak_error_class="upstream_error"} 1`)
+			for line := range strings.Lines(metricsText) {
+				if strings.HasPrefix(line, "kaiak_retries_total{") && !strings.HasSuffix(line, " 0\n") {
+					t.Errorf("a retry counted: %s", line)
+				}
+			}
 		})
 	}
 }
 
-// A wrong path belongs to the backend, as a refused credential does: every
-// deployment of the model on that backend shares its base_url, so the retry skips
-// them all and goes to another backend — never to a sibling on the same one.
-func TestUnknownPathRefusesTheBackendForTheRequest(t *testing.T) {
-	g, other := newRetryGateway(t, "local", "local-b", func(doc string) string {
-		return replaceOnce(t, doc, `{ "backend": "local", "model": "first" }, `,
-			`{ "backend": "local", "model": "first" }, { "backend": "local", "model": "sibling" }, `)
-	})
-	if n := len(g.holder.Current().Models["retry"].Deployments); n != 3 {
-		t.Fatalf("model retry has %d deployments, want 3", n)
-	}
-	g.backend.SetReply(fakebackend.Reply{Status: http.StatusNotFound, Body: "404 page not found\n"})
-	w := post(t, g, "r", `{"model":"retry"}`)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status %d, want 200 from local-b: %s", w.Code, w.Body.String())
-	}
-	if n := len(g.backend.Requests()); n != 1 {
-		t.Errorf("backend local got %d requests, want 1: its sibling deployment was tried", n)
-	}
-	if n := len(other.Requests()); n != 1 {
-		t.Errorf("local-b got %d requests, want 1", n)
-	}
-	if want := `"kaiak.attempts":2,"kaiak.tried":"local/first:upstream_path_missing,local-b/second:200"`; !strings.Contains(logLine(t, g, "r"), want) {
-		t.Errorf("log line misses %s:\n%s", want, logLine(t, g, "r"))
-	}
-}
+// A server's other answers to an endpoint it lacks are its own statuses, not read
+// (docs/specs/GATEWAY.md, Providers → A path the server does not have): llama-server's
+// 501 for embeddings or rerank when it was not started for them, and vLLM-Omni's 503
+// for an image request to a model with no diffusion stage, are backend 5xx as any
+// server error — retried on the model's other deployment as server_error, each a
+// circuit failure, the client answered upstream_error under the backend's status.
+func TestServersOwnAnswersAreServerErrors(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		typ      config.BackendType
+		endpoint provider.Endpoint
+		status   int
+		script   func(b *fakebackend.Backend)
+	}{
+		{"embeddings not supported", config.BackendLlamaServer, provider.Embeddings, http.StatusNotImplemented,
+			func(b *fakebackend.Backend) { b.SetNotSupported("embeddings") }},
+		{"rerank not supported", config.BackendLlamaServer, provider.Rerank, http.StatusNotImplemented,
+			func(b *fakebackend.Backend) { b.SetNotSupported("rerank") }},
+		{"no diffusion stage", config.BackendVLLMOmni, provider.ImagesGenerations, http.StatusServiceUnavailable,
+			func(b *fakebackend.Backend) { b.SetNonImageModels("twin-a", "twin-b") }},
+	} {
+		t.Run(string(c.typ)+"/"+c.name, func(t *testing.T) {
+			other := fakebackend.New()
+			t.Cleanup(other.Close)
+			g := newTestGateway(t)
+			withTwins(t, g, other, c.typ, "/v1", c.endpoint)
+			c.script(g.backend)
+			c.script(other)
 
-// vllm has no core endpoints: vLLM creates its routes from the loaded model's tasks, so
-// its route-missing answer on chat — a reranker's, or a wrong base_url's — is the
-// endpoint missing, not a wrong path (docs/specs/GATEWAY.md, Providers → Wrong path to
-// a host, An endpoint missing from a server): retried on another deployment, neutral
-// for the circuit, no usage record of its own, counted as endpoint_missing; with no
-// deployment left the client gets 502 upstream_endpoint_missing without the backend's
-// text, and its record no usage.
-func TestVLLMRouteMissingIsTheEndpointMissing(t *testing.T) {
-	const answer = `{"detail":"Not Found"}`
-	t.Run("retried", func(t *testing.T) {
-		circuit := withGlobal(t, `"circuit": { "failure_threshold": 1, "probe_interval_ms": 3600000 }`)
-		g, other := newRetryGateway(t, "local", "local-b", func(doc string) string {
-			return circuit(localAs(t, "vllm", "/v1")(doc))
+			r := twinRequests[c.endpoint]
+			w := do(t, g.h, call{method: "POST", path: r.path, key: workloadKey, body: r.body,
+				header: map[string]string{"X-Request-Id": "r"}})
+			expectError(t, w, c.status, "upstream_error")
+			for _, text := range []string{"support", "diffusion"} {
+				if strings.Contains(w.Body.String(), text) {
+					t.Errorf("the backend's answer reached the client: %s", w.Body.String())
+				}
+			}
+			if a, b := len(g.backend.Requests()), len(other.Requests()); a != 1 || b != 1 {
+				t.Errorf("the deployments got %d and %d requests, want one each: retried", a, b)
+			}
+			if !circuitOpen(g, "p1", "twin-a") || !circuitOpen(g, "p2", "twin-b") {
+				t.Error("a circuit closed after its 5xx at a failure threshold of 1, want both open: a failure")
+			}
+			if line := logLine(t, g, "r"); !strings.Contains(line, `"kaiak.attempts":2`) {
+				t.Errorf("log line, want two attempts:\n%s", line)
+			}
+			metricsText := scrape(g)
+			for _, d := range []struct{ backend, model string }{{"p1", "twin-a"}, {"p2", "twin-b"}} {
+				expectMetricLines(t, metricsText,
+					`kaiak_upstream_attempts_total{kaiak_backend_id="`+d.backend+`",kaiak_deployment_model="`+d.model+`",kaiak_attempt_outcome="server_error"} 1`)
+			}
 		})
-		g.backend.QueueReplies(fakebackend.Reply{Status: http.StatusNotFound, Body: answer})
-		w := post(t, g, "r", `{"model":"retry"}`)
-		if w.Code != http.StatusOK {
-			t.Fatalf("status %d, want 200 from the second deployment: %s", w.Code, w.Body.String())
-		}
-		if len(other.Requests()) != 1 {
-			t.Errorf("second deployment got %d requests, want 1", len(other.Requests()))
-		}
-		line := logLine(t, g, "r")
-		if want := `"kaiak.tried":"local/first:upstream_endpoint_missing,local-b/second:200"`; !strings.Contains(line, want) {
-			t.Errorf("log line misses %s:\n%s", want, line)
-		}
-		records := recordsOf(g, "r")
-		if len(records) != 1 || records[0].Deployment.Backend != "local-b" {
-			t.Errorf("records %+v, want the second deployment's alone", records)
-		}
-		if circuitOpen(g, "local", "first") {
-			t.Error("circuit of local/first open, want closed: the outcome is neutral")
-		}
-		expectMetricLines(t, scrape(g),
-			`kaiak_retries_total{gen_ai_request_model="retry",kaiak_backend_id="local",kaiak_attempt_outcome="endpoint_missing"} 1`,
-			`kaiak_upstream_attempts_total{kaiak_backend_id="local",kaiak_deployment_model="first",kaiak_attempt_outcome="endpoint_missing"} 1`)
-	})
-	t.Run("no deployment left", func(t *testing.T) {
-		g := newTestGateway(t)
-		g.apply(t, localAs(t, "vllm", "/v1"))
-		g.backend.SetReply(fakebackend.Reply{Status: http.StatusNotFound, Body: answer})
-		w := post(t, g, "r", `{"model":"open"}`)
-		expectError(t, w, http.StatusBadGateway, "upstream_endpoint_missing")
-		if strings.Contains(w.Body.String(), "Not Found") {
-			t.Errorf("the backend's answer reached the client: %s", w.Body.String())
-		}
-		if n := len(g.backend.Requests()); n != 1 {
-			t.Errorf("backend got %d requests, want 1", n)
-		}
-		records := recordsOf(g, "r")
-		if len(records) != 1 {
-			t.Fatalf("%d records, want the request's one", len(records))
-		}
-		expectUnits(t, records[0], units(0, 0, 0, 0, 0), false, true)
-	})
+	}
 }

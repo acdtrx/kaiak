@@ -623,8 +623,7 @@ func TestEveryErrorCodeHasItsClass(t *testing.T) {
 		"price_option_unsupported": metrics.ErrorInvalidRequest, "endpoint_not_served": metrics.ErrorInvalidRequest,
 		"stored_object_unsupported": metrics.ErrorInvalidRequest, "tei_format_unsupported": metrics.ErrorInvalidRequest,
 		"response_format_unsupported": metrics.ErrorInvalidRequest, "external_reference_unsupported": metrics.ErrorInvalidRequest,
-		"upstream_endpoint_missing": metrics.ErrorUpstreamError,
-		"upstream_overloaded":       metrics.ErrorUpstreamRateLimited, "upstream_refused": metrics.ErrorUpstreamClientError,
+		"upstream_overloaded": metrics.ErrorUpstreamRateLimited, "upstream_refused": metrics.ErrorUpstreamClientError,
 		"upstream_unavailable": metrics.ErrorUpstreamUnavailable, "upstream_auth_failed": metrics.ErrorUpstreamError,
 		"upstream_model_missing": metrics.ErrorUpstreamError, "upstream_path_missing": metrics.ErrorUpstreamError,
 		"upstream_error":   metrics.ErrorUpstreamError,
@@ -716,7 +715,6 @@ func errorAnswers() []struct {
 		// Every provider refusal is the caller's mistake, whatever its code.
 		{"errRefused", errRefused(&provider.RefusalError{Code: "price_option_unsupported"})},
 		{"errRefused", errRefused(&provider.RefusalError{Code: "duplicate_member"})},
-		{"errEndpointNotServed", errEndpointNotServed(bodyEndpoint(provider.ChatCompletions))},
 		{"errEndpointNotListed", errEndpointNotListed(bodyEndpoint(provider.AudioSpeech))},
 		{"errInternal", errInternal()},
 		{"errQueueFull", errQueueFull()},

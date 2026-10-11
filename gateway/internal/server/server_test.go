@@ -48,7 +48,8 @@ func testLookupEnv(name string) (string, bool) {
 }
 
 // testSnapshot is the test config. backendURL is the root URL of the fake backend
-// every reachable backend points at. Models:
+// every reachable backend points at. Every model lists every endpoint its backend's
+// type serves (everyEndpoint). Models:
 //   - open, secret, Org/open-7b: backend "local" (openai-compatible), same name there
 //   - renamed: backend "local", served as "vendor/renamed-7b-instruct"
 //   - on-azure: backend "azure" (azure-openai), deployment "gpt-4o-deploy"
@@ -98,16 +99,39 @@ func replaceMatch(t *testing.T, doc string, re *regexp.Regexp, repl string) stri
 	return re.ReplaceAllString(doc, repl)
 }
 
+// endpointsOf names every endpoint backends of type typ serve.
+func endpointsOf(typ config.BackendType) []string {
+	names := []string{}
+	for _, ep := range bodyEndpoints {
+		if typ.Serves(ep.api.Name()) {
+			names = append(names, string(ep.api.Name()))
+		}
+	}
+	return names
+}
+
+// everyEndpoint is a model's endpoints list, in JSON, naming every endpoint backends of
+// type typ serve: the list of a test model whose endpoints are not the test's point.
+func everyEndpoint(typ config.BackendType) string {
+	list, _ := json.Marshal(endpointsOf(typ)) // strings always encode
+	return string(list)
+}
+
 // testDocWith is the test config document, with edit applied (nil = none).
 func testDocWith(backendURL string, edit func(doc string) string) string {
 	model := func(name, backend, backendModel string) string {
+		typ := config.BackendOpenAICompatible
+		if backend == "azure" {
+			typ = config.BackendAzureOpenAI
+		}
 		return `"` + name + `": {
       "deployments": [{ "backend": "` + backend + `", "model": "` + backendModel + `" }],
+      "endpoints": ` + everyEndpoint(typ) + `,
       "metadata": { "context_length": 8192,
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } } }`
 	}
 	doc := `{
-  "format_version": 6,
+  "protocol_version": 7,
   "global": { "max_request_body_bytes": 1024 },
   "backends": {
     "local": { "type": "openai-compatible", "base_url": "` + backendURL + `/v1", "api_key_env": "LOCAL_KEY" },
@@ -122,6 +146,7 @@ func testDocWith(backendURL string, edit func(doc string) string) string {
     ` + model("down", "down", "down") + `,
     "pair": {
       "deployments": [{ "backend": "local", "model": "pair-a" }, { "backend": "local-b", "model": "pair-b" }],
+      "endpoints": ` + everyEndpoint(config.BackendOpenAICompatible) + `,
       "metadata": { "context_length": 32768, "reasoning_efforts": ["low", "high"],
         "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": true } },
       "output_limit": { "default": 256, "ceiling": 1024 },
@@ -160,7 +185,6 @@ type testGateway struct {
 	holder  *config.Holder
 	router  *routing.Router
 	limiter *limits.Limiter
-	missing *MissingEndpoints
 	usage   *recordedUsage
 	metrics *metric.Registry
 	drain   *Drain
@@ -258,20 +282,18 @@ func buildTestGateway(t *testing.T, opts testOptions) *testGateway {
 	recorder := accounting.NewRecorder(accounting.RecorderOptions{Instance: "gw-test", Batcher: batcher, Metrics: usage,
 		Logger: logger})
 	drain := NewDrain()
-	missing := NewMissingEndpoints()
-	h := NewAPI(holder, drain, bodies, providers, limiter, router, missing, recorder, metrics.NewOps(reg, router, circuits, holder), logger)
+	h := NewAPI(holder, drain, bodies, providers, limiter, router, recorder, metrics.NewOps(reg, router, circuits, holder), logger)
 	return &testGateway{h: h, logs: &logs, log: log, backend: backend, holder: holder, router: router,
-		limiter: limiter, missing: missing, usage: usage, metrics: reg, drain: drain, bodies: bodies}
+		limiter: limiter, usage: usage, metrics: reg, drain: drain, bodies: bodies}
 }
 
 // apply swaps in the test config with edit applied (nil = none) and hands it to
-// routing and the missing-endpoint memory, as cmd/kaiak applies a config.
+// routing, as cmd/kaiak applies a config.
 func (g *testGateway) apply(t *testing.T, edit func(doc string) string) {
 	t.Helper()
 	s := testSnapshotWith(t, g.backend.URL(), edit)
 	g.holder.Swap(s)
 	g.router.Configure(s)
-	g.missing.Retain(s.Models)
 }
 
 // testAPI returns the API handler over the test snapshot and a buffer of its log.

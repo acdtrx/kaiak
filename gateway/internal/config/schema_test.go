@@ -1,8 +1,8 @@
 package config
 
 // The schema walker and the resolved snapshot against protocol/schema/config.schema.json
-// itself, for the facts both state: the backend types, the endpoint names, the limit
-// types, the price units, and the defaults of omitted fields.
+// itself, for the facts both state: the protocol version, the backend types, the
+// endpoint names, the limit types, the price units, and the defaults of omitted fields.
 
 import (
 	"encoding/json"
@@ -29,6 +29,27 @@ func readConfigSchema(t *testing.T) map[string]any {
 		t.Fatal(err)
 	}
 	return schema
+}
+
+// One version for the whole contract: the config and status schemas' protocol_version
+// is ProtocolVersion, which the walker requires of a config document and the control
+// client sends in Kaiak-Protocol and in its status.
+func TestProtocolVersionIsTheSchemasConst(t *testing.T) {
+	for _, file := range []string{"config.schema.json", "status.schema.json"} {
+		var schema struct {
+			Properties struct {
+				ProtocolVersion struct {
+					Const *int `json:"const"`
+				} `json:"protocol_version"`
+			} `json:"properties"`
+		}
+		if err := json.Unmarshal(fixturetest.Read(t, fixturetest.SchemaFile(file)), &schema); err != nil {
+			t.Fatal(err)
+		}
+		if c := schema.Properties.ProtocolVersion.Const; c == nil || *c != ProtocolVersion {
+			t.Errorf("%s: protocol_version const %v, want %d", file, c, ProtocolVersion)
+		}
+	}
 }
 
 // The walker admits the schema's backend types, in the schema's order; the provider

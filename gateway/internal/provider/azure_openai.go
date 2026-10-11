@@ -16,10 +16,6 @@ type azureOpenAI struct {
 	credential string
 }
 
-// azureOpenAIEndpoints: Azure's v1 API serves the OpenAI endpoints and Responses, but
-// not responses/input_tokens (it answers 404 there).
-var azureOpenAIEndpoints = []Endpoint{ChatCompletions, Completions, Embeddings, Responses}
-
 func newAzureOpenAI(b *config.Backend, client *http.Client, credential string) backendModule {
 	return &azureOpenAI{backend: b, client: client, credential: credential}
 }
@@ -38,7 +34,7 @@ func (m *azureOpenAI) header() http.Header {
 func (m *azureOpenAI) Send(ctx context.Context, req *Request) (Response, error) {
 	return sendWire(ctx, req, wireCall{
 		backend: m.backend, client: m.client, url: m.url(req.Endpoint.Path()), header: m.header(),
-		edits: []memberEdit{standardServiceTier(req.Endpoint)}, missingModel: missingModelCoded("DeploymentNotFound", "model_not_found"), unknownPath: m.unknownPath, core: openAICore(req.Endpoint),
+		edits: []memberEdit{standardServiceTier(req.Endpoint)}, missingModel: missingModelCoded("DeploymentNotFound", "model_not_found"), unknownPath: m.unknownPath,
 	})
 }
 

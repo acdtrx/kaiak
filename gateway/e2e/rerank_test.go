@@ -6,11 +6,12 @@ package e2e
 // each a fake backend answering in its server's shape — with the model edit alone;
 // the answer comes back in that shape under the public model name; the usage settles
 // from the reported prompt tokens, priced on tokens_in, or is estimated and flagged
-// when the answer reports none; the documents cap, TEI's texts and a model with no
-// rerank-serving deployment are refused before any backend; a chat request to the
-// vllm reranker, whose server has no chat route, is answered as the endpoint missing,
-// neutral for the circuit; and the llama-server reranker, whose endpoints list names
-// rerank alone, takes no chat or embeddings, refused before its server.
+// when the answer reports none; the documents cap, TEI's texts and a model whose list
+// leaves rerank out are refused before any backend; a chat request to the vllm
+// reranker, whose list names chat its server has no route for, is answered as a path
+// the server does not have, neutral for the circuit; and the llama-server reranker,
+// whose endpoints list names rerank alone, takes no chat or embeddings, refused before
+// its server.
 
 import (
 	"encoding/json"
@@ -47,11 +48,12 @@ var rerankBackends = []rerankBackend{
 const rerankListed = "rerank-llama"
 
 // rerankUnserved is the scenario's backend whose type does not serve rerank, on the
-// vllm row's fake backend, with the same reranker deployed.
+// vllm row's fake backend, with the same reranker deployed: its list, every endpoint
+// its type serves, leaves rerank out.
 var rerankUnserved = scenarioBackend{name: "oc", typ: "openai-compatible", model: "rerank-oc", deployed: "Qwen/Qwen3-Reranker-0.6B"}
 
 // vllmRouteMissing is vLLM's answer to a path it has no route for — FastAPI's
-// (docs/specs/GATEWAY.md, Providers → Wrong path to a host).
+// (docs/specs/GATEWAY.md, Providers → A path the server does not have).
 const vllmRouteMissing = `{"detail":"Not Found"}`
 
 // rerankPromptTokens is what the fake backends report; at the rerankers' $2 per
@@ -60,13 +62,15 @@ const rerankPromptTokens = 40
 
 // rerankConfig is a config with each row's backend on its fake backend serving its
 // reranker alone, priced at $2 per million input tokens — the llama-server row's with
-// the endpoints list ["rerank"], the vllm row's with none — rerankUnserved on the vllm
+// the endpoints list ["rerank"], the vllm row's listing every endpoint vllm serves,
+// chat among them, which its reranker's server lacks — rerankUnserved on the vllm
 // row's fake, and global.max_rerank_documents 3 — all open to the key with hash in
 // group w.
 func rerankConfig(fakes map[string]*fakebackend.Backend, hash string) map[string]any {
 	reranker := func(b scenarioBackend) map[string]any {
 		return map[string]any{
 			"deployments": []any{map[string]any{"backend": b.name, "model": b.deployed}},
+			"endpoints":   everyEndpoint(b.typ),
 			"metadata": map[string]any{"context_length": 8192,
 				"capabilities": map[string]any{"streaming": false, "tools": false, "vision": false, "reasoning": false}},
 			"prices": []any{map[string]any{"effective_from": "2026-01-01", "tiers": []any{map[string]any{
@@ -79,16 +83,16 @@ func rerankConfig(fakes map[string]*fakebackend.Backend, hash string) map[string
 		backends[b.name] = backendEntry(b.typ, fakes[b.name].URL())
 		models[b.model] = reranker(b.scenarioBackend)
 	}
-	// llama-server registers every route whatever its model, so without the list a
-	// chat request would reach the reranker.
+	// llama-server registers every route whatever its model: a list naming chat would
+	// let a chat request reach the reranker.
 	models[rerankListed].(map[string]any)["endpoints"] = []any{"rerank"}
 	return map[string]any{
-		"format_version": 6,
-		"global":         map[string]any{"max_rerank_documents": 3},
-		"backends":       backends,
-		"models":         models,
-		"groups":         map[string]any{"w": map[string]any{"allowed_models": []any{"*"}}},
-		"keys":           map[string]any{"k": map[string]any{"hash": hash, "group": "w"}},
+		"protocol_version": 7,
+		"global":           map[string]any{"max_rerank_documents": 3},
+		"backends":         backends,
+		"models":           models,
+		"groups":           map[string]any{"w": map[string]any{"allowed_models": []any{"*"}}},
+		"keys":             map[string]any{"k": map[string]any{"hash": hash, "group": "w"}},
 	}
 }
 
@@ -208,31 +212,26 @@ func TestRerank(t *testing.T) {
 		})
 	}
 
-	// A chat request to the vllm reranker answers vLLM's route-missing 404: 502
-	// upstream_endpoint_missing without the backend's text, neutral for the circuit
-	// however many come — more than the failure threshold — with the endpoint-missing
-	// warning; the deployment serves rerank right after (docs/specs/GATEWAY.md,
-	// Providers → An endpoint missing from a server).
+	// A chat request to the vllm reranker, whose list names chat its server lacks,
+	// answers vLLM's route-missing 404: 502 upstream_path_missing at once, without the
+	// backend's text, neutral for the circuit however many come — more than the failure
+	// threshold — each counted as path_missing; the deployment serves rerank right
+	// after (docs/specs/GATEWAY.md, Providers → A path the server does not have).
 	t.Run("vllm/chat to the reranker", func(t *testing.T) {
 		b := rerankBackends[0]
 		for i := range 6 {
 			r := g.post(t, "/v1/chat/completions", key, fmt.Sprintf("chat-to-reranker-%d", i), chatBody(b.model, false, nil))
-			if r.StatusCode != http.StatusBadGateway || openAIErrorCode(t, r) != "upstream_endpoint_missing" ||
+			if r.StatusCode != http.StatusBadGateway || openAIErrorCode(t, r) != "upstream_path_missing" ||
 				strings.Contains(string(r.body), "Not Found") {
-				t.Fatalf("%d %s, want 502 upstream_endpoint_missing", r.StatusCode, r.body)
+				t.Fatalf("%d %s, want 502 upstream_path_missing", r.StatusCode, r.body)
 			}
 		}
 		deployment := `kaiak_backend_id="vl",kaiak_deployment_model="` + b.deployed + `"`
 		if v := g.metric(t, `kaiak_circuit_state{`+deployment+`,kaiak_circuit_state="open"}`); v != 0 {
 			t.Errorf("vl's circuit open = %v, want closed", v)
 		}
-		if v := g.metric(t, `kaiak_upstream_attempts_total{`+deployment+`,kaiak_attempt_outcome="endpoint_missing"}`); v != 6 {
-			t.Errorf("endpoint_missing attempts = %v, want 6", v)
-		}
-		line := g.logs.wait(t, "the endpoint-missing warning",
-			msg("the deployment's server does not serve an endpoint its type serves", "kaiak.backend.id", "vl"))
-		if line["level"] != "WARN" || line["kaiak.deployment.model"] != b.deployed || line["kaiak.endpoint"] != "chat_completions" {
-			t.Errorf("warning %v, want WARN naming %s and chat_completions", line, b.deployed)
+		if v := g.metric(t, `kaiak_upstream_attempts_total{`+deployment+`,kaiak_attempt_outcome="path_missing"}`); v != 6 {
+			t.Errorf("path_missing attempts = %v, want 6", v)
 		}
 		r := g.post(t, "/v1/rerank", key, "rerank-after-chat", rerankBody(t, b.model, rerankDocuments, nil))
 		if r.StatusCode != http.StatusOK || !strings.Contains(string(r.body), `"results"`) {
@@ -298,9 +297,8 @@ func TestRerank(t *testing.T) {
 		})
 	}
 
-	// More documents than max_rerank_documents, TEI's texts, and a model none of whose
-	// deployments' types serves rerank, are refused in OpenAI's shape before any
-	// backend is asked.
+	// More documents than max_rerank_documents, TEI's texts, and a model whose list
+	// leaves rerank out, are refused in OpenAI's shape before any backend is asked.
 	t.Run("refused before any backend", func(t *testing.T) {
 		before := received()
 		r := g.post(t, "/v1/rerank", key, "rerank-over-cap",

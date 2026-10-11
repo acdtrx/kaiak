@@ -165,7 +165,7 @@ func TestStartingLineNamesTheMetricExportEndpoint(t *testing.T) {
 func TestRunStartFailureReachesTheCollector(t *testing.T) {
 	collector := fakeotlp.New(t, nil)
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(`{"format_version": 6}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"protocol_version": 7}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var logs syncBuffer

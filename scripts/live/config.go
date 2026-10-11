@@ -57,10 +57,13 @@ const (
 	mediaLimitSeconds = 1
 )
 
-// The media models' endpoints lists: each serves what its server answers, so speech
-// sent to the image model, or an image request to the speech model, is the gateway's
-// own refusal, before any server.
+// The endpoints lists of the models beside the chat models (chatEndpoints): each
+// serves what its server answers, so a request for any other endpoint — chat sent to
+// the reranker, speech to the image model — is the gateway's own refusal, before any
+// server.
 var (
+	embedEndpoints  = []string{epEmbeddings}
+	rerankEndpoints = []string{epRerank}
 	speechEndpoints = []string{epSpeech, epSpeechBatch}
 	imageEndpoints  = []string{epImages}
 )
@@ -83,12 +86,12 @@ const (
 	failoverProbeIntervalMS = 1000
 )
 
-// buildConfig is the config document for one run: one backend (two with
-// -base-url-2, each deploying the chat models; one more with -embeddings-base-url,
-// deploying the embeddings model, with -rerank-base-url, deploying the reranker, and
-// with -speech-base-url and -image-base-url, vllm-omni backends deploying the speech
-// and image models, each with its endpoints list), the models above, and groups with
-// every model allowed: live
+// buildConfig is the config document for one run, at protocol 7: one backend (two
+// with -base-url-2, each deploying the chat models; one more with
+// -embeddings-base-url, deploying the embeddings model, with -rerank-base-url,
+// deploying the reranker, and with -speech-base-url and -image-base-url, vllm-omni
+// backends deploying the speech and image models), the models above, each with its
+// endpoints list, and groups with every model allowed: live
 // holds the checks' key (hash), live-metered the rate-limit checks' key (meteredHash)
 // under 1 request a minute — a limit counts every request of its group — and, with a
 // vLLM-Omni server, live-media the media limit checks' key (mediaHash) under 1 image
@@ -127,6 +130,7 @@ func buildConfig(o options, hash, meteredHash, mediaHash string) ([]byte, error)
 	chat := func(outputLimit int) map[string]any {
 		m := map[string]any{
 			"deployments": chatDeployments,
+			"endpoints":   chatEndpoints(o.kind),
 			"metadata": map[string]any{"context_length": o.contextLength,
 				"capabilities": map[string]any{"streaming": true, "tools": false, "vision": false, "reasoning": false}},
 			"output_limit": map[string]any{"default": outputLimit, "ceiling": outputLimit},
@@ -149,6 +153,7 @@ func buildConfig(o options, hash, meteredHash, mediaHash string) ([]byte, error)
 		}
 		embed := map[string]any{
 			"deployments": []any{map[string]any{"backend": embedBackend, "model": o.embeddingsModel}},
+			"endpoints":   embedEndpoints,
 			"metadata": map[string]any{"context_length": 8192,
 				"capabilities": map[string]any{"streaming": false, "tools": false, "vision": false, "reasoning": false}},
 		}
@@ -161,6 +166,7 @@ func buildConfig(o options, hash, meteredHash, mediaHash string) ([]byte, error)
 		backends[backendRerank] = backendOf(o.kind, o.rerankBaseURL, o.rerankAPIKeyEnv)
 		rerank := map[string]any{
 			"deployments": []any{map[string]any{"backend": backendRerank, "model": o.rerankModel}},
+			"endpoints":   rerankEndpoints,
 			"metadata": map[string]any{"context_length": 8192,
 				"capabilities": map[string]any{"streaming": false, "tools": false, "vision": false, "reasoning": false}},
 		}
@@ -213,12 +219,12 @@ func buildConfig(o options, hash, meteredHash, mediaHash string) ([]byte, error)
 	}
 
 	return json.MarshalIndent(map[string]any{
-		"format_version": 6,
-		"global":         global,
-		"backends":       backends,
-		"models":         models,
-		"groups":         groups,
-		"keys":           keys,
+		"protocol_version": 7,
+		"global":           global,
+		"backends":         backends,
+		"models":           models,
+		"groups":           groups,
+		"keys":             keys,
 	}, "", "  ")
 }
 

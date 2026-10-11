@@ -116,11 +116,12 @@ func TestRunExitsWithNoConfigAtBoot(t *testing.T) {
 func writeSeed(t *testing.T, model, backend map[string]any) string {
 	t.Helper()
 	doc := map[string]any{
-		"format_version": 6,
-		"global":         map[string]any{},
-		"backends":       map[string]any{"local": merged(map[string]any{"type": "openai-compatible", "base_url": "http://localhost:8080/v1"}, backend)},
+		"protocol_version": 7,
+		"global":           map[string]any{},
+		"backends":         map[string]any{"local": merged(map[string]any{"type": "openai-compatible", "base_url": "http://localhost:8080/v1"}, backend)},
 		"models": map[string]any{"llama": merged(map[string]any{
 			"deployments": []any{map[string]any{"backend": "local", "model": "llama"}},
+			"endpoints":   []any{"chat_completions"},
 			"metadata": map[string]any{"context_length": 8192,
 				"capabilities": map[string]any{"streaming": true, "tools": false, "vision": false, "reasoning": false}},
 		}, model)},

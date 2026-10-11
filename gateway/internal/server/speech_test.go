@@ -24,7 +24,7 @@ import (
 // output limit default 300, ceiling 1000; priced at $1 and $2 per million input and
 // output tokens), "tts-free" there with no output limit and no price, "tts-slow" on
 // omni-slow, and "painter" on omni (as "Qwen/Qwen-Image"), a model that does not
-// speak; then edits applied.
+// speak — each listing every endpoint vllm-omni serves; then edits applied.
 func withSpeechModels(t *testing.T, g *testGateway, edits ...func(doc string) string) {
 	t.Helper()
 	g.backend.SetNonSpeechModels("Qwen/Qwen-Image")
@@ -35,6 +35,7 @@ func withSpeechModels(t *testing.T, g *testGateway, edits ...func(doc string) st
       "stall_timeout_ms": 150, "first_event_timeout_ms": 5000 },`)
 		model := func(name, backend, backendModel, extra string) string {
 			return `"` + name + `": { "deployments": [{ "backend": "` + backend + `", "model": "` + backendModel + `" }],
+      "endpoints": ` + everyEndpoint(config.BackendVLLMOmni) + `,
       "metadata": { "context_length": 8192,
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } }` + extra + ` },
     `
@@ -717,9 +718,10 @@ func TestSpeechAudioLimits(t *testing.T) {
 	}
 }
 
-// Speech to a model whose server has no speech stage is the backend's 400, relayed
-// as the caller's: not retried, nothing settled but zeros (docs/specs/GATEWAY.md,
-// Providers → An endpoint missing from a server).
+// Speech to a model whose server has no speech stage — its list should leave the
+// endpoint out — is the backend's 400, relayed as the caller's: not retried, nothing
+// settled but zeros (docs/specs/GATEWAY.md, Model metadata → Endpoints per model;
+// Providers → A path the server does not have).
 func TestSpeechToAModelThatDoesNotSpeak(t *testing.T) {
 	g := newTestGateway(t)
 	withSpeechModels(t, g)

@@ -28,9 +28,12 @@ var (
 	labelKeyPattern        = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,62}$`)
 )
 
-// FormatVersion is the config document format this gateway reads; any other is
-// rejected, never migrated.
-const FormatVersion = 6
+// ProtocolVersion is the protocol version this gateway speaks, one version for the
+// whole contract (docs/specs/CONTROL-PROTOCOL.md, Shape → One version): a config
+// document states it in protocol_version, and a document of any other is rejected,
+// never migrated; the control client sends it in Kaiak-Protocol and in its status.
+// It lives here, where both read it: the control package imports this one.
+const ProtocolVersion = 7
 
 // maxPriceTiers bounds a price entry's tiers.
 const maxPriceTiers = 8
@@ -138,12 +141,12 @@ type schemaCheck struct {
 
 func (c *schemaCheck) document(v any) {
 	c.Object(v, "", map[string]schemacheck.Field{
-		"format_version": {Required: true, Check: c.Const(FormatVersion)},
-		"global":         {Required: true, Check: c.global},
-		"backends":       {Required: true, Check: c.CollectionOf(idPattern.MatchString, "an ID", c.backend)},
-		"models":         {Required: true, Check: c.CollectionOf(IsPublicModelName, PublicModelNameWhat, c.model)},
-		"groups":         {Check: c.CollectionOf(idPattern.MatchString, "an ID", c.group)},
-		"keys":           {Required: true, Check: c.CollectionOf(idPattern.MatchString, "an ID", c.key)},
+		"protocol_version": {Required: true, Check: c.Const(ProtocolVersion)},
+		"global":           {Required: true, Check: c.global},
+		"backends":         {Required: true, Check: c.CollectionOf(idPattern.MatchString, "an ID", c.backend)},
+		"models":           {Required: true, Check: c.CollectionOf(IsPublicModelName, PublicModelNameWhat, c.model)},
+		"groups":           {Check: c.CollectionOf(idPattern.MatchString, "an ID", c.group)},
+		"keys":             {Required: true, Check: c.CollectionOf(idPattern.MatchString, "an ID", c.key)},
 	})
 }
 
@@ -214,7 +217,7 @@ func (c *schemaCheck) model(v any, path string) {
 				"model":   {Required: true, Check: c.StringMatching(backendModelPattern, backendModelNameWhat)},
 			})
 		})},
-		"endpoints": {Check: c.ArrayOf(1, 0, true, c.Enum(endpointNames))},
+		"endpoints": {Required: true, Check: c.ArrayOf(1, 0, true, c.Enum(endpointNames))},
 		"metadata": {Required: true, Check: func(v any, path string) {
 			c.Object(v, path, map[string]schemacheck.Field{
 				"context_length": {Required: true, Check: c.IntegerAtLeast(1)},

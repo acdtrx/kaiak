@@ -16,8 +16,8 @@ import (
 	"kaiak/internal/fakebackend"
 )
 
-// Each server's answer to a path it does not have (docs/specs/GATEWAY.md, Providers:
-// wrong path to a host), as the step that settled them recorded it.
+// Each server's answer to a path it does not have (docs/specs/GATEWAY.md, Providers →
+// A path the server does not have), as the step that settled them recorded it.
 var unknownPathAnswers = map[string]string{
 	"openai":       `{"error":{"message":"Invalid URL (POST /chat/completions)","type":"invalid_request_error","param":null,"code":null}}`,
 	"azure-openai": `{"error":{"code":"404","message":"Resource not found"}}`,
@@ -83,12 +83,10 @@ func readAll(resp Response) string {
 	}
 }
 
-// Per module, on chat: its server's unknown-path answer is upstream_path_missing — on
-// vllm upstream_endpoint_missing, since vllm has no core endpoints
-// (docs/specs/GATEWAY.md, Providers → An endpoint missing from a server) — whose
-// error names the URL and not the backend's text; any other server's answer, a
-// caller's 404 and a missing model behave as they did — relayed whole, or
-// upstream_model_missing, which is read first.
+// Per module, on chat: its server's unknown-path answer is upstream_path_missing,
+// whose error names the URL and not the backend's text; any other server's answer and
+// a caller's 404 are relayed whole, and a missing model is upstream_model_missing,
+// read first.
 func TestUnknownPathByModule(t *testing.T) {
 	srv, answer := notFoundServer(t)
 	r := moduleRegistry()
@@ -97,10 +95,7 @@ func TestUnknownPathByModule(t *testing.T) {
 			b := &config.Backend{ID: "b", Type: m.typ, BaseURL: srv.URL + "/v1", APIKeyEnv: "KEY",
 				ConnectTimeout: time.Second, FirstEventTimeout: time.Minute, ResponseTimeout: time.Minute,
 				StallTimeout: time.Minute}
-			unknown := CodePathMissing
-			if m.typ == config.BackendVLLM {
-				unknown = CodeEndpointMissing
-			}
+			const unknown = CodePathMissing
 			for name, body := range unknownPathAnswers {
 				answer(body)
 				resp, err := sendFor(r, b)

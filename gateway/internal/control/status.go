@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"kaiak/internal/config"
 )
 
 // Status reports (CONTROL-PROTOCOL.md, Gateway status): POST /v1/status when Run
@@ -162,7 +164,7 @@ func (c *Client) reportStatus(ctx context.Context, trigger string) error {
 // refuses null.
 func (c *Client) currentStatus() Status {
 	r := c.status
-	s := Status{Instance: c.opts.Instance, ProtocolVersion: ProtocolVersion, StartedAt: r.startedAt,
+	s := Status{Instance: c.opts.Instance, ProtocolVersion: config.ProtocolVersion, StartedAt: r.startedAt,
 		State: StateReady, Backends: map[string]BackendStatus{}, Models: map[string]ModelStatus{}}
 	c.mu.Lock()
 	if c.appliedHash != "" {

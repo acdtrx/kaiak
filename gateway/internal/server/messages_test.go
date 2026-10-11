@@ -24,6 +24,7 @@ func withMessagesModels(t *testing.T, g *testGateway, edit func(doc string) stri
     "vl": { "type": "vllm", "base_url": "`+g.backend.URL()+`/v1" },`)
 		doc = replaceOnce(t, doc, `"models": { `, `"models": {
     "msg": { "deployments": [{ "backend": "vl", "model": "msg-back" }],
+      "endpoints": `+everyEndpoint(config.BackendVLLM)+`,
       "metadata": { "context_length": 8192,
         "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": false } },
       "output_limit": { "default": 64, "ceiling": 128 } },

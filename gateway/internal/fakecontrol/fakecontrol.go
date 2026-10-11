@@ -155,7 +155,7 @@ type Stream struct {
 
 // protocolVersion is the Kaiak-Protocol value the fake speaks
 // (docs/specs/CONTROL-PROTOCOL.md).
-const protocolVersion = "6"
+const protocolVersion = "7"
 
 // connectedBuffer bounds the streams Connected holds for a test that does not read
 // them; further ones are not announced.

@@ -82,10 +82,10 @@ func (c *semanticCheck) model(name string, model modelDoc) {
 				fmt.Sprintf("backend %q is not defined", deployment.Backend))
 		}
 	}
-	// What a deployment on an unknown backend serves cannot be known: such a model
-	// reports deployment-backend-unknown alone.
+	// A deployment on an unknown backend has no type: such a model reports
+	// deployment-backend-unknown alone.
 	if backendsKnown {
-		c.endpoints(model, path)
+		c.backendType(model, path)
 	}
 
 	metadata := model.Metadata
@@ -120,34 +120,26 @@ func (c *semanticCheck) model(name string, model modelDoc) {
 	}
 }
 
-// endpointSupport is which client API endpoints each backend type serves, as the
-// endpoint-not-served rule reads it (docs/specs/GATEWAY.md, Providers → Endpoint
-// support). The provider modules hold the table routing follows; this copy, theirs
-// and kaiak-control's are each held to protocol/fixtures/backend-types/ (endpoints).
-var endpointSupport = map[BackendType][]EndpointName{
-	BackendOpenAI: {EndpointChatCompletions, EndpointCompletions, EndpointEmbeddings, EndpointResponses,
-		EndpointResponsesInputTokens},
-	BackendAzureOpenAI: {EndpointChatCompletions, EndpointCompletions, EndpointEmbeddings, EndpointResponses},
-	BackendVLLM: {EndpointChatCompletions, EndpointCompletions, EndpointEmbeddings, EndpointMessages,
-		EndpointMessagesCountTokens, EndpointResponses, EndpointRerank},
-	BackendVLLMOmni: {EndpointAudioSpeech, EndpointAudioSpeechBatch, EndpointImagesGenerations},
-	BackendLlamaServer: {EndpointChatCompletions, EndpointCompletions, EndpointEmbeddings, EndpointMessages,
-		EndpointMessagesCountTokens, EndpointResponses, EndpointResponsesInputTokens, EndpointRerank},
-	BackendAnthropic:        {EndpointMessages, EndpointMessagesCountTokens},
-	BackendAzureAnthropic:   {EndpointMessages, EndpointMessagesCountTokens},
-	BackendOpenAICompatible: {EndpointChatCompletions, EndpointCompletions, EndpointEmbeddings},
-}
-
-// endpoints checks each entry of the model's endpoints list is served by the backend
-// type of at least one of its deployments, all of whose backends are defined.
-func (c *semanticCheck) endpoints(model modelDoc, path string) {
+// backendType checks the model's deployments, all of whose backends are defined, are
+// on backends of one type — reported once, at the backend of the first deployment
+// whose type differs from the first deployment's — and, when they are, that each
+// entry of its endpoints list is served by that type (docs/specs/CONTROL-PROTOCOL.md,
+// Config → One backend type per model; Endpoints per model).
+func (c *semanticCheck) backendType(model modelDoc, path string) {
+	typeOf := func(d deploymentDoc) BackendType { return BackendType(c.doc.Backends[d.Backend].Type) }
+	first := typeOf(model.Deployments[0])
+	for i, deployment := range model.Deployments[1:] {
+		if t := typeOf(deployment); t != first {
+			c.report(CodeDeploymentTypesDiffer, schemacheck.Pointer(path, "deployments", i+1, "backend"),
+				fmt.Sprintf("backend %q is of type %s, the model's first deployment's of %s: a model's deployments share one type",
+					deployment.Backend, t, first))
+			return
+		}
+	}
 	for i, endpoint := range model.Endpoints {
-		served := slices.ContainsFunc(model.Deployments, func(d deploymentDoc) bool {
-			return slices.Contains(endpointSupport[BackendType(c.doc.Backends[d.Backend].Type)], endpoint)
-		})
-		if !served {
+		if !first.Serves(endpoint) {
 			c.report(CodeEndpointNotServed, schemacheck.Pointer(path, "endpoints", i),
-				fmt.Sprintf("none of the model's deployments is on a backend type serving %s", endpoint))
+				fmt.Sprintf("the model's backend type %s does not serve %s", first, endpoint))
 		}
 	}
 }

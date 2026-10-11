@@ -139,7 +139,7 @@ func TestRequestLineKeysFollowTheFieldTable(t *testing.T) {
 // usage the media units under their metrics' names — each only when not 0, summed over
 // the request's records; a line without media carries none of them.
 func TestRequestLineCarriesTheOutputTypeAndMediaUsage(t *testing.T) {
-	media := &endpoint{body: true, api: provider.ChatCompletions, name: "media", operation: "generate_content",
+	media := &endpoint{body: true, api: provider.ChatCompletions, operation: "generate_content",
 		outputType: "speech"}
 	line := func(ep *endpoint, records ...accounting.UsageRecord) map[string]any {
 		var buf bytes.Buffer

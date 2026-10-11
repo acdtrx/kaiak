@@ -84,13 +84,12 @@ func TestBackendTypes(t *testing.T) {
 	g.stop(t)
 }
 
-// A vllm backend whose base_url misses the API version path (GATEWAY.md, Wrong path to
-// a host): its models list answers 404, and the check at config apply warns, naming
-// the backend, its base_url and what base_url should hold — the other backends, whose
-// lists answer, get no such warning. vllm has no core endpoints, so its requests
-// answer 502 upstream_endpoint_missing with the endpoint-missing warning, once per
-// interval, and its circuit stays closed however many come (GATEWAY.md, Providers →
-// An endpoint missing from a server).
+// A vllm backend whose base_url misses the API version path (GATEWAY.md, Providers →
+// A path the server does not have): its models list answers 404, and the check at
+// config apply warns, naming the backend, its base_url and what base_url should hold
+// — the other backends, whose lists answer, get no such warning. Its requests answer
+// 502 upstream_path_missing at once, its circuit stays closed however many come, and
+// each counts as path_missing.
 func TestWrongBaseURLOnVLLM(t *testing.T) {
 	backend := fakebackend.New()
 	defer backend.Close()
@@ -99,11 +98,7 @@ func TestWrongBaseURLOnVLLM(t *testing.T) {
 	key, hash := newKey()
 	cfg := scenarioConfig(backend.URL(), hash, scenarioBackends(chatBackends))
 	cfg["backends"].(map[string]any)["lost"] = map[string]any{"type": "vllm", "base_url": backend.URL()}
-	cfg["models"].(map[string]any)["on-lost"] = map[string]any{
-		"deployments": []any{map[string]any{"backend": "lost", "model": "Qwen/Qwen3-8B"}},
-		"metadata": map[string]any{"context_length": 8192,
-			"capabilities": map[string]any{"streaming": true, "tools": false, "vision": false, "reasoning": false}},
-	}
+	cfg["models"].(map[string]any)["on-lost"] = scenarioModel("vllm", map[string]any{"backend": "lost", "model": "Qwen/Qwen3-8B"})
 	configFile := filepath.Join(dir, "config.json")
 	writeJSON(t, configFile, cfg)
 	g := startGatewayEnv(t, append(gatewayEnv(configFile), backendKeysEnv()...))
@@ -119,25 +114,16 @@ func TestWrongBaseURLOnVLLM(t *testing.T) {
 
 	for i := range 6 {
 		r := g.post(t, "/v1/chat/completions", key, fmt.Sprintf("lost-%d", i), chatBody("on-lost", false, nil))
-		if r.StatusCode != http.StatusBadGateway || openAIErrorCode(t, r) != "upstream_endpoint_missing" ||
+		if r.StatusCode != http.StatusBadGateway || openAIErrorCode(t, r) != "upstream_path_missing" ||
 			strings.Contains(string(r.body), "Not Found") {
-			t.Fatalf("%d %s, want 502 upstream_endpoint_missing", r.StatusCode, r.body)
+			t.Fatalf("%d %s, want 502 upstream_path_missing", r.StatusCode, r.body)
 		}
 	}
 	const deployment = `kaiak_backend_id="lost",kaiak_deployment_model="Qwen/Qwen3-8B"`
 	if v := g.metric(t, `kaiak_circuit_state{`+deployment+`,kaiak_circuit_state="open"}`); v != 0 {
 		t.Errorf("lost's circuit open = %v, want closed", v)
 	}
-	if v := g.metric(t, `kaiak_upstream_attempts_total{`+deployment+`,kaiak_attempt_outcome="endpoint_missing"}`); v != 6 {
-		t.Errorf("endpoint_missing attempts = %v, want 6", v)
-	}
-	const warning = "the deployment's server does not serve an endpoint its type serves"
-	line = g.logs.wait(t, "the endpoint-missing warning", msg(warning, "kaiak.backend.id", "lost"))
-	if line["level"] != "WARN" || line["kaiak.deployment.model"] != "Qwen/Qwen3-8B" || line["kaiak.endpoint"] != "chat_completions" ||
-		line["kaiak.request.id"] != "lost-0" {
-		t.Errorf("warning %v, want WARN naming Qwen/Qwen3-8B, chat_completions and the first request", line)
-	}
-	if n := strings.Count(g.logs.text(), warning); n != 1 {
-		t.Errorf("%d endpoint-missing warnings, want 1 per probe interval", n)
+	if v := g.metric(t, `kaiak_upstream_attempts_total{`+deployment+`,kaiak_attempt_outcome="path_missing"}`); v != 6 {
+		t.Errorf("path_missing attempts = %v, want 6", v)
 	}
 }

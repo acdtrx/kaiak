@@ -7,7 +7,6 @@ import (
 	"io"
 	"maps"
 	"net/http"
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -343,11 +342,11 @@ func TestImagesCutShort(t *testing.T) {
 }
 
 // withImageServers adds a second vllm-omni backend, "omni2" on other, and three
-// models to withSpeechModels': stale-painter, whose one deployment names a model its
-// server does not run once g's backend serves Qwen/Qwen-Image alone; drawer, that
-// stale deployment beside omni2/Qwen/Qwen-Image; voice-or-image, a speech model's
-// deployment (no diffusion stage) beside omni2/Qwen/Qwen-Image. The circuit opens
-// after two failures.
+// models to withSpeechModels', each listing images_generations: stale-painter, whose
+// one deployment names a model its server does not run once g's backend serves
+// Qwen/Qwen-Image alone; drawer, that stale deployment beside omni2/Qwen/Qwen-Image;
+// voice-or-image, a speech model's deployment (no diffusion stage) beside
+// omni2/Qwen/Qwen-Image. The circuit opens after two failures.
 func withImageServers(t *testing.T, g *testGateway, other *fakebackend.Backend) {
 	t.Helper()
 	g.backend.SetImageServedModel("Qwen/Qwen-Image")
@@ -363,6 +362,7 @@ func withImageServers(t *testing.T, g *testGateway, other *fakebackend.Backend) 
 					list = append(list, `{ "backend": "`+backend+`", "model": "`+backendModel+`" }`)
 				}
 				return `"` + name + `": { "deployments": [` + strings.Join(list, ", ") + `],
+      "endpoints": ["images_generations"],
       "metadata": { "context_length": 8192,
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } } },
     `
@@ -415,51 +415,43 @@ func TestImagesModelMismatch(t *testing.T) {
 		`kaiak_retries_total{gen_ai_request_model="drawer",kaiak_backend_id="omni",kaiak_attempt_outcome="model_missing"} `+strconv.Itoa(retried))
 }
 
-// vLLM-Omni's image 503 "No diffusion stage" — an image request to a speech model —
-// is the endpoint missing from the deployment's server: 502 upstream_endpoint_missing
-// with no other deployment, the backend's text not relayed; neutral for the circuit;
-// the deployment remembered and left out of image routing, the request retried on the
-// model's other deployment (docs/specs/GATEWAY.md, Providers → An endpoint missing
-// from a server).
-func TestImagesNoDiffusionStage(t *testing.T) {
+// vLLM-Omni's image 503 "No diffusion stage" — an image request to a speech model,
+// which the model's endpoints list should have left out — is a backend 5xx as any
+// server error (docs/specs/GATEWAY.md, Providers → A path the server does not have):
+// answered as the backend's 503 upstream_error, its text not relayed, a circuit
+// failure; with another deployment, retried there as server_error.
+func TestImagesNoDiffusionStageIsAServerError(t *testing.T) {
 	other := fakebackend.New()
 	t.Cleanup(other.Close)
 	g := newTestGateway(t)
 	withImageServers(t, g, other)
 
-	for range 3 {
+	for range 2 {
 		w := do(t, g.h, imagesCall(`{"model":"tts","prompt":"a fox"}`, "to-tts"))
-		expectError(t, w, http.StatusBadGateway, "upstream_endpoint_missing")
+		expectError(t, w, http.StatusServiceUnavailable, "upstream_error")
 		if strings.Contains(w.Body.String(), "diffusion") {
 			t.Errorf("the backend's answer reached the client: %s", w.Body.String())
 		}
 	}
-	if circuitOpen(g, "omni", "Qwen/Qwen3-TTS") {
-		t.Error("circuit of omni/Qwen/Qwen3-TTS open, want closed: the outcome is neutral")
-	}
-	if got := rememberedDeployments(g.missing); !slices.Equal(got, []string{"omni/Qwen/Qwen3-TTS"}) {
-		t.Errorf("remembered %v, want omni/Qwen/Qwen3-TTS", got)
-	}
-	if lines := warnings(g); len(lines) != 1 || !strings.Contains(lines[0], `"kaiak.endpoint":"images_generations"`) {
-		t.Errorf("endpoint-missing warnings %v, want one naming images_generations", lines)
-	}
-	if w := do(t, g.h, speechCall(`{"model":"tts","input":"hi"}`, "speech")); w.Code != http.StatusOK {
-		t.Errorf("speech to the remembered deployment: %d %s", w.Code, w.Body.String())
+	if !circuitOpen(g, "omni", "Qwen/Qwen3-TTS") {
+		t.Error("circuit of omni/Qwen/Qwen3-TTS closed after two 503s, want open: a failure")
 	}
 
 	g = newTestGateway(t)
 	withImageServers(t, g, other)
-	before := len(other.Requests())
+	var lines string
 	for _, id := range []string{"mixed-1", "mixed-2", "mixed-3"} {
 		if w := do(t, g.h, imagesCall(`{"model":"voice-or-image","prompt":"a fox"}`, id)); w.Code != http.StatusOK {
 			t.Fatalf("%s: %d %s", id, w.Code, w.Body.String())
 		}
+		lines += logLine(t, g, id) + "\n"
 	}
-	if n, m := len(g.backend.Requests()), len(other.Requests())-before; n != 1 || m != 3 {
-		t.Errorf("the speech deployment got %d image requests, the image one %d; want 1 and 3: once remembered, it is left out", n, m)
+	retried := strings.Count(lines, `"kaiak.tried":"omni/Qwen/Qwen3-TTS:503,omni2/Qwen/Qwen-Image:200"`)
+	if retried == 0 {
+		t.Errorf("no request retried after the speech deployment's 503:\n%s", lines)
 	}
 	expectMetricLines(t, scrape(g),
-		`kaiak_retries_total{gen_ai_request_model="voice-or-image",kaiak_backend_id="omni",kaiak_attempt_outcome="endpoint_missing"} 1`)
+		`kaiak_retries_total{gen_ai_request_model="voice-or-image",kaiak_backend_id="omni",kaiak_attempt_outcome="server_error"} `+strconv.Itoa(retried))
 }
 
 // Nothing of the prompt, the negative prompt, the images answered, a LoRA path or the

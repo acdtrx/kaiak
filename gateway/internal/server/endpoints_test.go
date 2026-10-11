@@ -31,182 +31,39 @@ func errorMessage(t *testing.T, w *httptest.ResponseRecorder) string {
 	return body.Error.Message
 }
 
-// withAnthropicModels swaps in the test config plus an anthropic backend "claude" on
-// the fake backend, a model served only there ("claude-only") and one with a
-// deployment there and one on "local" ("mixed").
-func withAnthropicModels(t *testing.T, g *testGateway, edits ...func(doc string) string) {
-	t.Helper()
-	g.apply(t, func(doc string) string {
-		for _, edit := range edits {
-			doc = edit(doc)
-		}
-		doc = replaceOnce(t, doc, `"backends": {`, `"backends": {
-    "claude": { "type": "anthropic", "base_url": "`+g.backend.URL()+`/v1", "api_key_env": "ANTHROPIC_KEY" },`)
-		meta := `"metadata": { "context_length": 8192,
-        "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } }`
-		return replaceOnce(t, doc, `"models": { `, `"models": {
-    "claude-only": { "deployments": [{ "backend": "claude", "model": "claude-x" }], `+meta+` },
-    "mixed": { "deployments": [{ "backend": "claude", "model": "claude-x" }, { "backend": "local", "model": "mixed-local" }], `+meta+` },
-    `)
-	})
-}
-
-// A model none of whose deployments serves the endpoint is refused before routing,
-// 400 endpoint_not_served, nothing sent and nothing settled; a model with some that
-// do is routed to those only (docs/specs/GATEWAY.md, Providers → Endpoint support).
-func TestRoutingFollowsEndpointSupport(t *testing.T) {
-	g := newTestGateway(t)
-	withAnthropicModels(t, g)
-
-	w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey,
-		body: `{"model":"claude-only","messages":[]}`})
-	expectError(t, w, http.StatusBadRequest, "endpoint_not_served")
-	if msg, want := errorMessage(t, w), "The model is not served on /v1/chat/completions: none of its backends serves this API."; msg != want {
-		t.Errorf("message %q, want %q", msg, want)
-	}
-	if n := len(g.backend.Requests()); n != 0 {
-		t.Errorf("%d requests reached the backend, want none", n)
-	}
-	if n := len(g.usage.all()); n != 0 {
-		t.Errorf("%d usage records, want none: nothing was routed", n)
-	}
-	if !strings.Contains(g.logText(), `"error.type":"endpoint_not_served"`) {
-		t.Errorf("log line lacks the error:\n%s", g.logText())
-	}
-
-	for range 4 {
-		w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey,
-			body: `{"model":"mixed","messages":[]}`})
-		if w.Code != http.StatusOK {
-			t.Fatalf("mixed: status %d: %s", w.Code, w.Body.String())
-		}
-	}
-	for _, r := range g.backend.Requests() {
-		if !strings.Contains(string(r.Body), `"model":"mixed-local"`) {
-			t.Errorf("a chat request reached the anthropic deployment: %s", r.Body)
-		}
-	}
-}
-
-// withOmniModel swaps in the test config plus a vllm-omni backend "omni" on the fake
-// backend and a model served only there ("omni-only").
-func withOmniModel(t *testing.T, g *testGateway) {
-	t.Helper()
-	g.apply(t, func(doc string) string {
-		doc = replaceOnce(t, doc, `"backends": {`, `"backends": {
-    "omni": { "type": "vllm-omni", "base_url": "`+g.backend.URL()+`/v1" },`)
-		return replaceOnce(t, doc, `"models": { `, `"models": {
-    "omni-only": { "deployments": [{ "backend": "omni", "model": "Qwen/Qwen3-TTS" }],
-      "metadata": { "context_length": 8192,
-        "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } } },
-    `)
-	})
-}
-
-// omniRefusedBodies are a valid request body for each body endpoint vllm-omni does not
-// serve, naming the model "omni-only".
-var omniRefusedBodies = map[provider.Endpoint]string{
-	provider.ChatCompletions:      `{"model":"omni-only","messages":[{"role":"user","content":"hi"}]}`,
-	provider.Completions:          `{"model":"omni-only","prompt":"hi"}`,
-	provider.Embeddings:           `{"model":"omni-only","input":"a"}`,
-	provider.Messages:             `{"model":"omni-only","max_tokens":1,"messages":[]}`,
-	provider.MessagesCountTokens:  `{"model":"omni-only","messages":[]}`,
-	provider.Responses:            `{"model":"omni-only","input":"hi"}`,
-	provider.ResponsesInputTokens: `{"model":"omni-only","input":"hi"}`,
-	provider.Rerank:               `{"model":"omni-only","query":"q","documents":["a"]}`,
-}
-
-// vllm-omni serves the media endpoints alone: chat, completions, embeddings, Messages,
-// Responses, rerank and the token-counting endpoints to a model whose deployments are
-// all vllm-omni answer 400 endpoint_not_served, in the endpoint's error shape, before
-// any backend and with nothing settled; the model's entry lists only what the type
-// serves (docs/specs/GATEWAY.md, Providers → Endpoint support).
-func TestVLLMOmniServesNoOtherEndpoint(t *testing.T) {
-	g := newTestGateway(t)
-	withOmniModel(t, g)
-	served := []string{}
-	for _, ep := range bodyEndpoints {
-		if provider.Serves(config.BackendVLLMOmni, ep.api) {
-			served = append(served, ep.name)
-			continue
-		}
-		body, ok := omniRefusedBodies[ep.api]
-		if !ok {
-			t.Fatalf("no request body for %s, which vllm-omni does not serve", ep.name)
-		}
-		t.Run(ep.name, func(t *testing.T) {
-			w := do(t, g.h, call{method: "POST", path: ep.route(), key: workloadKey, body: body,
-				header: map[string]string{"X-Request-Id": "omni-" + ep.name}})
-			if ep.api.Format() == provider.FormatMessages {
-				expectAnthropicError(t, w, http.StatusBadRequest, "invalid_request_error", "endpoint_not_served")
-			} else {
-				expectError(t, w, http.StatusBadRequest, "endpoint_not_served")
-			}
-			if msg := errorMessage(t, w); !strings.Contains(msg, ep.route()) {
-				t.Errorf("message %q does not name %s", msg, ep.route())
-			}
-			if line := logLine(t, g, "omni-"+ep.name); !strings.Contains(line, `"error.type":"endpoint_not_served"`) {
-				t.Errorf("log line lacks the error: %s", line)
-			}
-		})
-	}
-	if n := len(g.backend.Requests()); n != 0 {
-		t.Errorf("%d requests reached the backend, want none", n)
-	}
-	if n := len(g.usage.all()); n != 0 {
-		t.Errorf("%d usage records, want none: nothing was routed", n)
-	}
-
-	slices.Sort(served)
-	want, _ := json.Marshal(served)
-	w := do(t, g.h, call{method: "GET", path: "/v1/models/omni-only", key: workloadKey})
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"endpoints":`+string(want)) {
-		t.Errorf("omni-only: %d %s, want the endpoints %s", w.Code, w.Body.String(), want)
-	}
-}
-
-// Model entries list the endpoints their deployments serve.
-func TestModelEntriesListServedEndpoints(t *testing.T) {
-	g := newTestGateway(t)
-	withAnthropicModels(t, g)
-	for model, want := range map[string]string{
-		"claude-only": `"endpoints":["messages","messages_count_tokens"]`,
-		"mixed":       `"endpoints":["chat_completions","completions","embeddings","messages","messages_count_tokens"]`,
-	} {
-		w := do(t, g.h, call{method: "GET", path: "/v1/models/" + model, key: workloadKey})
-		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), want) {
-			t.Errorf("%s: %d %s, want %s", model, w.Code, w.Body.String(), want)
-		}
-	}
-}
-
 // withEndpointLists is withSpeechModels with an anthropic backend "claude" on the fake
 // backend, painter's endpoints list narrowed to images_generations, and three models
-// with lists: "mixed-listed" on claude and local, listing chat_completions alone;
-// "claude-msg" on claude, listing messages; "claude-counts" on claude, listing
-// messages_count_tokens. tts keeps no list.
-func withEndpointLists(t *testing.T, g *testGateway) {
+// with narrow lists: "chat-listed" on local (openai-compatible, as "chat-local"),
+// listing chat_completions alone; "claude-msg" on claude, listing messages;
+// "claude-counts" on claude, listing messages_count_tokens. tts lists every endpoint
+// its type serves. Then edits applied.
+func withEndpointLists(t *testing.T, g *testGateway, edits ...func(doc string) string) {
 	t.Helper()
 	withSpeechModels(t, g, func(doc string) string {
 		doc = replaceOnce(t, doc, `"backends": {`, `"backends": {
     "claude": { "type": "anthropic", "base_url": "`+g.backend.URL()+`/v1", "api_key_env": "ANTHROPIC_KEY" },`)
-		doc = replaceOnce(t, doc, `"model": "Qwen/Qwen-Image" }],`, `"model": "Qwen/Qwen-Image" }], "endpoints": ["images_generations"],`)
+		doc = replaceOnce(t, doc, `"model": "Qwen/Qwen-Image" }],
+      "endpoints": `+everyEndpoint(config.BackendVLLMOmni)+`,`, `"model": "Qwen/Qwen-Image" }],
+      "endpoints": ["images_generations"],`)
 		meta := `"metadata": { "context_length": 8192,
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } }`
-		return replaceOnce(t, doc, `"models": {`, `"models": {
-    "mixed-listed": { "deployments": [{ "backend": "claude", "model": "claude-x" }, { "backend": "local", "model": "mixed-local" }],
+		doc = replaceOnce(t, doc, `"models": {`, `"models": {
+    "chat-listed": { "deployments": [{ "backend": "local", "model": "chat-local" }],
       "endpoints": ["chat_completions"], `+meta+` },
     "claude-msg": { "deployments": [{ "backend": "claude", "model": "claude-x" }], "endpoints": ["messages"], `+meta+` },
     "claude-counts": { "deployments": [{ "backend": "claude", "model": "claude-x" }], "endpoints": ["messages_count_tokens"], `+meta+` },`)
+		for _, edit := range edits {
+			doc = edit(doc)
+		}
+		return doc
 	})
 }
 
-// A model's endpoints list narrows what its deployments serve (docs/specs/GATEWAY.md,
-// Model metadata → Endpoints per model): an endpoint the list leaves out is refused
-// 400 endpoint_not_served before routing — though a deployment's type serves it — in
-// the endpoint's error shape, its message naming the route and the model's configured
-// endpoints, nothing sent and nothing settled; a listed endpoint routes as before, to
-// the deployments whose type serves it.
+// A model serves exactly what its endpoints list names (docs/specs/GATEWAY.md, Model
+// metadata → Endpoints per model): an endpoint the list leaves out is refused 400
+// endpoint_not_served before routing — though the model's type serves it — in the
+// endpoint's error shape, with the one message naming the route, nothing sent and
+// nothing settled; a listed endpoint routes to the model's deployments.
 func TestEndpointsListRefusesTheOthers(t *testing.T) {
 	g := newTestGateway(t)
 	withEndpointLists(t, g)
@@ -214,7 +71,7 @@ func TestEndpointsListRefusesTheOthers(t *testing.T) {
 	for _, c := range []struct{ id, path, body string }{
 		{"speech-to-painter", "/v1/audio/speech", `{"model":"painter","input":"Hello there"}`},
 		{"batch-to-painter", "/v1/audio/speech/batch", `{"model":"painter","items":[{"input":"Hello there"}]}`},
-		{"embeddings-to-mixed", "/v1/embeddings", `{"model":"mixed-listed","input":"a"}`},
+		{"embeddings-to-chat", "/v1/embeddings", `{"model":"chat-listed","input":"a"}`},
 	} {
 		w := do(t, g.h, call{method: "POST", path: c.path, key: workloadKey, body: c.body,
 			header: map[string]string{"X-Request-Id": c.id}})
@@ -226,10 +83,10 @@ func TestEndpointsListRefusesTheOthers(t *testing.T) {
 			t.Errorf("%s: log line lacks the error: %s", c.id, line)
 		}
 	}
-	// Messages to a model on an anthropic deployment whose list leaves Messages out:
-	// refused in Anthropic's shape, with the same message.
+	// Messages to an anthropic model whose list leaves Messages out: refused in
+	// Anthropic's shape, with the same message.
 	w := do(t, g.h, call{method: "POST", path: "/v1/messages", key: workloadKey,
-		body: `{"model":"mixed-listed","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`})
+		body: `{"model":"claude-counts","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`})
 	expectAnthropicError(t, w, http.StatusBadRequest, "invalid_request_error", "endpoint_not_served")
 	if !strings.Contains(w.Body.String(), `"message":"`+notListed("/v1/messages")+`"`) {
 		t.Errorf("Messages refusal %s, want the message %q", w.Body.String(), notListed("/v1/messages"))
@@ -241,26 +98,18 @@ func TestEndpointsListRefusesTheOthers(t *testing.T) {
 		t.Errorf("%d usage records, want none: nothing was routed", n)
 	}
 
-	// The listed endpoints route as before: images to painter; chat to mixed-listed,
-	// on its local deployment, whose type serves chat — never on claude.
+	// The listed endpoints route: images to painter, chat to chat-listed.
 	if w := do(t, g.h, imagesCall(`{"model":"painter","prompt":"a fox"}`, "images-listed")); w.Code != http.StatusOK {
 		t.Fatalf("images to painter: %d %s", w.Code, w.Body.String())
 	}
-	for range 3 {
-		w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey,
-			body: `{"model":"mixed-listed","messages":[{"role":"user","content":"hi"}]}`})
-		if w.Code != http.StatusOK {
-			t.Fatalf("chat to mixed-listed: %d %s", w.Code, w.Body.String())
-		}
+	if w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey,
+		body: `{"model":"chat-listed","messages":[{"role":"user","content":"hi"}]}`}); w.Code != http.StatusOK {
+		t.Fatalf("chat to chat-listed: %d %s", w.Code, w.Body.String())
 	}
 	reqs := g.backend.Requests()
-	if len(reqs) != 4 || reqs[0].Path != "/v1/images/generations" {
-		t.Fatalf("backend requests %+v, want the image request and three chat requests", reqs)
-	}
-	for _, r := range reqs[1:] {
-		if r.Path != "/v1/chat/completions" || !strings.Contains(string(r.Body), `"model":"mixed-local"`) {
-			t.Errorf("chat request reached %s with %s, want the local deployment", r.Path, r.Body)
-		}
+	if len(reqs) != 2 || reqs[0].Path != "/v1/images/generations" || reqs[1].Path != "/v1/chat/completions" ||
+		!strings.Contains(string(reqs[1].Body), `"model":"chat-local"`) {
+		t.Fatalf("backend requests %+v, want the image request and the chat request", reqs)
 	}
 }
 
@@ -270,20 +119,19 @@ func notListed(path string) string {
 	return "The model is not served on " + path + ": its configured endpoints do not include this API."
 }
 
-// A model with an endpoints list shows the endpoints it lists — in its entry, in
-// /v1/models, and in the Anthropic-shaped list, which holds the models whose
-// endpoints include messages; a model without one shows every endpoint its
-// deployments' types serve, as before (docs/specs/GATEWAY.md, Client API → /v1/models;
-// Anthropic-shaped model list).
+// A model shows the endpoints it lists — in its entry, in /v1/models, and in the
+// Anthropic-shaped list, which holds the models whose endpoints include messages
+// (docs/specs/GATEWAY.md, Client API → /v1/models; Anthropic-shaped model list).
 func TestEndpointsListShowsInTheModelLists(t *testing.T) {
 	g := newTestGateway(t)
 	withEndpointLists(t, g)
 	for model, want := range map[string]string{
 		"painter":       `"endpoints":["images_generations"]`,
-		"mixed-listed":  `"endpoints":["chat_completions"]`,
+		"chat-listed":   `"endpoints":["chat_completions"]`,
 		"claude-msg":    `"endpoints":["messages"]`,
 		"claude-counts": `"endpoints":["messages_count_tokens"]`,
 		"tts":           `"endpoints":["audio_speech","audio_speech_batch","images_generations"]`,
+		"open":          `"endpoints":["chat_completions","completions","embeddings"]`,
 	} {
 		w := do(t, g.h, call{method: "GET", path: "/v1/models/" + model, key: workloadKey})
 		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), want) {
@@ -310,7 +158,7 @@ func TestEndpointsListShowsInTheModelLists(t *testing.T) {
 	if len(list.Data) != 1 || list.Data[0].ID != "claude-msg" || !slices.Equal(list.Data[0].Endpoints, []string{"messages"}) {
 		t.Errorf("Anthropic list %s, want claude-msg alone, listing messages", w.Body.String())
 	}
-	for _, model := range []string{"mixed-listed", "claude-counts"} {
+	for _, model := range []string{"chat-listed", "claude-counts"} {
 		expectAnthropicError(t, do(t, g.h, call{method: "GET", path: "/v1/models/" + model, key: workloadKey, header: anthropic}),
 			http.StatusNotFound, "not_found_error", "model_not_found")
 	}
@@ -319,29 +167,20 @@ func TestEndpointsListShowsInTheModelLists(t *testing.T) {
 	}
 }
 
-// withEveryEndpoint edits the test config so that open and secret each have a
-// llama-server deployment and a vllm-omni one — between them serving every body
-// endpoint, so a refusal can come only from the model's endpoints list — and lists
-// listed as their endpoints (no list when nil).
-func withEveryEndpoint(t *testing.T, doc string, listed []string) string {
+// withListedOn edits the test config so that open and secret are each served on a
+// backend "typed" of type typ, on the fake backend, listing listed as their endpoints.
+func withListedOn(t *testing.T, doc string, typ config.BackendType, listed []string) string {
 	t.Helper()
 	var root map[string]any
 	if err := json.Unmarshal([]byte(doc), &root); err != nil {
 		t.Fatal(err)
 	}
 	backends := root["backends"].(map[string]any)
-	local := backends["local"].(map[string]any)
-	local["type"] = "llama-server"
-	backends["omni"] = map[string]any{"type": "vllm-omni", "base_url": local["base_url"]}
+	backends["typed"] = map[string]any{"type": string(typ), "base_url": backends["local"].(map[string]any)["base_url"]}
 	for _, name := range []string{"open", "secret"} {
 		m := root["models"].(map[string]any)[name].(map[string]any)
-		m["deployments"] = []any{
-			map[string]any{"backend": "local", "model": name},
-			map[string]any{"backend": "omni", "model": name},
-		}
-		if listed != nil {
-			m["endpoints"] = listed
-		}
+		m["deployments"] = []any{map[string]any{"backend": "typed", "model": name}}
+		m["endpoints"] = listed
 	}
 	b, err := json.Marshal(root)
 	if err != nil {
@@ -350,24 +189,45 @@ func withEveryEndpoint(t *testing.T, doc string, listed []string) string {
 	return string(b)
 }
 
+// listedRequests are a request to secret for an endpoint the test lists beside the one
+// it refuses: its type serves both, so a refusal comes from the list alone.
+var listedRequests = map[provider.Endpoint]struct{ path, body string }{
+	provider.ChatCompletions:   {"/v1/chat/completions", `{"model":"secret","messages":[]}`},
+	provider.Embeddings:        {"/v1/embeddings", `{"model":"secret","input":"hi"}`},
+	provider.AudioSpeech:       {"/v1/audio/speech", `{"model":"secret","input":"hi"}`},
+	provider.ImagesGenerations: {"/v1/images/generations", `{"model":"secret","prompt":"a fox"}`},
+}
+
 // The endpoints list is judged on every body route, streaming or not, after the
 // model-access check and before limits (docs/specs/GATEWAY.md, Request pipeline,
-// stage 2): a caller without access to the model gets model_not_found, nothing about
-// its endpoints; one with access gets endpoint_not_served in the route's error shape,
-// nothing sent, nothing settled, and the group's one request a minute still free.
+// stage 2): each route's model is on a type that serves it — llama-server, or
+// vllm-omni for the media endpoints — and lists another endpoint of that type alone,
+// so the refusal comes only from the list. A caller without access to the model gets
+// model_not_found, nothing about its endpoints; one with access gets
+// endpoint_not_served in the route's error shape with the one message, nothing sent,
+// nothing settled, and the group's one request a minute still free for the listed
+// endpoint.
 func TestEndpointsListIsJudgedOnEveryRoute(t *testing.T) {
 	for _, ep := range bodyEndpoints {
+		typ := config.BackendLlamaServer
+		listed, other := provider.ChatCompletions, provider.Embeddings
+		if !typ.Serves(ep.api.Name()) {
+			typ = config.BackendVLLMOmni
+			listed, other = provider.ImagesGenerations, provider.AudioSpeech
+		}
+		if ep.api == listed {
+			listed = other
+		}
+		if !typ.Serves(ep.api.Name()) || !typ.Serves(listed.Name()) {
+			t.Fatalf("%s: no type in the test serves it", ep.route())
+		}
 		for _, stream := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/stream=%t", ep.name, stream), func(t *testing.T) {
+			t.Run(fmt.Sprintf("%s/stream=%t", ep.api.Name(), stream), func(t *testing.T) {
 				g := newTestGateway(t)
-				listed, listedPath := "chat_completions", "/v1/chat/completions"
-				if ep.api == provider.ChatCompletions {
-					listed, listedPath = "embeddings", "/v1/embeddings"
-				}
 				g.apply(t, func(doc string) string {
 					doc = replaceOnce(t, doc, `"eval": { "parent": "research", "allowed_models": ["*"] }`,
 						`"eval": { "parent": "research", "allowed_models": ["*"], "limits": [{ "type": "requests_per_minute", "value": 1 }] }`)
-					return withEveryEndpoint(t, doc, []string{listed})
+					return withListedOn(t, doc, typ, []string{string(listed.Name())})
 				})
 				// One body every route reads cleanly: each takes the members it owns.
 				body := fmt.Sprintf(`{"model":"secret","stream":%t,"messages":[],"max_tokens":1,"input":"hi","prompt":"hi",`+
@@ -402,7 +262,8 @@ func TestEndpointsListIsJudgedOnEveryRoute(t *testing.T) {
 					t.Fatalf("%d backend requests and %d usage records, want none", n, u)
 				}
 
-				listedCall := call{method: "POST", path: listedPath, key: workloadKey, body: `{"model":"secret","messages":[],"input":"hi"}`}
+				r := listedRequests[listed]
+				listedCall := call{method: "POST", path: r.path, key: workloadKey, body: r.body}
 				if w := do(t, g.h, listedCall); w.Code != http.StatusOK {
 					t.Fatalf("the listed endpoint after the refusal: %d %s, want the request slot free", w.Code, w.Body.String())
 				}
@@ -417,15 +278,10 @@ func TestEndpointsListIsJudgedOnEveryRoute(t *testing.T) {
 // messages, change with each snapshot.
 func TestEndpointsListFollowsTheAppliedConfig(t *testing.T) {
 	g := newTestGateway(t)
-	for _, listed := range [][]string{nil, {"embeddings"}, {"messages", "messages_count_tokens"}, nil} {
-		g.apply(t, func(doc string) string { return withEveryEndpoint(t, doc, listed) })
-		want := slices.Clone(listed)
-		if listed == nil {
-			for _, ep := range bodyEndpoints {
-				want = append(want, ep.name)
-			}
-		}
-		slices.Sort(want)
+	every := endpointsOf(config.BackendLlamaServer)
+	for _, listed := range [][]string{every, {"embeddings"}, {"messages", "messages_count_tokens"}, every} {
+		g.apply(t, func(doc string) string { return withListedOn(t, doc, config.BackendLlamaServer, listed) })
+		want := slices.Sorted(slices.Values(listed))
 
 		for _, anthropic := range []bool{false, true} {
 			c := call{method: "GET", path: "/v1/models", key: workloadKey}
@@ -501,12 +357,12 @@ func TestXAPIKeyAuthenticates(t *testing.T) {
 }
 
 // A provider's refusal before sending is the caller's 400, named by the provider's
-// code and parameter, never retried, neutral for the circuit; an endpoint missing
-// from the deployment's server is retried on the model's other deployments — on the
-// same backend too: on a router-mode llama-server each model runs with its own flags
-// — neutral too (docs/specs/GATEWAY.md, Routing and reliability: retries, outcome
-// classes; Providers → An endpoint missing from a server).
-func TestRefusalAndEndpointMissingClassification(t *testing.T) {
+// code and parameter, never retried, neutral for the circuit; the server's answer to a
+// path it does not have is 502 upstream_path_missing with the message naming both
+// causes, never retried — the model's other deployments are identical instances —
+// and neutral too (docs/specs/GATEWAY.md, Routing and reliability: retries, outcome
+// classes; Providers → A path the server does not have).
+func TestRefusalAndPathMissingClassification(t *testing.T) {
 	refusal := &provider.RefusalError{Code: "price_option_unsupported", Param: "speed", Message: "no fast mode"}
 	at := &attempt{}
 	failure := upstreamFailure(context.Background(), at, refusal)
@@ -521,30 +377,19 @@ func TestRefusalAndEndpointMissingClassification(t *testing.T) {
 		t.Errorf("refusal classified %s, %v", outcome, class)
 	}
 
-	missing := &provider.Error{Code: provider.CodeEndpointMissing, Err: errors.New("no messages endpoint")}
+	missing := &provider.Error{Code: provider.CodePathMissing, Err: errors.New("no endpoint at http://x/v1/messages")}
 	at = &attempt{}
 	failure = upstreamFailure(context.Background(), at, missing)
-	if failure.status != http.StatusBadGateway || failure.code != "upstream_endpoint_missing" {
-		t.Errorf("endpoint missing answered %+v", failure)
+	const message = "The model backend does not have this endpoint: its address is misconfigured, or its server does not serve this API for the model."
+	if failure.status != http.StatusBadGateway || failure.code != "upstream_path_missing" || failure.message != message ||
+		failure.class != metrics.ErrorUpstreamError {
+		t.Errorf("path missing answered %+v", failure)
 	}
-	if reason := retriedFor(at); reason != metrics.AttemptEndpointMissing {
-		t.Errorf("endpoint missing retry reason %q", reason)
+	if reason := retriedFor(at); reason != "" {
+		t.Errorf("path missing retried for %q", reason)
 	}
-	if outcome, class, _ := classifyAttempt(at, ""); outcome != metrics.AttemptEndpointMissing || class != routing.Neutral {
-		t.Errorf("endpoint missing classified %s, %v", outcome, class)
-	}
-	a := &config.Backend{ID: "a"}
-	b := &config.Backend{ID: "b"}
-	m := &config.Model{Deployments: []config.Deployment{{Backend: a, Model: "x"}, {Backend: a, Model: "y"}, {Backend: b, Model: "x"}}}
-	avoid := avoidAfter(routing.Avoid{}, m, &attempt{deployment: m.Deployments[0], retryReason: metrics.AttemptEndpointMissing})
-	for _, d := range m.Deployments {
-		refused := false
-		for _, r := range avoid.Refused {
-			refused = refused || r == (routing.DeploymentID{Backend: d.Backend.ID, Model: d.Model})
-		}
-		if refused != (d == m.Deployments[0]) {
-			t.Errorf("deployment %s/%s refused %v, want the one tried refused alone", d.Backend.ID, d.Model, refused)
-		}
+	if outcome, class, _ := classifyAttempt(at, ""); outcome != metrics.AttemptPathMissing || class != routing.Neutral {
+		t.Errorf("path missing classified %s, %v", outcome, class)
 	}
 }
 
@@ -619,7 +464,7 @@ func TestErrorEventsAndOverloadClassification(t *testing.T) {
 // spends no request slot, and gets the answer that says what is wrong, not a 429.
 func TestEndpointNotServedComesBeforeLimits(t *testing.T) {
 	g := newTestGateway(t)
-	withAnthropicModels(t, g, func(doc string) string {
+	withEndpointLists(t, g, func(doc string) string {
 		return replaceOnce(t, doc, `"allowed_models": ["*"] }`,
 			`"allowed_models": ["*"], "limits": [{ "type": "requests_per_minute", "value": 1 }] }`)
 	})
@@ -627,6 +472,6 @@ func TestEndpointNotServedComesBeforeLimits(t *testing.T) {
 		t.Fatalf("first request: %d %s", w.Code, w.Body.String())
 	}
 	w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey,
-		body: `{"model":"claude-only","messages":[]}`})
+		body: `{"model":"claude-msg","messages":[]}`})
 	expectError(t, w, http.StatusBadRequest, "endpoint_not_served")
 }

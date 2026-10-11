@@ -248,9 +248,10 @@ func (r *run) checkServiceTier() {
 	}
 }
 
-// checkNotServed: the APIs the kind's backend type does not serve are refused with
-// endpoint_not_served, each in its API's error shape (rerank's and the media
-// endpoints' are OpenAI's). No kind serves the media endpoints: vllm-omni does.
+// checkNotServed: the APIs the kind's backend type does not serve — which the chat
+// model's endpoints list cannot name — are refused with endpoint_not_served, each in
+// its API's error shape (rerank's and the media endpoints' are OpenAI's). No kind
+// serves the media endpoints: vllm-omni does.
 func (r *run) checkNotServed() {
 	const name = "endpoint-not-served"
 	openAI := func(path string, body map[string]any) func() string {

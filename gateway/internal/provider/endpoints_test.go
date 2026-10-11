@@ -3,171 +3,71 @@ package provider
 import (
 	"errors"
 	"net/http"
-	"os"
-	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
 	"kaiak/internal/config"
 )
 
-// endpointColumns names the endpoint support table's columns
-// (docs/specs/GATEWAY.md, Providers → Endpoint support) by the endpoints they cover.
-var endpointColumns = map[string][]Endpoint{
-	"chat, completions, embeddings": {ChatCompletions, Completions, Embeddings},
-	"messages":                      {Messages},
-	"messages_count_tokens":         {MessagesCountTokens},
-	"responses":                     {Responses},
-	"responses_input_tokens":        {ResponsesInputTokens},
-	"rerank":                        {Rerank},
-	"audio_speech, audio_speech_batch, images_generations": {AudioSpeech, AudioSpeechBatch, ImagesGenerations},
-}
-
-// Each type serves exactly what the spec's endpoint support table says, the table
-// names every type, every column is one endpointColumns knows, and every endpoint is
-// in a column.
-func TestEndpointSupportFollowsTheSpec(t *testing.T) {
-	covered := map[Endpoint]bool{}
-	for _, es := range endpointColumns {
-		for _, e := range es {
-			covered[e] = true
-		}
-	}
-	for e := range Endpoint(len(endpoints)) {
-		if !covered[e] {
-			t.Errorf("%s is in no column of endpointColumns", e.Path())
-		}
-	}
-
-	doc, err := os.ReadFile(filepath.Join("..", "..", "..", "docs", "specs", "GATEWAY.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var header []string
-	seen := map[config.BackendType]bool{}
-	for line := range strings.Lines(string(doc)) {
-		line = strings.TrimSpace(line)
-		cells := strings.Split(strings.Trim(line, "|"), "|")
-		for i := range cells {
-			cells[i] = strings.TrimSpace(cells[i])
-		}
-		switch {
-		case strings.HasPrefix(line, "| Type | chat, completions, embeddings |"):
-			header = cells
-			for _, column := range header[1:] {
-				if _, ok := endpointColumns[column]; !ok {
-					t.Errorf("the spec's column %q is not in endpointColumns", column)
-				}
-			}
-			continue
-		case header == nil:
-			continue
-		case !strings.HasPrefix(line, "|"):
-			header = nil
-			continue
-		case strings.HasPrefix(cells[0], "---"):
-			continue
-		}
-		typ := config.BackendType(strings.Trim(cells[0], "`"))
-		seen[typ] = true
-		for i, cell := range cells[1:] {
-			for _, e := range endpointColumns[header[i+1]] {
-				if want := strings.HasPrefix(cell, "yes"); Serves(typ, e) != want {
-					t.Errorf("%s serves %s: %v, the spec says %q", typ, e.Path(), Serves(typ, e), cell)
-				}
-			}
-		}
-	}
-	for typ := range kinds {
-		if !seen[typ] {
-			t.Errorf("the spec's endpoint support table has no row for %s", typ)
-		}
-	}
-}
-
 // llamaServerNotSupported is llama-server's answer to rerank when it was not started
-// with --reranking (tools/server/server-common.cpp, format_error_response; b11513).
+// with --reranking (tools/server/server-common.cpp, format_error_response; b11513): a
+// 501, a backend 5xx as any server error.
 const llamaServerNotSupported = `{"error":{"code":501,"message":"This server does not support reranking. ` +
 	"Start it with `--reranking`" + `","type":"not_supported_error"}}`
 
-// Each module's answers saying its server does not serve an endpoint, on every
-// endpoint its type serves (docs/specs/GATEWAY.md, Providers → Wrong path to a host,
-// An endpoint missing from a server):
-//   - vllm has no core endpoints — vLLM creates its routes from the loaded model's
-//     tasks — so its route-missing answer, a 404 or a 405 where a POST lands on a
-//     route for another method, is upstream_endpoint_missing on every endpoint;
-//   - llama-server's File Not Found is upstream_path_missing on OpenAI's three, its
-//     core endpoints, and upstream_endpoint_missing elsewhere; its 501
-//     not_supported_error is upstream_endpoint_missing on embeddings and rerank, and
-//     any other 501 — on another endpoint, of another type — stays the backend's 5xx;
-//   - a cloud type's unknown-path answer is the same beyond its core endpoints;
-//   - a 501 is the backend's 5xx on every other type, and a 405 is relayed on a core
-//     endpoint.
-//
-// The error names the URL — on vllm a wrong base_url answers this way too — and never
-// the backend's text.
-func TestWrongEndpointAnswersByModule(t *testing.T) {
-	openAIThree := []Endpoint{ChatCompletions, Completions, Embeddings}
-	// relayed: the answer is not the deployment's failure; the provider returns it.
+// One "not found" reading on every type and every endpoint it serves
+// (docs/specs/GATEWAY.md, Providers → A path the server does not have): each module's
+// signature of a path its server does not have — vLLM's 404 and its 405, where a POST
+// lands on a route for another method — is upstream_path_missing, whose error names
+// the URL and never the backend's text. Every other answer is relayed for the pipeline
+// to answer: a 405 on the other types, llama-server's 501 for an endpoint it was not
+// started for and vLLM-Omni's 503 for an image request to a model with no diffusion
+// stage — plain 5xx, as any server error.
+func TestPathMissingAnswersByModule(t *testing.T) {
+	// relayed: the answer is not read; the provider returns it.
 	const relayed = Code("")
-	everywhere := func(c Code) func(Endpoint) Code { return func(Endpoint) Code { return c } }
-	coreOr := func(core, beyond Code) func(Endpoint) Code {
-		return func(e Endpoint) Code {
-			if slices.Contains(openAIThree, e) {
-				return core
-			}
-			return beyond
-		}
-	}
-	on := func(c Code, these ...Endpoint) func(Endpoint) Code {
-		return func(e Endpoint) Code {
-			if slices.Contains(these, e) {
-				return c
-			}
-			return relayed
-		}
-	}
+	const methodNotAllowed = `{"detail":"Method Not Allowed"}`
+	const noDiffusion = `{"error":{"message":"No diffusion stage found in multi-stage pipeline.","type":"Service Unavailable",` +
+		`"param":null,"code":503}}`
 	cases := []struct {
 		name   string
 		typ    config.BackendType
 		status int
 		answer string
-		want   func(Endpoint) Code
+		want   Code
 	}{
-		{"route missing", config.BackendVLLM, http.StatusNotFound, unknownPathAnswers["vllm"], everywhere(CodeEndpointMissing)},
-		{"method not allowed", config.BackendVLLM, http.StatusMethodNotAllowed, `{"detail":"Method Not Allowed"}`,
-			everywhere(CodeEndpointMissing)},
-		{"not supported", config.BackendVLLM, http.StatusNotImplemented, llamaServerNotSupported, everywhere(relayed)},
-		{"file not found", config.BackendLlamaServer, http.StatusNotFound, unknownPathAnswers["llama-server"],
-			coreOr(CodePathMissing, CodeEndpointMissing)},
-		{"not supported", config.BackendLlamaServer, http.StatusNotImplemented, llamaServerNotSupported,
-			on(CodeEndpointMissing, Embeddings, Rerank)},
-		{"501 server error", config.BackendLlamaServer, http.StatusNotImplemented,
-			`{"error":{"code":501,"message":"This server does not support reranking.","type":"server_error"}}`, everywhere(relayed)},
-		{"method not allowed", config.BackendLlamaServer, http.StatusMethodNotAllowed, `{"detail":"Method Not Allowed"}`,
-			everywhere(relayed)},
-		{"not supported", config.BackendOpenAICompatible, http.StatusNotImplemented, llamaServerNotSupported, everywhere(relayed)},
-		{"method not allowed", config.BackendOpenAICompatible, http.StatusMethodNotAllowed, `{"detail":"Method Not Allowed"}`,
-			everywhere(relayed)},
+		{"route missing", config.BackendVLLM, http.StatusNotFound, unknownPathAnswers["vllm"], CodePathMissing},
+		{"method not allowed", config.BackendVLLM, http.StatusMethodNotAllowed, methodNotAllowed, CodePathMissing},
+		{"not supported", config.BackendVLLM, http.StatusNotImplemented, llamaServerNotSupported, relayed},
+		{"route missing", config.BackendVLLMOmni, http.StatusNotFound, unknownPathAnswers["vllm"], CodePathMissing},
+		{"method not allowed", config.BackendVLLMOmni, http.StatusMethodNotAllowed, methodNotAllowed, relayed},
+		{"no diffusion stage", config.BackendVLLMOmni, http.StatusServiceUnavailable, noDiffusion, relayed},
+		{"file not found", config.BackendLlamaServer, http.StatusNotFound, unknownPathAnswers["llama-server"], CodePathMissing},
+		{"not supported", config.BackendLlamaServer, http.StatusNotImplemented, llamaServerNotSupported, relayed},
+		{"method not allowed", config.BackendLlamaServer, http.StatusMethodNotAllowed, methodNotAllowed, relayed},
+		{"page not found", config.BackendOpenAICompatible, http.StatusNotFound, unknownPathAnswers["go"], CodePathMissing},
+		{"not supported", config.BackendOpenAICompatible, http.StatusNotImplemented, llamaServerNotSupported, relayed},
+		{"method not allowed", config.BackendOpenAICompatible, http.StatusMethodNotAllowed, methodNotAllowed, relayed},
 		{"invalid URL", config.BackendOpenAI, http.StatusNotFound,
 			`{"error":{"message":"Invalid URL (POST /v1/responses)","type":"invalid_request_error","param":null,"code":null}}`,
-			coreOr(CodePathMissing, CodeEndpointMissing)},
-		{"resource not found", config.BackendAzureOpenAI, http.StatusNotFound, unknownPathAnswers["azure-openai"],
-			coreOr(CodePathMissing, CodeEndpointMissing)},
+			CodePathMissing},
+		{"resource not found", config.BackendAzureOpenAI, http.StatusNotFound, unknownPathAnswers["azure-openai"], CodePathMissing},
+		{"not found", config.BackendAnthropic, http.StatusNotFound,
+			`{"type":"error","error":{"type":"not_found_error","message":"Not Found"}}`, CodePathMissing},
+		{"resource not found", config.BackendAzureAnthropic, http.StatusNotFound, unknownPathAnswers["azure-openai"],
+			CodePathMissing},
 	}
 	r := moduleRegistry()
 	for _, c := range cases {
 		s := newWireServer(t)
 		s.set(c.status, c.answer)
 		for e := range Endpoint(len(endpoints)) {
-			if !Serves(c.typ, e) {
+			if !c.typ.Serves(e.Name()) {
 				continue
 			}
 			t.Run(string(c.typ)+"/"+c.name+"/"+e.Path(), func(t *testing.T) {
 				resp, err := sendTo(r, wireBackend(s, c.typ), e, `{"model":"pub"}`)
-				want := c.want(e)
-				if want == relayed {
+				if c.want == relayed {
 					if err != nil {
 						t.Fatalf("%v, want the %d relayed", err, c.status)
 					}
@@ -177,13 +77,13 @@ func TestWrongEndpointAnswersByModule(t *testing.T) {
 					return
 				}
 				perr, ok := errors.AsType[*Error](err)
-				if !ok || perr.Code != want {
-					t.Fatalf("%v, want %s", err, want)
+				if !ok || perr.Code != c.want {
+					t.Fatalf("%v, want %s", err, c.want)
 				}
 				if !strings.Contains(err.Error(), s.srv.URL) || !strings.Contains(err.Error(), e.Path()) {
 					t.Errorf("error %q: want the URL named", err)
 				}
-				for _, text := range []string{"Not Found", "Not Allowed", "Invalid URL", "not found", "not support"} {
+				for _, text := range []string{"Not Found", "Not Allowed", "Invalid URL", "not found", "page"} {
 					if strings.Contains(err.Error(), text) {
 						t.Errorf("error %q carries the backend's text", err)
 					}

@@ -16,11 +16,6 @@ type llamaServer struct {
 	credential string
 }
 
-// llamaServerEndpoints: llama-server serves every endpoint (build b9917; rerank on
-// b11513).
-var llamaServerEndpoints = []Endpoint{ChatCompletions, Completions, Embeddings, Messages, MessagesCountTokens, Responses,
-	ResponsesInputTokens, Rerank}
-
 func newLlamaServer(b *config.Backend, client *http.Client, credential string) backendModule {
 	return &llamaServer{backend: b, client: client, credential: credential}
 }
@@ -39,43 +34,21 @@ func (m *llamaServer) header() http.Header {
 func (m *llamaServer) Send(ctx context.Context, req *Request) (Response, error) {
 	return sendWire(ctx, req, wireCall{
 		backend: m.backend, client: m.client, url: m.url(req.Endpoint.Path()), header: m.header(),
-		missingModel: missingModelNamedOrCoded("model_not_found"), unknownPath: m.unknownPath, core: openAICore(req.Endpoint),
-		readings: m.readings(req.Endpoint),
+		missingModel: missingModelNamedOrCoded("model_not_found"), unknownPath: m.unknownPath,
 	})
 }
 
 // unknownPath: llama-server answers a path it does not have with
 // {"error": {"message": "File Not Found", "type": "not_found_error", "code": 404}};
-// its HTTP layer gives every 404 that body. On the core endpoints it is a wrong
-// base_url, on the others the endpoint missing — a wrong base_url reads that way
-// there too (docs/specs/GATEWAY.md, Providers → Wrong path to a host). A router-mode
-// server answers a model it does not have with 400 invalid_request_error ("model 'X'
-// not found"), not a 404: relayed as the caller's (docs/BACKLOG.md, llama-server
-// router mode).
+// its HTTP layer gives every 404 that body, and it registers every route whatever its
+// model or flags, so the answer means the base_url is wrong (docs/specs/GATEWAY.md,
+// Providers → A path the server does not have). Its 501 for an endpoint it was not
+// started for is a backend 5xx, as any server error. A router-mode server answers a
+// model it does not have with 400 invalid_request_error ("model 'X' not found"), not
+// a 404: relayed as the caller's (docs/BACKLOG.md, llama-server router mode).
 func (m *llamaServer) unknownPath(answer []byte) bool {
 	e, ok := readErrorAnswer(answer)
 	return ok && e.Type == "not_found_error" && e.Message == "File Not Found"
-}
-
-// readings are endpoint e's answers read beyond the 404: llama-server answers
-// embeddings when not started with --embeddings, and rerank when not started with
-// --embeddings and pooling rank, with a 501 of type not_supported_error ("This server
-// does not support reranking. Start it with --reranking") — the endpoint missing; the
-// message is not read. Its other 501s are on routes the gateway does not serve, so on
-// any other endpoint a 501 stays a backend 5xx (docs/specs/GATEWAY.md, Providers → An
-// endpoint missing from a server).
-func (m *llamaServer) readings(e Endpoint) []answerReading {
-	if e != Embeddings && e != Rerank {
-		return nil
-	}
-	return []answerReading{{status: http.StatusNotImplemented, code: CodeEndpointMissing, read: m.modeMissing}}
-}
-
-// modeMissing reads llama-server's 501 saying it was not started in the endpoint's
-// mode: its error type not_supported_error.
-func (m *llamaServer) modeMissing(answer []byte, _ string) bool {
-	a, ok := readErrorAnswer(answer)
-	return ok && a.Type == "not_supported_error"
 }
 
 // probe reads the models list, which names what requests carry: the model file's

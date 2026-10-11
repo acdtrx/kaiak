@@ -38,6 +38,14 @@ func (o options) serves(endpoint string) bool {
 	return slices.Contains(kindEndpoints[o.kind], endpoint)
 }
 
+// chatEndpoints are the endpoints list of the run's chat models: those of the kind's
+// endpoints a chat model's server answers — all but embeddings and rerank, which an
+// embedding model and a reranker serve, each listing its own (docs/specs/GATEWAY.md,
+// Model metadata → Endpoints per model).
+func chatEndpoints(kind string) []string {
+	return slices.DeleteFunc(slices.Clone(kindEndpoints[kind]), func(e string) bool { return e == epEmbeddings || e == epRerank })
+}
+
 // anthropicKind: a kind serving Claude through Anthropic's API, where the gateway
 // holds requests to the standard price.
 func anthropicKind(kind string) bool { return kind == kindAnthropic || kind == kindAzureAnthropic }

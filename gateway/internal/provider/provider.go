@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"slices"
 	"sync"
 	"time"
 
@@ -111,8 +110,8 @@ func (e Endpoint) Path() string { return endpoints[e].path }
 // Format is the format the endpoint speaks.
 func (e Endpoint) Format() Format { return endpoints[e].format }
 
-// Name is the endpoint's name: what /v1/models lists, a model's endpoints list names,
-// and the log lines call it (kaiak.endpoint).
+// Name is the endpoint's name: what /v1/models lists and a model's endpoints list
+// names.
 func (e Endpoint) Name() config.EndpointName { return endpoints[e].name }
 
 // Request is one client request as the pipeline hands it to a provider: already
@@ -215,17 +214,11 @@ const (
 	// model mismatch — the host serves another model (docs/specs/GATEWAY.md,
 	// Providers: wrong model on a host).
 	CodeModelMissing Code = "upstream_model_missing"
-	// CodePathMissing: the backend answered 404 the way its server answers a path it
-	// does not have, on one of its type's core endpoints — the backend's base_url is
-	// wrong (docs/specs/GATEWAY.md, Providers: wrong path to a host).
+	// CodePathMissing: the backend answered the way its server answers a path it does
+	// not have — the backend's base_url is wrong, or the model's endpoints list names
+	// an endpoint its server does not serve: an operator error either way
+	// (docs/specs/GATEWAY.md, Providers → A path the server does not have).
 	CodePathMissing Code = "upstream_path_missing"
-	// CodeEndpointMissing: the server does not serve an endpoint its type serves — the
-	// same answer on an endpoint beyond the type's core ones (every endpoint on vllm),
-	// llama-server's 501 on embeddings or rerank, or vLLM-Omni's 503 for image
-	// generation on a model with no diffusion stage: its version, the model it loaded
-	// or the flags it started with leave the endpoint out, while its other endpoints
-	// serve (docs/specs/GATEWAY.md, Providers: an endpoint missing from a server).
-	CodeEndpointMissing Code = "upstream_endpoint_missing"
 	// CodeErrorEvent: a successful stream's first event was an error event (a
 	// Messages error event, a Responses error or response.failed) — the backend gave
 	// up before anything reached the client; Error.Event says what it named
@@ -334,13 +327,9 @@ type backendModule interface {
 	probe(ctx context.Context) (serves func(model string) bool, err error)
 }
 
-// backendKind is one backend type: the endpoints its server serves, its GenAI
-// provider name, and how its module is built over a backend's connection pool and
-// credential.
+// backendKind is one backend type: its GenAI provider name, and how its module is
+// built over a backend's connection pool and credential.
 type backendKind struct {
-	// serves are the endpoints the type's server serves (docs/specs/GATEWAY.md,
-	// Providers → Endpoint support).
-	serves []Endpoint
 	// providerName is gen_ai.provider.name for the type: the GenAI convention's
 	// well-known value where one fits, else "" — the self-hosted types have none, and
 	// kaiak.backend.type names every type. Claude in Foundry is Anthropic's service and
@@ -352,14 +341,14 @@ type backendKind struct {
 // kinds holds every backend type the config schema admits: the one place a type is
 // named.
 var kinds = map[config.BackendType]backendKind{
-	config.BackendOpenAI:           {serves: openAIEndpoints, providerName: "openai", build: newOpenAI},
-	config.BackendAzureOpenAI:      {serves: azureOpenAIEndpoints, providerName: "azure.ai.openai", build: newAzureOpenAI},
-	config.BackendVLLM:             {serves: vLLMEndpoints, build: newVLLM},
-	config.BackendVLLMOmni:         {serves: vLLMOmniEndpoints, build: newVLLMOmni},
-	config.BackendLlamaServer:      {serves: llamaServerEndpoints, build: newLlamaServer},
-	config.BackendOpenAICompatible: {serves: openAICompatibleEndpoints, build: newOpenAICompatible},
-	config.BackendAnthropic:        {serves: anthropicEndpoints, providerName: "anthropic", build: newAnthropic},
-	config.BackendAzureAnthropic:   {serves: azureAnthropicEndpoints, providerName: "anthropic", build: newAzureAnthropic},
+	config.BackendOpenAI:           {providerName: "openai", build: newOpenAI},
+	config.BackendAzureOpenAI:      {providerName: "azure.ai.openai", build: newAzureOpenAI},
+	config.BackendVLLM:             {build: newVLLM},
+	config.BackendVLLMOmni:         {build: newVLLMOmni},
+	config.BackendLlamaServer:      {build: newLlamaServer},
+	config.BackendOpenAICompatible: {build: newOpenAICompatible},
+	config.BackendAnthropic:        {providerName: "anthropic", build: newAnthropic},
+	config.BackendAzureAnthropic:   {providerName: "anthropic", build: newAzureAnthropic},
 }
 
 // kindOf is type t's kind. The config schema admits only the types in kinds, so
@@ -370,13 +359,6 @@ func kindOf(t config.BackendType) backendKind {
 		panic(fmt.Sprintf("provider: no module for backend type %q", t))
 	}
 	return k
-}
-
-// Serves reports whether backends of type t serve endpoint e: routing sends a
-// request only to deployments whose backend does (docs/specs/GATEWAY.md, Providers →
-// Endpoint support).
-func Serves(t config.BackendType, e Endpoint) bool {
-	return slices.Contains(kindOf(t).serves, e)
 }
 
 // ProviderName is gen_ai.provider.name for backends of type t — the one mapping the

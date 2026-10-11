@@ -1,13 +1,13 @@
 package main
 
 // The rerank checks, for the kinds serving rerank (vllm, llama-server), and the
-// wrong-endpoint checks: a request to a deployment whose server lacks the endpoint.
+// wrong-endpoint checks: a request for an endpoint the model's server lacks, which
+// the model's endpoints list leaves out.
 
 import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"slices"
 	"strings"
 )
 
@@ -17,9 +17,7 @@ const (
 	idRerankCap      = "live-rerank-cap"
 	idRerankOversize = "live-rerank-oversize"
 	idChatToReranker = "live-chat-to-reranker"
-	idRerankAfter    = "live-rerank-after"
 	idRerankToChat   = "live-rerank-to-chat"
-	idChatAfter      = "live-chat-after"
 )
 
 // rerankQuery and relevanceDocuments: the document at relevantIndex answers the
@@ -37,10 +35,6 @@ const irrelevantIndex, relevantIndex = 0, 1
 // oversizeDocument is longer than any reranker's context — over 200,000 tokens, six
 // times a 32k context — and about a quarter of the gateway's default 4 MiB body cap.
 var oversizeDocument = strings.Repeat("The keeper climbs the tower at dusk and lights the lamp. ", 18000)
-
-// endpointMissingWarning is the gateway's warning when a deployment's server does not
-// serve an endpoint its type serves, once per probe interval and deployment.
-const endpointMissingWarning = "the deployment's server does not serve an endpoint its type serves"
 
 // rerankBody is a rerank request to model: rerankQuery over documents.
 func rerankBody(model string, documents []string) map[string]any {
@@ -194,84 +188,54 @@ func (r *run) checkRerankOversize() {
 	}
 }
 
-// checkChatToReranker sends a chat request to the reranker. vLLM creates its routes
-// from the model it loaded, so a reranker's server has no chat route: the gateway
-// answers 502 upstream_endpoint_missing, neutral for the circuit — a rerank right after
-// is served. llama-server registers every route whatever its flags, so there a chat
-// to a reranker is no endpoint missing (docs/specs/GATEWAY.md, Providers → An endpoint
-// missing from a server).
+// checkChatToReranker sends a chat request to the reranker, whose server has no chat
+// to answer it — vLLM creates no chat route for a reranker, and llama-server's would
+// answer from a model that does not chat: the reranker's endpoints list names rerank
+// alone, so the gateway refuses it, 400 endpoint_not_served, before any server
+// (docs/specs/GATEWAY.md, Model metadata → Endpoints per model).
 func (r *run) checkChatToReranker() {
 	const name = "chat-to-reranker"
-	if r.o.kind != kindVLLM {
-		r.skip(name, r.o.kind+" registers every route whatever its model: no endpoint missing to check")
-		return
-	}
 	resp, err := r.post(r.key, "/v1/chat/completions", idChatToReranker, r.chatBody(modelRerank, false, nil))
-	if _, problem := r.endpointMissing(resp, err, idChatToReranker, epChat, backendRerank); problem != "" {
+	if problem := r.notListed(resp, err, idChatToReranker, "/v1/chat/completions"); problem != "" {
 		r.fail(name, "chat to %s: %s", modelRerank, problem)
 		return
 	}
-	if problem := r.servedAfter(idRerankAfter, "/v1/rerank", rerankBody(modelRerank, relevanceDocuments)); problem != "" {
-		r.fail(name, "a rerank right after: %s", problem)
-		return
-	}
-	r.pass(name, "chat → 502 upstream_endpoint_missing, warned for "+backendRerank+"; a rerank right after → 200")
+	r.pass(name, "chat → 400 endpoint_not_served by the reranker's endpoints list, never sent")
 }
 
 // checkRerankToChat sends a rerank request to the chat model, whose server serves no
-// rerank: vLLM's chat server has no rerank route, and llama-server started without
-// --reranking answers 501. The gateway answers 502 upstream_endpoint_missing, neutral
-// for the circuit — a chat right after is served.
+// rerank — vLLM's chat server has no rerank route, and llama-server started without
+// --reranking answers 501: the chat model's endpoints list leaves rerank out, so the
+// gateway refuses it, 400 endpoint_not_served, before any server.
 func (r *run) checkRerankToChat() {
 	const name = "rerank-to-chat"
-	chatBackends := []string{backendFirst}
-	if r.o.twoBackends() {
-		chatBackends = append(chatBackends, backendSecond)
-	}
 	resp, err := r.post(r.key, "/v1/rerank", idRerankToChat, rerankBody(modelChat, relevanceDocuments))
-	warned, problem := r.endpointMissing(resp, err, idRerankToChat, epRerank, chatBackends...)
-	if problem != "" {
+	if problem := r.notListed(resp, err, idRerankToChat, "/v1/rerank"); problem != "" {
 		r.fail(name, "rerank to %s: %s", modelChat, problem)
 		return
 	}
-	if problem := r.servedAfter(idChatAfter, "/v1/chat/completions", r.chatBody(modelChat, false, nil)); problem != "" {
-		r.fail(name, "a chat right after: %s", problem)
-		return
-	}
-	r.pass(name, "rerank → 502 upstream_endpoint_missing, warned for "+warned+"; a chat right after → 200")
+	r.pass(name, "rerank → 400 endpoint_not_served by the chat model's endpoints list, never sent")
 }
 
-// endpointMissing checks the answer to a request whose deployment's server lacks the
-// endpoint: 502 upstream_endpoint_missing, and the gateway's warning for the request
-// naming the endpoint and one of backends. It returns the backend warned for, or what
-// is wrong.
-func (r *run) endpointMissing(resp *response, err error, id, endpoint string, backends ...string) (warned, problem string) {
+// notListed checks the answer to request id for an endpoint at path the model's
+// endpoints list leaves out: 400 endpoint_not_served with the list's message, and a
+// log line showing it never reached a backend. "" when so, else what is wrong.
+func (r *run) notListed(resp *response, err error, id, path string) string {
 	if err != nil {
-		return "", err.Error()
-	}
-	if problem := openAIError(resp, http.StatusBadGateway, "upstream_endpoint_missing"); problem != "" {
-		return "", problem + r.upstreamHint(id)
-	}
-	line, err := r.gw.logs.wait(r.ctx, msg(endpointMissingWarning, "kaiak.request.id", id, "kaiak.endpoint", endpoint))
-	if err != nil {
-		return "", fmt.Sprintf("no warning %q for the request: %v", endpointMissingWarning, err)
-	}
-	warned = fmt.Sprint(line["kaiak.backend.id"])
-	if !slices.Contains(backends, warned) {
-		return "", fmt.Sprintf("the warning names backend %s, want %s", warned, strings.Join(backends, " or "))
-	}
-	return warned, ""
-}
-
-// servedAfter sends body to path and requires 200: the deployment that lacked another
-// endpoint was not taken out of service. "" when served, else what is wrong.
-func (r *run) servedAfter(id, path string, body map[string]any) string {
-	resp, err := r.post(r.key, path, id, body)
-	switch {
-	case err != nil:
 		return err.Error()
-	case resp.status != http.StatusOK:
-		return fmt.Sprintf("status %d, want 200: %s%s", resp.status, clip(string(resp.body)), r.upstreamHint(id))
+	}
+	if problem := openAIError(resp, http.StatusBadRequest, "endpoint_not_served"); problem != "" {
+		return problem
+	}
+	var e struct {
+		Error struct{ Message string }
+	}
+	_ = json.Unmarshal(resp.body, &e)
+	if want := "The model is not served on " + path + ": its configured endpoints do not include this API."; e.Error.Message != want {
+		return fmt.Sprintf("message %q, want %q", e.Error.Message, want)
+	}
+	if notSent, err := r.notSent(id); err != nil || !notSent {
+		return fmt.Sprintf("refused, but the log line shows it routed to a backend (%v)", err)
 	}
 	return ""
 }

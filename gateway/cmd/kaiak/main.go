@@ -183,7 +183,7 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 		Metrics: g.usage, Logger: logger})
 	drain := server.NewDrain()
 	apiHandler := server.NewAPI(g.holder, drain, server.NewBodyBudget(s.bodyMemory), g.providers, limiter, g.router,
-		g.missingEndpoints, recorder, g.ops, logger)
+		recorder, g.ops, logger)
 	api, err := server.Listen("api", s.listenAddr, apiHandler, s.client, logger)
 	if err != nil {
 		return err
@@ -255,23 +255,21 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 // graph is the part of the dependency graph both modes share: what serves requests
 // and what an applied config reaches, built before the first config is loaded.
 type graph struct {
-	holder           *config.Holder
-	providers        *provider.Registry
-	registry         *metric.Registry
-	router           *routing.Router
-	ops              *metrics.Ops
-	usage            *metrics.UsageMetrics
-	modelChecker     *provider.ModelChecker
-	missingEndpoints *server.MissingEndpoints
-	applier          *config.Applier
+	holder       *config.Holder
+	providers    *provider.Registry
+	registry     *metric.Registry
+	router       *routing.Router
+	ops          *metrics.Ops
+	usage        *metrics.UsageMetrics
+	modelChecker *provider.ModelChecker
+	applier      *config.Applier
 }
 
 // newGraph builds the shared graph; reported is the build version the metrics report
 // (reportedVersion), and logExport, when not nil, has its counts in the metrics.
 func newGraph(s settings, reported string, lookupEnv func(string) (string, bool), logger *slog.Logger,
 	logExport *otlplog.Exporter) *graph {
-	g := &graph{holder: &config.Holder{}, providers: provider.NewRegistry(lookupEnv), registry: metric.NewRegistry(),
-		missingEndpoints: server.NewMissingEndpoints()}
+	g := &graph{holder: &config.Holder{}, providers: provider.NewRegistry(lookupEnv), registry: metric.NewRegistry()}
 	metrics.RegisterBuildInfo(g.registry, reported)
 	if logExport != nil {
 		metrics.RegisterLogExport(g.registry, logExport.Counts)
@@ -281,14 +279,13 @@ func newGraph(s settings, reported string, lookupEnv func(string) (string, bool)
 	g.ops = metrics.NewOps(g.registry, g.router, circuits, g.holder)
 	g.usage = metrics.NewUsageMetrics(g.registry, g.holder)
 	g.modelChecker = provider.NewModelChecker(g.providers, logger)
-	// Every applied config sets the backend caps routing enforces, the backends whose
-	// connection pools are kept and the deployments whose missing endpoints are kept,
-	// and has its deployments' models checked in the background.
+	// Every applied config sets the backend caps routing enforces and the backends whose
+	// connection pools are kept, and has its deployments' models checked in the
+	// background.
 	g.applier = config.NewApplier(g.holder, logger, lookupEnv, func(load config.Load) {
 		if applied := load.Snapshot; applied != nil {
 			g.router.Configure(applied)
 			g.providers.Retain(applied.Backends)
-			g.missingEndpoints.Retain(applied.Models)
 			g.modelChecker.Check(applied)
 			if bodyCap := applied.MaxRequestBodyBytes; bodyCap > s.bodyMemory {
 				logger.Warn("max_request_body_bytes exceeds the body budget: bodies above the budget are refused as too large",

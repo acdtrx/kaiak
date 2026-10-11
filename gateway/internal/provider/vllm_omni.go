@@ -18,14 +18,6 @@ type vLLMOmni struct {
 	credential string
 }
 
-// vLLMOmniEndpoints: the media endpoints alone — speech, the speech batch and image
-// generation. vLLM-Omni serves vLLM's routes too, but its chat answers carry media the gateway would count only as
-// tokens (images on a diffusion model, speech on an Omni model with a talker stage),
-// so chat, completions, embeddings, Messages, Responses and rerank are not served: a
-// request for them to a model whose deployments are all vllm-omni is
-// endpoint_not_served (docs/specs/GATEWAY.md, Providers → Endpoint support).
-var vLLMOmniEndpoints = []Endpoint{AudioSpeech, AudioSpeechBatch, ImagesGenerations}
-
 // speechHeaders are the speech answer's headers relayed to the client: the word
 // timing a request asks for with word_timestamps, which vLLM-Omni sends only there
 // (docs/specs/GATEWAY.md, Providers: headers). They hold the input's words: never
@@ -46,18 +38,18 @@ func (m *vLLMOmni) header() http.Header {
 	return bearer(m.credential)
 }
 
-// Send implements Provider. Every endpoint vllm-omni serves is a core endpoint:
-// vLLM-Omni registers its speech, speech batch and image routes on every server,
-// whatever model it loaded, so its answer to a path it does not have can only mean a
-// wrong base_url (docs/specs/GATEWAY.md, Providers → An endpoint missing from a
-// server). Speech and the speech batch run vLLM's model check, whose 404 names the
-// model ("The model `…` does not exist."); image generation answers a model it does
-// not run with a 400 mismatch, and a model with no diffusion stage with a 503
-// (imageReadings). A speech answer relays its word timing (speechHeaders).
+// Send implements Provider. vLLM-Omni registers its speech, speech batch and image
+// routes on every server, whatever model it loaded, so its answer to a path it does
+// not have means a wrong base_url (docs/specs/GATEWAY.md, Providers → A path the
+// server does not have). Speech and the speech batch run vLLM's model check, whose 404
+// names the model ("The model `…` does not exist."); image generation answers a model
+// it does not run with a 400 mismatch (imageReadings), and an image request to a model
+// with no diffusion stage with a 503, a backend 5xx as any server error. A speech
+// answer relays its word timing (speechHeaders).
 func (m *vLLMOmni) Send(ctx context.Context, req *Request) (Response, error) {
 	call := wireCall{
 		backend: m.backend, client: m.client, url: m.url(req.Endpoint.Path()), header: m.header(),
-		missingModel: missingModelNamedOrCoded("model_not_found"), unknownPath: m.unknownPath, core: true,
+		missingModel: missingModelNamedOrCoded("model_not_found"), unknownPath: m.unknownPath,
 	}
 	switch req.Endpoint {
 	case AudioSpeech:
@@ -69,14 +61,10 @@ func (m *vLLMOmni) Send(ctx context.Context, req *Request) (Response, error) {
 }
 
 // imageReadings are image generation's answers read beyond the 404: its 400 "Model
-// mismatch" naming the deployment's model, the model missing (imageModelMismatch),
-// and its 503 "No diffusion stage", the endpoint missing (noDiffusionStage). Any other
-// 400 is the caller's, relayed; any other 503 the backend's 5xx.
+// mismatch" naming the deployment's model, the model missing (imageModelMismatch).
+// Any other 400 is the caller's, relayed.
 func (m *vLLMOmni) imageReadings() []answerReading {
-	return []answerReading{
-		{status: http.StatusBadRequest, code: CodeModelMissing, read: m.imageModelMismatch},
-		{status: http.StatusServiceUnavailable, code: CodeEndpointMissing, read: m.noDiffusionStage},
-	}
+	return []answerReading{{status: http.StatusBadRequest, code: CodeModelMissing, read: m.imageModelMismatch}}
 }
 
 // unknownPath: vLLM-Omni is vLLM's FastAPI app, which answers a path it has no route
@@ -94,15 +82,6 @@ func (m *vLLMOmni) unknownPath(answer []byte) bool {
 func (m *vLLMOmni) imageModelMismatch(answer []byte, model string) bool {
 	e, ok := readErrorAnswer(answer)
 	return ok && model != "" && strings.HasPrefix(e.Message, "Model mismatch: request specifies '"+model+"'")
-}
-
-// noDiffusionStage is the reading of a 503 on image generation: a model with no
-// diffusion stage — a speech model — answers "No diffusion stage found in multi-stage
-// pipeline.", the endpoint missing from its server, not the server failing
-// (docs/specs/GATEWAY.md, Providers → An endpoint missing from a server).
-func (m *vLLMOmni) noDiffusionStage(answer []byte, _ string) bool {
-	e, ok := readErrorAnswer(answer)
-	return ok && e.Message == "No diffusion stage found in multi-stage pipeline."
 }
 
 // probe reads the models list, which names what requests carry: vLLM's list for a

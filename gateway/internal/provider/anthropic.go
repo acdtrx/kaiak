@@ -16,9 +16,6 @@ type anthropic struct {
 	credential string
 }
 
-// anthropicEndpoints: Messages and its token counting.
-var anthropicEndpoints = []Endpoint{Messages, MessagesCountTokens}
-
 func newAnthropic(b *config.Backend, client *http.Client, credential string) backendModule {
 	return &anthropic{backend: b, client: client, credential: credential}
 }
@@ -56,7 +53,6 @@ func (m *anthropic) Send(ctx context.Context, req *Request) (Response, error) {
 	return sendWire(ctx, req, wireCall{
 		backend: m.backend, client: m.client, url: m.url(req.Endpoint.Path()), header: m.header(),
 		edits: edits, missingModel: anthropicModelMissing, unknownPath: m.unknownPath,
-		core: req.Endpoint == Messages,
 	})
 }
 

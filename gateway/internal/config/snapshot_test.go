@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"kaiak/internal/fixturetest"
 	"kaiak/internal/schemacheck"
 )
 
@@ -58,12 +59,13 @@ func mustReject(t *testing.T, doc string) *schemacheck.ValidationError {
 // minimalDoc is protocol/fixtures/config/valid/minimal.json with one field replaceable.
 func minimalDoc(backend string) string {
 	return `{
-  "format_version": 6,
+  "protocol_version": 7,
   "global": {},
   "backends": { "local": ` + backend + ` },
   "models": {
     "llama": {
       "deployments": [{ "backend": "local", "model": "llama" }],
+      "endpoints": ["chat_completions"],
       "metadata": {
         "context_length": 8192.0,
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }
@@ -228,53 +230,90 @@ func TestModelResolution(t *testing.T) {
 	}
 }
 
-// A model's endpoints list resolves as written and admits only what it names; a model
-// without one admits every endpoint.
+// A model's endpoints list resolves as written, and the model serves exactly what it
+// names.
 func TestModelEndpointsResolve(t *testing.T) {
 	s := parseFixture(t, "model-endpoints.json")
-	image := s.Models["image"]
-	if !slices.Equal(image.Endpoints, []EndpointName{EndpointImagesGenerations}) {
-		t.Errorf("image endpoints = %v", image.Endpoints)
-	}
-	if !image.Admits(EndpointImagesGenerations) || image.Admits(EndpointAudioSpeech) || image.Admits(EndpointChatCompletions) {
-		t.Error("image admits other than images_generations alone")
-	}
-	chat := s.Models["chat"]
-	if chat.Endpoints != nil {
-		t.Errorf("chat endpoints = %v, want none: the model has no list", chat.Endpoints)
-	}
-	for _, e := range endpointNames {
-		if !chat.Admits(EndpointName(e)) {
-			t.Errorf("chat, with no list, does not admit %s", e)
+	for name, want := range map[string][]EndpointName{
+		"image": {EndpointImagesGenerations},
+		"chat": {EndpointChatCompletions, EndpointCompletions, EndpointMessages, EndpointMessagesCountTokens,
+			EndpointResponses},
+	} {
+		m := s.Models[name]
+		if !slices.Equal(m.Endpoints, want) {
+			t.Errorf("%s endpoints = %v, want %v", name, m.Endpoints, want)
+		}
+		for _, e := range endpointNames {
+			if got := m.Admits(EndpointName(e)); got != slices.Contains(want, EndpointName(e)) {
+				t.Errorf("%s admits %s: %v, want %v", name, e, got, !got)
+			}
 		}
 	}
 }
 
-// The endpoint rule reports each listed endpoint none of the model's deployments' types
-// serves, at its index — an endpoint one deployment's type serves passes, whatever the
-// others serve — and judges no model with a deployment on an unknown backend.
-func TestEndpointNotServedIssues(t *testing.T) {
+// The backend-type rules: a model on one type reports each listed endpoint the type
+// does not serve, at its index; a model whose deployments' types differ reports that
+// once, at the backend of the first deployment whose type differs from the first
+// one's, and its list is not judged; a model with a deployment on an unknown backend
+// reports that alone.
+func TestBackendTypeIssues(t *testing.T) {
 	doc := minimalDoc(`{ "type": "vllm", "base_url": "http://x/v1" }`)
 	doc = strings.Replace(doc, `"backends": {`, `"backends": {
+    "local-b": { "type": "vllm", "base_url": "http://y/v1" },
     "omni": { "type": "vllm-omni", "base_url": "http://omni/v1" },`, 1)
-	doc = strings.Replace(doc, `"deployments": [{ "backend": "local", "model": "llama" }],`,
-		`"deployments": [{ "backend": "local", "model": "llama" }, { "backend": "omni", "model": "llama" }],
+	oneType := strings.Replace(doc, `"deployments": [{ "backend": "local", "model": "llama" }],
+      "endpoints": ["chat_completions"],`,
+		`"deployments": [{ "backend": "local", "model": "llama" }, { "backend": "local-b", "model": "llama" }],
       "endpoints": ["rerank", "responses_input_tokens", "audio_speech", "messages_count_tokens", "completions"],`, 1)
-	var got []string
-	for _, issue := range mustReject(t, doc).Issues {
-		got = append(got, issue.Code+" "+issue.Path)
+	issues := func(doc string) []string {
+		var got []string
+		for _, issue := range mustReject(t, doc).Issues {
+			got = append(got, issue.Code+" "+issue.Path)
+		}
+		return got
 	}
-	if want := []string{"endpoint-not-served /models/llama/endpoints/1"}; !slices.Equal(got, want) {
-		t.Errorf("issues %v, want %v", got, want)
+	if got, want := issues(oneType), []string{"endpoint-not-served /models/llama/endpoints/1",
+		"endpoint-not-served /models/llama/endpoints/2"}; !slices.Equal(got, want) {
+		t.Errorf("one type: issues %v, want %v", got, want)
 	}
 
-	unknown := strings.Replace(doc, `{ "backend": "omni", "model": "llama" }`, `{ "backend": "ghost", "model": "llama" }`, 1)
-	got = nil
-	for _, issue := range mustReject(t, unknown).Issues {
-		got = append(got, issue.Code+" "+issue.Path)
+	typesDiffer := strings.Replace(oneType, `{ "backend": "local-b", "model": "llama" }`,
+		`{ "backend": "local-b", "model": "llama" }, { "backend": "omni", "model": "llama" }, { "backend": "local", "model": "other" }`, 1)
+	if got, want := issues(typesDiffer), []string{"deployment-types-differ /models/llama/deployments/2/backend"}; !slices.Equal(got, want) {
+		t.Errorf("types differ: issues %v, want %v", got, want)
 	}
-	if want := []string{"deployment-backend-unknown /models/llama/deployments/1/backend"}; !slices.Equal(got, want) {
-		t.Errorf("issues %v, want %v", got, want)
+
+	unknown := strings.Replace(typesDiffer, `{ "backend": "local-b", "model": "llama" }`, `{ "backend": "ghost", "model": "llama" }`, 1)
+	if got, want := issues(unknown), []string{"deployment-backend-unknown /models/llama/deployments/1/backend"}; !slices.Equal(got, want) {
+		t.Errorf("unknown backend: issues %v, want %v", got, want)
+	}
+}
+
+// The shared fixtures of the backend-type rules report at the paths the contract
+// names, the types differing once per model, a model on an unknown backend that rule
+// alone (docs/specs/CONTROL-PROTOCOL.md, Config → semantic rules).
+func TestBackendTypeFixturePaths(t *testing.T) {
+	for file, want := range map[string][]string{
+		"deployment-types-differ.json": {"deployment-types-differ /models/chat/deployments/2/backend"},
+		"endpoints-types-differ.json":  {"deployment-types-differ /models/chat/deployments/1/backend"},
+		"endpoints-not-served.json": {"endpoint-not-served /models/image/endpoints/1",
+			"endpoint-not-served /models/reranker/endpoints/1"},
+		"endpoints-deployment-backend-unknown.json": {"deployment-backend-unknown /models/tts/deployments/1/backend"},
+	} {
+		t.Run(file, func(t *testing.T) {
+			_, err := Parse(fixturetest.Read(t, filepath.Join(fixturesDir, "invalid", file)))
+			invalid, ok := errors.AsType[*schemacheck.ValidationError](err)
+			if !ok {
+				t.Fatalf("want a validation error, got %v", err)
+			}
+			var got []string
+			for _, issue := range invalid.Issues {
+				got = append(got, issue.Code+" "+issue.Path)
+			}
+			if !slices.Equal(got, want) {
+				t.Errorf("issues %v, want %v", got, want)
+			}
+		})
 	}
 }
 
@@ -428,7 +467,7 @@ func TestRejectionsOutsideTheFixtures(t *testing.T) {
 	for _, tc := range []struct {
 		name, doc, code string
 	}{
-		{"not JSON", `{"format_version": 1`, schemacheck.CodeSyntax},
+		{"not JSON", `{"protocol_version": 7`, schemacheck.CodeSyntax},
 		{"trailing data", valid + ` {}`, schemacheck.CodeSyntax},
 		{"null field", minimalDoc(`{ "type": "openai-compatible", "base_url": "http://x/v1", "api_key_env": null }`), schemacheck.CodeSchema},
 		{"null collection", strings.Replace(valid, `"groups": { "me": {} }`, `"groups": null`, 1), schemacheck.CodeSchema},

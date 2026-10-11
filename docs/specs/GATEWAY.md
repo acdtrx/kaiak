@@ -771,7 +771,7 @@ own, and a client sending repeats is broken either way.
     endpoints only: a server that serves Messages or Responses gets a type of its
     own (A type per server, below).
 - **Endpoint support** (settled 2026-10-06; rerank 2026-10-08) is fixed per backend
-  type, by its module — no config field. What each type serves, checked against the
+  type — no config field. What each type serves, checked against the
   servers on 2026-10-06 (vLLM 0.30.0's route list; llama.cpp builds b9917 and
   b10802, each route called;
   OpenAI's and Anthropic's API references; Microsoft Foundry's Claude page;
@@ -795,8 +795,8 @@ own, and a client sending repeats is broken either way.
 
   Config validation holds every model's list to its type's set (Model metadata →
   Endpoints per model); a model's deployments share its type, so routing filters
-  none of them by endpoint. A type gains an endpoint when its server does, in its
-  module. Rejected: a per-backend `endpoints` config field — the
+  none of them by endpoint. A type gains an endpoint when its server does.
+  Rejected: a per-backend `endpoints` config field — the
   operator would declare what the type already knows, and `openai-compatible`
   servers that serve more deserve their own type. **Rerank** (settled 2026-10-08):
   `vllm` and `llama-server` serve it; OpenAI, Azure OpenAI, Anthropic and Claude in
@@ -827,12 +827,13 @@ own, and a client sending repeats is broken either way.
   the endpoints its server answers and refuses the rest before routing. It never
   widens the set: a listed endpoint the model's type does not serve is a config
   error (`endpoint-not-served`).
-  **The table is shared data** (settled 2026-10-11): config validation reads it on
-  both halves, so `protocol/fixtures/backend-types/<type>.json` lists each type's
-  endpoints (`endpoints`), and the modules, the gateway's config check and
-  `kaiak-control` are each tested against it. The modules stay the source of what
-  routing does; a type gaining an endpoint changes its module, its fixture and both
-  halves' config tables in one change. Rejected: the table in the config schema —
+  **The table is shared data** (settled 2026-10-11): it is held as one table per
+  half, which that half's config validation reads, and
+  `protocol/fixtures/backend-types/<type>.json` lists each type's endpoints
+  (`endpoints`); both tables are tested against those fixtures, and the gateway's
+  against the table above. A type gaining an endpoint changes its fixture and both
+  halves' tables in one change, and its module when the module needs code for it.
+  Rejected: the table in the config schema —
   JSON Schema cannot relate a model's list to its backend type, so code would read
   it as data all the same.
 - **A module per backend type over one OpenAI wire core** (settled 2026-09-29): each

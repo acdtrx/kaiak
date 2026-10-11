@@ -50,36 +50,38 @@ var (
 // omniConfig is a config with a vllm-omni backend "omni" and an openai-compatible
 // backend "oc", both on the fake backend at fakeURL; the models "tts" (on omni as
 // omniSpeechModel; output limit default 300, ceiling 1000; $1 and $2 per million input
-// and output tokens; no endpoints list), "painter" (on omni as omniImageModel, its
-// endpoints list images_generations alone) and "chat" (on oc);
+// and output tokens; every endpoint vllm-omni serves), "painter" (on omni as
+// omniImageModel, its endpoints list images_generations alone) and "chat" (on oc,
+// every endpoint openai-compatible serves);
 // global.max_images_per_request 4 and global.max_speech_batch_items 3; the group w with
 // the key k of hash, the group audio (audio_seconds_out_per_minute 5) with audioKey and
 // the group images (images_per_minute 5) with imagesKey — each allowed every model.
 func omniConfig(fakeURL, hash string) map[string]any {
-	model := func(backend, deployed string) map[string]any {
+	model := func(backend, typ, deployed string) map[string]any {
 		return map[string]any{
 			"deployments": []any{map[string]any{"backend": backend, "model": deployed}},
+			"endpoints":   everyEndpoint(typ),
 			"metadata": map[string]any{"context_length": 8192,
 				"capabilities": map[string]any{"streaming": true, "tools": false, "vision": false, "reasoning": false}},
 		}
 	}
-	tts := model("omni", omniSpeechModel)
+	tts := model("omni", "vllm-omni", omniSpeechModel)
 	tts["output_limit"] = map[string]any{"default": 300, "ceiling": 1000}
 	tts["prices"] = []any{map[string]any{"effective_from": "2026-01-01", "tiers": []any{map[string]any{
 		"above_input_tokens": 0, "usd_per_million": map[string]any{"tokens_in": 1, "tokens_out": 2}}}}}
-	painter := model("omni", omniImageModel)
+	painter := model("omni", "vllm-omni", omniImageModel)
 	painter["endpoints"] = []any{"images_generations"}
 	limited := func(typ string) map[string]any {
 		return map[string]any{"allowed_models": []any{"*"}, "limits": []any{map[string]any{"type": typ, "value": 5}}}
 	}
 	return map[string]any{
-		"format_version": 6,
-		"global":         map[string]any{"max_images_per_request": 4, "max_speech_batch_items": 3},
+		"protocol_version": 7,
+		"global":           map[string]any{"max_images_per_request": 4, "max_speech_batch_items": 3},
 		"backends": map[string]any{
 			"omni": map[string]any{"type": "vllm-omni", "base_url": fakeURL + "/v1"},
 			"oc":   backendEntry("openai-compatible", fakeURL),
 		},
-		"models": map[string]any{"tts": tts, "painter": painter, "chat": model("oc", backendChatModel)},
+		"models": map[string]any{"tts": tts, "painter": painter, "chat": model("oc", "openai-compatible", backendChatModel)},
 		"groups": map[string]any{
 			"w":      map[string]any{"allowed_models": []any{"*"}},
 			"audio":  limited("audio_seconds_out_per_minute"),
@@ -404,9 +406,8 @@ func TestSpeech(t *testing.T) {
 		}
 	})
 
-	// A model on vllm-omni lists the media endpoints, and no other; a model whose
-	// endpoints list narrows them lists what it names (Client API → model entry; Model
-	// metadata → Endpoints per model).
+	// A model's entry lists what its endpoints list names (Client API → model entry;
+	// Model metadata → Endpoints per model).
 	t.Run("the model entry lists the media endpoints", func(t *testing.T) {
 		for model, want := range map[string]string{
 			"tts":     "audio_speech,audio_speech_batch,images_generations",
@@ -422,20 +423,14 @@ func TestSpeech(t *testing.T) {
 		}
 	})
 
-	// A model whose deployments are all vllm-omni serves no chat or embeddings — its
-	// server's chat would generate media no media limit sees — an image model whose
-	// endpoints list names images_generations alone takes no speech, which its server
-	// would answer only after a whole image generation, and what the media endpoints
-	// refuse, the caps included, is refused before any backend, in OpenAI's shape,
-	// naming the member at fault (Client API → errors; Model metadata → Endpoints per
-	// model).
+	// A model serves what its endpoints list names alone — a speech model no chat, a
+	// chat model no speech, an image model whose list names images_generations alone no
+	// speech, which its server would answer only after a whole image generation — and
+	// what the media endpoints refuse, the caps included, is refused before any
+	// backend, in OpenAI's shape, naming the member at fault (Client API → errors;
+	// Model metadata → Endpoints per model).
 	t.Run("refused before any backend", func(t *testing.T) {
 		before := len(fake.Requests())
-		// Why each endpoint_not_served case is refused, as its message says: painter's
-		// endpoints list leaves the endpoint out; no deployment of tts or chat serves it.
-		const listed, unserved = "its configured endpoints do not include this API.", "none of its backends serves this API."
-		reasons := map[string]string{"chat to a speech model": unserved, "speech to a chat model": unserved,
-			"embeddings to an image model": listed, "speech to an image model": listed, "a speech batch to an image model": listed}
 		for _, c := range []struct {
 			name, path string
 			body       any
@@ -470,8 +465,8 @@ func TestSpeech(t *testing.T) {
 				if r.StatusCode != http.StatusBadRequest || e["code"] != c.code || e["param"] != c.param {
 					t.Errorf("%d %s, want 400 %s on %v", r.StatusCode, r.body, c.code, c.param)
 				}
-				if want := "The model is not served on " + c.path + ": " + reasons[c.name]; c.code == "endpoint_not_served" &&
-					e["message"] != want {
+				want := "The model is not served on " + c.path + ": its configured endpoints do not include this API."
+				if c.code == "endpoint_not_served" && e["message"] != want {
 					t.Errorf("message %q, want %q", e["message"], want)
 				}
 			})

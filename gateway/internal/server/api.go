@@ -33,18 +33,17 @@ type API struct {
 }
 
 // NewAPI returns the client API handler, admitting requests and counting them in
-// flight through drain, holding request bodies within bodies, checking limits through limiter, choosing deployments through
-// router (leaving out those missing remembers not serving the endpoint),
-// sending requests upstream through providers and settling their usage through
-// recorder; every request is observed in ops. The
-// holder must hold a snapshot before the handler serves: the API listener starts only
-// once a config is loaded.
+// flight through drain, holding request bodies within bodies, checking limits through
+// limiter, choosing deployments through router, sending requests upstream through
+// providers and settling their usage through recorder; every request is observed in
+// ops. The holder must hold a snapshot before the handler serves: the API listener
+// starts only once a config is loaded.
 func NewAPI(holder *config.Holder, drain *Drain, bodies *BodyBudget, providers *provider.Registry,
-	limiter *limits.Limiter, router *routing.Router, missing *MissingEndpoints, recorder *accounting.Recorder,
+	limiter *limits.Limiter, router *routing.Router, recorder *accounting.Recorder,
 	ops *metrics.Ops, logger *slog.Logger) *API {
 	keys := newKeyInFlight()
 	a := &API{holder: holder, logger: logger, ops: ops, drain: drain, keys: keys,
-		stages: newPipeline(drain, keys, bodies, providers, limiter, router, missing, recorder, logger), mux: http.NewServeMux()}
+		stages: newPipeline(drain, keys, bodies, providers, limiter, router, recorder), mux: http.NewServeMux()}
 
 	for _, ep := range bodyEndpoints {
 		a.mux.HandleFunc("POST "+ep.route(), func(w http.ResponseWriter, r *http.Request) {

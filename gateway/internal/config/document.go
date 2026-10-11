@@ -11,12 +11,12 @@ package config
 // OutputLimit).
 
 type document struct {
-	FormatVersion int64                 `json:"format_version"`
-	Global        globalDoc             `json:"global"`
-	Backends      map[string]backendDoc `json:"backends"`
-	Models        map[string]modelDoc   `json:"models"`
-	Groups        map[string]groupDoc   `json:"groups"`
-	Keys          map[string]keyDoc     `json:"keys"`
+	ProtocolVersion int64                 `json:"protocol_version"`
+	Global          globalDoc             `json:"global"`
+	Backends        map[string]backendDoc `json:"backends"`
+	Models          map[string]modelDoc   `json:"models"`
+	Groups          map[string]groupDoc   `json:"groups"`
+	Keys            map[string]keyDoc     `json:"keys"`
 }
 
 type globalDoc struct {
@@ -68,7 +68,6 @@ type backendDoc struct {
 	MaxInFlight         *int64 `json:"max_in_flight"`
 }
 
-// modelDoc: a nil Endpoints is an omitted list (the schema refuses an empty one).
 type modelDoc struct {
 	Deployments []deploymentDoc `json:"deployments"`
 	Endpoints   []EndpointName  `json:"endpoints"`

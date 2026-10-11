@@ -9,7 +9,6 @@ import (
 
 	"kaiak/internal/auth"
 	"kaiak/internal/config"
-	"kaiak/internal/provider"
 )
 
 // The model endpoints answer from the declared config alone; field names and shapes
@@ -26,9 +25,8 @@ type modelEntry struct {
 	ContextLength    int64               `json:"context_length"`
 	Capabilities     config.Capabilities `json:"capabilities"`
 	ReasoningEfforts []string            `json:"reasoning_efforts"`
-	// Endpoints are the body endpoints some deployment of the model serves, narrowed to
-	// its endpoints list when it has one, by name, sorted: which API reaches the model.
-	// Information from the config, not health.
+	// Endpoints is the model's endpoints list, by name, sorted: which API reaches the
+	// model. Information from the config, not health.
 	Endpoints []string `json:"endpoints"`
 }
 
@@ -66,24 +64,15 @@ func newModelEntry(m *config.Model) modelEntry {
 	}
 }
 
-// servedEndpoints names the body endpoints m serves — those its endpoints list admits
-// that at least one of its deployments serves — sorted (docs/specs/GATEWAY.md, Client
-// API → /v1/models).
+// servedEndpoints names the endpoints m serves — its endpoints list — sorted
+// (docs/specs/GATEWAY.md, Client API → /v1/models).
 func servedEndpoints(m *config.Model) []string {
-	names := []string{}
-	for _, ep := range bodyEndpoints {
-		if servesEndpoint(m, ep.api) {
-			names = append(names, ep.name)
-		}
+	names := make([]string, len(m.Endpoints))
+	for i, e := range m.Endpoints {
+		names[i] = string(e)
 	}
 	slices.Sort(names)
 	return names
-}
-
-// servesEndpoint reports whether m serves api: its endpoints list admits api, and at
-// least one of its deployments serves it — what servingDeployments finds non-nil.
-func servesEndpoint(m *config.Model, api provider.Endpoint) bool {
-	return m.Admits(api.Name()) && slices.ContainsFunc(m.Deployments, func(d config.Deployment) bool { return serves(d, api) })
 }
 
 // anthropicModelEntry is one model as the Anthropic-shaped list describes it
@@ -123,14 +112,14 @@ func newAnthropicModelEntry(m *config.Model) anthropicModelEntry {
 	}
 }
 
-// servesMessages reports whether m serves Messages: the models an Anthropic client can
-// use.
+// servesMessages reports whether m serves Messages, its endpoints list naming it: the
+// models an Anthropic client can use.
 func servesMessages(m *config.Model) bool {
-	return servesEndpoint(m, provider.Messages)
+	return m.Admits(config.EndpointMessages)
 }
 
 // answerAnthropicModels answers the Anthropic-shaped model list and entry, over the
-// models the key may use that some deployment serves through Messages. A model without
+// models the key may use whose endpoints list names Messages. A model without
 // Messages is as unknown here as one that does not exist.
 func answerAnthropicModels(rq *request) *apiError {
 	if rq.endpoint == endpointGetModel {

@@ -49,10 +49,11 @@ func list(s string) string {
 func snapshot(t *testing.T, l limitsDoc) *config.Snapshot {
 	t.Helper()
 	model := `{ "deployments": [{ "backend": "b", "model": "x" }],
+      "endpoints": ["chat_completions"],
       "metadata": { "context_length": 32768,
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } } }`
 	doc := `{
-  "format_version": 6,
+  "protocol_version": 7,
   "global": {` + graceField(l.grace) + ` "limits": ` + list(l.global) + ` },
   "backends": { "b": { "type": "openai-compatible", "base_url": "http://localhost:1/v1" } },
   "models": { "m1": ` + strings.Replace(model, `"metadata"`, `"prices": [{ "effective_from": "2020-01-01",
@@ -769,10 +770,11 @@ func TestBillabilityComesFromTheRequestsOwnSnapshot(t *testing.T) {
 func treeSnapshot(t *testing.T) *config.Snapshot {
 	t.Helper()
 	doc := `{
-  "format_version": 6,
+  "protocol_version": 7,
   "global": {},
   "backends": { "b": { "type": "openai-compatible", "base_url": "http://localhost:1/v1" } },
   "models": { "m1": { "deployments": [{ "backend": "b", "model": "x" }],
+    "endpoints": ["chat_completions"],
     "metadata": { "context_length": 32768,
       "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } } } },
   "groups": {
@@ -835,10 +837,11 @@ func chainSnapshot(t *testing.T, withWorkload bool) *config.Snapshot {
 		workloadGroup = `, "workload": { "parent": "env", ` + limit + ` }`
 	}
 	doc := `{
-  "format_version": 6,
+  "protocol_version": 7,
   "global": {},
   "backends": { "b": { "type": "openai-compatible", "base_url": "http://localhost:1/v1" } },
   "models": { "m1": { "deployments": [{ "backend": "b", "model": "x" }],
+    "endpoints": ["chat_completions"],
     "metadata": { "context_length": 32768,
       "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } } } },
   "groups": {

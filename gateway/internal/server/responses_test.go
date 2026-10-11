@@ -23,10 +23,12 @@ func withResponsesModels(t *testing.T, g *testGateway) {
     "vl": { "type": "vllm", "base_url": "`+g.backend.URL()+`/v1" },`)
 		return replaceOnce(t, doc, `"models": { `, `"models": {
     "resp": { "deployments": [{ "backend": "ls", "model": "resp-back" }],
+      "endpoints": `+everyEndpoint(config.BackendLlamaServer)+`,
       "metadata": { "context_length": 8192,
         "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": true } },
       "output_limit": { "default": 64, "ceiling": 128 } },
     "resp-vllm": { "deployments": [{ "backend": "vl", "model": "resp-vllm-back" }],
+      "endpoints": `+everyEndpoint(config.BackendVLLM)+`,
       "metadata": { "context_length": 8192,
         "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": true } } },
     `)
@@ -390,6 +392,7 @@ func TestResponsesLimitRefusals(t *testing.T) {
     "ls": { "type": "llama-server", "base_url": "`+g.backend.URL()+`/v1" },`)
 		doc = replaceOnce(t, doc, `"models": { `, `"models": {
     "resp": { "deployments": [{ "backend": "ls", "model": "resp-back" }],
+      "endpoints": `+everyEndpoint(config.BackendLlamaServer)+`,
       "metadata": { "context_length": 8192,
         "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": true } } },
     `)

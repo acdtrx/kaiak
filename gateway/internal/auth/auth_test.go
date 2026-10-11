@@ -23,11 +23,12 @@ func testSnapshot(t *testing.T) *config.Snapshot {
 	model := func(name string) string {
 		return `"` + name + `": {
       "deployments": [{ "backend": "local", "model": "` + name + `" }],
+      "endpoints": ["chat_completions"],
       "metadata": { "context_length": 8192,
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } } }`
 	}
 	doc := `{
-  "format_version": 6,
+  "protocol_version": 7,
   "global": {},
   "backends": { "local": { "type": "openai-compatible", "base_url": "http://localhost:8000/v1" } },
   "models": { ` + model("open") + `, ` + model("secret") + ` },

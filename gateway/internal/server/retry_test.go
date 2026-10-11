@@ -37,6 +37,7 @@ func newRetryGateway(t *testing.T, first, second string, edit func(string) strin
 			`"local-b": { "type": "openai-compatible", "base_url": "`+other.URL()+`/v1" }`)
 		doc = replaceOnce(t, doc, `"pair": {`, `"retry": {
       "deployments": [{ "backend": "`+first+`", "model": "first" }, { "backend": "`+second+`", "model": "second" }],
+      "endpoints": `+everyEndpoint(config.BackendOpenAICompatible)+`,
       "metadata": { "context_length": 8192,
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } } },
     "pair": {`)
@@ -107,8 +108,6 @@ func TestRetrySucceedsOnTheOtherDeployment(t *testing.T) {
 		{name: "wrong model on the host", first: "local", fail: fakebackend.Reply{Status: 404,
 			Body: `{"object":"error","message":"The model ` + "`first`" + ` does not exist.","type":"NotFoundError","param":null,"code":404}`},
 			outcome: "upstream_model_missing", reason: "model_missing", records: 1},
-		{name: "no endpoint at the host's base_url", first: "local", fail: fakebackend.Reply{Status: 404, Body: "404 page not found\n"},
-			outcome: "upstream_path_missing", reason: "path_missing", records: 1},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			g, other := newRetryGateway(t, c.first, "local-b", nil)
@@ -182,10 +181,9 @@ func TestAttemptRules(t *testing.T) {
 		{"response timeout", code(provider.CodeResponseTimeout), 0, metrics.AttemptResponseTimeout, false, false, false},
 		{"credential refused", code(provider.CodeAuthFailed), 0, metrics.AttemptAuthFailed, true, true, false},
 		{"model missing", code(provider.CodeModelMissing), 0, metrics.AttemptModelMissing, true, false, false},
-		{"path missing", code(provider.CodePathMissing), 0, metrics.AttemptPathMissing, true, true, false},
-		// A missing endpoint is the deployment's alone (GATEWAY.md, Providers → An
-		// endpoint missing from a server: remembered per deployment).
-		{"endpoint missing", code(provider.CodeEndpointMissing), 0, metrics.AttemptEndpointMissing, true, false, false},
+		// The model's other deployments are identical instances (GATEWAY.md, Providers →
+		// A path the server does not have): not retried.
+		{"path missing", code(provider.CodePathMissing), 0, metrics.AttemptPathMissing, false, false, false},
 		{"failure event", event(provider.ErrorEventFailure), 0, metrics.AttemptServerError, true, false, false},
 		{"busy event", event(provider.ErrorEventBusy), 0, metrics.AttemptRateLimited, true, false, true},
 		{"caller event", event(provider.ErrorEventCaller), 0, metrics.AttemptClientError, false, false, false},

@@ -572,8 +572,10 @@ func crossHalfConfig(backendURL, refuserURL, downURL, cappedURL, evalHash, annHa
 		m["deployments"] = []any{map[string]any{"backend": backend, "model": backendChatModel}}
 		models[name] = m
 	}
+	models["agent"].(map[string]any)["endpoints"] = everyEndpoint("llama-server")
 	models["reranker"] = map[string]any{
 		"deployments": []any{map[string]any{"backend": "ls", "model": "qwen3-reranker-0.6b-q8_0.gguf"}},
+		"endpoints":   []any{"rerank"},
 		"metadata": map[string]any{"context_length": 8192,
 			"capabilities": map[string]any{"streaming": false, "tools": false, "vision": false, "reasoning": false}},
 		"prices": []any{map[string]any{"effective_from": "2026-01-01", "tiers": []any{map[string]any{
@@ -585,6 +587,7 @@ func crossHalfConfig(backendURL, refuserURL, downURL, cappedURL, evalHash, annHa
 		"tts-probe": {"omni-refuser", omniSpeechModel}, "painter-probe": {"omni-refuser", omniImageModel}} {
 		models[name] = map[string]any{
 			"deployments": []any{map[string]any{"backend": d[0], "model": d[1]}},
+			"endpoints":   everyEndpoint("vllm-omni"),
 			"metadata": map[string]any{"context_length": 8192,
 				"capabilities": map[string]any{"streaming": true, "tools": false, "vision": false, "reasoning": false}},
 		}
@@ -753,7 +756,7 @@ func watchTotals(t *testing.T, baseURL, token string) *totalsWatch {
 			return nil, err
 		}
 		req.Header.Set("Authorization", "Bearer "+token)
-		req.Header.Set("Kaiak-Protocol", strconv.Itoa(control.ProtocolVersion))
+		req.Header.Set("Kaiak-Protocol", strconv.Itoa(config.ProtocolVersion))
 		req.Header.Set("Kaiak-Instance", observerInstance)
 		return http.DefaultClient.Do(req)
 	}

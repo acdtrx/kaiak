@@ -21,6 +21,7 @@ const (
 	CodeGroupDepthExceeded               = "group-depth-exceeded"
 	CodeCountersExceeded                 = "counters-exceeded"
 	CodeDeploymentBackendUnknown         = "deployment-backend-unknown"
+	CodeDeploymentTypesDiffer            = "deployment-types-differ"
 	CodeEndpointNotServed                = "endpoint-not-served"
 	CodeAllowedModelUnknown              = "allowed-model-unknown"
 	CodeAllowedModelsWildcardMixed       = "allowed-models-wildcard-mixed"

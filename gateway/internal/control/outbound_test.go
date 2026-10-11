@@ -42,7 +42,7 @@ func (w *walker) usageBatch(v any, path string) {
 func (w *walker) status(v any, path string) {
 	w.Object(v, path, map[string]schemacheck.Field{
 		"instance":            {Required: true, Check: w.instance()},
-		"protocol_version":    {Required: true, Check: w.Const(ProtocolVersion)},
+		"protocol_version":    {Required: true, Check: w.Const(config.ProtocolVersion)},
 		"state":               {Required: true, Check: w.Enum(states)},
 		"started_at":          {Required: true, Check: w.timestamp()},
 		"applied_config_hash": {Required: true, Check: schemacheck.Nullable(w.configHash())},

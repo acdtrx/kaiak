@@ -73,17 +73,16 @@ func TestVLLMOmniURLCredentialAndProbe(t *testing.T) {
 }
 
 // What the vllm-omni module reads in a backend's answer (docs/specs/GATEWAY.md,
-// Providers → Wrong model on a host, Wrong path to a host, An endpoint missing from a
-// server). Every endpoint it serves is a core endpoint, and Send reads whatever
-// endpoint it is sent as one:
+// Providers → Wrong model on a host, A path the server does not have), the same
+// whatever endpoint it is sent:
 //   - FastAPI's {"detail": "Not Found"} is upstream_path_missing, its error naming the
 //     URL and not the backend's text; any other server's unknown-path answer is
 //     relayed;
 //   - vLLM's model check's 404 naming the deployment's model is
 //     upstream_model_missing, in both of vLLM's shapes; one naming another model is
 //     relayed;
-//   - a 405 and a 501 are relayed: there is no endpoint beyond the core ones, and no
-//     mode a 501 says the server was not started in.
+//   - a 405 and a 501 are relayed: vLLM-Omni's signature is the 404 alone, and a 5xx
+//     is the backend's.
 func TestVLLMOmniAnswerReadings(t *testing.T) {
 	// relayed: the answer is not the deployment's failure; the provider returns it.
 	const relayed = Code("")
@@ -152,12 +151,10 @@ func TestVLLMOmniAnswerReadings(t *testing.T) {
 	}
 }
 
-// Image generation's answers the module reads by their message (docs/specs/GATEWAY.md,
-// Providers → Wrong model on a host, An endpoint missing from a server): its 400
-// "Model mismatch" quoting the deployment's model first is the model missing — one
-// quoting another model, or the deployment's only as the server's name, is not; its
-// 503 "No diffusion stage found in multi-stage pipeline." is the endpoint missing, and
-// no other message is.
+// Image generation's answer the module reads by its message (docs/specs/GATEWAY.md,
+// Providers → Wrong model on a host): its 400 "Model mismatch" quoting the
+// deployment's model first is the model missing — one quoting another model, or the
+// deployment's only as the server's name, is not.
 func TestVLLMOmniImageReadings(t *testing.T) {
 	m := &vLLMOmni{}
 	mismatch := func(requested, running string) string {
@@ -179,26 +176,15 @@ func TestVLLMOmniImageReadings(t *testing.T) {
 			t.Errorf("model %q, %s: model missing %v, want %v", c.model, c.answer, got, c.want)
 		}
 	}
-
-	for answer, want := range map[string]bool{
-		`{"error":{"message":"No diffusion stage found in multi-stage pipeline.","type":"Service Unavailable","code":503}}`: true,
-		`{"error":{"message":"Engine is overloaded.","type":"Service Unavailable","code":503}}`:                             false,
-		`{"error":{"message":"No diffusion stage found","type":"Service Unavailable","code":503}}`:                          false,
-		`Service Unavailable`: false,
-	} {
-		if got := m.noDiffusionStage([]byte(answer), "Qwen/Qwen3-TTS"); got != want {
-			t.Errorf("%s: endpoint missing %v, want %v", answer, got, want)
-		}
-	}
 }
 
 // Image generation's own answers through Send (docs/specs/GATEWAY.md, Providers →
-// Wrong model on a host, An endpoint missing from a server): its 400 "Model mismatch"
-// quoting the deployment's model is upstream_model_missing, and its 503 "No diffusion
-// stage" upstream_endpoint_missing naming the URL — neither carrying the backend's
-// text; a mismatch quoting another model and any other 400 are relayed whole, as the
-// caller's; any other 503 is relayed for the pipeline to answer as the backend's 5xx.
-// Speech and the speech batch read neither: there the same answers are relayed.
+// Wrong model on a host, A path the server does not have): its 400 "Model mismatch"
+// quoting the deployment's model is upstream_model_missing, not carrying the
+// backend's text; a mismatch quoting another model and any other 400 are relayed
+// whole, as the caller's; a 503 — "No diffusion stage", an image request to a speech
+// model, among them — is relayed for the pipeline to answer as the backend's 5xx.
+// Speech and the speech batch read none of them: there the same answers are relayed.
 func TestVLLMOmniImageAnswersThroughSend(t *testing.T) {
 	// relayed: the answer is not the deployment's failure; the provider returns it.
 	const relayed = Code("")
@@ -218,7 +204,7 @@ func TestVLLMOmniImageAnswersThroughSend(t *testing.T) {
 		{"another model's mismatch", http.StatusBadRequest, mismatch("backend-model-2"), relayed},
 		{"caller's 400", http.StatusBadRequest,
 			`{"error":{"message":"n: Input should be less than or equal to 10","type":"BadRequestError","param":null,"code":400}}`, relayed},
-		{"no diffusion stage", http.StatusServiceUnavailable, noDiffusion, CodeEndpointMissing},
+		{"no diffusion stage", http.StatusServiceUnavailable, noDiffusion, relayed},
 		{"another 503", http.StatusServiceUnavailable,
 			`{"error":{"message":"The engine is overloaded.","type":"Service Unavailable","param":null,"code":503}}`, relayed},
 	}
@@ -246,9 +232,6 @@ func TestVLLMOmniImageAnswersThroughSend(t *testing.T) {
 				perr, ok := errors.AsType[*Error](err)
 				if !ok || perr.Code != want {
 					t.Fatalf("%v, want %s", err, want)
-				}
-				if want == CodeEndpointMissing && !strings.Contains(err.Error(), s.srv.URL+"/v1/images/generations") {
-					t.Errorf("error %q: want the URL named", err)
 				}
 				for _, text := range []string{"mismatch", "Qwen3-TTS", "diffusion", "pipeline"} {
 					if strings.Contains(err.Error(), text) {

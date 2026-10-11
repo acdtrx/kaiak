@@ -13,7 +13,7 @@ import (
 // shapes, the missing-model rules the modules choose from, and the whole-word match.
 
 // maxPeekedAnswer is the most of an error answer read to tell the deployment's failure
-// (a missing model, an unknown path, a missing endpoint) from an answer to relay;
+// (a missing model, an unknown path) from an answer to relay;
 // error answers are small.
 const maxPeekedAnswer = 64 << 10
 

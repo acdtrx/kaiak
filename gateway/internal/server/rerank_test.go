@@ -12,8 +12,8 @@ import (
 )
 
 // withRerankModels swaps in the test config, with global.max_rerank_documents 3, plus
-// rerankers on the fake backend: "reranker" on a vllm backend "vl" (as
-// "reranker-back"), "reranker-ls" on a llama-server backend "ls" (as
+// rerankers on the fake backend, each listing rerank alone: "reranker" on a vllm
+// backend "vl" (as "reranker-back"), "reranker-ls" on a llama-server backend "ls" (as
 // "reranker-ls-back"), both priced at $2 per million input tokens, and "reranker-slow"
 // on a vllm backend "vl-slow" whose response timeout is 150 ms and first-event
 // timeout 5 s.
@@ -27,6 +27,7 @@ func withRerankModels(t *testing.T, g *testGateway) {
     "vl-slow": { "type": "vllm", "base_url": "`+g.backend.URL()+`/v1", "response_timeout_ms": 150, "first_event_timeout_ms": 5000 },`)
 		model := func(name, backend, backendModel string) string {
 			return `"` + name + `": { "deployments": [{ "backend": "` + backend + `", "model": "` + backendModel + `" }],
+      "endpoints": ["rerank"],
       "metadata": { "context_length": 8192,
         "capabilities": { "streaming": false, "tools": false, "vision": false, "reasoning": false } },
       "prices": [{ "effective_from": "2020-01-01",
@@ -113,11 +114,10 @@ func TestRerankThroughThePipeline(t *testing.T) {
 }
 
 // What the gateway refuses on /v1/rerank it refuses before routing, in OpenAI's error
-// shape: a model none of whose deployments' types serves rerank, the owned fields'
-// mistakes, more documents than max_rerank_documents (counts named, never a
-// document), another method than POST. What is not owned passes: documents of any
-// shape, a stream member of any type (docs/specs/GATEWAY.md, Client API → owned
-// fields; Limits → batch caps).
+// shape: a model whose endpoints list leaves rerank out, the owned fields' mistakes,
+// more documents than max_rerank_documents (counts named, never a document), another
+// method than POST. What is not owned passes: documents of any shape, a stream member
+// of any type (docs/specs/GATEWAY.md, Client API → owned fields; Limits → batch caps).
 func TestRerankRefusals(t *testing.T) {
 	g := newTestGateway(t)
 	withRerankModels(t, g)
@@ -130,7 +130,7 @@ func TestRerankRefusals(t *testing.T) {
 	}{
 		{name: "no key", call: call{method: "POST", path: "/v1/rerank", body: `{"model":"reranker","query":"q","documents":["a"]}`},
 			status: 401, code: "missing_api_key"},
-		{name: "not served on openai-compatible", call: call{method: "POST", path: "/v1/rerank", key: workloadKey,
+		{name: "not listed", call: call{method: "POST", path: "/v1/rerank", key: workloadKey,
 			body: `{"model":"open","query":"q","documents":["a"]}`}, status: 400, code: "endpoint_not_served"},
 		{name: "not served on azure-openai", call: call{method: "POST", path: "/v1/rerank", key: workloadKey,
 			body: `{"model":"on-azure","query":"q","documents":["a"]}`}, status: 400, code: "endpoint_not_served"},
@@ -275,25 +275,6 @@ func TestRerankTakesTheNonStreamTimers(t *testing.T) {
 	for _, want := range []string{`no response within 150ms`, `"gen_ai.request.stream":false`} {
 		if !strings.Contains(logs, want) {
 			t.Errorf("log misses %s:\n%s", want, logs)
-		}
-	}
-}
-
-// /v1/models lists rerank for a model with a vllm or llama-server deployment, and not
-// for one whose deployments' types have no rerank API (docs/specs/GATEWAY.md, Client
-// API → /v1/models).
-func TestModelEntriesListRerank(t *testing.T) {
-	g := newTestGateway(t)
-	withRerankModels(t, g)
-	for model, want := range map[string]string{
-		"reranker":    `"endpoints":["chat_completions","completions","embeddings","messages","messages_count_tokens","rerank","responses"]`,
-		"reranker-ls": `"endpoints":["chat_completions","completions","embeddings","messages","messages_count_tokens","rerank","responses","responses_input_tokens"]`,
-		"open":        `"endpoints":["chat_completions","completions","embeddings"]`,
-		"on-azure":    `"endpoints":["chat_completions","completions","embeddings","responses"]`,
-	} {
-		w := do(t, g.h, call{method: "GET", path: "/v1/models/" + model, key: workloadKey})
-		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), want) {
-			t.Errorf("%s: %d %s, want %s", model, w.Code, w.Body.String(), want)
 		}
 	}
 }

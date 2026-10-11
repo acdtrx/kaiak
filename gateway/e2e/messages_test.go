@@ -5,7 +5,8 @@ package e2e
 // azure-anthropic backend — all on one fake backend — each at its module's URL with
 // its credential, streamed and not; the usage settles from Anthropic's report; the
 // gateway's own answers take Anthropic's shape; and a server lacking the endpoint is
-// failed over without opening its circuit.
+// answered as a path the server does not have, not retried, without opening its
+// circuit.
 
 import (
 	"encoding/json"
@@ -138,27 +139,18 @@ func TestMessages(t *testing.T) {
 		}
 	})
 
-	// The old server answers its framework's 404 on /v1/messages: the request fails
-	// over to vl, and old's circuit stays closed whatever the number of such answers.
-	t.Run("endpoint missing", func(t *testing.T) {
-		for i := range 8 {
-			id := fmt.Sprintf("old-%d", i)
-			r := g.postMessages(t, "/v1/messages", key, id, map[string]any{"model": "pair", "max_tokens": 8, "messages": []any{}})
-			if r.StatusCode != http.StatusOK {
-				t.Fatalf("%d %s", r.StatusCode, r.body)
+	// The old server answers its framework's 404 on /v1/messages: a request routed
+	// there is answered upstream_path_missing in Anthropic's shape, not retried.
+	t.Run("path missing", func(t *testing.T) {
+		pairPathMissing(t, g, old, "/v1/messages", 8, func(t *testing.T, id string) *response {
+			return g.postMessages(t, "/v1/messages", key, id, map[string]any{"model": "pair", "max_tokens": 8, "messages": []any{}})
+		}, func(t *testing.T, r *response) string {
+			typ, code := anthropicErrorOf(t, r)
+			if typ != "api_error" {
+				t.Errorf("error type %s, want api_error", typ)
 			}
-			g.settled(t, id)
-		}
-		// After its first 404 the old server is left out for the endpoint for a probe
-		// interval: one request, not one per client request.
-		if n := len(old.Requests()); n != 1 {
-			t.Fatalf("the old server got %d requests, want 1", n)
-		}
-		if v := g.metric(t, `kaiak_circuit_state{kaiak_backend_id="old",kaiak_deployment_model="Qwen/Qwen3-8B",kaiak_circuit_state="open"}`); v != 0 {
-			t.Errorf("old's circuit open = %v, want closed", v)
-		}
-		g.logs.wait(t, "the endpoint-missing warning", msg("the deployment's server does not serve an endpoint its type serves",
-			"kaiak.backend.id", "old", "kaiak.deployment.model", "Qwen/Qwen3-8B", "kaiak.endpoint", "messages"))
+			return code
+		})
 	})
 
 	t.Run("Anthropic-shaped model list", func(t *testing.T) {

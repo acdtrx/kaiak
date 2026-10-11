@@ -174,40 +174,37 @@ func (r *run) checkModels() {
 		ids = append(ids, m.ID)
 		endpoints[m.ID] = m.Endpoints
 	}
-	want := []string{modelCapped, modelChat, modelRPM}
+	// Every model lists the endpoints its endpoints list names (buildConfig), sorted.
+	lists := map[string][]string{}
+	for _, m := range []string{modelCapped, modelChat, modelRPM} {
+		lists[m] = chatEndpoints(r.o.kind)
+	}
 	if r.o.embeddingsModel != "" {
-		want = append(want, modelEmbed)
+		lists[modelEmbed] = embedEndpoints
 	}
 	if r.o.reranker() {
-		want = append(want, modelRerank)
+		lists[modelRerank] = rerankEndpoints
 	}
-	// A media model lists the endpoints its endpoints list names.
-	mediaEndpoints := map[string][]string{}
 	if r.o.speechServer() {
-		mediaEndpoints[modelSpeech] = speechEndpoints
+		lists[modelSpeech] = speechEndpoints
 	}
 	if r.o.imageServer() {
-		mediaEndpoints[modelImage] = imageEndpoints
+		lists[modelImage] = imageEndpoints
 	}
-	mediaModels := slices.Sorted(maps.Keys(mediaEndpoints))
-	want = append(want, mediaModels...)
-	slices.Sort(want)
-	if !slices.Equal(ids, want) {
+	if want := slices.Sorted(maps.Keys(lists)); !slices.Equal(ids, want) {
 		r.fail("models", "lists %v, want %v", ids, want)
 		return
 	}
-	wantEndpoints := slices.Sorted(slices.Values(kindEndpoints[r.o.kind]))
-	if !slices.Equal(endpoints[modelChat], wantEndpoints) {
-		r.fail("models", "%s lists endpoints %v, want %s's %v", modelChat, endpoints[modelChat], r.o.kind, wantEndpoints)
-		return
-	}
-	detail := "lists " + strings.Join(ids, ", ") + "; endpoints " + strings.Join(endpoints[modelChat], ", ")
-	for _, m := range mediaModels {
-		if !slices.Equal(endpoints[m], mediaEndpoints[m]) {
-			r.fail("models", "%s lists endpoints %v, want its endpoints list %v", m, endpoints[m], mediaEndpoints[m])
+	detail := "lists " + strings.Join(ids, ", ")
+	for _, m := range ids {
+		want := slices.Sorted(slices.Values(lists[m]))
+		if !slices.Equal(endpoints[m], want) {
+			r.fail("models", "%s lists endpoints %v, want its endpoints list %v", m, endpoints[m], want)
 			return
 		}
-		detail += "; " + m + ": " + strings.Join(mediaEndpoints[m], ", ")
+		if m != modelCapped && m != modelRPM {
+			detail += "; " + m + ": " + strings.Join(want, ", ")
+		}
 	}
 	r.pass("models", detail)
 }

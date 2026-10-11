@@ -17,6 +17,16 @@ real servers. Bring every operator-facing doc to phase B.
   - **`llama-server` kind:** a transcription of WAV, FLAC and MP3, the measured
     seconds, the refusal of an unmeasurable upload;
   - every config it writes at protocol 7 with lists;
+  - **the "not found" reading against real servers** (added at step 3 review): since
+    step 3 the kit's wrong-endpoint checks are refusals by the list, never sent, so
+    nothing exercises a real server's route-missing answer any more. Each kind gets
+    one deliberately wrong model, expecting `502 upstream_path_missing`, no retry,
+    the circuit untouched:
+    - `vllm`: a chat model whose list names `embeddings` (vLLM has no such route for
+      it);
+    - `llama-server` and `vllm-omni`: a backend with a wrong `base_url` (their servers
+      register every route whatever the model, so only a wrong path gets the
+      answer);
   - its self-test.
 - `docs/testing/LIVE-BACKENDS.md`: the new checks; serving an ASR model on vLLM and on
   llama-server; Qwen-Image-Edit on vLLM-Omni.

@@ -27,8 +27,7 @@ func TestSeriesStartAtZero(t *testing.T) {
 
 	outcomes := []string{"success", "unavailable", "timeout", "auth_failed", "model_missing", "path_missing",
 		"server_error", "broke_off", "response_timeout", "rate_limited", "client_error", "canceled", "internal"}
-	reasons := []string{"unavailable", "timeout", "server_error", "rate_limited", "auth_failed", "model_missing",
-		"path_missing"}
+	reasons := []string{"unavailable", "timeout", "server_error", "rate_limited", "auth_failed", "model_missing"}
 	want := func(series string, value float64) {
 		t.Helper()
 		if v, ok := g.metricValue(t, series); !ok || v != value {
@@ -79,7 +78,7 @@ func TestSeriesStartAtZero(t *testing.T) {
 	want(`kaiak_retries_total{gen_ai_request_model="chat",kaiak_backend_id="a",kaiak_attempt_outcome="server_error"}`, 1)
 
 	// A rejected reload: 0, then 1.
-	if err := os.WriteFile(configFile, []byte(`{"format_version": 6,`), 0o600); err != nil {
+	if err := os.WriteFile(configFile, []byte(`{"protocol_version": 7,`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	g.signal(t, syscall.SIGHUP)

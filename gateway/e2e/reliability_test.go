@@ -31,7 +31,7 @@ const reliableModel = backendChatModel
 // 100 ms. tune edits the document before it is written.
 func reliabilityConfig(aURL, bURL, hash string, tune func(cfg map[string]any)) map[string]any {
 	cfg := map[string]any{
-		"format_version": 6,
+		"protocol_version": 7,
 		"global": map[string]any{
 			"circuit": map[string]any{"failure_threshold": 2, "probe_interval_ms": 100},
 		},
@@ -52,13 +52,15 @@ func reliabilityConfig(aURL, bURL, hash string, tune func(cfg map[string]any)) m
 	return cfg
 }
 
-// reliableChatModel is a chat model deployed on a, then b.
+// reliableChatModel is a chat model deployed on a, then b, listing every endpoint
+// openai-compatible serves.
 func reliableChatModel() map[string]any {
 	return map[string]any{
 		"deployments": []any{
 			map[string]any{"backend": "a", "model": reliableModel},
 			map[string]any{"backend": "b", "model": reliableModel},
 		},
+		"endpoints": everyEndpoint("openai-compatible"),
 		"metadata": map[string]any{"context_length": 8192,
 			"capabilities": map[string]any{"streaming": true, "tools": false, "vision": false, "reasoning": false}},
 		"output_limit": map[string]any{"default": 64, "ceiling": 128},

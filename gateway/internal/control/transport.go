@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 
+	"kaiak/internal/config"
 	"kaiak/internal/netfail"
 )
 
@@ -23,7 +24,7 @@ const (
 	headerInstance = "Kaiak-Instance"
 )
 
-var protocolHeaderValue = strconv.Itoa(ProtocolVersion)
+var protocolHeaderValue = strconv.Itoa(config.ProtocolVersion)
 
 // maxMessageBytes bounds one stream event and a usage ack: a config document is far
 // smaller.

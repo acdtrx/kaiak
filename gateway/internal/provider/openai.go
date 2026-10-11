@@ -16,10 +16,6 @@ type openAI struct {
 	credential string
 }
 
-// openAIEndpoints: OpenAI's API serves the OpenAI endpoints and Responses with its token
-// counting.
-var openAIEndpoints = []Endpoint{ChatCompletions, Completions, Embeddings, Responses, ResponsesInputTokens}
-
 func newOpenAI(b *config.Backend, client *http.Client, credential string) backendModule {
 	return &openAI{backend: b, client: client, credential: credential}
 }
@@ -38,7 +34,7 @@ func (m *openAI) header() http.Header {
 func (m *openAI) Send(ctx context.Context, req *Request) (Response, error) {
 	return sendWire(ctx, req, wireCall{
 		backend: m.backend, client: m.client, url: m.url(req.Endpoint.Path()), header: m.header(),
-		edits: []memberEdit{standardServiceTier(req.Endpoint)}, missingModel: missingModelCoded("model_not_found"), unknownPath: m.unknownPath, core: openAICore(req.Endpoint),
+		edits: []memberEdit{standardServiceTier(req.Endpoint)}, missingModel: missingModelCoded("model_not_found"), unknownPath: m.unknownPath,
 	})
 }
 

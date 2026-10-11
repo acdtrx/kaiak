@@ -270,7 +270,7 @@ func TestBootAppliesTheStreamsFirstConfigAndSendsTheProtocolHeaders(t *testing.T
 	if len(reqs) != 1 || reqs[0].Path != "/v1/stream" || reqs[0].Query != "" {
 		t.Fatalf("requests %+v, want one stream with no parameters", reqs)
 	}
-	for name, want := range map[string]string{"Authorization": "Bearer " + testToken, "Kaiak-Protocol": "6",
+	for name, want := range map[string]string{"Authorization": "Bearer " + testToken, "Kaiak-Protocol": "7",
 		"Kaiak-Instance": testInstance} {
 		if got := reqs[0].Header.Values(name); len(got) != 1 || got[0] != want {
 			t.Errorf("%s = %q, want %q", name, got, want)
@@ -529,7 +529,7 @@ func TestBootRetriesUntilTheControlPlaneComesUp(t *testing.T) {
 		},
 		"500": {
 			down: func(h *harness) { h.cp.Publish(configA(t)); h.cp.SetProtocol("") },
-			up:   func(h *harness) { h.cp.SetProtocol("6") },
+			up:   func(h *harness) { h.cp.SetProtocol("7") },
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -801,14 +801,14 @@ func TestRedirectsAreNotFollowedWithTheToken(t *testing.T) {
 func TestProtocolMismatchIsLoggedAsAnErrorAndRetried(t *testing.T) {
 	h := newHarness(t)
 	h.cp.Publish(configA(t))
-	h.cp.SetProtocol("5")
+	h.cp.SetProtocol("6")
 	c := h.client(nil)
 	if err := h.boot(c); err == nil {
 		t.Fatal("Boot applied a config from a control plane speaking another version")
 	}
 	out := h.logs.String()
 	if !strings.Contains(out, "level=ERROR") || !strings.Contains(out, "protocol version mismatch") ||
-		!strings.Contains(out, "gateway speaks 6") {
+		!strings.Contains(out, "gateway speaks 7") {
 		t.Errorf("mismatch not logged as an error:\n%s", out)
 	}
 
@@ -817,7 +817,7 @@ func TestProtocolMismatchIsLoggedAsAnErrorAndRetried(t *testing.T) {
 	h.mu.Unlock()
 	h.run(c)
 	<-h.delayed // retried and failed again, still waiting
-	h.cp.SetProtocol("6")
+	h.cp.SetProtocol("7")
 	h.wantLoad(load{config.TriggerControl, true})
 	if n := len(h.cp.Gets()); n < 3 {
 		t.Errorf("%d requests, want the boot's stream and at least two retries", n)

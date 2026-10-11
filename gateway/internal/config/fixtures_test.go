@@ -94,8 +94,8 @@ func TestBatchCapsRefuseZero(t *testing.T) {
 
 // The endpoint-not-served rule's table is the shared one: each backend type serves
 // what protocol/fixtures/backend-types/<type>.json lists in its endpoints, and the
-// fixtures name every type the table does. The provider modules and kaiak-control are
-// held to the same files.
+// fixtures name every type the table does. kaiak-control's table is held to the same
+// files.
 func TestEndpointSupportIsTheSharedTable(t *testing.T) {
 	dir := fixturetest.Dir("backend-types")
 	var types []string
@@ -218,5 +218,77 @@ func TestResolvedFixtures(t *testing.T) {
 				assertLimits(t, id, g.Limits, wantLimits)
 			}
 		})
+	}
+}
+
+// endpointColumns names the columns of the spec's endpoint support table
+// (docs/specs/GATEWAY.md, Providers → Endpoint support) by the endpoints they cover.
+var endpointColumns = map[string][]EndpointName{
+	"chat, completions, embeddings": {EndpointChatCompletions, EndpointCompletions, EndpointEmbeddings},
+	"messages":                      {EndpointMessages},
+	"messages_count_tokens":         {EndpointMessagesCountTokens},
+	"responses":                     {EndpointResponses},
+	"responses_input_tokens":        {EndpointResponsesInputTokens},
+	"rerank":                        {EndpointRerank},
+	"audio_speech, audio_speech_batch, images_generations": {EndpointAudioSpeech, EndpointAudioSpeechBatch,
+		EndpointImagesGenerations},
+}
+
+// Each type serves exactly what the spec's endpoint support table says, the table
+// names every type, every column is one endpointColumns knows, and every endpoint name
+// is in a column.
+func TestEndpointSupportFollowsTheSpec(t *testing.T) {
+	covered := map[EndpointName]bool{}
+	for _, es := range endpointColumns {
+		for _, e := range es {
+			covered[e] = true
+		}
+	}
+	for _, e := range endpointNames {
+		if !covered[EndpointName(e)] {
+			t.Errorf("%s is in no column of endpointColumns", e)
+		}
+	}
+
+	doc := fixturetest.Read(t, filepath.Join("..", "..", "..", "docs", "specs", "GATEWAY.md"))
+	var header []string
+	seen := map[BackendType]bool{}
+	for line := range strings.Lines(string(doc)) {
+		line = strings.TrimSpace(line)
+		cells := strings.Split(strings.Trim(line, "|"), "|")
+		for i := range cells {
+			cells[i] = strings.TrimSpace(cells[i])
+		}
+		switch {
+		case strings.HasPrefix(line, "| Type | chat, completions, embeddings |"):
+			header = cells
+			for _, column := range header[1:] {
+				if _, ok := endpointColumns[column]; !ok {
+					t.Errorf("the spec's column %q is not in endpointColumns", column)
+				}
+			}
+			continue
+		case header == nil:
+			continue
+		case !strings.HasPrefix(line, "|"):
+			header = nil
+			continue
+		case strings.HasPrefix(cells[0], "---"):
+			continue
+		}
+		typ := BackendType(strings.Trim(cells[0], "`"))
+		seen[typ] = true
+		for i, cell := range cells[1:] {
+			for _, e := range endpointColumns[header[i+1]] {
+				if want := strings.HasPrefix(cell, "yes"); typ.Serves(e) != want {
+					t.Errorf("%s serves %s: %v, the spec says %q", typ, e, typ.Serves(e), cell)
+				}
+			}
+		}
+	}
+	for typ := range endpointSupport {
+		if !seen[typ] {
+			t.Errorf("the spec's endpoint support table has no row for %s", typ)
+		}
 	}
 }

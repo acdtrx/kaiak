@@ -5,8 +5,9 @@ package e2e
 // an azure-openai backend — all on one fake backend — each at its module's URL with
 // its credential, streamed and not, always with store: false; the usage settles from
 // the response's report; the stateful parts of the API, hosted tools and limits are
-// refused in OpenAI's shape; token counting reaches only the types that have it; and a
-// server lacking the endpoint is failed over without opening its circuit.
+// refused in OpenAI's shape; token counting reaches only the models that list it; and
+// a server lacking the endpoint is answered as a path the server does not have, not
+// retried, without opening its circuit.
 
 import (
 	"fmt"
@@ -140,23 +141,12 @@ func TestResponses(t *testing.T) {
 		}
 	})
 
-	// The old server answers its framework's 404 on /v1/responses: the request fails
-	// over to vl, and old's circuit stays closed whatever the number of such answers.
-	t.Run("endpoint missing", func(t *testing.T) {
-		for i := range 8 {
-			id := fmt.Sprintf("old-%d", i)
-			r := g.post(t, "/v1/responses", key, id, map[string]any{"model": "pair", "input": "hi"})
-			if r.StatusCode != http.StatusOK {
-				t.Fatalf("%d %s", r.StatusCode, r.body)
-			}
-			g.settled(t, id)
-		}
-		if n := len(old.Requests()); n == 0 {
-			t.Fatal("the old server got no request: the scenario did not run")
-		}
-		if v := g.metric(t, `kaiak_circuit_state{kaiak_backend_id="old",kaiak_deployment_model="Qwen/Qwen3-8B",kaiak_circuit_state="open"}`); v != 0 {
-			t.Errorf("old's circuit open = %v, want closed", v)
-		}
+	// The old server answers its framework's 404 on /v1/responses: a request routed
+	// there is answered upstream_path_missing, not retried.
+	t.Run("path missing", func(t *testing.T) {
+		pairPathMissing(t, g, old, "/v1/responses", 8, func(t *testing.T, id string) *response {
+			return g.post(t, "/v1/responses", key, id, map[string]any{"model": "pair", "input": "hi"})
+		}, openAIErrorCode)
 	})
 	g.stop(t)
 }

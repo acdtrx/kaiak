@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 	"time"
 
@@ -19,9 +18,6 @@ import (
 // what the pipeline decides by endpoint. A request refused before it matched one has
 // none (nil).
 type endpoint struct {
-	// name is the endpoint's name on log lines (kaiak.endpoint); a body endpoint's is
-	// its API's (newBodyEndpoint).
-	name string
 	// path is a model endpoint's route as the client API documents it; a body
 	// endpoint's is its API's (route).
 	path string
@@ -91,11 +87,9 @@ var bodyEndpoints = []*endpoint{
 	newBodyEndpoint(provider.ImagesGenerations, endpoint{operation: "generate_content", outputType: "image"}),
 }
 
-// newBodyEndpoint is row e of the body endpoint passing api through, named as api is
-// (provider.Endpoint.Name): the name /v1/models lists and a model's endpoints list
-// takes.
+// newBodyEndpoint is row e of the body endpoint passing api through.
 func newBodyEndpoint(api provider.Endpoint, e endpoint) *endpoint {
-	e.body, e.api, e.name = true, api, string(api.Name())
+	e.body, e.api = true, api
 	return &e
 }
 
@@ -103,9 +97,9 @@ func newBodyEndpoint(api provider.Endpoint, e endpoint) *endpoint {
 // Anthropic's shape when asked for it: Anthropic's SDKs send anthropic-version on
 // every request, and OpenAI's never do.
 var (
-	endpointListModels = &endpoint{name: "list_models", path: "/v1/models", anthropicOnHeader: true}
-	endpointGetModel   = &endpoint{name: "get_model", path: "/v1/models/{model}", anthropicOnHeader: true}
-	endpointModelProps = &endpoint{name: "model_props", path: "/v1/models/{model}/props"}
+	endpointListModels = &endpoint{path: "/v1/models", anthropicOnHeader: true}
+	endpointGetModel   = &endpoint{path: "/v1/models/{model}", anthropicOnHeader: true}
+	endpointModelProps = &endpoint{path: "/v1/models/{model}/props"}
 )
 
 // route is the endpoint's route as the client API documents it — never a request's
@@ -151,10 +145,6 @@ type request struct {
 	// modelAllowed: model passed the model-access check, so it is a name the config
 	// declares (safe as a metric label value).
 	modelAllowed bool
-	// serving is the model as routing sees it for a body request: only its
-	// deployments whose backend serves the endpoint, which its endpoints list admits
-	// (servingDeployments).
-	serving *config.Model
 	// Set by the inbound stage: the raw body, kept for passthrough, the fields the
 	// gateway owns, and the input estimate every stage reads (limits, the output
 	// default, estimated records) — taken once, from the body as received.
@@ -270,16 +260,15 @@ func (rq *request) finish() {
 // routing — once per client request, whatever the attempts; their finisher is
 // registered before the attempt loop's, so it runs after settlement.
 func newPipeline(drain *Drain, keys *keyInFlight, bodies *BodyBudget, providers *provider.Registry, limiter *limits.Limiter,
-	router *routing.Router, missing *MissingEndpoints, recorder *accounting.Recorder, logger *slog.Logger) []stage {
-	loop := &attempts{router: router, recorder: recorder, providers: providers, budget: newRetryBudget(time.Now),
-		missing: missing, logger: logger}
+	router *routing.Router, recorder *accounting.Recorder) []stage {
+	loop := &attempts{router: router, recorder: recorder, providers: providers, budget: newRetryBudget(time.Now)}
 	return []stage{
 		{"admission", func(_ context.Context, rq *request) *apiError { return admit(drain, rq) }, everyRequest},
 		{"auth", authenticateKey, everyRequest},
 		{"key_concurrency", func(_ context.Context, rq *request) *apiError { return limitKeyConcurrency(rq, keys) }, everyRequest},
 		{"inbound", func(ctx context.Context, rq *request) *apiError { return readInbound(ctx, rq, bodies) }, bodyRequests},
 		{"model_access", authorizeModel, everyRequest},
-		{"endpoint_support", findServingDeployments, bodyRequests},
+		{"endpoint_list", checkEndpointListed, bodyRequests},
 		{"model_params", applyModelParams, bodyRequests},
 		{"limits", func(_ context.Context, rq *request) *apiError { return checkLimits(rq, limiter) }, bodyRequests},
 		{"attempts", loop.run, bodyRequests},
@@ -315,18 +304,14 @@ func authorizeModel(_ context.Context, rq *request) *apiError {
 	return nil
 }
 
-// findServingDeployments finds the deployments of a body request's model that serve
-// its endpoint. A model whose endpoints list leaves the endpoint out, or none of whose
-// backends serves it, can never answer: refused here, before limits spend anything on
-// it, each with its own message (docs/specs/GATEWAY.md, Providers → Endpoint support;
-// Model metadata → Endpoints per model).
-func findServingDeployments(_ context.Context, rq *request) *apiError {
-	m := rq.snapshot.Models[rq.model]
-	if !m.Admits(rq.endpoint.api.Name()) {
+// checkEndpointListed refuses a body request whose model's endpoints list leaves its
+// endpoint out: the model can never answer it, so it is refused here, before limits
+// spend anything on it (docs/specs/GATEWAY.md, Model metadata → Endpoints per model).
+// Every listed endpoint is one the model's deployments serve: they share one backend
+// type, which config validation holds the list to.
+func checkEndpointListed(_ context.Context, rq *request) *apiError {
+	if !rq.snapshot.Models[rq.model].Admits(rq.endpoint.api.Name()) {
 		return errEndpointNotListed(rq.endpoint)
-	}
-	if rq.serving = servingDeployments(m, rq.endpoint.api); rq.serving == nil {
-		return errEndpointNotServed(rq.endpoint)
 	}
 	return nil
 }

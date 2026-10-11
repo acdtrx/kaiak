@@ -15,11 +15,6 @@ type vLLM struct {
 	credential string
 }
 
-// vLLMEndpoints: vLLM serves the OpenAI endpoints, Messages with its token counting,
-// Responses — not responses/input_tokens (not in 0.30.0: a POST there lands on
-// GET /v1/responses/{id} and answers 405) — and rerank.
-var vLLMEndpoints = []Endpoint{ChatCompletions, Completions, Embeddings, Messages, MessagesCountTokens, Responses, Rerank}
-
 func newVLLM(b *config.Backend, client *http.Client, credential string) backendModule {
 	return &vLLM{backend: b, client: client, credential: credential}
 }
@@ -34,25 +29,32 @@ func (m *vLLM) header() http.Header {
 	return bearer(m.credential)
 }
 
-// Send implements Provider. vllm has no core endpoints: vLLM creates its routes from
-// the loaded model's tasks — no chat route on a reranker or embedding server, no
-// embeddings or rerank route on a chat server — so its answer to a path it does not
-// have names the model, not the URL, on every endpoint: the endpoint missing, not a
-// wrong base_url (docs/specs/GATEWAY.md, Providers → An endpoint missing from a
-// server).
+// Send implements Provider. vLLM creates its routes from the loaded model's tasks —
+// no chat route on a reranker or embedding server, no embeddings or rerank route on a
+// chat server — so its answer to a path it does not have is as often a list naming an
+// endpoint the model's server lacks as a wrong base_url: one reading either way
+// (docs/specs/GATEWAY.md, Providers → A path the server does not have).
 func (m *vLLM) Send(ctx context.Context, req *Request) (Response, error) {
 	return sendWire(ctx, req, wireCall{
 		backend: m.backend, client: m.client, url: m.url(req.Endpoint.Path()), header: m.header(),
 		missingModel: missingModelNamedOrCoded("model_not_found"), unknownPath: m.unknownPath,
+		readings: []answerReading{{status: http.StatusMethodNotAllowed, code: CodePathMissing, read: m.methodNotAllowed}},
 	})
 }
 
 // unknownPath: vLLM's web framework (FastAPI) answers a path it has no route for
-// with {"detail": "Not Found"}, and a POST to a route it has for another method only
-// with {"detail": "Method Not Allowed"} (a 405); vLLM's own 404s carry the OpenAI or
-// the Anthropic error shape.
+// with {"detail": "Not Found"}; vLLM's own 404s carry the OpenAI or the Anthropic
+// error shape.
 func (m *vLLM) unknownPath(answer []byte) bool {
-	return fastAPIDetail(answer, "Not Found", "Method Not Allowed")
+	return fastAPIDetail(answer, "Not Found")
+}
+
+// methodNotAllowed: FastAPI answers a POST to a route vLLM has for another method only
+// with a 405, {"detail": "Method Not Allowed"} — a path the server does not have for
+// the request (0.30.0's POST /v1/responses/input_tokens lands on
+// GET /v1/responses/{id}).
+func (m *vLLM) methodNotAllowed(answer []byte, _ string) bool {
+	return fastAPIDetail(answer, "Method Not Allowed")
 }
 
 // probe reads the models list, which names what requests carry (vLLM's

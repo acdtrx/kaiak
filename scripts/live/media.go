@@ -532,8 +532,9 @@ func (r *run) checkImageRefused() {
 	})
 }
 
-// checkChatToImage: vllm-omni serves the media endpoints alone, so chat to its model
-// is the gateway's own refusal, before any backend.
+// checkChatToImage: vllm-omni serves the media endpoints alone, so its model's
+// endpoints list cannot name chat, and chat to it is the gateway's own refusal, before
+// any backend.
 func (r *run) checkChatToImage() {
 	r.checkRefusals("chat-to-image", []refusalCase{{"chat to " + modelImage, "/v1/chat/completions", idChatToImage,
 		r.chatBody(modelImage, false, nil), http.StatusBadRequest, "endpoint_not_served", ""}})
@@ -624,7 +625,7 @@ func (r *run) checkImageToSpeech() {
 // checkSpeechToImage sends a speech request to the image model, whose endpoints list
 // leaves speech out: the gateway's own 400 endpoint_not_served, never sent to the
 // server — where vLLM-Omni would run a whole image generation before answering 400
-// (docs/specs/GATEWAY.md, Providers → An endpoint missing from a server).
+// (docs/specs/GATEWAY.md, Model metadata → Endpoints per model).
 func (r *run) checkSpeechToImage() {
 	r.checkRefusals("speech-to-image", []refusalCase{{"speech to " + modelImage, "/v1/audio/speech",
 		idSpeechToImage, speechBody(modelImage, nil), http.StatusBadRequest, "endpoint_not_served", ""}})
