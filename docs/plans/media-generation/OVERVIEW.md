@@ -27,6 +27,9 @@ this one is released. The research and the direction settled with the user are i
 - **kaiak measures speech audio length** (WAV and PCM) as it relays it.
 - **Live-test kit:** a `vllm-omni` kind with speech and image checks; docs for serving
   Qwen3-TTS and Qwen-Image behind kaiak.
+- **Endpoints per model** (step 13, added 2026-10-11): an optional per-model list
+  narrowing the endpoints a model serves, so a request a loaded model cannot serve is
+  refused before any backend.
 
 ## Out of scope
 
@@ -222,6 +225,11 @@ the step boundary. The release after the merge is the user's call.
   10. `STEP-10-live-kit-and-docs.md`
   11. `STEP-11-review-and-green.md`
   12. `STEP-12-live-run.md` — the DGX, with vLLM-Omni.
+- **Phase 5 — Endpoints per model** (step 13; added 2026-10-11, with the user, after
+  the live run). Green at the end.
+  13. `STEP-13-endpoints-per-model.md` — an optional per-model `endpoints` list that
+      narrows what a model serves: speech sent to an image model, chat to a
+      reranker, refused before any backend.
 
 Expected reds inside phase 1:
 - After step 1, both halves fail the new fixtures and the version checks.
