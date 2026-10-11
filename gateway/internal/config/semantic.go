@@ -74,11 +74,18 @@ func (c *semanticCheck) report(code, path, message string) {
 func (c *semanticCheck) model(name string, model modelDoc) {
 	path := schemacheck.Pointer("/models", name)
 
+	backendsKnown := true
 	for i, deployment := range model.Deployments {
 		if _, ok := c.doc.Backends[deployment.Backend]; !ok {
+			backendsKnown = false
 			c.report(CodeDeploymentBackendUnknown, schemacheck.Pointer(path, "deployments", i, "backend"),
 				fmt.Sprintf("backend %q is not defined", deployment.Backend))
 		}
+	}
+	// What a deployment on an unknown backend serves cannot be known: such a model
+	// reports deployment-backend-unknown alone.
+	if backendsKnown {
+		c.endpoints(model, path)
 	}
 
 	metadata := model.Metadata
@@ -110,6 +117,38 @@ func (c *semanticCheck) model(name string, model modelDoc) {
 			c.report(CodePriceDatesNotIncreasing, datePath, fmt.Sprintf("%s does not follow %s", price.EffectiveFrom, previous))
 		}
 		previous = price.EffectiveFrom
+	}
+}
+
+// endpointSupport is which client API endpoints each backend type serves, as the
+// endpoint-not-served rule reads it (docs/specs/GATEWAY.md, Providers → Endpoint
+// support). The provider modules hold the table routing follows; this copy, theirs
+// and kaiak-control's are each held to protocol/fixtures/backend-types/ (endpoints).
+var endpointSupport = map[BackendType][]EndpointName{
+	BackendOpenAI: {EndpointChatCompletions, EndpointCompletions, EndpointEmbeddings, EndpointResponses,
+		EndpointResponsesInputTokens},
+	BackendAzureOpenAI: {EndpointChatCompletions, EndpointCompletions, EndpointEmbeddings, EndpointResponses},
+	BackendVLLM: {EndpointChatCompletions, EndpointCompletions, EndpointEmbeddings, EndpointMessages,
+		EndpointMessagesCountTokens, EndpointResponses, EndpointRerank},
+	BackendVLLMOmni: {EndpointAudioSpeech, EndpointAudioSpeechBatch, EndpointImagesGenerations},
+	BackendLlamaServer: {EndpointChatCompletions, EndpointCompletions, EndpointEmbeddings, EndpointMessages,
+		EndpointMessagesCountTokens, EndpointResponses, EndpointResponsesInputTokens, EndpointRerank},
+	BackendAnthropic:        {EndpointMessages, EndpointMessagesCountTokens},
+	BackendAzureAnthropic:   {EndpointMessages, EndpointMessagesCountTokens},
+	BackendOpenAICompatible: {EndpointChatCompletions, EndpointCompletions, EndpointEmbeddings},
+}
+
+// endpoints checks each entry of the model's endpoints list is served by the backend
+// type of at least one of its deployments, all of whose backends are defined.
+func (c *semanticCheck) endpoints(model modelDoc, path string) {
+	for i, endpoint := range model.Endpoints {
+		served := slices.ContainsFunc(model.Deployments, func(d deploymentDoc) bool {
+			return slices.Contains(endpointSupport[BackendType(c.doc.Backends[d.Backend].Type)], endpoint)
+		})
+		if !served {
+			c.report(CodeEndpointNotServed, schemacheck.Pointer(path, "endpoints", i),
+				fmt.Sprintf("none of the model's deployments is on a backend type serving %s", endpoint))
+		}
 	}
 }
 

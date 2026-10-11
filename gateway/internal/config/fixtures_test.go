@@ -92,6 +92,37 @@ func TestBatchCapsRefuseZero(t *testing.T) {
 	}
 }
 
+// The endpoint-not-served rule's table is the shared one: each backend type serves
+// what protocol/fixtures/backend-types/<type>.json lists in its endpoints, and the
+// fixtures name every type the table does. The provider modules and kaiak-control are
+// held to the same files.
+func TestEndpointSupportIsTheSharedTable(t *testing.T) {
+	dir := fixturetest.Dir("backend-types")
+	var types []string
+	for _, file := range fixturetest.Files(t, dir) {
+		typ := strings.TrimSuffix(file, ".json")
+		types = append(types, typ)
+		var fixture struct {
+			Endpoints []EndpointName `json:"endpoints"`
+		}
+		if err := json.Unmarshal(fixturetest.Read(t, filepath.Join(dir, file)), &fixture); err != nil {
+			t.Fatal(err)
+		}
+		got := slices.Sorted(slices.Values(endpointSupport[BackendType(typ)]))
+		if want := slices.Sorted(slices.Values(fixture.Endpoints)); !slices.Equal(got, want) {
+			t.Errorf("%s serves %v, the shared table says %v", typ, got, want)
+		}
+	}
+	var tableTypes []string
+	for typ := range endpointSupport {
+		tableTypes = append(tableTypes, string(typ))
+	}
+	slices.Sort(types)
+	if slices.Sort(tableTypes); !slices.Equal(types, tableTypes) {
+		t.Errorf("fixtures for %v, table rows for %v", types, tableTypes)
+	}
+}
+
 // The config fixtures of protocol/fixtures/duplicate-members (the message ones run in
 // the control package): each is refused with duplicate-member at its path, before any
 // decoder reads it.

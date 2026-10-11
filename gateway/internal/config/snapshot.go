@@ -74,6 +74,24 @@ const (
 	BackendAzureAnthropic   BackendType = "azure-anthropic"
 )
 
+// EndpointName names a client API endpoint as /v1/models lists it and a model's
+// endpoints list names it (docs/specs/GATEWAY.md, Client API → /v1/models).
+type EndpointName string
+
+const (
+	EndpointChatCompletions      EndpointName = "chat_completions"
+	EndpointCompletions          EndpointName = "completions"
+	EndpointEmbeddings           EndpointName = "embeddings"
+	EndpointMessages             EndpointName = "messages"
+	EndpointMessagesCountTokens  EndpointName = "messages_count_tokens"
+	EndpointResponses            EndpointName = "responses"
+	EndpointResponsesInputTokens EndpointName = "responses_input_tokens"
+	EndpointRerank               EndpointName = "rerank"
+	EndpointAudioSpeech          EndpointName = "audio_speech"
+	EndpointAudioSpeechBatch     EndpointName = "audio_speech_batch"
+	EndpointImagesGenerations    EndpointName = "images_generations"
+)
+
 type LimitType string
 
 const (
@@ -327,8 +345,12 @@ type Circuit struct {
 
 type Model struct {
 	// Name is the public model name clients send.
-	Name             string
-	Deployments      []Deployment
+	Name        string
+	Deployments []Deployment
+	// Endpoints is the model's endpoints list: the client API endpoints it serves,
+	// narrowing those its deployments' backend types serve; nil when it has none
+	// (Admits).
+	Endpoints        []EndpointName
 	ContextLength    int64
 	Capabilities     Capabilities
 	ReasoningEfforts []string
@@ -339,6 +361,14 @@ type Model struct {
 	Queue  Queue
 	// MaxAttempts is the attempts one client request gets, the first included.
 	MaxAttempts int
+}
+
+// Admits reports whether the model's endpoints list admits endpoint e: every endpoint
+// when the model has no list, else those it names (docs/specs/GATEWAY.md, Model
+// metadata → Endpoints per model). Which of its deployments serve e is their backend
+// types' to say.
+func (m *Model) Admits(e EndpointName) bool {
+	return m.Endpoints == nil || slices.Contains(m.Endpoints, e)
 }
 
 type Deployment struct {
@@ -524,6 +554,7 @@ func resolveModel(name string, m modelDoc, backends map[string]*Backend) *Model 
 	model := &Model{
 		Name:             name,
 		Deployments:      make([]Deployment, len(m.Deployments)),
+		Endpoints:        m.Endpoints,
 		ContextLength:    m.Metadata.ContextLength,
 		Capabilities:     m.Metadata.Capabilities,
 		ReasoningEfforts: m.Metadata.ReasoningEfforts,

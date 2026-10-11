@@ -7,9 +7,10 @@ package e2e
 // the answer comes back in that shape under the public model name; the usage settles
 // from the reported prompt tokens, priced on tokens_in, or is estimated and flagged
 // when the answer reports none; the documents cap, TEI's texts and a model with no
-// rerank-serving deployment are refused before any backend; and a chat request to the
+// rerank-serving deployment are refused before any backend; a chat request to the
 // vllm reranker, whose server has no chat route, is answered as the endpoint missing,
-// neutral for the circuit.
+// neutral for the circuit; and the llama-server reranker, whose endpoints list names
+// rerank alone, takes no chat or embeddings, refused before its server.
 
 import (
 	"encoding/json"
@@ -41,6 +42,10 @@ var rerankBackends = []rerankBackend{
 		fakebackend.LlamaServerRerank, "model,object,results,usage", "index,relevance_score"},
 }
 
+// rerankListed is the scenario's reranker whose endpoints list names rerank alone: the
+// llama-server row's.
+const rerankListed = "rerank-llama"
+
 // rerankUnserved is the scenario's backend whose type does not serve rerank, on the
 // vllm row's fake backend, with the same reranker deployed.
 var rerankUnserved = scenarioBackend{name: "oc", typ: "openai-compatible", model: "rerank-oc", deployed: "Qwen/Qwen3-Reranker-0.6B"}
@@ -54,7 +59,8 @@ const vllmRouteMissing = `{"detail":"Not Found"}`
 const rerankPromptTokens = 40
 
 // rerankConfig is a config with each row's backend on its fake backend serving its
-// reranker alone, priced at $2 per million input tokens, rerankUnserved on the vllm
+// reranker alone, priced at $2 per million input tokens — the llama-server row's with
+// the endpoints list ["rerank"], the vllm row's with none — rerankUnserved on the vllm
 // row's fake, and global.max_rerank_documents 3 — all open to the key with hash in
 // group w.
 func rerankConfig(fakes map[string]*fakebackend.Backend, hash string) map[string]any {
@@ -73,6 +79,9 @@ func rerankConfig(fakes map[string]*fakebackend.Backend, hash string) map[string
 		backends[b.name] = backendEntry(b.typ, fakes[b.name].URL())
 		models[b.model] = reranker(b.scenarioBackend)
 	}
+	// llama-server registers every route whatever its model, so without the list a
+	// chat request would reach the reranker.
+	models[rerankListed].(map[string]any)["endpoints"] = []any{"rerank"}
 	return map[string]any{
 		"format_version": 6,
 		"global":         map[string]any{"max_rerank_documents": 3},
@@ -228,6 +237,35 @@ func TestRerank(t *testing.T) {
 		r := g.post(t, "/v1/rerank", key, "rerank-after-chat", rerankBody(t, b.model, rerankDocuments, nil))
 		if r.StatusCode != http.StatusOK || !strings.Contains(string(r.body), `"results"`) {
 			t.Errorf("rerank after the chat requests: %d %s, want 200 with results", r.StatusCode, r.body)
+		}
+	})
+
+	// The llama-server reranker's endpoints list names rerank alone: chat and
+	// embeddings to it — which its type serves, and its server would answer with
+	// nonsense — are refused 400 endpoint_not_served before any backend, and its entry
+	// lists rerank alone (docs/specs/GATEWAY.md, Model metadata → Endpoints per model).
+	t.Run("llama-server/chat to the listed reranker", func(t *testing.T) {
+		before := received()
+		for path, body := range map[string]any{
+			"/v1/chat/completions": chatBody(rerankListed, false, nil),
+			"/v1/embeddings":       map[string]any{"model": rerankListed, "input": "a panda"},
+		} {
+			r := g.post(t, path, key, "", body)
+			want := "The model is not served on " + path + ": its configured endpoints do not include this API."
+			if e, _ := r.json(t)["error"].(map[string]any); r.StatusCode != http.StatusBadRequest ||
+				openAIErrorCode(t, r) != "endpoint_not_served" || e["message"] != want {
+				t.Errorf("%s: %d %s, want 400 endpoint_not_served: %s", path, r.StatusCode, r.body, want)
+			}
+		}
+		if n := received() - before; n != 0 {
+			t.Errorf("the backends got %d requests for refused ones", n)
+		}
+		status, body := g.get(t, "/v1/models/"+rerankListed, key)
+		var entry struct {
+			Endpoints []string `json:"endpoints"`
+		}
+		if err := json.Unmarshal(body, &entry); status != http.StatusOK || err != nil || !slices.Equal(entry.Endpoints, []string{"rerank"}) {
+			t.Errorf("/v1/models/%s = %d %s, want the endpoints [rerank]", rerankListed, status, body)
 		}
 	})
 

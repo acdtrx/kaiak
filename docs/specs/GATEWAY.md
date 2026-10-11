@@ -34,7 +34,9 @@
   `anthropic` backends through Messages only, an OpenAI model through the OpenAI and
   Responses endpoints, a vLLM or llama-server model through the first four, a
   vLLM-Omni model through the last three — which of them its server answers
-  depends on the model it loaded (Providers → An endpoint missing from a server). Rejected: translating through Chat Completions — it loses each
+  depends on the model it loaded (Providers → An endpoint missing from a server),
+  and a model's `endpoints` list narrows them to what it serves (Model metadata →
+  Endpoints per model, settled 2026-10-11). Rejected: translating through Chat Completions — it loses each
   format's own fields (thinking signatures, cache markers, typed output items) and
   the backends serving self-hosted models already speak Chat Completions, Messages
   and Responses; translation stays
@@ -184,7 +186,7 @@
   | A rerank request names `texts`, TEI's rerank format, whatever its value (`param: "texts"`; Client API → owned fields: rerank; settled 2026-10-09) | 400 | `invalid_request_error` | `tei_format_unsupported` |
   | A tool type the backend would run, a shell running in the backend's container, `mcp_servers`, `container`, or a Responses `tool_choice` or input item naming such a tool (`param` names it; Client API → Hosted tools are refused) | 400 | `invalid_request_error` | `hosted_tool_unsupported` |
   | A Messages request to an `anthropic` or `azure-anthropic` deployment asks for a price option the gateway does not price (`param` names it; Providers → Standard price on Anthropic types) | 400 | `invalid_request_error` | `price_option_unsupported` |
-  | No deployment of the model is on a backend that serves the endpoint (Providers → Endpoint support) | 400 | `invalid_request_error` | `endpoint_not_served` |
+  | No deployment of the model is on a backend that serves the endpoint (Providers → Endpoint support; the message: `The model is not served on /v1/…: none of its backends serves this API.`), or the model's `endpoints` list leaves the endpoint out (settled 2026-10-11, Model metadata → Endpoints per model; the message: `The model is not served on /v1/…: its configured endpoints do not include this API.`) | 400 | `invalid_request_error` | `endpoint_not_served` |
   | Path matches no endpoint | 404 | `invalid_request_error` | `unknown_url` |
   | Known path, wrong method (`Allow` header set) | 405 | `invalid_request_error` | `method_not_allowed` |
   | Backend unreachable: connect refused or timed out, DNS, TLS, connection lost before the first event | 502 | `server_error` | `upstream_unavailable` |
@@ -398,15 +400,19 @@
   endpoints some deployment of the model serves (Providers → Endpoint support), by
   their metric names, sorted — how a client sees which API reaches the model; the
   media endpoints are `audio_speech`, `audio_speech_batch` and `images_generations`
-  (settled 2026-10-09). It is
-  information, derived from the config; it says nothing about health. It follows the
-  backend types, not the model a server loaded: a vLLM chat model lists `embeddings`
-  and `rerank`, a vLLM reranker `chat_completions`, a vLLM-Omni speech model
-  `images_generations` (`docs/BACKLOG.md`, Endpoints per model).
+  (settled 2026-10-09). A model with an `endpoints` list shows the endpoints it
+  lists (settled 2026-10-11; Model metadata → Endpoints per model) — `qwen-image`
+  with `["images_generations"]` lists that alone. It is
+  information, derived from the config; it says nothing about health. Without a list
+  it follows the backend types, not the model a server loaded: a vLLM chat model
+  lists `embeddings` and `rerank`, a vLLM reranker `chat_completions`, a vLLM-Omni
+  speech model `images_generations` — the list is how config makes it say what the
+  server serves.
 - **Anthropic-shaped model list** (settled 2026-10-06): `GET /v1/models` and
   `GET /v1/models/{id}` with an `anthropic-version` request header (Anthropic's SDKs
   always send it; OpenAI's never do) answer in Anthropic's shape, over the models
-  the key may use **whose `endpoints` include `messages`**:
+  the key may use **whose `endpoints` include `messages`** — the listed set, for a
+  model with an `endpoints` list (settled 2026-10-11):
   `{"data": [<entry>, …], "has_more": false, "first_id", "last_id"}` (the ids `null`
   for an empty list), an entry `{"type": "model", "id", "display_name", "created_at",
   …kaiak's fields}` with `display_name` the public name and `created_at`
@@ -439,6 +445,39 @@
   is translation; and the backends already own defaults. What an app wants to show
   as suggested settings belongs to the app. The cost: no gateway-side lever for a
   cloud model's settings (a lower reasoning effort, say) — the client sets them.
+- **Endpoints per model** (settled 2026-10-11, with the user): a model's optional
+  `endpoints` lists the client API endpoints it serves, by the names `/v1/models`
+  lists (`CONTROL-PROTOCOL.md`, Config). Absent, the model serves every endpoint some
+  deployment's backend type serves (Providers → Endpoint support), as before.
+  Present, it **narrows** that set:
+  - a request for any other endpoint answers `400 endpoint_not_served` — the existing
+    code, status and shape per API, with a message of its own saying the model's
+    configured endpoints do not include the API (the errors table; the model passed
+    its access check, so naming the endpoint leaks nothing) — before routing: no
+    backend request, no request-limit slot, no usage record (Request pipeline,
+    stage 2);
+  - a listed endpoint routes as before, among the deployments whose type serves it;
+  - `/v1/models` and the Anthropic-shaped list show the listed set (Client API).
+
+  Every entry must be served by at least one of the model's deployments' types
+  (`endpoint-not-served`, on both halves). It sits beside `deployments`, not in
+  `metadata`: the gateway enforces it, where metadata is information. It is for a
+  model whose server answers fewer endpoints than its type serves — routes follow
+  the model a server loaded (Providers → An endpoint missing from a server): a
+  vLLM-Omni image model, whose server runs a whole image generation for a speech
+  request before refusing it; a speech model; a reranker (llama-server answers chat
+  sent to one with `500` for an encoder reranker, nonsense for a causal one); an
+  embedding model. The endpoint-missing memory and readings stay for models
+  without a list, and for a server lacking an endpoint its list names (its version,
+  its flags) — a different case, not a second safety net. Rejected:
+  - a per-backend list — settled against on 2026-10-06 (Providers → Endpoint
+    support): a backend can serve several models (llama-server's router mode, one
+    `base_url`), and what a server answers follows the model it loaded, so the list
+    belongs to the model;
+  - a list that widens what a type serves: the type's module is what speaks an
+    endpoint — a list cannot teach `openai-compatible` Messages (A type per server);
+  - a default-deny list (no list, no endpoint): every model would need one before it
+    served anything, though the types give the right set for most models.
 
 ## Request pipeline
 
@@ -461,20 +500,23 @@ prompt logging later plug in:
    keep the raw bytes for passthrough, refuse what the gateway does not serve
    (stateful Responses fields, stored objects, hosted tools, audio it cannot
    measure, references the backend would fetch or read). Then the model-access check (Client API) — the second half of auth, which
-   needs the model — and whether any of the model's deployments is on a backend that
-   serves the endpoint (Providers → Endpoint support; none: `400
-   endpoint_not_served`, settled 2026-10-06 here, before limits — the pre-merge
-   review's L2: a request no deployment can answer spends no request slot and gets
-   the answer that says what is wrong), and the model's output limit (Model
+   needs the model — and whether the model serves the endpoint: its `endpoints`
+   list, when it has one, names it (Model metadata → Endpoints per model, settled
+   2026-10-11), and one of its deployments is on a backend that serves it (Providers
+   → Endpoint support; either missing: `400 endpoint_not_served`, settled
+   2026-10-06 here, before limits — the pre-merge review's L2: a request no
+   deployment can answer spends no request slot and gets the answer that says what
+   is wrong), and the model's output limit (Model
    metadata, Limits), which fixes the request's effective output limit before limits
    reserve it.
 3. **Limits** — check every applicable scope; reserve the output limit (below). The
    reservation settles in a request finisher that runs after accounting's settlement
    and reads its usage record (settled 2026-09-24).
 4. **Routing** — resolve alias → deployment, among the deployments whose backend
-   serves the endpoint (Providers → Endpoint support), less those found lacking it
-   within the probe interval (Providers → An endpoint missing from a server); queue
-   for a concurrency slot.
+   serves the endpoint (Providers → Endpoint support) — an endpoint the model's
+   `endpoints` list leaves out never gets here (stage 2) — less those found lacking
+   it within the probe interval (Providers → An endpoint missing from a server);
+   queue for a concurrency slot.
 5. **Provider** — send upstream. Every request passes through in its own format
    (principle 4); translating providers (Bedrock) are later plugs.
 6. **Accounting** — settle usage, compute cost, emit metrics and a usage record (from
@@ -608,6 +650,18 @@ own, and a client sending repeats is broken either way.
   itself. A type serves an endpoint; whether a server
   answers it also depends on the model it loaded and the flags it started with (An
   endpoint missing from a server, below).
+  **A model narrows its types' set** (settled 2026-10-11, with the user): its
+  `endpoints` list (Model metadata → Endpoints per model) keeps the endpoints its
+  server answers and refuses the rest before routing. It never widens the set: a
+  listed endpoint none of the model's deployments' types serves is a config error.
+  **The table is shared data** (settled 2026-10-11): config validation reads it on
+  both halves, so `protocol/fixtures/backend-types/<type>.json` lists each type's
+  endpoints (`endpoints`), and the modules, the gateway's config check and
+  `kaiak-control` are each tested against it. The modules stay the source of what
+  routing does; a type gaining an endpoint changes its module, its fixture and both
+  halves' config tables in one change. Rejected: the table in the config schema —
+  JSON Schema cannot relate a model's list to its deployments' backend types, so
+  code would read it as data all the same.
 - **A module per backend type over one OpenAI wire core** (settled 2026-09-29): each
   backend type is a module that is the provider for that type — its URL layout,
   credential, body edits, what its models list says, which error code means a
@@ -1092,7 +1146,11 @@ own, and a client sending repeats is broken either way.
       on a GB10), and only then finds no audio (the live run, 2026-10-09,
       `docs/plans/media-generation/STEP-12-live-run.md`). The gateway records it as
       nothing — no tokens, seconds or images, cost 0 — and no image limit sees it,
-      its output being speech (`docs/BACKLOG.md`, Endpoints per model).
+      its output being speech. So an image model's `endpoints` list names
+      `images_generations` alone, and a speech model's the two speech endpoints
+      (Model metadata → Endpoints per model, settled 2026-10-11): a request for the
+      other kind is then refused before its server, and the server's own answers
+      above reach only a model without a list.
   - **llama-server registers every route whatever its model or flags**
     (`tools/server/server.cpp`), so its `File Not Found` keeps its reading: a wrong
     path on the core endpoints. On its other endpoints it reads as the endpoint

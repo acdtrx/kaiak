@@ -22,6 +22,25 @@ export const MODEL_CAPABILITIES = ["streaming", "tools", "vision", "reasoning"] 
 
 export type ModelCapability = (typeof MODEL_CAPABILITIES)[number];
 
+// The client API endpoints by the names /v1/models lists them: what a model's endpoints
+// list may hold, as a value for apps that list or offer them; a test pins it to the
+// schema's endpoint enum.
+export const MODEL_ENDPOINTS = [
+  "chat_completions",
+  "completions",
+  "embeddings",
+  "messages",
+  "messages_count_tokens",
+  "responses",
+  "responses_input_tokens",
+  "rerank",
+  "audio_speech",
+  "audio_speech_batch",
+  "images_generations",
+] as const;
+
+export type ModelEndpoint = (typeof MODEL_ENDPOINTS)[number];
+
 // The limit types, as a value the counter bound counts by; a test pins it to the
 // schema's enum. Each counts one measure — requests, tokens, images generated, seconds of
 // audio generated (audio_seconds_out) or processed (audio_seconds_in), or USD — per
@@ -127,6 +146,9 @@ export interface CircuitSettings {
 
 export interface Model {
   deployments: Deployment[];
+  // Narrows the endpoints its deployments' backend types serve; absent = all of them.
+  // Each entry must be served by one deployment's type (endpoint-not-served).
+  endpoints?: ModelEndpoint[];
   metadata: ModelMetadata;
   output_limit?: { default: number; ceiling: number };
   queue?: QueueSettings;

@@ -60,8 +60,8 @@ func TestRoutingFollowsEndpointSupport(t *testing.T) {
 	w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey,
 		body: `{"model":"claude-only","messages":[]}`})
 	expectError(t, w, http.StatusBadRequest, "endpoint_not_served")
-	if msg := errorMessage(t, w); !strings.Contains(msg, "/v1/chat/completions") {
-		t.Errorf("message %q does not name the endpoint", msg)
+	if msg, want := errorMessage(t, w), "The model is not served on /v1/chat/completions: none of its backends serves this API."; msg != want {
+		t.Errorf("message %q, want %q", msg, want)
 	}
 	if n := len(g.backend.Requests()); n != 0 {
 		t.Errorf("%d requests reached the backend, want none", n)
@@ -176,6 +176,145 @@ func TestModelEntriesListServedEndpoints(t *testing.T) {
 		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), want) {
 			t.Errorf("%s: %d %s, want %s", model, w.Code, w.Body.String(), want)
 		}
+	}
+}
+
+// withEndpointLists is withSpeechModels with an anthropic backend "claude" on the fake
+// backend, painter's endpoints list narrowed to images_generations, and three models
+// with lists: "mixed-listed" on claude and local, listing chat_completions alone;
+// "claude-msg" on claude, listing messages; "claude-counts" on claude, listing
+// messages_count_tokens. tts keeps no list.
+func withEndpointLists(t *testing.T, g *testGateway) {
+	t.Helper()
+	withSpeechModels(t, g, func(doc string) string {
+		doc = replaceOnce(t, doc, `"backends": {`, `"backends": {
+    "claude": { "type": "anthropic", "base_url": "`+g.backend.URL()+`/v1", "api_key_env": "ANTHROPIC_KEY" },`)
+		doc = replaceOnce(t, doc, `"model": "Qwen/Qwen-Image" }],`, `"model": "Qwen/Qwen-Image" }], "endpoints": ["images_generations"],`)
+		meta := `"metadata": { "context_length": 8192,
+        "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } }`
+		return replaceOnce(t, doc, `"models": {`, `"models": {
+    "mixed-listed": { "deployments": [{ "backend": "claude", "model": "claude-x" }, { "backend": "local", "model": "mixed-local" }],
+      "endpoints": ["chat_completions"], `+meta+` },
+    "claude-msg": { "deployments": [{ "backend": "claude", "model": "claude-x" }], "endpoints": ["messages"], `+meta+` },
+    "claude-counts": { "deployments": [{ "backend": "claude", "model": "claude-x" }], "endpoints": ["messages_count_tokens"], `+meta+` },`)
+	})
+}
+
+// A model's endpoints list narrows what its deployments serve (docs/specs/GATEWAY.md,
+// Model metadata → Endpoints per model): an endpoint the list leaves out is refused
+// 400 endpoint_not_served before routing — though a deployment's type serves it — in
+// the endpoint's error shape, its message naming the route and the model's configured
+// endpoints, nothing sent and nothing settled; a listed endpoint routes as before, to
+// the deployments whose type serves it.
+func TestEndpointsListRefusesTheOthers(t *testing.T) {
+	g := newTestGateway(t)
+	withEndpointLists(t, g)
+
+	for _, c := range []struct{ id, path, body string }{
+		{"speech-to-painter", "/v1/audio/speech", `{"model":"painter","input":"Hello there"}`},
+		{"batch-to-painter", "/v1/audio/speech/batch", `{"model":"painter","items":[{"input":"Hello there"}]}`},
+		{"embeddings-to-mixed", "/v1/embeddings", `{"model":"mixed-listed","input":"a"}`},
+	} {
+		w := do(t, g.h, call{method: "POST", path: c.path, key: workloadKey, body: c.body,
+			header: map[string]string{"X-Request-Id": c.id}})
+		expectError(t, w, http.StatusBadRequest, "endpoint_not_served")
+		if msg, want := errorMessage(t, w), notListed(c.path); msg != want {
+			t.Errorf("%s: message %q, want %q", c.id, msg, want)
+		}
+		if line := logLine(t, g, c.id); !strings.Contains(line, `"error.type":"endpoint_not_served"`) {
+			t.Errorf("%s: log line lacks the error: %s", c.id, line)
+		}
+	}
+	// Messages to a model on an anthropic deployment whose list leaves Messages out:
+	// refused in Anthropic's shape, with the same message.
+	w := do(t, g.h, call{method: "POST", path: "/v1/messages", key: workloadKey,
+		body: `{"model":"mixed-listed","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`})
+	expectAnthropicError(t, w, http.StatusBadRequest, "invalid_request_error", "endpoint_not_served")
+	if !strings.Contains(w.Body.String(), `"message":"`+notListed("/v1/messages")+`"`) {
+		t.Errorf("Messages refusal %s, want the message %q", w.Body.String(), notListed("/v1/messages"))
+	}
+	if n := len(g.backend.Requests()); n != 0 {
+		t.Errorf("%d requests reached the backend, want none", n)
+	}
+	if n := len(g.usage.all()); n != 0 {
+		t.Errorf("%d usage records, want none: nothing was routed", n)
+	}
+
+	// The listed endpoints route as before: images to painter; chat to mixed-listed,
+	// on its local deployment, whose type serves chat — never on claude.
+	if w := do(t, g.h, imagesCall(`{"model":"painter","prompt":"a fox"}`, "images-listed")); w.Code != http.StatusOK {
+		t.Fatalf("images to painter: %d %s", w.Code, w.Body.String())
+	}
+	for range 3 {
+		w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey,
+			body: `{"model":"mixed-listed","messages":[{"role":"user","content":"hi"}]}`})
+		if w.Code != http.StatusOK {
+			t.Fatalf("chat to mixed-listed: %d %s", w.Code, w.Body.String())
+		}
+	}
+	reqs := g.backend.Requests()
+	if len(reqs) != 4 || reqs[0].Path != "/v1/images/generations" {
+		t.Fatalf("backend requests %+v, want the image request and three chat requests", reqs)
+	}
+	for _, r := range reqs[1:] {
+		if r.Path != "/v1/chat/completions" || !strings.Contains(string(r.Body), `"model":"mixed-local"`) {
+			t.Errorf("chat request reached %s with %s, want the local deployment", r.Path, r.Body)
+		}
+	}
+}
+
+// notListed is endpoint_not_served's message for a model whose endpoints list leaves
+// the endpoint at path out.
+func notListed(path string) string {
+	return "The model is not served on " + path + ": its configured endpoints do not include this API."
+}
+
+// A model with an endpoints list shows the endpoints it lists — in its entry, in
+// /v1/models, and in the Anthropic-shaped list, which holds the models whose
+// endpoints include messages; a model without one shows every endpoint its
+// deployments' types serve, as before (docs/specs/GATEWAY.md, Client API → /v1/models;
+// Anthropic-shaped model list).
+func TestEndpointsListShowsInTheModelLists(t *testing.T) {
+	g := newTestGateway(t)
+	withEndpointLists(t, g)
+	for model, want := range map[string]string{
+		"painter":       `"endpoints":["images_generations"]`,
+		"mixed-listed":  `"endpoints":["chat_completions"]`,
+		"claude-msg":    `"endpoints":["messages"]`,
+		"claude-counts": `"endpoints":["messages_count_tokens"]`,
+		"tts":           `"endpoints":["audio_speech","audio_speech_batch","images_generations"]`,
+	} {
+		w := do(t, g.h, call{method: "GET", path: "/v1/models/" + model, key: workloadKey})
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), want) {
+			t.Errorf("%s: %d %s, want %s", model, w.Code, w.Body.String(), want)
+		}
+	}
+	w := do(t, g.h, call{method: "GET", path: "/v1/models", key: workloadKey})
+	if !strings.Contains(w.Body.String(), `"id":"painter",`) ||
+		!strings.Contains(w.Body.String(), `"endpoints":["images_generations"]}`) {
+		t.Errorf("/v1/models: %s, want painter listing images_generations alone", w.Body.String())
+	}
+
+	anthropic := map[string]string{"Anthropic-Version": "2023-06-01"}
+	w = do(t, g.h, call{method: "GET", path: "/v1/models", key: workloadKey, header: anthropic})
+	var list struct {
+		Data []struct {
+			ID        string
+			Endpoints []string
+		}
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil || w.Code != http.StatusOK {
+		t.Fatalf("Anthropic list: %d (%v) %s", w.Code, err, w.Body.String())
+	}
+	if len(list.Data) != 1 || list.Data[0].ID != "claude-msg" || !slices.Equal(list.Data[0].Endpoints, []string{"messages"}) {
+		t.Errorf("Anthropic list %s, want claude-msg alone, listing messages", w.Body.String())
+	}
+	for _, model := range []string{"mixed-listed", "claude-counts"} {
+		expectAnthropicError(t, do(t, g.h, call{method: "GET", path: "/v1/models/" + model, key: workloadKey, header: anthropic}),
+			http.StatusNotFound, "not_found_error", "model_not_found")
+	}
+	if w := do(t, g.h, call{method: "GET", path: "/v1/models/claude-msg", key: workloadKey, header: anthropic}); w.Code != http.StatusOK {
+		t.Errorf("Anthropic entry of claude-msg: %d %s", w.Code, w.Body.String())
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"slices"
 	"strconv"
@@ -180,15 +181,15 @@ func (r *run) checkModels() {
 	if r.o.reranker() {
 		want = append(want, modelRerank)
 	}
-	// A model on vllm-omni lists the media endpoints, whatever its server loaded.
-	mediaEndpoints := []string{epSpeech, epSpeechBatch, epImages}
-	var mediaModels []string
+	// A media model lists the endpoints its endpoints list names.
+	mediaEndpoints := map[string][]string{}
 	if r.o.speechServer() {
-		mediaModels = append(mediaModels, modelSpeech)
+		mediaEndpoints[modelSpeech] = speechEndpoints
 	}
 	if r.o.imageServer() {
-		mediaModels = append(mediaModels, modelImage)
+		mediaEndpoints[modelImage] = imageEndpoints
 	}
+	mediaModels := slices.Sorted(maps.Keys(mediaEndpoints))
 	want = append(want, mediaModels...)
 	slices.Sort(want)
 	if !slices.Equal(ids, want) {
@@ -200,15 +201,13 @@ func (r *run) checkModels() {
 		r.fail("models", "%s lists endpoints %v, want %s's %v", modelChat, endpoints[modelChat], r.o.kind, wantEndpoints)
 		return
 	}
+	detail := "lists " + strings.Join(ids, ", ") + "; endpoints " + strings.Join(endpoints[modelChat], ", ")
 	for _, m := range mediaModels {
-		if !slices.Equal(endpoints[m], mediaEndpoints) {
-			r.fail("models", "%s lists endpoints %v, want vllm-omni's %v", m, endpoints[m], mediaEndpoints)
+		if !slices.Equal(endpoints[m], mediaEndpoints[m]) {
+			r.fail("models", "%s lists endpoints %v, want its endpoints list %v", m, endpoints[m], mediaEndpoints[m])
 			return
 		}
-	}
-	detail := "lists " + strings.Join(ids, ", ") + "; endpoints " + strings.Join(endpoints[modelChat], ", ")
-	if len(mediaModels) > 0 {
-		detail += "; " + strings.Join(mediaModels, " and ") + ": " + strings.Join(mediaEndpoints, ", ")
+		detail += "; " + m + ": " + strings.Join(mediaEndpoints[m], ", ")
 	}
 	r.pass("models", detail)
 }

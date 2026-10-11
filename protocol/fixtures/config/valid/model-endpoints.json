@@ -1,0 +1,75 @@
+{
+  "format_version": 6,
+  "global": {},
+  "backends": {
+    "vllm-chat": { "type": "vllm", "base_url": "http://vllm-chat:8000/v1" },
+    "vllm-embed": { "type": "vllm", "base_url": "http://vllm-embed:8000/v1" },
+    "vllm-rerank": { "type": "vllm", "base_url": "http://vllm-rerank:8000/v1" },
+    "llama": { "type": "llama-server", "base_url": "http://llama:8080/v1" },
+    "omni-tts": { "type": "vllm-omni", "base_url": "http://omni-tts:8091/v1" },
+    "omni-image": { "type": "vllm-omni", "base_url": "http://omni-image:8092/v1" },
+    "claude": { "type": "anthropic", "base_url": "https://api.anthropic.com/v1", "api_key_env": "ANTHROPIC_API_KEY" }
+  },
+  "models": {
+    "chat": {
+      "deployments": [{ "backend": "vllm-chat", "model": "org/chat-model" }],
+      "metadata": {
+        "context_length": 32768,
+        "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": false }
+      }
+    },
+    "embed": {
+      "deployments": [{ "backend": "vllm-embed", "model": "org/embed-model" }],
+      "endpoints": ["embeddings"],
+      "metadata": {
+        "context_length": 8192,
+        "capabilities": { "streaming": false, "tools": false, "vision": false, "reasoning": false }
+      }
+    },
+    "reranker": {
+      "deployments": [
+        { "backend": "vllm-rerank", "model": "org/reranker" },
+        { "backend": "llama", "model": "reranker" }
+      ],
+      "endpoints": ["rerank"],
+      "metadata": {
+        "context_length": 8192,
+        "capabilities": { "streaming": false, "tools": false, "vision": false, "reasoning": false }
+      }
+    },
+    "tts": {
+      "deployments": [{ "backend": "omni-tts", "model": "org/tts-model" }],
+      "endpoints": ["audio_speech", "audio_speech_batch"],
+      "metadata": {
+        "context_length": 4096,
+        "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }
+      }
+    },
+    "image": {
+      "deployments": [{ "backend": "omni-image", "model": "org/image-model" }],
+      "endpoints": ["images_generations"],
+      "metadata": {
+        "context_length": 1024,
+        "capabilities": { "streaming": false, "tools": false, "vision": false, "reasoning": false }
+      }
+    },
+    "mixed": {
+      "deployments": [
+        { "backend": "claude", "model": "claude-model" },
+        { "backend": "llama", "model": "chat-model" }
+      ],
+      "endpoints": ["messages", "messages_count_tokens", "responses_input_tokens", "chat_completions"],
+      "metadata": {
+        "context_length": 32768,
+        "capabilities": { "streaming": true, "tools": true, "vision": false, "reasoning": false }
+      }
+    }
+  },
+  "groups": { "me": {} },
+  "keys": {
+    "k-me": {
+      "hash": "sha256:59f8f6709d858b919a10541cd215a0de7b4299bbc6c11a2e0bf4ca03ec6df717",
+      "group": "me"
+    }
+  }
+}

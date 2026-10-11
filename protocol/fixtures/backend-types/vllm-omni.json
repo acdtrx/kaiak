@@ -1,4 +1,5 @@
 {
+  "endpoints": ["audio_speech", "audio_speech_batch", "images_generations"],
   "base_url": "http://vllm-omni:8091/v1",
   "credential": "sk-fixture-credential",
   "models_list": {

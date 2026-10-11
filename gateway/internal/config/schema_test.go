@@ -1,8 +1,8 @@
 package config
 
 // The schema walker and the resolved snapshot against protocol/schema/config.schema.json
-// itself, for the facts both state: the backend types, the limit types, the price
-// units, and the defaults of omitted fields.
+// itself, for the facts both state: the backend types, the endpoint names, the limit
+// types, the price units, and the defaults of omitted fields.
 
 import (
 	"encoding/json"
@@ -50,6 +50,40 @@ func TestBackendTypesAreTheSchemaEnum(t *testing.T) {
 	}
 	if enum := schema.Defs.Backend.Properties.Type.Enum; !slices.Equal(backendTypes, enum) {
 		t.Errorf("walker %v, schema enum %v", backendTypes, enum)
+	}
+}
+
+// The walker admits the schema's endpoint names in a model's endpoints list, in the
+// schema's order, and they are the package's EndpointName constants; the provider
+// package holds its endpoints' names to the same enum.
+func TestEndpointNamesAreTheSchemaEnum(t *testing.T) {
+	var schema struct {
+		Defs struct {
+			Endpoint struct {
+				Enum []string `json:"enum"`
+			} `json:"endpoint"`
+			Model struct {
+				Properties struct {
+					Endpoints struct {
+						Items struct {
+							Ref string `json:"$ref"`
+						} `json:"items"`
+					} `json:"endpoints"`
+				} `json:"properties"`
+			} `json:"model"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(fixturetest.Read(t, fixturetest.SchemaFile("config.schema.json")), &schema); err != nil {
+		t.Fatal(err)
+	}
+	if ref := schema.Defs.Model.Properties.Endpoints.Items.Ref; ref != "#/$defs/endpoint" {
+		t.Errorf("a model's endpoints items are %q, want the endpoint enum", ref)
+	}
+	if enum := schema.Defs.Endpoint.Enum; !slices.Equal(endpointNames, enum) {
+		t.Errorf("walker %v, schema enum %v", endpointNames, enum)
+	}
+	if consts := constants(t, "EndpointName"); !slices.Equal(consts, endpointNames) {
+		t.Errorf("constants %v, walker %v", consts, endpointNames)
 	}
 }
 

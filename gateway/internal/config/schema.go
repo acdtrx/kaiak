@@ -105,6 +105,14 @@ var (
 	keyedBackendTypes = []string{
 		string(BackendOpenAI), string(BackendAzureOpenAI), string(BackendAnthropic), string(BackendAzureAnthropic),
 	}
+	// endpointNames is every endpoint name, in the schema's order: what a model's
+	// endpoints list may hold.
+	endpointNames = []string{
+		string(EndpointChatCompletions), string(EndpointCompletions), string(EndpointEmbeddings),
+		string(EndpointMessages), string(EndpointMessagesCountTokens), string(EndpointResponses),
+		string(EndpointResponsesInputTokens), string(EndpointRerank), string(EndpointAudioSpeech),
+		string(EndpointAudioSpeechBatch), string(EndpointImagesGenerations),
+	}
 	limitTypeNames = limitTypeEnum()
 )
 
@@ -206,6 +214,7 @@ func (c *schemaCheck) model(v any, path string) {
 				"model":   {Required: true, Check: c.StringMatching(backendModelPattern, backendModelNameWhat)},
 			})
 		})},
+		"endpoints": {Check: c.ArrayOf(1, 0, true, c.Enum(endpointNames))},
 		"metadata": {Required: true, Check: func(v any, path string) {
 			c.Object(v, path, map[string]schemacheck.Field{
 				"context_length": {Required: true, Check: c.IntegerAtLeast(1)},

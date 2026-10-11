@@ -6,10 +6,11 @@ import { isRealDate, isRealTimestamp } from "../calendar/index.ts";
 import { pointer } from "../schemas/index.ts";
 import type { ValidationIssue } from "../schemas/index.ts";
 
+import { ENDPOINT_SUPPORT } from "./endpoint-support.ts";
 import { MAX_GROUP_DEPTH, ancestries } from "./tree.ts";
 import type { Ancestry } from "./tree.ts";
 import { ALL_MODELS, LIMIT_TYPES } from "./types.ts";
-import type { Config, Group, Limit, LimitType, Model } from "./types.ts";
+import type { BackendType, Config, Group, Limit, LimitType, Model } from "./types.ts";
 
 export type SemanticRuleCode =
   | "key-group-unknown"
@@ -19,6 +20,7 @@ export type SemanticRuleCode =
   | "group-depth-exceeded"
   | "counters-exceeded"
   | "deployment-backend-unknown"
+  | "endpoint-not-served"
   | "allowed-model-unknown"
   | "allowed-models-wildcard-mixed"
   | "limit-duplicate"
@@ -182,6 +184,27 @@ function countCounters(config: Config): number {
   return count;
 }
 
+// Each entry of a model's endpoints list is served by the backend type of at least one
+// of its deployments. A deployment on an unknown backend serves what cannot be known,
+// so such a model reports deployment-backend-unknown alone.
+function checkEndpoints(config: Config, model: Model, path: string, report: Report): void {
+  const types: BackendType[] = [];
+  for (const deployment of model.deployments) {
+    const backend = Object.hasOwn(config.backends, deployment.backend) ? config.backends[deployment.backend] : undefined;
+    if (backend === undefined) return;
+    types.push(backend.type);
+  }
+  (model.endpoints ?? []).forEach((endpoint, index) => {
+    if (!types.some((type) => ENDPOINT_SUPPORT[type].includes(endpoint))) {
+      report(
+        "endpoint-not-served",
+        pointer(path, "endpoints", index),
+        `none of the model's deployments is on a backend type serving ${endpoint}`,
+      );
+    }
+  });
+}
+
 function checkModel(config: Config, name: string, model: Model, report: Report): void {
   const path = pointer("/models", name);
 
@@ -194,6 +217,7 @@ function checkModel(config: Config, name: string, model: Model, report: Report):
       );
     }
   });
+  checkEndpoints(config, model, path, report);
 
   const { metadata, output_limit: outputLimit } = model;
   if ((metadata.reasoning_efforts?.length ?? 0) > 0 && !metadata.capabilities.reasoning) {

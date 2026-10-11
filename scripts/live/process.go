@@ -395,7 +395,8 @@ func selfTestTwoBackends(ctx context.Context, o options, ws *workspace, fakeBin 
 // each with a bearer key (-speech-api-key-env, -image-api-key-env): a speech server
 // whose model does not draw — an image request answered 503, no diffusion stage — and
 // an image server comparing a request's model with its own, whose model does not
-// speak, its image check asking for a layered answer of several images. It returns
+// speak, as the real servers answer what the media models' endpoints lists refuse
+// should it reach them; its image check asks for a layered answer of several images. It returns
 // the fakes started (when it fails too) and the keys' environment.
 func startMediaFakes(ctx context.Context, fakeBin string, o *options) ([]*exec.Cmd, []string, error) {
 	const speechKeyEnv, imageKeyEnv = "LIVE_SELF_TEST_SPEECH_KEY", "LIVE_SELF_TEST_IMAGE_KEY"

@@ -57,6 +57,14 @@ const (
 	mediaLimitSeconds = 1
 )
 
+// The media models' endpoints lists: each serves what its server answers, so speech
+// sent to the image model, or an image request to the speech model, is the gateway's
+// own refusal, before any server.
+var (
+	speechEndpoints = []string{epSpeech, epSpeechBatch}
+	imageEndpoints  = []string{epImages}
+)
+
 // The speech model's metadata: Qwen3-TTS's talker context in vLLM-Omni's bundled
 // deploy config (max_model_len 4096), and vLLM-Omni's max_new_tokens default and
 // bound as the output limit. The image model's context: Qwen-Image's prompt bound
@@ -79,7 +87,8 @@ const (
 // -base-url-2, each deploying the chat models; one more with -embeddings-base-url,
 // deploying the embeddings model, with -rerank-base-url, deploying the reranker, and
 // with -speech-base-url and -image-base-url, vllm-omni backends deploying the speech
-// and image models), the models above, and groups with every model allowed: live
+// and image models, each with its endpoints list), the models above, and groups with
+// every model allowed: live
 // holds the checks' key (hash), live-metered the rate-limit checks' key (meteredHash)
 // under 1 request a minute — a limit counts every request of its group — and, with a
 // vLLM-Omni server, live-media the media limit checks' key (mediaHash) under 1 image
@@ -161,10 +170,11 @@ func buildConfig(o options, hash, meteredHash, mediaHash string) ([]byte, error)
 		models[modelRerank] = rerank
 		global["max_rerank_documents"] = rerankDocumentsCap
 	}
-	media := func(backend, baseURL, apiKeyEnv, model string, contextLength int, streaming bool) map[string]any {
+	media := func(backend, baseURL, apiKeyEnv, model string, endpoints []string, contextLength int, streaming bool) map[string]any {
 		backends[backend] = backendOf("vllm-omni", baseURL, apiKeyEnv)
 		m := map[string]any{
 			"deployments": []any{map[string]any{"backend": backend, "model": model}},
+			"endpoints":   endpoints,
 			"metadata": map[string]any{"context_length": contextLength,
 				"capabilities": map[string]any{"streaming": streaming, "tools": false, "vision": false, "reasoning": false}},
 		}
@@ -174,13 +184,13 @@ func buildConfig(o options, hash, meteredHash, mediaHash string) ([]byte, error)
 		return m
 	}
 	if o.speechServer() {
-		speech := media(backendSpeech, o.speechBaseURL, o.speechAPIKeyEnv, o.speechModel, speechContextLength, true)
+		speech := media(backendSpeech, o.speechBaseURL, o.speechAPIKeyEnv, o.speechModel, speechEndpoints, speechContextLength, true)
 		speech["output_limit"] = map[string]any{"default": speechOutputDefault, "ceiling": speechOutputCeiling}
 		models[modelSpeech] = speech
 		global["max_speech_batch_items"] = speechBatchItemsCap
 	}
 	if o.imageServer() {
-		models[modelImage] = media(backendImages, o.imageBaseURL, o.imageAPIKeyEnv, o.imageModel, imageContextLength, false)
+		models[modelImage] = media(backendImages, o.imageBaseURL, o.imageAPIKeyEnv, o.imageModel, imageEndpoints, imageContextLength, false)
 		global["max_images_per_request"] = imagesPerRequestCap
 	}
 

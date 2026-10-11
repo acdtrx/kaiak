@@ -172,10 +172,14 @@ func throttleCooldown(h http.Header, now time.Time) time.Duration {
 	return throttleCooldownDefault
 }
 
-// servingDeployments is model m as routing sees it for a request to api: only the
-// deployments whose backend serves api — m itself when every one does, nil when none
-// does (docs/specs/GATEWAY.md, Request pipeline: routing).
+// servingDeployments is model m as routing sees it for a request to api: nil when m's
+// endpoints list leaves api out, else only the deployments whose backend serves api —
+// m itself when every one does, nil when none does (docs/specs/GATEWAY.md, Request
+// pipeline: routing; Model metadata → Endpoints per model).
 func servingDeployments(m *config.Model, api provider.Endpoint) *config.Model {
+	if !m.Admits(api.Name()) {
+		return nil
+	}
 	n := 0
 	for _, d := range m.Deployments {
 		if serves(d, api) {

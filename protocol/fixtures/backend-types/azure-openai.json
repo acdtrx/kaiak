@@ -1,4 +1,5 @@
 {
+  "endpoints": ["chat_completions", "completions", "embeddings", "responses"],
   "base_url": "https://my-resource.openai.azure.com",
   "credential": "sk-fixture-credential",
   "models_list": {

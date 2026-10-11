@@ -391,6 +391,11 @@ support, Base URLs) and → Model metadata.
 - The type decides which client APIs reach a model: the gateway passes each request
   through to a backend speaking the same API and translates nothing, so a model gets
   the endpoints its deployments' types serve (a Claude model is Messages-only).
+  A model's optional `endpoints` list narrows them to what its server answers
+  (`GATEWAY.md` → Model metadata: Endpoints per model) — offer it for vLLM-Omni
+  models, rerankers and embedding models, with `MODEL_ENDPOINTS` as its choices. It
+  never widens them: a listed endpoint none of the model's deployments' types serves
+  is refused (`endpoint-not-served`).
 - `openai`, `azure-openai`, `anthropic` and `azure-anthropic` require `api_key_env`.
   What `base_url` holds depends on the type, and no type has a default: the
   descriptions of `type` and `base_url` in `schema/config.schema.json` give each

@@ -374,7 +374,9 @@ default builder), `KAIAK_IMAGE_REPO` (required: the registry and namespace, e.g.
   `anthropic` or `azure-anthropic` is reachable through Messages only, an OpenAI or
   Azure OpenAI model through OpenAI's endpoints and Responses, a vLLM or
   llama-server model through all four, a vLLM-Omni model through speech, the speech
-  batch and image generation only. `/v1/models` lists each model's `endpoints`.
+  batch and image generation only. `/v1/models` lists each model's `endpoints`, and
+  a model's `endpoints` list narrows them to what its server answers (Config for
+  many hosts).
   Responses `input_tokens` is served by `llama-server` and `openai` only, rerank by
   `vllm` and `llama-server` only, the media endpoints by `vllm-omni` only.
 - **Responses is stateless**: every request goes out with `store: false`, and
@@ -407,7 +409,9 @@ default builder), `KAIAK_IMAGE_REPO` (required: the registry and namespace, e.g.
   `llama-server` backend it shows that way on Messages, Responses, the
   token-counting endpoints and rerank, and as `502 upstream_path_missing`, a circuit
   failure, on chat completions, completions and embeddings (`GATEWAY.md` →
-  Providers: Wrong path to a host).
+  Providers: Wrong path to a host). **A model's `endpoints` list keeps the
+  requests its server cannot serve off it** (Config for many hosts): they answer
+  `400 endpoint_not_served` before any backend.
 
 ## Config for many hosts
 
@@ -465,6 +469,22 @@ the document (a script, or the control plane) rather than editing it by hand.
   cooling down after a `429` are skipped. A single-deployment model is not retried
   by the gateway. Two public models may share deployments (the example's
   `qwen3-32b` and `qwen3-32b-thinking`: same hosts, different output limits).
+- **Set `endpoints` on every model that serves less than its type** (`GATEWAY.md` →
+  Model metadata: Endpoints per model): every vLLM-Omni model, every reranker and
+  every embedding model. A backend's type says which client APIs reach its models,
+  but a server answers only what the model it loaded does — a vLLM reranker has no
+  chat route, a vLLM-Omni image model generates an image for a speech request
+  before refusing it, a llama-server reranker answers chat with `500` or nonsense.
+  The list names what the model serves, by the names `/v1/models` lists:
+  `["images_generations"]` for an image model, `["audio_speech",
+  "audio_speech_batch"]` for a speech model, `["rerank"]` for a reranker,
+  `["embeddings"]` for an embedding model (the example's `qwen-image`, `qwen3-tts`,
+  `qwen3-reranker-8b`, `bge-m3`). Every other endpoint then answers `400
+  endpoint_not_served` before any backend — no server time, no request-limit slot,
+  no usage record — and the model's `/v1/models` entry lists only these, so a
+  client picking a model by its `endpoints` is not misled. It only narrows: a
+  config listing an endpoint none of the model's deployments' types serves is
+  refused (`endpoint-not-served`). Chat models need none.
 - **A deployment's `model` is the name the backend lists** (`GET <base_url>/models`),
   in its own naming: vLLM's `--served-model-name`, Azure's deployment name,
   llama-server's model id — by default its file path
@@ -609,7 +629,9 @@ the document (a script, or the control plane) rather than editing it by hand.
   it past the documents cap and answer without usage.
 - **A reranker gets a backend of its own on vLLM**: one vLLM process serves one
   model, and a reranker's serves only the pooling endpoints (rerank among them), no
-  chat — deploy it on a backend entry for that process, as for an embeddings model.
+  chat — deploy it on a backend entry for that process, as for an embeddings model,
+  and give the model `"endpoints": ["rerank"]` (Config for many hosts) so other
+  requests stop at the gateway.
   llama-server's router mode can run a reranker beside chat models behind one
   `base_url`, each model in its own process with its own flags (a preset with
   `--reranking` for the reranker): the gateway learns per deployment which one
@@ -684,14 +706,13 @@ the document (a script, or the control plane) rather than editing it by hand.
     or Responses request sent to a BERT-style reranker on llama-server (such as
     bge-reranker-v2-m3) answers `500 server_error` (`the current context does not
     support logits computation`), which the gateway reads as the backend failing —
-    so a few chat requests sent to its model name open its circuit. Keep chat
-    clients off its model name, or serve it on vLLM, which has no chat route for a
-    reranker (an endpoint missing, neutral for the circuit).
+    so a few chat requests sent to its model name open its circuit. Give the model
+    `"endpoints": ["rerank"]`: chat to it is then refused before its server (Config
+    for many hosts).
   - **A causal reranker answers chat with nonsense**: on llama-server, a chat request
     sent to Qwen3-Reranker answers `200` with meaningless text, and an embeddings
     request `200` with null values (b11525, 2026-10-09) — no harm to the circuit, but
-    no use to the client. The same advice holds: keep other clients off its model
-    name.
+    no use to the client. The same list keeps those requests off it.
 - **Before go-live, run the live kit** with the reranker
   (`docs/testing/LIVE-BACKENDS.md`, Reranker on a server of its own): it checks the
   answer, the relevance order, the usage, the oversize refusal and the
@@ -715,13 +736,17 @@ the document (a script, or the control plane) rather than editing it by hand.
   model path): image generation compares a request's model with that name alone and
   answers `400 Model mismatch` for any other — a second served name too — read as
   `502 upstream_model_missing`, a circuit failure (`GATEWAY.md` → Providers: wrong
-  model on a host). An image request sent to a speech model's server answers `503` (no
+  model on a host).
+- **Set each model's `endpoints`** (Config for many hosts): `["images_generations"]`
+  on an image model, `["audio_speech", "audio_speech_batch"]` on a speech model.
+  Speech sent to an image model's name otherwise runs a whole image generation
+  (about a minute of the GPU on a GB10) before vLLM-Omni answers `400`, and the
+  gateway records it as nothing — no seconds, no images, no limit sees it; with the
+  list it is refused, `400 endpoint_not_served`, before the server. Without the
+  list, an image request sent to a speech model's server answers `503` (no
   diffusion stage), read as the endpoint missing — neutral, the deployment keeps
-  serving speech (Clients). The other way costs: speech sent to an image model's
-  name runs a whole image generation (about a minute of the GPU on a GB10) before
-  vLLM-Omni answers `400`, and the gateway records it as nothing — no seconds, no
-  images — so let only the keys meant for image models reach them
-  (`docs/BACKLOG.md`, Endpoints per model).
+  serving speech (Clients) — and `/v1/models` lists all three media endpoints for
+  both models.
 - **What the gateway accepts** (`GATEWAY.md` → Client API: owned fields; the rest of
   a request passes through — `voice`, `instructions`, `language`, `task_type`,
   `seed`, `size`, `negative_prompt`, `num_inference_steps`, …):
@@ -849,13 +874,13 @@ the document (a script, or the control plane) rather than editing it by hand.
     whose defaults apply when they are absent.
 - **The config**: a `vllm-omni` backend per server, `base_url` with `/v1`
   (`http://omni-tts:8091/v1`); the example's `qwen3-tts` and `qwen-image` models
-  (`examples/config.json`) and its `users` defaults (`images_per_hour`,
-  `audio_seconds_out_per_hour`). Every capability `false` but `streaming` for
-  speech (`vision` is images taken in).
+  (`examples/config.json`), each with its `endpoints`, and its `users` defaults
+  (`images_per_hour`, `audio_seconds_out_per_hour`). Every capability `false` but
+  `streaming` for speech (`vision` is images taken in).
 - **Before go-live, run the live kit** with both servers
   (`docs/testing/LIVE-BACKENDS.md`, Speech and images on vLLM-Omni): it checks each
   speech mode, that the seconds the gateway counts match the audio, the batch,
-  images, the caps, the media limits and the endpoint-missing reading on the real
+  images, the caps, the media limits and each model's `endpoints` list on the real
   servers — again after every vLLM-Omni upgrade or new speech model.
 
 ## Azure OpenAI
@@ -1534,7 +1559,10 @@ Boot).
     `images_per_hour`, `audio_seconds_out_per_minute`, `audio_seconds_out_per_hour`,
     `audio_seconds_in_per_minute` and `audio_seconds_in_per_hour`;
     `global.max_images_per_request` (default 10) and `global.max_speech_batch_items`
-    (default 32).
+    (default 32); and a model's `endpoints` list (Config for many hosts) — set it on
+    every vLLM-Omni model, reranker and embedding model before or with the upgrade.
+    A listed endpoint none of the model's deployments' types serves is refused
+    (`endpoint-not-served`).
   - **Five counters per scope** (`counters-exceeded`): the hour counts of images,
     audio generated and audio processed join tokens and the USD month, so a config
     within the 50 000 bound at two per scope may now pass it — count five per group
@@ -1563,7 +1591,9 @@ Boot).
     `tokens_per_hour` and `usd_per_month` — so `WindowStarts` has five keys, and a
     database store that lists the types (an enum, a check, a query per type) takes
     the three new ones; run the contract tests (GUIDE §11). Usage records carry the
-    three media units. The sample's page shows them.
+    three media units. The sample's page shows them. `MODEL_ENDPOINTS` lists the
+    names a model's `endpoints` list takes, for a form's choices, and config
+    validation reports the new code `endpoint-not-served`.
 
 ## Images
 

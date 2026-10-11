@@ -100,11 +100,12 @@ enforce the boundaries.
   endpoint support → model parameters → limits → attempts), plus the model endpoints'
   answers; each stage names the requests it applies to (every request, the body
   endpoints or the model endpoints). Each endpoint is one row of `server`'s endpoint
-  table; a body endpoint's identity is the `provider.Endpoint` it serves, whose path
-  and client API format are `provider`'s. The format decides the owned fields the
-  inbound stage reads and the error shape of every answer the gateway gives on that
-  route; the row holds the rest (its output-limit keys, its name and operation
-  name, whether it only counts tokens). The attempts stage is routing → accounting →
+  table; a body endpoint's identity is the `provider.Endpoint` it serves, whose path,
+  client API format and name are `provider`'s — the name one of `config`'s endpoint
+  names, which a model's `endpoints` list holds. The format decides the owned fields
+  the inbound stage reads and the error shape of every answer the gateway gives on
+  that route; the row holds the rest (its output-limit keys and operation name,
+  whether it only counts tokens). The attempts stage is routing → accounting →
   provider run once per attempt: an attempt that failed before
   anything reached the client is retried — through all three again, the queue
   included — on another deployment when there is one; limits reserve once per client

@@ -228,6 +228,56 @@ func TestModelResolution(t *testing.T) {
 	}
 }
 
+// A model's endpoints list resolves as written and admits only what it names; a model
+// without one admits every endpoint.
+func TestModelEndpointsResolve(t *testing.T) {
+	s := parseFixture(t, "model-endpoints.json")
+	image := s.Models["image"]
+	if !slices.Equal(image.Endpoints, []EndpointName{EndpointImagesGenerations}) {
+		t.Errorf("image endpoints = %v", image.Endpoints)
+	}
+	if !image.Admits(EndpointImagesGenerations) || image.Admits(EndpointAudioSpeech) || image.Admits(EndpointChatCompletions) {
+		t.Error("image admits other than images_generations alone")
+	}
+	chat := s.Models["chat"]
+	if chat.Endpoints != nil {
+		t.Errorf("chat endpoints = %v, want none: the model has no list", chat.Endpoints)
+	}
+	for _, e := range endpointNames {
+		if !chat.Admits(EndpointName(e)) {
+			t.Errorf("chat, with no list, does not admit %s", e)
+		}
+	}
+}
+
+// The endpoint rule reports each listed endpoint none of the model's deployments' types
+// serves, at its index — an endpoint one deployment's type serves passes, whatever the
+// others serve — and judges no model with a deployment on an unknown backend.
+func TestEndpointNotServedIssues(t *testing.T) {
+	doc := minimalDoc(`{ "type": "vllm", "base_url": "http://x/v1" }`)
+	doc = strings.Replace(doc, `"backends": {`, `"backends": {
+    "omni": { "type": "vllm-omni", "base_url": "http://omni/v1" },`, 1)
+	doc = strings.Replace(doc, `"deployments": [{ "backend": "local", "model": "llama" }],`,
+		`"deployments": [{ "backend": "local", "model": "llama" }, { "backend": "omni", "model": "llama" }],
+      "endpoints": ["rerank", "responses_input_tokens", "audio_speech", "messages_count_tokens", "completions"],`, 1)
+	var got []string
+	for _, issue := range mustReject(t, doc).Issues {
+		got = append(got, issue.Code+" "+issue.Path)
+	}
+	if want := []string{"endpoint-not-served /models/llama/endpoints/1"}; !slices.Equal(got, want) {
+		t.Errorf("issues %v, want %v", got, want)
+	}
+
+	unknown := strings.Replace(doc, `{ "backend": "omni", "model": "llama" }`, `{ "backend": "ghost", "model": "llama" }`, 1)
+	got = nil
+	for _, issue := range mustReject(t, unknown).Issues {
+		got = append(got, issue.Code+" "+issue.Path)
+	}
+	if want := []string{"deployment-backend-unknown /models/llama/deployments/1/backend"}; !slices.Equal(got, want) {
+		t.Errorf("issues %v, want %v", got, want)
+	}
+}
+
 // keyByHash is the snapshot's key with hash, failing the test when there is none.
 func keyByHash(t *testing.T, s *Snapshot, hash string) *Key {
 	t.Helper()

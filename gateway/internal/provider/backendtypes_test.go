@@ -1,7 +1,10 @@
 package provider
 
-// The backend types against what kaiak-control's backend-verify must agree on with
-// them (protocol/fixtures/backend-types/), and against the config schema's type enum.
+// The backend types against what both halves must agree on with them
+// (protocol/fixtures/backend-types/): the endpoints each serves, which config's
+// endpoint-not-served rule reads on both halves, and the models-list request
+// kaiak-control's backend-verify sends; and against the config schema's type and
+// endpoint enums.
 
 import (
 	"bytes"
@@ -21,12 +24,14 @@ import (
 )
 
 // backendTypeFixture is a file of protocol/fixtures/backend-types/, named for its type:
-// for a sample base_url and credential, the models-list request a backend of that
-// type gets — its URL, and the headers it carries besides each half's own Accept and
-// User-Agent — or null when the type has no models list.
+// the endpoints the type serves, by name; and for a sample base_url and credential,
+// the models-list request a backend of that type gets — its URL, and the headers it
+// carries besides each half's own Accept and User-Agent — or null when the type has
+// no models list.
 type backendTypeFixture struct {
-	BaseURL    string `json:"base_url"`
-	Credential string `json:"credential"`
+	Endpoints  []config.EndpointName `json:"endpoints"`
+	BaseURL    string                `json:"base_url"`
+	Credential string                `json:"credential"`
 	ModelsList *struct {
 		URL     string            `json:"url"`
 		Headers map[string]string `json:"headers"`
@@ -63,6 +68,15 @@ func TestBackendTypeFixtures(t *testing.T) {
 			if err := dec.Decode(&fixture); err != nil {
 				t.Fatal(err)
 			}
+			var served []config.EndpointName
+			for _, e := range kindOf(config.BackendType(typ)).serves {
+				served = append(served, e.Name())
+			}
+			slices.Sort(served)
+			if want := slices.Sorted(slices.Values(fixture.Endpoints)); !slices.Equal(served, want) {
+				t.Errorf("the module serves %v, the shared table says %v", served, want)
+			}
+
 			b := &config.Backend{ID: "b", Type: config.BackendType(typ), BaseURL: fixture.BaseURL, ConnectTimeout: time.Second}
 			transport := &recordingTransport{}
 			module := kindOf(b.Type).build(b, &http.Client{Transport: transport}, fixture.Credential)
@@ -126,6 +140,29 @@ func TestKindsAreTheSchemaBackendTypes(t *testing.T) {
 	enum := slices.Sorted(slices.Values(schema.Defs.Backend.Properties.Type.Enum))
 	if names := kindNames(); !slices.Equal(enum, names) {
 		t.Errorf("schema enum %v, kinds %v", enum, names)
+	}
+}
+
+// The endpoints' names, in the Endpoint order, are the config schema's endpoint enum
+// in its order: one name per endpoint, and every name a model's endpoints list may hold
+// names an endpoint the gateway serves.
+func TestEndpointNamesAreTheSchemaEnum(t *testing.T) {
+	var schema struct {
+		Defs struct {
+			Endpoint struct {
+				Enum []config.EndpointName `json:"enum"`
+			} `json:"endpoint"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(fixturetest.Read(t, fixturetest.SchemaFile("config.schema.json")), &schema); err != nil {
+		t.Fatal(err)
+	}
+	var names []config.EndpointName
+	for e := range Endpoint(len(endpoints)) {
+		names = append(names, e.Name())
+	}
+	if !slices.Equal(names, schema.Defs.Endpoint.Enum) {
+		t.Errorf("endpoint names %v, schema enum %v", names, schema.Defs.Endpoint.Enum)
 	}
 }
 

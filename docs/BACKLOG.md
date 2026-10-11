@@ -49,36 +49,6 @@ Group entries under headings as themes emerge.
   `usage.cache_creation.ephemeral_5m_input_tokens` and `ephemeral_1h_input_tokens`).
   Revisit trigger: a client needs one of them, or refusing 1-hour caching breaks a
   client in use.
-- **Endpoints per model** — the gateway knows the endpoints a model serves only from
-  its deployments' backend types (`docs/specs/GATEWAY.md`, Client API →
-  `/v1/models`; Providers → An endpoint missing from a server), not from the model
-  each server loaded. Two costs:
-  - `/v1/models` `endpoints` follows the types, not what each server answers: a vLLM
-    chat model lists `embeddings` and `rerank`, a vLLM reranker `chat_completions`,
-    a llama-server model started without `--reranking` `rerank`, a vLLM-Omni speech
-    model `images_generations`;
-  - a request the model's server cannot serve still reaches it. Mostly that costs
-    nothing — an image request to a vLLM-Omni speech model answers `503` at once,
-    the speech batch to an image model `400` at once — but **speech sent to a
-    vLLM-Omni image model's name costs a whole image generation**: vLLM-Omni's
-    speech handler runs the diffusion pipeline with the text as the prompt, at its
-    defaults (1024×1024; about 60 s of the GPU on a GB10), and only then answers
-    `400` `TTS model did not produce audio output.` The gateway relays it, neutral,
-    and records nothing — no tokens, seconds or images, cost 0 — and no image limit
-    sees it, its output being speech: a key allowed an image model can keep its
-    server busy within its request limits (the live run,
-    `docs/plans/media-generation/STEP-12-live-run.md`, 2026-10-09).
-
-  Recommended (2026-10-10): an optional per-model endpoint list in config — e.g.
-  `qwen-image` serving `images_generations` only — that kaiak enforces, refusing the
-  other endpoints `400 endpoint_not_served` before any backend, and that `/v1/models`
-  lists; absent, a model serves what its type serves. The listing alone could also
-  come from the endpoint memory (only what traffic has found, per gateway) or from
-  asking the servers (the gateway discovers nothing: Model metadata), neither of
-  which stops the wasted generation. Revisit trigger: the user's decision (being
-  weighed), a wasted generation observed in practice, or a client relying on
-  `endpoints` to pick a model and misled by a model listing an endpoint its server
-  does not serve.
 - **Image and audio models** — graduated to `docs/plans/media-generation/` (research
   and direction settled 2026-10-09): on `vllm-omni` backends, speech and image
   generation first, then uploads with image edits and transcription. Planned after

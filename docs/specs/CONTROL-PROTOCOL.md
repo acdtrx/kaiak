@@ -435,9 +435,9 @@ the `{ error, detail }` body, `error` being the stable code:
 ## Config
 
 - One JSON document: backends (with an optional concurrency cap), models
-  (deployments, metadata, output-limit default and ceiling, prices, queue and retry
-  overrides — no request defaults: `GATEWAY.md`, Model metadata → No model defaults,
-  settled 2026-10-06), the group tree (groups with their allowed models, limits, defaults for
+  (deployments, the endpoints they serve, metadata, output-limit default and
+  ceiling, prices, queue and retry overrides — no request defaults: `GATEWAY.md`,
+  Model metadata → No model defaults, settled 2026-10-06), the group tree (groups with their allowed models, limits, defaults for
   their children and labels), keys (hashes, each in one group), global settings
   (global limits, and the queue, retry and circuit-breaker settings — their defaults
   and bounds: `GATEWAY.md`, Routing and reliability). The schema is the source of
@@ -458,11 +458,26 @@ the `{ error, detail }` body, `error` being the stable code:
   version mismatch makes the two halves refuse to talk instead, which an upgrade of
   both ends. The limit types, `global.max_images_per_request`,
   `global.max_speech_batch_items` and the `vllm-omni` type ride with the bump.
+  **A model's `endpoints` list bumps neither** (settled 2026-10-11, with the user):
+  an optional field is additive (Endpoints per model, below); it ships inside
+  format 6.
   Collections are **objects keyed by ID** — uniqueness comes for free; the model key is
   the public model name clients send.
 - **Conventions**: snake_case field names (as in the OpenAI API); durations are integer
   milliseconds named `*_ms`; timestamps are RFC 3339 in UTC (`Z`); price dates are
   `YYYY-MM-DD`, read as UTC; key hashes are `sha256:` + 64 lowercase hex.
+- **Endpoints per model** (settled 2026-10-11, with the user): a model's optional
+  `endpoints` is a list of client API endpoint names — the names `/v1/models` lists
+  (`$defs.endpoint`: `chat_completions`, `completions`, `embeddings`, `messages`,
+  `messages_count_tokens`, `responses`, `responses_input_tokens`, `rerank`,
+  `audio_speech`, `audio_speech_batch`, `images_generations`) — unique, at least one.
+  Absent, the model serves every endpoint some deployment's backend type serves;
+  present, it serves only those it lists, each of which one of its deployments'
+  types must serve (`endpoint-not-served`, below). What the gateway does with it:
+  `GATEWAY.md`, Model metadata → Endpoints per model. Which types serve which
+  endpoints is `GATEWAY.md`'s table (Providers → Endpoint support), which both
+  halves hold as data: `protocol/fixtures/backend-types/<type>.json` lists each
+  type's `endpoints`, and each half's rule is tested against it.
 - **Strict everywhere** (settled 2026-10-06): every object but the ID-keyed
   collections and a group's `labels` (an open map whose keys follow a pattern) has a
   closed set of fields. A model names no request parameters: the one its config sets
@@ -692,6 +707,11 @@ the `{ error, detail }` body, `error` being the stable code:
     tree rules find; a group whose `parent` has no entry counts its own per-minute
     limits alone.
   - `deployment-backend-unknown` — a deployment's `backend` has no entry.
+  - `endpoint-not-served` — an `endpoints` entry names an endpoint none of the
+    model's deployments' backend types serves (settled 2026-10-11). Path: the entry
+    (`/models/<model>/endpoints/<i>`). Judged only for a model all of whose
+    deployments name a defined backend: one on an unknown backend reports
+    `deployment-backend-unknown` alone.
   - `allowed-model-unknown` — an `allowed_models` entry (a group's or a
     `child_defaults`') names no model.
   - `allowed-models-wildcard-mixed` — `"*"` listed alongside model names (a group's

@@ -85,22 +85,23 @@ const (
 )
 
 // endpoints holds each Endpoint's path below the API's version prefix
-// (docs/specs/GATEWAY.md, Base URLs) and the format it speaks.
+// (docs/specs/GATEWAY.md, Base URLs), the format it speaks and its name.
 var endpoints = [...]struct {
 	path   string
 	format Format
+	name   config.EndpointName
 }{
-	ChatCompletions:      {"chat/completions", FormatOpenAI},
-	Completions:          {"completions", FormatOpenAI},
-	Embeddings:           {"embeddings", FormatOpenAI},
-	Messages:             {"messages", FormatMessages},
-	MessagesCountTokens:  {"messages/count_tokens", FormatMessages},
-	Responses:            {"responses", FormatResponses},
-	ResponsesInputTokens: {"responses/input_tokens", FormatResponses},
-	Rerank:               {"rerank", FormatRerank},
-	AudioSpeech:          {"audio/speech", FormatSpeech},
-	AudioSpeechBatch:     {"audio/speech/batch", FormatSpeechBatch},
-	ImagesGenerations:    {"images/generations", FormatImages},
+	ChatCompletions:      {"chat/completions", FormatOpenAI, config.EndpointChatCompletions},
+	Completions:          {"completions", FormatOpenAI, config.EndpointCompletions},
+	Embeddings:           {"embeddings", FormatOpenAI, config.EndpointEmbeddings},
+	Messages:             {"messages", FormatMessages, config.EndpointMessages},
+	MessagesCountTokens:  {"messages/count_tokens", FormatMessages, config.EndpointMessagesCountTokens},
+	Responses:            {"responses", FormatResponses, config.EndpointResponses},
+	ResponsesInputTokens: {"responses/input_tokens", FormatResponses, config.EndpointResponsesInputTokens},
+	Rerank:               {"rerank", FormatRerank, config.EndpointRerank},
+	AudioSpeech:          {"audio/speech", FormatSpeech, config.EndpointAudioSpeech},
+	AudioSpeechBatch:     {"audio/speech/batch", FormatSpeechBatch, config.EndpointAudioSpeechBatch},
+	ImagesGenerations:    {"images/generations", FormatImages, config.EndpointImagesGenerations},
 }
 
 // Path is the endpoint's path below the API's version prefix: a backend URL ends with
@@ -109,6 +110,10 @@ func (e Endpoint) Path() string { return endpoints[e].path }
 
 // Format is the format the endpoint speaks.
 func (e Endpoint) Format() Format { return endpoints[e].format }
+
+// Name is the endpoint's name: what /v1/models lists, a model's endpoints list names,
+// and the log lines call it (kaiak.endpoint).
+func (e Endpoint) Name() config.EndpointName { return endpoints[e].name }
 
 // Request is one client request as the pipeline hands it to a provider: already
 // authenticated, parsed and routed.

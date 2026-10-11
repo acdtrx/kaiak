@@ -68,8 +68,10 @@ type backendDoc struct {
 	MaxInFlight         *int64 `json:"max_in_flight"`
 }
 
+// modelDoc: a nil Endpoints is an omitted list (the schema refuses an empty one).
 type modelDoc struct {
 	Deployments []deploymentDoc `json:"deployments"`
+	Endpoints   []EndpointName  `json:"endpoints"`
 	Metadata    metadataDoc     `json:"metadata"`
 	OutputLimit *OutputLimit    `json:"output_limit"`
 	Queue       *queueDoc       `json:"queue"`

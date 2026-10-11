@@ -78,7 +78,9 @@ way by the gateway:
   the request carries besides `Accept` and `User-Agent` — or `null` for a type with no
   models list. The gateway's provider tests and this subsystem's tests both read it,
   and each has one file per type it knows. Only what both halves send is in it:
-  `/props`, server recognition and the fields read are verify-only.
+  `/props`, server recognition and the fields read are verify-only. The same file
+  holds the type's `endpoints`, which config validation reads (settled 2026-10-11;
+  `CONTROL-PROTOCOL.md`, Config → Endpoints per model) — not this subsystem's.
 
 - **The Anthropic types** (settled 2026-10-06): Anthropic's models list is paged
   (20 by default), so one request asks for the most a page holds. Claude in

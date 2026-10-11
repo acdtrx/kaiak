@@ -19,7 +19,8 @@ import (
 // what the pipeline decides by endpoint. A request refused before it matched one has
 // none (nil).
 type endpoint struct {
-	// name is the endpoint's name on log lines (kaiak.endpoint).
+	// name is the endpoint's name on log lines (kaiak.endpoint); a body endpoint's is
+	// its API's (newBodyEndpoint).
 	name string
 	// path is a model endpoint's route as the client API documents it; a body
 	// endpoint's is its API's (route).
@@ -74,23 +75,28 @@ type endpoint struct {
 // bodyEndpoints are the endpoints served as a POST carrying a JSON request body, one
 // row per provider.Endpoint the client API serves.
 var bodyEndpoints = []*endpoint{
-	{body: true, api: provider.ChatCompletions, name: "chat_completions", operation: "chat",
-		outputLimitKeys: []string{"max_completion_tokens", "max_tokens"}},
-	{body: true, api: provider.Completions, name: "completions", operation: "text_completion",
-		outputLimitKeys: []string{"max_tokens"}},
-	{body: true, api: provider.Embeddings, name: "embeddings", operation: "embeddings"},
-	{body: true, api: provider.Messages, name: "messages", operation: "chat",
-		outputLimitKeys: []string{"max_tokens"}},
-	{body: true, api: provider.MessagesCountTokens, name: "messages_count_tokens", counts: true},
-	{body: true, api: provider.Responses, name: "responses", operation: "chat",
-		outputLimitKeys: []string{"max_output_tokens"}},
-	{body: true, api: provider.ResponsesInputTokens, name: "responses_input_tokens", counts: true},
-	{body: true, api: provider.Rerank, name: "rerank", operation: "rerank"},
-	{body: true, api: provider.AudioSpeech, name: "audio_speech", operation: "generate_content", outputType: "speech",
-		outputLimitKeys: []string{"max_new_tokens"}, writesNoOutputLimit: true},
-	{body: true, api: provider.AudioSpeechBatch, name: "audio_speech_batch", operation: "generate_content", outputType: "speech",
-		outputLimitKeys: []string{"max_new_tokens"}, writesNoOutputLimit: true},
-	{body: true, api: provider.ImagesGenerations, name: "images_generations", operation: "generate_content", outputType: "image"},
+	newBodyEndpoint(provider.ChatCompletions, endpoint{operation: "chat",
+		outputLimitKeys: []string{"max_completion_tokens", "max_tokens"}}),
+	newBodyEndpoint(provider.Completions, endpoint{operation: "text_completion", outputLimitKeys: []string{"max_tokens"}}),
+	newBodyEndpoint(provider.Embeddings, endpoint{operation: "embeddings"}),
+	newBodyEndpoint(provider.Messages, endpoint{operation: "chat", outputLimitKeys: []string{"max_tokens"}}),
+	newBodyEndpoint(provider.MessagesCountTokens, endpoint{counts: true}),
+	newBodyEndpoint(provider.Responses, endpoint{operation: "chat", outputLimitKeys: []string{"max_output_tokens"}}),
+	newBodyEndpoint(provider.ResponsesInputTokens, endpoint{counts: true}),
+	newBodyEndpoint(provider.Rerank, endpoint{operation: "rerank"}),
+	newBodyEndpoint(provider.AudioSpeech, endpoint{operation: "generate_content", outputType: "speech",
+		outputLimitKeys: []string{"max_new_tokens"}, writesNoOutputLimit: true}),
+	newBodyEndpoint(provider.AudioSpeechBatch, endpoint{operation: "generate_content", outputType: "speech",
+		outputLimitKeys: []string{"max_new_tokens"}, writesNoOutputLimit: true}),
+	newBodyEndpoint(provider.ImagesGenerations, endpoint{operation: "generate_content", outputType: "image"}),
+}
+
+// newBodyEndpoint is row e of the body endpoint passing api through, named as api is
+// (provider.Endpoint.Name): the name /v1/models lists and a model's endpoints list
+// takes.
+func newBodyEndpoint(api provider.Endpoint, e endpoint) *endpoint {
+	e.body, e.api, e.name = true, api, string(api.Name())
+	return &e
 }
 
 // The model endpoints, answered from the config. The model list and entry answer in
@@ -146,7 +152,8 @@ type request struct {
 	// declares (safe as a metric label value).
 	modelAllowed bool
 	// serving is the model as routing sees it for a body request: only its
-	// deployments whose backend serves the endpoint (servingDeployments).
+	// deployments whose backend serves the endpoint, which its endpoints list admits
+	// (servingDeployments).
 	serving *config.Model
 	// Set by the inbound stage: the raw body, kept for passthrough, the fields the
 	// gateway owns, and the input estimate every stage reads (limits, the output
@@ -309,11 +316,16 @@ func authorizeModel(_ context.Context, rq *request) *apiError {
 }
 
 // findServingDeployments finds the deployments of a body request's model that serve
-// its endpoint. A model none of whose backends serves the endpoint can never answer:
-// refused here, before limits spend anything on it (docs/specs/GATEWAY.md, Providers →
-// Endpoint support).
+// its endpoint. A model whose endpoints list leaves the endpoint out, or none of whose
+// backends serves it, can never answer: refused here, before limits spend anything on
+// it, each with its own message (docs/specs/GATEWAY.md, Providers → Endpoint support;
+// Model metadata → Endpoints per model).
 func findServingDeployments(_ context.Context, rq *request) *apiError {
-	if rq.serving = servingDeployments(rq.snapshot.Models[rq.model], rq.endpoint.api); rq.serving == nil {
+	m := rq.snapshot.Models[rq.model]
+	if !m.Admits(rq.endpoint.api.Name()) {
+		return errEndpointNotListed(rq.endpoint)
+	}
+	if rq.serving = servingDeployments(m, rq.endpoint.api); rq.serving == nil {
 		return errEndpointNotServed(rq.endpoint)
 	}
 	return nil

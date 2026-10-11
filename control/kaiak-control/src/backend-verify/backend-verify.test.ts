@@ -584,7 +584,8 @@ test("each type reads its models list at its URL with its credential header", as
 // A file of protocol/fixtures/backend-types/, named for its type: for a sample base_url
 // and credential, the models-list request a backend of that type gets — its URL, and
 // the headers it carries besides each half's own Accept and User-Agent — or null when
-// the type has no models list. The gateway's provider tests read the same files.
+// the type has no models list. The gateway's provider tests read the same files; its
+// endpoints, the endpoints the type serves, are the config tests'.
 interface BackendTypeFixture {
   base_url: string;
   credential: string;

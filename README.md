@@ -59,7 +59,8 @@ from a clone, or serve `docs/` with GitHub Pages.
   and image generation (`/v1/images/generations`), both on vLLM-Omni, on one port
   with one key (`Authorization: Bearer` or `x-api-key`). A request is passed through
   to a backend that speaks its API — never translated — so the backend types behind a
-  model decide which APIs reach it (`docs/DEPLOYMENT.md` → Clients).
+  model decide which APIs reach it, and a model's optional `endpoints` list narrows
+  them to what its server answers (`docs/DEPLOYMENT.md` → Clients).
 - **Groups.** Who may use which models, and under which limits, is a tree of groups
   of any depth: team → project → env → workload, or whatever shape your organization
   has. A key belongs to one group. A request must pass the limits of every group on

@@ -65,6 +65,7 @@
     },
     "bge-m3": {
       "deployments": [{ "backend": "vllm-embed", "model": "BAAI/bge-m3" }],
+      "endpoints": ["embeddings"],
       "metadata": {
         "context_length": 8192,
         "capabilities": { "streaming": false, "tools": false, "vision": false, "reasoning": false }
@@ -72,6 +73,7 @@
     },
     "qwen3-reranker-8b": {
       "deployments": [{ "backend": "vllm-rerank", "model": "Qwen/Qwen3-Reranker-8B" }],
+      "endpoints": ["rerank"],
       "metadata": {
         "context_length": 32768,
         "capabilities": { "streaming": false, "tools": false, "vision": false, "reasoning": false }
@@ -79,6 +81,7 @@
     },
     "qwen3-tts": {
       "deployments": [{ "backend": "omni-tts", "model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice" }],
+      "endpoints": ["audio_speech", "audio_speech_batch"],
       "metadata": {
         "context_length": 4096,
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false }
@@ -87,6 +90,7 @@
     },
     "qwen-image": {
       "deployments": [{ "backend": "omni-image", "model": "Qwen/Qwen-Image" }],
+      "endpoints": ["images_generations"],
       "metadata": {
         "context_length": 1024,
         "capabilities": { "streaming": false, "tools": false, "vision": false, "reasoning": false }

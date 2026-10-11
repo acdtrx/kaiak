@@ -40,7 +40,6 @@ const (
 	idImageLimit    = "live-image-limit"
 	idImageRefused  = "live-image-refused"
 	idImageToSpeech = "live-image-to-speech"
-	idSpeechAfter   = "live-speech-after"
 	idSpeechToImage = "live-speech-to-image"
 )
 
@@ -68,7 +67,8 @@ func imageBody(model string, extra map[string]any) map[string]any {
 }
 
 // mediaChecks are the speech and image checks, for the vLLM-Omni servers given: each
-// server's own, then the media limits, then each server sent the other's endpoint.
+// server's own, then the media limits, then each model sent the other's endpoint,
+// which its endpoints list leaves out.
 func (r *run) mediaChecks() {
 	speech, image := r.o.speechServer(), r.o.imageServer()
 	switch {
@@ -613,54 +613,21 @@ func (r *run) checkImageLimit() {
 		imageBody(modelImage, nil), "images", "images_per_minute")
 }
 
-// checkImageToSpeech sends an image request to the speech model, whose vLLM-Omni has
-// no diffusion stage and answers 503: the gateway reads it as the endpoint missing —
-// 502 upstream_endpoint_missing, neutral for the circuit — and a speech request right
-// after is served.
+// checkImageToSpeech sends an image request to the speech model, whose endpoints list
+// leaves image generation out: the gateway's own 400 endpoint_not_served, never sent
+// to the server (docs/specs/GATEWAY.md, Model metadata → Endpoints per model).
 func (r *run) checkImageToSpeech() {
-	const name = "image-to-speech"
-	resp, err := r.post(r.key, "/v1/images/generations", idImageToSpeech, imageBody(modelSpeech, nil))
-	if _, problem := r.endpointMissing(resp, err, idImageToSpeech, epImages, backendSpeech); problem != "" {
-		r.fail(name, "image to %s: %s", modelSpeech, problem)
-		return
-	}
-	if problem := r.servedAfter(idSpeechAfter, "/v1/audio/speech", speechBody(modelSpeech, nil)); problem != "" {
-		r.fail(name, "a speech request right after: %s", problem)
-		return
-	}
-	r.pass(name, "image → 502 upstream_endpoint_missing, warned for "+backendSpeech+"; a speech right after → 200")
+	r.checkRefusals("image-to-speech", []refusalCase{{"image to " + modelSpeech, "/v1/images/generations",
+		idImageToSpeech, imageBody(modelSpeech, nil), http.StatusBadRequest, "endpoint_not_served", ""}})
 }
 
-// checkSpeechToImage sends a speech request to the image model and records what
-// vLLM-Omni answers: its source does not decide it (docs/specs/GATEWAY.md, Providers →
-// An endpoint missing from a server). It fails only when the request got no answer.
+// checkSpeechToImage sends a speech request to the image model, whose endpoints list
+// leaves speech out: the gateway's own 400 endpoint_not_served, never sent to the
+// server — where vLLM-Omni would run a whole image generation before answering 400
+// (docs/specs/GATEWAY.md, Providers → An endpoint missing from a server).
 func (r *run) checkSpeechToImage() {
-	const name = "speech-to-image"
-	resp, err := r.post(r.key, "/v1/audio/speech", idSpeechToImage, speechBody(modelImage, nil))
-	if err != nil {
-		r.fail(name, "%v", err)
-		return
-	}
-	var e struct {
-		Error struct {
-			Message string
-			Type    any
-			Code    any
-		}
-	}
-	_ = json.Unmarshal(resp.body, &e)
-	recorded := fmt.Sprintf("status %d, content type %q", resp.status, resp.header.Get("Content-Type"))
-	if e.Error.Message != "" || e.Error.Code != nil {
-		recorded += fmt.Sprintf(", error type %v, code %v: %q", e.Error.Type, e.Error.Code, clip(e.Error.Message))
-	}
-	if line, err := r.gw.logs.wait(r.ctx, msg("request", "kaiak.request.id", idSpeechToImage)); err == nil {
-		for _, k := range []string{"error.type", "kaiak.upstream.error.code", "kaiak.upstream.error.type", "kaiak.usage.audio.output.duration"} {
-			if v, ok := line[k]; ok {
-				recorded += fmt.Sprintf(", %s=%v", k, v)
-			}
-		}
-	}
-	r.pass(name, "recorded: "+recorded)
+	r.checkRefusals("speech-to-image", []refusalCase{{"speech to " + modelImage, "/v1/audio/speech",
+		idSpeechToImage, speechBody(modelImage, nil), http.StatusBadRequest, "endpoint_not_served", ""}})
 }
 
 // mediaLog is what a media request's log line must carry.

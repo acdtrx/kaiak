@@ -39,8 +39,8 @@ model:
 | `live-rpm` | limit check, sent with a second key whose group (`live-metered`) allows 1 request per minute: a limit counts every request of its group |
 | `live-embed` | embeddings, only with `-embeddings-model` — whatever the model's name on the backend (a path-style id too) |
 | `live-rerank` | rerank, only with `-rerank-base-url` on `vllm` or `llama-server` |
-| `live-tts` | speech and the speech batch, only with `-speech-base-url`; output limit 2048, ceiling 4096 (`max_new_tokens`) |
-| `live-image` | image generation, only with `-image-base-url` |
+| `live-tts` | speech and the speech batch, only with `-speech-base-url`; output limit 2048, ceiling 4096 (`max_new_tokens`); `endpoints` `audio_speech`, `audio_speech_batch` |
+| `live-image` | image generation, only with `-image-base-url`; `endpoints` `images_generations` |
 
 Every model is priced at `-price-in` / `-price-out` USD per million tokens (default
 1 / 2 — placeholders, only so the cost path is exercised; `0` and `0` leave them
@@ -309,7 +309,8 @@ The vLLM run has two more fakes playing vLLM-Omni, each with a bearer key
 (`-speech-api-key-env`, `-image-api-key-env`): a speech server whose model answers an
 image request as vLLM-Omni's speech models do (`503`, no diffusion stage), and an
 image server whose model answers speech with vLLM-Omni's `400` (`TTS model did not
-produce audio output.`). The fake's audio is 2.5 s of silence per clip and per batch
+produce audio output.`), should a request the models' `endpoints` lists refuse reach
+them. The fake's audio is 2.5 s of silence per clip and per batch
 item, so a record of two items counts 5 s — rounded once — where rounding each item
 would count 6. The `image` check asks the fake for two images of two layers each,
 as a layered model answers, so `usage-log/image` checks a count of four, more than
@@ -331,7 +332,7 @@ context length. `go -C scripts/live run . -h` lists them all.
 | Check | Proves |
 |---|---|
 | `auth-reject` | a request without a key gets `401` (the config loaded, the pipeline runs) |
-| `models` | `/v1/models` lists exactly the configured public models for the key |
+| `models` | `/v1/models` lists exactly the configured public models for the key, `live-chat` with the endpoints its kind's type serves and each media model with those its `endpoints` list names |
 | `chat` | non-streamed chat reaches the backend and returns content under the **public** model name, with `usage` |
 | `usage-log/chat` | its log line carries the backend's own token counts (`kaiak.usage.estimated=false`) and a cost |
 | `chat-stream` | a stream without client `include_usage` relays chunks, every one named `live-chat`, ends with `[DONE]`, and **no usage chunk reaches the client** (the gateway asked for it and withholds it) |
@@ -384,8 +385,8 @@ context length. `go -C scripts/live run . -h` lists them all.
 | `chat-to-image` | a chat request to `live-image` is the gateway's own `400 endpoint_not_served`: `vllm-omni` serves the media endpoints alone |
 | `audio-limit` | with the `live-media` key: a first clip is served and fills the 1-second window — audio generated settles after the request — and the next is refused `429 audio_seconds` with `Retry-After`, no `x-ratelimit-*` header, its log line naming `audio_seconds_out_per_minute` |
 | `image-limit` | the same for images: a request reserves its `n`, so the second image in the minute is refused `429 images`, naming `images_per_minute` |
-| `image-to-speech` | an image request to `live-tts`: vLLM-Omni answers `503` for a model with no diffusion stage, which the gateway reads as `502 upstream_endpoint_missing` with its warning, and a speech request right after is served — the deployment stays in service |
-| `speech-to-image` | a speech request to `live-image`: what vLLM-Omni answers is recorded, not judged (its source does not decide it) — status, error type and code, and the gateway's reading on the log line. It fails only when no answer came |
+| `image-to-speech` | an image request to `live-tts`, whose `endpoints` list leaves image generation out, is the gateway's own `400 endpoint_not_served`, never sent to the server |
+| `speech-to-image` | a speech request to `live-image`, whose list leaves speech out, is the gateway's own `400 endpoint_not_served`, never sent — where vLLM-Omni would answer `400` only after a whole image generation |
 | `media-metrics` | `/metrics` counts the seconds of audio (`kaiak_usage_audio_output_duration_seconds_total`, `gen_ai_output_type="speech"`) and the images (`kaiak_usage_images_total`, `gen_ai_output_type="image"`) and each media limit's refusal (`kaiak_limit_rejections_total` by `kaiak_limit_type`) |
 | `endpoint-not-served` | every API the backend type does not serve (chat completions on Claude, Messages on OpenAI, `responses/input_tokens` on vLLM and Azure, rerank on the cloud APIs, speech, the speech batch and image generation on every kind, …) is refused `400 endpoint_not_served`, in that API's error shape |
 | `output-ceiling` | a request for the model's whole context length in output tokens (`-context-length`; more is refused, `400 invalid_value`) is lowered to the ceiling: `completion_tokens` ≤ ceiling, `finish_reason: "length"`. vLLM and llama-server are asked through `max_tokens` (the gateway lowers the client's own key), OpenAI and Azure through `max_completion_tokens` (their reasoning models refuse `max_tokens`); Anthropic and Foundry through Messages' `max_tokens`, ending `stop_reason: "max_tokens"` |
@@ -627,13 +628,14 @@ The checks that matter for the servers:
   run them on every vLLM-Omni upgrade and every new speech model: they are the check
   that the gateway measures that model's audio right.
 - `image` and `usage-log/image`: an image answered and counted.
-- `image-to-speech`: vLLM-Omni's `503` for an image request to a speech model still
-  reads as the endpoint missing.
 - `audio-limit` and `image-limit`: the media limits refuse.
-- `speech-to-image` is a record, not a check: copy its line into the run's notes —
-  it is how vLLM-Omni answers speech sent to an image model (at v0.30.0, `400` after
-  a whole image generation, about a minute of the GPU: `GATEWAY.md` → Providers,
-  vLLM-Omni).
+- `image-to-speech` and `speech-to-image`: each model's `endpoints` list keeps the
+  other kind of request off its server. What vLLM-Omni itself answers a model
+  without a list — `503` for an image request to a speech model, read as the
+  endpoint missing; `400` for speech to an image model, after a whole image
+  generation (about a minute of the GPU) — was read on the live run of 2026-10-09
+  (`GATEWAY.md` → Providers: An endpoint missing from a server, vLLM-Omni); the
+  kit sends neither to a server.
 
 ## Reading failures
 
@@ -697,10 +699,10 @@ The checks that matter for the servers:
 - `image` with `502 upstream_model_missing`: `-image-model` is not the image
   server's served name — vLLM-Omni compares the request's model with it and answers
   `400 Model mismatch`.
-- `image-to-speech` answering `200`, or another error: the speech server generated
-  an image, or vLLM-Omni's answer for a model with no diffusion stage changed — the
-  gateway reads only that `503` as the endpoint missing (`docs/specs/GATEWAY.md`,
-  Providers → An endpoint missing from a server).
+- `image-to-speech` or `speech-to-image` with the request sent to a server: the
+  model's `endpoints` list did not reach the gateway — the kit and the gateway
+  disagree on the config (`docs/specs/GATEWAY.md`, Model metadata → Endpoints per
+  model).
 - `400 hosted_tool_unsupported`, `stateful_responses_unsupported`,
   `price_option_unsupported` on a check other than the one testing it: a
   `-messages-params` or `-responses-params` value asks for something the gateway

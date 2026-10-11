@@ -6,9 +6,10 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { describe, test } from "node:test";
 
-import { fixturePath, readJson, testInvalidFixtures, testValidFixtures } from "../test-support/index.ts";
+import { fixtureFiles, fixturePath, readJson, testInvalidFixtures, testValidFixtures } from "../test-support/index.ts";
 
-import { BACKEND_TYPES, LIMIT_TYPES, MODEL_CAPABILITIES, validateConfig } from "./index.ts";
+import { ENDPOINT_SUPPORT } from "./endpoint-support.ts";
+import { BACKEND_TYPES, LIMIT_TYPES, MODEL_CAPABILITIES, MODEL_ENDPOINTS, validateConfig } from "./index.ts";
 
 const VALID_DIR = fixturePath("config", "valid");
 const INVALID_DIR = fixturePath("config", "invalid");
@@ -30,6 +31,27 @@ test("MODEL_CAPABILITIES is the schema's required metadata capabilities, in its 
     $defs: { model: { properties: { metadata: { properties: { capabilities: { required: unknown } } } } } };
   };
   assert.deepEqual(MODEL_CAPABILITIES, schema.$defs.model.properties.metadata.properties.capabilities.required);
+});
+
+test("MODEL_ENDPOINTS is the schema's endpoint enum, in its order", () => {
+  const schema = readJson(CONFIG_SCHEMA) as {
+    $defs: { endpoint: { enum: unknown }; model: { properties: { endpoints: { items: { $ref: unknown } } } } };
+  };
+  assert.deepEqual(MODEL_ENDPOINTS, schema.$defs.endpoint.enum);
+  assert.equal(schema.$defs.model.properties.endpoints.items.$ref, "#/$defs/endpoint");
+});
+
+// The endpoint-not-served rule's table is the shared one: each backend type serves what
+// protocol/fixtures/backend-types/<type>.json lists in its endpoints. The gateway's
+// modules and its own config check are held to the same files.
+test("each backend type serves the endpoints its shared fixture lists (protocol/fixtures/backend-types)", () => {
+  const dir = fixturePath("backend-types");
+  const types = fixtureFiles(dir).map((file) => path.basename(file, ".json"));
+  assert.deepEqual([...types].sort(), Object.keys(ENDPOINT_SUPPORT).sort(), "one fixture per type in the table");
+  for (const type of BACKEND_TYPES) {
+    const fixture = readJson(path.join(dir, `${type}.json`)) as { endpoints: string[] };
+    assert.deepEqual([...ENDPOINT_SUPPORT[type]].sort(), [...fixture.endpoints].sort(), type);
+  }
 });
 
 describe("valid config fixtures", () => {
@@ -154,6 +176,47 @@ describe("group tree rules", () => {
     assert.deepEqual(issuesOf(config), []);
     config.groups["one-more"] = {};
     assert.deepEqual(issuesOf(config), [{ code: "counters-exceeded", path: "" }]);
+  });
+});
+
+describe("endpoints list rule", () => {
+  // minimal.json's backend as vllm, plus a vllm-omni backend "omni", and its model on
+  // both, listing endpoints.
+  const withEndpoints = (endpoints: string[], omniBackend = "omni"): unknown => {
+    const config = readJson(path.join(VALID_DIR, "minimal.json")) as {
+      backends: Record<string, { type: string; base_url: string }>;
+      models: { llama: Record<string, unknown> };
+    };
+    const local = config.backends["local"];
+    assert.ok(local, "minimal.json has backend local");
+    local.type = "vllm";
+    config.backends["omni"] = { type: "vllm-omni", base_url: "http://omni/v1" };
+    config.models.llama["deployments"] = [
+      { backend: "local", model: "llama" },
+      { backend: omniBackend, model: "llama" },
+    ];
+    config.models.llama["endpoints"] = endpoints;
+    return config;
+  };
+  const issuesOf = (doc: unknown): { code: string; path: string }[] => {
+    const result = validateConfig(doc);
+    return result.ok ? [] : result.issues.map(({ code, path: at }) => ({ code, path: at }));
+  };
+
+  test("an endpoint one deployment's type serves passes, whatever the others serve", () => {
+    assert.deepEqual(issuesOf(withEndpoints(["rerank", "audio_speech", "messages_count_tokens", "completions"])), []);
+  });
+
+  test("each endpoint no deployment's type serves is reported at its index", () => {
+    assert.deepEqual(issuesOf(withEndpoints(["rerank", "responses_input_tokens", "audio_speech"])), [
+      { code: "endpoint-not-served", path: "/models/llama/endpoints/1" },
+    ]);
+  });
+
+  test("a model with a deployment on an unknown backend reports that alone", () => {
+    assert.deepEqual(issuesOf(withEndpoints(["responses_input_tokens"], "ghost")), [
+      { code: "deployment-backend-unknown", path: "/models/llama/deployments/1/backend" },
+    ]);
   });
 });
 

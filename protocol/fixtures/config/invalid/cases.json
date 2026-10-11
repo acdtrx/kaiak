@@ -157,6 +157,28 @@
     "kind": "schema",
     "reason": "a model needs at least one deployment"
   },
+  "endpoints-deployment-backend-unknown.json": {
+    "kind": "semantic",
+    "code": "deployment-backend-unknown",
+    "reason": "a model with a deployment on an unknown backend reports that rule alone: its endpoints list is judged only when every deployment's backend type is known"
+  },
+  "endpoints-duplicate.json": {
+    "kind": "schema",
+    "reason": "a model's endpoints are unique"
+  },
+  "endpoints-empty.json": {
+    "kind": "schema",
+    "reason": "a model's endpoints list names at least one endpoint (omit it for every endpoint its deployments' types serve)"
+  },
+  "endpoints-not-served.json": {
+    "kind": "semantic",
+    "code": "endpoint-not-served",
+    "reason": "a model lists an endpoint none of its deployments' backend types serves (chat on vllm-omni, speech on vllm)"
+  },
+  "endpoints-unknown-name.json": {
+    "kind": "schema",
+    "reason": "a model's endpoints are the gateway's endpoint names"
+  },
   "expires-at-date-only.json": {
     "kind": "schema",
     "reason": "expires_at is a full timestamp"

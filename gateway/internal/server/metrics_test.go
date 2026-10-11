@@ -717,6 +717,7 @@ func errorAnswers() []struct {
 		{"errRefused", errRefused(&provider.RefusalError{Code: "price_option_unsupported"})},
 		{"errRefused", errRefused(&provider.RefusalError{Code: "duplicate_member"})},
 		{"errEndpointNotServed", errEndpointNotServed(bodyEndpoint(provider.ChatCompletions))},
+		{"errEndpointNotListed", errEndpointNotListed(bodyEndpoint(provider.AudioSpeech))},
 		{"errInternal", errInternal()},
 		{"errQueueFull", errQueueFull()},
 		{"errConcurrencyLimited", errConcurrencyLimited(1)},

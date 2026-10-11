@@ -362,6 +362,14 @@ func errEndpointNotServed(ep *endpoint) *apiError {
 		message: fmt.Sprintf("The model is not served on %s: none of its backends serves this API.", ep.route())}
 }
 
+// errEndpointNotListed answers a request for a model whose endpoints list leaves the
+// endpoint out (docs/specs/GATEWAY.md, Model metadata → Endpoints per model): the code
+// of errEndpointNotServed, a message saying the model is not configured for it.
+func errEndpointNotListed(ep *endpoint) *apiError {
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "endpoint_not_served", class: metrics.ErrorInvalidRequest,
+		message: fmt.Sprintf("The model is not served on %s: its configured endpoints do not include this API.", ep.route())}
+}
+
 func errInternal() *apiError {
 	return &apiError{status: http.StatusInternalServerError, errType: typeServer, code: "internal_error", class: metrics.ErrorInternal,
 		message: "The gateway failed to process the request."}

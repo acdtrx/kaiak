@@ -1,4 +1,5 @@
 {
+  "endpoints": ["chat_completions", "completions", "embeddings", "messages", "messages_count_tokens", "responses", "rerank"],
   "base_url": "http://vllm:8000/v1",
   "credential": "sk-fixture-credential",
   "models_list": {
