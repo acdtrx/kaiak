@@ -276,4 +276,6 @@ in a row (2026-10-11). Live on the DGX (step 12, 2026-10-09/10): vLLM-Omni 0.30.
 Qwen3-TTS and Qwen-Image — the kit's 50 checks pass, the real answers match the fake
 backend in every field the gateway reads, the measured audio seconds equal the decoded
 clips; speech sent to an image model answers `400` after a full image generation
-(`docs/BACKLOG.md`, Endpoints per model).
+— closed for models that declare their endpoints (step 13: an optional per-model list,
+the others refused before any backend). `check-all.sh` green 3× in a row after step 13
+(2026-10-11).

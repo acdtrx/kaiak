@@ -236,3 +236,8 @@ metadata → Endpoints per model. No doc quoted the message elsewhere
   the change caught the new constructor missing from `errorAnswers`
   (`TestEveryErrorCodeHasItsClass`); fixed as above.
 - No expected reds: phase 5 ends green with this step.
+
+**Green 3× in a row on the final code (5c1ca6e, 2026-10-11):** the run after the
+wording change, then two more by the main session — each `all checks passed`; control
+666 tests, 665 pass, 0 fail, 1 skipped; gateway `kaiak/e2e` 126.5 s and 122.6 s;
+cross-half e2e `ok`.
