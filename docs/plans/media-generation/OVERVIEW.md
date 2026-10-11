@@ -269,7 +269,10 @@ and an independent Codex review of a plain copy. The user ruled three findings �
 making on speech, batch item error text replaced — and the rest were fixed with
 tests: image `Retry-After` while a request runs, absurd WAV byte rates, untested
 paths, the batch cap counted before decoding, speech members read by exact name, JSON
-escapes in batch base64. `STEP-11-review-and-green.md` has the table.
+escapes in batch base64. `STEP-11-review-and-green.md` has the table. Before the
+merge (2026-10-11), a quick Codex review of those fixes and step 13: one low finding
+(a duplicate `endpoints` entry's schema path differs between halves, as every schema
+path may — kept), its route-by-route tests taken in (`STEP-13-endpoints-per-model.md`).
 
 **Verification status:** component, e2e and cross-half tests green, `check-all.sh` 3×
 in a row (2026-10-11). Live on the DGX (step 12, 2026-10-09/10): vLLM-Omni 0.30.0 with

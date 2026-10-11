@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -315,6 +316,158 @@ func TestEndpointsListShowsInTheModelLists(t *testing.T) {
 	}
 	if w := do(t, g.h, call{method: "GET", path: "/v1/models/claude-msg", key: workloadKey, header: anthropic}); w.Code != http.StatusOK {
 		t.Errorf("Anthropic entry of claude-msg: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// withEveryEndpoint edits the test config so that open and secret each have a
+// llama-server deployment and a vllm-omni one — between them serving every body
+// endpoint, so a refusal can come only from the model's endpoints list — and lists
+// listed as their endpoints (no list when nil).
+func withEveryEndpoint(t *testing.T, doc string, listed []string) string {
+	t.Helper()
+	var root map[string]any
+	if err := json.Unmarshal([]byte(doc), &root); err != nil {
+		t.Fatal(err)
+	}
+	backends := root["backends"].(map[string]any)
+	local := backends["local"].(map[string]any)
+	local["type"] = "llama-server"
+	backends["omni"] = map[string]any{"type": "vllm-omni", "base_url": local["base_url"]}
+	for _, name := range []string{"open", "secret"} {
+		m := root["models"].(map[string]any)[name].(map[string]any)
+		m["deployments"] = []any{
+			map[string]any{"backend": "local", "model": name},
+			map[string]any{"backend": "omni", "model": name},
+		}
+		if listed != nil {
+			m["endpoints"] = listed
+		}
+	}
+	b, err := json.Marshal(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// The endpoints list is judged on every body route, streaming or not, after the
+// model-access check and before limits (docs/specs/GATEWAY.md, Request pipeline,
+// stage 2): a caller without access to the model gets model_not_found, nothing about
+// its endpoints; one with access gets endpoint_not_served in the route's error shape,
+// nothing sent, nothing settled, and the group's one request a minute still free.
+func TestEndpointsListIsJudgedOnEveryRoute(t *testing.T) {
+	for _, ep := range bodyEndpoints {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%t", ep.name, stream), func(t *testing.T) {
+				g := newTestGateway(t)
+				listed, listedPath := "chat_completions", "/v1/chat/completions"
+				if ep.api == provider.ChatCompletions {
+					listed, listedPath = "embeddings", "/v1/embeddings"
+				}
+				g.apply(t, func(doc string) string {
+					doc = replaceOnce(t, doc, `"eval": { "parent": "research", "allowed_models": ["*"] }`,
+						`"eval": { "parent": "research", "allowed_models": ["*"], "limits": [{ "type": "requests_per_minute", "value": 1 }] }`)
+					return withEveryEndpoint(t, doc, []string{listed})
+				})
+				// One body every route reads cleanly: each takes the members it owns.
+				body := fmt.Sprintf(`{"model":"secret","stream":%t,"messages":[],"max_tokens":1,"input":"hi","prompt":"hi",`+
+					`"query":"q","documents":["a"],"items":[{"input":"hi"}]}`, stream)
+				if ep.api.Format() == provider.FormatResponses {
+					body = fmt.Sprintf(`{"model":"secret","stream":%t,"input":"hi"}`, stream)
+				}
+				anthropic := ep.api.Format() == provider.FormatMessages
+
+				c := call{method: "POST", path: ep.route(), key: userKey, body: body}
+				w := do(t, g.h, c)
+				if anthropic {
+					expectAnthropicError(t, w, http.StatusNotFound, "not_found_error", "model_not_found")
+				} else {
+					expectError(t, w, http.StatusNotFound, "model_not_found")
+				}
+				if strings.Contains(w.Body.String(), "endpoints") {
+					t.Errorf("the model-access refusal tells of the endpoints list: %s", w.Body.String())
+				}
+
+				c.key = workloadKey
+				w = do(t, g.h, c)
+				if anthropic {
+					expectAnthropicError(t, w, http.StatusBadRequest, "invalid_request_error", "endpoint_not_served")
+				} else {
+					expectError(t, w, http.StatusBadRequest, "endpoint_not_served")
+				}
+				if !strings.Contains(w.Body.String(), `"message":"`+notListed(ep.route())+`"`) {
+					t.Errorf("refusal %s, want the message %q", w.Body.String(), notListed(ep.route()))
+				}
+				if n, u := len(g.backend.Requests()), len(g.usage.all()); n != 0 || u != 0 {
+					t.Fatalf("%d backend requests and %d usage records, want none", n, u)
+				}
+
+				listedCall := call{method: "POST", path: listedPath, key: workloadKey, body: `{"model":"secret","messages":[],"input":"hi"}`}
+				if w := do(t, g.h, listedCall); w.Code != http.StatusOK {
+					t.Fatalf("the listed endpoint after the refusal: %d %s, want the request slot free", w.Code, w.Body.String())
+				}
+				expectError(t, do(t, g.h, listedCall), http.StatusTooManyRequests, "rate_limit_exceeded")
+			})
+		}
+	}
+}
+
+// A model's endpoints list follows the config applied: the refusal, /v1/models and
+// the Anthropic-shaped list, which shows the model only while its endpoints include
+// messages, change with each snapshot.
+func TestEndpointsListFollowsTheAppliedConfig(t *testing.T) {
+	g := newTestGateway(t)
+	for _, listed := range [][]string{nil, {"embeddings"}, {"messages", "messages_count_tokens"}, nil} {
+		g.apply(t, func(doc string) string { return withEveryEndpoint(t, doc, listed) })
+		want := slices.Clone(listed)
+		if listed == nil {
+			for _, ep := range bodyEndpoints {
+				want = append(want, ep.name)
+			}
+		}
+		slices.Sort(want)
+
+		for _, anthropic := range []bool{false, true} {
+			c := call{method: "GET", path: "/v1/models", key: workloadKey}
+			if anthropic {
+				c.header = map[string]string{"Anthropic-Version": "2023-06-01"}
+			}
+			w := do(t, g.h, c)
+			var list struct {
+				Data []struct {
+					ID        string
+					Endpoints []string
+				}
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil || w.Code != http.StatusOK {
+				t.Fatalf("list %v (Anthropic %t): %d (%v) %s", listed, anthropic, w.Code, err, w.Body.String())
+			}
+			i := slices.IndexFunc(list.Data, func(m struct {
+				ID        string
+				Endpoints []string
+			}) bool {
+				return m.ID == "open"
+			})
+			if shown := !anthropic || slices.Contains(want, "messages"); (i >= 0) != shown {
+				t.Fatalf("list %v (Anthropic %t): open shown %t, want %t", listed, anthropic, i >= 0, shown)
+			}
+			if i >= 0 && !slices.Equal(list.Data[i].Endpoints, want) {
+				t.Errorf("list %v (Anthropic %t): open lists %v, want %v", listed, anthropic, list.Data[i].Endpoints, want)
+			}
+		}
+
+		w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey,
+			body: `{"model":"open","messages":[]}`})
+		if slices.Contains(want, "chat_completions") {
+			if w.Code != http.StatusOK {
+				t.Errorf("list %v: chat %d %s, want it served", listed, w.Code, w.Body.String())
+			}
+		} else {
+			expectError(t, w, http.StatusBadRequest, "endpoint_not_served")
+			if msg := errorMessage(t, w); msg != notListed("/v1/chat/completions") {
+				t.Errorf("list %v: chat refused with %q, want the list's refusal", listed, msg)
+			}
+		}
 	}
 }
 

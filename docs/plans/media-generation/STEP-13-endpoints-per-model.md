@@ -241,3 +241,27 @@ metadata → Endpoints per model. No doc quoted the message elsewhere
 wording change, then two more by the main session — each `all checks passed`; control
 666 tests, 665 pass, 0 fail, 1 skipped; gateway `kaiak/e2e` 126.5 s and 122.6 s;
 cross-half e2e `ok`.
+
+**Codex review before the merge** (2026-10-11, at the user's request): an independent
+Codex review of a plain copy, on the change since the step 11 review (the fixes for
+its findings and this step). No high or medium findings; one low:
+- **B1, the duplicate-entry path differs between halves:** a duplicated `endpoints`
+  entry is refused `schema` on both, the gateway pointing at the duplicate
+  (`/models/<model>/endpoints/1`), `kaiak-control` at the list (AJV's `uniqueItems`
+  path). Reproduced. **Not changed:** the shared fixtures judge a `schema` refusal by
+  its kind, never its path — each half's validator words its own (every other
+  `uniqueItems` list, `deployments`, `reasoning_efforts`, `allowed_models`, differs
+  the same way, as do other schema paths); the refusal and its code agree, and no
+  spec promises one path.
+- **Its passing tests taken in** (`gateway/internal/server/endpoints_test.go`):
+  `TestEndpointsListIsJudgedOnEveryRoute` — every body route, streaming and not: a
+  caller without access gets `model_not_found` with nothing of the list, one with
+  access the list's refusal in the route's shape, nothing sent or settled, the one
+  request a minute still free; `TestEndpointsListFollowsTheAppliedConfig` — the
+  refusal, `/v1/models` and the Anthropic-shaped list follow each applied list.
+  Checked by disabling the list check (`findServingDeployments`): the first fails on
+  all 22 route cases; the second once it asserts the list's own message, not only the
+  code the type-level refusal shares (added here).
+  `scripts/check-all.sh` with them, green: `all checks passed`; control 666 tests,
+  665 pass, 0 fail, 1 skipped; gateway `kaiak/e2e` 124.5 s; cross-half e2e `ok`
+  75.6 s.
