@@ -9,6 +9,8 @@
 // the server played can lack endpoints the way each server lacks them. Speech, the
 // speech batch and image generation answer as vLLM-Omni does, and a model can be
 // played as one that does not speak or does not draw, as vLLM-Omni answers for it.
+// Speech-to-text answers in vLLM's shape or llama-server's, and a model can be played
+// as one that does not hear audio, as each server answers for it.
 package main
 
 import (
@@ -47,6 +49,8 @@ func main() {
 	nonSpeech := flag.String("non-speech-models", "", `comma-separated models whose speech is answered as vLLM-Omni answers it on a model with no speech stage: 400 "TTS model did not produce audio output." (the speech batch: 400, as on a pure-diffusion server)`)
 	nonImage := flag.String("non-image-models", "", `comma-separated models whose image generation is answered as vLLM-Omni answers it on a model with no diffusion stage: 503 "No diffusion stage found in multi-stage pipeline."`)
 	imageServed := flag.String("image-served-model", "", `the server's served model name, which image generation compares a request's model with, as vLLM-Omni does: another model is answered 400 "Model mismatch" ("": none compared)`)
+	transcriptionShape := flag.String("transcription-shape", "vllm", "the server whose speech-to-text answers and errors the backend sends: vllm, llama-server")
+	nonAudio := flag.String("non-audio-models", "", `comma-separated models whose transcription is answered as each server answers one on a model that does not hear audio: vLLM 404 {"detail":"Not Found"}, llama-server 501 not_supported_error`)
 	flag.Parse()
 
 	if *cachedTokens < 0 || *cachedTokens > 7 {
@@ -58,6 +62,11 @@ func main() {
 	shape, ok := map[string]fakebackend.RerankShape{"vllm": fakebackend.VLLMRerank, "llama-server": fakebackend.LlamaServerRerank}[*rerankShape]
 	if !ok {
 		log.Fatalf("fakebackend: unknown -rerank-shape %q", *rerankShape)
+	}
+	transcription, ok := map[string]fakebackend.TranscriptionShape{"vllm": fakebackend.VLLMTranscription,
+		"llama-server": fakebackend.LlamaServerTranscription}[*transcriptionShape]
+	if !ok {
+		log.Fatalf("fakebackend: unknown -transcription-shape %q", *transcriptionShape)
 	}
 	reply := fakebackend.Reply{Chunks: words(answer), HonorMaxTokens: true, CachedTokens: *cachedTokens}
 	switch *profile {
@@ -102,6 +111,10 @@ func main() {
 		backend.SetNonImageModels(strings.Split(*nonImage, ",")...)
 	}
 	backend.SetImageServedModel(*imageServed)
+	backend.SetTranscriptionShape(transcription)
+	if *nonAudio != "" {
+		backend.SetNonAudioModels(strings.Split(*nonAudio, ",")...)
+	}
 	fmt.Println("listening", backend.URL())
 
 	stop := make(chan os.Signal, 1)

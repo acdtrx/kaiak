@@ -31,9 +31,12 @@ func (m *vLLM) header() http.Header {
 
 // Send implements Provider. vLLM creates its routes from the loaded model's tasks —
 // no chat route on a reranker or embedding server, no embeddings or rerank route on a
-// chat server — so its answer to a path it does not have is as often a list naming an
-// endpoint the model's server lacks as a wrong base_url: one reading either way
-// (docs/specs/GATEWAY.md, Providers → A path the server does not have).
+// chat server, no transcription route on a model without transcription — so its
+// answer to a path it does not have is as often a list naming an endpoint the model's
+// server lacks as a wrong base_url: one reading either way (docs/specs/GATEWAY.md,
+// Providers → A path the server does not have). Every route runs its model check, whose
+// 404 names the model ("The model `…` does not exist."); a transcription's form is
+// rebuilt with the deployment's model (Request.Form), its JSON answer relayed as sent.
 func (m *vLLM) Send(ctx context.Context, req *Request) (Response, error) {
 	return sendWire(ctx, req, wireCall{
 		backend: m.backend, client: m.client, url: m.url(req.Endpoint.Path()), header: m.header(),

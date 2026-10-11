@@ -1,5 +1,5 @@
 {
-  "endpoints": ["chat_completions", "completions", "embeddings", "messages", "messages_count_tokens", "responses", "rerank"],
+  "endpoints": ["chat_completions", "completions", "embeddings", "messages", "messages_count_tokens", "responses", "rerank", "audio_transcriptions"],
   "base_url": "http://vllm:8000/v1",
   "credential": "sk-fixture-credential",
   "models_list": {

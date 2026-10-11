@@ -4,13 +4,14 @@
 // /openai/v1/ (Azure OpenAI's) and /anthropic/v1/ (Claude in Foundry's), and rerank
 // under /v1/ alone (vLLM's and llama-server's: neither Azure API has one), in vLLM's
 // answer shape or llama-server's (SetRerankShape), refusing a pair longer than its
-// context (SetRerankContext), and speech, the speech batch, image generation and image
+// context (SetRerankContext), speech, the speech batch, image generation and image
 // edits — an upload — under /v1/ alone (vLLM-Omni's: speech.go, speech_batch.go,
-// images.go); it answers as scripted by the test — a path it has no route for
-// (SetNoRoute), an endpoint it was not started for (SetNotSupported), a model that
-// does not speak (SetNonSpeechModels), one that does not draw (SetNonImageModels) and
-// one it does not run (SetImageServedModel) too — and records every request it
-// receives.
+// images.go), and speech-to-text — an upload — under /v1/ alone, in vLLM's shape or
+// llama-server's (SetTranscriptionShape; transcription.go); it answers as scripted by
+// the test — a path it has no route for (SetNoRoute), an endpoint it was not started
+// for (SetNotSupported), a model that does not speak (SetNonSpeechModels), one that does
+// not draw (SetNonImageModels), one it does not run (SetImageServedModel) and one that
+// does not hear (SetNonAudioModels) too — and records every request it receives.
 // Test tooling only: nothing in the gateway binary imports it; cmd/fakebackend runs it
 // as a process for the e2e test and the live-test kit.
 package fakebackend
@@ -74,7 +75,8 @@ type Reply struct {
 	EventDelay time.Duration
 	// AudioMillis is a speech answer's length in milliseconds (default
 	// DefaultAudioMillis), split across len(Chunks) pieces on the raw-audio and SSE
-	// streams; each speech batch item's too.
+	// streams; each speech batch item's too, and the audio a transcription heard (vLLM's
+	// seconds, its verbose_json duration).
 	AudioMillis int
 	// FailItems are the positions of the speech batch items whose result is an error
 	// (SpeechBatchItemError).
@@ -208,6 +210,11 @@ type Backend struct {
 	// image generation it refuses as a model with no diffusion stage.
 	imageModel string
 	nonImage   []string
+	// transcriptionShape is the server whose speech-to-text the backend plays;
+	// nonAudio are the models whose transcription it answers as one on a model that
+	// does not hear audio.
+	transcriptionShape TranscriptionShape
+	nonAudio           []string
 }
 
 // maxQueuedArrivals bounds requests queued for NextRequest; a test that never reads
@@ -404,6 +411,7 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 	rerankShape, rerankContext := b.rerankShape, b.rerankContext
 	noRoute, unrouted, notSupported, nonSpeech := b.noRoute, b.unrouted, b.notSupported, b.nonSpeech
 	imageModel, nonImage := b.imageModel, b.nonImage
+	transcriptionShape, models, nonAudio := b.transcriptionShape, b.models, b.nonAudio
 	if len(b.queued) > 0 {
 		reply = b.queued[0]
 		b.queued = b.queued[1:]
@@ -415,7 +423,7 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	switch endpoint {
 	case chatPath, completionPath, embeddingPath, messagesPath, countTokensPath, responsesPath, inputTokensPath:
-	case rerankPath, speechPath, speechBatchPath, imagesPath, imageEditsPath:
+	case rerankPath, speechPath, speechBatchPath, imagesPath, imageEditsPath, transcriptionPath:
 		ok = strings.HasPrefix(r.URL.Path, "/v1/")
 	default:
 		ok = false
@@ -485,9 +493,13 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if endpoint == imageEditsPath {
-		// An upload: its body is a form, never JSON.
+	// An upload: its body is a form, never JSON.
+	switch endpoint {
+	case imageEditsPath:
 		b.writeImageEdits(w, r, req, reply, imageModel)
+		return
+	case transcriptionPath:
+		b.writeTranscription(w, r, req, reply, transcriptionShape, models, nonAudio)
 		return
 	}
 

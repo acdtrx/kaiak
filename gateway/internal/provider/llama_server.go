@@ -30,7 +30,8 @@ func (m *llamaServer) header() http.Header {
 	return bearer(m.credential)
 }
 
-// Send implements Provider.
+// Send implements Provider. A transcription's form is rebuilt with the deployment's
+// model (Request.Form), its JSON answer relayed as sent.
 func (m *llamaServer) Send(ctx context.Context, req *Request) (Response, error) {
 	return sendWire(ctx, req, wireCall{
 		backend: m.backend, client: m.client, url: m.url(req.Endpoint.Path()), header: m.header(),
@@ -43,9 +44,10 @@ func (m *llamaServer) Send(ctx context.Context, req *Request) (Response, error) 
 // its HTTP layer gives every 404 that body, and it registers every route whatever its
 // model or flags, so the answer means the base_url is wrong (docs/specs/GATEWAY.md,
 // Providers → A path the server does not have). Its 501 for an endpoint it was not
-// started for is a backend 5xx, as any server error. A router-mode server answers a
-// model it does not have with 400 invalid_request_error ("model 'X' not found"), not
-// a 404: relayed as the caller's (docs/BACKLOG.md, llama-server router mode).
+// started for, or a transcription its model has no audio encoder for, is a backend
+// 5xx, as any server error. A router-mode server answers a model it does not have
+// with 400 invalid_request_error ("model 'X' not found"), not a 404: relayed as the
+// caller's (docs/BACKLOG.md, llama-server router mode).
 func (m *llamaServer) unknownPath(answer []byte) bool {
 	e, ok := readErrorAnswer(answer)
 	return ok && e.Type == "not_found_error" && e.Message == "File Not Found"

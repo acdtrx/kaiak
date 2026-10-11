@@ -377,7 +377,7 @@ const inFlightRetry = 2 * time.Second
 // blockedByRunning reports whether c, refusing need at now, would admit it were its
 // in-flight reservations gone — a token or image limit only: a request limit keeps
 // counting the request in its slot once it settles, and the limits that reserve
-// nothing (USD, audio generated) hold no reservation.
+// nothing (USD, audio generated and processed) hold no reservation.
 func (c *counter) blockedByRunning(now time.Time, need int64) bool {
 	if c.measure != config.MeasureTokens && c.measure != config.MeasureImages {
 		return false
@@ -426,9 +426,9 @@ type Need struct {
 	// Media are the media measures the request counts toward, each with what it
 	// reserves before the request runs: an image request's images (the n it asks
 	// for), nothing for the audio a speech request generates (its length is known
-	// only once relayed), the measured seconds of audio a request uploads. A media
-	// limit applies only to a request whose Need names its measure: a full image or
-	// audio window refuses only requests that would add to it.
+	// only once relayed) or a transcription processes (known only from its answer). A
+	// media limit applies only to a request whose Need names its measure: a full image
+	// or audio window refuses only requests that would add to it.
 	Media map[config.Measure]int64
 }
 
@@ -474,7 +474,7 @@ func applies(m config.Measure, s Subject, n Need) bool {
 // need is what a request needing n reserves on c: one request, its token estimate,
 // its media amount, or nothing for cost (known only after the request; the check is
 // then that the window is still below its limit) and for a media measure reserving
-// nothing (audio generated, checked the same way).
+// nothing (audio generated and processed, checked the same way).
 func need(c *counter, n Need) int64 {
 	switch c.measure {
 	case config.MeasureRequests:

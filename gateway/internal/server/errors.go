@@ -303,6 +303,13 @@ func errOutputLimitNegative(param string, value int64) *apiError {
 		message: fmt.Sprintf("Invalid '%s': integer below minimum value. Expected a value >= 0, but got %d instead.", param, value)}
 }
 
+// errMissingFile refuses a transcription without its file part, the audio
+// (docs/specs/GATEWAY.md, Client API → owned parts: speech-to-text).
+func errMissingFile() *apiError {
+	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest,
+		code: "missing_required_parameter", class: metrics.ErrorInvalidRequest, param: "file", message: "Missing required parameter: 'file'."}
+}
+
 func errMissingModel() *apiError {
 	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest,
 		code: "missing_required_parameter", class: metrics.ErrorInvalidRequest, param: "model", message: "Missing required parameter: 'model'."}
@@ -495,13 +502,16 @@ func errExternalReference(param string) *apiError {
 		message: fmt.Sprintf("'%s' names something for the backend to fetch or read (a URL or a file path); the gateway sends only inline data.", param)}
 }
 
-// errExtraParams refuses a speech or image request naming extra_params, whatever its
-// value (docs/specs/GATEWAY.md, Client API → owned fields: speech, images): vLLM-Omni
-// hands it to the model — a speech model's adapter, a diffusion pipeline's extra
-// arguments — which can fetch or read what a key names, and which keys do is the
-// model's, unknown to the gateway. The message names the member, never its value.
-func errExtraParams() *apiError {
+// errExtraParams refuses a member or part handing the model parameters of its own,
+// whatever its value (docs/specs/GATEWAY.md, Client API → owned fields: speech, images;
+// owned parts: speech-to-text): a speech or image request's extra_params, which
+// vLLM-Omni hands to the model — a speech model's adapter, a diffusion pipeline's extra
+// arguments — and a transcription's vllm_xargs, which vLLM hands to the model as extra
+// arguments. A model can fetch or read what a key names, and which keys do is the
+// model's, unknown to the gateway. param names the member or part; the message never
+// echoes its value.
+func errExtraParams(param string) *apiError {
 	return &apiError{status: http.StatusBadRequest, errType: typeInvalidRequest, code: "external_reference_unsupported", class: metrics.ErrorInvalidRequest,
-		param: "extra_params", message: "'extra_params' passes model-specific parameters the backend can fetch or read (a URL or a file path) " +
-			"with; the gateway does not send it."}
+		param: param, message: fmt.Sprintf("'%s' passes model-specific parameters the backend can fetch or read (a URL or a file path) "+
+			"with; the gateway does not send it.", param)}
 }

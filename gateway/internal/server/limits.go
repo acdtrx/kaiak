@@ -111,12 +111,8 @@ func errLimited(r *limits.Rejection) *apiError {
 			r.Scope(), r.Limit, r.Type.Window(), r.Used, retry)
 	case config.MeasureAudioSecondsIn:
 		e.errType = "audio_seconds"
-		e.message = fmt.Sprintf("Rate limit reached: %s limit of %d seconds of audio processed per %s (used %d, requested %d). Retry after %s.",
-			r.Scope(), r.Limit, r.Type.Window(), r.Used, r.Requested, retry)
-		if r.Requested > r.Max {
-			e.message = fmt.Sprintf("Request too large: its audio is %d seconds and the %s limit is %d seconds of audio processed per %s.",
-				r.Requested, r.Scope(), r.Max, r.Type.Window())
-		}
+		e.message = fmt.Sprintf("Rate limit reached: %s limit of %d seconds of audio processed per %s (used %d). Retry after %s.",
+			r.Scope(), r.Limit, r.Type.Window(), r.Used, retry)
 	default:
 		e.errType = "budget"
 		e.code, e.class = "budget_exceeded", metrics.ErrorBudgetExceeded

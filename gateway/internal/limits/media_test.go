@@ -9,9 +9,9 @@ import (
 )
 
 // The media limits (docs/specs/GATEWAY.md, Limits → Check and reserve): images reserve
-// the request's count and settle to the answer's, audio generated reserves nothing and
-// settles after, audio processed reserves the measured seconds. Each applies only to a
-// request that would add to it.
+// the request's count and settle to the answer's, audio generated and audio processed
+// reserve nothing and settle after. Each applies only to a request that would add to
+// it.
 
 // mediaRecord is a record carrying media units, with tokens beside them.
 func mediaRecord(images, audioOut, audioIn int64) accounting.UsageRecord {
@@ -22,17 +22,15 @@ func mediaRecord(images, audioOut, audioIn int64) accounting.UsageRecord {
 	return rec
 }
 
-// The needs of an image request asking for n images, a speech request and a request
-// uploading seconds of audio, each with a token estimate.
+// The needs of an image request asking for n images, a speech request and a
+// transcription, each with a token estimate.
 func imageNeed(n int64) Need {
 	return Need{Tokens: 10, Media: map[config.Measure]int64{config.MeasureImages: n}}
 }
 
 var speechNeed = Need{Tokens: 10, Media: map[config.Measure]int64{config.MeasureAudioSecondsOut: 0}}
 
-func uploadNeed(seconds int64) Need {
-	return Need{Tokens: 10, Media: map[config.Measure]int64{config.MeasureAudioSecondsIn: seconds}}
-}
+var transcriptionNeed = Need{Tokens: 10, Media: map[config.Measure]int64{config.MeasureAudioSecondsIn: 0}}
 
 // reserve reserves need for s and fails if it is refused.
 func reserve(t *testing.T, l *Limiter, s Subject, need Need) *Reservation {
@@ -187,25 +185,40 @@ func TestAudioGeneratedLimitsSettleAfterTheRequest(t *testing.T) {
 	}
 }
 
-// Audio processed reserves the seconds measured from the upload, admitted while they
-// fit, and settles to the record's seconds.
-func TestAudioProcessedLimitsReserveTheMeasuredSeconds(t *testing.T) {
+// Audio processed reserves nothing — a transcription's seconds are known only from its
+// answer — so, as audio generated, a limit refuses once its window has reached its
+// value, and requests in flight then can pass it. Only transcriptions meet it.
+func TestAudioProcessedLimitsSettleAfterTheRequest(t *testing.T) {
 	for _, typ := range []config.LimitType{config.LimitAudioSecondsInPerMinute, config.LimitAudioSecondsInPerHour} {
 		t.Run(string(typ), func(t *testing.T) {
 			l := newClock("2026-09-24T10:30:00Z").limiter(holderOf(snapshot(t, limitsDoc{global: limitJSON(typ, "100")})))
-			res := reserve(t, l, workload, uploadNeed(60))
-			rej := refusedNeed(t, l, workload, uploadNeed(60))
-			if rej.Type != typ || rej.Measure != config.MeasureAudioSecondsIn || rej.Scope() != ScopeGlobal ||
-				rej.Used != 60 || rej.Requested != 60 {
-				t.Errorf("rejection %+v, want the global audio-processed limit: 60 requested, 60 used", rej)
+			first := reserve(t, l, workload, transcriptionNeed)
+			if got := used(t, l, "", typ); got != 0 {
+				t.Fatalf("used %d after a transcription's reservation, want 0: nothing is reserved", got)
 			}
-			l.Settle(res, mediaRecord(0, 0, 58))
+			l.Settle(first, mediaRecord(0, 0, 58))
 			if got := used(t, l, "", typ); got != 58 {
-				t.Errorf("used %d after settling, want the record's 58", got)
+				t.Fatalf("used %d after settling, want the record's 58", got)
 			}
-			reserve(t, l, workload, uploadNeed(42))
-			refusedNeed(t, l, workload, uploadNeed(1))
+			// 58 of 100: two more are admitted, and both run past the value.
+			second, third := reserve(t, l, workload, transcriptionNeed), reserve(t, l, workload, transcriptionNeed)
+			l.Settle(second, mediaRecord(0, 0, 30))
+			l.Settle(third, mediaRecord(0, 0, 30))
+			if got := used(t, l, "", typ); got != 118 {
+				t.Fatalf("used %d, want 118: the requests in flight passed the value", got)
+			}
+			rej := refusedNeed(t, l, workload, transcriptionNeed)
+			if rej.Type != typ || rej.Measure != config.MeasureAudioSecondsIn || rej.Scope() != ScopeGlobal ||
+				rej.Limit != 100 || rej.Used != 118 || rej.Requested != 0 {
+				t.Errorf("rejection %+v, want the global audio-processed limit: 118 of 100 used, nothing requested", rej)
+			}
+			if rej.Headers.Requests != nil || rej.Headers.Tokens != nil {
+				t.Errorf("an audio limit sends no rate-limit headers: %+v", rej.Headers)
+			}
+			// Chat, speech and image requests meet no audio-processed limit.
+			admitN(t, l, workload, 1, 10)
 			reserve(t, l, workload, speechNeed)
+			reserve(t, l, workload, imageNeed(1))
 		})
 	}
 }
@@ -217,7 +230,7 @@ func TestEveryScopeKeepsItsMediaHourCounts(t *testing.T) {
 	l := newClock("2026-09-24T10:30:00Z").limiter(holderOf(snapshot(t, limitsDoc{})))
 	l.Settle(reserve(t, l, workload, imageNeed(2)), mediaRecord(3, 0, 0))
 	l.Settle(reserve(t, l, workload, speechNeed), mediaRecord(0, 7, 0))
-	l.Settle(reserve(t, l, workload, uploadNeed(5)), mediaRecord(0, 0, 5))
+	l.Settle(reserve(t, l, workload, transcriptionNeed), mediaRecord(0, 0, 5))
 	for _, group := range []string{"", "t", "w"} {
 		for typ, want := range map[config.LimitType]int64{
 			config.LimitImagesPerHour: 3, config.LimitAudioSecondsOutPerHour: 7, config.LimitAudioSecondsInPerHour: 5,
@@ -274,9 +287,12 @@ func TestMediaWindowsInControlPlaneMode(t *testing.T) {
 	if rej := refusedNeed(t, l, workload, speechNeed); rej.Type != config.LimitAudioSecondsOutPerHour || rej.Used != 600 {
 		t.Errorf("rejection %+v, want the team's audio hour at 600 of 600", rej)
 	}
-	// 850 pushed: 60 s of upload do not fit 900, 50 do.
-	refusedNeed(t, l, workload, uploadNeed(60))
-	reserve(t, l, workload, uploadNeed(50))
+	// 850 pushed: a transcription is admitted, and its 60 s settled take the hour to
+	// 910 of 900, the next refused.
+	l.Settle(reserve(t, l, workload, transcriptionNeed), inGeneration(1, mediaRecord(0, 0, 60)))
+	if rej := refusedNeed(t, l, workload, transcriptionNeed); rej.Type != config.LimitAudioSecondsInPerHour || rej.Used != 910 {
+		t.Errorf("rejection %+v, want the team's audio-processed hour at 910 of 900", rej)
+	}
 
 	// The push counting batch 1 takes the 3 images into the base.
 	l.TakeTotals(Totals{LiveGateways: 2, Windows: []PushedWindow{

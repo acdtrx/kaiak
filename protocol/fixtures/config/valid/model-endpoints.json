@@ -6,6 +6,7 @@
     "vllm-embed": { "type": "vllm", "base_url": "http://vllm-embed:8000/v1" },
     "vllm-rerank": { "type": "vllm", "base_url": "http://vllm-rerank:8000/v1" },
     "vllm-rerank-b": { "type": "vllm", "base_url": "http://vllm-rerank-b:8000/v1" },
+    "vllm-asr": { "type": "vllm", "base_url": "http://vllm-asr:8000/v1" },
     "llama": { "type": "llama-server", "base_url": "http://llama:8080/v1" },
     "omni-tts": { "type": "vllm-omni", "base_url": "http://omni-tts:8091/v1" },
     "omni-image": { "type": "vllm-omni", "base_url": "http://omni-image:8092/v1" },
@@ -52,6 +53,14 @@
       "endpoints": ["images_generations", "images_edits"],
       "metadata": {
         "context_length": 1024,
+        "capabilities": { "streaming": false, "tools": false, "vision": false, "reasoning": false }
+      }
+    },
+    "asr": {
+      "deployments": [{ "backend": "vllm-asr", "model": "org/asr-model" }],
+      "endpoints": ["audio_transcriptions"],
+      "metadata": {
+        "context_length": 4096,
         "capabilities": { "streaming": false, "tools": false, "vision": false, "reasoning": false }
       }
     },

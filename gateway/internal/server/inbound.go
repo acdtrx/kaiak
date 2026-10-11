@@ -39,21 +39,24 @@ type inboundFields struct {
 	Sequences int64
 	// Media are the media measures the request counts toward, each with what it
 	// reserves before it runs (limits.Need.Media): the images an image request asks
-	// for, nothing for the audio a speech request generates, the measured seconds of
-	// audio a request uploads. nil for a request that produces no media, which no
-	// media limit refuses.
+	// for, nothing for the audio a speech request generates or a transcription
+	// processes — both known only from the answer. nil for a request that produces no
+	// media, which no media limit refuses.
 	Media map[config.Measure]int64
 	// Speech is what a speech request or a speech batch says about its answer — the
 	// sample rate its PCM comes at, a batch item's, whether it is the raw-audio
 	// stream — which its meters read.
 	Speech accounting.Speech
+	// Transcription is what a speech-to-text request says about its answer — whether
+	// it asked for verbose_json — which its meter reads.
+	Transcription accounting.Transcription
 }
 
 // mediaRequest is what the request says about its answer, which its meters read: a
 // speech request's or batch's Speech, the images an image request asks for (its
-// image reservation).
+// image reservation), a transcription's Transcription.
 func (f *inboundFields) mediaRequest() accounting.MediaRequest {
-	return accounting.MediaRequest{Speech: f.Speech, Images: f.Media[config.MeasureImages]}
+	return accounting.MediaRequest{Speech: f.Speech, Images: f.Media[config.MeasureImages], Transcription: f.Transcription}
 }
 
 // readInbound parses a body endpoint's request: an upload's under its own rules
@@ -230,7 +233,7 @@ func parseImagesFields(rq *request, top map[string]json.RawMessage) *apiError {
 		return errExternalReference("lora")
 	}
 	if _, present := top["extra_params"]; present {
-		return errExtraParams()
+		return errExtraParams("extra_params")
 	}
 	rq.inbound.Media = map[config.Measure]int64{config.MeasureImages: images}
 	return nil

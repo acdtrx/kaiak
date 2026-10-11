@@ -694,9 +694,9 @@ func TestMediaAmountsMeetTheLimitsOfTheirMeasure(t *testing.T) {
 	}
 }
 
-// The media refusals' messages: a request asking for more images, or uploading more
-// seconds, than a limit's whole value is too large; audio processed names what it
-// asked for.
+// The media refusals' messages: a request asking for more images than a limit's whole
+// value is too large; an audio-processed limit, which reserves nothing, names what its
+// window used.
 func TestMediaRefusalMessages(t *testing.T) {
 	for _, c := range []struct {
 		r    limits.Rejection
@@ -705,10 +705,8 @@ func TestMediaRefusalMessages(t *testing.T) {
 		{limits.Rejection{Type: config.LimitImagesPerHour, Measure: config.MeasureImages, Limit: 5, Max: 10, Requested: 11},
 			"Request too large: it asks for 11 images and the global limit is 10 images per hour."},
 		{limits.Rejection{Type: config.LimitAudioSecondsInPerMinute, Measure: config.MeasureAudioSecondsIn, Group: "g",
-			Limit: 60, Max: 60, Used: 50, Requested: 20, RetryAfter: 10 * time.Second},
-			"Rate limit reached: group limit of 60 seconds of audio processed per minute (used 50, requested 20). Retry after 10s."},
-		{limits.Rejection{Type: config.LimitAudioSecondsInPerHour, Measure: config.MeasureAudioSecondsIn, Max: 60, Requested: 61},
-			"Request too large: its audio is 61 seconds and the global limit is 60 seconds of audio processed per hour."},
+			Limit: 60, Max: 60, Used: 64, RetryAfter: 10 * time.Second},
+			"Rate limit reached: group limit of 60 seconds of audio processed per minute (used 64). Retry after 10s."},
 	} {
 		if got := errLimited(&c.r); got.message != c.want || got.errType == "" {
 			t.Errorf("%s: %q (type %q), want %q", c.r.Type, got.message, got.errType, c.want)

@@ -242,6 +242,7 @@ func TestModelEndpointsResolve(t *testing.T) {
 	s := parseFixture(t, "model-endpoints.json")
 	for name, want := range map[string][]EndpointName{
 		"image": {EndpointImagesGenerations, EndpointImagesEdits},
+		"asr":   {EndpointAudioTranscriptions},
 		"chat": {EndpointChatCompletions, EndpointCompletions, EndpointMessages, EndpointMessagesCountTokens,
 			EndpointResponses},
 	} {

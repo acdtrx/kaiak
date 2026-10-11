@@ -28,9 +28,9 @@ type endpoint struct {
 	// none and settle no usage record.
 	operation string
 	// outputType is the endpoint's gen_ai.output.type on the log line and on its usage
-	// records: the convention's well-known "speech" or "image" for the media
-	// endpoints, which share their operation; "" for the others, where the gateway
-	// reads no output type.
+	// records: the convention's well-known "speech", "image" or "text" (speech-to-text)
+	// for the media endpoints, which share their operation; "" for the others, where
+	// the gateway reads no output type.
 	outputType string
 	// body: the endpoint is a POST carrying a request body in api's format — JSON, or
 	// an upload's form (upload) — passed through to a backend serving api; its route
@@ -54,8 +54,8 @@ type endpoint struct {
 	// one), Responses only max_output_tokens, speech and the speech batch only
 	// max_new_tokens (vLLM-Omni's: the codec tokens a speech model generates; a batch's
 	// items carry it too). Embeddings, rerank and the
-	// token-counting endpoints generate nothing, and image generation and edits have no
-	// output limit. The inbound stage reads these keys
+	// token-counting endpoints generate nothing, and image generation and edits and
+	// speech-to-text have no output limit. The inbound stage reads these keys
 	// alone: another output-limit key the client sends is not the endpoint's and
 	// passes untouched.
 	outputLimitKeys []string
@@ -90,6 +90,8 @@ var bodyEndpoints = []*endpoint{
 		outputLimitKeys: []string{"max_new_tokens"}, writesNoOutputLimit: true}),
 	newBodyEndpoint(provider.ImagesGenerations, endpoint{operation: "generate_content", outputType: "image"}),
 	newBodyEndpoint(provider.ImagesEdits, endpoint{operation: "generate_content", outputType: "image", upload: imageEditsUpload}),
+	newBodyEndpoint(provider.AudioTranscriptions, endpoint{operation: "generate_content", outputType: "text",
+		upload: transcriptionUpload}),
 }
 
 // newBodyEndpoint is row e of the body endpoint passing api through.

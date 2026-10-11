@@ -1,13 +1,9 @@
 package fakebackend
 
 import (
-	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
-	"mime"
-	"mime/multipart"
 	"net/http"
 	"slices"
 	"strconv"
@@ -78,19 +74,19 @@ func (b *Backend) SetNonImageModels(models ...string) {
 func (b *Backend) writeImages(w http.ResponseWriter, r *http.Request, req *Request, reply Reply,
 	top map[string]json.RawMessage, model, imageModel string, nonImage []string) {
 	if slices.Contains(nonImage, model) {
-		writeJSON(w, http.StatusServiceUnavailable, omniError(http.StatusServiceUnavailable, "Service Unavailable",
+		writeJSON(w, http.StatusServiceUnavailable, vllmError(http.StatusServiceUnavailable, "Service Unavailable",
 			"No diffusion stage found in multi-stage pipeline."))
 		return
 	}
 	if imageModel != "" && model != imageModel {
-		writeJSON(w, http.StatusBadRequest, omniError(http.StatusBadRequest, "Bad Request",
+		writeJSON(w, http.StatusBadRequest, vllmError(http.StatusBadRequest, "Bad Request",
 			fmt.Sprintf("Model mismatch: request specifies '%s' but server is running '%s'.", model, imageModel)))
 		return
 	}
 	n := 1
 	if raw, ok := top["n"]; ok && string(raw) != "null" {
 		if json.Unmarshal(raw, &n) != nil || n < 1 || n > imagesMaxN {
-			writeJSON(w, http.StatusBadRequest, omniError(http.StatusBadRequest, "BadRequestError",
+			writeJSON(w, http.StatusBadRequest, vllmError(http.StatusBadRequest, "BadRequestError",
 				fmt.Sprintf("n: Input should be between 1 and %d", imagesMaxN)))
 			return
 		}
@@ -98,7 +94,7 @@ func (b *Backend) writeImages(w http.ResponseWriter, r *http.Request, req *Reque
 	format := "b64_json"
 	_ = json.Unmarshal(top["response_format"], &format) // absent or null: b64_json
 	if format != "b64_json" {
-		writeJSON(w, http.StatusBadRequest, omniError(http.StatusBadRequest, "BadRequestError",
+		writeJSON(w, http.StatusBadRequest, vllmError(http.StatusBadRequest, "BadRequestError",
 			fmt.Sprintf("the fake does not play response_format %q", format)))
 		return
 	}
@@ -111,77 +107,25 @@ func (b *Backend) writeImages(w http.ResponseWriter, r *http.Request, req *Reque
 	b.writeImagesAnswer(w, r, req, reply, n*layers, size)
 }
 
-// editForm is an image edit's form as vLLM-Omni's route reads it: its text parts'
-// values by name, and how many file parts each name holds.
-type editForm struct {
-	text  map[string][]string
-	files map[string]int
-}
-
-// value is the form's text part name, and whether it has one.
-func (f editForm) value(name string) (string, bool) {
-	if v := f.text[name]; len(v) > 0 {
-		return v[0], true
-	}
-	return "", false
-}
-
-// readEditForm reads an upload's body as a multipart/form-data form under the boundary
-// its Content-Type names: a body of another type reads as an empty form, as
-// Starlette's does; ok is false for a form that does not parse. A part is a file part
-// when its Content-Disposition names a filename, even an empty one, as Starlette reads
-// it.
-func readEditForm(contentType string, body []byte) (form editForm, ok bool) {
-	form = editForm{text: map[string][]string{}, files: map[string]int{}}
-	mediaType, params, err := mime.ParseMediaType(contentType)
-	if err != nil || mediaType != "multipart/form-data" || params["boundary"] == "" {
-		return form, true
-	}
-	reader := multipart.NewReader(bytes.NewReader(body), params["boundary"])
-	for {
-		part, err := reader.NextRawPart()
-		if err == io.EOF {
-			return form, true
-		}
-		if err != nil {
-			return form, false
-		}
-		data, err := io.ReadAll(part)
-		if err != nil {
-			return form, false
-		}
-		_, disposition, err := mime.ParseMediaType(part.Header.Get("Content-Disposition"))
-		if err != nil {
-			return form, false
-		}
-		name := disposition["name"]
-		if _, file := disposition["filename"]; file {
-			form.files[name]++
-		} else {
-			form.text[name] = append(form.text[name], string(data))
-		}
-	}
-}
-
 // writeImageEdits answers an image edit, its body req.Body as received.
 func (b *Backend) writeImageEdits(w http.ResponseWriter, r *http.Request, req *Request, reply Reply, imageModel string) {
 	if r.ContentLength < 0 {
-		writeJSON(w, http.StatusBadRequest, omniError(http.StatusBadRequest, "BadRequestError",
+		writeJSON(w, http.StatusBadRequest, vllmError(http.StatusBadRequest, "BadRequestError",
 			"the fake takes an upload with its Content-Length"))
 		return
 	}
-	form, ok := readEditForm(r.Header.Get("Content-Type"), req.Body)
+	form, ok := readUploadForm(r.Header.Get("Content-Type"), req.Body)
 	if !ok {
-		writeJSON(w, http.StatusBadRequest, omniError(http.StatusBadRequest, "BadRequestError", "the form does not parse"))
+		writeJSON(w, http.StatusBadRequest, vllmError(http.StatusBadRequest, "BadRequestError", "the form does not parse"))
 		return
 	}
 	if model, ok := form.value("model"); ok && imageModel != "" && model != imageModel {
-		writeJSON(w, http.StatusBadRequest, omniError(http.StatusBadRequest, "Bad Request",
+		writeJSON(w, http.StatusBadRequest, vllmError(http.StatusBadRequest, "Bad Request",
 			fmt.Sprintf("Model mismatch: request specifies '%s' but server is running '%s'.", model, imageModel)))
 		return
 	}
 	if _, ok := form.value("prompt"); !ok {
-		writeJSON(w, http.StatusBadRequest, omniError(http.StatusBadRequest, "BadRequestError", "prompt: Field required"))
+		writeJSON(w, http.StatusBadRequest, vllmError(http.StatusBadRequest, "BadRequestError", "prompt: Field required"))
 		return
 	}
 	inputs := form.files["image"]
@@ -189,7 +133,7 @@ func (b *Backend) writeImageEdits(w http.ResponseWriter, r *http.Request, req *R
 		inputs = form.files["image[]"]
 	}
 	if inputs+len(form.text["url"])+len(form.text["url[]"]) == 0 {
-		writeJSON(w, http.StatusUnprocessableEntity, omniError(http.StatusUnprocessableEntity, "BadRequestError",
+		writeJSON(w, http.StatusUnprocessableEntity, vllmError(http.StatusUnprocessableEntity, "BadRequestError",
 			"Either 'image' or 'url' must be provided"))
 		return
 	}
@@ -197,17 +141,17 @@ func (b *Backend) writeImageEdits(w http.ResponseWriter, r *http.Request, req *R
 	if v, ok := form.value("n"); ok {
 		var err error
 		if n, err = strconv.Atoi(v); err != nil || n < 1 {
-			writeJSON(w, http.StatusBadRequest, omniError(http.StatusBadRequest, "BadRequestError", "n: Input should be at least 1"))
+			writeJSON(w, http.StatusBadRequest, vllmError(http.StatusBadRequest, "BadRequestError", "n: Input should be at least 1"))
 			return
 		}
 	}
 	if v, ok := form.value("response_format"); ok && v != "b64_json" {
-		writeJSON(w, http.StatusBadRequest, omniError(http.StatusBadRequest, "BadRequestError",
+		writeJSON(w, http.StatusBadRequest, vllmError(http.StatusBadRequest, "BadRequestError",
 			fmt.Sprintf("the fake does not play response_format %q", v)))
 		return
 	}
 	if v, ok := form.value("stream"); ok && strings.EqualFold(v, "true") {
-		writeJSON(w, http.StatusBadRequest, omniError(http.StatusBadRequest, "BadRequestError",
+		writeJSON(w, http.StatusBadRequest, vllmError(http.StatusBadRequest, "BadRequestError",
 			"Streaming is only supported for multi-stage pipelines"))
 		return
 	}

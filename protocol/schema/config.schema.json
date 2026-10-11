@@ -59,7 +59,7 @@
       "not": { "type": "string", "pattern": "/props$" }
     },
     "endpoint": {
-      "description": "A client API endpoint, by the name /v1/models lists it: chat_completions, completions, embeddings, messages, messages_count_tokens, responses, responses_input_tokens, rerank, audio_speech, audio_speech_batch, images_generations, images_edits.",
+      "description": "A client API endpoint, by the name /v1/models lists it: chat_completions, completions, embeddings, messages, messages_count_tokens, responses, responses_input_tokens, rerank, audio_speech, audio_speech_batch, images_generations, images_edits, audio_transcriptions.",
       "enum": [
         "chat_completions",
         "completions",
@@ -72,7 +72,8 @@
         "audio_speech",
         "audio_speech_batch",
         "images_generations",
-        "images_edits"
+        "images_edits",
+        "audio_transcriptions"
       ]
     },
     "date": {

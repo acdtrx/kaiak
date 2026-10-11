@@ -23,7 +23,7 @@ const speechFormats = "wav and pcm"
 // instructions, task_type, word_timestamps, … — is the backend's and passes untouched.
 func parseSpeechFields(rq *request, top map[string]json.RawMessage) *apiError {
 	if _, present := top["extra_params"]; present {
-		return errExtraParams()
+		return errExtraParams("extra_params")
 	}
 	if apiErr := readSpeechMode(rq, top); apiErr != nil {
 		return apiErr

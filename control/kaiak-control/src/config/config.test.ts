@@ -213,6 +213,14 @@ describe("one backend type per model and its endpoints", () => {
     ]);
   });
 
+  test("speech-to-text is served by vllm and llama-server alone", () => {
+    assert.deepEqual(issuesOf(withDeployments(["vllm-a", "vllm-b"], ["audio_transcriptions"])), []);
+    assert.deepEqual(issuesOf(withDeployments(["llama"], ["chat_completions", "audio_transcriptions"])), []);
+    assert.deepEqual(issuesOf(withDeployments(["omni"], ["audio_speech", "audio_transcriptions"])), [
+      { code: "endpoint-not-served", path: "/models/llama/endpoints/1" },
+    ]);
+  });
+
   test("each entry the model's type does not serve is reported at its index", () => {
     assert.deepEqual(issuesOf(withDeployments(["vllm-a", "vllm-b"], ["rerank", "responses_input_tokens", "audio_speech"])), [
       { code: "endpoint-not-served", path: "/models/llama/endpoints/1" },

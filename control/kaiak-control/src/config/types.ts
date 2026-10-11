@@ -40,6 +40,7 @@ export const MODEL_ENDPOINTS = [
   "audio_speech_batch",
   "images_generations",
   "images_edits",
+  "audio_transcriptions",
 ] as const;
 
 export type ModelEndpoint = (typeof MODEL_ENDPOINTS)[number];

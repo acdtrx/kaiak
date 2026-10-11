@@ -206,8 +206,9 @@ var listedRequests = map[provider.Endpoint]struct{ path, body string }{
 // model_not_found, nothing about its endpoints; one with access gets
 // endpoint_not_served in the route's error shape with the one message, nothing sent,
 // nothing settled, and the group's one request a minute still free for the listed
-// endpoint. An upload carries a form, and is never a stream: its stream part asking for
-// one is refused as the body is read, before the model is known.
+// endpoint. An upload carries a form — one every upload format reads cleanly, an image
+// edit's input image and a transcription's audio — and is never a stream: its stream
+// part asking for one is refused as the body is read, before the model is known.
 func TestEndpointsListIsJudgedOnEveryRoute(t *testing.T) {
 	for _, ep := range bodyEndpoints {
 		typ := config.BackendLlamaServer
@@ -241,7 +242,8 @@ func TestEndpointsListIsJudgedOnEveryRoute(t *testing.T) {
 				}
 				var header map[string]string
 				if ep.upload != nil {
-					body = formOf(textPart("model", "secret"), textPart("prompt", "hi"), filePart("image", "a.png", "image/png", "\x89PNG"))
+					body = formOf(textPart("model", "secret"), textPart("prompt", "hi"), filePart("image", "a.png", "image/png", "\x89PNG"),
+						filePart("file", "a.wav", "audio/wav", "RIFF"))
 					header = map[string]string{"Content-Type": formContentType}
 				}
 				anthropic := ep.api.Format() == provider.FormatMessages

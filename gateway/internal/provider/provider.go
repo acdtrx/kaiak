@@ -25,7 +25,7 @@ import (
 // over the client's request as received plus the routing decision, and gets back
 // status, headers and events already in the client's format (the endpoint's: OpenAI,
 // Messages or Responses JSON and SSE, a Rerank, Speech batch or Images JSON body — an
-// image edit's too — or Speech audio). A
+// image edit's too — a Speech-to-text JSON body, or Speech audio). A
 // translating provider converts on both sides; today's modules pass every request
 // through in its own format with the owned edits only (docs/specs/GATEWAY.md, Client
 // API → Client APIs).
@@ -57,6 +57,7 @@ const (
 	AudioSpeechBatch
 	ImagesGenerations
 	ImagesEdits
+	AudioTranscriptions
 )
 
 // Format is a client API format: the request and response shapes an endpoint speaks
@@ -85,6 +86,10 @@ const (
 	// FormatImageEdits: image edits, OpenAI's image edit API in its multipart form as
 	// vLLM-Omni serves it: an upload (Request.Form), answered as image generation is.
 	FormatImageEdits
+	// FormatSpeechToText: speech-to-text, OpenAI's transcription API as vLLM and
+	// llama-server serve it: an upload (Request.Form), answered by a JSON body carrying
+	// the text and the server's usage.
+	FormatSpeechToText
 )
 
 // endpoints holds each Endpoint's path below the API's version prefix
@@ -106,6 +111,7 @@ var endpoints = [...]struct {
 	AudioSpeechBatch:     {"audio/speech/batch", FormatSpeechBatch, config.EndpointAudioSpeechBatch},
 	ImagesGenerations:    {"images/generations", FormatImages, config.EndpointImagesGenerations},
 	ImagesEdits:          {"images/edits", FormatImageEdits, config.EndpointImagesEdits},
+	AudioTranscriptions:  {"audio/transcriptions", FormatSpeechToText, config.EndpointAudioTranscriptions},
 }
 
 // Path is the endpoint's path below the API's version prefix: a backend URL ends with

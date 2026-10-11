@@ -51,8 +51,9 @@ type UsageRecord struct {
 	// text_completion, embeddings, rerank or generate_content. Never sent: the
 	// protocol has no field for it; the usage metrics label the record with it.
 	Operation string `json:"-"`
-	// OutputType is the request's gen_ai.output.type, from its endpoint: speech or
-	// image for the media endpoints, "" for the others. Never sent, as Operation.
+	// OutputType is the request's gen_ai.output.type, from its endpoint: speech, image
+	// or text (speech-to-text) for the media endpoints, "" for the others. Never sent,
+	// as Operation.
 	OutputType string `json:"-"`
 }
 

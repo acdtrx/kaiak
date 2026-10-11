@@ -1,5 +1,5 @@
 {
-  "endpoints": ["chat_completions", "completions", "embeddings", "messages", "messages_count_tokens", "responses", "responses_input_tokens", "rerank"],
+  "endpoints": ["chat_completions", "completions", "embeddings", "messages", "messages_count_tokens", "responses", "responses_input_tokens", "rerank", "audio_transcriptions"],
   "base_url": "http://llama-server:8080/v1",
   "credential": "sk-fixture-credential",
   "models_list": {
