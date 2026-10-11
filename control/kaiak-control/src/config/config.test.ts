@@ -179,22 +179,21 @@ describe("group tree rules", () => {
   });
 });
 
-describe("endpoints list rule", () => {
-  // minimal.json's backend as vllm, plus a vllm-omni backend "omni", and its model on
-  // both, listing endpoints.
-  const withEndpoints = (endpoints: string[], omniBackend = "omni"): unknown => {
+describe("one backend type per model and its endpoints", () => {
+  // minimal.json with backends of three types, its model deployed on the named ones and
+  // listing endpoints.
+  const withDeployments = (backends: string[], endpoints: string[]): unknown => {
     const config = readJson(path.join(VALID_DIR, "minimal.json")) as {
       backends: Record<string, { type: string; base_url: string }>;
       models: { llama: Record<string, unknown> };
     };
-    const local = config.backends["local"];
-    assert.ok(local, "minimal.json has backend local");
-    local.type = "vllm";
-    config.backends["omni"] = { type: "vllm-omni", base_url: "http://omni/v1" };
-    config.models.llama["deployments"] = [
-      { backend: "local", model: "llama" },
-      { backend: omniBackend, model: "llama" },
-    ];
+    config.backends = {
+      "vllm-a": { type: "vllm", base_url: "http://vllm-a/v1" },
+      "vllm-b": { type: "vllm", base_url: "http://vllm-b/v1" },
+      llama: { type: "llama-server", base_url: "http://llama/v1" },
+      omni: { type: "vllm-omni", base_url: "http://omni/v1" },
+    };
+    config.models.llama["deployments"] = backends.map((backend) => ({ backend, model: "llama" }));
     config.models.llama["endpoints"] = endpoints;
     return config;
   };
@@ -203,19 +202,27 @@ describe("endpoints list rule", () => {
     return result.ok ? [] : result.issues.map(({ code, path: at }) => ({ code, path: at }));
   };
 
-  test("an endpoint one deployment's type serves passes, whatever the others serve", () => {
-    assert.deepEqual(issuesOf(withEndpoints(["rerank", "audio_speech", "messages_count_tokens", "completions"])), []);
+  test("deployments on one type pass, listing endpoints that type serves", () => {
+    assert.deepEqual(issuesOf(withDeployments(["vllm-a", "vllm-b"], ["chat_completions", "messages", "rerank"])), []);
   });
 
-  test("each endpoint no deployment's type serves is reported at its index", () => {
-    assert.deepEqual(issuesOf(withEndpoints(["rerank", "responses_input_tokens", "audio_speech"])), [
+  test("each entry the model's type does not serve is reported at its index", () => {
+    assert.deepEqual(issuesOf(withDeployments(["vllm-a", "vllm-b"], ["rerank", "responses_input_tokens", "audio_speech"])), [
       { code: "endpoint-not-served", path: "/models/llama/endpoints/1" },
+      { code: "endpoint-not-served", path: "/models/llama/endpoints/2" },
     ]);
   });
 
+  test("types that differ are reported once, at the first deployment whose type differs from the first's, and the list is not judged", () => {
+    // responses_input_tokens is served by llama-server alone, audio_speech by vllm-omni
+    // alone: against no one type could both be judged.
+    const doc = withDeployments(["vllm-a", "vllm-b", "llama", "omni"], ["responses_input_tokens", "audio_speech"]);
+    assert.deepEqual(issuesOf(doc), [{ code: "deployment-types-differ", path: "/models/llama/deployments/2/backend" }]);
+  });
+
   test("a model with a deployment on an unknown backend reports that alone", () => {
-    assert.deepEqual(issuesOf(withEndpoints(["responses_input_tokens"], "ghost")), [
-      { code: "deployment-backend-unknown", path: "/models/llama/deployments/1/backend" },
+    assert.deepEqual(issuesOf(withDeployments(["vllm-a", "llama", "ghost"], ["audio_speech"])), [
+      { code: "deployment-backend-unknown", path: "/models/llama/deployments/2/backend" },
     ]);
   });
 });

@@ -2,7 +2,14 @@
 
 export type { ValidationIssue } from "./schemas/index.ts";
 
-export { BACKEND_TYPES, MODEL_CAPABILITIES, MODEL_ENDPOINTS, resolveScopes, validateConfig } from "./config/index.ts";
+export {
+  BACKEND_TYPES,
+  ENDPOINT_SUPPORT,
+  MODEL_CAPABILITIES,
+  MODEL_ENDPOINTS,
+  resolveScopes,
+  validateConfig,
+} from "./config/index.ts";
 export type * from "./config/index.ts";
 
 export {

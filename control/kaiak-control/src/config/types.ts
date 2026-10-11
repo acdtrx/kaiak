@@ -1,6 +1,8 @@
 // The config document as TypeScript sees it once it has passed the schema.
 // protocol/schema/config.schema.json is the source of truth; these types follow it.
 
+import type { PROTOCOL_VERSION } from "../protocol/index.ts";
+
 // The backend type enum, as a value for apps that list or check types; a test pins it to
 // the schema's enum.
 export const BACKEND_TYPES = [
@@ -145,10 +147,12 @@ export interface CircuitSettings {
 }
 
 export interface Model {
+  // Identical instances: every deployment on a backend of the same type
+  // (deployment-types-differ).
   deployments: Deployment[];
-  // Narrows the endpoints its deployments' backend types serve; absent = all of them.
-  // Each entry must be served by one deployment's type (endpoint-not-served).
-  endpoints?: ModelEndpoint[];
+  // What the model serves, and all it serves: each entry one its backend type serves
+  // (endpoint-not-served).
+  endpoints: ModelEndpoint[];
   metadata: ModelMetadata;
   output_limit?: { default: number; ceiling: number };
   queue?: QueueSettings;
@@ -202,7 +206,8 @@ export interface Global {
 }
 
 export interface Config {
-  format_version: 6;
+  // The protocol version the document is written for, equal to Kaiak-Protocol's.
+  protocol_version: typeof PROTOCOL_VERSION;
   global: Global;
   backends: Record<string, Backend>;
   models: Record<string, Model>;

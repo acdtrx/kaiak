@@ -121,18 +121,6 @@ export function testInvalidFixtures(dir: string, validate: FixtureValidator, pre
   }
 }
 
-// The config format version every valid config carries: the config schema's const.
-export const CONFIG_FORMAT_VERSION = configFormatVersion();
-
-function configFormatVersion(): Config["format_version"] {
-  const schema = readJson(path.join(FIXTURES, "../schema/config.schema.json")) as {
-    properties: { format_version: { const: unknown } };
-  };
-  const version = schema.properties.format_version.const;
-  assert.equal(typeof version, "number", "the config schema's format_version is a number");
-  return version as Config["format_version"];
-}
-
 // A valid config distinguishable by its context length.
 export function configNumbered(n: number): Config {
   const config = fixture("config", "valid", "minimal.json") as Config;

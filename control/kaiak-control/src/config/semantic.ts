@@ -20,6 +20,7 @@ export type SemanticRuleCode =
   | "group-depth-exceeded"
   | "counters-exceeded"
   | "deployment-backend-unknown"
+  | "deployment-types-differ"
   | "endpoint-not-served"
   | "allowed-model-unknown"
   | "allowed-models-wildcard-mixed"
@@ -184,23 +185,33 @@ function countCounters(config: Config): number {
   return count;
 }
 
-// Each entry of a model's endpoints list is served by the backend type of at least one
-// of its deployments. A deployment on an unknown backend serves what cannot be known,
-// so such a model reports deployment-backend-unknown alone.
-function checkEndpoints(config: Config, model: Model, path: string, report: Report): void {
+// A model has one backend type: every deployment is on a backend of the first
+// deployment's type, reported once, at the first that is not (deployment-types-differ).
+// Each entry of its endpoints list is one that type serves (endpoint-not-served). A
+// deployment on an unknown backend is on a type that cannot be known, so such a model
+// reports deployment-backend-unknown alone; a model whose types differ has no one type
+// to judge its list against, so it reports deployment-types-differ alone.
+function checkBackendType(config: Config, model: Model, path: string, report: Report): void {
   const types: BackendType[] = [];
   for (const deployment of model.deployments) {
     const backend = Object.hasOwn(config.backends, deployment.backend) ? config.backends[deployment.backend] : undefined;
     if (backend === undefined) return;
     types.push(backend.type);
   }
-  (model.endpoints ?? []).forEach((endpoint, index) => {
-    if (!types.some((type) => ENDPOINT_SUPPORT[type].includes(endpoint))) {
-      report(
-        "endpoint-not-served",
-        pointer(path, "endpoints", index),
-        `none of the model's deployments is on a backend type serving ${endpoint}`,
-      );
+  const type = types[0];
+  if (type === undefined) return;
+  const differing = types.findIndex((other) => other !== type);
+  if (differing !== -1) {
+    report(
+      "deployment-types-differ",
+      pointer(path, "deployments", differing, "backend"),
+      `backend "${model.deployments[differing]?.backend}" is ${types[differing]}, the first deployment's ${type}: every deployment of a model is on a backend of one type`,
+    );
+    return;
+  }
+  model.endpoints.forEach((endpoint, index) => {
+    if (!ENDPOINT_SUPPORT[type].includes(endpoint)) {
+      report("endpoint-not-served", pointer(path, "endpoints", index), `the model's backend type ${type} does not serve ${endpoint}`);
     }
   });
 }
@@ -217,7 +228,7 @@ function checkModel(config: Config, name: string, model: Model, report: Report):
       );
     }
   });
-  checkEndpoints(config, model, path, report);
+  checkBackendType(config, model, path, report);
 
   const { metadata, output_limit: outputLimit } = model;
   if ((metadata.reasoning_efforts?.length ?? 0) > 0 && !metadata.capabilities.reasoning) {

@@ -5,11 +5,11 @@
   "description": "Everything a gateway needs to serve: backends, models, the group tree, keys and limits. Used by file mode, by the control plane's config event and by the sample control plane's config file. Cross-reference rules this schema cannot express are listed in docs/specs/CONTROL-PROTOCOL.md (Config) and checked by code in both halves.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["format_version", "global", "backends", "models", "keys"],
+  "required": ["protocol_version", "global", "backends", "models", "keys"],
   "properties": {
-    "format_version": {
-      "description": "Version of this document format. A different version is rejected, never migrated.",
-      "const": 6
+    "protocol_version": {
+      "description": "The protocol version this document is written for, equal to the Kaiak-Protocol header's (docs/specs/CONTROL-PROTOCOL.md, Shape: one version). A different version is rejected, never migrated.",
+      "const": 7
     },
     "global": { "$ref": "#/$defs/global" },
     "backends": {
@@ -299,10 +299,10 @@
     "model": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["deployments", "metadata"],
+      "required": ["deployments", "endpoints", "metadata"],
       "properties": {
         "deployments": {
-          "description": "Where the model is served. Requests are balanced across all of them.",
+          "description": "Where the model is served: identical instances, every one on a backend of the same type (deployment-types-differ). Requests are balanced across all of them.",
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
@@ -320,7 +320,7 @@
           }
         },
         "endpoints": {
-          "description": "The client API endpoints the model serves, narrowing those its deployments' backend types serve: a request to any other endpoint is refused (400 endpoint_not_served) before any backend, and /v1/models lists these. Omitted = every endpoint some deployment's type serves. Each must be served by at least one deployment's type (endpoint-not-served). Set it on a model whose server answers fewer endpoints than its type: a vLLM-Omni image or speech model, a reranker, an embedding model.",
+          "description": "The client API endpoints the model serves: a request to any other endpoint is refused (400 endpoint_not_served) before any backend, and /v1/models lists these. Each must be one the model's backend type serves (endpoint-not-served). List what the model's server answers, which follows the model it loaded: a chat model its chat endpoints, an embedding model embeddings, a reranker rerank, a vLLM-Omni model its speech or image endpoints.",
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,

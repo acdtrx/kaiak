@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import { describe, test } from "node:test";
+
+import { readJson } from "../test-support/index.ts";
 
 import {
   INSTANCE_HEADER,
@@ -53,16 +56,27 @@ describe("bearer token", () => {
 });
 
 describe("protocol version", () => {
-  test("the current version is 6 and passes", () => {
-    assert.equal(PROTOCOL_VERSION, 6);
-    assert.equal(checkProtocolVersion("6"), undefined);
+  test("the current version is 7 and passes", () => {
+    assert.equal(PROTOCOL_VERSION, 7);
+    assert.equal(checkProtocolVersion("7"), undefined);
   });
 
   test("another or missing version is a mismatch, a repeated one (joined by Node) included", () => {
-    for (const header of ["5", "7", "6.0", "", " 6", undefined, "6, 6"]) {
+    for (const header of ["6", "8", "7.0", "", " 7", undefined, "7, 7"]) {
       const error = checkProtocolVersion(header);
       assert.equal(error?.code, "protocol-version-mismatch", JSON.stringify(header));
       assert.equal(error?.status, 400);
+    }
+  });
+
+  // One version for the whole contract: a config document and a gateway status state
+  // it in protocol_version, whose schemas pin it as a const.
+  test("the config and status schemas' protocol_version is this version", () => {
+    for (const file of ["config.schema.json", "status.schema.json"]) {
+      const schema = readJson(path.resolve(import.meta.dirname, "../../schema", file)) as {
+        properties: { protocol_version: { const: unknown } };
+      };
+      assert.equal(schema.properties.protocol_version.const, PROTOCOL_VERSION, file);
     }
   });
 });

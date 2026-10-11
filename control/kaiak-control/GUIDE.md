@@ -2,7 +2,7 @@
 
 > For a coding agent (or a person) building the real kaiak control plane — the app with
 > the UI — in its own repository, on this library. Read it top to bottom before writing
-> code. It matches config format 6 and protocol version 6.
+> code. It matches protocol version 7.
 >
 > Background, in this order: `docs/architecture/control-plane.html` (how gateways and a
 > control plane work together, with diagrams), `docs/specs/CONTROL-PROTOCOL.md` (the
@@ -82,7 +82,7 @@ something the protocol needs, the change belongs in the kaiak repo (§11).
 - It depends on `fastify` (5.x) and `ajv`. Use the same Fastify major in your app.
 - Pin the kaiak version you build against: gateways and control plane must speak the
   same protocol version (a mismatch is refused on both sides — no multi-version
-  support).
+  support), and the config documents your app composes state it (§7).
 
 ## 4. The minimal host app
 
@@ -373,8 +373,16 @@ re-price.
 
 The config document is the one format everything shares: `schema/config.schema.json`
 in the package, `examples/config.json` in the kaiak repo, field meanings in
-`CONTROL-PROTOCOL.md` → Config. Top level: `format_version: 6`, `global`, `backends`,
+`CONTROL-PROTOCOL.md` → Config. Top level: `protocol_version`, `global`, `backends`,
 `models`, `keys`, and optional `groups` — each collection an object keyed by ID.
+
+**`protocol_version` is the protocol version**, `PROTOCOL_VERSION` (7): one version
+covers the whole contract, the config document included, and a document must state
+the version the gateways speak (`CONTROL-PROTOCOL.md` → Shape → One version). A
+document of another version, or with none, is refused, never migrated: set it from
+`PROTOCOL_VERSION` when you compose the document. A bump can change what a valid
+document holds (a field made required, a new rule), so moving your kaiak pin across
+one is work on your composer, not only a new number.
 
 **Backends and models: what a UI must know.** The rules are `CONTROL-PROTOCOL.md` →
 Config → Backend types, and `GATEWAY.md` → Providers (each type's behavior, Endpoint
@@ -388,14 +396,26 @@ support, Base URLs) and → Model metadata.
   clients ask for, and priority bills about twice the prices config holds.
   `verifyBackend` notes a vLLM or llama-server answer under another type (§8) — but
   not a vLLM answer under `vllm-omni`: vLLM-Omni serves vLLM's own models list.
-- The type decides which client APIs reach a model: the gateway passes each request
-  through to a backend speaking the same API and translates nothing, so a model gets
-  the endpoints its deployments' types serve (a Claude model is Messages-only).
-  A model's optional `endpoints` list narrows them to what its server answers
-  (`GATEWAY.md` → Model metadata: Endpoints per model) — offer it for vLLM-Omni
-  models, rerankers and embedding models, with `MODEL_ENDPOINTS` as its choices. It
-  never widens them: a listed endpoint none of the model's deployments' types serves
-  is refused (`endpoint-not-served`).
+- **A model has one backend type** (`CONTROL-PROTOCOL.md` → Config → One backend type
+  per model): every deployment is on a backend of the same type — identical instances,
+  the same server and the same model on each, differing only in capacity. A model with
+  deployments on two types is refused (`deployment-types-differ`, at the first
+  deployment whose type differs from the first one's). So one model name cannot fail
+  over between providers: Claude on Anthropic and on Microsoft Foundry, or a GPT model
+  on OpenAI and on Azure, are two models.
+- **Every model lists its `endpoints`** (required, at least one, no repeats): it
+  serves exactly what it lists, and `/v1/models` shows the list. The gateway passes
+  each request through to a backend speaking the same API and translates nothing, so
+  each entry must be one the model's type serves (`endpoint-not-served`; a Claude
+  model is Messages-only). List what the model's server answers, which follows the
+  model it loaded: a chat model its chat endpoints, an embedding model `embeddings`, a
+  reranker `rerank`, a vLLM-Omni model its speech or image endpoints (`GATEWAY.md` →
+  Model metadata: Endpoints per model).
+- **What a model form needs**: its deployments' backends offered from one type, the
+  first deployment's; then `ENDPOINT_SUPPORT[type]` — the endpoints that type serves,
+  by the names `MODEL_ENDPOINTS` lists — as the endpoint choices, from which the
+  operator picks those the loaded model answers. A type's whole set is rarely right:
+  a vLLM backend serving an embedding model does not answer chat.
 - `openai`, `azure-openai`, `anthropic` and `azure-anthropic` require `api_key_env`.
   What `base_url` holds depends on the type, and no type has a default: the
   descriptions of `type` and `base_url` in `schema/config.schema.json` give each

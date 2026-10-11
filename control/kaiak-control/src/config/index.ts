@@ -7,6 +7,7 @@ import type { ValidationIssue } from "../schemas/index.ts";
 import { checkSemantics } from "./semantic.ts";
 import type { Config } from "./types.ts";
 
+export { ENDPOINT_SUPPORT } from "./endpoint-support.ts";
 export { resolveScopes } from "./limits.ts";
 export type { ResolvedScope } from "./limits.ts";
 export type { SemanticRuleCode } from "./semantic.ts";

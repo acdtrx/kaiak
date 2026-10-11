@@ -68,7 +68,7 @@
       }
     },
     "units": {
-      "description": "Usage units; every record carries every unit, zeros included. tokens_in, tokens_cached and tokens_cache_write are disjoint and add up to the backend's prompt tokens; tokens_reasoning is the reasoning share of tokens_out. images are images generated; audio_seconds_out seconds of audio generated and audio_seconds_in seconds of audio processed, each measured by the gateway and rounded up to a whole second per record. Media units are disjoint from tokens: a speech record carries both.",
+      "description": "Usage units; every record carries every unit, zeros included. tokens_in, tokens_cached and tokens_cache_write are disjoint and add up to the backend's prompt tokens; tokens_reasoning is the reasoning share of tokens_out. images are images generated; audio_seconds_out seconds of audio generated, measured by the gateway; audio_seconds_in seconds of audio processed, as the backend reports them or as the gateway measures the upload; each rounded up to a whole second per record. Media units are disjoint from tokens: a speech or transcription record carries both.",
       "type": "object",
       "additionalProperties": false,
       "required": [

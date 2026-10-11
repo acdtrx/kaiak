@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, test } from "node:test";
 
-import { createControlPlane, createMemoryStore } from "kaiak-control";
+import { PROTOCOL_VERSION, createControlPlane, createMemoryStore } from "kaiak-control";
 import type { ControlPlane } from "kaiak-control";
 
 import { WATCH_TRIGGER, createConfigFile } from "./index.ts";
@@ -161,9 +161,8 @@ test("each failure kind is rejected, kept, and cleared by the next good run", as
   const badJson = await configFile.reload("manual");
   assert.ok(!badJson.ok && badJson.error.code === "json-invalid");
 
-  // The current format version, and nothing else a config needs.
-  const { format_version } = JSON.parse(readFileSync(MINIMAL, "utf8")) as { format_version: number };
-  writeFileSync(file, JSON.stringify({ format_version }));
+  // The current protocol version, and nothing else a config needs.
+  writeFileSync(file, JSON.stringify({ protocol_version: PROTOCOL_VERSION }));
   const invalid = await configFile.reload("manual");
   assert.ok(!invalid.ok && invalid.error.code === "config-invalid");
   assert.ok(invalid.error.code === "config-invalid" && invalid.error.issues.length > 0);
