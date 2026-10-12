@@ -1,6 +1,6 @@
 # Step 10 — review and green
 
-**Status:** fix pass done (2026-10-12); the 3× green run follows
+**Status:** done (2026-10-12) — findings fixed (bceb441), green 3× in a row
 
 ## Intent
 
@@ -393,3 +393,15 @@ Not established; if it recurs, keep the `-v` output.
 `FuzzFormReadsAsMimeMultipart` fuzzed 20 s each. No temporary file left in the repo
 (the oracle corpus generator was a test file, removed); the oracle and corpora are in
 `/tmp/kaiak-audit-b` (`oracle.c`, `oracle-bin`, `oracle*/`, `backslash_test.cpp`).
+
+### Verification (2026-10-12)
+
+- Both fix passes reviewed by the main session; committed as bceb441.
+- `scripts/check-all.sh` on bceb441, **3× in a row, green**: 22:11:18–22:15:07,
+  22:15:07–22:18:50, 22:18:50–22:22:37 UTC (`all checks passed` each), after one more
+  green run on the uncommitted tree (22:06–22:10).
+- The cross-half test run once more with `-v` across the top of an hour (22:59:15 →
+  23:00:36 UTC, `ok kaiak/e2e 80.588s`): the barrier holds; the one failure lost in
+  the fix pass did not recur.
+- The `/tmp` copies (`/tmp/kaiak`, `/tmp/kaiak-audit-b`, `/tmp/kaiak-audit-prompt.md`)
+  deleted; no process had its working directory in them.
