@@ -575,3 +575,9 @@ Observations, not mismatches:
   the pre-existing `/tmp/…Qwen-Qwen3.5-2B.lock` stays (cria's vLLM touched it). cria's
   config, `~/spark-setup` and the existing venvs and builds are unchanged.
 - On the Mac: no kit, gateway or fake process; both `-keep` workspaces deleted.
+
+### Verification after the fix (2026-10-12)
+
+`scripts/check-all.sh` on ce7231a (the fix, cf2065e, and this write-up), **3× in a row,
+green**: 12:08:05–12:11:58, 12:11:58–12:15:45, 12:15:45–12:19:34 UTC (`all checks
+passed` each).
