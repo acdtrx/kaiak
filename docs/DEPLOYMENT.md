@@ -1814,7 +1814,7 @@ Boot).
     three media units. The sample's page shows them. `MODEL_ENDPOINTS` lists the
     names a model's `endpoints` list takes, for a form's choices, and config
     validation reports the new code `endpoint-not-served`.
-- **Next release** (protocol 7):
+- **0.15.0** (protocol 7):
   - **Protocol 7 — gateways and the control plane upgrade together.** The two
     versions refuse each other (the first bullet above), and a protocol-6 config
     document is refused: move every config — the control plane's, a file, a seed —
