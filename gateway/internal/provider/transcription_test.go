@@ -59,7 +59,7 @@ func TestTranscriptionsReachVLLMAndLlamaServer(t *testing.T) {
 	}{
 		{config.BackendVLLM, fakebackend.VLLMTranscription, `{"text":"Hello from the fake","usage":{"seconds":3,"type":"duration"}}`},
 		{config.BackendLlamaServer, fakebackend.LlamaServerTranscription, `{"text":"Hello from the fake","type":"transcript.text.done",` +
-			`"usage":{"input_tokens":7,"input_tokens_details":{"audio_tokens":7,"text_tokens":0},"output_tokens":4,"total_tokens":11,` +
+			`"usage":{"input_tokens":7,"input_tokens_details":{"cached_tokens":0},"output_tokens":4,"total_tokens":11,` +
 			`"type":"tokens"}}`},
 	} {
 		t.Run(string(c.typ), func(t *testing.T) {

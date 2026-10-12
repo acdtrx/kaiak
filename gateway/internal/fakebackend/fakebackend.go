@@ -147,7 +147,9 @@ const (
 // is PromptTokens less the cached and written tokens, which are
 // cache_read_input_tokens and cache_creation_input_tokens; reasoning is not reported
 // apart. A Responses answer reports PromptTokens as input_tokens, with the cached and
-// written tokens in input_tokens_details and reasoning in output_tokens_details.
+// written tokens in input_tokens_details and reasoning in output_tokens_details; a
+// llama-server transcription PromptTokens as input_tokens, with the cached tokens in
+// input_tokens_details, as llama-server does — nothing else apart.
 type Usage struct {
 	PromptTokens     int
 	CompletionTokens int

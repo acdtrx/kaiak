@@ -1132,7 +1132,7 @@ own, and a client sending repeats is broken either way.
     with no usage;
   - speech-to-text (settled 2026-10-11; vLLM 0.30.0,
     `speech_to_text/base/serving.py` and `api_router.py`; llama.cpp b11526,
-    `tools/server/server-chat.cpp`), a JSON body:
+    `tools/server/server-chat.cpp` and `server-task.cpp`), a JSON body:
     - vLLM, `json` and `text`: `{"text", "usage": {"type": "duration", "seconds"}}`
       — `text` answers JSON too, never plain text; `diarized_json` (MOSS models) the
       same usage; `verbose_json`: `{"duration", "language", "text", "segments",
@@ -1140,7 +1140,9 @@ own, and a client sending repeats is broken either way.
       FireRedASR2) answer it, the others `400`;
     - llama-server: `{"type": "transcript.text.done", "text", "usage": {"type":
       "tokens", "input_tokens", "output_tokens", "total_tokens",
-      "input_tokens_details"}}`.
+      "input_tokens_details": {"cached_tokens"}}}` — `cached_tokens` the prompt
+      tokens read from the server's cache, included in `input_tokens`, always sent
+      (`to_json_oaicompat_asr`; its Responses answer carries the same detail).
 
   None of them carries a top-level `model` at the versions read; one that does gets
   it rewritten (Response model name, above). An event stream answering a batch, an
@@ -2616,7 +2618,7 @@ own, and a client sending repeats is broken either way.
     input images (Limits → The input estimate) — flagged `estimated`.
   - **Speech-to-text** (settled 2026-10-11, with the user; vLLM 0.30.0,
     `speech_to_text/base/serving.py`; llama.cpp b11526,
-    `tools/server/server-chat.cpp` and `tools/mtmd/mtmd-helper.cpp`):
+    `tools/server/server-chat.cpp`, `server-task.cpp` and `tools/mtmd/mtmd-helper.cpp`):
     - **`audio_seconds_in`**: the answer's seconds when it reports them, else the
       measured upload (below), else 0 and the record flagged `estimated` — one rule,
       which the model's one type turns into these figures:
@@ -2633,11 +2635,23 @@ own, and a client sending repeats is broken either way.
         WAV, FLAC and MP3 alone, so another format would fail there too; a file in
         one of them that the gateway does not measure is one whose decoded length it
         cannot vouch for (below) — refused, not worked around.
-    - **Tokens**: the answer's when it reports them — llama-server's `usage` of
-      type `tokens`, `input_tokens` → `tokens_in`, `output_tokens` → `tokens_out`,
-      every other unit 0. Otherwise — vLLM reports none on a whole answer — as on
-      images: `tokens_in` the input estimate (the `prompt` part), flagged
-      `estimated`, every other token unit 0.
+    - **Tokens**: the answer's when it reports them — llama-server's `usage` of type
+      `tokens`, its `input_tokens` and `output_tokens` both integers, read as a
+      Responses usage is (Responses usage, above; settled 2026-10-12, with the user,
+      found in the media phase B live run): `input_tokens` includes the prompt
+      tokens read from the cache, so `input_tokens_details.cached_tokens` →
+      `tokens_cached` (and `cache_write_tokens` → `tokens_cache_write`, as on
+      Responses), `input_tokens` minus both → `tokens_in` (clamped as on Responses);
+      `output_tokens` → `tokens_out`; `tokens_reasoning` 0. Details or a count
+      missing or null count 0; details that are not an object, or a count that is
+      not an integer, make the usage no report, as on Responses. The cache reads are
+      priced and limited as on chat, Messages and Responses on the same server — out
+      of token limits (Limits → Settle). Rejected: counting them as plain input —
+      the live run's transcriptions read 66 of their 67 prompt tokens from the
+      cache, each billed at the input price and counted toward token limits.
+      Otherwise — vLLM reports none on a whole answer — as on images: `tokens_in`
+      the input estimate (the `prompt` part), flagged `estimated`, every other token
+      unit 0.
     - **Measuring an upload** (settled 2026-10-11): the `file` part is held whole in
       memory, so its length is read in one bounded pass — never by the filename or
       the part's content type. llama-server takes a file as audio by its first bytes

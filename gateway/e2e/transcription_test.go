@@ -189,7 +189,8 @@ func TestTranscription(t *testing.T) {
 
 	// On asr, whose server reports no seconds: the request settles the length the
 	// gateway measured from the upload, rounded up — a WAV of 2.5 s, an MP3 of 250
-	// frames (6 s), a FLAC declaring 30.5 s — and the tokens the answer reports, nothing
+	// frames (6 s), a FLAC declaring 30.5 s — and the tokens the answer reports, the
+	// prompt tokens read from the server's cache among them as cache reads, nothing
 	// estimated.
 	for _, c := range []struct {
 		name, filename, contentType, file string
@@ -200,7 +201,7 @@ func TestTranscription(t *testing.T) {
 		{"FLAC", "memo.flac", "audio/flac", flacUpload(16000, 16000*61/2), 31},
 	} {
 		t.Run("llama-server/"+c.name, func(t *testing.T) {
-			ls.SetReply(fakebackend.Reply{Usage: &fakebackend.Usage{PromptTokens: 375, CompletionTokens: 12}})
+			ls.SetReply(fakebackend.Reply{Usage: &fakebackend.Usage{PromptTokens: 375, CompletionTokens: 12, CachedTokens: 300}})
 			defer ls.SetReply(fakebackend.Reply{})
 			id := "stt-llama-server-" + c.name
 			contentType, body := writeForm(t, textPart("model", "asr"), filePart("file", c.filename, c.contentType, c.file),
@@ -220,8 +221,9 @@ func TestTranscription(t *testing.T) {
 			wantLine(t, g.settled(t, id), map[string]any{"kaiak.backend.id": "ls", "kaiak.backend.type": "llama-server",
 				"kaiak.deployment.model": llamaASRModel, "gen_ai.operation.name": "generate_content", "gen_ai.output.type": "text",
 				"gen_ai.request.stream": false, "kaiak.usage.audio.input.duration": float64(c.seconds),
-				"gen_ai.usage.input_tokens": 375.0, "gen_ai.usage.output_tokens": 12.0, "kaiak.usage.cost_usd": 0.0,
-				"kaiak.usage.estimated": false, "kaiak.usage.partial": false})
+				"gen_ai.usage.input_tokens": 375.0, "gen_ai.usage.cache_read.input_tokens": 300.0,
+				"gen_ai.usage.output_tokens": 12.0, "kaiak.usage.cost_usd": 0.0, "kaiak.usage.estimated": false,
+				"kaiak.usage.partial": false})
 		})
 	}
 

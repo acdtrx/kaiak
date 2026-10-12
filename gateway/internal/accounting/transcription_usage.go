@@ -30,16 +30,18 @@ const maxDurationBytes = 64
 // "duration", "seconds"}} (json, text, diarized_json) or, for verbose_json,
 // {"duration", "language", "text", "segments", "words"} with no usage; llama-server's
 // {"type": "transcript.text.done", "text", "usage": {"type": "tokens", "input_tokens",
-// "output_tokens", …}}. Its top-level usage — and a verbose_json answer's duration —
-// are kept as the body streams through (memberScanner), never the text, and every
-// member is read by its exact name after decoding.
+// "output_tokens", "total_tokens", "input_tokens_details": {"cached_tokens"}}}. Its
+// top-level usage — and a verbose_json answer's duration — are kept as the body
+// streams through (memberScanner), never the text, and every member is read by its
+// exact name after decoding.
 //
 // audio_seconds_in is the seconds the answer reports — its usage's seconds, else a
 // verbose_json answer's duration — rounded up to a whole second; an answer reporting
 // neither (llama-server's, which never does, or one cut short before them) counts the
 // upload's measured length, else 0 and the record is estimated. The tokens are a usage
-// of type tokens; without one the meter estimates them — the input estimate, output
-// 0: the answer's text is no more counted than an image answer's images are.
+// of type tokens, its cache reads apart (reported); without one the meter estimates
+// them — the input estimate, output 0: the answer's text is no more counted than an
+// image answer's images are.
 type transcriptionUsage struct {
 	request Transcription
 	body    *memberScanner
@@ -85,11 +87,14 @@ func (u *transcriptionUsage) usage() (map[string]json.RawMessage, bool) {
 	return exactMembers(raw)
 }
 
-// reported: llama-server's usage of type tokens — input_tokens as tokens_in,
-// output_tokens as tokens_out, both integers, every other unit 0 — else none: vLLM's
-// usage of type duration, an answer without usage, a usage missing either count or
-// holding one that is not an integer. A negative count is 0, as in every usage object
-// the gateway reads.
+// reported: llama-server's usage of type tokens, input_tokens and output_tokens both
+// integers, mapped as a Responses usage is (inclusiveUnits): input_tokens includes the
+// prompt tokens read from the cache, which input_tokens_details reports in
+// cached_tokens (and written to it, in cache_write_tokens), so they come out of it;
+// output_tokens is tokens_out. Else none: vLLM's usage of type duration, an answer
+// without usage, a usage missing either count or holding one that is not an integer,
+// or whose details are malformed (cacheDetails). A negative count is 0, as in every
+// usage object the gateway reads.
 func (u *transcriptionUsage) reported() (Units, bool) {
 	usage, ok := u.usage()
 	if !ok {
@@ -100,10 +105,34 @@ func (u *transcriptionUsage) reported() (Units, bool) {
 	}
 	in, inOK := memberValue[int64](usage, "input_tokens")
 	out, outOK := memberValue[int64](usage, "output_tokens")
-	if !inOK || !outOK {
+	cached, written, detailsOK := cacheDetails(usage)
+	if !inOK || !outOK || !detailsOK {
 		return nil, true
 	}
-	return withEveryUnit(Units{config.UnitTokensIn: max(in, 0), config.UnitTokensOut: max(out, 0)}), true
+	units, _ := inclusiveUnits(&in, &out, cached, written, 0)
+	return units, true
+}
+
+// cacheDetails is the prompt tokens a usage's input_tokens_details reports read from
+// and written to the cache — cached_tokens and cache_write_tokens, by their exact
+// names — read as a Responses usage's are: details or a count missing or null are 0;
+// details that are not an object, or a count that is not an integer, are malformed (ok
+// false), and make the usage no report.
+func cacheDetails(usage map[string]json.RawMessage) (cached, written int64, ok bool) {
+	var details map[string]json.RawMessage
+	if raw, present := usage["input_tokens_details"]; present && json.Unmarshal(raw, &details) != nil {
+		return 0, 0, false
+	}
+	count := func(name string) (int64, bool) {
+		var n int64
+		if raw, present := details[name]; present && json.Unmarshal(raw, &n) != nil {
+			return 0, false
+		}
+		return n, true
+	}
+	cached, cachedOK := count("cached_tokens")
+	written, writtenOK := count("cache_write_tokens")
+	return cached, written, cachedOK && writtenOK
 }
 
 // media: the seconds the answer reports, else the upload's measured length, else 0,

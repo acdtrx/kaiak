@@ -689,13 +689,16 @@ type mediaLog struct {
 	secondsOut, secondsIn, images int64
 	secondsInFrom                 string
 	// tokens, when set, is the usage the answer reported, which the record must
-	// carry exactly.
-	tokens *speechUsage
+	// carry exactly; cacheRead is the input tokens of it the answer reported read from
+	// the server's cache (llama-server's transcriptions), the record's cache read.
+	tokens    *speechUsage
+	cacheRead int64
 }
 
 // checkMediaLog reads a media request's log line: operation generate_content, its
-// output type and stream flag, complete, its tokens reported or estimated as want
-// says, and its seconds of audio or images as the kit counted them.
+// output type and stream flag, complete, its tokens — their cache reads among them —
+// reported or estimated as want says, and its seconds of audio or images as the kit
+// counted them.
 func (r *run) checkMediaLog(name, id string, want mediaLog) {
 	line, err := r.gw.logs.wait(r.ctx, msg("request", "kaiak.request.id", id))
 	if err != nil {
@@ -729,6 +732,9 @@ func (r *run) checkMediaLog(name, id string, want mediaLog) {
 		int64(num("gen_ai.usage.output_tokens")) != want.tokens.OutputTokens):
 		r.fail(name, "tokens %v+%v, the answer reported %d+%d", line["gen_ai.usage.input_tokens"],
 			line["gen_ai.usage.output_tokens"], want.tokens.InputTokens, want.tokens.OutputTokens)
+	case want.tokens != nil && int64(num("gen_ai.usage.cache_read.input_tokens")) != want.cacheRead:
+		r.fail(name, "cache read %v, the answer reported %d of its %d input tokens read from the cache",
+			line["gen_ai.usage.cache_read.input_tokens"], want.cacheRead, want.tokens.InputTokens)
 	case int64(secondsOut) != want.secondsOut:
 		r.fail(name, "kaiak.usage.audio.output.duration=%v s, want %d: the audio measured here, rounded up once", secondsOut,
 			want.secondsOut)
@@ -737,8 +743,9 @@ func (r *run) checkMediaLog(name, id string, want mediaLog) {
 	case int64(images) != want.images:
 		r.fail(name, "kaiak.usage.images=%v, want the answer's %d", images, want.images)
 	default:
-		detail := fmt.Sprintf("in %v, out %v, estimated %v, cost %v", line["gen_ai.usage.input_tokens"],
-			line["gen_ai.usage.output_tokens"], line["kaiak.usage.estimated"], line["kaiak.usage.cost_usd"])
+		detail := fmt.Sprintf("in %v (cache read %v), out %v, estimated %v, cost %v", line["gen_ai.usage.input_tokens"],
+			line["gen_ai.usage.cache_read.input_tokens"], line["gen_ai.usage.output_tokens"], line["kaiak.usage.estimated"],
+			line["kaiak.usage.cost_usd"])
 		switch want.outputType {
 		case "image":
 			r.pass(name, fmt.Sprintf("%d image(s); %s", want.images, detail))

@@ -88,8 +88,9 @@ const wavSeconds = 8
 // part and an unknown one included, no output limit of the gateway's added though the
 // model declares one — answered with the backend's JSON as sent, its content type
 // kept, never a stream. vLLM's answer settles its seconds and the prompt's estimate,
-// flagged estimated; llama-server's its tokens and the upload's measured seconds,
-// nothing estimated. The token limits
+// flagged estimated; llama-server's its tokens — the prompt tokens it read from its
+// cache as cache reads, out of its input — and the upload's measured seconds, nothing
+// estimated. The token limits
 // reserve the input estimate alone; operation generate_content and output type text on
 // the record, the request line and the usage metrics, the seconds on the audio-input
 // counter; never timed to a first token (docs/specs/GATEWAY.md, Client API → owned
@@ -102,16 +103,18 @@ func TestTranscriptionThroughThePipeline(t *testing.T) {
 		shape                            fakebackend.TranscriptionShape
 		model, backendModel, backendType string
 		limitPart                        rawPart
-		answer                           string
-		want                             accounting.Units
-		estimated                        bool
+		// cached is the prompt tokens the backend reports read from its cache.
+		cached    int64
+		answer    string
+		want      accounting.Units
+		estimated bool
 	}{
-		{fakebackend.VLLMTranscription, "whisper", "openai/whisper-large-v3", "vllm", textPart("max_completion_tokens", "500"),
+		{fakebackend.VLLMTranscription, "whisper", "openai/whisper-large-v3", "vllm", textPart("max_completion_tokens", "500"), 0,
 			`{"text":"Hello from the fake","usage":{"seconds":3,"type":"duration"}}`, transcriptionUnits(estimate, 0, 3), true},
-		{fakebackend.LlamaServerTranscription, "asr-ls", "qwen3-asr.gguf", "llama-server", textPart("max_tokens", "500"),
+		{fakebackend.LlamaServerTranscription, "asr-ls", "qwen3-asr.gguf", "llama-server", textPart("max_tokens", "500"), 5,
 			`{"text":"Hello from the fake","type":"transcript.text.done","usage":{"input_tokens":7,"input_tokens_details":` +
-				`{"audio_tokens":7,"text_tokens":0},"output_tokens":4,"total_tokens":11,"type":"tokens"}}`,
-			transcriptionUnits(7, 4, wavSeconds), false},
+				`{"cached_tokens":5},"output_tokens":4,"total_tokens":11,"type":"tokens"}}`,
+			transcriptionUnits(2, 4, wavSeconds), false},
 	} {
 		t.Run(c.backendType, func(t *testing.T) {
 			g := newTestGateway(t)
@@ -119,6 +122,7 @@ func TestTranscriptionThroughThePipeline(t *testing.T) {
 				return replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [{ "type": "tokens_per_minute", "value": 100000 }] }`)
 			})
 			g.backend.SetTranscriptionShape(c.shape)
+			g.backend.SetReply(fakebackend.Reply{CachedTokens: int(c.cached)})
 			form := formOf(textPart("model", c.model), filePart("file", "voice memo ünï.wav", "audio/wav", wavData),
 				textPart("prompt", prompt), textPart("language", "en"), textPart("timestamp_granularities[]", "word"),
 				textPart("timestamp_granularities[]", "segment"), textPart("stream", "False"), textPart("response_format", "json"),
@@ -141,7 +145,9 @@ func TestTranscriptionThroughThePipeline(t *testing.T) {
 			expectRebuilt(t, reqs[0], form, c.backendModel)
 
 			rec := onlyRecord(t, g)
-			expectUnits(t, rec, c.want, c.estimated, false)
+			wantUnits := maps.Clone(c.want)
+			wantUnits[config.UnitTokensCached] = c.cached
+			expectUnits(t, rec, wantUnits, c.estimated, false)
 			if got := w.Header().Get("x-ratelimit-remaining-tokens"); got != strconv.FormatInt(100000-estimate, 10) {
 				t.Errorf("remaining tokens at admission %s, want the input estimate of %d reserved alone", got, estimate)
 			}
@@ -149,11 +155,12 @@ func TestTranscriptionThroughThePipeline(t *testing.T) {
 				t.Errorf("record operation %q, output type %q; want generate_content, text", rec.Operation, rec.OutputType)
 			}
 			line := logLine(t, g, "stt-1")
-			seconds := strconv.FormatInt(c.want[config.UnitAudioSecondsIn], 10)
+			seconds := strconv.FormatInt(wantUnits[config.UnitAudioSecondsIn], 10)
 			for _, want := range []string{`"gen_ai.operation.name":"generate_content"`, `"gen_ai.output.type":"text"`,
 				`"gen_ai.request.stream":false`, `"kaiak.backend.type":"` + c.backendType + `"`,
 				`"kaiak.usage.estimated":` + strconv.FormatBool(c.estimated),
-				`"gen_ai.usage.input_tokens":` + strconv.FormatInt(c.want[config.UnitTokensIn], 10),
+				`"gen_ai.usage.input_tokens":` + strconv.FormatInt(wantUnits.Sum(config.InputUnits), 10),
+				`"gen_ai.usage.cache_read.input_tokens":` + strconv.FormatInt(c.cached, 10),
 				`"kaiak.usage.audio.input.duration":` + seconds} {
 				if !strings.Contains(line, want) {
 					t.Errorf("log line lacks %s: %s", want, line)

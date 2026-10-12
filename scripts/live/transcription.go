@@ -44,16 +44,20 @@ func transcriptionForm(model string, audio uploadAudio, params map[string]any) [
 }
 
 // transcriptionAnswer is the part of a transcription the checks read, in either
-// server's shape: vLLM's usage of type duration, llama-server's of type tokens;
-// verbose_json's duration.
+// server's shape: vLLM's usage of type duration, llama-server's of type tokens — its
+// input including the prompt tokens read from the server's cache, reported in
+// input_tokens_details; verbose_json's duration.
 type transcriptionAnswer struct {
 	Text     *string
 	Duration *float64
 	Usage    *struct {
-		Type         string
-		Seconds      *float64
-		InputTokens  *int64 `json:"input_tokens"`
-		OutputTokens *int64 `json:"output_tokens"`
+		Type               string
+		Seconds            *float64
+		InputTokens        *int64 `json:"input_tokens"`
+		OutputTokens       *int64 `json:"output_tokens"`
+		InputTokensDetails *struct {
+			CachedTokens int64 `json:"cached_tokens"`
+		} `json:"input_tokens_details"`
 	}
 }
 
@@ -82,7 +86,8 @@ func (r *run) heardSeconds() (int64, string) {
 // checkTranscription transcribes audio: a text, and the usage its server reports — on
 // vLLM the seconds it decoded (heardSeconds); on llama-server tokens. It returns what
 // the request's log line must carry: vLLM's seconds, or on llama-server the upload's
-// length rounded up; and the tokens reported, or estimated where none are.
+// length rounded up; and the tokens reported, with their cache reads, or estimated
+// where none are.
 func (r *run) checkTranscription(audio uploadAudio) (mediaLog, bool) {
 	name, id := "transcribe-"+audio.format, idTranscribe+audio.format
 	resp, err := r.postForm(r.key, "/v1/audio/transcriptions", id, transcriptionForm(modelASR, audio, nil))
@@ -117,8 +122,11 @@ func (r *run) checkTranscription(audio uploadAudio) (mediaLog, bool) {
 		return mediaLog{}, false
 	}
 	want.tokens = &speechUsage{InputTokens: *a.Usage.InputTokens, OutputTokens: *a.Usage.OutputTokens}
-	r.pass(name, fmt.Sprintf("%s: %q; %d+%d tokens reported, no seconds", upload, clip(*a.Text), want.tokens.InputTokens,
-		want.tokens.OutputTokens))
+	if d := a.Usage.InputTokensDetails; d != nil {
+		want.cacheRead = d.CachedTokens
+	}
+	r.pass(name, fmt.Sprintf("%s: %q; %d+%d tokens reported, %d read from the cache, no seconds", upload, clip(*a.Text),
+		want.tokens.InputTokens, want.tokens.OutputTokens, want.cacheRead))
 	return want, true
 }
 

@@ -418,7 +418,7 @@ context length. `go -C scripts/live run . -h` lists them all.
 | `edit-refused` | `stream=true` (`400 invalid_value`), an input image by `https` URL and a `lora` (`400 external_reference_unsupported`) are refused before routing |
 | `generation-to-edit` | an image generation to `live-edit`, whose list names edits alone, is the gateway's own `400 endpoint_not_served`, never sent — where vLLM-Omni answers a generation on an edit model `500`, a backend failure |
 | `transcribe-wav`, `transcribe-flac`, `transcribe-mp3` | with `-asr-base-url`: 3.6 s of audio the kit writes — a tone as 16-bit 16 kHz WAV and as FLAC (verbatim frames with their CRCs, the MD5 in its header), silence as MPEG-1 Layer III (one unbroken run of frames, nothing else) — each uploaded as OpenAI's transcription form; a text comes back, and on vLLM `usage.seconds` 4 — the upload's length rounded up, as vLLM decoded it — on llama-server its token usage |
-| `usage-log/transcribe-*` | operation `generate_content`, output type `text`, `kaiak.usage.audio.input.duration`: on vLLM the seconds the server reported, the tokens estimated and flagged (vLLM reports none); on llama-server 4, the gateway's own measurement of the upload, and the server's tokens exactly |
+| `usage-log/transcribe-*` | operation `generate_content`, output type `text`, `kaiak.usage.audio.input.duration`: on vLLM the seconds the server reported, the tokens estimated and flagged (vLLM reports none); on llama-server 4, the gateway's own measurement of the upload, and the server's tokens exactly, the prompt tokens its answer reports read from the cache (`input_tokens_details.cached_tokens`) as the record's cache read |
 | `transcribe-verbose` | vLLM: `verbose_json` answers the decoded `duration` (3.6 s) and no usage; its log line counts that duration rounded up. Skipped only on vLLM's refusal `Currently do not support verbose_json for <model>` (`400`, relayed): only models with segment timestamps (Whisper, FunASR, FireRedASR2) answer it; any other answer fails the check |
 | `transcribe-refused` | `stream=true` (`400 invalid_value`), and on llama-server an Ogg upload the gateway cannot measure (`400 audio_format_unsupported` on `file`), are refused before routing |
 | `audio-limit` | with the `live-media` key: a first clip is served and fills the 1-second window — audio generated settles after the request — and the next is refused `429 audio_seconds` with `Retry-After`, no `x-ratelimit-*` header, its log line naming `audio_seconds_out_per_minute` |
@@ -846,6 +846,9 @@ this way: their answers to a wrong path are taken from their documentation.
 - `usage-log/transcribe-*` on llama-server with other seconds than 4, or
   `kaiak.usage.estimated=true`: the gateway measured the upload otherwise than the
   kit wrote it — a measuring bug. Rerun with `-v -keep` and keep the log.
+- `usage-log/transcribe-*` on llama-server with other tokens or another cache read
+  than the answer reported: the gateway did not take the answer's usage — a
+  metering bug. Rerun with `-v -keep` and keep the log.
 - `transcribe-verbose` skipped: the model has no segment timestamps — expected for
   every model but Whisper, FunASR and FireRedASR2. Failing with a `400`: vLLM refused
   the request for another reason — its message is in the output.

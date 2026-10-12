@@ -32,15 +32,16 @@ func meterTranscription(request Transcription, status int, body string, piece in
 }
 
 // vLLM's answers (speech_to_text/base/serving.py, 0.30.0), and llama-server's
-// (tools/server/server-chat.cpp, b11526).
+// (tools/server/server-task.cpp, to_json_oaicompat_asr, b11526): 66 of its 67 prompt
+// tokens read from the cache, as the live run's repeated uploads were.
 const (
 	vllmJSONAnswer    = `{"text":"Hello from the fake","usage":{"type":"duration","seconds":3}}`
 	vllmVerboseAnswer = `{"duration":2.5,"language":"en","text":"Hello from the fake",` +
 		`"segments":[{"id":0,"seek":0,"start":0.0,"end":2.5,"text":"Hello from the fake","tokens":[1,2],"temperature":0.0,` +
 		`"avg_logprob":-0.1,"compression_ratio":1.0,"no_speech_prob":0.0}],"words":null}`
 	llamaServerAnswer = `{"type":"transcript.text.done","text":"Hello from the fake",` +
-		`"usage":{"type":"tokens","input_tokens":91,"output_tokens":6,"total_tokens":97,` +
-		`"input_tokens_details":{"text_tokens":12,"audio_tokens":79}}}`
+		`"usage":{"type":"tokens","input_tokens":67,"output_tokens":4,"total_tokens":71,` +
+		`"input_tokens_details":{"cached_tokens":66}}}`
 )
 
 // vLLM reports a transcription's seconds and no tokens: audio_seconds_in is its
@@ -82,9 +83,10 @@ func TestVLLMTranscriptionSeconds(t *testing.T) {
 	}
 }
 
-// llama-server reports tokens and no seconds: its usage of type tokens gives tokens_in
-// and tokens_out, every other unit 0, unestimated; its seconds are the upload's
-// measured length, and with none measured 0, the record estimated
+// llama-server reports tokens and no seconds: its usage of type tokens gives tokens_in,
+// tokens_cached and tokens_out — input_tokens includes the cache reads its
+// input_tokens_details report — every other unit 0, unestimated; its seconds are the
+// upload's measured length, and with none measured 0, the record estimated
 // (docs/specs/GATEWAY.md, Accounting → Media usage: speech-to-text).
 func TestLlamaServerTranscriptionTokens(t *testing.T) {
 	for _, c := range []struct {
@@ -98,8 +100,78 @@ func TestLlamaServerTranscriptionTokens(t *testing.T) {
 		{"an upload of no audio", Transcription{Upload: 0, UploadMeasured: true}, 0, Flags{}},
 	} {
 		units, flags := meterTranscription(c.request, http.StatusOK, llamaServerAnswer, 5, true)
-		if !maps.Equal(units, transcriptionUnits(91, 6, c.seconds)) || flags != c.flags {
-			t.Errorf("%s: %v %+v, want 91 in, 6 out, %d seconds, %+v", c.name, units, flags, c.seconds, c.flags)
+		want := withEveryUnit(Units{config.UnitTokensIn: 1, config.UnitTokensCached: 66, config.UnitTokensOut: 4,
+			config.UnitAudioSecondsIn: c.seconds})
+		if !maps.Equal(units, want) || flags != c.flags {
+			t.Errorf("%s: %v %+v, want 1 in, 66 cached, 4 out, %d seconds, %+v", c.name, units, flags, c.seconds, c.flags)
+		}
+	}
+}
+
+// llama-server's usage reports the prompt tokens read from its cache in
+// input_tokens_details, included in input_tokens, as its Responses usage does: they map
+// as a Responses usage does, to the units the Responses reader gives the same usage —
+// cached_tokens to tokens_cached and cache_write_tokens to tokens_cache_write, out of
+// tokens_in, the reads clamped to the input and the writes to what remains. Details or
+// a count missing or null are 0; details that are not an object, or a count that is not
+// an integer, make the usage no report. The details' members are read by their exact
+// names, as every member of the answer is — where the Responses reader matches names in
+// any case (docs/specs/GATEWAY.md, Accounting → Media usage: speech-to-text; Responses
+// usage).
+func TestLlamaServerTranscriptionCacheReads(t *testing.T) {
+	tokens := func(in, cached, written int64) Units {
+		return withEveryUnit(Units{config.UnitTokensIn: in, config.UnitTokensCached: cached,
+			config.UnitTokensCacheWrite: written, config.UnitTokensOut: 4})
+	}
+	for _, c := range []struct {
+		name string
+		// details is the usage's input_tokens_details member, "" for none.
+		details string
+		// want is the record's token units, nil for no report.
+		want        Units
+		asResponses bool
+	}{
+		{"66 of 67 read", `{"cached_tokens":66}`, tokens(1, 66, 0), true},
+		{"none read", `{"cached_tokens":0}`, tokens(67, 0, 0), true},
+		{"no details", "", tokens(67, 0, 0), true},
+		{"details null", `null`, tokens(67, 0, 0), true},
+		{"the read null", `{"cached_tokens":null}`, tokens(67, 0, 0), true},
+		{"OpenAI's transcription details, no read", `{"text_tokens":12,"audio_tokens":55}`, tokens(67, 0, 0), true},
+		{"more read than the input: clamped", `{"cached_tokens":90}`, tokens(0, 67, 0), true},
+		{"a negative read", `{"cached_tokens":-5}`, tokens(67, 0, 0), true},
+		{"read and written", `{"cached_tokens":20,"cache_write_tokens":7}`, tokens(40, 20, 7), true},
+		{"written past what remains: clamped", `{"cached_tokens":60,"cache_write_tokens":9}`, tokens(0, 60, 7), true},
+		{"details a string", `"66"`, nil, true},
+		{"details a list", `[{"cached_tokens":66}]`, nil, true},
+		{"the read a string", `{"cached_tokens":"66"}`, nil, true},
+		{"the read a fraction", `{"cached_tokens":6.5}`, nil, true},
+		{"the write a string", `{"cached_tokens":6,"cache_write_tokens":"7"}`, nil, true},
+		{"the read under another name", `{"Cached_Tokens":66}`, tokens(67, 0, 0), false},
+	} {
+		usage := `{"type":"tokens","input_tokens":67,"output_tokens":4,"total_tokens":71`
+		if c.details != "" {
+			usage += `,"input_tokens_details":` + c.details
+		}
+		usage += `}`
+		want, estimated := c.want, c.want == nil
+		if estimated {
+			want = withEveryUnit(Units{config.UnitTokensIn: 33})
+		}
+		units, flags := meterTranscription(Transcription{Upload: 3 * time.Second, UploadMeasured: true}, http.StatusOK,
+			`{"type":"transcript.text.done","text":"hi","usage":`+usage+`}`, 6, true)
+		withSeconds := maps.Clone(want)
+		withSeconds[config.UnitAudioSecondsIn] = 3
+		if !maps.Equal(units, withSeconds) || flags != (Flags{Estimated: estimated}) {
+			t.Errorf("%s: %v %+v, want %v and 3 seconds, estimated %v", c.name, units, flags, want, estimated)
+		}
+		if !c.asResponses {
+			continue
+		}
+		// The Responses meter estimates the same input (33 tokens, from 132 bytes) and
+		// no output from an empty output list.
+		units, flags = bodyMeter(provider.Responses, 132, http.StatusOK, `{"output":[],"usage":`+usage+`}`).Settle(true)
+		if !maps.Equal(units, want) || flags.Estimated != estimated {
+			t.Errorf("%s: Responses reads the usage as %v %+v, the transcription as %v", c.name, units, flags, want)
 		}
 	}
 }

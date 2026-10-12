@@ -1082,8 +1082,10 @@ under rules of their own (`GATEWAY.md` → Request pipeline: Uploads; settled
   Any other upload is refused before it is sent, `400 audio_format_unsupported`
   (`param: "file"`): a request whose audio nothing could count is never sent. On
   `vllm` measuring is only the fallback for an answer without seconds, and no
-  upload is refused for its format. The tokens are llama-server's. llama-server
-  refuses `response_format` other than `json` (`400`, relayed).
+  upload is refused for its format. The tokens are llama-server's, the prompt tokens
+  it read from its cache counted as cache reads (`tokens_cached`: the cache-read
+  price, out of token limits), as on its chat answers. llama-server refuses
+  `response_format` other than `json` (`400`, relayed).
   - **Serving**: a GGUF of a model with an audio encoder (Voxtral, Qwen2.5-Omni,
     Qwen3-ASR, Ultravox, …) and its audio projector, `llama-server -m <model>.gguf
     --mmproj <projector>.gguf`; a model without one answers `501`, a backend `5xx`.

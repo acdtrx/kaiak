@@ -16,9 +16,10 @@ import (
 // edits, and one without a file part 400, as both servers refuse it. Stream true is
 // refused 400: both servers stream a transcription, and the gateway never asks for
 // one. The text is the reply's chunks joined, the audio vLLM's shape hears AudioMillis
-// long, the tokens the reply's usage; OmitUsage leaves usage out. The reply's stream fault stops
-// the answer halfway: Cut drops the connection, Hang waits for the request's end, End
-// ends the body there.
+// long, the tokens the reply's usage (its CachedTokens read from the cache when it sets
+// no Usage); OmitUsage leaves usage out. The reply's stream fault stops the answer
+// halfway: Cut drops the connection, Hang waits for the request's end, End ends the
+// body there.
 
 // transcriptionPath is the speech-to-text endpoint, below the version prefix.
 const transcriptionPath = "audio/transcriptions"
@@ -37,15 +38,17 @@ const (
 	// other format refused 400. A model without transcription (SetNonAudioModels) has
 	// no route: 404 {"detail":"Not Found"}.
 	VLLMTranscription TranscriptionShape = iota
-	// LlamaServerTranscription is llama-server's (tools/server/server-chat.cpp,
-	// b11526): the model part is not checked — a server serves its one model —
-	// response_format json only (absent means it), else 400; the answer
-	// {"type": "transcript.text.done", "text", "usage": {"type": "tokens",
-	// "input_tokens", "output_tokens", "total_tokens", "input_tokens_details"}}, no
+	// LlamaServerTranscription is llama-server's (tools/server/server-chat.cpp and, for
+	// the answer, server-task.cpp's to_json_oaicompat_asr, b11526): the model part is
+	// not checked — a server serves its one model — response_format json only (absent
+	// means it), else 400; the answer {"type": "transcript.text.done", "text", "usage":
+	// {"type": "tokens", "input_tokens", "output_tokens", "total_tokens",
+	// "input_tokens_details": {"cached_tokens"}}} — input_tokens the usage's prompt
+	// tokens, the cache reads among them, cached_tokens always present — and no
 	// seconds: the audio is not read, nor AudioMillis — the gateway measures the upload
 	// itself, so a test sends a file of the length it wants counted. A model without an
-	// audio encoder (SetNonAudioModels) is answered 501 not_supported_error "The current
-	// model does not support audio input.".
+	// audio encoder (SetNonAudioModels) is answered 501 not_supported_error "The
+	// current model does not support audio input.".
 	LlamaServerTranscription
 )
 
@@ -127,7 +130,7 @@ func (b *Backend) writeTranscription(w http.ResponseWriter, r *http.Request, req
 		chunks = DefaultChunks
 	}
 	text := strings.Join(chunks, "")
-	usage := Usage{PromptTokens: 7, CompletionTokens: len(chunks)}
+	usage := Usage{PromptTokens: 7, CompletionTokens: len(chunks), CachedTokens: reply.CachedTokens}
 	if reply.Usage != nil {
 		usage = *reply.Usage
 	}
@@ -142,7 +145,7 @@ func (b *Backend) writeTranscription(w http.ResponseWriter, r *http.Request, req
 		if !reply.OmitUsage {
 			body["usage"] = map[string]any{"type": "tokens", "input_tokens": usage.PromptTokens,
 				"output_tokens": usage.CompletionTokens, "total_tokens": usage.PromptTokens + usage.CompletionTokens,
-				"input_tokens_details": map[string]int{"text_tokens": 0, "audio_tokens": usage.PromptTokens}}
+				"input_tokens_details": map[string]int{"cached_tokens": usage.CachedTokens}}
 		}
 		answer = body
 	case shape == VLLMTranscription && (format == "json" || format == "text" || format == "diarized_json"):
