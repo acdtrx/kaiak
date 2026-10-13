@@ -6,16 +6,17 @@ import path from "node:path";
 import { describe, test } from "node:test";
 
 import { PROTOCOL_VERSION } from "../protocol/index.ts";
-import { fixtureFiles, fixturePath, readJson } from "../test-support/index.ts";
+import { fixtureFiles, fixturePath, group, readJson } from "../test-support/index.ts";
 
 import { validateConfig } from "./index.ts";
 import { mergeLimits, resolveScopes } from "./limits.ts";
-import type { Config, Limit } from "./types.ts";
+import type { Config, Group, Limit } from "./types.ts";
 
 const RESOLVED = fixturePath("config", "resolved");
 
 interface ResolvedGroup {
   path: string[];
+  capture: boolean;
   allowed_models: string[] | "all";
   limits: Limit[];
 }
@@ -50,8 +51,12 @@ describe("resolution fixtures", () => {
       const resolved: Record<string, ResolvedGroup> = {};
       for (const scope of scopes.slice(1)) {
         assert.ok(scope.group !== undefined, "every scope after global names its group");
+        const entry: Group | undefined = validation.config.groups?.[scope.group];
+        assert.ok(entry !== undefined, `group ${scope.group} is in the config`);
         resolved[scope.group] = {
           path: scope.path,
+          // The group's own flag, as written: capture is not resolved along the path.
+          capture: entry.capture,
           allowed_models: scope.allowed_models ?? "all",
           limits: scope.limits,
         };
@@ -79,7 +84,7 @@ test("resolving a config whose parents do not reach a top-level group fails loud
     global: {},
     backends: {},
     models: {},
-    groups: { a: { parent: "b" }, b: { parent: "a" } },
+    groups: { a: group({ parent: "b" }), b: group({ parent: "a" }) },
     keys: {},
   } satisfies Config;
   assert.throws(() => resolveScopes(config), { code: "config-invalid" });

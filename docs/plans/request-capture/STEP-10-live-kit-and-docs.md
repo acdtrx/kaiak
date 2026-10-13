@@ -33,7 +33,10 @@ operator- and app-facing docs.
     gateways and control plane upgrade together; apps decide each group's value;
     `gen_ai.provider.name` now on every type — the self-hosted types' usage metrics
     gain a `gen_ai_provider_name` label (`vllm`, `llama-server`, …) and the request
-    line the attribute, so dashboards and alerts that matched its absence change.
+    line the attribute, so dashboards and alerts that matched its absence change;
+    a sample config copied from the example before this change (the README's
+    `data/sample-config.json`) is refused — copy `examples/local-config.json` again
+    and re-add the key entry.
 - `docs/testing/LIVE-BACKENDS.md` — the capture checks.
 - `README.md` — the protocol version and a line on capture if the README lists
   features.

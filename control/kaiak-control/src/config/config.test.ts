@@ -6,10 +6,20 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { describe, test } from "node:test";
 
-import { fixtureFiles, fixturePath, readJson, testInvalidFixtures, testValidFixtures } from "../test-support/index.ts";
+import {
+  configWithGroups,
+  fixtureFiles,
+  fixturePath,
+  group,
+  readJson,
+  testInvalidFixtures,
+  testValidFixtures,
+} from "../test-support/index.ts";
+import type { GroupFields } from "../test-support/index.ts";
 
 import { ENDPOINT_SUPPORT } from "./endpoint-support.ts";
 import { BACKEND_TYPES, LIMIT_TYPES, MODEL_CAPABILITIES, MODEL_ENDPOINTS, validateConfig } from "./index.ts";
+import type { Group, Limit, LimitType } from "./index.ts";
 
 const VALID_DIR = fixturePath("config", "valid");
 const INVALID_DIR = fixturePath("config", "invalid");
@@ -79,19 +89,13 @@ test("a backend's api_key_env cannot name a gateway OTEL_ variable", () => {
 });
 
 describe("group tree rules", () => {
-  // minimal.json (its key in group "me") with more groups.
-  const withGroups = (groups: Record<string, { parent?: string }>): unknown => {
-    const config = readJson(path.join(VALID_DIR, "minimal.json")) as { groups: Record<string, unknown> };
-    config.groups = { me: {}, ...groups };
-    return config;
-  };
   const issuesOf = (doc: unknown): { code: string; path: string }[] => {
     const result = validateConfig(doc);
     return result.ok ? [] : result.issues.map(({ code, path: at }) => ({ code, path: at }));
   };
 
   test("a group below an unknown parent or a cycle reports nothing of its own", () => {
-    const doc = withGroups({
+    const doc = configWithGroups({
       orphan: { parent: "ghost" },
       "below-orphan": { parent: "orphan" },
       "loop-a": { parent: "loop-b" },
@@ -106,9 +110,9 @@ describe("group tree rules", () => {
   });
 
   test("every group below level 8 reports its depth", () => {
-    const chain: Record<string, { parent?: string }> = { l1: {} };
+    const chain: Record<string, GroupFields> = { l1: {} };
     for (let level = 2; level <= 10; level++) chain[`l${level}`] = { parent: `l${level - 1}` };
-    assert.deepEqual(issuesOf(withGroups(chain)), [
+    assert.deepEqual(issuesOf(configWithGroups(chain)), [
       { code: "group-depth-exceeded", path: "/groups/l9" },
       { code: "group-depth-exceeded", path: "/groups/l10" },
     ]);
@@ -123,24 +127,24 @@ describe("group tree rules", () => {
         groups: Record<string, { parent?: string; limits?: unknown[]; child_defaults?: unknown }>;
       };
     const exceeded = { code: "counters-exceeded", path: "" };
-    const perMinute = (...types: string[]): unknown[] => types.map((type) => ({ type, value: 1 }));
+    const perMinute = (...types: LimitType[]): Limit[] => types.map((type) => ({ type, value: 1 }));
     assert.deepEqual(issuesOf(atBound()), []);
 
     // A new child of users: 5, and users' 2 per-minute defaults.
     const child = atBound();
-    child.groups["u-new"] = { parent: "users" };
+    child.groups["u-new"] = group({ parent: "users" });
     assert.deepEqual(issuesOf(child), [exceeded]);
 
     // A group with no limits still takes its five counters.
     const empty = atBound();
-    empty.groups["also-empty"] = {};
+    empty.groups["also-empty"] = group();
     assert.deepEqual(issuesOf(empty), [exceeded]);
 
     // A group whose parent has no entry counts its own per-minute limits alone: in
     // spare's place, three keep the bound and a fourth passes it.
     const stray = atBound();
     delete stray.groups["spare"];
-    stray.groups["stray"] = { parent: "ghost", limits: perMinute("requests_per_minute", "tokens_per_minute", "images_per_minute") };
+    stray.groups["stray"] = group({ parent: "ghost", limits: perMinute("requests_per_minute", "tokens_per_minute", "images_per_minute") });
     assert.deepEqual(issuesOf(stray), [{ code: "group-parent-unknown", path: "/groups/stray/parent" }]);
     stray.groups["stray"].limits = perMinute("requests_per_minute", "tokens_per_minute", "images_per_minute", "audio_seconds_in_per_minute");
     assert.deepEqual(issuesOf(stray), [{ code: "group-parent-unknown", path: "/groups/stray/parent" }, exceeded]);
@@ -159,22 +163,22 @@ describe("group tree rules", () => {
     // A group on a cycle still takes its direct parent's defaults: spare's own three and
     // its own default of a fourth type.
     const cycle = atBound();
-    cycle.groups["spare"] = {
+    cycle.groups["spare"] = group({
       parent: "spare",
       limits: perMinute("requests_per_minute", "tokens_per_minute", "images_per_minute"),
       child_defaults: { limits: perMinute("audio_seconds_out_per_minute") },
-    };
+    });
     assert.deepEqual(issuesOf(cycle), [{ code: "group-cycle", path: "/groups/spare/parent" }, exceeded]);
   });
 
   // Groups without limits are counters all the same: global's five, "me"'s five and
   // 9 998 more groups' are exactly the bound; one more group passes it.
   test("a config of groups without limits past the bound is refused", () => {
-    const config = readJson(path.join(VALID_DIR, "minimal.json")) as { groups: Record<string, unknown> };
+    const config = readJson(path.join(VALID_DIR, "minimal.json")) as { groups: Record<string, Group> };
     assert.deepEqual(Object.keys(config.groups), ["me"]);
-    for (let i = 0; i < 9_998; i += 1) config.groups[`g${i}`] = {};
+    for (let i = 0; i < 9_998; i += 1) config.groups[`g${i}`] = group();
     assert.deepEqual(issuesOf(config), []);
-    config.groups["one-more"] = {};
+    config.groups["one-more"] = group();
     assert.deepEqual(issuesOf(config), [{ code: "counters-exceeded", path: "" }]);
   });
 });

@@ -7,7 +7,7 @@ import { describe, test } from "node:test";
 import type { Config } from "../config/index.ts";
 import { createMemoryStore } from "../storage/index.ts";
 import type { ControlPlaneStore } from "../storage/index.ts";
-import { configHash, configNumbered, numberOf } from "../test-support/index.ts";
+import { configHash, configNumbered, configWithGroups, numberOf } from "../test-support/index.ts";
 
 import { createConfigPublishing } from "./index.ts";
 import type { ConfigPublishing, PublishedConfig, PublishResult } from "./index.ts";
@@ -157,19 +157,12 @@ describe("publishing", () => {
   });
 });
 
-// minimal.json with the given groups; its key stays in "me".
-function withGroups(groups: Config["groups"]): Config {
-  const config = minimalConfig();
-  config.groups = { me: {}, ...groups };
-  return config;
-}
-
 describe("parents never change", () => {
   test("a publish moving a group to another parent is refused and the current config stays", async () => {
     const configs = publishing();
-    const first = published(await configs.publishConfig(withGroups({ a: {}, b: {}, child: { parent: "a" } })));
+    const first = published(await configs.publishConfig(configWithGroups({ a: {}, b: {}, child: { parent: "a" } })));
 
-    const result = await configs.publishConfig(withGroups({ a: {}, b: {}, child: { parent: "b" } }));
+    const result = await configs.publishConfig(configWithGroups({ a: {}, b: {}, child: { parent: "b" } }));
     assert.deepEqual(result.ok ? [] : result.issues.map(({ code, path }) => ({ code, path })), [
       { code: "group-parent-changed", path: "/groups/child/parent" },
     ]);
@@ -178,9 +171,9 @@ describe("parents never change", () => {
 
   test("a top-level group given a parent, and a child made top-level, are moves too", async () => {
     const configs = publishing();
-    await configs.publishConfig(withGroups({ a: {}, b: {}, child: { parent: "a" } }));
+    await configs.publishConfig(configWithGroups({ a: {}, b: {}, child: { parent: "a" } }));
 
-    const result = await configs.publishConfig(withGroups({ a: {}, b: { parent: "a" }, child: {} }));
+    const result = await configs.publishConfig(configWithGroups({ a: {}, b: { parent: "a" }, child: {} }));
     assert.deepEqual(result.ok ? [] : result.issues.map(({ code, path }) => ({ code, path })), [
       { code: "group-parent-changed", path: "/groups/b/parent" },
       { code: "group-parent-changed", path: "/groups/child/parent" },
@@ -189,22 +182,22 @@ describe("parents never change", () => {
 
   test("a group deleted in one publish may come back under another parent in the next", async () => {
     const configs = publishing();
-    await configs.publishConfig(withGroups({ a: {}, b: {}, child: { parent: "a" } }));
-    published(await configs.publishConfig(withGroups({ a: {}, b: {} })));
-    published(await configs.publishConfig(withGroups({ a: {}, b: {}, child: { parent: "b" } })));
+    await configs.publishConfig(configWithGroups({ a: {}, b: {}, child: { parent: "a" } }));
+    published(await configs.publishConfig(configWithGroups({ a: {}, b: {} })));
+    published(await configs.publishConfig(configWithGroups({ a: {}, b: {}, child: { parent: "b" } })));
   });
 
   test("a new group named like an object property is new", async () => {
     const configs = publishing();
-    await configs.publishConfig(withGroups({ a: {} }));
-    published(await configs.publishConfig(withGroups({ a: {}, constructor: { parent: "a" } })));
+    await configs.publishConfig(configWithGroups({ a: {} }));
+    published(await configs.publishConfig(configWithGroups({ a: {}, constructor: { parent: "a" } })));
   });
 
   test("groups keeping their parents publish, whatever else changes", async () => {
     const configs = publishing();
-    await configs.publishConfig(withGroups({ a: {}, child: { parent: "a" } }));
-    const edited = withGroups({
-      a: { labels: { kind: "team" }, limits: [{ type: "usd_per_month", value: 10 }] },
+    await configs.publishConfig(configWithGroups({ a: {}, child: { parent: "a" } }));
+    const edited = configWithGroups({
+      a: { capture: true, labels: { kind: "team" }, limits: [{ type: "usd_per_month", value: 10 }] },
       child: { parent: "a", allowed_models: ["llama"] },
       added: { parent: "child" },
     });
@@ -243,12 +236,12 @@ describe("several processes over one store", () => {
 
   test("a publish that lost the race is checked again against the config that won", async () => {
     const [a, b] = twoProcesses();
-    await a.publishConfig(withGroups({ top: {}, other: {} }));
+    await a.publishConfig(configWithGroups({ top: {}, other: {} }));
     // Both read a config where "child" does not exist. a's publish creates it under
     // "top"; b's publish, checked again against a's, would move it.
     const [won, lost] = await Promise.all([
-      a.publishConfig(withGroups({ top: {}, other: {}, child: { parent: "top" } })),
-      b.publishConfig(withGroups({ top: {}, other: {}, child: { parent: "other" } })),
+      a.publishConfig(configWithGroups({ top: {}, other: {}, child: { parent: "top" } })),
+      b.publishConfig(configWithGroups({ top: {}, other: {}, child: { parent: "other" } })),
     ]);
     const winner = published(won);
     assert.deepEqual(lost.ok ? [] : lost.issues.map(({ code }) => code), ["group-parent-changed"]);

@@ -11,7 +11,7 @@ import { definitionChecker } from "../schemas/index.ts";
 // protocol_version a config document and a gateway status carry (one version for the
 // whole contract: docs/specs/CONTROL-PROTOCOL.md, Shape → One version). The schemas
 // state it as a const; a test holds them to this value.
-export const PROTOCOL_VERSION = 7;
+export const PROTOCOL_VERSION = 8;
 
 // Header names, lower case as Node presents incoming headers.
 export const PROTOCOL_HEADER = "kaiak-protocol";
@@ -49,7 +49,7 @@ export function checkGatewayRequest(headers: RequestHeaders, token: string): Gat
 }
 
 // Node hands these headers over as one string: a repeated Kaiak-Protocol or
-// Kaiak-Instance arrives joined ("7, 7"), which fails its check like any other wrong
+// Kaiak-Instance arrives joined ("8, 8"), which fails its check like any other wrong
 // value, and a repeated Authorization keeps only the first. An array (which Node does
 // not produce for them) reads as missing.
 function single(header: string | string[] | undefined): string | undefined {

@@ -182,8 +182,10 @@ function configSummary(config: Config): Markup {
 
 // The groups as nested lists, top-level groups first and each group's children under
 // it, siblings in config order. The nesting comes from the resolver's paths, so the
-// page draws the tree the limits and model lists are resolved on. Labels are shown as
-// written; the page gives none of them a meaning.
+// page draws the tree the limits and model lists are resolved on. Each group's capture
+// is its own flag, as written — never resolved along the path, as the gateway reads
+// only the key's own group's. Labels are shown as written; the page gives none of them
+// a meaning.
 function groupTree(config: Config): Markup {
   const scopes = resolveScopes(config).filter((scope) => scope.group !== undefined);
   if (scopes.length === 0) return html`<p class="muted">None.</p>`;
@@ -200,14 +202,16 @@ function groupTree(config: Config): Markup {
 }
 
 function groupLine(scope: ResolvedScope, config: Config, keys: string[]): Markup {
-  const labels = Object.entries(config.groups?.[scope.group ?? ""]?.labels ?? {});
+  const group = config.groups?.[scope.group ?? ""];
+  const labels = Object.entries(group?.labels ?? {});
+  const capture = group?.capture ? html`<span class="tag">capture on</span>` : html`<span class="tag muted">capture off</span>`;
   const models =
     scope.allowed_models === undefined
       ? html`<span class="muted">all models</span>`
       : scope.allowed_models.length === 0
         ? html`<span class="tag bad">no models</span>`
         : scope.allowed_models.join(", ");
-  return html`<span class="id">${scope.group}</span>${labels.map(([key, value]) => html` <span class="tag label">${key}=${value}</span>`)}
+  return html`<span class="id">${scope.group}</span> ${capture}${labels.map(([key, value]) => html` <span class="tag label">${key}=${value}</span>`)}
 <span class="muted">models:</span> ${models} <span class="muted">keys:</span> ${keys.length === 0 ? html`<span class="muted">none</span>` : keys.map((id, index) => html`${index > 0 && ", "}<span class="id">${id}</span>`)}`;
 }
 

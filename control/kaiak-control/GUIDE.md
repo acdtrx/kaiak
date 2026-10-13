@@ -2,7 +2,7 @@
 
 > For a coding agent (or a person) building the real kaiak control plane — the app with
 > the UI — in its own repository, on this library. Read it top to bottom before writing
-> code. It matches protocol version 7.
+> code. It matches protocol version 8.
 >
 > Background, in this order: `docs/architecture/control-plane.html` (how gateways and a
 > control plane work together, with diagrams), `docs/specs/CONTROL-PROTOCOL.md` (the
@@ -376,7 +376,7 @@ in the package, `examples/config.json` in the kaiak repo, field meanings in
 `CONTROL-PROTOCOL.md` → Config. Top level: `protocol_version`, `global`, `backends`,
 `models`, `keys`, and optional `groups` — each collection an object keyed by ID.
 
-**`protocol_version` is the protocol version**, `PROTOCOL_VERSION` (7): one version
+**`protocol_version` is the protocol version**, `PROTOCOL_VERSION` (8): one version
 covers the whole contract, the config document included, and a document must state
 the version the gateways speak (`CONTROL-PROTOCOL.md` → Shape → One version). A
 document of another version, or with none, is refused, never migrated: set it from
@@ -429,12 +429,13 @@ support, Base URLs) and → Model metadata.
   shows people are your app's data, outside config.
 
 **The group tree** (`CONTROL-PROTOCOL.md` → Config → The group tree): each group is
-`{ parent?, labels?, allowed_models?, limits?, child_defaults? }`; no `parent` = a
-top-level group, `global` is the root above them, at most 8 levels. Your domain
-model decides what the levels mean (team → project → env → workload, a `users` group
-whose children are people, …); the config carries no meaning for them — put the
+`{ parent?, capture, labels?, allowed_models?, limits?, child_defaults? }`; no
+`parent` = a top-level group, `global` is the root above them, at most 8 levels. Your
+domain model decides what the levels mean (team → project → env → workload, a `users`
+group whose children are people, …); the config carries no meaning for them — put the
 kind of node, a cost center or an owner in `labels`, which gateways ignore. Who may
-edit which group or mint keys in it is your app's business, never config.
+edit which group or mint keys in it is your app's business, never config. `capture`
+says whether a group's chat requests are captured — below.
 
 - `allowed_models` intersect down the path; no list anywhere on a path = every model.
 - `child_defaults` (`allowed_models`, `limits`) apply to **direct children** only; a
@@ -465,6 +466,40 @@ edit which group or mint keys in it is your app's business, never config.
   every scope on a record's path whatever the config's limits, so **a limit added
   mid-window starts with the window's usage so far**, and one removed and added back
   shows everything counted meanwhile.
+
+**Capture: your app decides, for every group.** The rules are `CONTROL-PROTOCOL.md` →
+Config → The group tree (Capture) and `GATEWAY.md` → Request capture.
+
+- **What it does**: with `capture: true` on a group, the gateways record the chat
+  requests (`/v1/chat/completions`, `/v1/messages`, `/v1/responses`) made with keys
+  naming that group — the request as the client sent it, the answer as the client
+  received it — and export each as an OpenTelemetry span carrying the GenAI content
+  attributes, to a tool such as Langfuse. With `false`, nothing of the group's is
+  captured. Either way, prompts and answers never reach logs, metrics or usage
+  records.
+- **Required on every group, a boolean, no default anywhere**: your composer writes
+  it on each group it publishes; a group without it is refused. It is a privacy
+  choice, and it is your app's: who may turn it on, the consent of the people or
+  teams whose prompts are recorded, and the policy it answers to are not config's.
+- **Each group's own, never inherited**: it has no place in `child_defaults`, and a
+  parent's value reaches no child, on or off. A rule for passing it down the tree —
+  "a team off means its sub-groups off", "a person in `users` only with their
+  consent" — is your app's to apply when it writes each group: compute every group's
+  flag in your composer, and show it per group in the UI (`resolveScopes` does not
+  carry it; read `config.groups[id].capture`, as the sample's group tree does).
+- **The gateway reads only the key's own group**: a request is captured when the
+  group its key names has `capture: true`, whatever that group's ancestors say.
+- **Where captures go is the operator's**: each gateway exports to the one trace
+  destination its operator switched on (`GATEWAY.md` → Observability → OTLP trace
+  export). A gateway without it captures nothing, and logs a warning after applying a
+  config with capturing groups. Each capture names `kaiak.key.id`, `kaiak.key.group`
+  and `kaiak.key.root_group`, and `kaiak.request.id` joins it to the usage record;
+  who may see which group's or key's captures in the tool (its projects, users and
+  roles) is your app's job to arrange there — the gateway writes no tool-specific
+  attribute.
+- **Best effort**: a capture over the gateway's memory budget or export limit is
+  dropped, never the request. Captures are not a record of usage: the usage records
+  are (§6).
 
 **Prices: what a UI must know.** The rules are `CONTROL-PROTOCOL.md` → Config →
 Prices, Tiered prices, and Units and price units; how each backend type keeps
@@ -725,6 +760,9 @@ if (current) {
   (§7) — use a new ID for a fresh budget.
 - Giving tree levels a meaning in config (a `kind` field, a level that must be a
   "team") — there is none; use `labels` and keep the meaning in your app.
+- Turning `capture` off on a team and expecting its sub-groups to follow, or on and
+  expecting its people to be captured — the gateway reads only the key's own group.
+  Write every group's flag, applying your propagation rule in the composer (§7).
 - Adding children's windows to their parent's — a record counts toward every group
   on its path, so a parent's window already holds its descendants' spend. Totals
   exist only for the hour and month windows; for reports, group your ledger (§6) by

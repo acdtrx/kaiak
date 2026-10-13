@@ -278,7 +278,7 @@ function groupItem(config: string, id: string): string {
   return rest.slice(0, end);
 }
 
-test("config: groups as a tree, each with its labels, effective models and keys", async () => {
+test("config: groups as a tree, each with its capture, labels, effective models and keys", async () => {
   const config = section((await fetchPage(PUBLISHED)).body, "config");
   const tree = config.slice(config.indexOf("<h3>Groups</h3>"));
   // Top-level groups at the outer level, each group's children nested under it.
@@ -288,6 +288,26 @@ test("config: groups as a tree, each with its labels, effective models and keys"
   nested("support", ["support-bot"]);
   nested("users", ["alice", "bob", "carol"]);
   assert.match(tree, /^<h3>Groups<\/h3><ul class="tree"><li><span class="id">research<\/span>/);
+  // Each group's own capture flag, never its parent's: users does not capture, alice and
+  // carol below it do, bob does not.
+  const captures = Object.fromEntries(
+    ["research", "eval-pipeline", "support", "support-bot", "users", "alice", "bob", "carol"].map((id) => [
+      id,
+      /^<span class="id">[^<]*<\/span> <span class="tag( muted)?">capture (on|off)<\/span>/.exec(groupItem(tree, id))?.[2],
+    ]),
+  );
+  assert.deepEqual(captures, {
+    research: "off",
+    "eval-pipeline": "off",
+    support: "on",
+    "support-bot": "on",
+    users: "off",
+    alice: "on",
+    bob: "off",
+    carol: "on",
+  });
+  assert.match(groupItem(tree, "support"), /^<span class="id">support<\/span> <span class="tag">capture on<\/span> <span class="tag label">kind=team<\/span>/);
+  assert.match(groupItem(tree, "bob"), /^<span class="id">bob<\/span> <span class="tag muted">capture off<\/span>\s*<span class="muted">models:/);
   // Labels as key=value chips; models as resolved down the path.
   assert.match(groupItem(tree, "research"), /<span class="tag label">kind=team<\/span> <span class="tag label">owner=research-leads@example.com<\/span>\s*<span class="muted">models:<\/span> <span class="muted">all models<\/span> <span class="muted">keys:<\/span> <span class="muted">none<\/span>/);
   assert.match(groupItem(tree, "eval-pipeline"), /models:<\/span> <span class="muted">all models<\/span> <span class="muted">keys:<\/span> <span class="id">k-eval-ci<\/span>$/);

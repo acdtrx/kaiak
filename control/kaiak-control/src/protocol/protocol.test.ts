@@ -56,13 +56,13 @@ describe("bearer token", () => {
 });
 
 describe("protocol version", () => {
-  test("the current version is 7 and passes", () => {
-    assert.equal(PROTOCOL_VERSION, 7);
-    assert.equal(checkProtocolVersion("7"), undefined);
+  test("the current version is 8 and passes", () => {
+    assert.equal(PROTOCOL_VERSION, 8);
+    assert.equal(checkProtocolVersion("8"), undefined);
   });
 
   test("another or missing version is a mismatch, a repeated one (joined by Node) included", () => {
-    for (const header of ["6", "8", "7.0", "", " 7", undefined, "7, 7"]) {
+    for (const header of ["7", "9", "8.0", "", " 8", undefined, "8, 8"]) {
       const error = checkProtocolVersion(header);
       assert.equal(error?.code, "protocol-version-mismatch", JSON.stringify(header));
       assert.equal(error?.status, 400);

@@ -175,6 +175,11 @@ export interface ChildDefaults {
 // root above every top-level group.
 export interface Group {
   parent?: string;
+  // Whether the gateway captures the chat requests of keys naming this group, and their
+  // answers (docs/specs/GATEWAY.md, Request capture). The group's own and required: not
+  // inherited, not in child_defaults, and its ancestors' values are never read — any
+  // rule for passing it down the tree is the app's, applied when it writes each group.
+  capture: boolean;
   // For the control plane only; the gateway checks their shape and ignores them.
   labels?: Record<string, string>;
   allowed_models?: string[];

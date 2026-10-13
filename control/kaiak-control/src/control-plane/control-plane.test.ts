@@ -4,12 +4,11 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, test } from "node:test";
 
-import type { Config } from "../config/index.ts";
 import type { UsageBatch } from "../messages/index.ts";
 import { INSTANCE_HEADER, PROTOCOL_HEADER, PROTOCOL_VERSION } from "../protocol/index.ts";
 import { createMemoryStore } from "../storage/index.ts";
 import type { ControlPlaneStore, ForgetGateway, StoreChangeListener } from "../storage/index.ts";
-import { configNumbered, fixture, gatewayStatus, testCore, usageBatch } from "../test-support/index.ts";
+import { configNumbered, configWithGroups, fixture, gatewayStatus, testCore, usageBatch } from "../test-support/index.ts";
 
 import { createControlPlane } from "./index.ts";
 import type { ControlPlane, ControlPlaneOptions, ExpirySweepRun, ListenerEvent } from "./index.ts";
@@ -232,8 +231,7 @@ test("a publish checks the parents rule against what it writes, whatever the cal
     },
   });
   try {
-    const current = fixture("config/valid/minimal.json") as Config;
-    current.groups = { me: { parent: "a" }, a: {}, b: {} };
+    const current = configWithGroups({ me: { parent: "a" }, a: {}, b: {} });
     assert.ok((await core.publishConfig(current)).ok);
     const edit = structuredClone(current);
     edit.groups!["me"]!.parent = "b";

@@ -23,6 +23,7 @@ import {
   fixture,
   gatewayHeaders,
   gatewayStatus,
+  group,
   nextTotals,
   openStream,
   restorable,
@@ -569,7 +570,7 @@ describe("slow readers", { timeout: 30_000 }, () => {
     model.metadata.context_length = 1000 + n;
     // Padding: 256 more top-level groups, each with 16 labels of 256 characters.
     const labels = Object.fromEntries(Array.from({ length: 16 }, (_, i) => [`pad${i}`, "x".repeat(256)]));
-    for (let i = 0; i < 256; i++) (config.groups ??= {})[`pad-${i}`] = { labels };
+    for (let i = 0; i < 256; i++) (config.groups ??= {})[`pad-${i}`] = group({ labels });
     return config;
   }
 

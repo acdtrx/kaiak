@@ -16,7 +16,7 @@ import { test } from "node:test";
 
 import Fastify from "fastify";
 
-import type { Config } from "../config/index.ts";
+import type { Config, Group } from "../config/index.ts";
 import { createControlPlane } from "../control-plane/index.ts";
 import type { ControlPlane, ControlPlaneOptions } from "../control-plane/index.ts";
 import { controlProtocolPlugin } from "../fastify/index.ts";
@@ -139,6 +139,23 @@ export function testInvalidFixtures(dir: string, validate: FixtureValidator, pre
       }
     });
   }
+}
+
+// A group as the tests build one: fields as given, capture off unless they set it.
+// Every group states its capture (docs/specs/CONTROL-PROTOCOL.md, Config → The group
+// tree); a test that is not about it leaves it to this.
+export type GroupFields = Omit<Group, "capture"> & { capture?: boolean };
+
+export function group(fields: GroupFields = {}): Group {
+  return { capture: false, ...fields };
+}
+
+// minimal.json with the given groups, each built by group; its key stays in "me", which
+// groups may replace.
+export function configWithGroups(groups: Record<string, GroupFields>): Config {
+  const config = fixture("config", "valid", "minimal.json") as Config;
+  config.groups = Object.fromEntries(Object.entries({ me: {}, ...groups }).map(([id, fields]) => [id, group(fields)]));
+  return config;
 }
 
 // A valid config distinguishable by its context length.
