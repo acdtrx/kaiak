@@ -2,6 +2,7 @@ package fakebackend
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 )
@@ -56,13 +57,27 @@ func reasoningItem(reasoning string) map[string]any {
 		"content": []any{map[string]any{"type": "reasoning_text", "text": reasoning}}}
 }
 
+// functionCallID is the item ID of the answer's function call i.
+func functionCallID(i int) string { return fmt.Sprintf("fc_fake_%d", i+1) }
+
+// functionCallItem is the answer's function call i, with arguments and status.
+func functionCallItem(i int, c ToolCall, arguments, status string) map[string]any {
+	return map[string]any{"id": functionCallID(i), "type": "function_call", "status": status, "call_id": c.ID,
+		"name": c.Name, "arguments": arguments}
+}
+
 // finishResponse completes a response object: its output — the reasoning item when
-// there is reasoning, then the message — its status (incomplete with its reason when
-// the output limit cut it short) and its usage.
-func finishResponse(response map[string]any, reasoning, text string, cut bool, usage Usage, omitUsage bool) {
+// there is reasoning, then the message, then a function call item per call — its
+// status (incomplete with its reason when the output limit cut it short) and its
+// usage.
+func finishResponse(response map[string]any, reasoning, text string, calls []ToolCall, cut bool, usage Usage,
+	omitUsage bool) {
 	output := []any{messageItem(text)}
 	if reasoning != "" {
 		output = append([]any{reasoningItem(reasoning)}, output...)
+	}
+	for i, c := range calls {
+		output = append(output, functionCallItem(i, c, c.arguments(), "completed"))
 	}
 	response["output"] = output
 	response["status"] = "completed"
@@ -75,10 +90,10 @@ func finishResponse(response map[string]any, reasoning, text string, cut bool, u
 	}
 }
 
-func writeResponse(w http.ResponseWriter, top map[string]json.RawMessage, model, reasoning, text string, cut bool,
-	usage Usage, omitUsage bool) {
+func writeResponse(w http.ResponseWriter, top map[string]json.RawMessage, model, reasoning, text string, calls []ToolCall,
+	cut bool, usage Usage, omitUsage bool) {
 	response := responseObject(model, "in_progress", top)
-	finishResponse(response, reasoning, text, cut, usage, omitUsage)
+	finishResponse(response, reasoning, text, calls, cut, usage, omitUsage)
 	writeJSON(w, http.StatusOK, response)
 }
 
@@ -93,10 +108,12 @@ func responsesError(code string) []byte {
 
 // writeResponsesStream streams a Responses answer: response.created and
 // response.in_progress; with reasoning, a reasoning item with a reasoning_text delta
-// per piece; one message item with one output_text part and a delta per chunk, then
-// response.completed — response.incomplete when the output limit cut it short —
-// carrying the whole response and its usage. The reply's stream fault applies with
-// responsesError as the error event.
+// per piece; one message item with one output_text part and a delta per chunk; a
+// function call item per call — added with empty arguments, a
+// function_call_arguments delta per argument piece; then response.completed —
+// response.incomplete when the output limit cut it short — carrying the whole
+// response and its usage. The reply's stream fault applies with responsesError as the
+// error event.
 func (b *Backend) writeResponsesStream(w http.ResponseWriter, r *http.Request, req *Request, reply Reply,
 	top map[string]json.RawMessage, model string, chunks []string, cut bool, usage Usage) {
 	s, ok := b.startStream(w, r, req, reply, responsesError)
@@ -158,7 +175,26 @@ func (b *Backend) writeResponsesStream(w http.ResponseWriter, r *http.Request, r
 		!event(map[string]any{"type": "response.output_item.done", "output_index": index, "item": messageItem(text)}) {
 		return
 	}
-	finishResponse(response, reasoning, text, cut, usage, reply.OmitUsage)
+	for i, c := range reply.ToolCalls {
+		index++
+		if !event(map[string]any{"type": "response.output_item.added", "output_index": index,
+			"item": functionCallItem(i, c, "", "in_progress")}) {
+			return
+		}
+		for _, piece := range c.Arguments {
+			if !event(map[string]any{"type": "response.function_call_arguments.delta", "item_id": functionCallID(i),
+				"output_index": index, "delta": piece}) {
+				return
+			}
+		}
+		if !event(map[string]any{"type": "response.function_call_arguments.done", "item_id": functionCallID(i),
+			"output_index": index, "arguments": c.arguments()}) ||
+			!event(map[string]any{"type": "response.output_item.done", "output_index": index,
+				"item": functionCallItem(i, c, c.arguments(), "completed")}) {
+			return
+		}
+	}
+	finishResponse(response, reasoning, text, reply.ToolCalls, cut, usage, reply.OmitUsage)
 	final := "response.completed"
 	if cut {
 		final = "response.incomplete"

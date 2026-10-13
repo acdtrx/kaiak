@@ -55,6 +55,13 @@ type Reply struct {
 	// StreamFault's At counts the text events alone — joined in the non-stream
 	// answer. Chat completions, Messages and Responses only.
 	Reasoning []string
+	// ToolCalls are the function calls the answer makes after its text, in each API's
+	// shape: a chat completion's tool_calls (finish reason tool_calls), Messages
+	// tool_use blocks (stop reason tool_use), Responses function_call items. Streamed,
+	// each call opens with its ID and name, then its argument pieces follow, one event
+	// each (a StreamFault's At counts the text events alone). Chat completions,
+	// Messages and Responses only.
+	ToolCalls []ToolCall
 	// Usage overrides the reported token counts. Default: 7 prompt tokens, one
 	// completion token per chunk.
 	Usage *Usage
@@ -163,6 +170,21 @@ type Usage struct {
 	CacheWriteTokens int
 	ReasoningTokens  int
 }
+
+// ToolCall is one function call of an answer.
+type ToolCall struct {
+	// ID is the call's ID: a chat tool call's id, a tool_use block's id, a
+	// function_call item's call_id.
+	ID   string
+	Name string
+	// Arguments are the call's arguments in pieces — joined, a JSON object, or none:
+	// a Messages tool_use block's input is that object — one stream event each, joined
+	// in the non-stream answer.
+	Arguments []string
+}
+
+// arguments are the call's arguments whole.
+func (c ToolCall) arguments() string { return strings.Join(c.Arguments, "") }
 
 // DefaultChunks is the generated text when a Reply sets no Chunks.
 var DefaultChunks = []string{"Hello", " from", " the", " fake"}
@@ -544,6 +566,9 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 		chunks = chunks[:*params.maxTokens]
 		finish = "length"
 	}
+	if finish == "stop" && endpoint == chatPath && len(reply.ToolCalls) > 0 {
+		finish = "tool_calls"
+	}
 	usage := Usage{PromptTokens: 7, CompletionTokens: len(chunks), CachedTokens: reply.CachedTokens}
 	if reply.Usage != nil {
 		usage = *reply.Usage
@@ -557,13 +582,13 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 	case endpoint == responsesPath && params.stream:
 		b.writeResponsesStream(w, r, req, reply, top, params.model, chunks, finish == "length", usage)
 	case endpoint == responsesPath:
-		writeResponse(w, top, params.model, strings.Join(reply.Reasoning, ""), strings.Join(chunks, ""), finish == "length",
-			usage, reply.OmitUsage)
+		writeResponse(w, top, params.model, strings.Join(reply.Reasoning, ""), strings.Join(chunks, ""), reply.ToolCalls,
+			finish == "length", usage, reply.OmitUsage)
 	case endpoint == messagesPath && params.stream:
 		b.writeMessagesStream(w, r, req, reply, params.model, chunks, finish == "length", usage)
 	case endpoint == messagesPath:
-		writeMessage(w, params.model, strings.Join(reply.Reasoning, ""), strings.Join(chunks, ""), finish == "length", usage,
-			reply.OmitUsage)
+		writeMessage(w, params.model, strings.Join(reply.Reasoning, ""), strings.Join(chunks, ""), reply.ToolCalls,
+			finish == "length", usage, reply.OmitUsage)
 	case endpoint == embeddingPath:
 		b.writeEmbeddings(w, params.model, usage, reply.OmitUsage)
 	case endpoint == rerankPath:
@@ -581,8 +606,12 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 	case params.stream:
 		b.writeStream(w, r, req, reply, endpoint, params.model, chunks, finish, usage, params.includeUsage && !reply.OmitUsage)
 	default:
-		writeCompletion(w, endpoint, params.model, strings.Join(reply.Reasoning, ""), strings.Join(chunks, ""), finish, usage,
-			reply.OmitUsage)
+		var calls []ToolCall
+		if endpoint == chatPath {
+			calls = reply.ToolCalls
+		}
+		writeCompletion(w, endpoint, params.model, strings.Join(reply.Reasoning, ""), strings.Join(chunks, ""), finish, calls,
+			usage, reply.OmitUsage)
 	}
 }
 
@@ -757,7 +786,23 @@ func (b *Backend) writeStream(w http.ResponseWriter, r *http.Request, req *Reque
 			return
 		}
 	}
-	if !send(textChunk(endpoint, model, "content", "", len(chunks) == 0 && len(reasoning) == 0, &finish, includeUsage)) {
+	var calls []ToolCall
+	if endpoint == chatPath {
+		calls = reply.ToolCalls
+	}
+	for i, call := range calls {
+		first := i == 0 && len(chunks) == 0 && len(reasoning) == 0
+		if !send(toolCallChunk(model, i, call, nil, first, includeUsage)) {
+			return
+		}
+		for _, piece := range call.Arguments {
+			if !send(toolCallChunk(model, i, call, &piece, false, includeUsage)) {
+				return
+			}
+		}
+	}
+	if !send(textChunk(endpoint, model, "content", "", len(chunks) == 0 && len(reasoning) == 0 && len(calls) == 0, &finish,
+		includeUsage)) {
 		return
 	}
 	if includeUsage {
@@ -783,31 +828,56 @@ func chunkObject(endpoint string) string {
 }
 
 // textChunk builds one stream chunk carrying text (or the finish reason) — a chat
-// chunk's in its delta's member, content or reasoning. Field order follows OpenAI's;
-// like OpenAI, every chunk carries "usage": null when the request asks for usage
-// (withUsage).
+// chunk's in its delta's member, content or reasoning.
 func textChunk(endpoint, model, member, text string, first bool, finish *string, withUsage bool) []byte {
-	var choice any
-	if endpoint == chatPath {
-		delta := map[string]string{}
-		if first {
-			delta["role"] = "assistant"
-		}
-		if finish == nil {
-			delta[member] = text
-		}
-		choice = struct {
-			Index        int               `json:"index"`
-			Delta        map[string]string `json:"delta"`
-			FinishReason *string           `json:"finish_reason"`
-		}{0, delta, finish}
-	} else {
-		choice = struct {
+	if endpoint != chatPath {
+		return streamChunk(endpoint, model, struct {
 			Index        int     `json:"index"`
 			Text         string  `json:"text"`
 			FinishReason *string `json:"finish_reason"`
-		}{0, text, finish}
+		}{0, text, finish}, withUsage)
 	}
+	delta := map[string]any{}
+	if first {
+		delta["role"] = "assistant"
+	}
+	if finish == nil {
+		delta[member] = text
+	}
+	return chatChunk(model, delta, finish, withUsage)
+}
+
+// toolCallChunk builds one chat stream chunk carrying a piece of the answer's tool
+// call index, as OpenAI streams one: its opening — the ID, the type, the name and
+// empty arguments — when piece is nil, else one piece of its arguments.
+func toolCallChunk(model string, index int, call ToolCall, piece *string, first, withUsage bool) []byte {
+	fragment := map[string]any{"index": index}
+	if piece == nil {
+		fragment["id"], fragment["type"] = call.ID, "function"
+		fragment["function"] = map[string]any{"name": call.Name, "arguments": ""}
+	} else {
+		fragment["function"] = map[string]any{"arguments": *piece}
+	}
+	delta := map[string]any{"tool_calls": []any{fragment}}
+	if first {
+		delta["role"] = "assistant"
+	}
+	return chatChunk(model, delta, nil, withUsage)
+}
+
+// chatChunk builds one chat completion stream chunk of one choice with delta.
+func chatChunk(model string, delta map[string]any, finish *string, withUsage bool) []byte {
+	return streamChunk(chatPath, model, struct {
+		Index        int            `json:"index"`
+		Delta        map[string]any `json:"delta"`
+		FinishReason *string        `json:"finish_reason"`
+	}{0, delta, finish}, withUsage)
+}
+
+// streamChunk builds one stream chunk holding choice. Field order follows OpenAI's;
+// like OpenAI, every chunk carries "usage": null when the request asks for usage
+// (withUsage).
+func streamChunk(endpoint, model string, choice any, withUsage bool) []byte {
 	chunk := struct {
 		ID      string `json:"id"`
 		Object  string `json:"object"`
@@ -846,12 +916,21 @@ func usageBody(u Usage, endpoint string) map[string]any {
 
 // writeCompletion answers a completion: a chat message's reasoning, when there is
 // some, in vLLM's reasoning member.
-func writeCompletion(w http.ResponseWriter, endpoint, model, reasoning, text, finish string, usage Usage, omitUsage bool) {
+func writeCompletion(w http.ResponseWriter, endpoint, model, reasoning, text, finish string, calls []ToolCall, usage Usage,
+	omitUsage bool) {
 	answer := map[string]any{"id": "fake-1", "created": created, "model": model}
 	if endpoint == chatPath {
-		message := map[string]string{"role": "assistant", "content": text}
+		message := map[string]any{"role": "assistant", "content": text}
 		if reasoning != "" {
 			message["reasoning"] = reasoning
+		}
+		if len(calls) > 0 {
+			var toolCalls []any
+			for _, c := range calls {
+				toolCalls = append(toolCalls, map[string]any{"id": c.ID, "type": "function",
+					"function": map[string]any{"name": c.Name, "arguments": c.arguments()}})
+			}
+			message["tool_calls"] = toolCalls
 		}
 		answer["object"] = "chat.completion"
 		answer["choices"] = []any{map[string]any{"index": 0, "finish_reason": finish, "message": message}}
