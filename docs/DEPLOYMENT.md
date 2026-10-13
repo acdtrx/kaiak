@@ -1898,6 +1898,11 @@ Boot).
     each type serves, a model form's choices once its backends' type is known;
     `MODEL_ENDPOINTS` gains `images_edits` and `audio_transcriptions`, and `Global`
     `max_upload_bytes`. The store is unchanged.
+- **0.15.1** (protocol 7, no config change; a 0.15.0 control plane talks to it):
+  - **`azure-anthropic` sends the key as `x-api-key`**, where it sent `api-key`,
+    which Foundry refuses (`401`) even with a valid key: every request to a Claude
+    deployment in Foundry answered `502 upstream_auth_failed`. Upgrading the
+    gateways is the whole fix — the config and its `api_key_env` stay as they are.
 
 ## Images
 
