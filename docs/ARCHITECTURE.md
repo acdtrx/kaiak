@@ -383,8 +383,9 @@ Test tooling outside the binary:
   embeddings, reranker and speech-to-text servers and vLLM-Omni speech, image and
   image edit servers beside it, and models misconfigured on purpose to read a real
   server's answer to a path it does not have — runs the built binary and checks it
-  end to end, uploading audio and an image it writes itself
-  (`docs/testing/LIVE-BACKENDS.md`).
+  end to end, uploading audio and an image it writes itself, and receiving the
+  gateway's request captures on an OTLP receiver of its own, which can forward them
+  to a second destination (`docs/testing/LIVE-BACKENDS.md`).
 
 ## Control-plane packages
 

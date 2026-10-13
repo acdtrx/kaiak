@@ -99,7 +99,7 @@ const (
 	failoverProbeIntervalMS = 1000
 )
 
-// buildConfig is the config document for one run, at protocol 7: one backend (two
+// buildConfig is the config document for one run, at protocol 8: one backend (two
 // with -base-url-2, each deploying the chat models; one more with
 // -embeddings-base-url, deploying the embeddings model, with -rerank-base-url,
 // deploying the reranker, with -asr-base-url, deploying the speech recognition model,
@@ -108,11 +108,12 @@ const (
 // base_url, pathmissing.go), the models above, each with its endpoints list, all of a
 // model's deployments on one backend type, and groups with every model allowed: live
 // holds the checks' key (hash), live-metered the rate-limit checks' key (meteredHash)
-// under 1 request a minute — a limit counts every request of its group — and, with a
+// under 1 request a minute — a limit counts every request of its group — live-capture
+// the capture checks' key (captureHash), the one group with capture on, and, with a
 // vLLM-Omni or speech-to-text server, live-media the media limit checks' key
 // (mediaHash) under 1 image, 1 second of audio generated and 1 second of audio
 // processed a minute.
-func buildConfig(o options, hash, meteredHash, mediaHash string) ([]byte, error) {
+func buildConfig(o options, hash, meteredHash, mediaHash, captureHash string) ([]byte, error) {
 	timeout := o.requestTimeout.Milliseconds()
 	backendOf := func(backendType, baseURL, apiKeyEnv string) map[string]any {
 		b := map[string]any{"type": backendType, "base_url": baseURL, "first_event_timeout_ms": timeout,
@@ -254,10 +255,12 @@ func buildConfig(o options, hash, meteredHash, mediaHash string) ([]byte, error)
 			"capture": false,
 			"limits":  []any{map[string]any{"type": "requests_per_minute", "value": 1}},
 		},
+		groupCapture: map[string]any{"capture": true},
 	}
 	keys := map[string]any{
 		"k-live":         map[string]any{"hash": hash, "group": "live"},
 		"k-live-metered": map[string]any{"hash": meteredHash, "group": "live-metered"},
+		keyCapture:       map[string]any{"hash": captureHash, "group": groupCapture},
 	}
 	if o.speechServer() || o.imageServer() || o.editServer() || o.transcriber() {
 		groups[groupMedia] = map[string]any{"capture": false, "limits": []any{

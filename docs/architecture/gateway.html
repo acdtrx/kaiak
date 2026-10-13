@@ -226,8 +226,10 @@ svg .band { stroke: none; }
     <tr><td><code>config</code></td><td>Strict decoding, validation, resolution into an immutable snapshot (each group's path, allowed models and effective limits), the table of which endpoints each backend type serves (which every model's <code>endpoints</code> list is held to), the holder that swaps it atomically, the one apply path, the file loader.</td></tr>
     <tr><td><code>control</code></td><td>Boot (the stream's first config → seed), the config stream with reconnect (every config the control plane sends is applied, unless its hash is the running or last rejected one), totals from the stream only (a malformed totals event ends the stream), the usage batch sender (batches queued in memory, the drain delivering them), the status reporter, contact tracking (stream bytes only).</td></tr>
     <tr><td><code>metrics</code></td><td>The gateway's metric families — ops, usage, control-plane state, usage delivery, the exporters' own counts — each defined once under its OpenTelemetry name on <code>telemetry/metric</code>'s registry. <code>/metrics</code> and the OTLP metric exporter both read it.</td></tr>
+    <tr><td><code>capture</code></td><td>Request capture: the capture budget, the session header's rule, the background builder (one capture at a time, a fault dropping that capture alone), each chat API's request, answer and stream read into the GenAI conventions' message format, and the span with its attributes, handed to the trace exporter. <code>server</code> runs its stage and feeds it the client's bytes; <code>cmd/kaiak</code> makes it with the trace export.</td></tr>
     <tr><td><code>telemetry/otlp</code>, <code>telemetry/otlplog</code></td><td>The OpenTelemetry tree (standard library and <code>netfail</code> only, built to leave the repo as a library). Optional OTLP log export (<code>OTEL_*</code> variables): an <code>slog</code> handler beside the stderr one queues a copy of every line; one sender posts OTLP/HTTP JSON batches through the OTLP connection every signal shares (<code>otlp</code>: settings per signal, resource, retries, what counts as delivered), drops the newest when its queue is full, and flushes at exit after usage. Its own problems go to stderr only. Not drawn: <code>cmd/kaiak</code> wraps the logger with it.</td></tr>
     <tr><td><code>telemetry/metric</code>, <code>telemetry/otlpmetric</code></td><td>The instruments (counter, up-down counter, gauge, histogram, and the forms read at collect), the collect step producing OpenTelemetry's data model, and the Prometheus text writer with the name translation; optional OTLP metric export (<code>OTEL_*</code> variables): a periodic reader collects the registry, applies the temporality and posts OTLP/HTTP JSON through <code>otlp</code>, with a final export at exit after usage and before the logs. Not drawn: <code>cmd/kaiak</code> starts it.</td></tr>
+    <tr><td><code>telemetry/otlptrace</code></td><td>Optional OTLP trace export, behind its own switch (<code>OTEL_EXPORTER_OTLP_TRACES_ENDPOINT</code>, or <code>OTEL_TRACES_EXPORTER=otlp</code>): encodes a span model of its own (it imports nothing of kaiak's), queues encoded spans with a release callback — the capture budget is the queue's bound — and posts OTLP/HTTP JSON through <code>otlp</code> every second or at 16 MiB, one export in flight; flushed at exit after the builder, before the metrics and the logs.</td></tr>
     <tr><td><code>sse</code>, <code>netfail</code>, <code>clip</code>, <code>logattr</code>, <code>schemacheck</code></td><td>Shared parts: SSE reader (backend streams and the config stream), a failed exchange named by its class in the gateway's own words (never the remote party's text), bounding client strings before they are logged, log durations in seconds, the one validation pipeline every received document goes through (strict JSON, the schema walker, the typed decode).</td></tr>
     <tr><td><code>fakebackend</code>, <code>fakecontrol</code>, <code>telemetry/fakeotlp</code>, <code>fixturetest</code></td><td>Test tooling only: a backend, a control plane and an OTLP collector for the unit tests and the e2e suite in <code>gateway/e2e</code>, and the runner of the shared fixtures in <code>protocol/fixtures/</code>.</td></tr>
   </tbody>
@@ -240,7 +242,7 @@ svg .band { stroke: none; }
 <p>Every client request passes the same ordered stages — no endpoint or fast path skips one. New cross-cutting behavior (caching, guardrails, prompt logging) arrives as a new stage, not as a special case inside a provider.</p>
 
 <figure>
-<svg viewBox="0 0 960 360" role="img" aria-label="Request pipeline: admission, auth, inbound and limits run once per request; routing, accounting and provider run once per attempt and are retried on another deployment only while nothing has reached the client; finishers run however the request ends.">
+<svg viewBox="0 0 960 380" role="img" aria-label="Request pipeline: admission, auth, inbound and limits run once per request, inbound starting the capture of a capturing group's chat request; routing, accounting and provider run once per attempt and are retried on another deployment only while nothing has reached the client; finishers run however the request ends, handing a capture to its background builder.">
   <defs>
     <marker id="p-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker>
     <marker id="p-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-hot"/></marker>
@@ -259,7 +261,8 @@ svg .band { stroke: none; }
 
   <rect x="280" y="50" width="120" height="62" rx="8" class="box"/>
   <text x="340" y="75" text-anchor="middle" class="t">2 · Inbound</text>
-  <text x="340" y="93" text-anchor="middle" class="s">body · model</text>
+  <text x="340" y="91" text-anchor="middle" class="s">body · model</text>
+  <text x="340" y="105" text-anchor="middle" class="la">capture</text>
 
   <rect x="415" y="50" width="120" height="62" rx="8" class="box"/>
   <text x="475" y="75" text-anchor="middle" class="t">3 · Limits</text>
@@ -302,10 +305,11 @@ svg .band { stroke: none; }
   <text x="565" y="232" class="lw">4 · 429 queue_full / queue_timeout · 503 no_healthy_deployment</text>
 
   <!-- finishers -->
-  <rect x="280" y="262" width="670" height="82" rx="10" class="box"/>
+  <rect x="280" y="262" width="670" height="102" rx="10" class="box"/>
   <text x="296" y="286" class="t">Request finishers — run however the request ends</text>
   <text x="296" y="308" class="l">release the last slot · report the attempt to its circuit · settle the usage record</text>
   <text x="296" y="328" class="l">limits settle the stage-3 reservation from that record · ops metrics · the log line</text>
+  <text x="296" y="348" class="la">a capture's copies go to the background builder; it exports the span after the response</text>
   <line x1="935" y1="212" x2="935" y2="260" class="edge" marker-end="url(#p-a)"/>
 
   <text x="10" y="190" class="s">Stages 0–1 run on headers</text>
@@ -313,14 +317,15 @@ svg .band { stroke: none; }
   <text x="10" y="226" class="s">client never makes the</text>
   <text x="10" y="244" class="s">gateway read a body.</text>
 </svg>
-<figcaption>Stages 0–3 run once per client request, so there is exactly one limits reservation however many attempts follow. Stages 4–6 form the attempt loop. A retry never goes back to a deployment the request already tried; with none left, the last attempt's answer goes to the client. Anything after the first event relayed is final.</figcaption>
+<figcaption>Stages 0–3 run once per client request, so there is exactly one limits reservation however many attempts follow. Stages 4–6 form the attempt loop. A retry never goes back to a deployment the request already tried; with none left, the last attempt's answer goes to the client. Anything after the first event relayed is final. Capture is part of stage 2, once the body is parsed: every refusal after it is captured, none before; on the request path it only copies, and it never refuses, delays or alters a request.</figcaption>
 </figure>
 
 <h3>What each stage does</h3>
 <ul>
   <li><strong>Admission</strong> — refuses during a drain and while no config is in force, before anything is read.</li>
   <li><strong>Auth</strong> — hashes the key (<code>Authorization: Bearer</code>, or <code>x-api-key</code> when that header is absent), looks up key ID and its group (with the group's path up the tree), then counts the request against the key's concurrency limit.</li>
-  <li><strong>Inbound</strong> — reads the body under the per-request cap and the gateway-wide body budget — an upload (image edits, speech-to-text: <code>multipart/form-data</code>) under a cap, budget and read deadline of its own — parses only the fields or parts the gateway owns in the endpoint's client API (OpenAI, Messages, Responses, Rerank, Speech, Speech batch, Images, Image edits or Speech-to-text) and keeps the raw bytes for passthrough; refuses tools the backend would run, on Responses the stateful fields, references the backend would fetch or read (speech audio or an input image by URL, an image LoRA) and streams it does not relay; then the model-access check, whether the model's <code>endpoints</code> list names the endpoint, for a transcription on llama-server whether its upload could be measured, and the model's output limit, under that API's own key. Models carry no request defaults: the backends apply their own.</li>
+  <li><strong>Inbound</strong> — reads the body under the per-request cap and the gateway-wide body budget — an upload (image edits, speech-to-text: <code>multipart/form-data</code>) under a cap, budget and read deadline of its own — parses only the fields or parts the gateway owns in the endpoint's client API (OpenAI, Messages, Responses, Rerank, Speech, Speech batch, Images, Image edits or Speech-to-text) and keeps the raw bytes for passthrough; refuses tools the backend would run, on Responses the stateful fields, references the backend would fetch or read (speech audio or an input image by URL, an image LoRA) and streams it does not relay; then <em>capture</em> (below); then the model-access check, whether the model's <code>endpoints</code> list names the endpoint, for a transcription on llama-server whether its upload could be measured, and the model's output limit, under that API's own key. Models carry no request defaults: the backends apply their own.</li>
+  <li><strong>Capture</strong> — on chat completions, Messages and Responses, for a key whose own group has <code>capture</code> on: reads the <code>Kaiak-Session-Id</code> header, copies the body under the capture budget and registers a finisher; the relay copies every byte written to the client. Once the request is over the finisher hands the copies to a background builder, which maps them into the GenAI conventions' messages — streams assembled — and queues the span for the trace exporter. With trace export off it copies nothing and the request line says <code>export_off</code>.</li>
   <li><strong>Limits</strong> — checks every scope on the key's path (global › each ancestor group › the key's group) and reserves input estimate + output limit.</li>
   <li><strong>Routing</strong> — picks the deployment with the fewest requests in flight among those with a closed circuit and a free backend slot; otherwise waits in the model's FIFO queue.</li>
   <li><strong>Accounting</strong> — opens the attempt's meter; the relay feeds it every event.</li>
@@ -511,7 +516,6 @@ svg .band { stroke: none; }
   <defs>
     <marker id="x-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker>
     <marker id="x-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-hot"/></marker>
-    <marker id="x-am" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-muted"/></marker>
   </defs>
 
   <!-- response path along the top -->
@@ -594,10 +598,10 @@ svg .band { stroke: none; }
   <line x1="560" y1="270" x2="522" y2="270" class="edge" marker-end="url(#x-a)"/>
   <text x="541" y="232" text-anchor="middle" class="s">records</text>
 
-  <rect x="300" y="316" width="220" height="44" rx="8" class="frame"/>
-  <text x="410" y="336" text-anchor="middle" class="l">prompt / response log</text>
-  <text x="410" y="352" text-anchor="middle" class="s">opt-in, own channel — not records</text>
-  <path d="M780,200 L780,338 L522,338" class="edge-dash" marker-end="url(#x-am)"/>
+  <rect x="300" y="316" width="220" height="44" rx="8" class="hot"/>
+  <text x="410" y="336" text-anchor="middle" class="la">request capture</text>
+  <text x="410" y="352" text-anchor="middle" class="s">per group, OTLP spans — not records</text>
+  <path d="M780,200 L780,338 L522,338" class="edge" marker-end="url(#x-a)"/>
 
   <text x="10" y="258" class="t">Legend</text>
   <rect x="10" y="270" width="26" height="16" rx="3" class="hot"/>
@@ -607,7 +611,7 @@ svg .band { stroke: none; }
   <text x="10" y="336" class="s">⑦ limits and ⑧ the control-</text>
   <text x="10" y="352" class="s">plane side: in the table</text>
 </svg>
-<figcaption>The same pipeline as above, drawn to show where future plugs attach. Positions for stages that do not exist yet (templating, guardrails, cache) are where the current contracts point, not settled decisions — each gets its own design when its trigger fires. Prompt logging would read relayed content, so it is a separate, opt-in channel. It never goes into usage records, metrics or logs, all of which stay free of prompt and response content.</figcaption>
+<figcaption>The same pipeline as above, drawn to show where future plugs attach. Positions for stages that do not exist yet (templating, guardrails, cache) are where the current contracts point, not settled decisions — each gets its own design when its trigger fires. Request capture reads the request and the relayed content, so it is a separate, opt-in channel: per group, to the gateway's trace destination alone. Content never goes into usage records, metrics or logs, all of which stay free of prompt and response content.</figcaption>
 </figure>
 
 <h3>The seams</h3>
@@ -625,8 +629,8 @@ svg .band { stroke: none; }
     <tr>
       <td>② Pipeline stages</td>
       <td><code>server/pipeline.go</code>, <code>newPipeline</code>: an ordered list; "a new stage is a new entry"; finishers for anything that must run however a request ends</td>
-      <td>admission, auth, key concurrency, inbound, model access, endpoint list, upload measured, model params, limits, attempts, models — each stage naming the requests it applies to</td>
-      <td>Response cache, guardrails (input/output), prompt templating, prompt/response logging</td>
+      <td>admission, auth, key concurrency, inbound, capture, model access, endpoint list, upload measured, model params, limits, attempts, models — each stage naming the requests it applies to</td>
+      <td>Response cache, guardrails (input/output), prompt templating</td>
       <td>Its position and what it reads or edits in the per-request struct. How it keeps the one-pipeline rule: for a cache, whether a hit is counted against limits and accounted is its first design question.</td>
     </tr>
     <tr>
@@ -803,12 +807,13 @@ svg .band { stroke: none; }
 <ul>
   <li><strong>Logs</strong>: one line per request (JSON by default, <code>KAIAK_LOG_FORMAT=text</code> for development); config loads log their trigger and result. Never a client key, provider secret, prompt or response. Attribute names follow OpenTelemetry's conventions where they fit. With an OTLP endpoint in the standard <code>OTEL_*</code> variables every line also goes to an OpenTelemetry collector (OTLP/HTTP JSON) — stderr is always written; the export is queued off the request path and counted in <code>otel.sdk.processor.log.processed</code> and <code>otel.sdk.exporter.log.exported</code>.</li>
   <li><strong>Metrics</strong> on the admin port (optionally behind <code>KAIAK_METRICS_TOKEN</code>): ops metrics from the pipeline, usage metrics from accounting (labelled <code>kaiak.key.group</code> — the key's group; not <code>group</code>, a common scrape target label —, <code>kaiak.key.root_group</code> — its top-level group —, <code>kaiak.key.id</code>, <code>gen_ai.request.model</code>, <code>gen_ai.operation.name</code>, <code>gen_ai.provider.name</code>, <code>kaiak.usage.status</code>; <code>global.metrics.group_label</code> and <code>key_id_label</code> switch the first and third off to bound series), control-plane connection state (<code>kaiak_control_connected</code>, <code>kaiak_control_outage</code>), delivery metrics from the batch sender. Each metric is defined once under its OpenTelemetry name — the HTTP and GenAI conventions' where they fit (<code>http.server.request.duration</code>, <code>gen_ai.client.inference.usage.*</code>), <code>kaiak.*</code> for the rest; <code>/metrics</code> writes the name Prometheus's own OTLP ingestion makes of it (<code>http_server_request_duration_seconds</code>). With an OTLP endpoint the same series are also pushed to a collector on an interval (cumulative by default, delta on request), counted in <code>otel.sdk.exporter.metric_data_point.exported</code>. Every series with config-bounded labels exists at 0 from startup; usage series appear with traffic.</li>
+  <li><strong>Request captures</strong>, for the groups whose <code>capture</code> is on: each chat request and the answer its client received, one OTLP span with the GenAI conventions' content attributes, to the one trace destination the operator switched on — the only way prompt and response content leaves the gateway. Best effort: a capture that does not fit the capture budget or the export limit is dropped, never the request, and counted in <code>otel.sdk.processor.span.processed</code> and <code>otel.sdk.exporter.span.exported</code>.</li>
   <li><strong>Limit refusals</strong> carry <code>Retry-After</code> and rate-limit headers; <code>X-Request-Id</code> ties a response to its log line and usage record.</li>
 </ul>
 </section>
 
 <footer>
-  Overview only — the contracts are in <code>docs/specs/GATEWAY.md</code> and <code>docs/specs/CONTROL-PROTOCOL.md</code>, the package-level detail in <code>docs/ARCHITECTURE.md</code>, operations in <code>docs/DEPLOYMENT.md</code>. Written 2026-09-26 against 0.6.0; describes the group tree with the 2026-09-27 review's fixes (after 0.7.1), tiered prices (2026-09-29), the cache-write unit (2026-10-02), OTLP log export (2026-10-05), Messages and Responses passthrough with the Anthropic backend types (2026-10-06), the package graph after the 2026-10-08 structure work, metrics in OpenTelemetry names with OTLP metric export (2026-10-08), rerank (2026-10-08), speech and image generation on vLLM-Omni with their units and limits (2026-10-09), and protocol 7 — one version, every model listing its endpoints on one backend type — with uploads, image edits and speech-to-text (2026-10-11). Continue with <a href="control-plane.html">gateway ↔ control plane</a>.
+  Overview only — the contracts are in <code>docs/specs/GATEWAY.md</code> and <code>docs/specs/CONTROL-PROTOCOL.md</code>, the package-level detail in <code>docs/ARCHITECTURE.md</code>, operations in <code>docs/DEPLOYMENT.md</code>. Written 2026-09-26 against 0.6.0; describes the group tree with the 2026-09-27 review's fixes (after 0.7.1), tiered prices (2026-09-29), the cache-write unit (2026-10-02), OTLP log export (2026-10-05), Messages and Responses passthrough with the Anthropic backend types (2026-10-06), the package graph after the 2026-10-08 structure work, metrics in OpenTelemetry names with OTLP metric export (2026-10-08), rerank (2026-10-08), speech and image generation on vLLM-Omni with their units and limits (2026-10-09), protocol 7 — one version, every model listing its endpoints on one backend type — with uploads, image edits and speech-to-text (2026-10-11), and request capture with protocol 8, every group stating <code>capture</code> (2026-10-13). Continue with <a href="control-plane.html">gateway ↔ control plane</a>.
 </footer>
 </main>
 </body>

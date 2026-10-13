@@ -34,11 +34,15 @@ type gateway struct {
 	stopOnce sync.Once
 }
 
+// startGateway runs the gateway with this process's environment but its KAIAK_ and
+// OTEL_ variables — the live-test kit sets the gateway's own, its trace export among
+// them in extraEnv, so a shell's OpenTelemetry settings cannot turn it off or send
+// the run's telemetry elsewhere.
 func startGateway(ctx context.Context, o options, ws *workspace, configFile string, extraEnv []string) (*gateway, error) {
 	g := &gateway{logs: newLogLines(), exited: make(chan struct{})}
 	g.cmd = exec.Command(o.kaiakBin)
 	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "KAIAK_") {
+		if !strings.HasPrefix(kv, "KAIAK_") && !strings.HasPrefix(kv, "OTEL_") {
 			g.cmd.Env = append(g.cmd.Env, kv)
 		}
 	}
@@ -209,6 +213,19 @@ func (l *logLines) find(match func(map[string]any) bool) (map[string]any, bool) 
 	return nil, false
 }
 
+// all returns every line matching match so far, without waiting.
+func (l *logLines) all(match func(map[string]any) bool) []map[string]any {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []map[string]any
+	for _, entry := range l.lines {
+		if match(entry) {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
 func (l *logLines) text() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -240,7 +257,9 @@ func msg(message string, fields ...string) func(map[string]any) bool {
 // (or only o.kind) — with more fakes, each with a key, as the servers beside the
 // kind's own (selfTestServers) — then, when vllm is among them, the two-backend
 // checks against two fakes, the failover check stopping and restarting the second:
-// the kit's own acceptance test, no real backend needed.
+// the live-test kit's own acceptance test, no real backend needed. Each run forwards
+// the gateway's traces to a second receiver of the live-test kit's, which wants the
+// forward headers.
 func runSelfTest(ctx context.Context, o options) error {
 	// The servers beside the kind's own are the self-test's own fakes, whatever the
 	// flags or the environment name.
@@ -271,6 +290,19 @@ func runSelfTest(ctx context.Context, o options) error {
 			return err
 		}
 	}
+	// The forward target: another receiver of the live-test kit's own, which refuses
+	// an export without the forward headers — given percent-encoded, as an operator
+	// gives Langfuse's.
+	if o.tracesForwardHeaders, err = parseForwardHeaders("the self-test's forward headers",
+		selfTestForwardHeaders); err != nil {
+		return err
+	}
+	target, err := startTraceReceiver("", nil, o.tracesForwardHeaders)
+	if err != nil {
+		return err
+	}
+	defer target.close()
+	o.tracesForward = target.endpoint
 
 	var failed []string
 	for _, kind := range kinds {
@@ -483,25 +515,38 @@ const selfTestCachedTokens = "3"
 // document is longer.
 const selfTestRerankContext = "32768"
 
+// selfTestReasoning is the reasoning the chat fakes give before every answer's text.
+const selfTestReasoning = "The keeper thinks of the ships first."
+
+// selfTestForwardHeaders are the self-test's forward headers, as an operator gives
+// Langfuse's: a Basic credential, its space percent-encoded, and the ingestion
+// version.
+const selfTestForwardHeaders = "Authorization=Basic%20c2VsZi10ZXN0OnNlY3JldA==,x-langfuse-ingestion-version=4"
+
 // fakeFlags are the fake backend's flags playing kind's server for the run's chat
 // model, or with reranker for the reranker: rerank in that server's shape, and the
 // endpoints its model lacks answered as the server answers them — vLLM creates no
 // route for them, llama-server answers rerank with 501 unless started with
 // --reranking — as is a path it has no route for (a wrong base_url: llama-server's
-// own 404). Other kinds: none.
+// own 404). The chat model, whatever the kind, reasons before every answer and calls
+// the capture checks' tool when a request offers it, so the capture checks see
+// reasoning and tool calls.
 func fakeFlags(kind string, reranker bool) []string {
 	switch {
 	case kind == kindVLLM && reranker:
 		return []string{"-rerank-shape", "vllm", "-rerank-context", selfTestRerankContext,
 			"-no-route", "chat/completions,completions,embeddings,messages,messages/count_tokens,responses"}
-	case kind == kindVLLM:
-		return []string{"-no-route", "rerank,embeddings"}
 	case kind == kindLlamaServer && reranker:
 		return []string{"-rerank-shape", "llama-server", "-rerank-context", selfTestRerankContext}
-	case kind == kindLlamaServer:
-		return []string{"-not-supported", "rerank", "-no-route-shape", "llama-server"}
 	}
-	return nil
+	flags := []string{"-reasoning", selfTestReasoning, "-tool-call", captureTool}
+	switch kind {
+	case kindVLLM:
+		flags = append(flags, "-no-route", "rerank,embeddings")
+	case kindLlamaServer:
+		flags = append(flags, "-not-supported", "rerank", "-no-route-shape", "llama-server")
+	}
+	return flags
 }
 
 // startFake runs the fake backend on addr (port 0: a free one), listing models, with

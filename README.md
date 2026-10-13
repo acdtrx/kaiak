@@ -6,7 +6,9 @@ Responses** to clients, along with rerank, speech, image generation and edits, a
 speech-to-text, routes to self-hosted model servers (vLLM, vLLM-Omni, llama-server,
 SGLang) and cloud providers (OpenAI, Azure OpenAI, Anthropic, Claude in Microsoft
 Foundry), and enforces **access keys, rate limits and budgets** while counting every
-token, image, second of audio and dollar.
+token, image, second of audio and dollar. For the groups that opt in, it **captures**
+what apps sent to the models and got back, as OpenTelemetry spans for a tool such as
+Langfuse.
 
 kaiak has no UI and no admin API of its own. Its config comes either from a file or
 from a **control plane** that pushes changes live and receives usage and status back.
@@ -24,7 +26,7 @@ a small sample control plane shows how.
 - **The contract** (`protocol/`): JSON Schemas and shared fixtures both halves test
   against.
 
-> **Status:** pre-1.0. The protocol, the config document included, is at version 7.
+> **Status:** pre-1.0. The protocol, the config document included, is at version 8.
 > There is no backwards compatibility between versions yet: gateways and control
 > plane upgrade together.
 
@@ -75,6 +77,11 @@ from a clone, or serve `docs/` with GitHub Pages.
 - **Usage.** Every routed request settles into a usage record: tokens by kind, images
   and seconds of audio, and cost in nano-USD. Records go to the control plane in
   batches, delivered at least once and counted exactly once.
+- **Captures.** Every group states whether its chat requests are captured. For a
+  group that is, and a gateway whose trace export is on, each request and the answer
+  its client received go out as an OpenTelemetry span with the GenAI conventions'
+  content attributes — and nowhere else: prompts and answers never enter logs,
+  metrics or usage records (`docs/DEPLOYMENT.md` → Request capture).
 
 The config document: [`examples/config.json`](examples/config.json) (a realistic tree),
 the schema, and CONTROL-PROTOCOL.md → Config.

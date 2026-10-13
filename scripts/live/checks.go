@@ -26,7 +26,14 @@ type run struct {
 	// mediaKey is the media limit checks' key: its group allows 1 image and 1 second
 	// of audio generated a minute.
 	mediaKey string
-	client   *http.Client
+	// captureKey is the capture checks' key: its group, alone in the config, has
+	// capture on. session is the Kaiak-Session-Id they send; traces receives the
+	// gateway's spans; captures are the requests sent, checked after the exit.
+	captureKey string
+	session    string
+	traces     *traceReceiver
+	captures   []*captureExchange
+	client     *http.Client
 
 	passed, failed, skipped int
 }
@@ -65,12 +72,14 @@ const (
 	idEmbed       = "live-embed"
 )
 
-// checks runs every check the kind's backend type allows: the chat completions checks,
-// then the embeddings, rerank, Messages and Responses checks where it serves them, the
-// media checks — speech, images and edits on the vLLM-Omni servers given,
-// speech-to-text on the kind's server for it — the refusal of the APIs the chat model
-// does not serve, the misconfigured models' answers, and the checks across APIs
-// (output ceiling, rate limit, metrics) through the first API it serves.
+// checks runs every check the kind's backend type allows while the gateway runs: the
+// chat completions checks, then the embeddings, rerank, Messages and Responses checks
+// where it serves them, the capture checks' requests, the media checks — speech,
+// images and edits on the vLLM-Omni servers given, speech-to-text on the kind's server
+// for it — the refusal of the APIs the chat model does not serve, the misconfigured
+// models' answers, and the checks across APIs (output ceiling, rate limit, metrics)
+// through the first API it serves. The capture checks read their spans after the
+// gateway's exit (runKind).
 func (r *run) checks() {
 	r.checkAuth()
 	r.checkModels()
@@ -101,6 +110,7 @@ func (r *run) checks() {
 	if r.o.serves(epResponses) {
 		r.responsesChecks()
 	}
+	r.sendCaptures()
 	r.mediaChecks()
 	r.checkNotServed()
 	r.pathMissingChecks()

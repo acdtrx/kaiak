@@ -4,7 +4,8 @@
 > llama-server, OpenAI, Azure OpenAI, Anthropic or Claude in Microsoft Foundry
 > backend and check it end to end, through every client API the backend serves (chat
 > completions, Anthropic Messages, OpenAI Responses, rerank, speech-to-text) — and,
-> with vLLM-Omni servers beside it, speech, image generation and image edits. Opt-in —
+> with vLLM-Omni servers beside it, speech, image generation and image edits — and the
+> request captures of its chat APIs. Opt-in —
 > never needed for a green suite (`docs/TECH-STACK.md`, Testing). The kit's own
 > self-test, against the fake backend, runs in `scripts/check-gateway.sh`. Someone
 > running it for the kaiak team without knowing kaiak: start at **For a tester with
@@ -23,13 +24,20 @@ One command per backend kind. The runner:
    one each with `-speech-base-url`, `-image-base-url` and `-edit-base-url`: see
    Speech, images and image edits on vLLM-Omni; one or two whose `base_url` is wrong
    on purpose: see A path the server does not have), the public models below, every
-   model with its `endpoints` list, one group holding the key;
-3. starts `kaiak` on free loopback ports with JSON logs;
+   model with its `endpoints` list, the groups holding the keys — one of them,
+   `live-capture`, with `capture` on, every other with it off;
+3. starts its own OTLP receiver of traces on a free loopback port, then `kaiak` on
+   free loopback ports with JSON logs, its trace export pointed at the receiver
+   (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) — the gateway gets this process's
+   environment without its `KAIAK_` and `OTEL_` variables, so a shell's
+   OpenTelemetry settings cannot turn the export off or send it elsewhere;
 4. runs the checks — through each client API the backend type serves (the table in
    `docs/specs/GATEWAY.md`, Providers → Endpoint support) — printing
    `PASS`/`FAIL`/`SKIP` per check and a summary;
-5. sends SIGTERM, requires a clean drain and exit 0, and deletes everything it made
-   (`-keep` keeps the config and the gateway log, and prints where).
+5. sends SIGTERM, requires a clean drain and exit 0, then reads the spans the
+   receiver got — the exit's trace flush has sent every capture, so the capture
+   checks wait on nothing — and deletes everything it made (`-keep` keeps the config
+   and the gateway log, and prints where).
 
 Exit code 0 only when every check passed. Ctrl-C stops the gateway and cleans up.
 
@@ -38,7 +46,7 @@ model:
 
 | Name | Purpose |
 |---|---|
-| `live-chat` | chat, Messages and Responses checks; output limit `-max-output` (default 1024) |
+| `live-chat` | chat, Messages, Responses and capture checks; output limit `-max-output` (default 1024) |
 | `live-capped` | output-limit ceiling check; ceiling `-ceiling` (default 16) |
 | `live-rpm` | limit check, sent with a second key whose group (`live-metered`) allows 1 request per minute: a limit counts every request of its group |
 | `live-embed` | embeddings, only with `-embeddings-model` — whatever the model's name on the backend (a path-style id too) |
@@ -91,8 +99,9 @@ go -C scripts/live run . -kind azure-openai -base-url https://<resource>.openai.
 
 Each run takes a minute or two, ends with `N passed, N failed, N skipped`, and costs
 cents (Prerequisites). **Send back the whole output.** It holds no keys — the kit
-passes only the variable's *name* to the gateway — and no prompt text; the
-answers' first few words appear, from fixed questions about lighthouses. A `FAIL`
+passes only the variable's *name* to the gateway — and no text but the live-test kit's own: the
+answers' first few words appear, from fixed questions about lighthouses and the
+weather, and a failed capture check shows those messages in full. A `FAIL`
 line says what was expected and what came back; nothing else is needed from you. If
 a run cannot start (a `live:` error before the first check), the message says which
 flag or variable is missing.
@@ -167,7 +176,9 @@ default; each refusal names the parameter, so the fix is one setting:
   (`api_key_env`), never the value; the value never appears in its output or in the
   gateway log.
 - Each run sends a few small requests per API the backend serves (one asks for a long
-  story, cut at 16 tokens) and, with `-embeddings-model`, one embeddings request; a
+  story, cut at 16 tokens) and, with `-embeddings-model`, one embeddings request. The
+  capture checks add four short requests per chat API: two with a tool offered,
+  which a self-hosted server must accept (Request capture). A
   Messages backend also gets
   the cache check's two requests of about 8,000 input tokens each. With
   `-rerank-base-url`, a few small rerank requests and one carrying a 1 MB document,
@@ -207,6 +218,9 @@ go -C scripts/live run . -kind vllm \
 - `-embeddings-model` served by `-base-url` itself skips `path-missing`: that check
   needs the chat server without an embeddings route (A path the server does not
   have).
+- The capture checks offer a tool: start vLLM with tool calling,
+  `--enable-auto-tool-choice --tool-call-parser <parser>` (`hermes` for Qwen3), or
+  the four `capture/*-tool*` checks fail with vLLM's `400` (Request capture).
 
 ### llama-server
 
@@ -228,6 +242,8 @@ go -C scripts/live run . -kind llama-server \
   `-rerank-model` (see Reranker on a server of its own).
 - And a speech recognition model, with its audio projector (`--mmproj`): add
   `-asr-base-url` and `-asr-model` (see Speech-to-text on a server of its own).
+- The capture checks offer a tool, which llama-server answers through its model's
+  Jinja chat template (`--jinja`).
 
 ### OpenAI
 
@@ -346,6 +362,14 @@ would count 6. The `image` and `edit` checks ask the fakes for two images of two
 layers each, as a layered model answers, so `usage-log/image` and `usage-log/edit`
 check a count of four, more than `n`.
 
+Whatever the kind, the chat fake reasons before every answer (a chat message's
+`reasoning`, a thinking block, a reasoning item) and calls `get_weather` after its
+text when a request offers tools — the fake backend's `-reasoning` and `-tool-call`
+— so every capture check holds reasoning and the tool checks a tool call, whole and
+streamed. Each run forwards its traces (`-traces-forward`) to a second receiver of
+the live-test kit's own, which refuses an export without the forward headers: `capture/forward`
+proves they arrive, percent-decoded.
+
 The self-test ends with a two-backend run: two fakes serving one model, each capped
 at one request (`-max-in-flight 1`), with the failover check — the runner stops the
 second fake and starts it again on its address itself — and a third fake as the
@@ -436,6 +460,9 @@ context length. `go -C scripts/live run . -h` lists them all.
 | `spread` | two backends: six requests one after another are served by both (`kaiak.backend.id` on each log line) — tied deployments take turns |
 | `capacity` | two backends with `-max-in-flight N`: 2N+2 requests at once are all answered — those over the cap wait in the gateway's queue (the count queued is reported, not required) — and `kaiak_backend_active_requests_limit` shows N for each |
 | `failover` | two backends with `-check-failover`: see the failover procedure below |
+| `capture/<api>`, `capture/<api>-stream`, `capture/<api>-tool`, `capture/<api>-tool-stream` | per chat API the kind serves — `<api>` is `chat`, `msg` (Messages), `resp` (Responses) — a request from the `live-capture` key, with a system prompt and a question (`-tool`: for the weather, with `get_weather` offered), whole and streamed, under the run's `Kaiak-Session-Id`. Read after the gateway's exit: its request line says `kaiak.capture=queued` and exactly one span carries its `kaiak.request.id` — named `chat live-chat`, kind `CLIENT`, no parent, no error status; its input messages, system instructions and tool definitions are what was sent; its output messages and finish reasons equal the answer the live-test kit received, read here independently — text, reasoning, tool calls with their IDs and arguments; a stream assembled as the client saw it, a Responses stream's terminal event taken as the answer; its usage, cost, flags, provider, backend, attempts and time to first token those of the request line; `gen_ai.conversation.id` the session; `gen_ai.request.stream` only when streamed; no `gen_ai.request.max_tokens`, though the gateway filled the output limit; `server.address`/`server.port` the answering backend's. A mismatch names the first differing path. Checked after `metrics`, once the gateway has exited |
+| `capture/groups` | after the exit flush, the receiver holds no span but the capture checks' — none for the requests of the groups that do not capture, whose request lines carry no `kaiak.capture` — refused no export, and the gateway logged no `trace export failing` |
+| `capture/forward` | with `-traces-forward`: every export the receiver took was forwarded and answered `2xx` (Request capture) |
 | `gateway-exit` | (reported only on failure) SIGTERM drained the gateway and it exited 0 |
 
 ## Two vLLM processes, one model
@@ -777,6 +804,42 @@ the chat checks that follow (`output-ceiling`, `rate-limit`, with two backends
 `spread` and `failover`) show them still serving. The cloud kinds are not checked
 this way: their answers to a wrong path are taken from their documentation.
 
+## Request capture
+
+Every run checks request capture on the backend's chat APIs (`docs/specs/GATEWAY.md`,
+Request capture): its config gives one group, `live-capture`, `capture` on and its
+own key, and the gateway's trace export goes to the live-test kit's own OTLP receiver. The
+`capture/*` checks send each chat API the kind serves a question and a question for
+the weather with a `get_weather` tool offered, whole and streamed, under one
+`Kaiak-Session-Id` per run (the run's header line prints it), and hold each span to
+what was sent and to the answer the live-test kit received — read here on its own, so a stream
+the gateway assembled differently from the client fails, naming the first differing
+path. Real models give what they give: a model that answers the tool question in
+text, or reasons first, is compared as it answered.
+
+- **Tool calling on self-hosted servers**: the `-tool` checks need the server to
+  accept tools — vLLM with `--enable-auto-tool-choice --tool-call-parser <parser>`,
+  llama-server through its Jinja chat template (`--jinja`). The cloud APIs take them
+  as they are.
+- **A second destination**: a gateway exports to one destination, the live-test
+  kit's receiver. To see the captures in a tool too — a Langfuse, a collector —
+  `-traces-forward <URL>` (env `LIVE_TRACES_FORWARD`) has the receiver post every
+  export it takes, as it took it, to that traces endpoint, with the headers in the
+  variable `-traces-forward-headers-env` names (`key=value,…`, values
+  percent-encoded: `OTEL_EXPORTER_OTLP_TRACES_HEADERS`' format). `capture/forward`
+  checks every export was answered `2xx`. For Langfuse (`docs/DEPLOYMENT.md` →
+  Request capture: Langfuse):
+
+  ```sh
+  export LANGFUSE_OTLP_HEADERS="Authorization=Basic%20$(printf '%s:%s' "$LANGFUSE_PUBLIC_KEY" "$LANGFUSE_SECRET_KEY" | base64 | tr -d '\n'),x-langfuse-ingestion-version=4"
+  go -C scripts/live run . -kind vllm -base-url http://gpu-host:8001/v1 -model qwen3.5-2b \
+    -traces-forward http://localhost:3000/api/public/otel/v1/traces \
+    -traces-forward-headers-env LANGFUSE_OTLP_HEADERS
+  ```
+
+  The run's captures land in the project as one session, named on the run's header
+  line (`live-<kind>-<8 hex>`).
+
 ## Reading failures
 
 - A failed request prints the status, the body and the gateway's view from its log
@@ -874,6 +937,24 @@ this way: their answers to a wrong path are taken from their documentation.
 - `output-ceiling` with `finish_reason` other than `length`: the model stopped on its
   own before 16 tokens (unlikely with the prompt used) — or the backend ignored the
   output limit; compare `completion_tokens` with the ceiling.
+- `capture/*-tool*` with a `400` relayed from vLLM naming `--enable-auto-tool-choice`:
+  the server runs without tool calling (Request capture). Any other capture check
+  failing on its request: read it as the matching chat, Messages or Responses check.
+- `capture/*` saying `kaiak.capture` is `export_off` or absent: the gateway did not
+  see trace export on, or not the capture group — the live-test kit and the gateway disagree
+  on the config or the environment; rerun with `-v -keep`.
+- `capture/*` with no span: the gateway did not build or send it — `capture/groups`
+  names exports the receiver refused and a `trace export failing` line; a `capture
+  build failed` line in the gateway log (`-v -keep`) is a gateway bug: keep the log.
+- `capture/*` with a span that differs (`… differs from the answer received: <path>
+  is …, want …`): the capture's reading of that server's answer is not what its
+  client saw — the gateway's mapping or stream assembly for that API needs a look;
+  rerun with `-v -keep` and send the output (it holds the live-test kit's prompts and the
+  model's answers, never a key).
+- `capture/groups` naming spans of other groups: the gateway captured a request whose
+  key's group does not capture — a privacy bug; send the output.
+- `capture/forward` failing: the forward URL or its headers are wrong (`401`: the
+  credential; `404`: the path — Langfuse's is `/api/public/otel/v1/traces`).
 - Rerun with `-v -keep` to see the whole gateway log and keep the generated config.
 
 ## Azure: assumptions made without access

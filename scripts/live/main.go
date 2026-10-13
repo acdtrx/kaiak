@@ -21,11 +21,15 @@
 // model deliberately misconfigured shows how the gateway answers a real server's
 // answer to a path it does not have: on vllm a chat model whose list names
 // embeddings, on llama-server and vLLM-Omni a backend whose base_url has a wrong path.
-// -self-test runs every check against the fake backend standing in for each kind
-// (with more fakes as the reranker and speech-to-text servers where the kind serves
-// them, and on vllm as the embeddings server and the vLLM-Omni servers), and the
-// two-backend checks against two fakes, stopping and restarting the second itself,
-// with a third fake as the embeddings server.
+// The capture checks send each chat API a question and a question for a tool, whole
+// and streamed, with a key whose group captures: the gateway's trace export goes to
+// the live-test kit's own receiver, and each span must hold what was sent and what
+// came back (with -traces-forward the receiver forwards every export to a second
+// destination, a Langfuse say). -self-test runs every check against the fake backend standing in
+// for each kind (with more fakes as the reranker and speech-to-text servers where the
+// kind serves them, and on vllm as the embeddings server and the vLLM-Omni servers),
+// and the two-backend checks against two fakes, stopping and restarting the second
+// itself, with a third fake as the embeddings server.
 //
 // Standard library only, and a module of its own: nothing here is part of the
 // gateway. Runbook: docs/testing/LIVE-BACKENDS.md.
@@ -37,8 +41,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -113,6 +119,12 @@ type options struct {
 	requestTimeout     time.Duration
 	keep               bool
 	verbose            bool
+	// tracesForward, when set, is a second OTLP/HTTP JSON traces endpoint the
+	// live-test kit's receiver forwards every export to, with tracesForwardHeaders —
+	// read by resolve from the variable tracesForwardHeadersEnv names.
+	tracesForward           string
+	tracesForwardHeadersEnv string
+	tracesForwardHeaders    []header
 
 	// Two backends (-base-url-2).
 	maxInFlight   int
@@ -211,6 +223,8 @@ func main() {
 	flag.DurationVar(&o.requestTimeout, "request-timeout", 2*time.Minute, "time allowed for each request")
 	flag.BoolVar(&o.keep, "keep", false, "keep the temporary directory (config, gateway log) and print its path")
 	flag.BoolVar(&o.verbose, "v", false, "echo the gateway's log")
+	flag.StringVar(&o.tracesForward, "traces-forward", os.Getenv("LIVE_TRACES_FORWARD"), "a second OTLP/HTTP JSON traces endpoint (env LIVE_TRACES_FORWARD), e.g. a Langfuse's http://host:3000/api/public/otel/v1/traces: every export of the gateway's captures the live-test kit receives is forwarded there as received")
+	flag.StringVar(&o.tracesForwardHeadersEnv, "traces-forward-headers-env", "", "with -traces-forward: name of the environment variable holding the headers sent with each forwarded export, key=value pairs separated by commas, values percent-encoded (OTEL_EXPORTER_OTLP_TRACES_HEADERS' format)")
 	flag.Parse()
 	o.failoverPace = time.Second
 
@@ -357,7 +371,30 @@ func resolve(o *options) error {
 	if o.maxOutput < 1 || o.ceiling < 1 || o.maxOutput > o.contextLength || o.ceiling > o.contextLength {
 		return errors.New("-max-output and -ceiling must be at least 1 and at most -context-length")
 	}
-	return nil
+	return resolveForward(o)
+}
+
+// resolveForward checks the forward URL and reads the forward headers.
+func resolveForward(o *options) error {
+	if o.tracesForward == "" {
+		if o.tracesForwardHeadersEnv != "" {
+			return errors.New("-traces-forward-headers-env needs -traces-forward")
+		}
+		return nil
+	}
+	if u, err := url.Parse(o.tracesForward); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("-traces-forward %q: want an absolute http:// or https:// URL, the traces endpoint itself", o.tracesForward)
+	}
+	if o.tracesForwardHeadersEnv == "" {
+		return nil
+	}
+	value := os.Getenv(o.tracesForwardHeadersEnv)
+	if value == "" {
+		return fmt.Errorf("%s is not set: export the forward headers there (key=value,key=value)", o.tracesForwardHeadersEnv)
+	}
+	var err error
+	o.tracesForwardHeaders, err = parseForwardHeaders(o.tracesForwardHeadersEnv, value)
+	return err
 }
 
 // azureLayouts are the paths the gateway appends to an Azure kind's resource
@@ -385,7 +422,8 @@ func runKind(ctx context.Context, o options, ws *workspace, extraEnv []string) e
 	key, hash := newKey()
 	meteredKey, meteredHash := newKey()
 	mediaKey, mediaHash := newKey()
-	cfg, err := buildConfig(o, hash, meteredHash, mediaHash)
+	captureKey, captureHash := newKey()
+	cfg, err := buildConfig(o, hash, meteredHash, mediaHash, captureHash)
 	if err != nil {
 		return err
 	}
@@ -419,19 +457,37 @@ func runKind(ctx context.Context, o options, ws *workspace, extraEnv []string) e
 	if o.transcriber() {
 		fmt.Printf(", speech-to-text %s on %s", o.asrModel, o.asrBaseURL)
 	}
+	session := newSessionID(o.label())
+	fmt.Printf(", captures in session %s", session)
+	if o.tracesForward != "" {
+		fmt.Printf(" forwarded to %s", o.tracesForward)
+	}
 	fmt.Println()
 
-	gw, err := startGateway(ctx, o, ws, configFile, extraEnv)
+	traces, err := startTraceReceiver(o.tracesForward, o.tracesForwardHeaders, nil)
+	if err != nil {
+		return err
+	}
+	defer traces.close()
+	gw, err := startGateway(ctx, o, ws, configFile, append(slices.Clone(extraEnv),
+		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="+traces.endpoint))
 	if err != nil {
 		return err
 	}
 	defer gw.stop()
 
-	r := &run{ctx: ctx, o: o, gw: gw, key: key, meteredKey: meteredKey, mediaKey: mediaKey, client: newClient(o.requestTimeout)}
+	r := &run{ctx: ctx, o: o, gw: gw, key: key, meteredKey: meteredKey, mediaKey: mediaKey, captureKey: captureKey,
+		session: session, traces: traces, client: newClient(o.requestTimeout)}
 	r.checks()
 	gw.stop()
 	if !gw.cleanExit() {
 		r.fail("gateway-exit", "the gateway did not drain and exit 0 on SIGTERM (see its log)")
 	}
+	// The exit's trace flush has sent every capture the gateway built: the capture
+	// checks read the spans now, with nothing left to wait for.
+	traces.close()
+	r.checkCaptures()
+	r.checkCapturedOnly()
+	r.checkForward()
 	return r.report()
 }

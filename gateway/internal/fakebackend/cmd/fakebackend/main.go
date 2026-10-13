@@ -11,7 +11,8 @@
 // image generation and image edits answer as vLLM-Omni does, and a model can be
 // played as one that does not speak or does not draw, as vLLM-Omni answers for it.
 // Speech-to-text answers in vLLM's shape or llama-server's, and a model can be played
-// as one that does not hear audio, as each server answers for it.
+// as one that does not hear audio, as each server answers for it. Chat answers can
+// carry reasoning, and a tool call when the request offers tools.
 package main
 
 import (
@@ -34,6 +35,9 @@ const answer = "Hello from the fake backend. It answers every request with the s
 	"checked without a model: a gateway in front of it should relay these words exactly " +
 	"as they are sent and count them."
 
+// toolCallID is the ID of the call -tool-call makes.
+const toolCallID = "call_fake_1"
+
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8000", "listen address (port 0 picks a free port)")
 	profile := flag.String("profile", "normal", "behavior: normal, no-usage (never reports usage), slow (streams one event every 200ms)")
@@ -54,6 +58,8 @@ func main() {
 	transcriptionShape := flag.String("transcription-shape", "vllm", "the server whose speech-to-text answers and errors the backend sends: vllm, llama-server")
 	nonAudio := flag.String("non-audio-models", "", `comma-separated models whose transcription is answered as each server answers one on a model that does not hear audio: vLLM 404 {"detail":"Not Found"}, llama-server 501 not_supported_error`)
 	audioMillis := flag.Int("audio-millis", 0, "the length in milliseconds of each speech clip and batch item generated, and of the audio vLLM's speech-to-text shape hears in every upload (0: 2500)")
+	reasoning := flag.String("reasoning", "", "reasoning every chat completion, Messages and Responses answer gives before its text, one stream event per word, in vLLM's shape: a chat message's reasoning member, a thinking block, a reasoning item")
+	toolCall := flag.String("tool-call", "", `a function the chat completion, Messages and Responses answers call after their text when the request offers tools: call ID `+toolCallID+`, arguments {"city": "Oslo"} streamed in two pieces`)
 	flag.Parse()
 
 	if *cachedTokens < 0 || *cachedTokens > 7 {
@@ -83,6 +89,13 @@ func main() {
 		log.Fatalf("fakebackend: unknown -transcription-shape %q", *transcriptionShape)
 	}
 	reply := fakebackend.Reply{Chunks: words(answer), HonorMaxTokens: true, CachedTokens: *cachedTokens, AudioMillis: *audioMillis}
+	if *reasoning != "" {
+		reply.Reasoning = words(*reasoning)
+	}
+	if *toolCall != "" {
+		reply.ToolCalls = []fakebackend.ToolCall{{ID: toolCallID, Name: *toolCall, Arguments: []string{`{"city": `, `"Oslo"}`}}}
+		reply.ToolCallsWhenOffered = true
+	}
 	switch *profile {
 	case "normal":
 	case "no-usage":

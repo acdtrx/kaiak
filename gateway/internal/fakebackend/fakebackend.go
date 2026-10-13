@@ -62,6 +62,10 @@ type Reply struct {
 	// each (a StreamFault's At counts the text events alone). Chat completions,
 	// Messages and Responses only.
 	ToolCalls []ToolCall
+	// ToolCallsWhenOffered makes the answer carry ToolCalls only when its request
+	// offers tools (a tools list that is not empty), as a model calls only the tools it
+	// was offered.
+	ToolCallsWhenOffered bool
 	// Usage overrides the reported token counts. Default: 7 prompt tokens, one
 	// completion token per chunk.
 	Usage *Usage
@@ -555,6 +559,10 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 		if json.Unmarshal(top[name], &n) == nil && n != nil && (params.maxTokens == nil || *n < *params.maxTokens) {
 			params.maxTokens = n
 		}
+	}
+	var tools []json.RawMessage
+	if reply.ToolCallsWhenOffered && (json.Unmarshal(top["tools"], &tools) != nil || len(tools) == 0) {
+		reply.ToolCalls = nil
 	}
 
 	chunks := reply.Chunks

@@ -21,6 +21,7 @@ flowchart LR
     cp --- store[(Store)]
     prom[Prometheus] -->|:9090 /metrics| gw0 & gw1 & gw2
     gw0 & gw1 & gw2 -.->|OTLP logs, metrics,<br/>when configured| otel[OpenTelemetry<br/>collector]
+    gw0 & gw1 & gw2 -.->|OTLP request captures,<br/>when switched on| traces[Trace tool<br/>Langfuse, a collector]
 ```
 
 - **Gateways**: N identical, **stateless** replicas — a Deployment behind one
@@ -179,8 +180,9 @@ refused, and in-flight requests, streams included, get the drain timeout
 Requests still running then are cut, and their partial usage records go out with
 the rest in the reserve. Usage batches keep going out every 5 s throughout the
 drain; then a final status (≤ 2 s), the admin listener closes (≤ 5 s for a scrape
-still open), with metric export on a final export of the metrics, with log export
-on the last queued log lines (each given at least 1 s), and the process exits 0. The `draining` log line names the times in
+still open), with trace export on the last request captures built and sent, with
+metric export on a final export of the metrics, with log export on the last queued
+log lines (each given at least 1 s), and the process exits 0. The `draining` log line names the times in
 force, in seconds: `kaiak.drain.grace`, `kaiak.drain.timeout`,
 `kaiak.drain.flush_reserve` and `kaiak.drain.cut_after` — when requests still
 running are cut, counted from the grace's end (the timeout less the reserve; the
@@ -245,12 +247,22 @@ Nothing else is lost: config and totals come back from the control plane.
   back to the budget once its response starts relaying), so this is conservative.
   Lower the budget for a smaller pod — 256 MiB serves 64 bodies at the 4 MiB cap and thousands
   of ordinary requests. Then watch the working set under real load.
+- **With trace export on, add the capture budget and the builder's garbage**
+  (Request capture, below): the capture budget (`KAIAK_CAPTURE_MEMORY_BYTES`, default
+  128 MiB) bounds every byte captures hold, and beside it the background builder
+  makes short-lived garbage of about **10× the capture it is building**, one build
+  at a time — about 40 MB for a request at the 4 MiB body cap with an inline image,
+  up to about 160 MB for a capture at the 16 MiB export limit. So **limit = 2 × body
+  budget + upload budget + capture budget + 672 MiB** (2080 MiB at the defaults,
+  `GOMEMLIMIT=1870MiB` as a literal). Without trace export neither is held,
+  whatever the groups say.
 - **`GOMEMLIMIT`** makes the Go collector work harder before the kernel kills the
   pod. From the downward API (`valueFrom: {resourceFieldRef: {resource:
   limits.memory}}` — bytes) it follows the limit with no
   second number to keep in step, set at 100% of it; a literal value at about 90%
   (`GOMEMLIMIT=1600MiB` for 1.75 GiB) leaves the collector more room. It is a soft
-  limit; the body and upload budgets are the hard bounds on what clients can pin.
+  limit; the body, upload and capture budgets are the hard bounds on what clients can
+  pin.
 - **CPU**: the gateway is I/O-bound (it splices a few fields into bodies and parses
   SSE framing; no tokenizer). Go sizes `GOMAXPROCS` from the container's CPU limit.
   Set a CPU request; a tight CPU limit throttles every stream at once and shows up as
@@ -300,7 +312,7 @@ Nothing else is lost: config and totals come back from the control plane.
 
 Every variable the code reads (verified by grep over `gateway/cmd`, `gateway/internal`,
 `control/sample/src`, the Dockerfiles and `scripts/`), except development tooling:
-the live-backend kit's `LIVE_*` (`docs/testing/LIVE-BACKENDS.md`) and npm's
+the live-test kit's `LIVE_*` (`docs/testing/LIVE-BACKENDS.md`) and npm's
 `INIT_CWD` (the sample resolves a relative `KAIAK_SAMPLE_CONFIG` against the
 directory `npm` ran from; unset in the image, where the working directory counts).
 Durations are whole milliseconds; a malformed value is a startup error.
@@ -330,18 +342,21 @@ sources):
 | `KAIAK_BODY_MEMORY_BYTES` | `536870912` (512 MiB) | The body budget (Resources); above 0. |
 | `KAIAK_UPLOAD_MEMORY_BYTES` | `268435456` (256 MiB) | The upload budget, a pool apart from the body budget (Uploads, Resources); above 0. |
 | `KAIAK_USAGE_MEMORY_BYTES` | `67108864` (64 MiB) | Control-plane mode: the bound on unacknowledged usage held in memory, by encoded size (Control-plane outages); above 0. |
+| `KAIAK_CAPTURE_MEMORY_BYTES` | `134217728` (128 MiB) | With trace export on: the capture budget, every byte request captures hold until their spans are exported (Request capture, Resources); above 0. |
 | `KAIAK_MAX_CONNECTIONS` | `0` (no cap) | The most connections the API listener keeps open, idle keep-alive ones included; beyond it a connection is closed at accept (Secrets and trust: connection floods); 0 or more. |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OTLP export (Observability: OTLP export), both signals: the collector's base URL (`http://collector:4318`); `/v1/logs` and `/v1/metrics` are appended. Setting it turns log and metric export on. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OTLP export (Observability: OTLP export), every signal: the collector's base URL (`http://collector:4318`); `/v1/logs`, `/v1/metrics` and `/v1/traces` are appended. Setting it turns log and metric export on — **never trace export**, which needs its own switch (below). |
 | `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | — | One signal's URL, used as is (`http://collector:4318/v1/logs`); it wins over the general one for that signal, and setting it turns that signal on. |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | — | The request captures' URL, used as is (`http://collector:4318/v1/traces`, Langfuse's `…/api/public/otel/v1/traces`); setting it turns trace export on (Request capture). |
 | `OTEL_LOGS_EXPORTER`, `OTEL_METRICS_EXPORTER` | — | `none` turns that signal's export off whatever else is set; `otlp` turns it on, to `http://localhost:4318/v1/logs` or `…/v1/metrics` when no endpoint is set. |
-| `OTEL_SDK_DISABLED` | `false` | `true` turns both exports off. |
-| `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_EXPORTER_OTLP_LOGS_HEADERS`, `OTEL_EXPORTER_OTLP_METRICS_HEADERS` | — | Headers sent with each export, `key=value,…`, values percent-encoded (a backend's API key: a Secret). Never logged. The signal's variable wins. |
-| `OTEL_EXPORTER_OTLP_TIMEOUT`, `OTEL_EXPORTER_OTLP_LOGS_TIMEOUT`, `OTEL_EXPORTER_OTLP_METRICS_TIMEOUT` | `10000` | How long one request may take, retries included (above 0): a log batch; for metrics, within the export timeout. The signal's variable wins. |
-| `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_EXPORTER_OTLP_LOGS_PROTOCOL`, `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL` | `http/json` | Only `http/json`; `grpc` or `http/protobuf` fail the start. |
+| `OTEL_TRACES_EXPORTER` | — | `otlp` turns trace export on: to `OTEL_EXPORTER_OTLP_ENDPOINT` with `/v1/traces` appended, else `http://localhost:4318/v1/traces`; `none` turns it off whatever else is set. |
+| `OTEL_SDK_DISABLED` | `false` | `true` turns every export off. |
+| `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_EXPORTER_OTLP_LOGS_HEADERS`, `OTEL_EXPORTER_OTLP_METRICS_HEADERS`, `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | — | Headers sent with each export, `key=value,…`, values percent-encoded (a backend's API key: a Secret). Never logged. The signal's variable wins. |
+| `OTEL_EXPORTER_OTLP_TIMEOUT`, `OTEL_EXPORTER_OTLP_LOGS_TIMEOUT`, `OTEL_EXPORTER_OTLP_METRICS_TIMEOUT`, `OTEL_EXPORTER_OTLP_TRACES_TIMEOUT` | `10000` | How long one request may take, retries included (above 0): a log batch, a trace export; for metrics, within the export timeout. The signal's variable wins. |
+| `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_EXPORTER_OTLP_LOGS_PROTOCOL`, `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL`, `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | `http/json` | Only `http/json`; `grpc` or `http/protobuf` fail the start. |
 | `OTEL_METRIC_EXPORT_INTERVAL` | `60000` | Metric export: the time between exports (above 0). |
 | `OTEL_METRIC_EXPORT_TIMEOUT` | `30000` | Metric export: the bound on one export, retries and split requests included (above 0); the shorter of it and the OTLP timeout applies — 10 s at the defaults. |
 | `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` | `cumulative` | `cumulative`, `delta` or `lowmemory` (any case): what the pushed sums and histograms carry (Observability: OTLP export). `/metrics` is always cumulative. |
-| `OTEL_SERVICE_NAME` | `kaiak` | The `service.name` of the resource both exports carry. |
+| `OTEL_SERVICE_NAME` | `kaiak` | The `service.name` of the resource every export carries. |
 | `OTEL_RESOURCE_ATTRIBUTES` | — | More resource attributes, `key=value,…` (`deployment.environment.name=prod`); `service.version` and `service.instance.id` are always the gateway's own. |
 
 Also read by the gateway (Go runtime and standard library): every backend's
@@ -1299,7 +1314,9 @@ under rules of their own (`GATEWAY.md` → Request pipeline: Uploads; settled
   counts (`gen_ai.usage.input_tokens` is all input, cache reads and writes
   included), `kaiak.usage.images`, `kaiak.usage.audio.output.duration` and
   `kaiak.usage.audio.input.duration` for media, and, on failure, `error.type`; never
-  keys, prompts, responses, audio, images or an upload's filenames. A
+  keys, prompts, responses, audio, images or an upload's filenames — prompts and
+  answers leave the gateway only as request captures, for the groups that opt in
+  (Request capture, below). A
   limit refusal names the limit (`kaiak.limit.scope`, `kaiak.limit.group`,
   `kaiak.limit.type`, `kaiak.limit.enforced`, `kaiak.limit.configured`,
   `kaiak.limit.used`, `kaiak.limit.requested`); a relayed backend `4xx` carries
@@ -1323,7 +1340,8 @@ under rules of their own (`GATEWAY.md` → Request pipeline: Uploads; settled
   changes on the request path: log lines are queued, metrics are collected from the
   counters a scrape reads; a slow or down collector costs at most the log queue
   (10 000 records; the newest beyond it are dropped) and one metric export in
-  flight. The variables: Environment.
+  flight. The variables: Environment. The same endpoint sends no request captures:
+  trace export has a switch of its own (Request capture).
   - **One signal only**: give it its own endpoint (`OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`
     or `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`) and leave the shared one unset, or
     keep the shared one and opt the other out with `OTEL_METRICS_EXPORTER=none` or
@@ -1480,6 +1498,150 @@ before priced models are refused. Scale the 300 with the grace if you change it.
 | Clamped usage | ticket | `sum(increase(kaiak_usage_clamped_records_total[1h])) > 0` | — | A backend reported absurd usage. |
 | Log export losing records | ticket | `sum by (error_type) (increase(otel_sdk_processor_log_processed_total{error_type!=""}[15m])) > 0 or sum by (error_type) (increase(otel_sdk_exporter_log_exported_total{error_type!=""}[15m])) > 0` | — | Log lines did not reach the collector: dropped by the queue (`queue_full`, `shutdown`) or failed by the exporter (the collector's status, or the failure's class: down, slow or refusing — `log export failing` on the gateway's stderr names the status or error). A failure's series is created at its first failure, so that first batch shows in the next one's increase. Only with log export on. |
 | Metric export failing | ticket | `sum by (error_type) (increase(otel_sdk_exporter_metric_data_point_exported_total{error_type!=""}[15m])) > 0` | — | Pushed data points did not reach the collector (its status, or the failure's class — `metric export failing` in the gateway's log says which); a cumulative push catches up at the next export that succeeds, a delta push loses them. A failure's series is created at its first failure, so that first failure shows in the next one's increase. Only with metric export on. |
+| Captures lost | ticket | `sum by (error_type) (increase(otel_sdk_processor_span_processed_total{error_type!=""}[15m])) > 0 or sum by (error_type) (increase(otel_sdk_exporter_span_exported_total{error_type!=""}[15m])) > 0` | — | Request captures that never reached the trace destination: dropped before it (`memory`: the capture budget was full — a destination down or slow fills it; `too_large`; `shutdown`; `_OTHER`: a build that failed, a gateway bug with its `capture build failed` line — report it) or failed by the exporter (`trace export failing` says why). Requests are never affected. Only with trace export on (Request capture). |
+
+## Request capture
+
+For the groups that opt in, the gateway records each chat request — chat
+completions, Messages, Responses — as the client sent it, and the answer as the
+client received it (streams assembled), and exports it as an OpenTelemetry span with
+the GenAI conventions' content attributes: to a collector, or straight to a tool that
+takes OTLP, such as Langfuse. People who build on kaiak see what their apps did with
+the models without an observability SDK in each app. The contract — which requests,
+the span, its attributes, the message format of each API, the drops:
+`GATEWAY.md` → Request capture.
+
+- **Two switches, two owners.** The app that writes the config decides **which
+  groups** are captured: every group states `capture` (`true` or `false`, required),
+  and only the flag of the group a key names counts — a parent's reaches no child
+  (`control/kaiak-control/GUIDE.md` §7, Capture). The operator decides **whether and
+  where** a gateway exports: one trace destination per gateway, set by the
+  environment. A capturing group on a gateway without trace export is captured
+  nowhere: each applied config with one logs `groups capture requests but trace
+  export is off: nothing is captured` (warn, `kaiak.config.capture_groups`), and its
+  request lines say `kaiak.capture=export_off`.
+- **Captures hold prompts and answers** — the content that never enters logs,
+  metrics or usage records. Treat the trace destination as you treat that data: who
+  may see which group's captures there is arranged in the tool, by the attributes
+  each capture carries (`kaiak.key.group`, `kaiak.key.root_group`, `kaiak.key.id`).
+  A tool that should see only some groups gets them through a collector in between,
+  routing on those attributes.
+- **Switching trace export on** — an explicit switch, never implied by the endpoint
+  that sends logs and metrics: `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, the full URL; or
+  `OTEL_TRACES_EXPORTER=otlp` beside `OTEL_EXPORTER_OTLP_ENDPOINT`, which then gets
+  `/v1/traces` appended. `OTEL_EXPORTER_OTLP_ENDPOINT` alone sends no captures.
+  `OTEL_TRACES_EXPORTER=none` or `OTEL_SDK_DISABLED=true` keep it off whatever else is
+  set. Headers, timeout and protocol (`http/json` only) as for the other signals:
+  Environment. With it on, `kaiak starting` names `kaiak.trace_export.endpoint`.
+- **Never in the way of a request**: on the request path a capture only copies the
+  body and the bytes written to the client; a background builder makes the span
+  after the response has ended, and a sender posts it — every second, or as soon
+  as 16 MiB are queued, one export in flight. A capture that cannot be made is
+  dropped; the request is served as if capture were off.
+- **Memory**: `KAIAK_CAPTURE_MEMORY_BYTES` (default 128 MiB) bounds every byte
+  captures hold — the copy of the request, the answer as it is written, the encoded
+  span until its export ends. A capture that would pass it is dropped (`memory`).
+  While the destination is down or slow, queued spans fill the budget and new
+  captures are dropped until exports drain it. Size the pod for it and for the
+  builder's short-lived garbage (Resources).
+- **What is not captured, and how drops show**: requests refused before or while
+  their body is read and parsed (a bad key, a body over its cap, invalid JSON, a
+  hosted tool …) and every other endpoint are never captured. For a captured
+  request the request line carries `kaiak.capture` — `queued` (handed to the
+  builder), `memory`, `export_off` — and `kaiak.session_id.ignored` when a malformed
+  session ID was dropped. What the builder and the exporter drop later is counted:
+  `otel_sdk_processor_span_processed_total` (no `error_type`: handed to the
+  exporter; `memory`, `too_large` — a span over the 16 MiB export limit —,
+  `shutdown`, `_OTHER`: a failed build, logged `capture build failed` at error
+  level, a gateway bug to report) and `otel_sdk_exporter_span_exported_total`
+  (accepted, or failed by status or class, with `trace export failing` in the log).
+  The starter alert Captures lost watches both.
+- **At exit**: the drain hands every finished request's capture to the builder; after
+  the usage flush the builder finishes and one final flush sends what is queued,
+  before the final metric export and the last log lines — within the drain's
+  bound, so `terminationGracePeriodSeconds` needs nothing more (Draining).
+
+### Langfuse
+
+Langfuse (self-hosted or Langfuse Cloud; read at Langfuse 4.58) takes OTLP/HTTP JSON
+at `/api/public/otel/v1/traces`, with the project's keys as Basic auth. The
+headers' variable takes values percent-encoded, so the space after `Basic` is `%20`;
+`base64` wraps long lines on Linux, hence the `tr`:
+
+```sh
+credential=$(printf '%s:%s' "$LANGFUSE_PUBLIC_KEY" "$LANGFUSE_SECRET_KEY" | base64 | tr -d '\n')
+printf 'Authorization=Basic%%20%s,x-langfuse-ingestion-version=4' "$credential"   # the Secret's value
+```
+
+```yaml
+env:
+  - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+    value: http://langfuse-web.langfuse:3000/api/public/otel/v1/traces
+  - name: OTEL_EXPORTER_OTLP_TRACES_HEADERS
+    valueFrom: {secretKeyRef: {name: kaiak-langfuse, key: otlp-headers}}
+```
+
+`x-langfuse-ingestion-version: 4` is the header Langfuse recommends for OTLP
+ingestion. One gateway sends to one Langfuse project. The URL must be the one that
+answers: the gateway follows no redirect, so an `http://` address that redirects to
+`https://` fails every export (`trace export failing`).
+
+What Langfuse shows of a capture:
+
+- a trace holding one generation named `chat <model>`: its input as a conversation
+  — the system instructions first, then the messages sent, tool calls and results
+  included — its output (text, reasoning, tool calls), the tools offered, and the
+  model, as the public name the client used;
+- the request parameters the client set (`gen_ai.request.*`) as model parameters;
+- the usage: input, output, cache read and write, reasoning — Langfuse takes the
+  cache tokens out of the input, which the conventions count inclusive. Any cost
+  it shows comes from its own model prices; kaiak's is in the metadata;
+- the session: requests sent with the same `Kaiak-Session-Id` (below) share it;
+- every `kaiak.*` attribute as metadata — the request ID (which the usage record
+  and the request line carry too), key, group, backend, attempts, cost;
+- a request that ended in an error at level ERROR, with `error.type`;
+- inline images and documents of 1 KiB or more moved to Langfuse's media store.
+
+Not shown: the time to first token (`kaiak.time_to_first_token` stays in the
+metadata: Langfuse reads a completion's start only from its own attributes), and an
+end user (no `user.id` is sent: `docs/BACKLOG.md`).
+
+### Sending the session ID
+
+A client names the conversation a request belongs to with the optional request
+header `Kaiak-Session-Id`, the same value on every request of the conversation; the
+capture records it as `gen_ai.conversation.id`, which tools group by (Langfuse's
+sessions). It is read only for captured requests, never forwarded to a backend and
+never logged. A value of 1 to 256 visible ASCII characters (a UUID) is kept; any
+other is ignored, and the request line and the span say why
+(`kaiak.session_id.ignored`; `GATEWAY.md` → Request capture: Sessions). Any client
+that can add a header per request can send it:
+
+- **curl**: `-H "Kaiak-Session-Id: $session"`.
+- **OpenAI's SDKs**: per request — Python
+  `client.chat.completions.create(..., extra_headers={"Kaiak-Session-Id": session})`,
+  TypeScript `client.chat.completions.create({...}, {headers: {"Kaiak-Session-Id": session}})`
+  — or per conversation, a client copy with the header as a default
+  (`client.with_options(default_headers={"Kaiak-Session-Id": session})` in Python).
+- **Anthropic's SDKs**: the same `extra_headers` (Python) and `headers` request
+  option (TypeScript).
+- **Claude Code**: one session per process — `ANTHROPIC_CUSTOM_HEADERS="Kaiak-Session-Id: $(uuidgen)" claude`.
+- **pi** (0.80.4 or later): an extension whose `before_provider_headers` handler adds
+  the session's ID to every model request; pi's session IDs are UUIDs. In
+  `~/.pi/agent/extensions/kaiak-session.ts`:
+
+  ```ts
+  import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+  export default function (pi: ExtensionAPI) {
+    pi.on("before_provider_headers", (event, ctx) => {
+      // Only to kaiak: "kaiak" is the provider's name in pi's models.json.
+      if (ctx.model?.provider === "kaiak") {
+        event.headers["Kaiak-Session-Id"] = ctx.sessionManager.getSessionId();
+      }
+    });
+  }
+  ```
 
 ## Secrets and trust
 
@@ -1716,7 +1878,8 @@ Boot).
     counted input neither read from nor written to the cache. The old value is
     input − cache read − cache write. Output already included reasoning. The usage
     families gain `gen_ai_operation_name` and `gen_ai_provider_name` (absent for the
-    self-hosted types), the token counters `gen_ai_token_modality="unknown"`; a
+    self-hosted types until protocol 8, which gives them their type's name: Next
+    release, below), the token counters `gen_ai_token_modality="unknown"`; a
     usage series is now per operation and provider too (Cardinality).
   - **The circuit gauges merged**: `kaiak_circuit_state` has three series per
     deployment (`kaiak_circuit_state` = `closed`, `open`, `half_open`), 1 on the
@@ -1903,6 +2066,53 @@ Boot).
     which Foundry refuses (`401`) even with a valid key: every request to a Claude
     deployment in Foundry answered `502 upstream_auth_failed`. Upgrading the
     gateways is the whole fix — the config and its `api_key_env` stay as they are.
+- **Next release** (protocol 8):
+  - **Protocol 8 — gateways and the control plane upgrade together.** The two
+    versions refuse each other (the first bullet above), and a protocol-7 config
+    document is refused: move every config — the control plane's, a file, a seed —
+    to `protocol_version: 8` before or with the upgrade, as the next bullet says.
+  - **Every group states `capture`** (`true` or `false`, required: `CONTROL-PROTOCOL.md`
+    → Config: The group tree): a group without it is refused, and so is `capture` in
+    `child_defaults`. **The app decides each group's value** — a privacy choice it
+    makes for every group it writes, with no default and no inheritance: only the
+    flag of the group a key names counts (Request capture). To change nothing, give
+    every group `capture: false`.
+  - **Nothing is captured until the operator switches trace export on** (Request
+    capture): a gateway without `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` or
+    `OTEL_TRACES_EXPORTER=otlp` exports nothing new, and `OTEL_EXPORTER_OTLP_ENDPOINT`,
+    which already pushes logs and metrics, sends no captures. With a capturing group
+    and trace export off, each applied config logs `groups capture requests but trace
+    export is off: nothing is captured` (warn). Turning it on: **raise the memory
+    limit** by the capture budget and the builder's garbage (Resources: 2080 MiB at
+    the defaults).
+  - **`gen_ai.provider.name` on every backend type**: the self-hosted types carry
+    their type's name — `vllm`, `vllm-omni`, `llama-server`, `openai-compatible` —
+    where they had none. Their models' usage series gain a `gen_ai_provider_name`
+    label (new series replace the unlabelled ones: a rate or increase across the
+    rollout sees one end and the other start), and their request lines gain
+    `gen_ai.provider.name`. **Dashboards, recording rules and alerts that matched
+    its absence** — `gen_ai_provider_name=""`, `unless` on it, a log query for lines
+    without it — change; a `sum by (gen_ai_provider_name)` now splits self-hosted
+    usage by type.
+  - **New**: the request header `Kaiak-Session-Id` (Sending the session ID); the
+    environment variables `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`,
+    `OTEL_TRACES_EXPORTER`, `OTEL_EXPORTER_OTLP_TRACES_HEADERS`,
+    `OTEL_EXPORTER_OTLP_TRACES_TIMEOUT`, `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` and
+    `KAIAK_CAPTURE_MEMORY_BYTES`; the request line's `kaiak.capture` and
+    `kaiak.session_id.ignored`, and `kaiak.trace_export.endpoint` on `kaiak
+    starting`; with trace export on, the metrics
+    `otel_sdk_processor_span_processed_total` and
+    `otel_sdk_exporter_span_exported_total` and the log lines `trace export failing`
+    (warn) and `capture build failed` (error); the starter alert Captures lost.
+  - **A sample config from the quick start is refused**: a `data/sample-config.json`
+    copied from `examples/local-config.json` before this release is at protocol 7,
+    its groups without `capture` (`README.md` → Quick start: with the sample control
+    plane). Copy the example again and paste your `keys` entry back in.
+  - **Host apps on `kaiak-control`** (`control/kaiak-control/GUIDE.md` §7):
+    `PROTOCOL_VERSION` is 8 (a config states it in `protocol_version`); `Group.capture`
+    is required — set it on every group the app writes (§7, Capture), reading a
+    group's own value from `config.groups[id].capture`; the schema refuses a group
+    without it. The sample's page shows each group's flag. The store is unchanged.
 
 ## Images
 
