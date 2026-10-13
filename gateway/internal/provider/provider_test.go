@@ -42,13 +42,14 @@ func TestURLJoining(t *testing.T) {
 }
 
 // gen_ai.provider.name is the GenAI convention's well-known value for the cloud types
-// (Claude in Foundry is anthropic) and none for the self-hosted ones
-// (docs/specs/GATEWAY.md, Observability: Logs → the request line).
+// (Claude in Foundry is anthropic) and the type's own name, a custom value, for every
+// other (docs/specs/GATEWAY.md, Observability: Logs → the request line).
 func TestProviderNames(t *testing.T) {
 	for typ, want := range map[config.BackendType]string{
 		config.BackendOpenAI: "openai", config.BackendAzureOpenAI: "azure.ai.openai",
 		config.BackendAnthropic: "anthropic", config.BackendAzureAnthropic: "anthropic",
-		config.BackendVLLM: "", config.BackendVLLMOmni: "", config.BackendLlamaServer: "", config.BackendOpenAICompatible: "",
+		config.BackendVLLM: "vllm", config.BackendVLLMOmni: "vllm-omni", config.BackendLlamaServer: "llama-server",
+		config.BackendOpenAICompatible: "openai-compatible",
 	} {
 		if got := ProviderName(typ); got != want {
 			t.Errorf("%s: %q, want %q", typ, got, want)

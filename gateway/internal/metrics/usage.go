@@ -53,8 +53,8 @@ func keyLabels(snap *config.Snapshot, path []string, keyID string) []string {
 }
 
 // providerName is gen_ai.provider.name for a record run on backend: its type's in the
-// live config snap (provider.ProviderName, the request line's), "" for a self-hosted
-// type or a backend snap no longer has.
+// live config snap (provider.ProviderName, the request line's), "" for a backend snap
+// no longer has.
 func providerName(snap *config.Snapshot, backend string) string {
 	if snap == nil {
 		return ""

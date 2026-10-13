@@ -345,10 +345,10 @@ type backendModule interface {
 // backendKind is one backend type: its GenAI provider name, and how its module is
 // built over a backend's connection pool and credential.
 type backendKind struct {
-	// providerName is gen_ai.provider.name for the type: the GenAI convention's
-	// well-known value where one fits, else "" — the self-hosted types have none, and
-	// kaiak.backend.type names every type. Claude in Foundry is Anthropic's service and
-	// API on Azure, and no Azure value names it, so it is anthropic too.
+	// providerName is gen_ai.provider.name for the type when one of the GenAI
+	// convention's well-known values applies, else "" — the type's own name is its
+	// custom value (ProviderName). Claude in Foundry is Anthropic's service and API on
+	// Azure, and no Azure value names it, so it is anthropic too.
 	providerName string
 	build        func(b *config.Backend, client *http.Client, credential string) backendModule
 }
@@ -377,9 +377,15 @@ func kindOf(t config.BackendType) backendKind {
 }
 
 // ProviderName is gen_ai.provider.name for backends of type t — the one mapping the
-// request line and the usage metrics read; "" for a type with no well-known value.
+// request line, the usage metrics and request captures read: the GenAI convention's
+// well-known value where one applies, else the type's own name, a custom value
+// (docs/specs/GATEWAY.md, Observability → Logs: the request line). Every type has
+// one.
 func ProviderName(t config.BackendType) string {
-	return kindOf(t).providerName
+	if name := kindOf(t).providerName; name != "" {
+		return name
+	}
+	return string(t)
 }
 
 // For returns the provider for backend b: its type's module.

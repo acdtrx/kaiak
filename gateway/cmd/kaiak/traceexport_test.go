@@ -16,12 +16,15 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"kaiak/internal/capture"
 	"kaiak/internal/config"
+	"kaiak/internal/provider"
 	"kaiak/internal/telemetry/fakeotlp"
 	"kaiak/internal/telemetry/otlp"
 	"kaiak/internal/telemetry/otlpmetric"
@@ -236,7 +239,7 @@ func exportedPoints(t *testing.T, r fakeotlp.Received, name, component string) m
 }
 
 // With trace export on, its counts are on /metrics and in the OTLP metric export from
-// the start, at 0 — the spans accepted and the processor's four — with no failure
+// the start, at 0 — the spans accepted and the processor's five — with no failure
 // series; with it off there are none. Either way run returns leaving nothing
 // running: the exporter shut down.
 func TestTraceExportCountsFromTheStart(t *testing.T) {
@@ -280,7 +283,8 @@ func TestTraceExportCountsFromTheStart(t *testing.T) {
 			}
 			var want []string
 			if on {
-				want = []string{spanExported + "} 0\n", spanProcessed + "} 0\n", spanProcessed + `,error_type="memory"} 0` + "\n",
+				want = []string{spanExported + "} 0\n", spanProcessed + "} 0\n", spanProcessed + `,error_type="_OTHER"} 0` + "\n",
+					spanProcessed + `,error_type="memory"} 0` + "\n",
 					spanProcessed + `,error_type="shutdown"} 0` + "\n", spanProcessed + `,error_type="too_large"} 0` + "\n"}
 			}
 			if !slices.Equal(series, want) {
@@ -303,7 +307,7 @@ func TestTraceExportCountsFromTheStart(t *testing.T) {
 			exported := exportedPoints(t, final[0], "otel.sdk.exporter.span.exported", "otlp_http_json_span_exporter")
 			wantProcessed, wantExported := map[string]string(nil), map[string]string(nil)
 			if on {
-				wantProcessed = map[string]string{"": "0", "memory": "0", "too_large": "0", "shutdown": "0"}
+				wantProcessed = map[string]string{"": "0", "_OTHER": "0", "memory": "0", "too_large": "0", "shutdown": "0"}
 				wantExported = map[string]string{"": "0"}
 			}
 			if !maps.Equal(processed, wantProcessed) || !maps.Equal(exported, wantExported) {
@@ -406,6 +410,157 @@ func TestExitFlushesTracesFirst(t *testing.T) {
 					slices.Contains(exportedLines, "trace export failing"), want, stderr.String())
 			}
 		})
+	}
+}
+
+// exitCaptures starts the exports as run does, to collector — logs, metrics and
+// traces switched on — with the captures over the trace exporter, wrapped by wrap
+// when it is set, and a graph whose metrics count them.
+func exitCaptures(t *testing.T, collector *fakeotlp.Collector, stderr io.Writer,
+	wrap func(capture.Exporter) capture.Exporter) (exports, *slog.Logger) {
+	t.Helper()
+	env := envOf(map[string]string{"KAIAK_CONFIG_FILE": minimalFixture, "KAIAK_INSTANCE_ID": "test-1",
+		"OTEL_EXPORTER_OTLP_ENDPOINT": collector.URL, "OTEL_TRACES_EXPORTER": "otlp"})
+	s, err := readSettings(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := otlp.Service{Version: "test", InstanceID: s.instanceID}
+	exp, logger := startExports(s, service, slog.New(slog.NewJSONHandler(stderr, nil)))
+	if wrap != nil {
+		exp.captures.Finish(context.Background()) // nothing handed: it stops at once
+		exp.captures = capture.New(s.captureMemory, wrap(exp.traces), logger)
+	}
+	g := newGraph(s, "test", env, logger, exp)
+	exp.metrics = otlpmetric.New(s.metricExport, service, g.registry, logger)
+	return exp, logger
+}
+
+// handCapture hands a capture of a finished chat request, id, to the builder, as
+// the capture stage's finisher does; it returns the bytes the capture holds.
+func handCapture(t *testing.T, captures *capture.Captures, id string) int64 {
+	t.Helper()
+	body := []byte(`{"model":"llama","messages":[]}`)
+	c := captures.Start(provider.ChatCompletions, body, nil)
+	now := time.Now()
+	if got := c.Hand(capture.Summary{Start: now.Add(-time.Second), End: now, RequestID: id, KeyID: "k-1", Group: "me",
+		RootGroup: "me", Model: "llama", Status: http.StatusOK}); got != capture.OutcomeQueued {
+		t.Fatalf("capture %s: %s, want queued", id, got)
+	}
+	return int64(len(body))
+}
+
+// At exit the captures the drained requests handed to the builder are built before
+// the trace export's final flush, which sends them — before the final metric export,
+// which counts them handed and exported — and every byte they held goes back.
+func TestExitBuildsCapturesBeforeTheTraceFlush(t *testing.T) {
+	collector := fakeotlp.New(t, nil)
+	var stderr syncBuffer
+	exp, logger := exitCaptures(t, collector, &stderr, nil)
+	for _, id := range []string{"exit-1", "exit-2"} {
+		handCapture(t, exp.captures, id)
+	}
+	start := time.Now()
+	exp.finish(context.Background(), start.Add(10*time.Second), func() { logger.Info("kaiak stopped") })
+	if took := time.Since(start); took > 5*time.Second {
+		t.Errorf("exit took %s", took)
+	}
+	exports := collector.Received()
+	var ids []any
+	traces, metricsAt := -1, -1
+	for i, r := range exports {
+		switch r.Path {
+		case "/v1/traces":
+			traces = i
+			for _, span := range r.Spans() {
+				ids = append(ids, span.Attrs(t)["kaiak.request.id"])
+			}
+		case "/v1/metrics":
+			metricsAt = i
+		}
+	}
+	if !slices.Equal(ids, []any{"exit-1", "exit-2"}) || traces < 0 || traces > metricsAt {
+		t.Fatalf("spans %v exported at %d, the metrics at %d; want both captures before the final metric export", ids,
+			traces, metricsAt)
+	}
+	processed := exportedPoints(t, exports[metricsAt], "otel.sdk.processor.span.processed", "capture_span_processor")
+	exported := exportedPoints(t, exports[metricsAt], "otel.sdk.exporter.span.exported", "otlp_http_json_span_exporter")
+	if processed[""] != "2" || processed["shutdown"] != "0" || exported[""] != "2" {
+		t.Errorf("final metric export: processed %v, exported %v; want both handed and exported", processed, exported)
+	}
+	if held := exp.captures.InUse(); held != 0 {
+		t.Errorf("captures hold %d bytes, want 0", held)
+	}
+}
+
+// gatedExporter holds each build at the exporter until gate is closed, telling
+// entered first: the builder stands still.
+type gatedExporter struct {
+	capture.Exporter
+	gate, entered chan struct{}
+}
+
+func (e gatedExporter) MaxSpanBytes() int {
+	e.entered <- struct{}{}
+	<-e.gate
+	return e.Exporter.MaxSpanBytes()
+}
+
+// A builder still busy when the exit's bound ends — the drain's deadline, at least
+// 1 s — has the captures it did not reach dropped and counted as shutdown, their
+// bytes given back; the build in progress completes, and its span is handed to the
+// trace export's last work.
+func TestExitDropsCapturesNotBuiltAtTheBound(t *testing.T) {
+	collector := fakeotlp.New(t, nil)
+	var stderr syncBuffer
+	gate, entered := make(chan struct{}), make(chan struct{}, 1)
+	exp, logger := exitCaptures(t, collector, &stderr, func(e capture.Exporter) capture.Exporter {
+		return gatedExporter{Exporter: e, gate: gate, entered: entered}
+	})
+	building := handCapture(t, exp.captures, "exit-1")
+	<-entered
+	handCapture(t, exp.captures, "exit-2")
+	finished := make(chan struct{})
+	start := time.Now()
+	go func() {
+		exp.finish(context.Background(), start, func() { logger.Info("kaiak stopped") })
+		close(finished)
+	}()
+	deadline := time.After(exitExportFloor + 5*time.Second)
+	for exp.captures.Drops().Shutdown != 1 {
+		select {
+		case <-deadline:
+			close(gate)
+			t.Fatalf("drops %+v, want exit-2 dropped at the bound", exp.captures.Drops())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if took := time.Since(start); took < exitExportFloor {
+		t.Errorf("exit-2 dropped after %s, before the bound's 1 s floor", took)
+	}
+	if held := exp.captures.InUse(); held != building {
+		t.Errorf("captures hold %d bytes at the bound, want exit-1's %d alone", held, building)
+	}
+	close(gate)
+	select {
+	case <-finished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("exit still waiting once the build ended")
+	}
+	if held := exp.captures.InUse(); held != 0 {
+		t.Errorf("captures hold %d bytes after exit, want 0", held)
+	}
+	var metricExport fakeotlp.Received
+	for _, r := range collector.Received() {
+		if r.Path == "/v1/metrics" {
+			metricExport = r
+		}
+	}
+	// exit-1's span, built after the bound, is exported, cut or dropped by the trace
+	// export's Shutdown: counted either way.
+	processed := exportedPoints(t, metricExport, "otel.sdk.processor.span.processed", "capture_span_processor")
+	if shutdown, _ := strconv.Atoi(processed["shutdown"]); shutdown < 1 {
+		t.Errorf("final metric export: processed %v, want exit-2 counted as shutdown", processed)
 	}
 }
 

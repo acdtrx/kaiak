@@ -29,14 +29,17 @@ func TestRequestLineKeysFollowTheFieldTable(t *testing.T) {
 	// A client that left before any answer was sent: no status code.
 	unanswered := slices.DeleteFunc(slices.Clone(always), func(k string) bool { return k == "http.response.status_code" })
 	routed := []string{"kaiak.key.id", "kaiak.key.group", "gen_ai.request.model", "gen_ai.request.stream",
-		"gen_ai.operation.name", "kaiak.backend.id", "kaiak.backend.type", "kaiak.deployment.model", "kaiak.attempts"}
+		"gen_ai.operation.name", "kaiak.backend.id", "kaiak.backend.type", "gen_ai.provider.name", "kaiak.deployment.model",
+		"kaiak.attempts"}
 	settled := []string{"gen_ai.usage.input_tokens", "gen_ai.usage.cache_read.input_tokens",
 		"gen_ai.usage.cache_write.input_tokens", "gen_ai.usage.output_tokens", "gen_ai.usage.reasoning.output_tokens",
 		"kaiak.usage.cost_usd", "kaiak.usage.estimated", "kaiak.usage.partial"}
 	keys := func(groups ...[]string) []string { return slices.Concat(groups...) }
 
 	cases := []struct {
-		name  string
+		name string
+		// opts shape the gateway (the zero value: file mode, trace export off).
+		opts  testOptions
 		setup func(t *testing.T, g *testGateway)
 		c     call
 		want  []string
@@ -49,11 +52,31 @@ func TestRequestLineKeysFollowTheFieldTable(t *testing.T) {
 			body: `{"model":"open","messages":[]}`},
 			want: keys(always, routed, settled),
 			values: map[string]any{"http.request.method": "POST", "gen_ai.operation.name": "chat",
-				"kaiak.backend.type": "openai-compatible", "http.response.status_code": float64(200)}},
+				"kaiak.backend.type": "openai-compatible", "gen_ai.provider.name": "openai-compatible",
+				"http.response.status_code": float64(200)}},
 		{name: "success on azure-openai", c: call{method: "POST", path: "/v1/chat/completions", key: workloadKey,
 			body: `{"model":"on-azure","messages":[]}`},
-			want:   keys(always, routed, settled, []string{"gen_ai.provider.name"}),
+			want:   keys(always, routed, settled),
 			values: map[string]any{"kaiak.backend.type": "azure-openai", "gen_ai.provider.name": "azure.ai.openai"}},
+		{name: "captured", opts: testOptions{traces: true, edit: capturing(t)},
+			c:      call{method: "POST", path: "/v1/chat/completions", key: workloadKey, body: `{"model":"open","messages":[]}`},
+			want:   keys(always, routed, settled, []string{"kaiak.capture"}),
+			values: map[string]any{"kaiak.capture": "queued"}},
+		{name: "captured, its session ID ignored", opts: testOptions{traces: true, edit: capturing(t)},
+			c: call{method: "POST", path: "/v1/chat/completions", key: workloadKey, body: `{"model":"open","messages":[]}`,
+				header: map[string]string{"Kaiak-Session-Id": "two words"}},
+			want:   keys(always, routed, settled, []string{"kaiak.capture", "kaiak.session_id.ignored"}),
+			values: map[string]any{"kaiak.capture": "queued", "kaiak.session_id.ignored": "invalid_characters"}},
+		{name: "captured, refused after the capture stage", opts: testOptions{traces: true, edit: capturing(t)},
+			c: call{method: "POST", path: "/v1/chat/completions", key: workloadKey, body: `{"model":"nope","messages":[]}`},
+			want: keys(always, []string{"kaiak.key.id", "kaiak.key.group", "gen_ai.request.model", "gen_ai.operation.name",
+				"error.type", "kaiak.capture"}),
+			values: map[string]any{"kaiak.capture": "queued", "error.type": "model_not_found"}},
+		{name: "capturing group, trace export off", opts: testOptions{edit: capturing(t)},
+			c: call{method: "POST", path: "/v1/chat/completions", key: workloadKey, body: `{"model":"open","messages":[]}`,
+				header: map[string]string{"Kaiak-Session-Id": "two words"}},
+			want:   keys(always, routed, settled, []string{"kaiak.capture"}),
+			values: map[string]any{"kaiak.capture": "export_off"}},
 		{name: "limit refusal",
 			setup: func(t *testing.T, g *testGateway) {
 				withLimits(t, g, "", `[{ "type": "requests_per_minute", "value": 0 }]`)
@@ -105,11 +128,14 @@ func TestRequestLineKeysFollowTheFieldTable(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			g := newTestGateway(t)
+			g := buildTestGateway(t, c.opts)
 			if c.setup != nil {
 				c.setup(t, g)
 			}
-			c.c.header = map[string]string{"X-Request-Id": "line"}
+			if c.c.header == nil {
+				c.c.header = map[string]string{}
+			}
+			c.c.header["X-Request-Id"] = "line"
 			if c.gone {
 				r := httptest.NewRequest(c.c.method, c.c.path, strings.NewReader(c.c.body))
 				r.Header.Set("Authorization", "Bearer "+c.c.key)

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"kaiak/internal/accounting"
 	"kaiak/internal/clip"
 	"kaiak/internal/config"
 	"kaiak/internal/logattr"
@@ -49,11 +50,9 @@ func (a *API) logRequest(rq *request) {
 	at := rq.answeringAttempt()
 	if b := at.deployment.Backend; b != nil {
 		attrs = append(attrs, slog.String("kaiak.backend.id", b.ID),
-			slog.String("kaiak.backend.type", string(b.Type)))
-		if name := provider.ProviderName(b.Type); name != "" {
-			attrs = append(attrs, slog.String("gen_ai.provider.name", name))
-		}
-		attrs = append(attrs, slog.String("kaiak.deployment.model", at.deployment.Model),
+			slog.String("kaiak.backend.type", string(b.Type)),
+			slog.String("gen_ai.provider.name", provider.ProviderName(b.Type)),
+			slog.String("kaiak.deployment.model", at.deployment.Model),
 			slog.Int("kaiak.attempts", len(rq.attempts)))
 	}
 	if len(rq.attempts) > 1 {
@@ -93,16 +92,14 @@ func (a *API) logRequest(rq *request) {
 		// Units and cost are the request's (totalUsage); the flags are the answering
 		// attempt's.
 		units, cost := rq.totalUsage()
-		// gen_ai.usage.input_tokens is all input, as the GenAI convention means it:
-		// config.InputUnits, the input neither read from nor written to the cache plus
-		// its two cache parts.
+		tokens := tokensOf(units)
 		attrs = append(attrs,
-			slog.Int64("gen_ai.usage.input_tokens", units.Sum(config.InputUnits)),
-			slog.Int64("gen_ai.usage.cache_read.input_tokens", units[config.UnitTokensCached]),
-			slog.Int64("gen_ai.usage.cache_write.input_tokens", units[config.UnitTokensCacheWrite]),
-			slog.Int64("gen_ai.usage.output_tokens", units[config.UnitTokensOut]),
-			slog.Int64("gen_ai.usage.reasoning.output_tokens", units[config.UnitTokensReasoning]),
-			slog.Float64("kaiak.usage.cost_usd", float64(cost)/1e9))
+			slog.Int64("gen_ai.usage.input_tokens", tokens.input),
+			slog.Int64("gen_ai.usage.cache_read.input_tokens", tokens.cacheRead),
+			slog.Int64("gen_ai.usage.cache_write.input_tokens", tokens.cacheWrite),
+			slog.Int64("gen_ai.usage.output_tokens", tokens.output),
+			slog.Int64("gen_ai.usage.reasoning.output_tokens", tokens.reasoning),
+			slog.Float64("kaiak.usage.cost_usd", costUSD(cost)))
 		// The media units only when not 0, as their metrics are fed.
 		for _, f := range mediaUsageFields {
 			if n := units[f.unit]; n != 0 {
@@ -113,7 +110,35 @@ func (a *API) logRequest(rq *request) {
 			slog.Bool("kaiak.usage.estimated", u.Estimated),
 			slog.Bool("kaiak.usage.partial", u.Partial))
 	}
+	// The capture's outcome on the request's path; what its build drops is in the
+	// counts alone, the line being written first. Never the session ID: client text.
+	if rq.captureOutcome != "" {
+		attrs = append(attrs, slog.String("kaiak.capture", rq.captureOutcome))
+	}
+	if rq.capture != nil && rq.capture.SessionIgnored() != "" {
+		attrs = append(attrs, slog.String("kaiak.session_id.ignored", rq.capture.SessionIgnored()))
+	}
 	a.logger.LogAttrs(rq.r.Context(), slog.LevelInfo, "request", attrs...)
+}
+
+// tokenCounts are a request's tokens as the GenAI convention counts them, the
+// request line's and its capture's: input is all input — config.InputUnits, the
+// input neither read from nor written to the cache plus its two cache parts — and
+// output all output, its reasoning part included.
+type tokenCounts struct {
+	input, cacheRead, cacheWrite, output, reasoning int64
+}
+
+// tokensOf is the token counts of a request's units (request.totalUsage).
+func tokensOf(units accounting.Units) tokenCounts {
+	return tokenCounts{input: units.Sum(config.InputUnits), cacheRead: units[config.UnitTokensCached],
+		cacheWrite: units[config.UnitTokensCacheWrite], output: units[config.UnitTokensOut],
+		reasoning: units[config.UnitTokensReasoning]}
+}
+
+// costUSD is a cost in nano-USD in dollars, for reading.
+func costUSD(nanoUSD int64) float64 {
+	return float64(nanoUSD) / 1e9
 }
 
 // mediaUsageFields are the request line's media usage fields, in line order: each

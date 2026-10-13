@@ -167,7 +167,8 @@ func TestTranscriptionThroughThePipeline(t *testing.T) {
 				}
 			}
 			usage := `{kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",gen_ai_request_model="` +
-				c.model + `",gen_ai_operation_name="generate_content",gen_ai_output_type="text",kaiak_usage_status="complete"}`
+				c.model + `",gen_ai_operation_name="generate_content",gen_ai_output_type="text",gen_ai_provider_name="` + c.backendType +
+				`",kaiak_usage_status="complete"}`
 			text := g.metricsText()
 			expectMetricLines(t, text,
 				`http_server_request_duration_seconds_count{http_request_method="POST",url_scheme="http",`+

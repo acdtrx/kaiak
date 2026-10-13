@@ -338,7 +338,7 @@ func TestGatewayEndToEnd(t *testing.T) {
 
 	t.Run("metrics reflect the traffic", func(t *testing.T) {
 		labels := `kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",gen_ai_request_model="chat",` +
-			`gen_ai_operation_name="chat",kaiak_usage_status="complete"`
+			`gen_ai_operation_name="chat",gen_ai_provider_name="openai-compatible",kaiak_usage_status="complete"`
 		usage := `{` + labels + `}`
 		for series, want := range map[string]float64{
 			`kaiak_errors_total{kaiak_error_class="auth"}`:                                                      2,
@@ -487,7 +487,7 @@ func TestTieredPrices(t *testing.T) {
 	}
 
 	usage := `{kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",gen_ai_request_model="tiered",` +
-		`gen_ai_operation_name="chat",kaiak_usage_status="complete"}`
+		`gen_ai_operation_name="chat",gen_ai_provider_name="openai-compatible",kaiak_usage_status="complete"}`
 	if got, want := g.metric(t, `kaiak_usage_cost_usd_total`+usage), 0.0008395; got != want {
 		t.Errorf("cost metric %v, want %v", got, want)
 	}
@@ -558,7 +558,8 @@ func TestInputWrittenToTheCache(t *testing.T) {
 
 	usage := func(model, modality string) string {
 		return fmt.Sprintf(`{kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",gen_ai_request_model=%q,`+
-			`gen_ai_operation_name="chat",kaiak_usage_status="complete"%s}`, model, modality)
+			`gen_ai_operation_name="chat",gen_ai_provider_name="openai-compatible",kaiak_usage_status="complete"%s}`, model,
+			modality)
 	}
 	const tokens = `,gen_ai_token_modality="unknown"`
 	for series, want := range map[string]float64{

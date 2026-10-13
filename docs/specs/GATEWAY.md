@@ -628,9 +628,10 @@ capture); caching and guardrails would be others.
    Then **capture** (settled 2026-10-13, with the user; Request capture): on chat
    completions, Messages and Responses, for a key whose own group has `capture`
    on, the session header is read, the body copied under the capture budget and a
-   finisher registered that builds the capture once the response is over — every
-   refusal from here on is captured, none before; it never refuses, delays or
-   alters the request. Then the model-access check (Client API) — the second half of
+   finisher registered that hands the capture to a background builder once the
+   request is over — the span is built after the response has ended (Request
+   capture → Capture never gets in the way of serving) — every refusal from here on
+   is captured, none before; it never refuses, delays or alters the request. Then the model-access check (Client API) — the second half of
    auth, which needs the model — and whether the model's `endpoints` list names the
    endpoint (Model metadata → Endpoints per model, settled 2026-10-11, with the user;
    else `400 endpoint_not_served`, settled 2026-10-06 here, before limits — the
@@ -2879,10 +2880,24 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
   delays or alters a request. The backend gets the same request, byte for byte,
   whether the request is captured or not (passthrough is untouched). On the request's
   path capture only copies — the body when the stage runs, each piece written to the
-  client as it is written — and the parsing, assembling and encoding run in the
-  stage's finisher, after the response's last byte. Its own failures — the memory
-  budget, the export limit, a malformed session ID — drop or reduce the capture,
-  never the request.
+  client as it is written — and hands the copies on: the stage's finisher passes
+  them, with a summary of how the request ended (the values the request line reads),
+  to a **background builder**, which does the parsing, assembling and encoding after
+  the client's response has ended (settled 2026-10-13, at the stage's build: a
+  request's finishers run inside its handler, before net/http ends the response —
+  HTTP/1.1's last chunk, HTTP/2's `END_STREAM` — so a span built there would delay
+  the end of every captured response by its build). One builder takes the captures
+  one at a time, oldest first; its backlog has no bound of its own — each capture in
+  it holds its bytes in the capture budget (Memory, below). Its own failures — the
+  memory budget, the export limit, a malformed session ID — drop or reduce the
+  capture, never the request. **A fault in building a capture** — a panic while its
+  content is parsed or its span made, an encoding that fails — drops that capture
+  and never reaches serving (settled 2026-10-13): its bytes go back to the budget,
+  it is counted (`_OTHER`, Exporters' own counts) and reported by one `capture build
+  failed` line (error) with the request's ID and the builder's stack — never the
+  fault's value or text, which a parser can fill with what the client sent — and
+  the builder goes on with the next capture. A gateway fault to fix, not an
+  operator's to tune.
 - **Which requests**: those on `/v1/chat/completions`, `/v1/messages` and
   `/v1/responses` whose key's group has `capture: true`, once the inbound stage has
   read, parsed and accepted the body (Request pipeline, stage 2) — the capture stage
@@ -2920,9 +2935,9 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
     that did not fail.
   - Attempts are not spans of their own: `kaiak.attempts` counts them, and the
     backend attributes are the last attempt's, as on the request line.
-  - Built at the request's end from what the gateway holds: no trace SDK
-    (`docs/TECH-STACK.md`, Dependencies), no sampling — the group's flag decides —
-    and no span tree. How a span is written on the wire, and its resource and scope:
+  - Built after the request's end, by the builder, from what the gateway holds: no
+    trace SDK (`docs/TECH-STACK.md`, Dependencies), no sampling — the group's flag
+    decides — and no span tree. How a span is written on the wire, and its resource and scope:
     Observability → OTLP trace export.
 - **Attributes** (the conventions' names at the pinned commit, Conventions below;
   kaiak's as on the request line and the metrics). Values follow the request line's
@@ -3217,11 +3232,16 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
     request content" in its place.
 - **Memory** (`KAIAK_CAPTURE_MEMORY_BYTES`, default 128 MiB; Configuration sources):
   one gateway-wide capture budget bounds every byte a capture holds — the copy of the
-  request body, taken when the stage runs; the answer's bytes, taken as each piece is
-  written to the client; the encoded span, from its encoding until its export ends.
-  A take that does not fit drops the capture at once (`memory`) and gives back
-  everything it held; the request goes on untouched. Exported, failed or dropped, a
-  span's bytes are given back. The budget is also the export queue's only bound: the
+  request body, taken when the stage runs; the answer's bytes, taken as they are
+  written to the client (the buffer that holds them doubles from 4 KiB, each growth
+  taken before it is made, as a request body's is); both until the builder has
+  built the span; the encoded span, from its encoding until its export ends. While
+  the request runs, a take that does not fit drops the capture at once (`memory`)
+  and gives back everything it held; the request goes on untouched. The builder
+  swaps a capture's charge from its copies to its encoded span in one step (settled
+  2026-10-13): an encoded span the budget cannot hold is dropped (`memory`) and the
+  copies' bytes given back. Exported, failed or dropped, a span's bytes are given
+  back. The budget is also the export queue's only bound: the
   exporter drops nothing for a full queue, and while a collector is down captures
   fill the budget and new ones are dropped until exports drain it. Outside the
   budget, parsing and encoding make short-lived garbage. Size `GOMEMLIMIT` above the
@@ -3229,14 +3249,19 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
 - **The export limit**: an export request is at most 16 MiB, its envelope included —
   under the OpenTelemetry Collector's OTLP/HTTP receiver default (20 MiB, checked
   again after decompression); Langfuse takes up to 512 MiB by default but warns
-  above 16 MiB. A span that cannot fit in an export request alone is dropped
-  (`too_large`) and its bytes given back. Content is never truncated to fit
+  above 16 MiB. A span that cannot fit in an export request alone is dropped by the
+  builder (`too_large`) and its bytes given back. Content is never truncated to fit
   (`docs/BACKLOG.md`, Truncating large captures).
 - **On the request line and in the counts**: `kaiak.capture` on the request line —
-  `queued` (handed to the exporter), or why not: `memory`, `too_large`,
-  `export_off` — and `kaiak.session_id.ignored` (Observability → Logs: the request
-  line); `otel.sdk.processor.span.processed` and `otel.sdk.exporter.span.exported`
-  (Observability → Exporters' own counts).
+  `queued` (handed to the builder), or why not: `memory` (the copy of the request or
+  of the answer did not fit while the request ran), `export_off` — and
+  `kaiak.session_id.ignored` (Observability → Logs: the request line);
+  `otel.sdk.processor.span.processed` and `otel.sdk.exporter.span.exported`
+  (Observability → Exporters' own counts). The line is written before the span is
+  built (settled 2026-10-13; Capture never gets in the way of serving, above), so
+  what the build drops — `too_large`, `memory` for an encoded span the budget
+  cannot hold, `_OTHER` for a build that failed — and a capture not built at exit
+  (`shutdown`) are in the counts alone.
 - **Groups capture, trace export off**: a config whose groups capture is applied
   like any other — a config cannot fail a gateway's start, and the export switch is
   the operator's. When trace export is off on this gateway, each applied config that
@@ -3780,7 +3805,7 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
   | `otel.sdk.processor.log.processed` | counter, read at collect | `{log_record}` | `otel.component.type`, `otel.component.name`, `error.type` | `otel_sdk_processor_log_processed_total` | With OTLP log export on: log records the export's queue is done with — handed to the exporter (no `error.type`), or dropped: `queue_full` (refused by the full queue), `shutdown` (still queued when the final flush ended) (Exporters' own counts, below) | `kaiak_log_export_records_total{outcome="dropped"}` |
   | `otel.sdk.exporter.log.exported` | counter, read at collect | `{log_record}` | `otel.component.type`, `otel.component.name`, `error.type` | `otel_sdk_exporter_log_exported_total` | With OTLP log export on: log records the exporter sent — accepted by the collector (no `error.type`), or failed, by how (Exporters' own counts) | `kaiak_log_export_records_total{outcome="exported"}`, `{outcome="failed"}` |
   | `otel.sdk.exporter.metric_data_point.exported` | counter, read at collect | `{data_point}` | `otel.component.type`, `otel.component.name`, `error.type` | `otel_sdk_exporter_metric_data_point_exported_total` | With OTLP metric export on: data points the exporter sent — accepted (no `error.type`), or failed, by how (Exporters' own counts) | — (added) |
-  | `otel.sdk.processor.span.processed` | counter, read at collect | `{span}` | `otel.component.type`, `otel.component.name`, `error.type` | `otel_sdk_processor_span_processed_total` | With OTLP trace export on: request captures the capture stage and the export's queue are done with — handed to the exporter (no `error.type`), or dropped: `memory` (the capture budget could not hold it), `too_large` (its span exceeds the export limit), `shutdown` (still queued when the final flush ended) (Request capture; Exporters' own counts) | — (added 2026-10-13) |
+  | `otel.sdk.processor.span.processed` | counter, read at collect | `{span}` | `otel.component.type`, `otel.component.name`, `error.type` | `otel_sdk_processor_span_processed_total` | With OTLP trace export on: request captures the capture stage, its builder and the export's queue are done with — handed to the exporter (no `error.type`), or dropped: `memory` (the capture budget could not hold it), `too_large` (its span exceeds the export limit), `shutdown` (not built when the builder's work at exit ended, or still queued when the final flush ended), `_OTHER` (its build failed: a gateway fault, reported by `capture build failed`) (Request capture; Exporters' own counts) | — (added 2026-10-13) |
   | `otel.sdk.exporter.span.exported` | counter, read at collect | `{span}` | `otel.component.type`, `otel.component.name`, `error.type` | `otel_sdk_exporter_span_exported_total` | With OTLP trace export on: spans the exporter sent — accepted by the collector (no `error.type`), or failed, by how (Exporters' own counts) | — (added 2026-10-13) |
 
   - **Naming** (settled 2026-10-08):
@@ -3864,8 +3889,9 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
         convention's `queue_full` (Exporters' own counts).
       - `otel.sdk.processor.span.processed` names a component type of kaiak's,
         `capture_span_processor`, and its own `error.type` values — `memory`,
-        `too_large`, `shutdown` — in place of the convention's `queue_full`, which
-        never happens: the capture budget bounds the queue (Exporters' own counts;
+        `too_large`, `shutdown`, beside the convention's fallback `_OTHER` for a
+        build that failed — in place of the convention's `queue_full`, which never
+        happens: the capture budget bounds the queue (Exporters' own counts;
         settled 2026-10-13).
   - **The request duration's attributes** (settled 2026-10-08):
     `http.request.method` — the method when the HTTP convention knows it, else
@@ -3978,8 +4004,8 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
     usage-delivery counters per result and drop reason,
     `kaiak.usage.clamped_records`; with OTLP export on, each exporter's accepted
     series (no `error.type`), the log queue's three (handed over, `queue_full`,
-    `shutdown`) and the span processor's four (handed over, `memory`, `too_large`,
-    `shutdown`). Per applied config: per model
+    `shutdown`) and the span processor's five (handed over, `memory`, `too_large`,
+    `shutdown`, `_OTHER`). Per applied config: per model
     `kaiak.queue.rejections` × error code, `kaiak.queue.wait_duration`,
     `kaiak.request.attempts`; per deployment `kaiak.upstream.attempts` × outcome and
     `kaiak.circuit.transitions` × state; per deployment's backend
@@ -4145,9 +4171,9 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
   - `otel.component.type` names the component: `batching_log_processor` (the log
     export's queue), `otlp_http_json_log_exporter`, `otlp_http_json_metric_exporter`,
     `otlp_http_json_span_exporter` — the convention's well-known values — and
-    `capture_span_processor` (settled 2026-10-13), kaiak's own: the capture stage,
-    which builds each span at its request's end under the capture budget, and the
-    trace export's queue — neither of the convention's span processors (batching,
+    `capture_span_processor` (settled 2026-10-13), kaiak's own: the capture stage
+    with its background builder, which builds each span after its request's end
+    under the capture budget, and the trace export's queue — neither of the convention's span processors (batching,
     simple) describes it, and a custom value is allowed where none applies;
     `otel.component.name` is `<type>/0`, the convention's form for the process's one
     instance of each.
@@ -4171,9 +4197,15 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
     the full queue, and a drop at exit is a different fix: a longer termination
     grace, not a bigger queue).
   - The span processor's `error.type` (settled 2026-10-13): `memory` and
-    `too_large` — the capture dropped before the queue (Request capture → Memory,
-    The export limit), as the request line's `kaiak.capture` says — and `shutdown`,
-    as for logs. No `queue_full`: the capture budget is the queue's bound.
+    `too_large`, the capture dropped before the queue (Request capture → Memory,
+    The export limit) — the request line's `kaiak.capture`, written before the
+    build, says `memory` for a drop while the request ran and nothing of the
+    build's drops; `shutdown`, as for logs: a capture the builder had not built
+    when its work at exit ended, or a span still queued when the final flush
+    ended; and `_OTHER`, the convention's fallback, for a capture whose build
+    failed: a fault in the gateway, each reported by a `capture build failed` line
+    (Request capture → Capture never gets in the way of serving). No `queue_full`:
+    the capture budget is the queue's bound.
   - An export's own outcome is counted after it ends, so it shows in the next
     export and the next scrape; the final export's outcome is in its stderr line
     only.
@@ -4333,7 +4365,7 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
     | `kaiak.usage.audio.input.duration` | — (added 2026-10-09) | once settled, when not 0 | Seconds of audio processed (the records' `audio_seconds_in`), as the metric of the same name |
     | `kaiak.usage.estimated` | `estimated` | once settled | The last record's flag (Accounting: Estimation) |
     | `kaiak.usage.partial` | `partial` | once settled | The last record's flag (Accounting: Partial) |
-    | `kaiak.capture` | — (added 2026-10-13) | the key's group captures and the request passed the capture stage (Request capture) | `queued` — the capture was handed to the trace exporter — or why it was not: `memory` (the capture budget could not hold it), `too_large` (its span exceeds the export limit), `export_off` (this gateway's trace export is off) |
+    | `kaiak.capture` | — (added 2026-10-13) | the key's group captures and the request passed the capture stage (Request capture) | `queued` — the capture was handed to the background builder, which builds its span after the response has ended — or why it was not: `memory` (the capture budget could not hold the copy of the request or of the answer), `export_off` (this gateway's trace export is off). The line is written before the build, so what the build drops — `too_large`, `memory` for an encoded span, `_OTHER` for a build that failed — is in the counts alone (settled 2026-10-13; Request capture → On the request line and in the counts) |
     | `kaiak.session_id.ignored` | — (added 2026-10-13) | a captured request's `Kaiak-Session-Id` was ignored | `empty`, `too_long`, `invalid_characters` (Request capture → Sessions). Never the value: it is client text |
 
     Limit values are counts in the limit's unit, USD limits in dollars. Across
@@ -4381,7 +4413,7 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
     | `kaiak.usage.batches`, `kaiak.usage.records` | `batches`, `records` | Usage batches and records a line is about (sealed, sent, flushed, dropped) |
     | `kaiak.usage.epoch`, `kaiak.usage.sequence` | `epoch`, `sequence` | A usage batch's ID |
     | `kaiak.usage.kept_records`, `kaiak.usage.kept_size`, `kaiak.usage.max_size` | `kept_records`, `kept_bytes`, `bound_bytes` | Usage dropped to bound memory: the records that stay and their encoded size, and the bound (`KAIAK_USAGE_MEMORY_BYTES`) — sizes in bytes |
-    | `kaiak.usage.record_id`, `kaiak.request.id` | `record_id`, `request_id` | A usage record refused by the checks or clamped, and its request |
+    | `kaiak.usage.record_id`, `kaiak.request.id` | `record_id`, `request_id` | A usage record refused by the checks or clamped, and its request; `kaiak.request.id` alone on `capture build failed`: the request whose capture it was |
     | `kaiak.usage.issues` | `issues` | `usage record refused by the protocol's checks…`: what failed |
     | `kaiak.usage.clamped` | `clamped` | `usage out of the protocol's range…`: the units clamped (an array) |
     | `http.response.status_code`, `error.type` | `status`, `code` | `usage batch refused by the control plane…`: the control plane's status and error code — the code only when it has the protocol's code shape (Logs: no remote text) |
@@ -4402,6 +4434,7 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
     | `kaiak.listener.shutdown_timeout` | `timeout` (a duration string) | `shutdown timed out; closing open connections`: the timeout, in seconds |
     | `kaiak.log_export.failed`, `kaiak.log_export.dropped` | — (added) | `log export failing` (stderr only; OTLP log export, below): records failed and dropped since the previous such line; with `http.response.status_code` (the collector's last answer, when it answered) and `exception.message` (the last error, in the gateway's own words — never the collector's text) |
     | `kaiak.metric_export.failed` | — (added 2026-10-08) | `metric export failing` (OTLP metric export, below): data points failed since the previous such line; with `http.response.status_code` and `exception.message`, as `log export failing` |
+    | `exception.stacktrace` | — (added 2026-10-13) | `capture build failed` (error; Request capture → Capture never gets in the way of serving): the capture builder's stack where the build failed, with `kaiak.request.id`. Never the fault's value or an error's text: a parser can fill them with what the client sent |
     | `kaiak.trace_export.failed`, `kaiak.trace_export.dropped` | — (added 2026-10-13) | `trace export failing` (OTLP trace export, below): spans failed since the previous such line, and spans still queued when the final flush ended (at exit only); with `http.response.status_code` and `exception.message`, as `log export failing` |
 
     The HTTP server's own messages (`http: …`, at warn level) carry no attributes.
@@ -4634,8 +4667,10 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
     `doubleValue`, booleans `boolValue`, string lists an `arrayValue` of
     `stringValue`s; `status` `{"code": 2, "message": <error.type>}` for a span with
     an `error.type`, else none. No events, no links.
-  - **Delivery** — never on the request path: a capture's finisher encodes its span
-    and queues the bytes; a background sender does the rest.
+  - **Delivery** — never on the request path: a capture's finisher hands its copies
+    to the background builder (Request capture → Capture never gets in the way of
+    serving), which builds and encodes the span and queues the bytes; a background
+    sender does the rest.
     - **The queue's bound is the capture budget** (Request capture → Memory), not a
       count: every queued span holds its bytes in the budget until its export ends,
       so the queue never drops for being full. Spans go out in export requests of at
@@ -4657,7 +4692,8 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
       `otel.sdk.exporter.span.exported` — accepted by the collector, or failed by
       `error.type` — and `otel.sdk.processor.span.processed` — handed to the
       exporter, or never sent: `memory`, `too_large` (dropped by the capture, before
-      the queue), `shutdown` (still queued when the final flush ended).
+      the queue), `shutdown` (not built when the builder's work at exit ended, or
+      still queued when the final flush ended), `_OTHER` (its build failed).
     - **Export problems**, as for metrics: one `trace export failing` line (warn) at
       the first failure, then at most one a minute while failures continue, with the
       spans failed since the previous one, the collector's last status when it
@@ -4665,18 +4701,23 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
       events, no remote text). It is an ordinary line — stderr, and the log export
       when that is on: a failing trace export cannot feed itself through it. The
       report at exit is never held back.
-  - **At exit**: the sender keeps exporting through the drain, each capture as its
-    request ends; a request counts as in flight until its finishers ran, so every
-    request the drain lets finish has its capture queued by then. After the usage
-    flush and the final status, once the listeners have stopped, one final flush
-    sends what is queued — before the final metric export, `kaiak stopped` and the
-    log export's final flush (Lifecycle → Draining, step 5): usage is the record and
-    goes first; the traces go before the metrics and the logs so that their counts
-    and their final `trace export failing` line still reach those exports. It is
-    bounded as the log flush is: by the drain's deadline (grace + drain timeout from
-    the drain's start) or 1 s from its start, whichever is later; a second stop
-    signal cuts it to its 1 s. What is still queued then is dropped, counted
-    (`shutdown`) and reported on the final `trace export failing` line.
+  - **At exit**: the builder and the sender keep working through the drain, each
+    capture built and sent after its request ends; a request counts as in flight
+    until its finishers ran, so every request the drain lets finish has handed its
+    capture to the builder by then. After the usage flush and the final status, once
+    the listeners have stopped, the builder builds the captures it was handed, then
+    one final flush sends what is queued (settled 2026-10-13: the builder first, or
+    the captures of the last requests would miss the flush) — before the final
+    metric export, `kaiak stopped` and the log export's final flush (Lifecycle →
+    Draining, step 5): usage is the record and goes first; the traces go before the
+    metrics and the logs so that their counts and their final `trace export failing`
+    line still reach those exports. The builder's work and the flush are bounded
+    together, as the log flush is: by the drain's deadline (grace + drain timeout
+    from the drain's start) or 1 s from the start of the builder's work, whichever is
+    later; a second stop signal cuts them to that 1 s. A capture the builder has not
+    reached then is dropped, counted (`shutdown`) and its bytes given back — a build
+    in progress completes; what is still queued once the flush ends is dropped,
+    counted (`shutdown`) and reported on the final `trace export failing` line.
 
 ## Lifecycle
 
@@ -4775,9 +4816,10 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
      error level, as other lost usage is: `usage not flushed: lost at exit`, with the
      batches and records; settled 2026-10-01, the 2026-09-30 review's O7). Then the
      control-plane client stops, the admin listener stops, with OTLP trace export on
-     its final flush runs (Observability → OTLP trace export: at exit; settled
-     2026-10-13), with OTLP metric export on its final export runs (Observability →
-     OTLP metric export: at exit; settled 2026-10-08), `kaiak stopped` is logged
+     the captures handed to the builder are built and the trace export's final
+     flush runs (Observability → OTLP trace export: at exit; settled 2026-10-13),
+     with OTLP metric export on its final export runs (Observability → OTLP metric
+     export: at exit; settled 2026-10-08), `kaiak stopped` is logged
      and, with OTLP log export on, the log export's final flush runs (Observability
      → OTLP log export: at exit; settled 2026-10-05: after usage — usage is the
      record, logs are not); the process exits 0. The admin listener serves throughout the drain:
@@ -4797,8 +4839,8 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
   - Kubernetes: `terminationGracePeriodSeconds` must exceed grace + drain timeout +
     about 10 s — after the drain, the final status report (≤ 2 s), the admin
     listener's shutdown (≤ 5 s with a scrape open), and with OTLP export on the
-    final trace flush, the final metric export and the final log flush — 1 s each
-    when the drain used its whole time. Default 5 + 60 + 10 s → at least 75 s; the
+    captures' last builds with the final trace flush, the final metric export and
+    the final log flush — 1 s each when the drain used its whole time. Default 5 + 60 + 10 s → at least 75 s; the
     Kubernetes default of 30 s would SIGKILL long streams mid-drain.
   - No draining metric: `/readyz` already says it, and a scrape during a
     seconds-long drain adds little.

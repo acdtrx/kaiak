@@ -159,8 +159,13 @@ discussed and changed first):
 23. **The export limit:** an export request is at most 16 MiB (under the Collector's
     20 MiB default); a span larger than that is dropped (`too_large`).
 24. **Work on the request's path stays a copy:** the stage copies the body; the relay
-    appends the bytes it writes; the parsing, assembling and encoding run in the
-    stage's finisher, after the response's last byte.
+    appends the bytes it writes; the parsing, assembling and encoding run in a
+    background builder, after the client's response has completed. *Amended
+    2026-10-13 at step 6:* finishers run inside the handler, before net/http ends the
+    response (the last chunk, HTTP/2's END_STREAM), so building in the finisher would
+    delay every captured response's end by the build — against decision 18. The
+    finisher only hands the copied bytes (still in the budget) and the summary to the
+    builder; the drain waits for the builder before the trace export's final flush.
 25. **Trace export needs an explicit switch:** `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`,
     or `OTEL_TRACES_EXPORTER=otlp` (with the general endpoint, `/v1/traces` appended).
     The general `OTEL_EXPORTER_OTLP_ENDPOINT` alone, which turns logs and metrics on,
@@ -172,9 +177,12 @@ discussed and changed first):
     this gateway has no trace export is applied, with a warning on the config-applied
     line naming how many groups capture. Nothing else — captures are not built.
 27. **The request line** gains `kaiak.capture` when the key's group captures:
-    `queued`, or why not — `memory`, `too_large`, `export_off` — and
-    `kaiak.session_id.ignored` when a malformed session ID was dropped (decision
-    21).
+    `queued` (handed to the builder), or why not — `memory` (the copy or the answer
+    did not fit while the request ran), `export_off` — and `kaiak.session_id.ignored`
+    when a malformed session ID was dropped (decision 21). *Amended 2026-10-13 at
+    step 6 (decision 24):* the line is written before the build, so drops in the
+    build — `too_large`, and `memory` when the encoded span does not fit — are in the
+    counts (decision 28) only.
 28. **Counts:** `otel.sdk.processor.span.processed` and `otel.sdk.exporter.span.exported`
     as the log exporter's twins (component types `capture_span_processor`,
     `otlp_http_json_span_exporter`); drops before the exporter (`memory`,

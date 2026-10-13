@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"kaiak/internal/accounting"
+	"kaiak/internal/capture"
 	"kaiak/internal/config"
 	"kaiak/internal/limits"
 	"kaiak/internal/metrics"
@@ -34,16 +35,19 @@ type API struct {
 
 // NewAPI returns the client API handler, admitting requests and counting them in
 // flight through drain, holding request bodies within bodies and uploads under
-// uploads, checking limits through limiter, choosing deployments through router,
-// sending requests upstream through providers and settling their usage through
-// recorder; every request is observed in ops. The holder must hold a snapshot before the handler serves: the API listener
-// starts only once a config is loaded.
-func NewAPI(holder *config.Holder, drain *Drain, bodies *BodyBudget, uploads Uploads, providers *provider.Registry,
-	limiter *limits.Limiter, router *routing.Router, recorder *accounting.Recorder,
+// uploads, capturing the requests of the groups that capture through captures (nil
+// with trace export off), checking limits through limiter, choosing deployments
+// through router, sending requests upstream through providers and settling their
+// usage through recorder; every request is observed in ops. The holder must hold a
+// snapshot before the handler serves: the API listener starts only once a config is
+// loaded.
+func NewAPI(holder *config.Holder, drain *Drain, bodies *BodyBudget, uploads Uploads, captures *capture.Captures,
+	providers *provider.Registry, limiter *limits.Limiter, router *routing.Router, recorder *accounting.Recorder,
 	ops *metrics.Ops, logger *slog.Logger) *API {
 	keys := newKeyInFlight()
 	a := &API{holder: holder, logger: logger, ops: ops, drain: drain, keys: keys,
-		stages: newPipeline(drain, keys, bodies, uploads, providers, limiter, router, recorder), mux: http.NewServeMux()}
+		stages: newPipeline(drain, keys, bodies, uploads, captures, providers, limiter, router, recorder),
+		mux:    http.NewServeMux()}
 
 	for _, ep := range bodyEndpoints {
 		a.mux.HandleFunc("POST "+ep.route(), func(w http.ResponseWriter, r *http.Request) {
@@ -184,11 +188,15 @@ func validRequestID(id string) bool {
 	return true
 }
 
-// statusWriter records the status code written, for the log line. Unwrap lets
-// http.ResponseController reach the underlying writer (flushing streams).
+// statusWriter records the status code written, for the log line, and hands every
+// byte written to the request's capture, when it has one: every byte the client
+// receives — a relayed answer, the gateway's own error body — passes here. Unwrap
+// lets http.ResponseController reach the underlying writer (flushing streams).
 type statusWriter struct {
 	http.ResponseWriter
 	status int
+	// capture takes a copy of what is written; nil when the request is not captured.
+	capture *capture.Capture
 }
 
 func (s *statusWriter) WriteHeader(code int) {
@@ -202,7 +210,11 @@ func (s *statusWriter) Write(p []byte) (int, error) {
 	if s.status == 0 {
 		s.status = http.StatusOK
 	}
-	return s.ResponseWriter.Write(p)
+	n, err := s.ResponseWriter.Write(p)
+	if s.capture != nil {
+		s.capture.Append(p[:n])
+	}
+	return n, err
 }
 
 func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }

@@ -7,6 +7,7 @@ import (
 
 	"kaiak/internal/accounting"
 	"kaiak/internal/auth"
+	"kaiak/internal/capture"
 	"kaiak/internal/config"
 	"kaiak/internal/limits"
 	"kaiak/internal/metrics"
@@ -165,6 +166,13 @@ type request struct {
 	bodies   *BodyBudget
 	bodyHeld int64
 
+	// Set by the capture stage for a key whose group captures: capture is the
+	// request's capture — nil with trace export off, when nothing is copied — and
+	// captureOutcome the request line's kaiak.capture, set by the stage (export_off)
+	// or by the capture's finisher.
+	capture        *capture.Capture
+	captureOutcome string
+
 	// Set by the model_params stage for the body endpoints: the parameters the model's
 	// config sets, the request's effective output limit — the most tokens one of its
 	// sequences may generate; nil when unbounded or unknown — and outputReserve, the
@@ -234,6 +242,9 @@ const (
 	bodyRequests
 	// modelRequests: the model endpoints only, answered from the config.
 	modelRequests
+	// chatRequests: the chat endpoints — chat completions, Messages and Responses,
+	// whose operation is chat — the requests capture covers.
+	chatRequests
 )
 
 // covers reports whether a stage of scope s runs for a request to ep.
@@ -241,6 +252,8 @@ func (s stageScope) covers(ep *endpoint) bool {
 	switch s {
 	case bodyRequests:
 		return ep.body
+	case chatRequests:
+		return ep.body && ep.operation == "chat"
 	case modelRequests:
 		return !ep.body
 	}
@@ -259,8 +272,10 @@ func (rq *request) finish() {
 // the requests it runs for (docs/specs/GATEWAY.md, Request pipeline). A new stage is
 // a new entry here. Admission comes first: a draining gateway, or one with no config,
 // refuses before reading anything. The per-key concurrency limit follows auth, before
-// the body is read: a key's idle connections declaring bodies count against it. The
-// model endpoints pass admission, auth, key concurrency and model access, then reach
+// the body is read: a key's idle connections declaring bodies count against it.
+// Capture follows the inbound stage, on the chat endpoints: every refusal after it
+// is captured, none before (captures is nil with trace export off). The model
+// endpoints pass admission, auth, key concurrency and model access, then reach
 // their terminal stage. The attempts stage is routing, accounting and provider run per
 // attempt — retries go through all three again — and answers the body endpoints.
 // Accounting opens each attempt's meter before its provider call because it must see
@@ -268,14 +283,15 @@ func (rq *request) finish() {
 // Limits run after model_params (they reserve the effective output limit) and before
 // routing — once per client request, whatever the attempts; their finisher is
 // registered before the attempt loop's, so it runs after settlement.
-func newPipeline(drain *Drain, keys *keyInFlight, bodies *BodyBudget, uploads Uploads, providers *provider.Registry,
-	limiter *limits.Limiter, router *routing.Router, recorder *accounting.Recorder) []stage {
+func newPipeline(drain *Drain, keys *keyInFlight, bodies *BodyBudget, uploads Uploads, captures *capture.Captures,
+	providers *provider.Registry, limiter *limits.Limiter, router *routing.Router, recorder *accounting.Recorder) []stage {
 	loop := &attempts{router: router, recorder: recorder, providers: providers, budget: newRetryBudget(time.Now)}
 	return []stage{
 		{"admission", func(_ context.Context, rq *request) *apiError { return admit(drain, rq) }, everyRequest},
 		{"auth", authenticateKey, everyRequest},
 		{"key_concurrency", func(_ context.Context, rq *request) *apiError { return limitKeyConcurrency(rq, keys) }, everyRequest},
 		{"inbound", func(ctx context.Context, rq *request) *apiError { return readInbound(ctx, rq, bodies, uploads) }, bodyRequests},
+		{"capture", func(_ context.Context, rq *request) *apiError { return startCapture(rq, captures) }, chatRequests},
 		{"model_access", authorizeModel, everyRequest},
 		{"endpoint_list", checkEndpointListed, bodyRequests},
 		{"upload_measured", checkUploadMeasured, bodyRequests},

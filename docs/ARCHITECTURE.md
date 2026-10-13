@@ -72,11 +72,12 @@ flowchart LR
   (`docs/specs/GATEWAY.md`, Observability → Metric list, OTLP metric export).
 - Request captures (settled 2026-10-13): for the chat requests of the groups the
   config marks (`capture`), the capture stage copies the request and the bytes the
-  client receives, and the request's finisher builds one OpenTelemetry span with
-  the GenAI content attributes once the response is over; it is queued under the
-  capture budget and sent to the trace destination in the background — only when
-  trace export is switched on explicitly, never on the request path, dropped rather
-  than ever waited for, flushed at exit after usage and before the metrics and logs
+  client receives, and the request's finisher hands the copies to a background
+  builder, which builds one OpenTelemetry span with the GenAI content attributes
+  after the response has ended; it is queued under the capture budget and sent to
+  the trace destination in the background — only when trace export is switched on
+  explicitly, never on the request path, dropped rather than ever waited for, built
+  and flushed at exit after usage and before the metrics and logs
   (`docs/specs/GATEWAY.md`, Request capture, Observability → OTLP trace export).
   The only path by which prompt and response content leaves the gateway.
 
@@ -132,9 +133,9 @@ enforce the boundaries.
   included — on another deployment when there is one; limits reserve once per client
   request and settle the sum of its attempts' records. Work that must happen however
   a request ends (the last attempt's slot release and circuit report, usage
-  settlement, the capture's span, ops metrics, the log line) runs in request
-  finishers. Every byte written to the client passes one writer, which hands a
-  captured request's bytes to its capture as they are written.
+  settlement, handing the capture to its builder, ops metrics, the log line) runs in
+  request finishers. Every byte written to the client passes one writer, which
+  hands a captured request's bytes to its capture as they are written.
 - `auth` — key hash lookup (key → key ID, group and its path) and the one
   model-access check.
 - `routing` — model name → deployment: least in flight among the eligible
@@ -208,14 +209,16 @@ enforce the boundaries.
   usage metrics accounting hands each settled record; the per-config series
   created at 0. The registry is built in `cmd/kaiak` and passed in; `/metrics` on
   the admin port and the OTLP metric exporter both read it.
-- `capture` — request capture: whether a request is captured (its key's own
-  group's flag), the session header's rule, the capture budget (take, give back,
-  drop when it cannot), a capture's state for one request (the copy of the body,
-  the answer's bytes as written), and at the request's end the span — the content
-  of each client API in the conventions' message format, a stream assembled from
-  the events the client received — encoded, size-checked and handed to
-  `telemetry/otlptrace` with a release that gives its bytes back. `server` runs its
-  stage and finisher and tells it the request's outcome.
+- `capture` — request capture: the session header's rule, the capture budget
+  (take, give back, drop when it cannot), a capture's state for one request (the
+  copy of the body, the answer's bytes as written), and the background builder that
+  makes each span after its request's end — the content of each client API in the
+  conventions' message format, a stream assembled from the events the client
+  received — encoded, size-checked, its budget charge moved to the encoded bytes
+  and handed to `telemetry/otlptrace` with a release that gives them back; a fault
+  in one build drops that capture alone, logged, and the builder goes on. `server`
+  runs its stage (whether a request is captured: its key's own group's flag) and
+  finisher, which hands the capture over with a summary of how the request ended.
 - `clip` — bounds a client-controlled string (path, method, model name) before it is
   logged or echoed in an error message; `server` and `auth` use it.
 - `logattr` — log attribute values in the units the log vocabulary fixes (a duration
@@ -258,9 +261,10 @@ enforce the boundaries.
   `cmd/kaiak` wraps the process logger with the log exporter when log export is on
   (giving it a stderr-only logger for its own problem reports: no feedback loop),
   starts the metric exporter when metric export is on and the trace exporter when
-  trace export is on (handing it to `capture`), registers the exporters' own counts
-  on the registry, and at exit runs the trace export's final flush, then the final
-  metric export, then the log export's final flush as the process's last act.
+  trace export is on (handing it to `capture`'s builder), registers the exporters'
+  own counts on the registry, and at exit has the builder build what it was handed,
+  then runs the trace export's final flush, then the final metric export, then the
+  log export's final flush as the process's last act.
 - `sse` — the server-sent events reader (WHATWG format): splits a stream into blocks
   with their raw bytes, data, event name and ID, bounded in size; a failure of the
   stream under it comes back by its class (`netfail`). The provider relays backend

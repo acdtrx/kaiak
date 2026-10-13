@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -15,13 +16,17 @@ import (
 
 	"kaiak/internal/accounting"
 	"kaiak/internal/auth"
+	"kaiak/internal/capture"
 	"kaiak/internal/config"
 	"kaiak/internal/fakebackend"
 	"kaiak/internal/limits"
 	"kaiak/internal/metrics"
 	"kaiak/internal/provider"
 	"kaiak/internal/routing"
+	"kaiak/internal/telemetry/fakeotlp"
 	"kaiak/internal/telemetry/metric"
+	"kaiak/internal/telemetry/otlp"
+	"kaiak/internal/telemetry/otlptrace"
 )
 
 const (
@@ -190,6 +195,11 @@ type testGateway struct {
 	drain   *Drain
 	bodies  *BodyBudget
 	uploads Uploads
+	// With trace export on (testOptions.traces): the captures, the trace exporter
+	// they queue with and the collector it exports to; nil otherwise.
+	captures  *capture.Captures
+	traces    *otlptrace.Exporter
+	collector *fakeotlp.Collector
 }
 
 // recordedUsage keeps every usage record the gateway settles, after handing it to the
@@ -242,6 +252,13 @@ type testOptions struct {
 	// config document, the gateway's logger and its limiter before the rest of the
 	// pipeline is wired, it returns the batcher the recorder hands every record.
 	attach func(doc string, logger *slog.Logger, limiter *limits.Limiter) accounting.Batcher
+	// traces switches trace export on, to a fake collector: the requests of the
+	// groups that capture are captured.
+	traces bool
+	// captureMemory is the capture budget in bytes (0 = capture.DefaultMemory).
+	captureMemory int64
+	// spanExporter, when set, stands between the captures and the trace exporter.
+	spanExporter func(capture.Exporter) capture.Exporter
 }
 
 func newTestGateway(t *testing.T) *testGateway {
@@ -284,9 +301,46 @@ func buildTestGateway(t *testing.T, opts testOptions) *testGateway {
 		Logger: logger})
 	drain := NewDrain()
 	uploads := Uploads{Budget: NewBodyBudget(DefaultUploadMemory), ReadTimeout: DefaultUploadReadTimeout}
-	h := NewAPI(holder, drain, bodies, uploads, providers, limiter, router, recorder, metrics.NewOps(reg, router, circuits, holder), logger)
-	return &testGateway{h: h, logs: &logs, log: log, backend: backend, holder: holder, router: router,
+	g := &testGateway{logs: &logs, log: log, backend: backend, holder: holder, router: router,
 		limiter: limiter, usage: usage, metrics: reg, drain: drain, bodies: bodies, uploads: uploads}
+	if opts.traces {
+		g.startCaptures(t, opts, logger)
+	}
+	g.h = NewAPI(holder, drain, bodies, uploads, g.captures, providers, limiter, router, recorder,
+		metrics.NewOps(reg, router, circuits, holder), logger)
+	return g
+}
+
+// startCaptures starts the trace export to a fake collector and the captures over
+// it, as cmd/kaiak starts them with trace export on; both end with the test.
+func (g *testGateway) startCaptures(t *testing.T, opts testOptions, logger *slog.Logger) {
+	t.Helper()
+	g.collector = fakeotlp.New(t, nil)
+	settings, err := otlp.ReadSettings(otlp.Traces, func(name string) (string, bool) {
+		if name == "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" {
+			return g.collector.URL + "/v1/traces", true
+		}
+		return "", false
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.traces = otlptrace.New(settings, otlp.Service{Version: "test", InstanceID: "gw-test"}, logger)
+	var exporter capture.Exporter = g.traces
+	if opts.spanExporter != nil {
+		exporter = opts.spanExporter(exporter)
+	}
+	memory := capture.DefaultMemory
+	if opts.captureMemory != 0 {
+		memory = opts.captureMemory
+	}
+	g.captures = capture.New(memory, exporter, logger)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), waitTimeout)
+		defer cancel()
+		g.captures.Finish(ctx)
+		g.traces.Shutdown(ctx)
+	})
 }
 
 // apply swaps in the test config with edit applied (nil = none) and hands it to

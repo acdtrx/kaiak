@@ -200,7 +200,7 @@ func TestRerank(t *testing.T) {
 				}
 			}
 			usage := `{kaiak_key_group="w",kaiak_key_root_group="w",kaiak_key_id="k",gen_ai_request_model="` + b.model +
-				`",gen_ai_operation_name="rerank",kaiak_usage_status="complete"`
+				`",gen_ai_operation_name="rerank",gen_ai_provider_name="` + b.typ + `",kaiak_usage_status="complete"`
 			for series, want := range map[string]float64{
 				`gen_ai_client_inference_usage_input_tokens_total` + usage + `,gen_ai_token_modality="unknown"}`: rerankPromptTokens,
 				`kaiak_usage_cost_usd_total` + usage + `}`:                                                       0.00008,

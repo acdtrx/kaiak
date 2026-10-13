@@ -231,7 +231,8 @@ func TestImageEdits(t *testing.T) {
 	// image, on the route /v1/images/edits.
 	usage := func(key, group string) string {
 		return `{kaiak_key_group="` + group + `",kaiak_key_root_group="` + group + `",kaiak_key_id="` + key +
-			`",gen_ai_request_model="editor",gen_ai_operation_name="generate_content",gen_ai_output_type="image",kaiak_usage_status="complete"}`
+			`",gen_ai_request_model="editor",gen_ai_operation_name="generate_content",gen_ai_output_type="image",` +
+			`gen_ai_provider_name="vllm-omni",kaiak_usage_status="complete"}`
 	}
 	for series, want := range map[string]float64{
 		`kaiak_usage_images_total` + usage("k", "w"):              2,

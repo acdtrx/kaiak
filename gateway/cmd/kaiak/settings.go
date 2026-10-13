@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"kaiak/internal/capture"
 	"kaiak/internal/config"
 	"kaiak/internal/control"
 	"kaiak/internal/server"
@@ -77,15 +78,11 @@ const (
 	defaultDrainReserve = 10 * time.Second
 )
 
-// defaultCaptureMemory is the capture budget unless KAIAK_CAPTURE_MEMORY_BYTES sets
-// it: 128 MiB.
-const defaultCaptureMemory = 128 << 20
-
 func readSettings(lookupEnv func(string) (string, bool)) (settings, error) {
 	s := settings{listenAddr: defaultListenAddr, adminAddr: defaultAdminAddr,
 		drain: server.DrainTimes{Grace: defaultDrainGrace, Timeout: defaultDrainTimeout}, client: server.DefaultClientTimeouts,
 		bodyMemory: server.DefaultBodyMemory, uploadMemory: server.DefaultUploadMemory, uploadRead: server.DefaultUploadReadTimeout,
-		usageMemory: control.DefaultUsageMemoryBytes, captureMemory: defaultCaptureMemory}
+		usageMemory: control.DefaultUsageMemoryBytes, captureMemory: capture.DefaultMemory}
 	var err error
 	s.configFile, _ = lookupEnv("KAIAK_CONFIG_FILE")
 	seedFile, _ := lookupEnv("KAIAK_SEED_CONFIG_FILE")

@@ -183,7 +183,7 @@ func TestImages(t *testing.T) {
 	usage := func(key, group, model, outputType string) string {
 		return `{kaiak_key_group="` + group + `",kaiak_key_root_group="` + group + `",kaiak_key_id="` + key +
 			`",gen_ai_request_model="` + model + `",gen_ai_operation_name="generate_content",gen_ai_output_type="` + outputType +
-			`",kaiak_usage_status="complete"}`
+			`",gen_ai_provider_name="vllm-omni",kaiak_usage_status="complete"}`
 	}
 	for series, want := range map[string]float64{
 		`kaiak_usage_images_total` + usage("k", "w", "painter", "image"):             5,

@@ -41,8 +41,8 @@ func TestUsageMetricsCountsRecords(t *testing.T) {
 		Units: units, CostNanoUSD: 120_000}
 	usage.Record(rec)
 	usage.Record(rec)
-	// A key on a top-level group: that group is its own top-level group. A self-hosted
-	// backend type has no provider name.
+	// A key on a top-level group: that group is its own top-level group. A backend
+	// type no well-known provider name applies to has its own name as one.
 	topLevel := accounting.UsageRecord{KeyID: "k-ann", Groups: []string{"ann"}, Model: "open", Operation: "embeddings",
 		Deployment: accounting.Deployment{Backend: "local", Model: "open"}, Units: units, Partial: true}
 	usage.Record(topLevel)
@@ -52,7 +52,7 @@ func TestUsageMetricsCountsRecords(t *testing.T) {
 		`gen_ai_operation_name="chat",gen_ai_provider_name="anthropic",kaiak_usage_status="complete"`
 	tokens := wl + `,gen_ai_token_modality="unknown"`
 	ann := `kaiak_key_group="ann",kaiak_key_root_group="ann",kaiak_key_id="k-ann",gen_ai_request_model="open",` +
-		`gen_ai_operation_name="embeddings",kaiak_usage_status="partial"`
+		`gen_ai_operation_name="embeddings",gen_ai_provider_name="vllm",kaiak_usage_status="partial"`
 	for _, want := range []string{
 		`kaiak_usage_records_total{` + wl + `} 2`,
 		// Input is all input: in + cached + cache write, twice.
@@ -81,7 +81,7 @@ func TestUsageMetricsCountsRecords(t *testing.T) {
 	usage.Record(topLevel)
 	out = text(reg)
 	if want := `kaiak_usage_records_total{kaiak_key_group="ann",kaiak_key_root_group="ann",gen_ai_request_model="open",` +
-		`gen_ai_operation_name="embeddings",kaiak_usage_status="partial"} 1`; !strings.Contains(out, want+"\n") {
+		`gen_ai_operation_name="embeddings",gen_ai_provider_name="vllm",kaiak_usage_status="partial"} 1`; !strings.Contains(out, want+"\n") {
 		t.Errorf("missing %q in:\n%s", want, out)
 	}
 
@@ -138,7 +138,8 @@ func TestUsageMetricsCountMediaUnits(t *testing.T) {
 	out := text(reg)
 	labels := func(model, outputType string) string {
 		return `kaiak_key_group="ann",kaiak_key_root_group="users",kaiak_key_id="k-ann",gen_ai_request_model="` + model +
-			`",gen_ai_operation_name="generate_content",gen_ai_output_type="` + outputType + `",kaiak_usage_status="complete"`
+			`",gen_ai_operation_name="generate_content",gen_ai_output_type="` + outputType +
+			`",gen_ai_provider_name="vllm-omni",kaiak_usage_status="complete"`
 	}
 	for _, want := range []string{
 		`kaiak_usage_audio_output_duration_seconds_total{` + labels("tts", "speech") + `} 14`,
@@ -147,7 +148,8 @@ func TestUsageMetricsCountMediaUnits(t *testing.T) {
 		`gen_ai_client_inference_usage_output_tokens_total{` + labels("tts", "speech") + `,gen_ai_token_modality="unknown"} 166`,
 		// No output type: the label is absent.
 		`kaiak_usage_records_total{kaiak_key_group="ann",kaiak_key_root_group="users",kaiak_key_id="k-ann",` +
-			`gen_ai_request_model="chat",gen_ai_operation_name="generate_content",kaiak_usage_status="complete"} 1`,
+			`gen_ai_request_model="chat",gen_ai_operation_name="generate_content",gen_ai_provider_name="vllm-omni",` +
+			`kaiak_usage_status="complete"} 1`,
 	} {
 		if !strings.Contains(out, want+"\n") {
 			t.Errorf("missing %q in:\n%s", want, out)
@@ -402,9 +404,10 @@ func TestTraceExportMetrics(t *testing.T) {
 		processor = `otel_component_type="capture_span_processor",otel_component_name="capture_span_processor/0"`
 		exporter  = `otel_component_type="otlp_http_json_span_exporter",otel_component_name="otlp_http_json_span_exporter/0"`
 	)
-	// At startup: the accepted series and the processor's four, at 0; no failure series.
+	// At startup: the accepted series and the processor's five, at 0; no failure series.
 	want := `otel_sdk_exporter_span_exported_total{` + exporter + `} 0
 otel_sdk_processor_span_processed_total{` + processor + `} 0
+otel_sdk_processor_span_processed_total{` + processor + `,error_type="_OTHER"} 0
 otel_sdk_processor_span_processed_total{` + processor + `,error_type="memory"} 0
 otel_sdk_processor_span_processed_total{` + processor + `,error_type="shutdown"} 0
 otel_sdk_processor_span_processed_total{` + processor + `,error_type="too_large"} 0
@@ -412,15 +415,17 @@ otel_sdk_processor_span_processed_total{` + processor + `,error_type="too_large"
 	if got := samples(text(reg)); got != want {
 		t.Errorf("at startup:\n%s\nwant:\n%s", got, want)
 	}
-	// The drops before the queue come from the capture, the rest from the exporter.
+	// The drops before the queue come from the capture, the rest from the exporter;
+	// shutdown from both: the builder's and the queue's.
 	counts = otlptrace.Counts{Handed: 30, Shutdown: 2, Exported: 24, Failed: map[string]uint64{"503": 4, "rejected": 2}}
-	drops = CaptureDrops{Memory: 7, TooLarge: 1}
+	drops = CaptureDrops{Memory: 7, TooLarge: 1, Shutdown: 3, Failed: 5}
 	want = `otel_sdk_exporter_span_exported_total{` + exporter + `} 24
 otel_sdk_exporter_span_exported_total{` + exporter + `,error_type="503"} 4
 otel_sdk_exporter_span_exported_total{` + exporter + `,error_type="rejected"} 2
 otel_sdk_processor_span_processed_total{` + processor + `} 30
+otel_sdk_processor_span_processed_total{` + processor + `,error_type="_OTHER"} 5
 otel_sdk_processor_span_processed_total{` + processor + `,error_type="memory"} 7
-otel_sdk_processor_span_processed_total{` + processor + `,error_type="shutdown"} 2
+otel_sdk_processor_span_processed_total{` + processor + `,error_type="shutdown"} 5
 otel_sdk_processor_span_processed_total{` + processor + `,error_type="too_large"} 1
 `
 	if got := samples(text(reg)); got != want {

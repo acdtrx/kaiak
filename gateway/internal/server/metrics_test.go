@@ -73,7 +73,7 @@ func TestOpsAndUsageMetricsMoveWithRequests(t *testing.T) {
 	}
 	pair := records[0]
 	wl := `kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",gen_ai_request_model="pair",` +
-		`gen_ai_operation_name="chat",kaiak_usage_status="complete"`
+		`gen_ai_operation_name="chat",gen_ai_provider_name="openai-compatible",kaiak_usage_status="complete"`
 	tokens := wl + `,gen_ai_token_modality="unknown"`
 	usageLine := func(name, labels string, value int64) string {
 		return name + "{" + labels + "} " + strconv.FormatInt(value, 10)
@@ -102,8 +102,8 @@ func TestOpsAndUsageMetricsMoveWithRequests(t *testing.T) {
 		usageLine("gen_ai_client_inference_usage_output_tokens_total", tokens, pair.Units[config.UnitTokensOut]),
 		usageLine("gen_ai_client_inference_usage_reasoning_output_tokens_total", tokens, pair.Units[config.UnitTokensReasoning]),
 		`kaiak_usage_cost_usd_total{`+wl+`} `+strconv.FormatFloat(float64(pair.CostNanoUSD)/1e9, 'g', -1, 64),
-		`kaiak_usage_records_total{kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",gen_ai_request_model="down",gen_ai_operation_name="chat",kaiak_usage_status="partial"} 1`,
-		`kaiak_usage_records_total{kaiak_key_group="ann",kaiak_key_root_group="users",kaiak_key_id="k-ann",gen_ai_request_model="open",gen_ai_operation_name="chat",kaiak_usage_status="complete"} 1`,
+		`kaiak_usage_records_total{kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",gen_ai_request_model="down",gen_ai_operation_name="chat",gen_ai_provider_name="openai-compatible",kaiak_usage_status="partial"} 1`,
+		`kaiak_usage_records_total{kaiak_key_group="ann",kaiak_key_root_group="users",kaiak_key_id="k-ann",gen_ai_request_model="open",gen_ai_operation_name="chat",gen_ai_provider_name="openai-compatible",kaiak_usage_status="complete"} 1`,
 		`kaiak_backend_active_requests{kaiak_backend_id="local"} 0`,
 	)
 	if pair.CostNanoUSD != 120_000 || pair.Units[config.UnitTokensIn] != 40 || pair.Units[config.UnitTokensCacheWrite] != 20 {
@@ -155,8 +155,8 @@ func TestUsageMetricsCountAsTheRequestLine(t *testing.T) {
 	}
 	ann := `kaiak_usage_records_total{kaiak_key_group="ann",kaiak_key_root_group="users",kaiak_key_id="k-ann",gen_ai_request_model="open",`
 	expectMetricLines(t, g.metricsText(),
-		ann+`gen_ai_operation_name="embeddings",kaiak_usage_status="complete"} 1`,
-		ann+`gen_ai_operation_name="text_completion",kaiak_usage_status="complete"} 1`)
+		ann+`gen_ai_operation_name="embeddings",gen_ai_provider_name="openai-compatible",kaiak_usage_status="complete"} 1`,
+		ann+`gen_ai_operation_name="text_completion",gen_ai_provider_name="openai-compatible",kaiak_usage_status="complete"} 1`)
 }
 
 func TestStreamMetricsTimeToFirstTokenAndDecodeRate(t *testing.T) {
@@ -271,7 +271,7 @@ func TestKeyIDLabelSwitchedOff(t *testing.T) {
 		t.Fatalf("status %d", w.Code)
 	}
 	text := g.metricsText()
-	expectMetricLines(t, text, `kaiak_usage_records_total{kaiak_key_group="ann",kaiak_key_root_group="users",gen_ai_request_model="open",gen_ai_operation_name="chat",kaiak_usage_status="complete"} 1`)
+	expectMetricLines(t, text, `kaiak_usage_records_total{kaiak_key_group="ann",kaiak_key_root_group="users",gen_ai_request_model="open",gen_ai_operation_name="chat",gen_ai_provider_name="openai-compatible",kaiak_usage_status="complete"} 1`)
 	if strings.Contains(text, "kaiak_key_id=") {
 		t.Errorf("kaiak_key_id label present while switched off:\n%s", text)
 	}
@@ -292,7 +292,7 @@ func TestGroupLabelSwitchedOff(t *testing.T) {
 		t.Fatalf("status %d", w.Code)
 	}
 	text := g.metricsText()
-	expectMetricLines(t, text, `kaiak_usage_records_total{kaiak_key_root_group="users",kaiak_key_id="k-ann",gen_ai_request_model="open",gen_ai_operation_name="chat",kaiak_usage_status="complete"} 1`)
+	expectMetricLines(t, text, `kaiak_usage_records_total{kaiak_key_root_group="users",kaiak_key_id="k-ann",gen_ai_request_model="open",gen_ai_operation_name="chat",gen_ai_provider_name="openai-compatible",kaiak_usage_status="complete"} 1`)
 	if strings.Contains(text, `kaiak_key_group=`) {
 		t.Errorf("kaiak_key_group label present while switched off:\n%s", text)
 	}
@@ -399,7 +399,7 @@ func TestMetricsUnderConcurrentRequests(t *testing.T) {
 	text := g.metricsText()
 	validateExposition(t, text)
 	expectMetricLines(t, text,
-		`kaiak_usage_records_total{kaiak_key_group="ann",kaiak_key_root_group="users",kaiak_key_id="k-ann",gen_ai_request_model="open",gen_ai_operation_name="chat",kaiak_usage_status="complete"} 24`,
+		`kaiak_usage_records_total{kaiak_key_group="ann",kaiak_key_root_group="users",kaiak_key_id="k-ann",gen_ai_request_model="open",gen_ai_operation_name="chat",gen_ai_provider_name="openai-compatible",kaiak_usage_status="complete"} 24`,
 		`http_server_request_duration_seconds_count{http_request_method="POST",url_scheme="http",http_route="/v1/chat/completions",http_response_status_code="200",gen_ai_request_model="open"} 24`,
 		`kaiak_time_to_first_token_seconds_count{gen_ai_request_model="open",kaiak_backend_id="local"} 12`,
 	)

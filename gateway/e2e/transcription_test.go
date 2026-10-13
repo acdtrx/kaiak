@@ -328,8 +328,10 @@ func TestTranscription(t *testing.T) {
 	// generate_content and text: whisper's 3 and 5, asr's 3, 6 and 31 for k; 3 each for
 	// k-listen.
 	usage := func(key, group, model string) string {
+		provider := map[string]string{"whisper": "vllm", "asr": "llama-server"}[model]
 		return `{kaiak_key_group="` + group + `",kaiak_key_root_group="` + group + `",kaiak_key_id="` + key +
-			`",gen_ai_request_model="` + model + `",gen_ai_operation_name="generate_content",gen_ai_output_type="text",kaiak_usage_status="complete"}`
+			`",gen_ai_request_model="` + model + `",gen_ai_operation_name="generate_content",gen_ai_output_type="text",` +
+			`gen_ai_provider_name="` + provider + `",kaiak_usage_status="complete"}`
 	}
 	for series, want := range map[string]float64{
 		`kaiak_usage_audio_input_duration_seconds_total` + usage("k", "w", "whisper"):             8,

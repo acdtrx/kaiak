@@ -102,7 +102,7 @@ func TestRerankThroughThePipeline(t *testing.T) {
 				}
 			}
 			usage := `{kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",gen_ai_request_model="` + c.model +
-				`",gen_ai_operation_name="rerank",kaiak_usage_status="complete"`
+				`",gen_ai_operation_name="rerank",gen_ai_provider_name="` + c.backendType + `",kaiak_usage_status="complete"`
 			expectMetricLines(t, g.metricsText(),
 				`http_server_request_duration_seconds_count{http_request_method="POST",url_scheme="http",http_route="/v1/rerank",`+
 					`http_response_status_code="200",gen_ai_request_model="`+c.model+`"} 1`,

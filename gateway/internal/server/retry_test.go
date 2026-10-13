@@ -120,7 +120,7 @@ func TestRetrySucceedsOnTheOtherDeployment(t *testing.T) {
 				t.Errorf("second deployment got %d requests, want 1", len(other.Requests()))
 			}
 			line := logLine(t, g, "r")
-			want := `"kaiak.backend.id":"local-b","kaiak.backend.type":"openai-compatible","kaiak.deployment.model":"second","kaiak.attempts":2,"kaiak.tried":"` + c.first + `/first:` + c.outcome + `,local-b/second:200"`
+			want := `"kaiak.backend.id":"local-b","kaiak.backend.type":"openai-compatible","gen_ai.provider.name":"openai-compatible","kaiak.deployment.model":"second","kaiak.attempts":2,"kaiak.tried":"` + c.first + `/first:` + c.outcome + `,local-b/second:200"`
 			if !strings.Contains(line, want) {
 				t.Errorf("log line misses %s:\n%s", want, line)
 			}
@@ -287,8 +287,8 @@ func TestTimedOutAttemptIsRecordedAndLimitsSettleTheSum(t *testing.T) {
 		t.Errorf("log line: %s", line)
 	}
 	expectMetricLines(t, scrape(g),
-		`kaiak_usage_records_total{kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",gen_ai_request_model="retry",gen_ai_operation_name="chat",kaiak_usage_status="partial"} 1`,
-		`kaiak_usage_records_total{kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",gen_ai_request_model="retry",gen_ai_operation_name="chat",kaiak_usage_status="complete"} 1`,
+		`kaiak_usage_records_total{kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",gen_ai_request_model="retry",gen_ai_operation_name="chat",gen_ai_provider_name="openai-compatible",kaiak_usage_status="partial"} 1`,
+		`kaiak_usage_records_total{kaiak_key_group="eval",kaiak_key_root_group="research",kaiak_key_id="k-eval",gen_ai_request_model="retry",gen_ai_operation_name="chat",gen_ai_provider_name="openai-compatible",kaiak_usage_status="complete"} 1`,
 		`http_server_request_duration_seconds_count{http_request_method="POST",url_scheme="http",http_route="/v1/chat/completions",http_response_status_code="200",gen_ai_request_model="retry"} 1`)
 }
 

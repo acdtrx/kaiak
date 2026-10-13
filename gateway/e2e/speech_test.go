@@ -481,7 +481,8 @@ func TestSpeech(t *testing.T) {
 	// client gone's 2 s, partial; the audio group's two clips.
 	usage := func(key, group, status string) string {
 		return `{kaiak_key_group="` + group + `",kaiak_key_root_group="` + group + `",kaiak_key_id="` + key +
-			`",gen_ai_request_model="tts",gen_ai_operation_name="generate_content",gen_ai_output_type="speech",kaiak_usage_status="` +
+			`",gen_ai_request_model="tts",gen_ai_operation_name="generate_content",gen_ai_output_type="speech",` +
+			`gen_ai_provider_name="vllm-omni",kaiak_usage_status="` +
 			status + `"}`
 	}
 	for series, want := range map[string]float64{
