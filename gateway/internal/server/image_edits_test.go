@@ -122,7 +122,7 @@ var pngData = func() string {
 func TestImageEditsThroughThePipeline(t *testing.T) {
 	g := newTestGateway(t)
 	withSpeechModels(t, g, func(doc string) string {
-		return replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [{ "type": "tokens_per_minute", "value": 100000 }] }`)
+		return replaceOnce(t, doc, `"research": { "capture": false }`, `"research": { "capture": false, "limits": [{ "type": "tokens_per_minute", "value": 100000 }] }`)
 	})
 	g.backend.SetReply(fakebackend.Reply{ImageBytes: 2000})
 	const prompt = "a red fox in snow"
@@ -387,7 +387,7 @@ func TestImageEditsReserveTheirN(t *testing.T) {
 func TestImageEditLimits(t *testing.T) {
 	g := newTestGateway(t)
 	withSpeechModels(t, g, func(doc string) string {
-		return replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [{ "type": "images_per_minute", "value": 5 }] }`)
+		return replaceOnce(t, doc, `"research": { "capture": false }`, `"research": { "capture": false, "limits": [{ "type": "images_per_minute", "value": 5 }] }`)
 	})
 	edit := func(parts ...rawPart) string {
 		return formOf(append([]rawPart{textPart("model", "painter"), textPart("prompt", "a fox"),

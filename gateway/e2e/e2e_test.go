@@ -89,23 +89,23 @@ func testConfig(backendURL, evalHash, annHash, extraModel string) map[string]any
 		models[extraModel] = chatModel(nil)
 	}
 	return map[string]any{
-		"protocol_version": 7,
+		"protocol_version": 8,
 		"global":           map[string]any{},
 		"backends":         map[string]any{"fake": map[string]any{"type": "openai-compatible", "base_url": backendURL + "/v1"}},
 		"models":           models,
 		"groups": map[string]any{
-			"research": map[string]any{},
-			"eval":     map[string]any{"parent": "research", "allowed_models": []any{"*"}},
+			"research": map[string]any{"capture": false},
+			"eval":     map[string]any{"parent": "research", "capture": false, "allowed_models": []any{"*"}},
 			"metered": map[string]any{
-				"parent": "research", "allowed_models": []any{"rpm"},
+				"parent": "research", "capture": false, "allowed_models": []any{"rpm"},
 				"limits": []any{map[string]any{"type": "requests_per_minute", "value": 2}},
 			},
 			"budgeted": map[string]any{
-				"parent": "research", "allowed_models": []any{"priced", "rpm"},
+				"parent": "research", "capture": false, "allowed_models": []any{"priced", "rpm"},
 				"limits": []any{map[string]any{"type": "usd_per_month", "value": 0.0001}},
 			},
-			"users": map[string]any{"child_defaults": map[string]any{"allowed_models": []any{"chat", "embed"}}},
-			"ann":   map[string]any{"parent": "users"},
+			"users": map[string]any{"capture": false, "child_defaults": map[string]any{"allowed_models": []any{"chat", "embed"}}},
+			"ann":   map[string]any{"parent": "users", "capture": false},
 		},
 		"keys": map[string]any{
 			"k-eval":   map[string]any{"hash": evalHash, "group": "eval"},
@@ -319,7 +319,7 @@ func TestGatewayEndToEnd(t *testing.T) {
 	})
 
 	t.Run("SIGHUP reload keeps a bad config out and applies a good one", func(t *testing.T) {
-		if err := os.WriteFile(configFile, []byte(`{"protocol_version": 7,`), 0o600); err != nil {
+		if err := os.WriteFile(configFile, []byte(`{"protocol_version": 8,`), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		g.signal(t, syscall.SIGHUP)

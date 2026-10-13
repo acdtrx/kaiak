@@ -704,7 +704,7 @@ func crossHalfConfig(backendURL, refuserURL, downURL, cappedURL, evalHash, annHa
 		map[string]any{"type": "images_per_hour", "value": 2},
 		map[string]any{"type": "audio_seconds_out_per_hour", "value": 3},
 	}
-	groups["transcribers"] = map[string]any{"allowed_models": []any{"painter", "asr", "asr-probe", "chat"},
+	groups["transcribers"] = map[string]any{"capture": false, "allowed_models": []any{"painter", "asr", "asr-probe", "chat"},
 		"limits": []any{map[string]any{"type": "audio_seconds_in_per_hour", "value": 5}}}
 	cfg["keys"].(map[string]any)["k-transcribers"] = map[string]any{"hash": transcribersHash, "group": "transcribers"}
 	return cfg

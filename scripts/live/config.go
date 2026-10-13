@@ -249,9 +249,10 @@ func buildConfig(o options, hash, meteredHash, mediaHash string) ([]byte, error)
 	}
 
 	groups := map[string]any{
-		"live": map[string]any{},
+		"live": map[string]any{"capture": false},
 		"live-metered": map[string]any{
-			"limits": []any{map[string]any{"type": "requests_per_minute", "value": 1}},
+			"capture": false,
+			"limits":  []any{map[string]any{"type": "requests_per_minute", "value": 1}},
 		},
 	}
 	keys := map[string]any{
@@ -259,7 +260,7 @@ func buildConfig(o options, hash, meteredHash, mediaHash string) ([]byte, error)
 		"k-live-metered": map[string]any{"hash": meteredHash, "group": "live-metered"},
 	}
 	if o.speechServer() || o.imageServer() || o.editServer() || o.transcriber() {
-		groups[groupMedia] = map[string]any{"limits": []any{
+		groups[groupMedia] = map[string]any{"capture": false, "limits": []any{
 			map[string]any{"type": "images_per_minute", "value": mediaLimitImages},
 			map[string]any{"type": "audio_seconds_out_per_minute", "value": mediaLimitSeconds},
 			map[string]any{"type": "audio_seconds_in_per_minute", "value": mediaLimitSeconds},
@@ -268,7 +269,7 @@ func buildConfig(o options, hash, meteredHash, mediaHash string) ([]byte, error)
 	}
 
 	return json.MarshalIndent(map[string]any{
-		"protocol_version": 7,
+		"protocol_version": 8,
 		"global":           global,
 		"backends":         backends,
 		"models":           models,

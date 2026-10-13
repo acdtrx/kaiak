@@ -343,7 +343,7 @@ func TestSpeechOutputLimit(t *testing.T) {
 	} {
 		g := newTestGateway(t)
 		withSpeechModels(t, g, func(doc string) string {
-			return replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [{ "type": "tokens_per_minute", "value": 100000 }] }`)
+			return replaceOnce(t, doc, `"research": { "capture": false }`, `"research": { "capture": false, "limits": [{ "type": "tokens_per_minute", "value": 100000 }] }`)
 		})
 		w := do(t, g.h, speechCall(c.body, "limit"))
 		if w.Code != http.StatusOK {
@@ -363,7 +363,7 @@ func TestSpeechOutputLimit(t *testing.T) {
 	// large, though the default is never sent.
 	g := newTestGateway(t)
 	withSpeechModels(t, g, func(doc string) string {
-		return replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [{ "type": "tokens_per_minute", "value": 200 }] }`)
+		return replaceOnce(t, doc, `"research": { "capture": false }`, `"research": { "capture": false, "limits": [{ "type": "tokens_per_minute", "value": 200 }] }`)
 	})
 	w := do(t, g.h, speechCall(`{"model":"tts","input":"hi"}`, "too-large"))
 	if w.Code != http.StatusTooManyRequests || !strings.Contains(errorMessage(t, w), "Request too large") {
@@ -692,7 +692,7 @@ func TestSpeechAudioLimits(t *testing.T) {
 		t.Run(string(typ), func(t *testing.T) {
 			g := newTestGateway(t)
 			withSpeechModels(t, g, func(doc string) string {
-				return replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [{ "type": "`+string(typ)+`", "value": 5 }] }`)
+				return replaceOnce(t, doc, `"research": { "capture": false }`, `"research": { "capture": false, "limits": [{ "type": "`+string(typ)+`", "value": 5 }] }`)
 			})
 			body := `{"model":"tts","input":"hi"}`
 			for i := range 2 {

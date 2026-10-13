@@ -87,11 +87,11 @@ func rerankConfig(fakes map[string]*fakebackend.Backend, hash string) map[string
 	// let a chat request reach the reranker.
 	models[rerankListed].(map[string]any)["endpoints"] = []any{"rerank"}
 	return map[string]any{
-		"protocol_version": 7,
+		"protocol_version": 8,
 		"global":           map[string]any{"max_rerank_documents": 3},
 		"backends":         backends,
 		"models":           models,
-		"groups":           map[string]any{"w": map[string]any{"allowed_models": []any{"*"}}},
+		"groups":           map[string]any{"w": map[string]any{"capture": false, "allowed_models": []any{"*"}}},
 		"keys":             map[string]any{"k": map[string]any{"hash": hash, "group": "w"}},
 	}
 }

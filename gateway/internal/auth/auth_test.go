@@ -28,15 +28,15 @@ func testSnapshot(t *testing.T) *config.Snapshot {
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } } }`
 	}
 	doc := `{
-  "protocol_version": 7,
+  "protocol_version": 8,
   "global": {},
   "backends": { "local": { "type": "openai-compatible", "base_url": "http://localhost:8000/v1" } },
   "models": { ` + model("open") + `, ` + model("secret") + ` },
   "groups": {
-    "research": {},
-    "eval": { "parent": "research", "allowed_models": ["*"] },
-    "users": { "child_defaults": { "allowed_models": ["open"] } },
-    "ann": { "parent": "users" }
+    "research": { "capture": false },
+    "eval": { "parent": "research", "capture": false, "allowed_models": ["*"] },
+    "users": { "capture": false, "child_defaults": { "allowed_models": ["open"] } },
+    "ann": { "parent": "users", "capture": false }
   },
   "keys": {
     "k-eval": { "hash": "` + KeyHash(workloadKey) + `", "group": "eval" },

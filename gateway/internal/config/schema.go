@@ -33,7 +33,7 @@ var (
 // document states it in protocol_version, and a document of any other is rejected,
 // never migrated; the control client sends it in Kaiak-Protocol and in its status.
 // It lives here, where both read it: the control package imports this one.
-const ProtocolVersion = 7
+const ProtocolVersion = 8
 
 // maxPriceTiers bounds a price entry's tiers.
 const maxPriceTiers = 8
@@ -297,6 +297,7 @@ func (c *schemaCheck) usdPerMillion(v any, path string) {
 func (c *schemaCheck) group(v any, path string) {
 	c.Object(v, path, map[string]schemacheck.Field{
 		"parent":         {Check: c.StringMatching(idPattern, "an ID")},
+		"capture":        {Required: true, Check: c.Boolean},
 		"labels":         {Check: c.labels},
 		"allowed_models": {Check: c.allowedModels},
 		"limits":         {Check: c.limits},

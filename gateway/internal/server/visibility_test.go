@@ -57,7 +57,7 @@ func postAs(t *testing.T, g *testGateway, key, id, body string) *httptest.Respon
 func TestLimitRefusalsLogTheLimit(t *testing.T) {
 	g := newTestGateway(t)
 	g.holder.Swap(testSnapshotWith(t, g.backend.URL(), func(doc string) string {
-		doc = replaceOnce(t, doc, `"research": {}`, `"research": { "labels": { "cost_center": "label-value-never-logged" }, "limits": [{ "type": "usd_per_month", "value": 0 }] }`)
+		doc = replaceOnce(t, doc, `"research": { "capture": false }`, `"research": { "capture": false, "labels": { "cost_center": "label-value-never-logged" }, "limits": [{ "type": "usd_per_month", "value": 0 }] }`)
 		doc = replaceOnce(t, doc, `"allowed_models": ["*"] }`, `"allowed_models": ["*"], "limits": [{ "type": "requests_per_minute", "value": 1 }] }`)
 		return replaceOnce(t, doc, `"global": { `, `"global": { "limits": [{ "type": "tokens_per_minute", "value": 100 }], `)
 	}))

@@ -119,7 +119,7 @@ func TestTranscriptionThroughThePipeline(t *testing.T) {
 		t.Run(c.backendType, func(t *testing.T) {
 			g := newTestGateway(t)
 			withTranscriptionModels(t, g, func(doc string) string {
-				return replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [{ "type": "tokens_per_minute", "value": 100000 }] }`)
+				return replaceOnce(t, doc, `"research": { "capture": false }`, `"research": { "capture": false, "limits": [{ "type": "tokens_per_minute", "value": 100000 }] }`)
 			})
 			g.backend.SetTranscriptionShape(c.shape)
 			g.backend.SetReply(fakebackend.Reply{CachedTokens: int(c.cached)})
@@ -285,7 +285,7 @@ func TestLlamaServerTranscriptionCountsTheMeasuredUpload(t *testing.T) {
 func TestUnmeasurableUploadRefusedOnLlamaServer(t *testing.T) {
 	g := newTestGateway(t)
 	withTranscriptionModels(t, g, func(doc string) string {
-		doc = replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [{ "type": "requests_per_minute", "value": 1 }] }`)
+		doc = replaceOnce(t, doc, `"research": { "capture": false }`, `"research": { "capture": false, "limits": [{ "type": "requests_per_minute", "value": 1 }] }`)
 		return replaceOnce(t, doc, `"models": {`, `"models": {
     "chat-ls": { "deployments": [{ "backend": "ls", "model": "qwen3-asr.gguf" }], "endpoints": ["chat_completions"],
       "metadata": { "context_length": 8192, "capabilities": { "streaming": false, "tools": false, "vision": false, "reasoning": false } } },`)
@@ -499,7 +499,7 @@ func TestTranscriptionReadsItsParts(t *testing.T) {
 func TestTranscriptionPromptWithAnEmptyFilenameIsRefused(t *testing.T) {
 	g := newTestGateway(t)
 	withTranscriptionModels(t, g, func(doc string) string {
-		return replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [{ "type": "tokens_per_minute", "value": 100 }] }`)
+		return replaceOnce(t, doc, `"research": { "capture": false }`, `"research": { "capture": false, "limits": [{ "type": "tokens_per_minute", "value": 100 }] }`)
 	})
 	g.backend.SetTranscriptionShape(fakebackend.LlamaServerTranscription)
 	prompt := strings.Repeat("word ", 400)
@@ -557,7 +557,7 @@ func TestUnansweredTranscriptionRecordsNoAudio(t *testing.T) {
 func TestTranscriptionLimits(t *testing.T) {
 	g := newTestGateway(t)
 	withTranscriptionModels(t, g, func(doc string) string {
-		return replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [{ "type": "audio_seconds_in_per_minute", "value": 5 }] }`)
+		return replaceOnce(t, doc, `"research": { "capture": false }`, `"research": { "capture": false, "limits": [{ "type": "audio_seconds_in_per_minute", "value": 5 }] }`)
 	})
 	transcription := func(model string) string {
 		return formOf(textPart("model", model), filePart("file", "a.wav", "audio/wav", wavData))

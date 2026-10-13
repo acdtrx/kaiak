@@ -23,7 +23,7 @@ func withLimits(t *testing.T, g *testGateway, team, workload string) {
 	t.Helper()
 	g.holder.Swap(testSnapshotWith(t, g.backend.URL(), func(doc string) string {
 		if team != "" {
-			doc = replaceOnce(t, doc, `"research": {}`, `"research": { "limits": `+team+` }`)
+			doc = replaceOnce(t, doc, `"research": { "capture": false }`, `"research": { "capture": false, "limits": `+team+` }`)
 		}
 		if workload != "" {
 			doc = replaceOnce(t, doc, `"allowed_models": ["*"] }`, `"allowed_models": ["*"], "limits": `+workload+` }`)
@@ -232,7 +232,7 @@ func TestOutputMultiplicityMultipliesTheReservation(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			g := newTestGateway(t)
 			g.holder.Swap(testSnapshotWith(t, g.backend.URL(), func(doc string) string {
-				doc = replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [{ "type": "tokens_per_minute", "value": 1000000 }] }`)
+				doc = replaceOnce(t, doc, `"research": { "capture": false }`, `"research": { "capture": false, "limits": [{ "type": "tokens_per_minute", "value": 1000000 }] }`)
 				if c.maxN != "" {
 					doc = replaceOnce(t, doc, `"max_request_body_bytes": 1024 }`, `"max_request_body_bytes": 1024, "max_n": `+c.maxN+
 						`, "max_sequences_per_request": `+c.maxN+` }`)
@@ -275,7 +275,7 @@ func TestOutputMultiplicityMultipliesTheReservation(t *testing.T) {
 func TestOutputMultiplicityReservationSaturates(t *testing.T) {
 	g := newTestGateway(t)
 	g.holder.Swap(testSnapshotWith(t, g.backend.URL(), func(doc string) string {
-		doc = replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [{ "type": "tokens_per_minute", "value": 1000000 }] }`)
+		doc = replaceOnce(t, doc, `"research": { "capture": false }`, `"research": { "capture": false, "limits": [{ "type": "tokens_per_minute", "value": 1000000 }] }`)
 		return replaceOnce(t, doc, `"max_request_body_bytes": 1024 }`, `"max_request_body_bytes": 1024, "max_n": 9007199254740991, "max_sequences_per_request": 9007199254740991 }`)
 	}))
 	w := do(t, g.h, call{method: "POST", path: "/v1/completions", key: workloadKey,
@@ -561,11 +561,11 @@ func TestRefusalsNameTheScopeKindOnly(t *testing.T) {
 	swap := func(t *testing.T, g *testGateway, groupLimits, globalLimits string) {
 		t.Helper()
 		g.holder.Swap(testSnapshotWith(t, g.backend.URL(), func(doc string) string {
-			research := `"research": { "labels": { "cost_center": "` + label + `" }`
+			research := `"research": { "capture": false, "labels": { "cost_center": "` + label + `" }`
 			if groupLimits != "" {
 				research += `, "limits": ` + groupLimits
 			}
-			doc = replaceOnce(t, doc, `"research": {}`, research+` }`)
+			doc = replaceOnce(t, doc, `"research": { "capture": false }`, research+` }`)
 			if globalLimits != "" {
 				doc = replaceOnce(t, doc, `"global": { `, `"global": { "limits": `+globalLimits+`, `)
 			}
@@ -639,7 +639,7 @@ func TestRefusalsNameTheScopeKindOnly(t *testing.T) {
 // request stating none meets no media limit. Media limits send no rate-limit headers.
 func TestMediaAmountsMeetTheLimitsOfTheirMeasure(t *testing.T) {
 	snap := testSnapshotWith(t, "http://127.0.0.1:1", func(doc string) string {
-		return replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [
+		return replaceOnce(t, doc, `"research": { "capture": false }`, `"research": { "capture": false, "limits": [
       { "type": "images_per_minute", "value": 4 }, { "type": "audio_seconds_out_per_hour", "value": 10 } ] }`)
 	})
 	holder := &config.Holder{}

@@ -51,7 +51,7 @@ func editsConfig(fakeURL, hash, imagesHash string) map[string]any {
 		}
 	}
 	return map[string]any{
-		"protocol_version": 7,
+		"protocol_version": 8,
 		"global":           map[string]any{"max_images_per_request": 4, "max_upload_bytes": editsUploadCap},
 		"backends": map[string]any{
 			"omni-edit":  map[string]any{"type": "vllm-omni", "base_url": fakeURL + "/v1"},
@@ -62,8 +62,8 @@ func editsConfig(fakeURL, hash, imagesHash string) map[string]any {
 			"painter": model("omni-image", omniImageModel, "images_generations"),
 		},
 		"groups": map[string]any{
-			"w":      map[string]any{"allowed_models": []any{"*"}},
-			"images": map[string]any{"allowed_models": []any{"*"}, "limits": []any{map[string]any{"type": "images_per_minute", "value": 5}}},
+			"w":      map[string]any{"capture": false, "allowed_models": []any{"*"}},
+			"images": map[string]any{"capture": false, "allowed_models": []any{"*"}, "limits": []any{map[string]any{"type": "images_per_minute", "value": 5}}},
 		},
 		"keys": map[string]any{
 			"k":        map[string]any{"hash": hash, "group": "w"},

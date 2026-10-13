@@ -105,6 +105,7 @@ type priceTierDoc struct {
 // ignored.
 type groupDoc struct {
 	Parent        string            `json:"parent"`
+	Capture       bool              `json:"capture"`
 	Labels        map[string]string `json:"labels"`
 	AllowedModels []string          `json:"allowed_models"`
 	Limits        []limitDoc        `json:"limits"`

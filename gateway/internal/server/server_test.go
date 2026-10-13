@@ -131,7 +131,7 @@ func testDocWith(backendURL string, edit func(doc string) string) string {
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } } }`
 	}
 	doc := `{
-  "protocol_version": 7,
+  "protocol_version": 8,
   "global": { "max_request_body_bytes": 1024 },
   "backends": {
     "local": { "type": "openai-compatible", "base_url": "` + backendURL + `/v1", "api_key_env": "LOCAL_KEY" },
@@ -156,10 +156,10 @@ func testDocWith(backendURL string, edit func(doc string) string) string {
         { "effective_from": "2999-01-01",
           "tiers": [{ "above_input_tokens": 0, "usd_per_million": { "tokens_in": 100, "tokens_out": 200 } }] } ] } },
   "groups": {
-    "research": {},
-    "eval": { "parent": "research", "allowed_models": ["*"] },
-    "users": { "child_defaults": { "allowed_models": ["open", "Org/open-7b"] } },
-    "ann": { "parent": "users" }
+    "research": { "capture": false },
+    "eval": { "parent": "research", "capture": false, "allowed_models": ["*"] },
+    "users": { "capture": false, "child_defaults": { "allowed_models": ["open", "Org/open-7b"] } },
+    "ann": { "parent": "users", "capture": false }
   },
   "keys": {
     "k-eval": { "hash": "` + auth.KeyHash(workloadKey) + `", "group": "eval" },
@@ -806,7 +806,7 @@ func TestNestedDuplicateMembersPassThrough(t *testing.T) {
 func TestModelAccessIntersectsDownThePath(t *testing.T) {
 	g := newTestGateway(t)
 	g.holder.Swap(testSnapshotWith(t, g.backend.URL(), func(doc string) string {
-		doc = replaceOnce(t, doc, `"research": {}`, `"research": { "allowed_models": ["open", "pair", "secret"] }`)
+		doc = replaceOnce(t, doc, `"research": { "capture": false }`, `"research": { "capture": false, "allowed_models": ["open", "pair", "secret"] }`)
 		return replaceOnce(t, doc, `"allowed_models": ["*"] }`, `"allowed_models": ["open", "Org/open-7b"] }`)
 	}))
 	w := do(t, g.h, call{method: "GET", path: "/v1/models", key: workloadKey})
@@ -828,7 +828,7 @@ func TestModelAccessIntersectsDownThePath(t *testing.T) {
 
 	// Neither research nor eval restricts: every model.
 	g.holder.Swap(testSnapshotWith(t, g.backend.URL(), func(doc string) string {
-		return replaceOnce(t, doc, `"eval": { "parent": "research", "allowed_models": ["*"] }`, `"eval": { "parent": "research" }`)
+		return replaceOnce(t, doc, `"eval": { "parent": "research", "capture": false, "allowed_models": ["*"] }`, `"eval": { "parent": "research", "capture": false }`)
 	}))
 	if w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey,
 		body: `{"model":"secret","messages":[]}`}); w.Code != http.StatusOK {

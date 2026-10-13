@@ -191,7 +191,7 @@ func TestBackendReportingTooManyTokensDoesNotLoseItsBatch(t *testing.T) {
 func TestUsageAcksFailingPastTheGraceRefusePricedBudgets(t *testing.T) {
 	g := newControlledGateway(t, 1, func(doc string) string {
 		doc = replaceOnce(t, doc, `"max_request_body_bytes": 1024 }`, `"max_request_body_bytes": 1024, "control_outage_grace_ms": 300 }`)
-		return replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [{ "type": "usd_per_month", "value": 100 }] }`)
+		return replaceOnce(t, doc, `"research": { "capture": false }`, `"research": { "capture": false, "limits": [{ "type": "usd_per_month", "value": 100 }] }`)
 	})
 	pair := call{method: "POST", path: "/v1/chat/completions", key: workloadKey, body: `{"model":"pair","messages":[]}`}
 	waitFor(t, func() bool { connected, _ := g.client.Contact(); return connected })

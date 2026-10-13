@@ -53,7 +53,7 @@ func snapshot(t *testing.T, l limitsDoc) *config.Snapshot {
       "metadata": { "context_length": 32768,
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } } }`
 	doc := `{
-  "protocol_version": 7,
+  "protocol_version": 8,
   "global": {` + graceField(l.grace) + ` "limits": ` + list(l.global) + ` },
   "backends": { "b": { "type": "openai-compatible", "base_url": "http://localhost:1/v1" } },
   "models": { "m1": ` + strings.Replace(model, `"metadata"`, `"prices": [{ "effective_from": "2020-01-01",
@@ -61,11 +61,11 @@ func snapshot(t *testing.T, l limitsDoc) *config.Snapshot {
       "output_limit": { "default": 16384, "ceiling": 16384 }, "metadata"`, 1) + `,
     "m2": ` + model + ` },
   "groups": {
-    "t": { ` + allowedModels(l.teamModels) + `"limits": ` + list(l.team) + ` },
-    "w": { "parent": "t", "limits": ` + list(l.workload) + ` },
-    "users": { "child_defaults": { "limits": ` + list(l.defaultUser) + ` } },
-    "ann": { "parent": "users", "limits": ` + list(l.ann) + ` },
-    "bob": { "parent": "users" }` + extraGroup(l.extraGroup) + `
+    "t": { "capture": false, ` + allowedModels(l.teamModels) + `"limits": ` + list(l.team) + ` },
+    "w": { "parent": "t", "capture": false, "limits": ` + list(l.workload) + ` },
+    "users": { "capture": false, "child_defaults": { "limits": ` + list(l.defaultUser) + ` } },
+    "ann": { "parent": "users", "capture": false, "limits": ` + list(l.ann) + ` },
+    "bob": { "parent": "users", "capture": false }` + extraGroup(l.extraGroup) + `
   },
   "keys": { "k": { "hash": "sha256:` + strings.Repeat("0", 64) + `", "group": "w" } }
 }`
@@ -80,7 +80,7 @@ func extraGroup(id string) string {
 	if id == "" {
 		return ""
 	}
-	return `, "` + id + `": {}`
+	return `, "` + id + `": { "capture": false }`
 }
 
 func allowedModels(list string) string {
@@ -770,7 +770,7 @@ func TestBillabilityComesFromTheRequestsOwnSnapshot(t *testing.T) {
 func treeSnapshot(t *testing.T) *config.Snapshot {
 	t.Helper()
 	doc := `{
-  "protocol_version": 7,
+  "protocol_version": 8,
   "global": {},
   "backends": { "b": { "type": "openai-compatible", "base_url": "http://localhost:1/v1" } },
   "models": { "m1": { "deployments": [{ "backend": "b", "model": "x" }],
@@ -778,13 +778,13 @@ func treeSnapshot(t *testing.T) *config.Snapshot {
     "metadata": { "context_length": 32768,
       "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } } } },
   "groups": {
-    "research": {},
-    "rag": { "parent": "research", "limits": [{ "type": "tokens_per_minute", "value": 1000 }],
+    "research": { "capture": false },
+    "rag": { "parent": "research", "capture": false, "limits": [{ "type": "tokens_per_minute", "value": 1000 }],
       "child_defaults": { "limits": [{ "type": "requests_per_minute", "value": 2 }] } },
-    "rag-prod": { "parent": "rag" },
-    "rag-dev": { "parent": "rag", "limits": [{ "type": "requests_per_minute", "value": 3 }] },
-    "prod-chat": { "parent": "rag-prod" },
-    "dev-chat": { "parent": "rag-dev" }
+    "rag-prod": { "parent": "rag", "capture": false },
+    "rag-dev": { "parent": "rag", "capture": false, "limits": [{ "type": "requests_per_minute", "value": 3 }] },
+    "prod-chat": { "parent": "rag-prod", "capture": false },
+    "dev-chat": { "parent": "rag-dev", "capture": false }
   },
   "keys": {}
 }`
@@ -834,10 +834,10 @@ func chainSnapshot(t *testing.T, withWorkload bool) *config.Snapshot {
 	limit := `"limits": [{ "type": "tokens_per_hour", "value": 100000 }]`
 	workloadGroup := ""
 	if withWorkload {
-		workloadGroup = `, "workload": { "parent": "env", ` + limit + ` }`
+		workloadGroup = `, "workload": { "parent": "env", "capture": false, ` + limit + ` }`
 	}
 	doc := `{
-  "protocol_version": 7,
+  "protocol_version": 8,
   "global": {},
   "backends": { "b": { "type": "openai-compatible", "base_url": "http://localhost:1/v1" } },
   "models": { "m1": { "deployments": [{ "backend": "b", "model": "x" }],
@@ -845,8 +845,8 @@ func chainSnapshot(t *testing.T, withWorkload bool) *config.Snapshot {
     "metadata": { "context_length": 32768,
       "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } } } },
   "groups": {
-    "team": { ` + limit + ` },
-    "env": { "parent": "team", ` + limit + ` }` + workloadGroup + `
+    "team": { "capture": false, ` + limit + ` },
+    "env": { "parent": "team", "capture": false, ` + limit + ` }` + workloadGroup + `
   },
   "keys": {}
 }`

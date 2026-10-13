@@ -72,10 +72,10 @@ func omniConfig(fakeURL, hash string) map[string]any {
 	painter := model("omni", "vllm-omni", omniImageModel)
 	painter["endpoints"] = []any{"images_generations"}
 	limited := func(typ string) map[string]any {
-		return map[string]any{"allowed_models": []any{"*"}, "limits": []any{map[string]any{"type": typ, "value": 5}}}
+		return map[string]any{"capture": false, "allowed_models": []any{"*"}, "limits": []any{map[string]any{"type": typ, "value": 5}}}
 	}
 	return map[string]any{
-		"protocol_version": 7,
+		"protocol_version": 8,
 		"global":           map[string]any{"max_images_per_request": 4, "max_speech_batch_items": 3},
 		"backends": map[string]any{
 			"omni": map[string]any{"type": "vllm-omni", "base_url": fakeURL + "/v1"},
@@ -83,7 +83,7 @@ func omniConfig(fakeURL, hash string) map[string]any {
 		},
 		"models": map[string]any{"tts": tts, "painter": painter, "chat": model("oc", "openai-compatible", backendChatModel)},
 		"groups": map[string]any{
-			"w":      map[string]any{"allowed_models": []any{"*"}},
+			"w":      map[string]any{"capture": false, "allowed_models": []any{"*"}},
 			"audio":  limited("audio_seconds_out_per_minute"),
 			"images": limited("images_per_minute"),
 		},

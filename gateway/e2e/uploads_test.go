@@ -204,7 +204,7 @@ func TestUploadBudgetFromTheEnvironment(t *testing.T) {
 	}
 	configFile := filepath.Join(t.TempDir(), "config.json")
 	writeJSON(t, configFile, map[string]any{
-		"protocol_version": 7,
+		"protocol_version": 8,
 		"global":           map[string]any{},
 		"backends": map[string]any{
 			"vl":   map[string]any{"type": "vllm", "base_url": asr.URL() + "/v1"},
@@ -214,7 +214,7 @@ func TestUploadBudgetFromTheEnvironment(t *testing.T) {
 			"whisper": model("vl", vllmASRModel, "audio_transcriptions"),
 			"chat":    model("fake", backendChatModel, "chat_completions"),
 		},
-		"groups": map[string]any{"w": map[string]any{"allowed_models": []any{"*"}}},
+		"groups": map[string]any{"w": map[string]any{"capture": false, "allowed_models": []any{"*"}}},
 		"keys":   map[string]any{"k": map[string]any{"hash": hash, "group": "w"}},
 	})
 	g := startGatewayEnv(t, append(gatewayEnv(configFile), "KAIAK_UPLOAD_MEMORY_BYTES="+strconv.Itoa(uploadBudget)))

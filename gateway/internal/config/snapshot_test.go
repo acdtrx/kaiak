@@ -59,7 +59,7 @@ func mustReject(t *testing.T, doc string) *schemacheck.ValidationError {
 // minimalDoc is protocol/fixtures/config/valid/minimal.json with one field replaceable.
 func minimalDoc(backend string) string {
 	return `{
-  "protocol_version": 7,
+  "protocol_version": 8,
   "global": {},
   "backends": { "local": ` + backend + ` },
   "models": {
@@ -72,7 +72,7 @@ func minimalDoc(backend string) string {
       }
     }
   },
-  "groups": { "me": {} },
+  "groups": { "me": { "capture": false } },
   "keys": {
     "k-me": { "hash": "sha256:59f8f6709d858b919a10541cd215a0de7b4299bbc6c11a2e0bf4ca03ec6df717", "group": "me" }
   }
@@ -474,10 +474,10 @@ func TestRejectionsOutsideTheFixtures(t *testing.T) {
 	for _, tc := range []struct {
 		name, doc, code string
 	}{
-		{"not JSON", `{"protocol_version": 7`, schemacheck.CodeSyntax},
+		{"not JSON", `{"protocol_version": 8`, schemacheck.CodeSyntax},
 		{"trailing data", valid + ` {}`, schemacheck.CodeSyntax},
 		{"null field", minimalDoc(`{ "type": "openai-compatible", "base_url": "http://x/v1", "api_key_env": null }`), schemacheck.CodeSchema},
-		{"null collection", strings.Replace(valid, `"groups": { "me": {} }`, `"groups": null`, 1), schemacheck.CodeSchema},
+		{"null collection", strings.Replace(valid, `"groups": { "me": { "capture": false } }`, `"groups": null`, 1), schemacheck.CodeSchema},
 		{"fractional timeout", minimalDoc(`{ "type": "openai-compatible", "base_url": "http://x/v1", "connect_timeout_ms": 1.5 }`), schemacheck.CodeSchema},
 		// The schema's patterns are ECMAScript: \s includes \v and Unicode spaces.
 		{"vertical tab in base_url", minimalDoc(`{ "type": "openai-compatible", "base_url": "http://x/v\u000b1" }`), schemacheck.CodeSchema},
@@ -509,13 +509,16 @@ func TestSchemaIssuesCarryPaths(t *testing.T) {
 // groups below a cycle or an unknown parent report nothing of their own.
 func TestGroupTreeIssues(t *testing.T) {
 	doc := strings.Replace(minimalDoc(`{ "type": "openai-compatible", "base_url": "http://x/v1" }`),
-		`"groups": { "me": {} }`, `"groups": {
-    "me": {},
-    "a": { "parent": "b" }, "b": { "parent": "a" }, "below-cycle": { "parent": "a" },
-    "orphan": { "parent": "nowhere" }, "below-orphan": { "parent": "orphan" },
-    "l1": {}, "l2": { "parent": "l1" }, "l3": { "parent": "l2" }, "l4": { "parent": "l3" },
-    "l5": { "parent": "l4" }, "l6": { "parent": "l5" }, "l7": { "parent": "l6" },
-    "l8": { "parent": "l7" }, "l9": { "parent": "l8" }, "l10": { "parent": "l9" }
+		`"groups": { "me": { "capture": false } }`, `"groups": {
+    "me": { "capture": false },
+    "a": { "parent": "b", "capture": false }, "b": { "parent": "a", "capture": false },
+    "below-cycle": { "parent": "a", "capture": false },
+    "orphan": { "parent": "nowhere", "capture": false }, "below-orphan": { "parent": "orphan", "capture": false },
+    "l1": { "capture": false }, "l2": { "parent": "l1", "capture": false }, "l3": { "parent": "l2", "capture": false },
+    "l4": { "parent": "l3", "capture": false }, "l5": { "parent": "l4", "capture": false },
+    "l6": { "parent": "l5", "capture": false }, "l7": { "parent": "l6", "capture": false },
+    "l8": { "parent": "l7", "capture": false }, "l9": { "parent": "l8", "capture": false },
+    "l10": { "parent": "l9", "capture": false }
   }`, 1)
 	invalid := mustReject(t, doc)
 	var got []string

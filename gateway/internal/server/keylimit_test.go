@@ -141,8 +141,8 @@ func TestPerKeySlotIsReleasedOnEveryPath(t *testing.T) {
 		}},
 		{name: "rate limited", want: 429,
 			edit: func(t *testing.T, doc string) string {
-				return replaceOnce(t, doc, `"eval": { "parent": "research",`,
-					`"eval": { "parent": "research", "limits": [{ "type": "requests_per_minute", "value": 1 }],`)
+				return replaceOnce(t, doc, `"eval": { "parent": "research", "capture": false,`,
+					`"eval": { "parent": "research", "capture": false, "limits": [{ "type": "requests_per_minute", "value": 1 }],`)
 			},
 			run: func(t *testing.T, g *testGateway) int {
 				if code := post(g, chatBody); code != 200 {

@@ -65,7 +65,7 @@ func answeredImages(t *testing.T, body []byte) [][]byte {
 func TestImagesThroughThePipeline(t *testing.T) {
 	g := newTestGateway(t)
 	withSpeechModels(t, g, func(doc string) string {
-		return replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [{ "type": "tokens_per_minute", "value": 100000 }] }`)
+		return replaceOnce(t, doc, `"research": { "capture": false }`, `"research": { "capture": false, "limits": [{ "type": "tokens_per_minute", "value": 100000 }] }`)
 	})
 	g.backend.SetReply(fakebackend.Reply{ImageBytes: 2000})
 	body := `{"model":"painter","prompt":"a red fox in snow","negative_prompt":"blur","n":2,"size":"512x512","stream":true,"seed":7}`
@@ -240,7 +240,7 @@ func TestImagesPassWhatTheyDoNotOwn(t *testing.T) {
 	// n below 1 reserves one image, and the backend's refusal is relayed.
 	g = newTestGateway(t)
 	withSpeechModels(t, g, func(doc string) string {
-		return replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [{ "type": "images_per_minute", "value": 1 }] }`)
+		return replaceOnce(t, doc, `"research": { "capture": false }`, `"research": { "capture": false, "limits": [{ "type": "images_per_minute", "value": 1 }] }`)
 	})
 	w := do(t, g.h, imagesCall(`{"model":"painter","prompt":"a fox","n":0}`, "zero"))
 	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "n: Input should be between 1 and 10") {
@@ -259,7 +259,7 @@ func TestImageLimits(t *testing.T) {
 		t.Run(string(typ), func(t *testing.T) {
 			g := newTestGateway(t)
 			withSpeechModels(t, g, func(doc string) string {
-				return replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [{ "type": "`+string(typ)+`", "value": 5 }] }`)
+				return replaceOnce(t, doc, `"research": { "capture": false }`, `"research": { "capture": false, "limits": [{ "type": "`+string(typ)+`", "value": 5 }] }`)
 			})
 			if w := do(t, g.h, imagesCall(`{"model":"painter","prompt":"a fox","n":3}`, "three")); w.Code != http.StatusOK {
 				t.Fatalf("3 images under 5: %d %s", w.Code, w.Body.String())

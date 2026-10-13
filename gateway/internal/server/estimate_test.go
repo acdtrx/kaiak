@@ -66,7 +66,7 @@ func TestInlineImageCountsAsOneMediaItem(t *testing.T) {
 	const tpm = 1_000_000
 	g := newTestGateway(t)
 	g.holder.Swap(testSnapshotWith(t, g.backend.URL(), withLargeBodies(t, 4096, 32768, func(doc string) string {
-		return replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [{ "type": "tokens_per_minute", "value": 1000000 }] }`)
+		return replaceOnce(t, doc, `"research": { "capture": false }`, `"research": { "capture": false, "limits": [{ "type": "tokens_per_minute", "value": 1000000 }] }`)
 	})))
 	image := base64Image(450 << 10)
 	body := imageChat("pair", "what is in this photo?", image)
@@ -90,7 +90,7 @@ func TestInlineImageCountsAsOneMediaItem(t *testing.T) {
 func TestLargeInlineImageFitsATokenLimit(t *testing.T) {
 	g := newTestGateway(t)
 	g.holder.Swap(testSnapshotWith(t, g.backend.URL(), withLargeBodies(t, 16384, 32768, func(doc string) string {
-		return replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [{ "type": "tokens_per_minute", "value": 100000 }] }`)
+		return replaceOnce(t, doc, `"research": { "capture": false }`, `"research": { "capture": false, "limits": [{ "type": "tokens_per_minute", "value": 100000 }] }`)
 	})))
 	body := imageChat("pair", "describe", base64Image(1_399_000))
 	w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey, body: body})

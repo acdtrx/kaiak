@@ -127,11 +127,11 @@ func scenarioConfig(fakeURL, hash string, backends []scenarioBackend) map[string
 		models[b.model] = scenarioModel(b.typ, map[string]any{"backend": b.name, "model": b.deployed})
 	}
 	return map[string]any{
-		"protocol_version": 7,
+		"protocol_version": 8,
 		"global":           map[string]any{},
 		"backends":         entries,
 		"models":           models,
-		"groups":           map[string]any{"w": map[string]any{"allowed_models": []any{"*"}}},
+		"groups":           map[string]any{"w": map[string]any{"capture": false, "allowed_models": []any{"*"}}},
 		"keys":             map[string]any{"k": map[string]any{"hash": hash, "group": "w"}},
 	}
 }
@@ -150,7 +150,7 @@ func apiScenarioConfig(fakeURL, oldURL, hash string, backends []scenarioBackend)
 	models["pair"] = scenarioModel("vllm", map[string]any{"backend": "old", "model": "Qwen/Qwen3-8B"},
 		map[string]any{"backend": "vl", "model": "Qwen/Qwen3-8B"})
 	models["rpm"] = scenarioModel("vllm", map[string]any{"backend": "vl", "model": "Qwen/Qwen3-8B"})
-	cfg["groups"].(map[string]any)["tight"] = map[string]any{"allowed_models": []any{"rpm"},
+	cfg["groups"].(map[string]any)["tight"] = map[string]any{"capture": false, "allowed_models": []any{"rpm"},
 		"limits": []any{map[string]any{"type": "tokens_per_minute", "value": 10}}}
 	cfg["keys"].(map[string]any)["k-tight"] = map[string]any{"hash": tightHash, "group": "tight"}
 	return cfg

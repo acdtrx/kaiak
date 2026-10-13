@@ -44,7 +44,7 @@ func configLoads(t *testing.T, r fakeotlp.Received, trigger, result string) (str
 // stopped with an error` — and it carries what the process ends with.
 func TestFinalMetricExportBeforeTheLastLine(t *testing.T) {
 	rejected := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(rejected, []byte(`{"protocol_version": 7}`), 0o600); err != nil {
+	if err := os.WriteFile(rejected, []byte(`{"protocol_version": 8}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {

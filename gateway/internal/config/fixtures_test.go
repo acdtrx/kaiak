@@ -66,6 +66,29 @@ func TestBackendsRequiringAPIKeyEnv(t *testing.T) {
 	}
 }
 
+// The capture fixtures are refused for capture, at the group that breaks the rule —
+// not for another defect: TestInvalidFixtures sees only the schema code. Every group
+// states its own boolean capture, and child_defaults holds none.
+func TestCaptureIsRequiredOnEveryGroup(t *testing.T) {
+	for file, want := range map[string]schemacheck.Issue{
+		"group-capture-missing.json":  {Path: "/groups/alice", Message: `missing required field "capture"`},
+		"group-capture-string.json":   {Path: "/groups/app/capture", Message: "must be a boolean"},
+		"group-capture-number.json":   {Path: "/groups/app/capture", Message: "must be a boolean"},
+		"child-defaults-capture.json": {Path: "/groups/users/child_defaults/capture", Message: "unknown field"},
+	} {
+		t.Run(file, func(t *testing.T) {
+			_, err := Parse(fixturetest.Read(t, filepath.Join(fixturesDir, "invalid", file)))
+			var invalid *schemacheck.ValidationError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("want a *schemacheck.ValidationError, got %v", err)
+			}
+			if len(invalid.Issues) != 1 || invalid.Issues[0].Path != want.Path || invalid.Issues[0].Message != want.Message {
+				t.Errorf("issues %v, want one at %s: %s", invalid.Issues, want.Path, want.Message)
+			}
+		})
+	}
+}
+
 // The batch caps' zero fixtures are refused by their bound, at their field — not as
 // an unknown field: TestInvalidFixtures sees only the schema code, which both reasons
 // share.
@@ -164,6 +187,9 @@ type resolvedFixture struct {
 
 type resolvedGroup struct {
 	Path []string `json:"path"`
+	// Capture is the group's own flag, as written in config; nil when the fixture
+	// leaves it out.
+	Capture *bool `json:"capture"`
 	// AllowedModels is "all" or a sorted list of names.
 	AllowedModels json.RawMessage `json:"allowed_models"`
 	Limits        []struct {
@@ -193,6 +219,11 @@ func TestResolvedFixtures(t *testing.T) {
 				g := s.Groups[id]
 				if !slices.Equal(g.PathIDs, want.Path) {
 					t.Errorf("%s: path %v, want %v", id, g.PathIDs, want.Path)
+				}
+				if want.Capture == nil {
+					t.Errorf("%s: the fixture states no capture", id)
+				} else if g.Capture != *want.Capture {
+					t.Errorf("%s: capture %v, want %v", id, g.Capture, *want.Capture)
 				}
 
 				// "all" is every model of the snapshot.

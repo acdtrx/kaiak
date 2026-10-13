@@ -41,7 +41,7 @@ func newRetryGateway(t *testing.T, first, second string, edit func(string) strin
       "metadata": { "context_length": 8192,
         "capabilities": { "streaming": true, "tools": false, "vision": false, "reasoning": false } } },
     "pair": {`)
-		doc = replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [
+		doc = replaceOnce(t, doc, `"research": { "capture": false }`, `"research": { "capture": false, "limits": [
       { "type": "requests_per_minute", "value": 1000 }, { "type": "tokens_per_minute", "value": 100000 } ] }`)
 		if edit != nil {
 			doc = edit(doc)

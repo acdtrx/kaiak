@@ -30,7 +30,7 @@ func cappedDoc(t *testing.T, doc string) string {
 		`"first_event_timeout_ms": 500, "response_timeout_ms": 500, "stall_timeout_ms": 500, "max_in_flight": 1 }`)
 	doc = replaceOnce(t, doc, `"secret": {`, `"secret": { "queue": { "timeout_ms": 50 },`)
 	doc = replaceOnce(t, doc, `"Org/open-7b": {`, `"Org/open-7b": { "queue": { "size": 0 },`)
-	return replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [{ "type": "tokens_per_minute", "value": 100000 }] }`)
+	return replaceOnce(t, doc, `"research": { "capture": false }`, `"research": { "capture": false, "limits": [{ "type": "tokens_per_minute", "value": 100000 }] }`)
 }
 
 // newCappedGateway is the test gateway under the capped config, applied as cmd/kaiak

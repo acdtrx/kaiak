@@ -230,8 +230,8 @@ func TestEndpointsListIsJudgedOnEveryRoute(t *testing.T) {
 			t.Run(fmt.Sprintf("%s/stream=%t", ep.api.Name(), stream), func(t *testing.T) {
 				g := newTestGateway(t)
 				g.apply(t, func(doc string) string {
-					doc = replaceOnce(t, doc, `"eval": { "parent": "research", "allowed_models": ["*"] }`,
-						`"eval": { "parent": "research", "allowed_models": ["*"], "limits": [{ "type": "requests_per_minute", "value": 1 }] }`)
+					doc = replaceOnce(t, doc, `"eval": { "parent": "research", "capture": false, "allowed_models": ["*"] }`,
+						`"eval": { "parent": "research", "capture": false, "allowed_models": ["*"], "limits": [{ "type": "requests_per_minute", "value": 1 }] }`)
 					return withListedOn(t, doc, typ, []string{string(listed.Name())})
 				})
 				// One body every route reads cleanly: each takes the members it owns.

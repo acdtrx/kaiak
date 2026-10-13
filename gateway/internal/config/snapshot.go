@@ -470,6 +470,10 @@ type Group struct {
 	// itself last (1 to MaxGroupDepth groups), as usage records carry them. Shared: do
 	// not modify.
 	PathIDs []string
+	// Capture: whether the chat requests of keys naming this group are captured
+	// (docs/specs/GATEWAY.md, Request capture) — the group's own flag, never a
+	// parent's: it is not inherited and child_defaults has none.
+	Capture bool
 	// AllowedModels: the models a key in this group may use, every level of the path
 	// intersected.
 	AllowedModels ModelSet
@@ -638,7 +642,7 @@ func resolveGroup(id string, doc *document, s *Snapshot, every ModelSet) *Group 
 		return g
 	}
 	entry := doc.Groups[id]
-	g := &Group{ID: id}
+	g := &Group{ID: id, Capture: entry.Capture}
 	var defaults childDefaultsDoc
 	allowed := every
 	var parentPath []string

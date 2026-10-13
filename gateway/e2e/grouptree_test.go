@@ -31,22 +31,24 @@ func groupTreeConfig(backendURL string, hashes map[string]string) map[string]any
 		return map[string]any{"type": "requests_per_minute", "value": value}
 	}
 	cfg["groups"] = map[string]any{
-		"acme": map[string]any{"labels": map[string]any{"kind": "team", "cost_center": labelSentinel}},
+		"acme": map[string]any{"capture": false, "labels": map[string]any{"kind": "team", "cost_center": labelSentinel}},
 		"acme-rag": map[string]any{
-			"parent": "acme",
-			"labels": map[string]any{"kind": "project"},
-			"limits": []any{rpm(4), map[string]any{"type": "usd_per_month", "value": 0.0001}},
+			"parent":  "acme",
+			"capture": false,
+			"labels":  map[string]any{"kind": "project"},
+			"limits":  []any{rpm(4), map[string]any{"type": "usd_per_month", "value": 0.0001}},
 		},
 		"acme-rag-prod": map[string]any{
-			"parent": "acme-rag",
-			"labels": map[string]any{"kind": "env", "env": "prod"},
-			"limits": []any{rpm(2)},
+			"parent":  "acme-rag",
+			"capture": false,
+			"labels":  map[string]any{"kind": "env", "env": "prod"},
+			"limits":  []any{rpm(2)},
 		},
-		"acme-rag-dev": map[string]any{"parent": "acme-rag", "labels": map[string]any{"kind": "env", "env": "dev"}},
-		"rag-api":      map[string]any{"parent": "acme-rag-prod", "labels": map[string]any{"kind": "workload"}},
-		"rag-sandbox":  map[string]any{"parent": "acme-rag-dev", "labels": map[string]any{"kind": "workload"}},
-		"acme-search":  map[string]any{"parent": "acme", "labels": map[string]any{"kind": "project"}},
-		"search-api":   map[string]any{"parent": "acme-search", "labels": map[string]any{"kind": "workload"}},
+		"acme-rag-dev": map[string]any{"parent": "acme-rag", "capture": false, "labels": map[string]any{"kind": "env", "env": "dev"}},
+		"rag-api":      map[string]any{"parent": "acme-rag-prod", "capture": false, "labels": map[string]any{"kind": "workload"}},
+		"rag-sandbox":  map[string]any{"parent": "acme-rag-dev", "capture": false, "labels": map[string]any{"kind": "workload"}},
+		"acme-search":  map[string]any{"parent": "acme", "capture": false, "labels": map[string]any{"kind": "project"}},
+		"search-api":   map[string]any{"parent": "acme-search", "capture": false, "labels": map[string]any{"kind": "workload"}},
 	}
 	cfg["keys"] = map[string]any{
 		"k-prod":   map[string]any{"hash": hashes["k-prod"], "group": "rag-api"},

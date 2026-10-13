@@ -61,7 +61,7 @@ func transcriptionConfig(vlURL, lsURL, hash, listenHash string) map[string]any {
 		}
 	}
 	return map[string]any{
-		"protocol_version": 7,
+		"protocol_version": 8,
 		"global":           map[string]any{"max_upload_bytes": transcriptionUploadCap},
 		"backends": map[string]any{
 			"vl":      map[string]any{"type": "vllm", "base_url": vlURL + "/v1"},
@@ -74,8 +74,8 @@ func transcriptionConfig(vlURL, lsURL, hash, listenHash string) map[string]any {
 			"chat":    model("vl-chat", backendChatModel, "chat_completions"),
 		},
 		"groups": map[string]any{
-			"w": map[string]any{"allowed_models": []any{"*"}},
-			"listen": map[string]any{"allowed_models": []any{"*"},
+			"w": map[string]any{"capture": false, "allowed_models": []any{"*"}},
+			"listen": map[string]any{"capture": false, "allowed_models": []any{"*"},
 				"limits": []any{map[string]any{"type": "audio_seconds_in_per_minute", "value": 5}}},
 		},
 		"keys": map[string]any{
@@ -368,7 +368,7 @@ func TestTranscriptionWrongBaseURL(t *testing.T) {
 	key, hash := newKey()
 	configFile := filepath.Join(t.TempDir(), "config.json")
 	writeJSON(t, configFile, map[string]any{
-		"protocol_version": 7,
+		"protocol_version": 8,
 		"global":           map[string]any{"circuit": map[string]any{"failure_threshold": 2}},
 		"backends": map[string]any{
 			"lost": map[string]any{"type": "vllm", "base_url": lost.URL()},
@@ -383,7 +383,7 @@ func TestTranscriptionWrongBaseURL(t *testing.T) {
 			"metadata": map[string]any{"context_length": 8192,
 				"capabilities": map[string]any{"streaming": false, "tools": false, "vision": false, "reasoning": false}},
 		}},
-		"groups": map[string]any{"w": map[string]any{"allowed_models": []any{"*"}}},
+		"groups": map[string]any{"w": map[string]any{"capture": false, "allowed_models": []any{"*"}}},
 		"keys":   map[string]any{"k": map[string]any{"hash": hash, "group": "w"}},
 	})
 	g := startGateway(t, configFile)

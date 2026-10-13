@@ -294,7 +294,7 @@ func TestSpeechBatchOutputLimits(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			g := newTestGateway(t)
 			withSpeechModels(t, g, func(doc string) string {
-				return replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [{ "type": "tokens_per_minute", "value": 100000 }] }`)
+				return replaceOnce(t, doc, `"research": { "capture": false }`, `"research": { "capture": false, "limits": [{ "type": "tokens_per_minute", "value": 100000 }] }`)
 			})
 			w := do(t, g.h, batchCall(c.body, "limit"))
 			if w.Code != http.StatusOK {
@@ -313,7 +313,7 @@ func TestSpeechBatchOutputLimits(t *testing.T) {
 
 	g := newTestGateway(t)
 	withSpeechModels(t, g, func(doc string) string {
-		return replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [{ "type": "tokens_per_minute", "value": 1000 }] }`)
+		return replaceOnce(t, doc, `"research": { "capture": false }`, `"research": { "capture": false, "limits": [{ "type": "tokens_per_minute", "value": 1000 }] }`)
 	})
 	if w := do(t, g.h, batchCall(`{"model":"tts","items":[{"input":"a"},{"input":"b"},{"input":"c"}]}`, "fits")); w.Code != http.StatusOK {
 		t.Errorf("three items of 300: %d %s", w.Code, w.Body.String())
@@ -399,7 +399,7 @@ func TestSpeechBatchItemRateWinsOverTheBatchs(t *testing.T) {
 func TestSpeechBatchAudioLimits(t *testing.T) {
 	g := newTestGateway(t)
 	withSpeechModels(t, g, func(doc string) string {
-		return replaceOnce(t, doc, `"research": {}`, `"research": { "limits": [{ "type": "audio_seconds_out_per_minute", "value": 5 }] }`)
+		return replaceOnce(t, doc, `"research": { "capture": false }`, `"research": { "capture": false, "limits": [{ "type": "audio_seconds_out_per_minute", "value": 5 }] }`)
 	})
 	body := `{"model":"tts","items":[{"input":"a"},{"input":"b"},{"input":"c"}]}`
 	if w := do(t, g.h, batchCall(body, "ok")); w.Code != http.StatusOK {
