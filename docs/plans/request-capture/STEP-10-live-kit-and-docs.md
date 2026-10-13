@@ -21,7 +21,10 @@ operator- and app-facing docs.
   - its own self-test (`check-gateway.sh` runs it) extended.
 - `docs/DEPLOYMENT.md`:
   - **Request capture:** what it is, who decides (the app, per group), the trace
-    variables and the explicit switch, `KAIAK_CAPTURE_MEMORY_BYTES` and `GOMEMLIMIT`,
+    variables and the explicit switch, `KAIAK_CAPTURE_MEMORY_BYTES` and `GOMEMLIMIT`
+    — beside the budget, the builder's short-lived garbage: about 10× the capture
+    being built (measured at step 7: a 4 MiB request with a 3 MiB inline image, ~18 ms
+    and ~42 MB), one build at a time, so up to ~160 MB at the 16 MiB span limit —
     what is dropped and how to see it (`kaiak.capture`, the counts);
   - **Langfuse:** the endpoint, the Basic auth header (percent-encoded in
     `OTEL_EXPORTER_OTLP_TRACES_HEADERS`), `x-langfuse-ingestion-version: 4`; what it

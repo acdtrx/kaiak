@@ -1,6 +1,8 @@
 package capture
 
 import (
+	"net/http"
+
 	"kaiak/internal/provider"
 	"kaiak/internal/telemetry/otlptrace"
 )
@@ -24,27 +26,54 @@ type exchange struct {
 
 // content is the content attributes of a capture of api — the request's parameters
 // and messages, the answer's messages, ID, model and finish reasons — read from x by
-// its API's mapping (docs/specs/GATEWAY.md, Request capture → Parameters, Content).
+// its API's mapping (docs/specs/GATEWAY.md, Request capture → Parameters, Content). An
+// error answer (400 or above) — the backend's relayed refusal, the gateway's own
+// error body — gives no output messages: error.type says what happened.
 func content(api provider.Endpoint, x exchange) []otlptrace.Attribute {
+	var m mapping
 	switch api {
 	case provider.ChatCompletions:
-		return chatCompletionsContent(x)
+		m = chatCompletionsMapping
 	case provider.Messages:
-		return messagesContent(x)
+		m = messagesMapping
 	case provider.Responses:
-		return responsesContent(x)
+		m = responsesMapping
+	default:
+		return nil
 	}
-	return nil
+	var an answerContent
+	switch {
+	case x.status >= http.StatusBadRequest:
+	case x.stream:
+		an = m.stream(x.response)
+	default:
+		an = m.answer(x.response)
+	}
+	return contentAttributes(m.request(x.request), an)
 }
 
-// chatCompletionsContent is a Chat Completions exchange's content attributes
-// (docs/specs/GATEWAY.md, Request capture → Chat Completions).
-func chatCompletionsContent(exchange) []otlptrace.Attribute { return nil }
+// mapping is how an API's exchange is read into the conventions' format: its request,
+// its answer as a JSON body, and its answer as an event stream — assembled into what
+// the same answer unstreamed gives. Each reads what it is given as far as it has its
+// API's shape: a malformed or cut-short input gives what can be read of it.
+type mapping struct {
+	request func(body []byte) requestContent
+	answer  func(body []byte) answerContent
+	stream  func(stream []byte) answerContent
+}
 
-// messagesContent is a Messages exchange's content attributes (docs/specs/GATEWAY.md,
-// Request capture → Messages).
-func messagesContent(exchange) []otlptrace.Attribute { return nil }
+// messagesMapping reads a Messages exchange (docs/specs/GATEWAY.md, Request capture →
+// Messages).
+var messagesMapping = mapping{
+	request: func([]byte) requestContent { return requestContent{} },
+	answer:  func([]byte) answerContent { return answerContent{} },
+	stream:  func([]byte) answerContent { return answerContent{} },
+}
 
-// responsesContent is a Responses exchange's content attributes
-// (docs/specs/GATEWAY.md, Request capture → Responses).
-func responsesContent(exchange) []otlptrace.Attribute { return nil }
+// responsesMapping reads a Responses exchange (docs/specs/GATEWAY.md, Request capture
+// → Responses).
+var responsesMapping = mapping{
+	request: func([]byte) requestContent { return requestContent{} },
+	answer:  func([]byte) answerContent { return answerContent{} },
+	stream:  func([]byte) answerContent { return answerContent{} },
+}

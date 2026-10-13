@@ -2956,7 +2956,7 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
   | `gen_ai.request.stream` | boolean | the request streams | `true` — the convention sets it only on a streaming request |
   | `gen_ai.response.id` | string | the answer names one | The answer's `id` |
   | `gen_ai.response.model` | string | the answer names one | The answer's `model` as the client received it: the public name, which the gateway writes there (Providers → Response model name) |
-  | `gen_ai.response.finish_reasons` | string[] | the answer gives any | One per output message, in their order, in the API's own words (Content, below) |
+  | `gen_ai.response.finish_reasons` | string[] | the answer gives any | One per output message, in their order, in the API's own words — `""` for one that gave none (a choice of a stream cut short) (Content, below) |
   | `gen_ai.usage.input_tokens`, `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_write.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.reasoning.output_tokens` | int | once settled (routed requests) | As on the request line: all input with its two cache parts, all output with its reasoning part, summed over the request's records |
   | `gen_ai.conversation.id` | string | a valid `Kaiak-Session-Id` | The session (Sessions, below) |
   | `server.address`, `server.port` | string, int | once routed | The answering backend: its `base_url`'s host, and its port — the URL's, else 443 for `https`, 80 for `http` |
@@ -2978,9 +2978,11 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
   | `kaiak.session_id.ignored` | string | a `Kaiak-Session-Id` was sent and ignored | `empty`, `too_long`, `invalid_characters` (Sessions, below) |
 
 - **Parameters**: the request's sampling and output parameters, read as the client
-  sent them — each only when its value has the attribute's type (a number; a whole
-  number for an integer; a string or a list of strings for stop sequences), anything
-  else left out for the backend to judge. A `null` counts as absent.
+  sent them — each only when its value has the attribute's type (a number within the
+  double's range; for an integer, an integer written as one — `2.0` and `1e3` are
+  not — as the gateway reads its own integer fields; a string or a list of strings
+  for stop sequences), anything else left out for the backend to judge. A `null`
+  counts as absent.
 
   | Attribute | Chat Completions | Messages | Responses |
   |---|---|---|---|
@@ -3006,12 +3008,15 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
     middle of a call);
   - a tool result → `{"type": "tool_call_response", "id", "response"}` — the result
     as sent, a string or its JSON;
-  - inline media (a `data:` URL, a base64 source) → `{"type": "blob", "modality",
-    "mime_type", "content"}`, the base64 as sent; media by URL → `{"type": "uri",
-    "modality", "mime_type"?, "uri"}`; media by file ID → `{"type": "file",
-    "modality", "mime_type"?, "file_id"}`. The modality is the MIME type's —
-    `image/*` image, `audio/*` audio, `video/*` video, any other document — or, with
-    no MIME type, the kind the API names (an `image_url`'s is image);
+  - inline media (a base64 `data:` URL, a base64 source) → `{"type": "blob",
+    "modality", "mime_type", "content"}`, the base64 as sent; media by URL (any other
+    URL) → `{"type": "uri", "modality", "mime_type"?, "uri"}`; media by file ID →
+    `{"type": "file", "modality", "mime_type"?, "file_id"}`. The MIME type is
+    written lowercase, without parameters (`data:Image/PNG;name=a.png;base64,…` →
+    `image/png`), and left out when the value is no `type/subtype`. The modality is
+    the MIME type's — `image/*` image, `audio/*` audio, `video/*` video, any other
+    document — or, with no MIME type, the kind the API names (an `image_url`'s is
+    image);
   - **anything else** — a part, block or item the mapping does not know — is a
     generic part: the original JSON object, unchanged, which names its own `type`. As
     passthrough preserves what it does not understand, so does capture.
@@ -3019,6 +3024,10 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
   Input messages keep the order they were sent in; each output message is one
   generation (a Chat Completions choice; the one answer of Messages and Responses),
   with its finish reason in `gen_ai.response.finish_reasons`, never on the message.
+  An empty text or reasoning is no part (settled 2026-10-13, at Chat Completions'
+  build): it carries nothing, and a stream's opening delta (`"content": ""`) would
+  otherwise make an answer differ from the same answer unstreamed (`"content":
+  null`); a message with no parts has an empty `parts` list.
   A member the structure has no place for is not carried (a Chat message's other
   members, a thinking block's signature, a reasoning item's encrypted content);
   content that does not have its API's shape where the mapping reads it (a message
@@ -3028,19 +3037,22 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
 - **Chat Completions**:
   - `messages` → `gen_ai.input.messages`, every message with its `role` — `system`
     and `developer` included: they are chat history — and its `name`. A string
-    `content` is one text part; a list is its parts: `text` → text; `image_url` →
-    blob (a `data:` URL) or uri, modality image; `input_audio` → blob, modality
-    audio, MIME type `audio/<format>`; `file` → file (`file_id`) or blob
-    (`file_data`, a `data:` URL); any other → generic. An assistant message's
-    `reasoning_content` or `reasoning` → a reasoning part first, then its `content`
-    and its `refusal` as text, then its `tool_calls` as tool calls (`id`,
-    `function.name`, `function.arguments`). A `tool` message → a tool result
-    (`tool_call_id`, `content`).
+    `content` is one text part; a list is its parts: `text` and `refusal` → text;
+    `image_url` → blob (a base64 `data:` URL) or uri, modality image;
+    `input_audio` → blob, modality audio, MIME type `audio/<format>`; `file` → file
+    (`file_id`, modality document) or blob (`file_data`, a base64 `data:` URL); any
+    other → generic. An assistant message's `reasoning_content` or `reasoning` → a
+    reasoning part first (`reasoning_content` when it has text, else `reasoning`: a
+    server may send the same text under both names), then its `content` and its
+    `refusal` as text, then its `tool_calls` as tool calls (`id`, `function.name`,
+    `function.arguments`) — a call of another type (OpenAI's `custom`) generic. A
+    `tool` message → a tool result (`tool_call_id`, `content`).
   - `tools` → `gen_ai.tool.definitions`: a `function` tool → `{"type": "function",
     "name", "description", "parameters"}`; any other → its own JSON.
-  - The answer: each choice → one output message, in `index` order, role
-    `assistant`, its parts as an assistant message's above; each `finish_reason`
-    (`stop`, `length`, `tool_calls`, …) → `gen_ai.response.finish_reasons`.
+  - The answer: each choice → one output message, in `index` order, its role the
+    one the choice names (`assistant`, also when it names none), its parts as an
+    assistant message's above; each `finish_reason` (`stop`, `length`,
+    `tool_calls`, …) → `gen_ai.response.finish_reasons`.
 - **Messages**:
   - `system` → `gen_ai.system_instructions`: a string is one text part, a list its
     text blocks as text parts (any other block generic).
@@ -3087,9 +3099,11 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
   streamed case to its unstreamed twin.
   - Chat Completions: the chunks gathered by choice `index` — the role; the content,
     reasoning and refusal deltas, concatenated; tool calls by their own `index`, the
-    `id` and name from the fragments that carry them, the argument fragments
+    `id` and name from the first fragments that carry them, the argument fragments
     concatenated; the `finish_reason` — and the chunks' `id` and `model`. `[DONE]`
-    ends it; a chunk without choices (usage) carries no content.
+    ends it; a chunk without choices (usage) carries no content. Only a function's
+    call is rebuilt from its fragments: a call of another type is left out of a
+    stream, where the same answer unstreamed carries it generic.
   - Messages: `message_start` (the `id`, the `model`); content blocks by `index` —
     `content_block_start` opens one, `text_delta`, `thinking_delta` and
     `input_json_delta` fragments extend it (`signature_delta` is left out),

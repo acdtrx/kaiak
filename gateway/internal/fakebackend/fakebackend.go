@@ -49,6 +49,11 @@ type Reply struct {
 	// Chunks are the pieces of generated text, one per stream event; the non-stream
 	// answer joins them. Default: DefaultChunks.
 	Chunks []string
+	// Reasoning are the pieces of a chat completion's reasoning, in vLLM's reasoning
+	// member: one stream event each, before the text's — a StreamFault's At counts
+	// the text events alone — and joined in the non-stream answer's message. Chat
+	// completions only.
+	Reasoning []string
 	// Usage overrides the reported token counts. Default: 7 prompt tokens, one
 	// completion token per chunk.
 	Usage *Usage
@@ -573,7 +578,8 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 	case params.stream:
 		b.writeStream(w, r, req, reply, endpoint, params.model, chunks, finish, usage, params.includeUsage && !reply.OmitUsage)
 	default:
-		writeCompletion(w, endpoint, params.model, strings.Join(chunks, ""), finish, usage, reply.OmitUsage)
+		writeCompletion(w, endpoint, params.model, strings.Join(reply.Reasoning, ""), strings.Join(chunks, ""), finish, usage,
+			reply.OmitUsage)
 	}
 }
 
@@ -731,15 +737,24 @@ func (b *Backend) writeStream(w http.ResponseWriter, r *http.Request, req *Reque
 		return
 	}
 	send := func(payload []byte) bool { return s.send("", payload) }
+	var reasoning []string
+	if endpoint == chatPath {
+		reasoning = reply.Reasoning
+	}
+	for i, text := range reasoning {
+		if !send(textChunk(endpoint, model, "reasoning", text, i == 0, nil, includeUsage)) {
+			return
+		}
+	}
 	for i, text := range chunks {
 		if !s.interrupt(i) {
 			return
 		}
-		if !send(textChunk(endpoint, model, text, i == 0, nil, includeUsage)) {
+		if !send(textChunk(endpoint, model, "content", text, i == 0 && len(reasoning) == 0, nil, includeUsage)) {
 			return
 		}
 	}
-	if !send(textChunk(endpoint, model, "", len(chunks) == 0, &finish, includeUsage)) {
+	if !send(textChunk(endpoint, model, "content", "", len(chunks) == 0 && len(reasoning) == 0, &finish, includeUsage)) {
 		return
 	}
 	if includeUsage {
@@ -764,10 +779,11 @@ func chunkObject(endpoint string) string {
 	return "text_completion"
 }
 
-// textChunk builds one stream chunk carrying text (or the finish reason). Field order
-// follows OpenAI's; like OpenAI, every chunk carries "usage": null when the request
-// asks for usage (withUsage).
-func textChunk(endpoint, model, text string, first bool, finish *string, withUsage bool) []byte {
+// textChunk builds one stream chunk carrying text (or the finish reason) — a chat
+// chunk's in its delta's member, content or reasoning. Field order follows OpenAI's;
+// like OpenAI, every chunk carries "usage": null when the request asks for usage
+// (withUsage).
+func textChunk(endpoint, model, member, text string, first bool, finish *string, withUsage bool) []byte {
 	var choice any
 	if endpoint == chatPath {
 		delta := map[string]string{}
@@ -775,7 +791,7 @@ func textChunk(endpoint, model, text string, first bool, finish *string, withUsa
 			delta["role"] = "assistant"
 		}
 		if finish == nil {
-			delta["content"] = text
+			delta[member] = text
 		}
 		choice = struct {
 			Index        int               `json:"index"`
@@ -825,12 +841,17 @@ func usageBody(u Usage, endpoint string) map[string]any {
 	return body
 }
 
-func writeCompletion(w http.ResponseWriter, endpoint, model, text, finish string, usage Usage, omitUsage bool) {
+// writeCompletion answers a completion: a chat message's reasoning, when there is
+// some, in vLLM's reasoning member.
+func writeCompletion(w http.ResponseWriter, endpoint, model, reasoning, text, finish string, usage Usage, omitUsage bool) {
 	answer := map[string]any{"id": "fake-1", "created": created, "model": model}
 	if endpoint == chatPath {
+		message := map[string]string{"role": "assistant", "content": text}
+		if reasoning != "" {
+			message["reasoning"] = reasoning
+		}
 		answer["object"] = "chat.completion"
-		answer["choices"] = []any{map[string]any{"index": 0, "finish_reason": finish,
-			"message": map[string]string{"role": "assistant", "content": text}}}
+		answer["choices"] = []any{map[string]any{"index": 0, "finish_reason": finish, "message": message}}
 	} else {
 		answer["object"] = "text_completion"
 		answer["choices"] = []any{map[string]any{"index": 0, "finish_reason": finish, "text": text}}

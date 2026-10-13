@@ -12,6 +12,7 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -178,11 +179,13 @@ func TestCaptureSessionHeader(t *testing.T) {
 	}
 }
 
-// The span of each outcome from the capture stage on carries every attribute but
-// the content (docs/specs/GATEWAY.md, Request capture → Attributes): a success, a
-// stream, a refusal after the stage, an upstream error and a stream cut short.
+// The span of each outcome from the capture stage on carries its attributes
+// (docs/specs/GATEWAY.md, Request capture → Attributes): a success, a stream, a
+// refusal after the stage, an upstream error and a stream cut short — the answer's
+// content when the client received one, all of it or what arrived.
 func TestCaptureSpanAttributes(t *testing.T) {
-	// The attributes every span has; a routed request's; a settled one's.
+	// The attributes every span has; a routed request's; a settled one's; an answered
+	// one's; one whose stream was cut short — no finish reason.
 	always := []string{"gen_ai.operation.name", "gen_ai.request.model", "kaiak.request.id", "kaiak.key.id",
 		"kaiak.key.group", "kaiak.key.root_group"}
 	routed := []string{"gen_ai.provider.name", "server.address", "server.port", "kaiak.backend.id", "kaiak.backend.type",
@@ -190,6 +193,9 @@ func TestCaptureSpanAttributes(t *testing.T) {
 	settled := []string{"gen_ai.usage.input_tokens", "gen_ai.usage.cache_read.input_tokens",
 		"gen_ai.usage.cache_write.input_tokens", "gen_ai.usage.output_tokens", "gen_ai.usage.reasoning.output_tokens",
 		"kaiak.usage.cost_usd", "kaiak.usage.estimated", "kaiak.usage.partial"}
+	answered := []string{"gen_ai.response.id", "gen_ai.response.model", "gen_ai.response.finish_reasons",
+		"gen_ai.output.messages"}
+	cutShort := []string{"gen_ai.response.id", "gen_ai.response.model", "gen_ai.output.messages"}
 	keys := func(groups ...[]string) []string { return slices.Concat(groups...) }
 
 	g := newCapturingGateway(t, testOptions{})
@@ -226,21 +232,26 @@ func TestCaptureSpanAttributes(t *testing.T) {
 		// errorType is the span's error.type and status message; "" for no status.
 		errorType string
 	}{
-		{id: "success", want: keys(always, routed, settled), values: map[string]any{
+		{id: "success", want: keys(always, routed, settled, answered), values: map[string]any{
 			"gen_ai.operation.name": "chat", "gen_ai.provider.name": "openai-compatible", "gen_ai.request.model": "open",
 			"server.address": "127.0.0.1", "server.port": port, "kaiak.request.id": "success", "kaiak.key.id": "k-eval",
 			"kaiak.key.group": "eval", "kaiak.key.root_group": "research", "kaiak.backend.id": "local",
 			"kaiak.backend.type": "openai-compatible", "kaiak.deployment.model": "open", "kaiak.attempts": int64(1),
 			"gen_ai.usage.input_tokens": int64(7), "gen_ai.usage.output_tokens": int64(4), "kaiak.usage.cost_usd": float64(0),
-			"kaiak.usage.estimated": false, "kaiak.usage.partial": false}},
-		{id: "stream", want: keys(always, routed, settled, []string{"gen_ai.request.stream", "kaiak.time_to_first_token"}),
-			values: map[string]any{"gen_ai.request.stream": true, "kaiak.usage.partial": false}},
+			"kaiak.usage.estimated": false, "kaiak.usage.partial": false, "gen_ai.response.id": "fake-1",
+			"gen_ai.response.model":  "open",
+			"gen_ai.output.messages": `[{"role":"assistant","parts":[{"type":"text","content":"Hello from the fake"}]}]`}},
+		{id: "stream", want: keys(always, routed, settled, answered,
+			[]string{"gen_ai.request.stream", "kaiak.time_to_first_token"}),
+			values: map[string]any{"gen_ai.request.stream": true, "kaiak.usage.partial": false,
+				"gen_ai.output.messages": `[{"role":"assistant","parts":[{"type":"text","content":"Hello from the fake"}]}]`}},
 		{id: "refused", want: keys(always, []string{"error.type"}), errorType: "model_not_found",
 			values: map[string]any{"gen_ai.request.model": "nope"}},
 		{id: "upstream-error", want: keys(always, routed, settled, []string{"error.type"}), errorType: "upstream_error"},
-		{id: "cut", want: keys(always, routed, settled, []string{"gen_ai.request.stream", "kaiak.time_to_first_token",
-			"error.type", "kaiak.relay_end"}), errorType: "upstream_failed",
-			values: map[string]any{"kaiak.relay_end": "upstream_failed", "kaiak.usage.partial": true}},
+		{id: "cut", want: keys(always, routed, settled, cutShort, []string{"gen_ai.request.stream",
+			"kaiak.time_to_first_token", "error.type", "kaiak.relay_end"}), errorType: "upstream_failed",
+			values: map[string]any{"kaiak.relay_end": "upstream_failed", "kaiak.usage.partial": true,
+				"gen_ai.output.messages": `[{"role":"assistant","parts":[{"type":"text","content":"Hello from"}]}]`}},
 	} {
 		span, ok := spans[c.id]
 		if !ok {
@@ -255,6 +266,9 @@ func TestCaptureSpanAttributes(t *testing.T) {
 			if attrs[k] != v {
 				t.Errorf("%s: %s = %v (%T), want %v (%T)", c.id, k, attrs[k], attrs[k], v, v)
 			}
+		}
+		if reasons, ok := attrs["gen_ai.response.finish_reasons"]; ok && !reflect.DeepEqual(reasons, []any{"stop"}) {
+			t.Errorf("%s: finish reasons %v, want stop", c.id, reasons)
 		}
 		wantName := "chat open"
 		if c.id == "refused" {
@@ -276,6 +290,83 @@ func TestCaptureSpanAttributes(t *testing.T) {
 			attrs["error.type"] != c.errorType):
 			t.Errorf("%s: status %+v, error.type %v; want an error status and error.type %s", c.id, span.Status,
 				attrs["error.type"], c.errorType)
+		}
+	}
+	expectAllGivenBack(t, g)
+}
+
+// A captured chat request's span carries its content (docs/specs/GATEWAY.md, Request
+// capture → Chat Completions): the request as the client sent it — never the output
+// limit the gateway injects — and the answer as the client received it, the public
+// model name in it; streamed, the answer assembles to what it gives unstreamed, and a
+// stream cut short keeps what arrived. None of the content reaches the request line.
+func TestCaptureChatCompletionsContent(t *testing.T) {
+	g := newCapturingGateway(t, testOptions{})
+	url := serveGateway(t, g)
+	reply := fakebackend.Reply{Reasoning: []string{"A cat ", "on a mat."}, Chunks: []string{"A ", "cat."}}
+	cut := reply
+	cut.Fault = &fakebackend.StreamFault{At: 1, Kind: fakebackend.Cut}
+	body := func(stream bool) string {
+		return `{"model": "msg", "stream": ` + strconv.FormatBool(stream) + `, "temperature": 0.2,
+			"messages": [
+				{"role": "system", "content": "Answer briefly."},
+				{"role": "user", "content": [
+					{"type": "text", "text": "What is in this image?"},
+					{"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0K"}}]}],
+			"tools": [{"type": "function", "function": {"name": "lookup",
+				"description": "Look a word up", "parameters": {"type": "object"}}}]}`
+	}
+	for _, c := range []struct {
+		id     string
+		stream bool
+		reply  fakebackend.Reply
+	}{{"whole", false, reply}, {"streamed", true, reply}, {"cut", true, cut}} {
+		g.backend.SetReply(c.reply)
+		req, _ := http.NewRequest(http.MethodPost, url+"/v1/chat/completions", strings.NewReader(body(c.stream)))
+		req.Header.Set("Authorization", "Bearer "+workloadKey)
+		req.Header.Set("X-Request-Id", c.id)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.ReadAll(resp.Body) // a stream cut short ends in an error
+		resp.Body.Close()
+		waitIdle(t, g)
+	}
+	if line := g.logText(); strings.Contains(line, "What is in this image") || strings.Contains(line, "on a mat") {
+		t.Errorf("the log carries content:\n%s", line)
+	}
+	spans := g.capturedSpans(t)
+
+	input := `[{"role":"system","parts":[{"type":"text","content":"Answer briefly."}]},` +
+		`{"role":"user","parts":[{"type":"text","content":"What is in this image?"},` +
+		`{"type":"blob","modality":"image","mime_type":"image/png","content":"iVBORw0K"}]}]`
+	tools := `[{"type":"function","name":"lookup","description":"Look a word up","parameters":{"type":"object"}}]`
+	for _, c := range []struct {
+		id     string
+		output string
+		// finished: the answer gave its finish reason.
+		finished bool
+	}{
+		{"whole", `[{"role":"assistant","parts":[{"type":"reasoning","content":"A cat on a mat."},{"type":"text","content":"A cat."}]}]`, true},
+		{"streamed", `[{"role":"assistant","parts":[{"type":"reasoning","content":"A cat on a mat."},{"type":"text","content":"A cat."}]}]`, true},
+		{"cut", `[{"role":"assistant","parts":[{"type":"reasoning","content":"A cat on a mat."},{"type":"text","content":"A "}]}]`, false},
+	} {
+		attrs := spans[c.id].Attrs(t)
+		for k, want := range map[string]any{"gen_ai.request.temperature": 0.2, "gen_ai.input.messages": input,
+			"gen_ai.tool.definitions": tools, "gen_ai.output.messages": c.output, "gen_ai.response.id": "fake-1",
+			"gen_ai.response.model": "msg", "kaiak.deployment.model": "msg-back", "gen_ai.provider.name": "vllm"} {
+			if got := attrs[k]; got != want {
+				t.Errorf("%s: %s =\n %v\nwant\n %v", c.id, k, got, want)
+			}
+		}
+		if _, ok := attrs["gen_ai.request.max_tokens"]; ok {
+			t.Errorf("%s: gen_ai.request.max_tokens %v, want none: the client set no output limit", c.id,
+				attrs["gen_ai.request.max_tokens"])
+		}
+		reasons, ok := attrs["gen_ai.response.finish_reasons"]
+		if ok != c.finished || (ok && !reflect.DeepEqual(reasons, []any{"stop"})) {
+			t.Errorf("%s: finish reasons %v, want stop: %v", c.id, reasons, c.finished)
 		}
 	}
 	expectAllGivenBack(t, g)
