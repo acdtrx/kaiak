@@ -248,7 +248,7 @@ var lineAndSpan = []string{"kaiak.request.id", "kaiak.key.id", "kaiak.key.group"
 // model asked for, kind CLIENT, a root span with IDs of OTLP's lengths, as long as the
 // request at most; the attributes of lineAndSpan the line has, with its values —
 // error.type the line's, else its kaiak.relay_end — and want's; no other attribute;
-// an error status with the error.type when it has one, else none.
+// an error status, with no message, when it has an error.type, else none.
 func expectSpan(t *testing.T, span fakeotlp.Span, line, want map[string]any) {
 	t.Helper()
 	id := line["kaiak.request.id"]
@@ -286,8 +286,8 @@ func expectSpan(t *testing.T, span fakeotlp.Span, line, want map[string]any) {
 	switch {
 	case errorType == "" && span.Status != nil:
 		t.Errorf("%v: status %+v, want none", id, span.Status)
-	case errorType != "" && (span.Status == nil || span.Status.Code != 2 || span.Status.Message != errorType):
-		t.Errorf("%v: status %+v, want code 2 (ERROR) with message %s", id, span.Status, errorType)
+	case errorType != "" && (span.Status == nil || span.Status.Code != 2 || span.Status.Message != ""):
+		t.Errorf("%v: status %+v, want code 2 (ERROR) with no message: error.type is %s", id, span.Status, errorType)
 	}
 }
 
@@ -599,7 +599,7 @@ func TestCaptureEndToEnd(t *testing.T) {
 		}
 		expectSpan(t, waitSpans(t, collector, "client-left")["client-left"], line, merged(answeredBy(t, backend.URL()),
 			map[string]any{"kaiak.key.root_group": "team", "gen_ai.input.messages": helloInput, "gen_ai.request.stream": true,
-				"gen_ai.response.id": "fake-1", "gen_ai.response.model": "cap",
+				"gen_ai.response.id": "fake-1", "gen_ai.response.model": "cap", "gen_ai.response.finish_reasons": []any{"error"},
 				"gen_ai.output.messages": `[{"role":"assistant","parts":[{"type":"text","content":"Hello from"}]}]`}))
 		captured = append(captured, "client-left")
 	})
@@ -779,7 +779,8 @@ func TestCaptureDrain(t *testing.T) {
 		t.Errorf("drain-cut: request line %v, want kaiak.relay_end shutdown", cutLine)
 	}
 	expectSpan(t, spans["drain-cut"], cutLine, merged(answered,
-		map[string]any{"gen_ai.output.messages": `[{"role":"assistant","parts":[{"type":"text","content":"Hello"}]}]`}))
+		map[string]any{"gen_ai.output.messages": `[{"role":"assistant","parts":[{"type":"text","content":"Hello"}]}]`,
+			"gen_ai.response.finish_reasons": []any{"error"}}))
 
 	// The final metric export comes after the trace flush: it counts every span.
 	received := collector.Received()

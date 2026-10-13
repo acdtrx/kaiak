@@ -316,10 +316,36 @@ var chatCorpus = []contentCase{
 				{"type":"text","content":"What happens?"},
 				{"type":"video_url","video_url":{"url":"https://example.com/v.mp4"}},
 				{"zeta":1,"type":"x_custom","alpha":[true,null],"s":"<&>"}]}]`,
-			"gen_ai.tool.definitions": `[{"type":"custom","custom":{"name":"grep","description":"Search","format":{"type":"text"}}}]`,
+			"gen_ai.tool.definitions": `[{"type":"custom","custom":{"name":"grep","description":"Search","format":{"type":"text"}},"name":"grep"}]`,
 			"gen_ai.response.id":      "chatcmpl-9", "gen_ai.response.model": "qwen-omni",
 			"gen_ai.response.finish_reasons": []string{"stop"},
 			"gen_ai.output.messages":         `[{"role":"assistant","parts":[{"type":"text","content":"A ball rolls."}]}]`,
+		},
+	},
+	{
+		// A custom tool's call is carried as the answer has it, generic; streamed, it is
+		// rebuilt from its fragments — its name, its input in pieces — into the same.
+		name: "a custom tool's call, OpenAI",
+		request: `{"model":"gpt-5","messages":[{"role":"user","content":"Find the rain."}],
+			"tools":[{"type":"custom","custom":{"name":"grep","description":"Search","format":{"type":"text"}}}]}`,
+		answer: `{"id":"chatcmpl-10","object":"chat.completion","created":1,"model":"gpt-5","choices":[{"index":0,"message":{
+			"role":"assistant","content":null,"refusal":null,"annotations":[],
+			"tool_calls":[{"id":"call_g1","type":"custom","custom":{"name":"grep","input":"rain <&> \"wet\""}}]},
+			"logprobs":null,"finish_reason":"tool_calls"}]}`,
+		stream: events(
+			`{"id":"chatcmpl-10","object":"chat.completion.chunk","created":1,"model":"gpt-5","choices":[{"index":0,"delta":{"role":"assistant","content":null,"refusal":null},"logprobs":null,"finish_reason":null}]}`,
+			`{"id":"chatcmpl-10","object":"chat.completion.chunk","created":1,"model":"gpt-5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_g1","type":"custom","custom":{"name":"grep","input":""}}]},"logprobs":null,"finish_reason":null}]}`,
+			`{"id":"chatcmpl-10","object":"chat.completion.chunk","created":1,"model":"gpt-5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"custom":{"input":"rain <&"}}]},"logprobs":null,"finish_reason":null}]}`,
+			`{"id":"chatcmpl-10","object":"chat.completion.chunk","created":1,"model":"gpt-5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"custom":{"input":"> \"wet\""}}]},"logprobs":null,"finish_reason":null}]}`,
+			`{"id":"chatcmpl-10","object":"chat.completion.chunk","created":1,"model":"gpt-5","choices":[{"index":0,"delta":{},"logprobs":null,"finish_reason":"tool_calls"}]}`,
+			`[DONE]`),
+		want: map[string]any{
+			"gen_ai.input.messages":   `[{"role":"user","parts":[{"type":"text","content":"Find the rain."}]}]`,
+			"gen_ai.tool.definitions": `[{"type":"custom","custom":{"name":"grep","description":"Search","format":{"type":"text"}},"name":"grep"}]`,
+			"gen_ai.response.id":      "chatcmpl-10", "gen_ai.response.model": "gpt-5",
+			"gen_ai.response.finish_reasons": []string{"tool_calls"},
+			"gen_ai.output.messages": `[{"role":"assistant","parts":[
+				{"id":"call_g1","type":"custom","custom":{"name":"grep","input":"rain <&> \"wet\""}}]}]`,
 		},
 	},
 }
@@ -328,10 +354,11 @@ var chatCorpus = []contentCase{
 // streamed alike: every streamed answer assembles to its unstreamed twin.
 func TestChatCompletionsContent(t *testing.T) { expectCorpus(t, provider.ChatCompletions, chatCorpus) }
 
-// A stream cut short keeps what arrived: the text finished, and a tool call's
-// half-written arguments as a string; with no finish reason, none is written. A
-// block the stream ends inside was never whole and is not read. A non-stream answer
-// cut short is no valid JSON, and gives nothing.
+// A stream cut short keeps what arrived: the text finished, a tool call's
+// half-written arguments as a string, a custom tool's call with its input so far; the
+// choice that never finished has the finish reason error. A block the stream ends
+// inside was never whole and is not read. A non-stream answer cut short is no valid
+// JSON, and gives nothing.
 func TestChatCompletionsCutShort(t *testing.T) {
 	const request = `{"model":"qwen","stream":true,"messages":[{"role":"user","content":"Weather?"}],
 		"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}}]}`
@@ -345,11 +372,22 @@ func TestChatCompletionsCutShort(t *testing.T) {
 		"gen_ai.input.messages":   `[{"role":"user","parts":[{"type":"text","content":"Weather?"}]}]`,
 		"gen_ai.tool.definitions": `[{"type":"function","name":"get_weather","parameters":{"type":"object"}}]`,
 		"gen_ai.response.id":      "chatcmpl-c", "gen_ai.response.model": "qwen",
+		"gen_ai.response.finish_reasons": []string{"error"},
 		"gen_ai.output.messages": `[{"role":"assistant","parts":[
 			{"type":"text","content":"Checking."},
 			{"type":"tool_call","id":"call_9","name":"get_weather","arguments":"{\"city\": \"Os"}]}]`,
 	}
 	expectAttributes(t, "cut stream", chatContent(t, request, stream, true, 200), want)
+
+	custom := events(
+		`{"id":"chatcmpl-g","model":"gpt-5","choices":[{"index":0,"delta":{"role":"assistant","content":null},"finish_reason":null}]}`,
+		`{"id":"chatcmpl-g","model":"gpt-5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_g","type":"custom","custom":{"name":"grep","input":""}}]},"finish_reason":null}]}`,
+		`{"id":"chatcmpl-g","model":"gpt-5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"custom":{"input":"ra"}}]},"finish_reason":null}]}`)
+	expectAttributes(t, "cut custom call", chatContent(t, `{"model":"gpt-5"}`, custom, true, 200), map[string]any{
+		"gen_ai.response.id": "chatcmpl-g", "gen_ai.response.model": "gpt-5",
+		"gen_ai.response.finish_reasons": []string{"error"},
+		"gen_ai.output.messages": `[{"role":"assistant","parts":[
+			{"id":"call_g","type":"custom","custom":{"name":"grep","input":"ra"}}]}]`})
 
 	whole := `{"id":"chatcmpl-c","object":"chat.completion","model":"qwen","choices":[{"index":0,"message":{"role":"assistant","content":"Check`
 	expectAttributes(t, "cut body", chatContent(t, request, whole, false, 200), map[string]any{
@@ -478,7 +516,7 @@ func TestChatCompletionsMalformed(t *testing.T) {
 			{"role":"user","content":5},
 			{"role":"user","content":{"text":"x"}},
 			{"role":"user","content":[1,"x",null,[],{"type":5},{"text":"no type"},{"type":"text"},{"type":"text","text":["x"]},
-				{"type":"text","text":""},
+				{"type":"text","text":""},{"type":"reasoning","text":"named as the conventions' part"},{"type":"blob"},
 				{"type":"image_url","image_url":"https://example.com/a.png"},{"type":"image_url"},
 				{"type":"image_url","image_url":{"url":5}},
 				{"type":"input_audio","input_audio":{"data":5,"format":"wav"}},{"type":"input_audio","input_audio":"x"},
@@ -487,7 +525,7 @@ func TestChatCompletionsMalformed(t *testing.T) {
 			{"role":"assistant","content":"ok","name":7,"tool_calls":{"a":1},"reasoning":5,"reasoning_content":null,"refusal":["x"]},
 			{"role":"assistant","content":null,"tool_calls":[1,null,{"function":"x"},{"function":{"name":5}},
 				{"id":5,"function":{"name":"f","arguments":{"a":1}}},{"id":"c2","function":{"name":"g","arguments":null}},
-				{"type":"custom","id":"c3","custom":{"name":"grep","input":"x"}}]},
+				{"type":"custom","id":"c3","custom":{"name":"grep","input":"x"}},{"type":"tool_call","id":"c4"}]},
 			{"role":"tool","tool_call_id":5}]}`,
 			want: map[string]any{"gen_ai.input.messages": `[
 				{"role":"user","parts":[]},
@@ -501,8 +539,12 @@ func TestChatCompletionsMalformed(t *testing.T) {
 				{"role":"tool","parts":[{"type":"tool_call_response","response":null}]}]`}},
 		{name: "tools of every wrong shape", request: `{"tools":[1,null,"f",{"type":5},{"type":"function"},
 			{"type":"function","function":"f"},{"type":"function","function":{"name":5}},
-			{"type":"function","function":{"name":"f","description":5,"parameters":null}},{"function":{"name":"g"}}]}`,
-			want: map[string]any{"gen_ai.tool.definitions": `[{"type":"function","name":"f"}]`}},
+			{"type":"function","function":{"name":"f","description":5,"parameters":null}},{"function":{"name":"g"}},
+			{"type":"x_tool","name":5},{"type":"x_tool","name":null},{"type":"x_tool"},{"type":"custom","custom":{"name":5}},
+			{"type":"custom","custom":"grep"},{"type":"x_tool","name":"own","x_tool":{"name":"inner"}}]}`,
+			want: map[string]any{"gen_ai.tool.definitions": `[{"type":"function","name":"f"},
+				{"type":"x_tool","name":"x_tool"},{"type":"custom","custom":{"name":5},"name":"custom"},
+				{"type":"custom","custom":"grep","name":"custom"},{"type":"x_tool","name":"own","x_tool":{"name":"inner"}}]`}},
 		{name: "parameters of the wrong types", request: `{"temperature":"0.5","top_p":true,"top_k":1.5,"seed":1e3,
 			"max_tokens":null,"max_completion_tokens":"10","frequency_penalty":1e400,"presence_penalty":null,
 			"stop":[1,"x"],"n":"2"}`, want: map[string]any{}},
@@ -522,7 +564,8 @@ func TestChatCompletionsMalformed(t *testing.T) {
 			{"message":{"content":"no index"}},{"index":"0","message":{"content":"x"}},{"index":0},
 			{"index":0,"message":"text"},{"index":1.5,"message":{"content":"x"}},
 			{"index":2,"message":{"role":5,"content":"ok"},"finish_reason":5}]}`,
-			want: map[string]any{"gen_ai.output.messages": `[{"role":"assistant","parts":[{"type":"text","content":"ok"}]}]`}},
+			want: map[string]any{"gen_ai.response.finish_reasons": []string{"error"},
+				"gen_ai.output.messages": `[{"role":"assistant","parts":[{"type":"text","content":"ok"}]}]`}},
 		{name: "whitespace before the answer", response: "\r\n {\"id\":\"a\",\"choices\":[{\"index\":0,\"message\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}",
 			want: map[string]any{"gen_ai.response.id": "a", "gen_ai.response.finish_reasons": []string{"stop"},
 				"gen_ai.output.messages": `[{"role":"assistant","parts":[{"type":"text","content":"hi"}]}]`}},
@@ -543,8 +586,16 @@ func TestChatCompletionsMalformed(t *testing.T) {
 				"gen_ai.output.messages": `[{"role":"assistant","parts":[{"type":"tool_call","id":"c1","name":"f"}]}]`}},
 		{name: "spaces before an event's data", stream: true,
 			response: "data:    {\"id\":\"w\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"x\"}}]}\n\n",
-			want: map[string]any{"gen_ai.response.id": "w",
+			want: map[string]any{"gen_ai.response.id": "w", "gen_ai.response.finish_reasons": []string{"error"},
 				"gen_ai.output.messages": `[{"role":"assistant","parts":[{"type":"text","content":"x"}]}]`}},
+		{name: "a custom call's fragments", stream: true, response: events(
+			`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"custom":{"name":"grep","input":"a"}},{"index":1,"type":"custom","custom":{"name":5,"input":5}}]}}]}`,
+			`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"not the call's kind"}},{"index":0,"custom":{"name":"later","input":"b"}}]}}]}`,
+			`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"f"},"custom":{"input":"c"}}]},"finish_reason":"tool_calls"}]}`),
+			want: map[string]any{"gen_ai.response.finish_reasons": []string{"tool_calls"},
+				"gen_ai.output.messages": `[{"role":"assistant","parts":[
+					{"type":"custom","custom":{"name":"grep","input":"abc"}},
+					{"type":"custom","custom":{"name":"","input":""}}]}]`}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			expectAttributes(t, c.name, chatContent(t, c.request, c.response, c.stream, 200), c.want)

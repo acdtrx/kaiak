@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -20,12 +21,13 @@ import (
 const waitTimeout = 5 * time.Second
 
 // fakeExporter keeps the spans queued with it, releasing each when the test says
-// its export ended. maxSpan is MaxSpanBytes; gate, when set, holds MaxSpanBytes —
-// and so the build that calls it — until it is closed, after entered is sent.
+// its export ended. maxSpan is MaxSpanBytes; gate, when set, holds Enqueue — and so
+// the build that calls it — until it is closed, after entered is sent the encoded
+// span's length.
 type fakeExporter struct {
 	maxSpan int
 	gate    chan struct{}
-	entered chan struct{}
+	entered chan int
 	// releaseNow releases each span within Enqueue, as an exporter shut down does.
 	releaseNow bool
 
@@ -38,15 +40,13 @@ type queuedSpan struct {
 	release func()
 }
 
-func (f *fakeExporter) MaxSpanBytes() int {
-	if f.gate != nil {
-		f.entered <- struct{}{}
-		<-f.gate
-	}
-	return f.maxSpan
-}
+func (f *fakeExporter) MaxSpanBytes() int { return f.maxSpan }
 
 func (f *fakeExporter) Enqueue(encoded []byte, release func()) {
+	if f.gate != nil {
+		f.entered <- len(encoded)
+		<-f.gate
+	}
 	if f.releaseNow {
 		release()
 		return
@@ -201,13 +201,13 @@ func TestAnswerThatOutgrowsTheBudgetDropsTheCapture(t *testing.T) {
 	for range 4 {
 		c.Append(event)
 	}
-	if c.dropped {
+	if c.dropped != "" {
 		t.Fatal("dropped while the first buffer held the answer")
 	}
 	c.Append(event)
 	c.Append(event)
-	if !c.dropped || cs.InUse() != 0 {
-		t.Errorf("dropped %v with %d bytes held, want dropped and 0 held", c.dropped, cs.InUse())
+	if c.dropped != OutcomeMemory || cs.InUse() != 0 {
+		t.Errorf("dropped %q with %d bytes held, want memory and 0 held", c.dropped, cs.InUse())
 	}
 	if got := c.Hand(summary("r-1")); got != OutcomeMemory {
 		t.Errorf("Hand: %q, want memory", got)
@@ -215,6 +215,42 @@ func TestAnswerThatOutgrowsTheBudgetDropsTheCapture(t *testing.T) {
 	finish(t, cs)
 	if len(exp.queued) != 0 || cs.Drops() != (Drops{Memory: 1}) {
 		t.Errorf("%d spans queued, drops %+v; want none and one memory", len(exp.queued), cs.Drops())
+	}
+}
+
+// A request body larger than the exporter can send in a span drops the capture at
+// once, before anything is copied: nothing is held, what the client is written is
+// ignored, nothing is built, and it is counted — and its request line says —
+// too_large. A body of the limit's own size is copied.
+func TestBodyOverTheExportLimitIsNotCopied(t *testing.T) {
+	body := []byte(`{"model":"qwen","messages":[{"role":"user","content":"` + strings.Repeat("x", 64) + `"}]}`)
+	exp := newFakeExporter()
+	exp.maxSpan = len(body) - 1
+	cs := newCaptures(t, 1<<20, exp)
+	cs.readContent = func(provider.Endpoint, exchange) []otlptrace.Attribute {
+		t.Error("a capture whose body is over the export limit was built")
+		return nil
+	}
+	c := cs.Start(provider.ChatCompletions, body, nil)
+	c.Append([]byte("data: one\n\n"))
+	if got := cs.InUse(); got != 0 {
+		t.Errorf("%d bytes held, want none: nothing is copied", got)
+	}
+	if got := c.Hand(summary("r-1")); got != OutcomeTooLarge {
+		t.Errorf("Hand: %q, want too_large", got)
+	}
+	finish(t, cs)
+	if len(exp.queued) != 0 || cs.InUse() != 0 || cs.Drops() != (Drops{TooLarge: 1}) {
+		t.Errorf("%d spans queued, %d bytes held, drops %+v; want none, 0 and one too_large", len(exp.queued), cs.InUse(),
+			cs.Drops())
+	}
+
+	atLimit := newFakeExporter()
+	atLimit.maxSpan = len(body)
+	cs = newCaptures(t, 1<<20, atLimit)
+	cs.Start(provider.ChatCompletions, body, nil)
+	if got := cs.InUse(); got != int64(len(body)) {
+		t.Errorf("%d bytes held for a body at the limit, want its %d", got, len(body))
 	}
 }
 
@@ -283,12 +319,13 @@ func TestFinish(t *testing.T) {
 	})
 	t.Run("bound ends with the builder blocked", func(t *testing.T) {
 		exp := newFakeExporter()
-		exp.gate, exp.entered = make(chan struct{}), make(chan struct{}, 1)
+		exp.gate, exp.entered = make(chan struct{}), make(chan int, 1)
 		cs := newCaptures(t, 1<<20, exp)
 		body := []byte(`{"model":"qwen"}`)
 		cs.Start(provider.ChatCompletions, body, nil).Hand(summary("r-1"))
+		var building int
 		select {
-		case <-exp.entered:
+		case building = <-exp.entered:
 		case <-time.After(waitTimeout):
 			t.Fatal("the builder never started")
 		}
@@ -310,8 +347,8 @@ func TestFinish(t *testing.T) {
 			case <-time.After(time.Millisecond):
 			}
 		}
-		if got := cs.InUse(); got != int64(len(body)) {
-			t.Errorf("%d bytes held at the bound, want r-1's %d alone", got, len(body))
+		if got := cs.InUse(); got != int64(building) {
+			t.Errorf("%d bytes held at the bound, want r-1's encoded span's %d alone", got, building)
 		}
 		select {
 		case <-finished:
@@ -333,7 +370,8 @@ func TestFinish(t *testing.T) {
 
 // The span carries every attribute but the content from the summary, under the
 // convention's names and the request line's (docs/specs/GATEWAY.md, Request capture
-// → Attributes); an error makes its status an error with error.type as its message.
+// → Attributes); an error makes its status an error, with no message: error.type
+// says which.
 func TestSpanAttributes(t *testing.T) {
 	str := func(s string) map[string]any { return map[string]any{"stringValue": s} }
 	integer := func(s string) map[string]any { return map[string]any{"intValue": s} }
@@ -369,7 +407,7 @@ func TestSpanAttributes(t *testing.T) {
 				"error.type": str("model_not_found"), "kaiak.request.id": str("r-2"), "kaiak.key.id": str("k-eval"),
 				"kaiak.key.group": str("eval"), "kaiak.key.root_group": str("research"),
 				"kaiak.session_id.ignored": str("invalid_characters")},
-			status: map[string]any{"code": float64(2), "message": "model_not_found"}},
+			status: map[string]any{"code": float64(2)}},
 		{name: "a stream cut short", summary: func() Summary {
 			s := summary("r-3")
 			s.Stream, s.RelayEnd, s.ContentStreamed, s.TimeToFirstToken = true, "upstream_failed", true, 1234567*time.Microsecond
@@ -389,7 +427,7 @@ func TestSpanAttributes(t *testing.T) {
 			"kaiak.time_to_first_token": double(1.234567), "kaiak.relay_end": str("upstream_failed"),
 			"kaiak.usage.cost_usd": double(0.5), "kaiak.usage.estimated": boolean(false),
 			"kaiak.usage.partial": boolean(true)},
-			status: map[string]any{"code": float64(2), "message": "upstream_failed"}},
+			status: map[string]any{"code": float64(2)}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			exp := newFakeExporter()
@@ -485,26 +523,17 @@ func TestSession(t *testing.T) {
 	}
 }
 
-// faultyExporter faults within the first build that reaches it — at MaxSpanBytes,
-// before the charge moves to the encoded span, or within Enqueue once it has
-// released the span — and serves the builds after it as fakeExporter does.
+// faultyExporter faults within the first build that reaches it — within Enqueue,
+// once it has released the span — and serves the builds after it as fakeExporter
+// does. marker is the panic's value.
 type faultyExporter struct {
 	*fakeExporter
-	// at is where it faults: "max" or "enqueue"; marker is the panic's value.
-	at, marker string
-	faulted    bool
-}
-
-func (f *faultyExporter) MaxSpanBytes() int {
-	if f.at == "max" && !f.faulted {
-		f.faulted = true
-		panic(f.marker)
-	}
-	return f.fakeExporter.MaxSpanBytes()
+	marker  string
+	faulted bool
 }
 
 func (f *faultyExporter) Enqueue(encoded []byte, release func()) {
-	if f.at == "enqueue" && !f.faulted {
+	if !f.faulted {
 		f.faulted = true
 		release()
 		panic(f.marker)
@@ -520,12 +549,12 @@ func (f *faultyExporter) Enqueue(encoded []byte, release func()) {
 // next capture is built and queued.
 func TestBuildFaultDropsOneCapture(t *testing.T) {
 	const marker = "PANIC-MARKER-c0ffee"
-	for _, at := range []string{"content", "max", "enqueue"} {
+	for _, at := range []string{"content", "enqueue"} {
 		t.Run(at, func(t *testing.T) {
 			fake := newFakeExporter()
 			var exp Exporter = fake
-			if at != "content" {
-				exp = &faultyExporter{fakeExporter: fake, at: at, marker: marker}
+			if at == "enqueue" {
+				exp = &faultyExporter{fakeExporter: fake, marker: marker}
 			}
 			var logs bytes.Buffer
 			cs := startCaptures(t, 1<<20, exp, slog.New(slog.NewJSONHandler(&logs, nil)))
@@ -571,5 +600,38 @@ func TestBuildFaultDropsOneCapture(t *testing.T) {
 				t.Errorf("the log carries the fault's value: %s", logs.String())
 			}
 		})
+	}
+}
+
+// A capture's content is read knowing whether its request failed — its span has an
+// error.type: a stream cut before its content arrived gives no output message, none
+// made up, and the finish reason error; the same stream of a request that did not
+// fail gives its message, empty.
+func TestFailedCaptureMakesUpNoOutput(t *testing.T) {
+	stream := typedEvents(`{"type":"message_start","message":{"id":"msg","model":"claude","content":[]}}`)
+	for _, c := range []struct {
+		name, relayEnd string
+		output         bool
+	}{{"failed", "client_closed", false}, {"not failed", "", true}} {
+		exp := newFakeExporter()
+		cs := newCaptures(t, 1<<20, exp)
+		capture := cs.Start(provider.Messages, []byte(`{"model":"claude","stream":true}`), nil)
+		capture.Append([]byte(stream))
+		s := summary("r-1")
+		s.Stream, s.RelayEnd = true, c.relayEnd
+		capture.Hand(s)
+		finish(t, cs)
+		spans := exp.exportAll()
+		if len(spans) != 1 {
+			t.Fatalf("%s: %d spans, want 1", c.name, len(spans))
+		}
+		_, attrs, _ := decoded(t, spans[0])
+		if _, has := attrs["gen_ai.output.messages"]; has != c.output {
+			t.Errorf("%s: output messages %v, want them %v", c.name, attrs["gen_ai.output.messages"], c.output)
+		}
+		if got, want := attrs["gen_ai.response.finish_reasons"], map[string]any{"arrayValue": map[string]any{
+			"values": []any{map[string]any{"stringValue": "error"}}}}; !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: finish reasons %v, want error", c.name, got)
+		}
 	}
 }

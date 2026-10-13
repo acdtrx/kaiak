@@ -33,7 +33,7 @@ func TestEncodeSpan(t *testing.T) {
 			Strings("kaiak.empty", []string{}),
 			String("gen_ai.input.messages", `[{"role":"user","parts":[{"type":"text","content":"is 1 < 2 && 3 > 2?"}]}]`),
 		},
-		Status: Status{Code: StatusError, Message: "upstream_error"},
+		Status: Status{Code: StatusError},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -47,7 +47,7 @@ func TestEncodeSpan(t *testing.T) {
 		`{"key":"gen_ai.response.finish_reasons","value":{"arrayValue":{"values":[{"stringValue":"stop"},{"stringValue":"length"}]}}},` +
 		`{"key":"kaiak.empty","value":{"arrayValue":{"values":[]}}},` +
 		`{"key":"gen_ai.input.messages","value":{"stringValue":"[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"is 1 < 2 && 3 > 2?\"}]}]"}}],` +
-		`"status":{"code":2,"message":"upstream_error"}}`
+		`"status":{"code":2}}`
 	if string(got) != want {
 		t.Fatalf("encoded\n%s\nwant\n%s", got, want)
 	}

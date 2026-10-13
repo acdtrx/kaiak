@@ -61,7 +61,7 @@ type captureExchange struct {
 // answerOutput is an answer read by the live-test kit into what its capture must
 // carry (docs/specs/GATEWAY.md, Request capture → Content, Streams): its ID and
 // model, its output messages in the GenAI conventions' format — decoded JSON, to
-// compare with the span's — and their finish reasons.
+// compare with the span's — and their finish reasons, "" for one that gave none.
 type answerOutput struct {
 	id, model     string
 	messages      []any
@@ -580,8 +580,8 @@ func messagesStreamOutput(events []map[string]any) (answerOutput, error) {
 }
 
 // responseOutput reads a response object: one output message of its output items,
-// its finish reason the incomplete_details.reason of an incomplete response, else
-// its status.
+// its finish reason the incomplete_details.reason of an incomplete response, error
+// for a failed one, else its status.
 func responseOutput(response map[string]any) answerOutput {
 	out := answerOutput{id: str(response, "id"), model: str(response, "model")}
 	items, ok := response["output"].([]any)
@@ -636,8 +636,11 @@ func responseOutput(response map[string]any) answerOutput {
 		}
 	}
 	reason := str(response, "status")
-	if reason == "incomplete" {
+	switch reason {
+	case "incomplete":
 		reason = cmp.Or(str(response, "incomplete_details", "reason"), reason)
+	case "failed":
+		reason = "error"
 	}
 	out.messages = []any{outputMessage("assistant", parts)}
 	out.finishReasons = []string{reason}
@@ -765,10 +768,11 @@ func (r *run) captureProblem(c *captureExchange, sp span, line map[string]any) s
 	}
 	expects = append(expects, expect{"gen_ai.response.id", nonEmpty(c.answer.id)},
 		expect{"gen_ai.response.model", nonEmpty(c.answer.model)})
-	if slices.ContainsFunc(c.answer.finishReasons, func(s string) bool { return s != "" }) {
+	// One finish reason per generation, error for one that gave none.
+	if len(c.answer.finishReasons) > 0 {
 		reasons := []any{}
 		for _, s := range c.answer.finishReasons {
-			reasons = append(reasons, s)
+			reasons = append(reasons, cmp.Or(s, "error"))
 		}
 		expects = append(expects, expect{"gen_ai.response.finish_reasons", reasons})
 	} else {

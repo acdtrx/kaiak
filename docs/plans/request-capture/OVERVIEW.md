@@ -182,7 +182,10 @@ discussed and changed first):
     when a malformed session ID was dropped (decision 21). *Amended 2026-10-13 at
     step 6 (decision 24):* the line is written before the build, so drops in the
     build — `too_large`, and `memory` when the encoded span does not fit — are in the
-    counts (decision 28) only.
+    counts (decision 28) only. *Amended 2026-10-14 at step 11:* a request body over
+    the export limit drops the capture at the copy — nothing copied, held or built —
+    so the line says `too_large` for it; a span built over the limit is still in the
+    counts alone.
 28. **Counts:** `otel.sdk.processor.span.processed` and `otel.sdk.exporter.span.exported`
     as the log exporter's twins (component types `capture_span_processor`,
     `otlp_http_json_span_exporter`); drops before the exporter (`memory`,

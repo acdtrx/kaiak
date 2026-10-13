@@ -58,10 +58,11 @@ const (
 	StatusError StatusCode = 2
 )
 
-// Status is a span's status: its code, and for an error a message.
+// Status is a span's status: its code alone. The gateway writes no description: the
+// conventions' error rules ask not to repeat error.type there (docs/specs/GATEWAY.md,
+// Request capture → The span).
 type Status struct {
-	Code    StatusCode
-	Message string
+	Code StatusCode
 }
 
 // Attribute is one of a span's attributes, OTLP's KeyValue. String, Int, Float64,

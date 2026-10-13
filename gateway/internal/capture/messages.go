@@ -42,9 +42,9 @@ func messagesRequest(body []byte) requestContent {
 }
 
 // messagesSystem is a request's system prompt as system instructions: a string is
-// one text part, a list its text blocks as text parts and any other block as sent. A
-// block that is not an object naming its type, or a text block without its text, is
-// left out.
+// one text part, a list its text blocks as text parts and any other block as sent
+// (appendGeneric). A block that is not an object naming its type, or a text block
+// without its text, is left out.
 func messagesSystem(raw json.RawMessage) []part {
 	if s, ok := stringOf(raw); ok {
 		return appendText(nil, s)
@@ -62,7 +62,7 @@ func messagesSystem(raw json.RawMessage) []part {
 			s, _ := stringOf(m["text"])
 			parts = appendText(parts, s)
 		default:
-			parts = append(parts, original(block))
+			parts = appendGeneric(parts, block, typ)
 		}
 	}
 	return parts
@@ -96,8 +96,8 @@ func messagesInputMessage(raw json.RawMessage) (message, bool) {
 // (appendMessagesMedia); tool_use as a tool call — its id, name and input;
 // tool_result as a tool result — its tool_use_id and its content as sent, a string
 // or its blocks' JSON; any other type (redacted_thinking, a server tool's blocks, …)
-// as sent. A block that is not an object naming its type, or a known block without
-// its API's shape, is left out.
+// as sent (appendGeneric). A block that is not an object naming its type, or a known
+// block without its API's shape, is left out.
 func appendMessagesBlock(parts []part, raw json.RawMessage) []part {
 	m, ok := members(raw)
 	if !ok {
@@ -128,16 +128,17 @@ func appendMessagesBlock(parts []part, raw json.RawMessage) []part {
 		id, _ := stringOf(m["tool_use_id"])
 		return append(parts, newToolCallResponsePart(id, m["content"]))
 	default:
-		return append(parts, original(raw))
+		return appendGeneric(parts, raw, typ)
 	}
 	return parts
 }
 
 // appendMessagesMedia appends block, an image or a document — media of kind — by its
 // source: a base64 source as a blob, its media_type and its data; a url source as a
-// uri; a source of any other type (text, content, file) as the block as sent. A
-// source that is not an object naming its type, or a base64 or url source without
-// its shape, is left out.
+// uri; a source of any other type (text, content) as the block as sent. A source
+// that is not an object naming its type, or a base64 or url source without its
+// shape, is left out. A file source never reaches capture: the inbound stage refuses
+// a stored object.
 func appendMessagesMedia(parts []part, block, rawSource json.RawMessage, kind string) []part {
 	source, _ := members(rawSource)
 	switch typ, _ := stringOf(source["type"]); typ {
@@ -163,8 +164,9 @@ func appendMessagesMedia(parts []part, block, rawSource json.RawMessage, kind st
 
 // messagesTool is one of the tools a request offers: a tool with an input_schema —
 // a custom tool — as a function definition, its input_schema as the parameters; any
-// other (Anthropic's client-run tools, bash_20250124, …) as sent. false for a tool
-// that is neither, or a custom tool without a name.
+// other (Anthropic's client-run tools, bash_20250124, …) as sent, named as
+// genericTool names it. false for a tool that is neither, or a custom tool without a
+// name.
 func messagesTool(raw json.RawMessage) (toolDefinition, bool) {
 	m, ok := members(raw)
 	if !ok {
@@ -174,7 +176,7 @@ func messagesTool(raw json.RawMessage) (toolDefinition, bool) {
 		return readFunctionTool(m, "input_schema")
 	}
 	if typ, _ := stringOf(m["type"]); typ != "" {
-		return original(raw), true
+		return genericTool(raw, m, "")
 	}
 	return nil, false
 }
@@ -275,8 +277,8 @@ events:
 // messagesBlock is one content block of a streamed answer, as its start and its
 // deltas have built it so far.
 type messagesBlock struct {
-	// typ is text, thinking or tool_use — the blocks built from deltas; "" for a
-	// block of any other type, carried as its start gave it (start).
+	// typ is its type: text, thinking and tool_use are built from deltas; a block of
+	// any other type is carried as its start gave it (start).
 	typ   string
 	start json.RawMessage
 	// id, name and input are a tool_use block's from its start.
@@ -298,20 +300,19 @@ func startMessagesBlock(raw json.RawMessage) (*messagesBlock, bool) {
 	if !ok {
 		return nil, false
 	}
-	b := &messagesBlock{start: raw}
-	switch typ, _ := stringOf(m["type"]); typ {
-	case "":
+	typ, _ := stringOf(m["type"])
+	if typ == "" {
 		return nil, false
+	}
+	b := &messagesBlock{typ: typ, start: raw}
+	switch typ {
 	case "text":
-		b.typ = typ
 		s, _ := stringOf(m["text"])
 		b.content.WriteString(s)
 	case "thinking":
-		b.typ = typ
 		s, _ := stringOf(m["thinking"])
 		b.content.WriteString(s)
 	case "tool_use":
-		b.typ = typ
 		b.id, _ = stringOf(m["id"])
 		b.name, b.hasName = stringOf(m["name"])
 		b.input = m["input"]
@@ -358,5 +359,5 @@ func (b *messagesBlock) appendTo(parts []part) []part {
 		}
 		return append(parts, newToolCallPart(b.id, b.name, arguments))
 	}
-	return append(parts, original(b.start))
+	return appendGeneric(parts, b.start, b.typ)
 }

@@ -7,9 +7,11 @@
 // hands it each piece written to the client (Capture.Append); the stage's finisher
 // hands it, with how the request ended, to a background builder (Capture.Hand) and
 // does nothing more — finishers run before the response's end reaches the client,
-// so building there would delay it. Every byte a capture holds is taken from one
-// budget first; a take that does not fit drops the capture and gives back what it
-// held, and the request goes on untouched.
+// so building there would delay it. A body larger than the exporter can send in a
+// span is not copied at all: the span carries the request's content nearly whole.
+// Every byte a capture holds is taken from one budget first; a take that does not
+// fit drops the capture and gives back what it held, and the request goes on
+// untouched.
 //
 // The builder makes each capture's span, encodes it, swaps its budget charge from
 // the copies to the encoded span and queues it with the trace exporter, whose
@@ -43,6 +45,9 @@ const (
 	// OutcomeMemory: the budget could not hold the copy of the request or of the
 	// answer while the request ran.
 	OutcomeMemory = "memory"
+	// OutcomeTooLarge: the request's body is larger than a span the exporter can
+	// send — nothing is copied.
+	OutcomeTooLarge = "too_large"
 	// OutcomeExportOff: the key's group captures, but this gateway's trace export is
 	// off — nothing is copied.
 	OutcomeExportOff = "export_off"
@@ -51,7 +56,8 @@ const (
 // Exporter takes the spans the builder makes: the trace exporter
 // (otlptrace.Exporter).
 type Exporter interface {
-	// MaxSpanBytes is the largest encoded span it can send.
+	// MaxSpanBytes is the largest encoded span it can send. It never changes: New
+	// reads it once.
 	MaxSpanBytes() int
 	// Enqueue queues an encoded span without waiting; release gives its bytes back
 	// once its export has ended — possibly within Enqueue.
@@ -64,6 +70,9 @@ type Exporter interface {
 type Captures struct {
 	budget   budget
 	exporter Exporter
+	// maxSpan is the exporter's MaxSpanBytes: no span over it is queued, and no
+	// request body over it copied.
+	maxSpan int
 	// logger reports a build that failed (failBuild).
 	logger *slog.Logger
 	// readContent reads a capture's content attributes: content; tests replace it.
@@ -98,8 +107,8 @@ type job struct {
 // New starts the builder of the captures held within memory bytes and queued with
 // exporter; a build that fails is reported to logger. Finish stops it.
 func New(memory int64, exporter Exporter, logger *slog.Logger) *Captures {
-	cs := &Captures{budget: budget{limit: memory}, exporter: exporter, logger: logger, readContent: content,
-		wake: make(chan struct{}, 1), built: make(chan struct{})}
+	cs := &Captures{budget: budget{limit: memory}, exporter: exporter, maxSpan: exporter.MaxSpanBytes(), logger: logger,
+		readContent: content, wake: make(chan struct{}, 1), built: make(chan struct{})}
 	go cs.runBuilder()
 	return cs
 }
@@ -117,21 +126,30 @@ type Capture struct {
 	// buffer's capacity.
 	held                    int64
 	session, sessionIgnored string
-	// dropped: the budget could not hold it, and it gave back everything it held.
+	// dropped is why the capture was dropped — OutcomeTooLarge or OutcomeMemory —
+	// having given back everything it held; "" while it is kept.
+	dropped string
 	// handed: Hand passed its bytes to the builder, which owns them now.
-	dropped, handed bool
+	handed bool
 }
 
 // Start captures a request to api — chat completions, Messages or Responses — whose
 // body is body, as the client sent it, and whose Kaiak-Session-Id headers are
-// sessionValues. The copy of the body is taken from the budget; when it does not
-// fit, the capture is dropped at once (Hand returns OutcomeMemory).
+// sessionValues. A body larger than the exporter can send in a span drops the
+// capture at once, nothing copied (Hand returns OutcomeTooLarge): the span carries
+// the request's content nearly whole, so it could not fit, and copying, holding and
+// building it would only spend memory. Else the copy of the body is taken from the
+// budget; when it does not fit, the capture is dropped at once (OutcomeMemory).
 func (cs *Captures) Start(api provider.Endpoint, body []byte, sessionValues []string) *Capture {
 	c := &Capture{captures: cs, api: api}
 	c.session, c.sessionIgnored = session(sessionValues)
+	if len(body) > cs.maxSpan {
+		c.drop(OutcomeTooLarge)
+		return c
+	}
 	size := int64(len(body))
 	if !cs.budget.take(size) {
-		c.drop()
+		c.drop(OutcomeMemory)
 		return c
 	}
 	c.request, c.held = bytes.Clone(body), size
@@ -146,14 +164,14 @@ const responseStep = 4 << 10
 // budget before it is made; a growth the budget cannot hold drops the capture, which
 // gives back everything it held. The client's write is never affected.
 func (c *Capture) Append(p []byte) {
-	if c.dropped || c.handed || len(p) == 0 {
+	if c.dropped != "" || c.handed || len(p) == 0 {
 		return
 	}
 	if need := len(c.response) + len(p); need > cap(c.response) {
 		size := max(2*cap(c.response), need, responseStep)
 		growth := int64(size - cap(c.response))
 		if !c.captures.budget.take(growth) {
-			c.drop()
+			c.drop(OutcomeMemory)
 			return
 		}
 		c.held += growth
@@ -164,11 +182,15 @@ func (c *Capture) Append(p []byte) {
 	c.response = append(c.response, p...)
 }
 
-// drop drops the capture for want of memory: it gives back everything it held, and
-// is counted.
-func (c *Capture) drop() {
+// drop drops the capture for why — OutcomeMemory or OutcomeTooLarge: it gives back
+// everything it held, and is counted.
+func (c *Capture) drop(why string) {
 	c.captures.budget.give(c.held)
-	c.request, c.response, c.held, c.dropped = nil, nil, 0, true
+	c.request, c.response, c.held, c.dropped = nil, nil, 0, why
+	if why == OutcomeTooLarge {
+		c.captures.droppedTooLarge.Add(1)
+		return
+	}
 	c.captures.droppedMemory.Add(1)
 }
 
@@ -178,12 +200,13 @@ func (c *Capture) SessionIgnored() string { return c.sessionIgnored }
 
 // Hand ends the capture's part on the request's path: it passes the copies — their
 // bytes still held in the budget — with s, how the request ended, to the builder,
-// and returns the request line's kaiak.capture: OutcomeQueued, or OutcomeMemory
-// for a capture the budget could not hold. It does nothing else: it runs in a
-// finisher, before the response's end reaches the client.
+// and returns the request line's kaiak.capture: OutcomeQueued, or why the capture
+// was dropped — OutcomeTooLarge for a body too large to send, OutcomeMemory for a
+// capture the budget could not hold. It does nothing else: it runs in a finisher,
+// before the response's end reaches the client.
 func (c *Capture) Hand(s Summary) string {
-	if c.dropped {
-		return OutcomeMemory
+	if c.dropped != "" {
+		return c.dropped
 	}
 	j := job{api: c.api, request: c.request, response: c.response, held: c.held, session: c.session,
 		sessionIgnored: c.sessionIgnored, summary: s}
@@ -268,7 +291,7 @@ func (cs *Captures) build(j job) {
 		cs.failBuild(j.summary.RequestID, charged)
 		return
 	}
-	if len(encoded) > cs.exporter.MaxSpanBytes() {
+	if len(encoded) > cs.maxSpan {
 		cs.budget.give(charged)
 		charged = 0
 		cs.droppedTooLarge.Add(1)
@@ -334,9 +357,9 @@ func (cs *Captures) Finish(ctx context.Context) {
 // counts the rest.
 type Drops struct {
 	// Memory: the budget could not hold one — its copies while its request ran, or
-	// its encoded span. TooLarge: its encoded span exceeds what the exporter can
-	// send. Shutdown: handed and not built when Finish's bound ended. Failed: its
-	// build failed, a fault in the gateway.
+	// its encoded span. TooLarge: its request's body, or its encoded span, exceeds
+	// what the exporter can send. Shutdown: handed and not built when Finish's bound
+	// ended. Failed: its build failed, a fault in the gateway.
 	Memory, TooLarge, Shutdown, Failed uint64
 }
 

@@ -2,6 +2,7 @@ package capture
 
 import (
 	"net/http"
+	"slices"
 
 	"kaiak/internal/provider"
 	"kaiak/internal/telemetry/otlptrace"
@@ -22,13 +23,18 @@ type exchange struct {
 	// status is the status the client was answered: an error answer (400 or above)
 	// gives no output messages.
 	status int
+	// failed: the request ended in an error, or its response stopped early — the span
+	// has an error.type.
+	failed bool
 }
 
 // content is the content attributes of a capture of api — the request's parameters
 // and messages, the answer's messages, ID, model and finish reasons — read from x by
 // its API's mapping (docs/specs/GATEWAY.md, Request capture → Parameters, Content). An
 // error answer (400 or above) — the backend's relayed refusal, the gateway's own
-// error body — gives no output messages: error.type says what happened.
+// error body — gives no output messages: error.type says what happened. Nor is output
+// made up for a request that failed: an output message with no parts is left out,
+// its generation's finish reason kept.
 func content(api provider.Endpoint, x exchange) []otlptrace.Attribute {
 	var m mapping
 	switch api {
@@ -48,6 +54,9 @@ func content(api provider.Endpoint, x exchange) []otlptrace.Attribute {
 		an = m.stream(x.response)
 	default:
 		an = m.answer(x.response)
+	}
+	if x.failed {
+		an.messages = slices.DeleteFunc(an.messages, func(m message) bool { return len(m.Parts) == 0 })
 	}
 	return contentAttributes(m.request(x.request), an)
 }

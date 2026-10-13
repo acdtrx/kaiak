@@ -52,10 +52,10 @@ var responsesToolOutputs = []string{"custom_tool_call_output", "local_shell_call
 // or a role and no type) with its role and content; a function_call as an assistant
 // message holding the tool call and a function_call_output as a tool message holding
 // its result — so that a tool round trip reads as on Chat Completions; a reasoning
-// item as an assistant message of its reasoning; any other item as sent, in a tool
-// message for the output of a tool the client ran, else an assistant message. false
-// for an item that is not an object naming its type or role, or a known item without
-// its API's shape.
+// item as an assistant message of its reasoning; any other item as sent
+// (appendGeneric), in a tool message for the output of a tool the client ran, else an
+// assistant message. false for an item that is not an object naming its type or
+// role, a known item without its API's shape, or an item appendGeneric leaves out.
 func responsesInputItem(raw json.RawMessage) (message, bool) {
 	m, ok := members(raw)
 	if !ok {
@@ -82,11 +82,15 @@ func responsesInputItem(raw json.RawMessage) (message, bool) {
 	case "reasoning":
 		return newMessage("assistant", "", appendResponsesReasoning(nil, m)), true
 	}
+	parts := appendGeneric(nil, raw, typ)
+	if len(parts) == 0 {
+		return message{}, false
+	}
 	role := "assistant"
 	if slices.Contains(responsesToolOutputs, typ) {
 		role = "tool"
 	}
-	return newMessage(role, "", []part{original(raw)}), true
+	return newMessage(role, "", parts), true
 }
 
 // responsesMessageItem is a message item with its role and its content's parts.
@@ -114,11 +118,12 @@ func appendResponsesContent(parts []part, raw json.RawMessage) []part {
 
 // appendResponsesContentPart appends one part of a message item's content:
 // input_text and output_text as text, refusal as text; input_image as a blob (a
-// base64 data: URL in image_url), a uri (another URL) or a file (file_id), modality
-// image; input_file as a blob (file_data, a base64 data: URL), a uri (file_url) or a
-// file (file_id), modality document unless a MIME type says otherwise; any other type
-// as sent. A part that is not an object naming its type, or a known part without its
-// API's shape, is left out.
+// base64 data: URL in image_url) or a uri (another URL), modality image; input_file
+// as a blob (file_data, a base64 data: URL) or a uri (file_url), modality document
+// unless a MIME type says otherwise; any other type as sent (appendGeneric). A part
+// that is not an object naming its type, or a known part without its API's shape, is
+// left out. A part naming a file_id never reaches capture: the inbound stage refuses
+// a stored object.
 func appendResponsesContentPart(parts []part, raw json.RawMessage) []part {
 	m, ok := members(raw)
 	if !ok {
@@ -138,9 +143,6 @@ func appendResponsesContentPart(parts []part, raw json.RawMessage) []part {
 		if url, ok := stringOf(m["image_url"]); ok {
 			return append(parts, newMediaByURL(url, modalityImage))
 		}
-		if id, ok := stringOf(m["file_id"]); ok {
-			return append(parts, newFilePart(modalityImage, "", id))
-		}
 	case "input_file":
 		if data, ok := stringOf(m["file_data"]); ok {
 			if mime, content, ok := dataURL(data); ok {
@@ -151,11 +153,8 @@ func appendResponsesContentPart(parts []part, raw json.RawMessage) []part {
 		if url, ok := stringOf(m["file_url"]); ok {
 			return append(parts, newMediaByURL(url, modalityDocument))
 		}
-		if id, ok := stringOf(m["file_id"]); ok {
-			return append(parts, newFilePart(modalityDocument, "", id))
-		}
 	default:
-		return append(parts, original(raw))
+		return appendGeneric(parts, raw, typ)
 	}
 	return parts
 }
@@ -173,9 +172,9 @@ func responsesFunctionCall(item map[string]json.RawMessage) (part, bool) {
 
 // appendResponsesReasoning appends a reasoning item's texts as reasoning parts: each
 // summary_text of its summary, then each reasoning_text of its content (vLLM's and
-// llama-server's reasoning) — an entry of any other type as sent. Its encrypted
-// content is not carried. An entry that is not an object naming its type, or a known
-// entry without its text, is left out.
+// llama-server's reasoning) — an entry of any other type as sent (appendGeneric). Its
+// encrypted content is not carried. An entry that is not an object naming its type,
+// or a known entry without its text, is left out.
 func appendResponsesReasoning(parts []part, item map[string]json.RawMessage) []part {
 	for _, list := range []struct{ member, kind string }{{"summary", "summary_text"}, {"content", "reasoning_text"}} {
 		entries, _ := elements(item[list.member])
@@ -190,7 +189,7 @@ func appendResponsesReasoning(parts []part, item map[string]json.RawMessage) []p
 				s, _ := stringOf(m["text"])
 				parts = appendReasoning(parts, s)
 			default:
-				parts = append(parts, original(raw))
+				parts = appendGeneric(parts, raw, typ)
 			}
 		}
 	}
@@ -198,8 +197,9 @@ func appendResponsesReasoning(parts []part, item map[string]json.RawMessage) []p
 }
 
 // responsesTool is one of the tools a request offers: a function tool as a function
-// definition — its name, description and parameters — and any other as sent. false
-// for a tool that is not an object naming its type, or a function without a name.
+// definition — its name, description and parameters — and any other as sent, named
+// as genericTool names it (local_shell, apply_patch, … have no name). false for a
+// tool that is not an object naming its type, or a function without a name.
 func responsesTool(raw json.RawMessage) (toolDefinition, bool) {
 	m, ok := members(raw)
 	if !ok {
@@ -211,7 +211,7 @@ func responsesTool(raw json.RawMessage) (toolDefinition, bool) {
 	case "function":
 		return readFunctionTool(m, "parameters")
 	}
-	return original(raw), true
+	return genericTool(raw, m, "")
 }
 
 // responsesAnswer is a Responses answer — a response object — as
@@ -226,8 +226,9 @@ func responsesAnswer(body []byte) answerContent {
 
 // responseObjectContent is a response object's ID, model and its one output message
 // — its output items in order, role assistant — with its finish reason: the
-// incomplete_details.reason of an incomplete response that has one, else its status.
-// A response whose output is not a list has no output message.
+// incomplete_details.reason of an incomplete response that has one, unfinished for a
+// failed one, else its status. A response whose output is not a list has no output
+// message.
 func responseObjectContent(response map[string]json.RawMessage) answerContent {
 	var an answerContent
 	an.id, _ = stringOf(response["id"])
@@ -242,11 +243,14 @@ func responseObjectContent(response map[string]json.RawMessage) answerContent {
 	}
 	status, _ := stringOf(response["status"])
 	reason := status
-	if status == "incomplete" {
+	switch status {
+	case "incomplete":
 		details, _ := members(response["incomplete_details"])
 		if s, _ := stringOf(details["reason"]); s != "" {
 			reason = s
 		}
+	case "failed":
+		reason = unfinished
 	}
 	an.messages = []message{newMessage("assistant", "", parts)}
 	an.finishReasons = []string{reason}
@@ -255,8 +259,8 @@ func responseObjectContent(response map[string]json.RawMessage) answerContent {
 
 // appendResponsesOutputItem appends an output item's parts: a message item's content
 // (output_text and refusal as text), a function_call as a tool call, a reasoning
-// item's texts as reasoning, any other item as sent. An item that is not an object
-// naming its type, or a function call without a name, is left out.
+// item's texts as reasoning, any other item as sent (appendGeneric). An item that is
+// not an object naming its type, or a function call without a name, is left out.
 func appendResponsesOutputItem(parts []part, raw json.RawMessage) []part {
 	m, ok := members(raw)
 	if !ok {
@@ -274,8 +278,9 @@ func appendResponsesOutputItem(parts []part, raw json.RawMessage) []part {
 		return parts
 	case "reasoning":
 		return appendResponsesReasoning(parts, m)
+	default:
+		return appendGeneric(parts, raw, typ)
 	}
-	return append(parts, original(raw))
 }
 
 // responsesTerminalEvents end a Responses stream, each carrying the whole response.
@@ -287,8 +292,8 @@ var responsesTerminalEvents = []string{"response.completed", "response.incomplet
 // response.in_progress, and the output items in the order they were added, each as
 // response.output_item.done finished it or, still in progress, as its deltas have
 // built it (responsesItem). Deltas name their item by item_id: llama-server's carry
-// no output_index, and its items interleave. With no terminal event there is no
-// finish reason.
+// no output_index, and its items interleave. With no terminal event its one
+// generation gave no finish reason.
 func responsesStream(stream []byte) answerContent {
 	var an answerContent
 	started := false

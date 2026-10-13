@@ -118,6 +118,13 @@ func TestCaptureStageDecides(t *testing.T) {
 		{"embeddings", "/v1/embeddings", workloadKey, `{"model":"msg","input":"hi"}`, 200, ""},
 		{"count tokens", "/v1/messages/count_tokens", workloadKey, `{"model":"msg","messages":[]}`, 200, ""},
 		{"refused by the inbound stage", "/v1/chat/completions", workloadKey, `{"model":`, 400, ""},
+		// A file ID names a stored object: refused before capture, so no capture reads
+		// one on Responses or Messages.
+		{"responses file id", "/v1/responses", workloadKey,
+			`{"model":"msg","input":[{"role":"user","content":[{"type":"input_file","file_id":"file-1"}]}]}`, 400, ""},
+		{"messages file source", "/v1/messages", workloadKey,
+			`{"model":"msg","max_tokens":8,"messages":[{"role":"user","content":[{"type":"document","source":{"type":"file","file_id":"file-1"}}]}]}`,
+			400, ""},
 	} {
 		w := do(t, g.h, call{method: "POST", path: c.path, key: c.key, body: c.body,
 			header: map[string]string{"X-Request-Id": strings.ReplaceAll(c.id, " ", "-")}})
@@ -205,7 +212,7 @@ func TestCaptureSessionHeader(t *testing.T) {
 // and a Responses answer, whole and streamed.
 func TestCaptureSpanAttributes(t *testing.T) {
 	// The attributes every span has; a routed request's; a settled one's; an answered
-	// one's; one whose stream was cut short — no finish reason.
+	// one's, a stream cut short's too — its finish reason error.
 	always := []string{"gen_ai.operation.name", "gen_ai.request.model", "kaiak.request.id", "kaiak.key.id",
 		"kaiak.key.group", "kaiak.key.root_group"}
 	routed := []string{"gen_ai.provider.name", "server.address", "server.port", "kaiak.backend.id", "kaiak.backend.type",
@@ -215,7 +222,6 @@ func TestCaptureSpanAttributes(t *testing.T) {
 		"kaiak.usage.cost_usd", "kaiak.usage.estimated", "kaiak.usage.partial"}
 	answered := []string{"gen_ai.response.id", "gen_ai.response.model", "gen_ai.response.finish_reasons",
 		"gen_ai.output.messages"}
-	cutShort := []string{"gen_ai.response.id", "gen_ai.response.model", "gen_ai.output.messages"}
 	keys := func(groups ...[]string) []string { return slices.Concat(groups...) }
 
 	g := newCapturingGateway(t, testOptions{})
@@ -250,7 +256,8 @@ func TestCaptureSpanAttributes(t *testing.T) {
 		id     string
 		want   []string
 		values map[string]any
-		// errorType is the span's error.type and status message; "" for no status.
+		// errorType is the span's error.type, whose status is an error with no
+		// message; "" for no status.
 		errorType string
 		// model is the model asked for, "open" when empty; finish the answer's finish
 		// reason, "stop" when empty.
@@ -272,7 +279,7 @@ func TestCaptureSpanAttributes(t *testing.T) {
 		{id: "refused", want: keys(always, []string{"error.type"}), errorType: "model_not_found",
 			values: map[string]any{"gen_ai.request.model": "nope"}},
 		{id: "upstream-error", want: keys(always, routed, settled, []string{"error.type"}), errorType: "upstream_error"},
-		{id: "cut", want: keys(always, routed, settled, cutShort, []string{"gen_ai.request.stream",
+		{id: "cut", finish: "error", want: keys(always, routed, settled, answered, []string{"gen_ai.request.stream",
 			"kaiak.time_to_first_token", "error.type", "kaiak.relay_end"}), errorType: "upstream_failed",
 			values: map[string]any{"kaiak.relay_end": "upstream_failed", "kaiak.usage.partial": true,
 				"gen_ai.output.messages": `[{"role":"assistant","parts":[{"type":"text","content":"Hello from"}]}]`}},
@@ -322,10 +329,10 @@ func TestCaptureSpanAttributes(t *testing.T) {
 		switch {
 		case c.errorType == "" && span.Status != nil:
 			t.Errorf("%s: status %+v, want none", c.id, span.Status)
-		case c.errorType != "" && (span.Status == nil || span.Status.Code != 2 || span.Status.Message != c.errorType ||
+		case c.errorType != "" && (span.Status == nil || span.Status.Code != 2 || span.Status.Message != "" ||
 			attrs["error.type"] != c.errorType):
-			t.Errorf("%s: status %+v, error.type %v; want an error status and error.type %s", c.id, span.Status,
-				attrs["error.type"], c.errorType)
+			t.Errorf("%s: status %+v, error.type %v; want an error status with no message and error.type %s", c.id,
+				span.Status, attrs["error.type"], c.errorType)
 		}
 	}
 	expectAllGivenBack(t, g)
@@ -369,14 +376,13 @@ func TestCaptureChatCompletionsContent(t *testing.T) {
 		`{"type":"blob","modality":"image","mime_type":"image/png","content":"iVBORw0K"}]}]`
 	tools := `[{"type":"function","name":"lookup","description":"Look a word up","parameters":{"type":"object"}}]`
 	for _, c := range []struct {
-		id     string
-		output string
-		// finished: the answer gave its finish reason.
-		finished bool
+		id, output string
+		// finish is the answer's finish reason: error for the stream cut short.
+		finish string
 	}{
-		{"whole", `[{"role":"assistant","parts":[{"type":"reasoning","content":"A cat on a mat."},{"type":"text","content":"A cat."}]}]`, true},
-		{"streamed", `[{"role":"assistant","parts":[{"type":"reasoning","content":"A cat on a mat."},{"type":"text","content":"A cat."}]}]`, true},
-		{"cut", `[{"role":"assistant","parts":[{"type":"reasoning","content":"A cat on a mat."},{"type":"text","content":"A "}]}]`, false},
+		{"whole", `[{"role":"assistant","parts":[{"type":"reasoning","content":"A cat on a mat."},{"type":"text","content":"A cat."}]}]`, "stop"},
+		{"streamed", `[{"role":"assistant","parts":[{"type":"reasoning","content":"A cat on a mat."},{"type":"text","content":"A cat."}]}]`, "stop"},
+		{"cut", `[{"role":"assistant","parts":[{"type":"reasoning","content":"A cat on a mat."},{"type":"text","content":"A "}]}]`, "error"},
 	} {
 		attrs := spans[c.id].Attrs(t)
 		for k, want := range map[string]any{"gen_ai.request.temperature": 0.2, "gen_ai.input.messages": input,
@@ -390,9 +396,8 @@ func TestCaptureChatCompletionsContent(t *testing.T) {
 			t.Errorf("%s: gen_ai.request.max_tokens %v, want none: the client set no output limit", c.id,
 				attrs["gen_ai.request.max_tokens"])
 		}
-		reasons, ok := attrs["gen_ai.response.finish_reasons"]
-		if ok != c.finished || (ok && !reflect.DeepEqual(reasons, []any{"stop"})) {
-			t.Errorf("%s: finish reasons %v, want stop: %v", c.id, reasons, c.finished)
+		if reasons := attrs["gen_ai.response.finish_reasons"]; !reflect.DeepEqual(reasons, []any{c.finish}) {
+			t.Errorf("%s: finish reasons %v, want %s", c.id, reasons, c.finish)
 		}
 	}
 	expectAllGivenBack(t, g)
@@ -453,7 +458,7 @@ func TestCaptureResponsesContent(t *testing.T) {
 // reasoning "A cat on a mat." and the text "A cat.". Each span has the content
 // attributes want, the temperature, the public model name and the backend's own
 // model; the output is the reasoning and the text — the text's first chunk alone
-// for the cut stream, which has no finish reason; the others' is finish. No content
+// for the cut stream, whose finish reason is error; the others' is finish. No content
 // reaches the log.
 func expectCapturedContent(t *testing.T, path string, body func(stream bool) string, want map[string]any, finish string) {
 	t.Helper()
@@ -475,14 +480,13 @@ func expectCapturedContent(t *testing.T, path string, body func(stream bool) str
 	}
 	spans := g.capturedSpans(t)
 	for _, c := range []struct {
-		id     string
-		output string
-		// finished: the answer gave its finish reason.
-		finished bool
+		id, output string
+		// finish is the answer's finish reason.
+		finish string
 	}{
-		{"whole", `[{"role":"assistant","parts":[{"type":"reasoning","content":"A cat on a mat."},{"type":"text","content":"A cat."}]}]`, true},
-		{"streamed", `[{"role":"assistant","parts":[{"type":"reasoning","content":"A cat on a mat."},{"type":"text","content":"A cat."}]}]`, true},
-		{"cut", `[{"role":"assistant","parts":[{"type":"reasoning","content":"A cat on a mat."},{"type":"text","content":"A "}]}]`, false},
+		{"whole", `[{"role":"assistant","parts":[{"type":"reasoning","content":"A cat on a mat."},{"type":"text","content":"A cat."}]}]`, finish},
+		{"streamed", `[{"role":"assistant","parts":[{"type":"reasoning","content":"A cat on a mat."},{"type":"text","content":"A cat."}]}]`, finish},
+		{"cut", `[{"role":"assistant","parts":[{"type":"reasoning","content":"A cat on a mat."},{"type":"text","content":"A "}]}]`, "error"},
 	} {
 		attrs := spans[c.id].Attrs(t)
 		for k, w := range with(want, map[string]any{"gen_ai.request.temperature": 0.2, "gen_ai.output.messages": c.output,
@@ -496,9 +500,8 @@ func expectCapturedContent(t *testing.T, path string, body func(stream bool) str
 				t.Errorf("%s: gen_ai.request.max_tokens %v, want none: the client set no output limit", c.id, v)
 			}
 		}
-		reasons, ok := attrs["gen_ai.response.finish_reasons"]
-		if ok != c.finished || (ok && !reflect.DeepEqual(reasons, []any{finish})) {
-			t.Errorf("%s: finish reasons %v, want %s: %v", c.id, reasons, finish, c.finished)
+		if reasons := attrs["gen_ai.response.finish_reasons"]; !reflect.DeepEqual(reasons, []any{c.finish}) {
+			t.Errorf("%s: finish reasons %v, want %s", c.id, reasons, c.finish)
 		}
 	}
 	expectAllGivenBack(t, g)
@@ -557,6 +560,68 @@ func TestCaptureBudget(t *testing.T) {
 			}
 		})
 	}
+}
+
+// limitedExporter is an exporter whose export limit for one span is maxSpan.
+type limitedExporter struct {
+	capture.Exporter
+	maxSpan int
+}
+
+func (e limitedExporter) MaxSpanBytes() int { return e.maxSpan }
+
+// A request body larger than a span the exporter can send is not captured: nothing
+// is copied, the client gets its whole answer, the request line says too_large and
+// the counts count it; nothing stays held and nothing reaches the collector.
+func TestCaptureBodyOverTheExportLimit(t *testing.T) {
+	body := `{"model":"open","messages":[{"role":"user","content":"` + strings.Repeat("x", 300) + `"}]}`
+	g := newCapturingGateway(t, testOptions{spanExporter: func(e capture.Exporter) capture.Exporter {
+		return limitedExporter{Exporter: e, maxSpan: len(body) - 1}
+	}})
+	w := do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey, body: body,
+		header: map[string]string{"X-Request-Id": "too-large"}})
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Hello from the fake") {
+		t.Fatalf("status %d, want the whole answer: %s", w.Code, w.Body.String())
+	}
+	if held := g.captures.InUse(); held != 0 {
+		t.Errorf("%d bytes held, want none: nothing is copied", held)
+	}
+	expectFields(t, logFields(t, g, "too-large"), map[string]any{"kaiak.capture": "too_large"})
+	if spans := g.capturedSpans(t); len(spans) != 0 {
+		t.Errorf("%d spans, want none", len(spans))
+	}
+	if drops := g.captures.Drops(); drops != (capture.Drops{TooLarge: 1}) {
+		t.Errorf("drops %+v, want one too_large", drops)
+	}
+}
+
+// A finisher that panics stops none of the others: with one run before the
+// capture's — registered after the capture stage — the capture is still handed on,
+// built and exported, every byte it held given back, and the request line written;
+// the panic is raised again once they all have run, so net/http still sees it.
+func TestFinisherPanicRunsTheOthers(t *testing.T) {
+	g := newCapturingGateway(t, testOptions{})
+	api := g.h.(*API)
+	at := slices.IndexFunc(api.stages, func(s stage) bool { return s.name == "capture" })
+	api.stages = slices.Insert(slices.Clone(api.stages), at+1, stage{name: "faulty_finisher", scope: chatRequests,
+		run: func(_ context.Context, rq *request) *apiError {
+			rq.finishers = append(rq.finishers, func() { panic("finisher fault") })
+			return nil
+		}})
+	func() {
+		defer func() {
+			if v := recover(); v != "finisher fault" {
+				t.Errorf("the handler panicked with %v, want the finisher's fault raised again", v)
+			}
+		}()
+		do(t, g.h, call{method: "POST", path: "/v1/chat/completions", key: workloadKey,
+			body: `{"model":"open","messages":[]}`, header: map[string]string{"X-Request-Id": "faulty-finisher"}})
+	}()
+	expectFields(t, logFields(t, g, "faulty-finisher"), map[string]any{"kaiak.capture": "queued"})
+	if spans := g.capturedSpans(t); len(spans) != 1 {
+		t.Errorf("%d spans, want the capture's", len(spans))
+	}
+	expectAllGivenBack(t, g)
 }
 
 // However a captured request ends, its capture is built and exported and every byte
@@ -655,10 +720,10 @@ type gatedExporter struct {
 	gate, entered chan struct{}
 }
 
-func (e gatedExporter) MaxSpanBytes() int {
+func (e gatedExporter) Enqueue(encoded []byte, release func()) {
 	e.entered <- struct{}{}
 	<-e.gate
-	return e.Exporter.MaxSpanBytes()
+	e.Exporter.Enqueue(encoded, release)
 }
 
 // The span is built after the client's response has ended, never before: with the
@@ -761,19 +826,21 @@ func TestCaptureSendsTheBackendTheSameRequest(t *testing.T) {
 }
 
 // faultingExporter panics with marker in the first build that reaches it — the
-// builder's goroutine — and serves the builds after it.
+// builder's goroutine — once it has released the span, and serves the builds after
+// it.
 type faultingExporter struct {
 	capture.Exporter
 	marker  string
 	faulted bool
 }
 
-func (e *faultingExporter) MaxSpanBytes() int {
+func (e *faultingExporter) Enqueue(encoded []byte, release func()) {
 	if !e.faulted {
 		e.faulted = true
+		release()
 		panic(e.marker)
 	}
-	return e.Exporter.MaxSpanBytes()
+	e.Exporter.Enqueue(encoded, release)
 }
 
 // A fault in building a capture never reaches serving: the request is answered, the

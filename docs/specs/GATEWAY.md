@@ -2930,9 +2930,11 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
     a backend's trace (`docs/BACKLOG.md`, OpenTelemetry traces).
   - From the request's arrival to the end of its response — what
     `kaiak.request.duration` covers.
-  - Status `ERROR` (code 2) with the span's `error.type` as its message when it has
-    one; otherwise unset, as the conventions' error rules have it for an operation
-    that did not fail.
+  - Status `ERROR` (code 2) when the span has an `error.type`, with no description
+    (settled 2026-10-14): the conventions' error rules (Recording Errors) advise
+    against repeating `error.type` there, and the gateway has nothing to add that
+    could not quote what a backend or a client sent; otherwise unset, as those rules
+    have it for an operation that did not fail.
   - Attempts are not spans of their own: `kaiak.attempts` counts them, and the
     backend attributes are the last attempt's, as on the request line.
   - Built after the request's end, by the builder, from what the gateway holds: no
@@ -2956,7 +2958,7 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
   | `gen_ai.request.stream` | boolean | the request streams | `true` — the convention sets it only on a streaming request |
   | `gen_ai.response.id` | string | the answer names one | The answer's `id` |
   | `gen_ai.response.model` | string | the answer names one | The answer's `model` as the client received it: the public name, which the gateway writes there (Providers → Response model name) |
-  | `gen_ai.response.finish_reasons` | string[] | the answer gives any | One per output message, in their order, in the API's own words — `""` for one that gave none (a choice of a stream cut short) (Content, below) |
+  | `gen_ai.response.finish_reasons` | string[] | the answer gave a generation | One per generation, in their order, in the API's own words — `error` for one that gave none or failed (Content: a generation that did not finish, below) |
   | `gen_ai.usage.input_tokens`, `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_write.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.reasoning.output_tokens` | int | once settled (routed requests) | As on the request line: all input with its two cache parts, all output with its reasoning part, summed over the request's records |
   | `gen_ai.conversation.id` | string | a valid `Kaiak-Session-Id` | The session (Sessions, below) |
   | `server.address`, `server.port` | string, int | once routed | The answering backend: its `base_url`'s host, and its port — the URL's, else 443 for `https`, 80 for `http` |
@@ -2964,7 +2966,7 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
   | `gen_ai.system_instructions` | string (JSON) | the request has instructions apart from its messages | Content, below |
   | `gen_ai.input.messages` | string (JSON) | the request has messages | Content, below |
   | `gen_ai.tool.definitions` | string (JSON) | the request lists tools | Content, below |
-  | `gen_ai.output.messages` | string (JSON) | the client received an answer: a success, or the part of a stream that arrived | Content, below |
+  | `gen_ai.output.messages` | string (JSON) | the client received an answer: a success, or the part of a stream that arrived — none made up for a request that failed | Content, below |
   | `kaiak.request.id` | string | always | The request ID — the usage record and the request line carry it too, so a capture joins them |
   | `kaiak.key.id` | string | always | The key ID |
   | `kaiak.key.group` | string | always | The key's group: its config ID |
@@ -3011,19 +3013,40 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
   - inline media (a base64 `data:` URL, a base64 source) → `{"type": "blob",
     "modality", "mime_type", "content"}`, the base64 as sent; media by URL (any other
     URL) → `{"type": "uri", "modality", "mime_type"?, "uri"}`; media by file ID →
-    `{"type": "file", "modality", "mime_type"?, "file_id"}`. The MIME type is
-    written lowercase, without parameters (`data:Image/PNG;name=a.png;base64,…` →
-    `image/png`), and left out when the value is no `type/subtype`. The modality is
+    `{"type": "file", "modality", "mime_type"?, "file_id"}` (Chat Completions'
+    `file.file_id`: Responses and Messages refuse a file ID before capture — Client
+    API → Stored objects). The MIME type is written lowercase, without parameters
+    (`data:Image/PNG;name=a.png;base64,…` → `image/png`), and left out when the
+    value is no `type/subtype`. The modality is
     the MIME type's — `image/*` image, `audio/*` audio, `video/*` video, any other
     document — or, with no MIME type, the kind the API names (an `image_url`'s is
     image);
   - **anything else** — a part, block or item the mapping does not know — is a
     generic part: the original JSON object, unchanged, which names its own `type`. As
-    passthrough preserves what it does not understand, so does capture.
+    passthrough preserves what it does not understand, so does capture. Unless its
+    `type` is one of the conventions' own part types — `text`, `reasoning`,
+    `tool_call`, `tool_call_response`, `blob`, `uri`, `file`, `server_tool_call`,
+    `server_tool_call_response`: it is not that part, and a reader taking it for one
+    would find none of that part's members, so it is left out (settled 2026-10-14:
+    every capture holds to the conventions' schemas).
 
   Input messages keep the order they were sent in; each output message is one
   generation (a Chat Completions choice; the one answer of Messages and Responses),
   with its finish reason in `gen_ai.response.finish_reasons`, never on the message.
+  **A generation that did not finish** (settled 2026-10-14, the conventions' rules
+  for both attributes): where a finish reason was expected and none came — a stream
+  cut short or ended without its last event, a choice that never finished, a
+  Responses answer that failed — its finish reason is `error`, the conventions'
+  value for a generation that ended abnormally. And no output is made up for a
+  request that failed (its span has an `error.type`): an output message with no
+  parts — a generation cut before any of its content arrived — is left out, its
+  finish reason kept; the finish reasons stay one per generation the answer gave.
+  A tool definition is `{"type", "name", …}`: a function's as the conventions
+  write it; any other tool's own JSON, with a top-level `name` added when it has
+  none — the name its API gives it inside (Chat Completions' `custom.name`), else
+  its type (Responses' `local_shell`, `shell`, `apply_patch`) — as the conventions
+  require of every tool definition, and as Langfuse needs to show one; a tool whose
+  `name` is not a string is left out (settled 2026-10-14).
   An empty text or reasoning is no part (settled 2026-10-13, at Chat Completions'
   build): it carries nothing, and a stream's opening delta (`"content": ""`) would
   otherwise make an answer differ from the same answer unstreamed (`"content":
@@ -3032,8 +3055,8 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
   members, a thinking block's signature, a reasoning item's encrypted content);
   content that does not have its API's shape where the mapping reads it (a message
   that is not an object) is left out, and the rest captured. An error answer — the
-  backend's relayed `4xx`, the gateway's own error body — gives no output messages:
-  `error.type` says what happened.
+  backend's relayed `4xx`, the gateway's own error body — gives no output messages
+  and no finish reasons, having no generation: `error.type` says what happened.
 - **Chat Completions**:
   - `messages` → `gen_ai.input.messages`, every message with its `role` — `system`
     and `developer` included: they are chat history — and its `name`. A string
@@ -3048,11 +3071,13 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
     `function.arguments`) — a call of another type (OpenAI's `custom`) generic. A
     `tool` message → a tool result (`tool_call_id`, `content`).
   - `tools` → `gen_ai.tool.definitions`: a `function` tool → `{"type": "function",
-    "name", "description", "parameters"}`; any other → its own JSON.
+    "name", "description", "parameters"}`; any other → its own JSON, named (a
+    `custom` tool by its `custom.name`).
   - The answer: each choice → one output message, in `index` order, its role the
     one the choice names (`assistant`, also when it names none), its parts as an
     assistant message's above; each `finish_reason` (`stop`, `length`,
-    `tool_calls`, …) → `gen_ai.response.finish_reasons`.
+    `tool_calls`, …) → `gen_ai.response.finish_reasons`, `error` for a choice that
+    gave none.
 - **Messages**:
   - `system` → `gen_ai.system_instructions`: a string is one text part, a list its
     text blocks as text parts (any other block generic).
@@ -3068,18 +3093,21 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
     (`redacted_thinking`, server tool blocks, …) → generic.
   - `tools` → `gen_ai.tool.definitions`: a tool with an `input_schema` → a function
     definition (`name`, `description`, `input_schema` as `parameters`); any other
-    (Anthropic's client-run tools, `bash_20250124`, …) → its own JSON.
+    (Anthropic's client-run tools, `bash_20250124`, …) → its own JSON, named (its
+    type when it has no `name`).
   - The answer: one output message, role `assistant`, its `content` blocks as above;
-    `stop_reason` (`end_turn`, `max_tokens`, `tool_use`, …) → its finish reason.
+    `stop_reason` (`end_turn`, `max_tokens`, `tool_use`, …) → its finish reason,
+    `error` when it gives none.
 - **Responses**:
   - `instructions` (a string) → `gen_ai.system_instructions`, one text part.
   - `input` → `gen_ai.input.messages`. A string is one `user` message with a text
     part. A list is its items, each one message:
     - a message item (`type` `message`, or a `role` and no `type`) → its role and
-      parts: `input_text`, `output_text`, `refusal` → text; `input_image` → blob (a
-      `data:` URL in `image_url`), uri (another URL) or file (`file_id`), modality
-      image; `input_file` → blob (`file_data`, a `data:` URL), uri (`file_url`) or
-      file (`file_id`); any other → generic; a string `content` is one text part;
+      parts: `input_text`, `output_text`, `refusal` → text; `input_image` → blob
+      (a `data:` URL in `image_url`) or uri (another URL), modality image;
+      `input_file` → blob (`file_data`, a `data:` URL) or uri (`file_url`); any
+      other → generic; a string `content` is one text part (a part naming a
+      `file_id` is refused before capture: Client API → Stored objects);
     - `function_call` → an `assistant` message holding a tool call (`call_id`,
       `name`, `arguments`), and `function_call_output` → a `tool` message holding a
       tool result (`call_id`, `output`) — so a tool round trip reads as on Chat
@@ -3091,13 +3119,14 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
       a tool the client ran (`custom_tool_call_output`, `local_shell_call_output`,
       `shell_call_output`, `apply_patch_call_output`), else `assistant`.
   - `tools` → `gen_ai.tool.definitions`: a `function` tool → `{"type": "function",
-    "name", "description", "parameters"}`; any other → its own JSON.
+    "name", "description", "parameters"}`; any other → its own JSON, named (its type
+    when it has no `name`: `local_shell`, `shell`, `apply_patch`).
   - The answer: one output message, role `assistant`, from the response's `output`
     items in order — a `message` item's `output_text` and `refusal` as text, a
     `function_call` as a tool call, a `reasoning` item's texts as reasoning, any other
     item generic; its finish reason the `incomplete_details.reason` of an incomplete
-    response that has one (`max_output_tokens`, `content_filter`), else its `status`
-    (`completed`, `incomplete`, `failed`).
+    response that has one (`max_output_tokens`, `content_filter`), `error` for a
+    failed one, else its `status` (`completed`, `incomplete`).
 - **Streams**: a streamed answer is assembled from the events the client received
   into the output messages the same answer unstreamed gives — the tests hold every
   streamed case to its unstreamed twin.
@@ -3105,9 +3134,13 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
     reasoning and refusal deltas, concatenated; tool calls by their own `index`, the
     `id` and name from the first fragments that carry them, the argument fragments
     concatenated; the `finish_reason` — and the chunks' `id` and `model`. `[DONE]`
-    ends it; a chunk without choices (usage) carries no content. Only a function's
-    call is rebuilt from its fragments: a call of another type is left out of a
-    stream, where the same answer unstreamed carries it generic.
+    ends it; a chunk without choices (usage) carries no content. A custom tool's call
+    (OpenAI's `custom`) is rebuilt the same way — its `id`, its `custom.name`, its
+    `custom.input` fragments concatenated — into the generic object the same answer
+    unstreamed carries, `{"id", "type": "custom", "custom": {"name", "input"}}`
+    (settled 2026-10-14); a call is of the kind — `function` or `custom` — its
+    first fragment with either member gave, and only that member of its later
+    fragments is read.
   - Messages: `message_start` opens the message (the `id`, the `model`; an event
     before it is not read); content blocks by `index` — they may interleave
     (llama-server opens one before closing the previous) — `content_block_start`
@@ -3123,8 +3156,8 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
   - Responses: the response object of the terminal event — `response.completed`,
     `response.incomplete` or `response.failed` — is the answer, read as an
     unstreamed one. A stream without one — cut short, or ended by an `error` event
-    or by nothing — gives what arrived, with no finish reason (settled 2026-10-13, at
-    Responses' build): the `id` and `model` of `response.created` or
+    or by nothing — gives what arrived (settled 2026-10-13, at Responses' build),
+    with the finish reason `error`: the `id` and `model` of `response.created` or
     `response.in_progress` (llama-server's name no model), and the output items in
     the order `response.output_item.added` added them, each as
     `response.output_item.done` finished it, else as its deltas have built it — a
@@ -3140,8 +3173,10 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
     did.
   - **A stream cut short** — the client gone, a backend failure, the drain's cut —
     keeps what arrived: the finished parts and the one in progress, a tool call's
-    half-written arguments as a string. A non-stream answer cut short is no valid
-    JSON and gives no output messages.
+    half-written arguments as a string; a generation that gave no finish reason has
+    `error`, and one with no parts yet is left out (Content: a generation that did
+    not finish). A non-stream answer cut short is no valid JSON and gives no output
+    messages.
 - **Examples** (each attribute's JSON string shown as JSON; base64 shortened):
   - Chat Completions, streamed, an image inline and a tool offered:
 
@@ -3258,11 +3293,12 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
     header, as Request IDs read `x-request-id`. Any other value is treated as no
     session: the capture has no `gen_ai.conversation.id`, and the span and the
     request line carry `kaiak.session_id.ignored` with the reason — `empty` (no
-    characters), `too_long` (over 256), `invalid_characters` (a space, a control or
-    a non-ASCII character), judged in that order — so the user can see in the tool
-    why a capture has no session. Never refused. Rejected: answering `400` — most
-    tools send no session, and a header for observability must not break a request
-    (Capture never gets in the way of serving, above).
+    characters), `too_long` (over 256 bytes, whatever they are),
+    `invalid_characters` (a space, a control or a non-ASCII character), judged in
+    that order — so the user can see in the tool why a capture has no session.
+    Never refused. Rejected: answering `400` — most tools send no session, and a
+    header for observability must not break a request (Capture never gets in the
+    way of serving, above).
   - Read only when the request is captured. Never forwarded to a backend (no client
     header is: Providers), never echoed, never logged — it is client text; the line
     carries only the reason it was ignored.
@@ -3272,7 +3308,8 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
     request content" in its place.
 - **Memory** (`KAIAK_CAPTURE_MEMORY_BYTES`, default 128 MiB; Configuration sources):
   one gateway-wide capture budget bounds every byte a capture holds — the copy of the
-  request body, taken when the stage runs; the answer's bytes, taken as they are
+  request body, taken when the stage runs (never of a body over the export limit:
+  The export limit, below); the answer's bytes, taken as they are
   written to the client (the buffer that holds them doubles from 4 KiB, each growth
   taken before it is made, as a request body's is); both until the builder has
   built the span; the encoded span, from its encoding until its export ends. While
@@ -3284,24 +3321,33 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
   back. The budget is also the export queue's only bound: the
   exporter drops nothing for a full queue, and while a collector is down captures
   fill the budget and new ones are dropped until exports drain it. Outside the
-  budget, parsing and encoding make short-lived garbage. Size `GOMEMLIMIT` above the
-  body, upload, usage and capture budgets together (`docs/DEPLOYMENT.md`).
+  budget, parsing and encoding make short-lived garbage — about ten times the
+  capture being built, one build at a time. Size `GOMEMLIMIT` above the body,
+  upload, usage and capture budgets together, with room for that garbage
+  (`docs/DEPLOYMENT.md`).
 - **The export limit**: an export request is at most 16 MiB, its envelope included —
   under the OpenTelemetry Collector's OTLP/HTTP receiver default (20 MiB, checked
   again after decompression); Langfuse takes up to 512 MiB by default but warns
   above 16 MiB. A span that cannot fit in an export request alone is dropped by the
-  builder (`too_large`) and its bytes given back. Content is never truncated to fit
-  (`docs/BACKLOG.md`, Truncating large captures).
+  builder (`too_large`) and its bytes given back. **A request body over that limit —
+  the most one span can carry — drops the capture at the copy** (`too_large`):
+  nothing is copied, held or built (settled 2026-10-14). The span carries the
+  request's content nearly whole, so it could not fit; copying it — up to the
+  capture budget when an operator raises `max_request_body_bytes` — holding it, and
+  building it at about ten times its size live, only to drop it, put the pod's
+  memory at risk. Content is never truncated to fit (`docs/BACKLOG.md`, Truncating
+  large captures).
 - **On the request line and in the counts**: `kaiak.capture` on the request line —
   `queued` (handed to the builder), or why not: `memory` (the copy of the request or
-  of the answer did not fit while the request ran), `export_off` — and
+  of the answer did not fit while the request ran), `too_large` (the request's body
+  is over the export limit: nothing was copied), `export_off` — and
   `kaiak.session_id.ignored` (Observability → Logs: the request line);
   `otel.sdk.processor.span.processed` and `otel.sdk.exporter.span.exported`
   (Observability → Exporters' own counts). The line is written before the span is
   built (settled 2026-10-13; Capture never gets in the way of serving, above), so
-  what the build drops — `too_large`, `memory` for an encoded span the budget
-  cannot hold, `_OTHER` for a build that failed — and a capture not built at exit
-  (`shutdown`) are in the counts alone.
+  what the build drops — `too_large` for a span built over the export limit,
+  `memory` for an encoded span the budget cannot hold, `_OTHER` for a build that
+  failed — and a capture not built at exit (`shutdown`) are in the counts alone.
 - **Groups capture, trace export off**: a config whose groups capture is applied
   like any other — a config cannot fail a gateway's start, and the export switch is
   the operator's. When trace export is off on this gateway, each applied config that
@@ -3845,7 +3891,7 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
   | `otel.sdk.processor.log.processed` | counter, read at collect | `{log_record}` | `otel.component.type`, `otel.component.name`, `error.type` | `otel_sdk_processor_log_processed_total` | With OTLP log export on: log records the export's queue is done with — handed to the exporter (no `error.type`), or dropped: `queue_full` (refused by the full queue), `shutdown` (still queued when the final flush ended) (Exporters' own counts, below) | `kaiak_log_export_records_total{outcome="dropped"}` |
   | `otel.sdk.exporter.log.exported` | counter, read at collect | `{log_record}` | `otel.component.type`, `otel.component.name`, `error.type` | `otel_sdk_exporter_log_exported_total` | With OTLP log export on: log records the exporter sent — accepted by the collector (no `error.type`), or failed, by how (Exporters' own counts) | `kaiak_log_export_records_total{outcome="exported"}`, `{outcome="failed"}` |
   | `otel.sdk.exporter.metric_data_point.exported` | counter, read at collect | `{data_point}` | `otel.component.type`, `otel.component.name`, `error.type` | `otel_sdk_exporter_metric_data_point_exported_total` | With OTLP metric export on: data points the exporter sent — accepted (no `error.type`), or failed, by how (Exporters' own counts) | — (added) |
-  | `otel.sdk.processor.span.processed` | counter, read at collect | `{span}` | `otel.component.type`, `otel.component.name`, `error.type` | `otel_sdk_processor_span_processed_total` | With OTLP trace export on: request captures the capture stage, its builder and the export's queue are done with — handed to the exporter (no `error.type`), or dropped: `memory` (the capture budget could not hold it), `too_large` (its span exceeds the export limit), `shutdown` (not built when the builder's work at exit ended, or still queued when the final flush ended), `_OTHER` (its build failed: a gateway fault, reported by `capture build failed`) (Request capture; Exporters' own counts) | — (added 2026-10-13) |
+  | `otel.sdk.processor.span.processed` | counter, read at collect | `{span}` | `otel.component.type`, `otel.component.name`, `error.type` | `otel_sdk_processor_span_processed_total` | With OTLP trace export on: request captures the capture stage, its builder and the export's queue are done with — handed to the exporter (no `error.type`), or dropped: `memory` (the capture budget could not hold it), `too_large` (its request's body or its span exceeds the export limit), `shutdown` (not built when the builder's work at exit ended, or still queued when the final flush ended), `_OTHER` (its build failed: a gateway fault, reported by `capture build failed`) (Request capture; Exporters' own counts) | — (added 2026-10-13) |
   | `otel.sdk.exporter.span.exported` | counter, read at collect | `{span}` | `otel.component.type`, `otel.component.name`, `error.type` | `otel_sdk_exporter_span_exported_total` | With OTLP trace export on: spans the exporter sent — accepted by the collector (no `error.type`), or failed, by how (Exporters' own counts) | — (added 2026-10-13) |
 
   - **Naming** (settled 2026-10-08):
@@ -4239,8 +4285,9 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
   - The span processor's `error.type` (settled 2026-10-13): `memory` and
     `too_large`, the capture dropped before the queue (Request capture → Memory,
     The export limit) — the request line's `kaiak.capture`, written before the
-    build, says `memory` for a drop while the request ran and nothing of the
-    build's drops; `shutdown`, as for logs: a capture the builder had not built
+    build, says `memory` or `too_large` for a drop while the request ran (a copy
+    that did not fit, a body over the export limit) and nothing of the build's
+    drops; `shutdown`, as for logs: a capture the builder had not built
     when its work at exit ended, or a span still queued when the final flush
     ended; and `_OTHER`, the convention's fallback, for a capture whose build
     failed: a fault in the gateway, each reported by a `capture build failed` line
@@ -4405,7 +4452,7 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
     | `kaiak.usage.audio.input.duration` | — (added 2026-10-09) | once settled, when not 0 | Seconds of audio processed (the records' `audio_seconds_in`), as the metric of the same name |
     | `kaiak.usage.estimated` | `estimated` | once settled | The last record's flag (Accounting: Estimation) |
     | `kaiak.usage.partial` | `partial` | once settled | The last record's flag (Accounting: Partial) |
-    | `kaiak.capture` | — (added 2026-10-13) | the key's group captures and the request passed the capture stage (Request capture) | `queued` — the capture was handed to the background builder, which builds its span after the response has ended — or why it was not: `memory` (the capture budget could not hold the copy of the request or of the answer), `export_off` (this gateway's trace export is off). The line is written before the build, so what the build drops — `too_large`, `memory` for an encoded span, `_OTHER` for a build that failed — is in the counts alone (settled 2026-10-13; Request capture → On the request line and in the counts) |
+    | `kaiak.capture` | — (added 2026-10-13) | the key's group captures and the request passed the capture stage (Request capture) | `queued` — the capture was handed to the background builder, which builds its span after the response has ended — or why it was not: `memory` (the capture budget could not hold the copy of the request or of the answer), `too_large` (the request's body is over the export limit: nothing was copied; settled 2026-10-14), `export_off` (this gateway's trace export is off). The line is written before the build, so what the build drops — `too_large` for a span built over the limit, `memory` for an encoded span, `_OTHER` for a build that failed — is in the counts alone (settled 2026-10-13; Request capture → On the request line and in the counts) |
     | `kaiak.session_id.ignored` | — (added 2026-10-13) | a captured request's `Kaiak-Session-Id` was ignored | `empty`, `too_long`, `invalid_characters` (Request capture → Sessions). Never the value: it is client text |
 
     Limit values are counts in the limit's unit, USD limits in dollars. Across
@@ -4705,8 +4752,8 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
     attributes with the log export's types (OTLP log export: record mapping) —
     strings `stringValue`, integers `intValue` (a decimal string), floats
     `doubleValue`, booleans `boolValue`, string lists an `arrayValue` of
-    `stringValue`s; `status` `{"code": 2, "message": <error.type>}` for a span with
-    an `error.type`, else none. No events, no links.
+    `stringValue`s; `status` `{"code": 2}`, no message, for a span with an
+    `error.type`, else none (Request capture → The span). No events, no links.
   - **Delivery** — never on the request path: a capture's finisher hands its copies
     to the background builder (Request capture → Capture never gets in the way of
     serving), which builds and encodes the span and queues the bytes; a background

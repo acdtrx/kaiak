@@ -64,7 +64,7 @@ const operationName = "chat"
 // the end of its response, named and with the attributes the spec's table gives
 // (docs/specs/GATEWAY.md, Request capture → The span, Attributes) — the content's
 // read from the copies by readContent, the rest from the summary. Its status is an
-// error, with the span's error.type as its message, when it has one.
+// error when it has an error.type, which the status does not repeat.
 func (j job) span(readContent func(provider.Endpoint, exchange) []otlptrace.Attribute) otlptrace.Span {
 	s := j.summary
 	attrs := []otlptrace.Attribute{otlptrace.String("gen_ai.operation.name", operationName)}
@@ -98,7 +98,7 @@ func (j job) span(readContent func(provider.Endpoint, exchange) []otlptrace.Attr
 		attrs = append(attrs, otlptrace.String("error.type", errorType))
 	}
 	attrs = append(attrs, readContent(j.api, exchange{request: j.request, response: j.response, stream: s.Stream,
-		status: s.Status})...)
+		status: s.Status, failed: errorType != ""})...)
 	attrs = append(attrs,
 		otlptrace.String("kaiak.request.id", s.RequestID),
 		otlptrace.String("kaiak.key.id", s.KeyID),
@@ -132,7 +132,7 @@ func (j job) span(readContent func(provider.Endpoint, exchange) []otlptrace.Attr
 		Name: operationName + " " + s.Model, Kind: otlptrace.KindClient, Start: s.Start, End: s.End,
 		Attributes: attrs}
 	if errorType != "" {
-		span.Status = otlptrace.Status{Code: otlptrace.StatusError, Message: errorType}
+		span.Status = otlptrace.Status{Code: otlptrace.StatusError}
 	}
 	return span
 }

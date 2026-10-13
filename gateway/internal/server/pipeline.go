@@ -261,10 +261,24 @@ func (s stageScope) covers(ep *endpoint) bool {
 }
 
 // finish runs the request's finishers. It is deferred by the request's handler, so it
-// runs even when the handler cuts the connection by panicking.
+// runs even when the handler cuts the connection by panicking. Every finisher runs
+// even when one panics — one left out would keep what it releases held for good (a
+// capture's budget, a key's slot) or leave the request line unwritten — and the
+// first panic is raised again once they all have run, so net/http still sees it.
 func (rq *request) finish() {
+	var fault any
 	for i := len(rq.finishers) - 1; i >= 0; i-- {
-		rq.finishers[i]()
+		func() {
+			defer func() {
+				if v := recover(); v != nil && fault == nil {
+					fault = v
+				}
+			}()
+			rq.finishers[i]()
+		}()
+	}
+	if fault != nil {
+		panic(fault)
 	}
 }
 

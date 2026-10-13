@@ -437,8 +437,8 @@ func exitCaptures(t *testing.T, collector *fakeotlp.Collector, stderr io.Writer,
 }
 
 // handCapture hands a capture of a finished chat request, id, to the builder, as
-// the capture stage's finisher does; it returns the bytes the capture holds.
-func handCapture(t *testing.T, captures *capture.Captures, id string) int64 {
+// the capture stage's finisher does.
+func handCapture(t *testing.T, captures *capture.Captures, id string) {
 	t.Helper()
 	body := []byte(`{"model":"llama","messages":[]}`)
 	c := captures.Start(provider.ChatCompletions, body, nil)
@@ -447,7 +447,6 @@ func handCapture(t *testing.T, captures *capture.Captures, id string) int64 {
 		RootGroup: "me", Model: "llama", Status: http.StatusOK}); got != capture.OutcomeQueued {
 		t.Fatalf("capture %s: %s, want queued", id, got)
 	}
-	return int64(len(body))
 }
 
 // At exit the captures the drained requests handed to the builder are built before
@@ -494,16 +493,17 @@ func TestExitBuildsCapturesBeforeTheTraceFlush(t *testing.T) {
 }
 
 // gatedExporter holds each build at the exporter until gate is closed, telling
-// entered first: the builder stands still.
+// entered the encoded span's length first: the builder stands still.
 type gatedExporter struct {
 	capture.Exporter
-	gate, entered chan struct{}
+	gate    chan struct{}
+	entered chan int
 }
 
-func (e gatedExporter) MaxSpanBytes() int {
-	e.entered <- struct{}{}
+func (e gatedExporter) Enqueue(encoded []byte, release func()) {
+	e.entered <- len(encoded)
 	<-e.gate
-	return e.Exporter.MaxSpanBytes()
+	e.Exporter.Enqueue(encoded, release)
 }
 
 // A builder still busy when the exit's bound ends — the drain's deadline, at least
@@ -513,12 +513,12 @@ func (e gatedExporter) MaxSpanBytes() int {
 func TestExitDropsCapturesNotBuiltAtTheBound(t *testing.T) {
 	collector := fakeotlp.New(t, nil)
 	var stderr syncBuffer
-	gate, entered := make(chan struct{}), make(chan struct{}, 1)
+	gate, entered := make(chan struct{}), make(chan int, 1)
 	exp, logger := exitCaptures(t, collector, &stderr, func(e capture.Exporter) capture.Exporter {
 		return gatedExporter{Exporter: e, gate: gate, entered: entered}
 	})
-	building := handCapture(t, exp.captures, "exit-1")
-	<-entered
+	handCapture(t, exp.captures, "exit-1")
+	building := int64(<-entered)
 	handCapture(t, exp.captures, "exit-2")
 	finished := make(chan struct{})
 	start := time.Now()
@@ -539,7 +539,7 @@ func TestExitDropsCapturesNotBuiltAtTheBound(t *testing.T) {
 		t.Errorf("exit-2 dropped after %s, before the bound's 1 s floor", took)
 	}
 	if held := exp.captures.InUse(); held != building {
-		t.Errorf("captures hold %d bytes at the bound, want exit-1's %d alone", held, building)
+		t.Errorf("captures hold %d bytes at the bound, want exit-1's encoded span's %d alone", held, building)
 	}
 	close(gate)
 	select {

@@ -89,10 +89,8 @@ var responsesCorpus = []contentCase{
 			{"role":"user","content":[{"type":"input_text","text":"Compare these."},
 				{"type":"input_image","image_url":"data:image/PNG;base64,iVBORw0KGgo=","detail":"auto"},
 				{"type":"input_image","image_url":"https://example.com/cat.jpg"},
-				{"type":"input_image","file_id":"file-img","image_url":null},
 				{"type":"input_file","file_data":"data:application/pdf;base64,JVBERi0=","filename":"a.pdf"},
 				{"type":"input_file","file_url":"https://example.com/a.pdf"},
-				{"type":"input_file","file_id":"file-abc"},
 				{"type":"input_audio","input_audio":{"data":"UklGRiQ=","format":"wav"}}]},
 			{"type":"message","role":"assistant","id":"msg_0","status":"completed","content":[
 				{"type":"output_text","text":"Earlier answer.","annotations":[]},{"type":"refusal","refusal":"Not that."}]}]}`,
@@ -114,10 +112,8 @@ var responsesCorpus = []contentCase{
 					{"type":"text","content":"Compare these."},
 					{"type":"blob","modality":"image","mime_type":"image/png","content":"iVBORw0KGgo="},
 					{"type":"uri","modality":"image","uri":"https://example.com/cat.jpg"},
-					{"type":"file","modality":"image","file_id":"file-img"},
 					{"type":"blob","modality":"document","mime_type":"application/pdf","content":"JVBERi0="},
 					{"type":"uri","modality":"document","uri":"https://example.com/a.pdf"},
-					{"type":"file","modality":"document","file_id":"file-abc"},
 					{"type":"input_audio","input_audio":{"data":"UklGRiQ=","format":"wav"}}]},
 				{"role":"assistant","parts":[{"type":"text","content":"Earlier answer."},{"type":"text","content":"Not that."}]}]`,
 			"gen_ai.response.id": "resp_2", "gen_ai.response.model": "gpt-4.1",
@@ -234,7 +230,7 @@ var responsesCorpus = []contentCase{
 			`{"type":"response.output_item.done","output_index":1,"item":{"id":"msg_5","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"A ball rolls.","annotations":[]},{"type":"x_part","v":1}]}}`,
 			`{"type":"response.completed","response":{"id":"resp_5","object":"response","status":"completed","model":"gpt-4.1","output":[{"type":"x_output","id":"xo_1","payload":{"a":1}},{"id":"msg_5","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"A ball rolls.","annotations":[]},{"type":"x_part","v":1}]}]}}`),
 		want: map[string]any{
-			"gen_ai.tool.definitions": `[{"type":"local_shell"}]`,
+			"gen_ai.tool.definitions": `[{"type":"local_shell","name":"local_shell"}]`,
 			"gen_ai.input.messages": `[
 				{"role":"user","parts":[{"type":"text","content":"What happens?"},{"zeta":1,"type":"x_custom","alpha":[true,null],"s":"<&>"}]},
 				{"role":"assistant","parts":[{"type":"local_shell_call","id":"lsc_1","call_id":"call_9","action":{"type":"exec","command":["ls"]},"status":"completed"}]},
@@ -280,7 +276,7 @@ var responsesCorpus = []contentCase{
 		want: map[string]any{
 			"gen_ai.input.messages": `[{"role":"user","parts":[{"type":"text","content":"Hi"}]}]`,
 			"gen_ai.response.id":    "resp_7", "gen_ai.response.model": "gpt-4.1",
-			"gen_ai.response.finish_reasons": []string{"failed"},
+			"gen_ai.response.finish_reasons": []string{"error"},
 			"gen_ai.output.messages":         `[{"role":"assistant","parts":[]}]`,
 		},
 	},
@@ -289,12 +285,12 @@ var responsesCorpus = []contentCase{
 // Each case's request and answer give the corpus' attributes — the answer whole and
 // streamed alike: every streamed answer assembles to its unstreamed twin. Without its
 // terminal event, the stream's items still assemble to the same output — only the
-// finish reason, which the terminal event carries, is missing.
+// finish reason, which the terminal event carries, never came: error.
 func TestResponsesContent(t *testing.T) {
 	expectCorpus(t, provider.Responses, responsesCorpus)
 	for _, c := range responsesCorpus {
 		want := maps.Clone(c.want)
-		delete(want, "gen_ai.response.finish_reasons")
+		want["gen_ai.response.finish_reasons"] = []string{"error"}
 		expectAttributes(t, c.name+", without its terminal event",
 			responsesContent(t, c.request, withoutTerminalEvent(c.stream), true, 200), want)
 	}
@@ -339,6 +335,7 @@ func TestResponsesRecordedStreams(t *testing.T) {
 					{"type":"tool_call","id":"chatcmpl-tool-a1ffcc03da294e18","name":"get_weather","arguments":{"city":"Paris"}}]}]`}),
 			items: with(recordedResponsesToolWant, map[string]any{
 				"gen_ai.response.id": "resp_a27aa2d242736829", "gen_ai.response.model": "unsloth/Qwen3.8-27B-NVFP4",
+				"gen_ai.response.finish_reasons": []string{"error"},
 				"gen_ai.output.messages": `[{"role":"assistant","parts":[` + vllmReasoning + `,
 					{"type":"tool_call","id":"call_8cca9c91a69990d7","name":"get_weather","arguments":{"city":"Paris"}}]}]`})},
 		{server: "llama-server", file: "responses-stream-tool.sse", request: recordedResponsesToolRequest,
@@ -348,7 +345,7 @@ func TestResponsesRecordedStreams(t *testing.T) {
 				"gen_ai.output.messages": `[{"role":"assistant","parts":[` + llamaReasoning + `,
 					{"type":"tool_call","id":"call_xpGk890Sm9ix7yCPjCRtl1IuuFw440pa","name":"get_weather","arguments":{"city":"Paris"}}]}]`}),
 			items: with(recordedResponsesToolWant, map[string]any{
-				"gen_ai.response.id": "resp_H89DjiEz6GawFO2ZhnllTaxYvIJqkmk5",
+				"gen_ai.response.id": "resp_H89DjiEz6GawFO2ZhnllTaxYvIJqkmk5", "gen_ai.response.finish_reasons": []string{"error"},
 				"gen_ai.output.messages": `[{"role":"assistant","parts":[` + llamaReasoning + `,
 					{"type":"tool_call","id":"call_xpGk890Sm9ix7yCPjCRtl1IuuFw440pa","name":"get_weather","arguments":{"city":"Paris"}}]}]`})},
 		{server: "vllm", file: "responses-stream-incomplete.sse", request: countRequest,
@@ -359,6 +356,7 @@ func TestResponsesRecordedStreams(t *testing.T) {
 					{"type":"reasoning","content":"We need to respond to user: \"Count to fifty.\" Need final answer probably"}]}]`}),
 			items: with(countWant, map[string]any{
 				"gen_ai.response.id": "resp_96dafd9e0305944d", "gen_ai.response.model": "unsloth/Qwen3.8-27B-NVFP4",
+				"gen_ai.response.finish_reasons": []string{"error"},
 				"gen_ai.output.messages": `[{"role":"assistant","parts":[
 					{"type":"reasoning","content":"We need to respond to user: \"Count to fifty.\" Need final answer probably"}]}]`})},
 		// A length-capped llama-server stream ends with response.completed, status
@@ -370,7 +368,7 @@ func TestResponsesRecordedStreams(t *testing.T) {
 				"gen_ai.output.messages": `[{"role":"assistant","parts":[
 					{"type":"reasoning","content":"The user wants me to count to fifty. This is straightforward - I just need"}]}]`}),
 			items: with(countWant, map[string]any{
-				"gen_ai.response.id": "resp_IikvrrHVUBXLCBj1crvROdW70RCW6Q9z",
+				"gen_ai.response.id": "resp_IikvrrHVUBXLCBj1crvROdW70RCW6Q9z", "gen_ai.response.finish_reasons": []string{"error"},
 				"gen_ai.output.messages": `[{"role":"assistant","parts":[
 					{"type":"reasoning","content":"The user wants me to count to fifty. This is straightforward - I just need"}]}]`})},
 	} {
@@ -410,7 +408,8 @@ func TestResponsesRecordedAnswers(t *testing.T) {
 // A stream cut short keeps what arrived: the items finished and the ones in progress
 // as their deltas built them — a message's text and refusal, a reasoning item's
 // summary and reasoning text, a function call's half-written arguments as a string,
-// any other item as it began — with no finish reason. An event the stream ends inside
+// any other item as it began — with the finish reason error: its terminal event never
+// came. An event the stream ends inside
 // was never whole and is not read. A non-stream answer cut short is no valid JSON,
 // and gives nothing.
 func TestResponsesCutShort(t *testing.T) {
@@ -432,6 +431,7 @@ func TestResponsesCutShort(t *testing.T) {
 		`data: {"type":"response.function_call_arguments.delta","item_id":"fc_c","output_index":2,"delta":"lo\"}"}`
 	expectAttributes(t, "cut mid tool call", responsesContent(t, request, stream, true, 200), with(base, map[string]any{
 		"gen_ai.response.id": "resp_c", "gen_ai.response.model": "gpt-4.1",
+		"gen_ai.response.finish_reasons": []string{"error"},
 		"gen_ai.output.messages": `[{"role":"assistant","parts":[
 			{"type":"reasoning","content":"Use the tool."},{"type":"text","content":"Checking."},
 			{"type":"tool_call","id":"call_9","name":"get_weather","arguments":"{\"city\": \"Os"}]}]`}))
@@ -451,6 +451,7 @@ func TestResponsesCutShort(t *testing.T) {
 		`{"type":"error","code":"server_error","message":"The server had an error.","param":null}`)
 	expectAttributes(t, "items in progress", responsesContent(t, request, inProgress, true, 200), with(base, map[string]any{
 		"gen_ai.response.id": "resp_p", "gen_ai.response.model": "gpt-4.1",
+		"gen_ai.response.finish_reasons": []string{"error"},
 		"gen_ai.output.messages": `[{"role":"assistant","parts":[
 			{"type":"text","content":"Partial"},{"type":"text","content":"No."},
 			{"type":"reasoning","content":"Sum"},{"type":"reasoning","content":"Think"},
@@ -464,7 +465,7 @@ func TestResponsesCutShort(t *testing.T) {
 	cut := recorded[:strings.Index(recorded, marker)+len(marker)]
 	expectAttributes(t, "recorded, cut", responsesContent(t, recordedResponsesToolRequest, cut, true, 200),
 		with(recordedResponsesToolWant, map[string]any{
-			"gen_ai.response.id": "resp_H89DjiEz6GawFO2ZhnllTaxYvIJqkmk5",
+			"gen_ai.response.id": "resp_H89DjiEz6GawFO2ZhnllTaxYvIJqkmk5", "gen_ai.response.finish_reasons": []string{"error"},
 			"gen_ai.output.messages": `[{"role":"assistant","parts":[
 				{"type":"reasoning","content":"The user wants to know the weather in Paris and explicitly asked me to use the tool. I'll call the get_weather function with city \"Paris\".\n"},
 				{"type":"tool_call","id":"call_xpGk890Sm9ix7yCPjCRtl1IuuFw440pa","name":"get_weather","arguments":"{\"city\":\""}]}]`}))
@@ -554,9 +555,10 @@ func TestResponsesMalformed(t *testing.T) {
 			{"role":"user","content":5},
 			{"role":"user","content":[1,null,{"type":5},{"text":"no type"},{"type":"input_text"},{"type":"input_text","text":5},
 				{"type":"input_text","text":""},{"type":"refusal","refusal":5},{"type":"input_image"},
-				{"type":"input_image","image_url":5,"file_id":5},
-				{"type":"input_file","file_data":"not a data URL","file_id":"not read"},{"type":"input_file"},
-				{"type":"output_text","text":"ok"}]},
+				{"type":"input_image","image_url":5},
+				{"type":"input_file","file_data":"not a data URL","file_url":"not read"},{"type":"input_file"},
+				{"type":"text","text":"named as the conventions' part"},{"type":"output_text","text":"ok"}]},
+			{"type":"tool_call","name":"named as the conventions' part"},
 			{"type":"function_call","call_id":"c1"},{"type":"function_call","name":5},
 			{"type":"function_call","call_id":5,"name":"f","arguments":{"a":1}},
 			{"type":"function_call_output"},
@@ -571,8 +573,10 @@ func TestResponsesMalformed(t *testing.T) {
 				{"role":"assistant","parts":[]},
 				{"role":"assistant","parts":[{"type":"x_entry","v":1}]}]`}},
 		{name: "tools of every wrong shape", request: `{"tools":[1,null,"f",{"type":5},{"type":"function"},
-			{"type":"function","name":5},{"type":"function","name":"f","description":5,"parameters":null},{"name":"g"}]}`,
-			want: map[string]any{"gen_ai.tool.definitions": `[{"type":"function","name":"f"}]`}},
+			{"type":"function","name":5},{"type":"function","name":"f","description":5,"parameters":null},{"name":"g"},
+			{"type":"apply_patch"},{"type":"shell","name":null},{"type":"custom","name":"grep"}]}`,
+			want: map[string]any{"gen_ai.tool.definitions": `[{"type":"function","name":"f"},
+				{"type":"apply_patch","name":"apply_patch"},{"type":"custom","name":"grep"}]`}},
 		{name: "parameters of the wrong types", request: `{"max_output_tokens":"10","temperature":"0.5","top_p":true}`,
 			want: map[string]any{}},
 		{name: "parameters at their edges", request: `{"max_output_tokens":0,"temperature":0,"top_p":1e-300}`,
@@ -588,8 +592,9 @@ func TestResponsesMalformed(t *testing.T) {
 			want: map[string]any{"gen_ai.response.id": "r"}},
 		{name: "an answer of every wrong shape", response: `{"id":5,"model":["m"],"status":5,"output":[1,null,{"type":5},
 			{"id":"no type"},{"type":"function_call","call_id":"c"},{"type":"message","content":5},
-			{"type":"message","content":"plain"},{"type":"reasoning","summary":"x"}]}`,
-			want: map[string]any{"gen_ai.output.messages": `[{"role":"assistant","parts":[{"type":"text","content":"plain"}]}]`}},
+			{"type":"message","content":"plain"},{"type":"reasoning","summary":"x"},{"type":"uri","id":"u"}]}`,
+			want: map[string]any{"gen_ai.response.finish_reasons": []string{"error"},
+				"gen_ai.output.messages": `[{"role":"assistant","parts":[{"type":"text","content":"plain"}]}]`}},
 		{name: "incomplete without a reason", response: `{"status":"incomplete","incomplete_details":{"reason":""},"output":[]}`,
 			want: map[string]any{"gen_ai.response.finish_reasons": []string{"incomplete"},
 				"gen_ai.output.messages": `[{"role":"assistant","parts":[]}]`}},
@@ -606,7 +611,8 @@ func TestResponsesMalformed(t *testing.T) {
 			`{"type":"response.output_item.done","item":{"id":"i","type":"message","content":[{"type":"output_text","text":"kept"}]}}`,
 			`{"type":"response.completed","response":5}`),
 			want: map[string]any{"gen_ai.response.id": "r", "gen_ai.response.model": "m",
-				"gen_ai.output.messages": `[{"role":"assistant","parts":[{"type":"text","content":"kept"}]}]`}},
+				"gen_ai.response.finish_reasons": []string{"error"},
+				"gen_ai.output.messages":         `[{"role":"assistant","parts":[{"type":"text","content":"kept"}]}]`}},
 		{name: "a stream that ends at its terminal event", stream: true, response: typedEvents(
 			`{"type":"response.completed","response":{"id":"r","status":"completed","output":[]}}`,
 			`{"type":"response.output_item.done","item":{"id":"i","type":"message","content":[{"type":"output_text","text":"after the end"}]}}`),
@@ -631,8 +637,9 @@ func TestResponsesMalformed(t *testing.T) {
 			`{"type":"response.output_item.done","item":{"id":"m2","type":"message","content":[{"type":"output_text","text":"finished"}]}}`,
 			`{"type":"response.output_text.delta","item_id":"m2","delta":"after it was done"}`,
 			`{"type":"response.output_item.done","item":{"type":"message","content":[{"type":"output_text","text":"no id"}]}}`,
-			`{"type":"response.output_item.added","item":{"id":"f1","type":"function_call","name":5,"arguments":"{}"}}`),
-			want: map[string]any{"gen_ai.response.id": "r",
+			`{"type":"response.output_item.added","item":{"id":"f1","type":"function_call","name":5,"arguments":"{}"}}`,
+			`{"type":"response.output_item.added","item":{"id":"b1","type":"blob","data":"named as the conventions' part"}}`),
+			want: map[string]any{"gen_ai.response.id": "r", "gen_ai.response.finish_reasons": []string{"error"},
 				"gen_ai.output.messages": `[{"role":"assistant","parts":[
 					{"type":"text","content":"kept"},{"type":"text","content":"finished"}]}]`}},
 	} {

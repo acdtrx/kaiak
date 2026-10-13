@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"kaiak/internal/provider"
 )
 
 // The shared pieces of the conventions' format, which every API's mapping reads
@@ -135,8 +137,9 @@ func TestContentJSONIsNotHTMLEscaped(t *testing.T) {
 	}
 }
 
-// The finish reasons are written when any generation gave one — one per output
-// message, "" for one that gave none — and not when none did.
+// The finish reasons are one per generation the answer gave, error — the
+// conventions' value for a generation that ended abnormally — for one that gave none;
+// none for an answer with no generation.
 func TestFinishReasons(t *testing.T) {
 	one := []message{newMessage("assistant", "", nil)}
 	two := append(slices.Clone(one), one...)
@@ -144,9 +147,11 @@ func TestFinishReasons(t *testing.T) {
 		an   answerContent
 		want any
 	}{
-		{answerContent{messages: two, finishReasons: []string{"", "stop"}}, []string{"", "stop"}},
-		{answerContent{messages: two, finishReasons: []string{"", ""}}, nil},
-		{answerContent{messages: one, finishReasons: []string{""}}, nil},
+		{answerContent{messages: two, finishReasons: []string{"", "stop"}}, []string{"error", "stop"}},
+		{answerContent{messages: two, finishReasons: []string{"", ""}}, []string{"error", "error"}},
+		{answerContent{messages: one, finishReasons: []string{""}}, []string{"error"}},
+		{answerContent{messages: one, finishReasons: []string{"length"}}, []string{"length"}},
+		{answerContent{}, nil},
 	} {
 		got := plainAttributes(t, contentAttributes(requestContent{}, c.an))["gen_ai.response.finish_reasons"]
 		if !slices.Equal(asStrings(got), asStrings(c.want)) || (got == nil) != (c.want == nil) {
@@ -193,5 +198,91 @@ func TestStreamEvents(t *testing.T) {
 	}
 	if n != 2 {
 		t.Errorf("%d events read, want 2", n)
+	}
+}
+
+// A tool the mapping does not know keeps its own JSON, named as the conventions
+// require of every tool definition: by its own name; else the name its API gives it
+// inside (Chat's custom.name), added; else its type, added. A tool whose name is not
+// a string is left out.
+func TestGenericTool(t *testing.T) {
+	for _, c := range []struct{ raw, inner, want string }{
+		{`{"type":"bash_20250124","name":"bash"}`, "", `{"type":"bash_20250124","name":"bash"}`},
+		{`{"type":"x","name":""}`, "", `{"type":"x","name":""}`},
+		{`{"type":"local_shell"}`, "", `{"type":"local_shell","name":"local_shell"}`},
+		{`{"type":"custom","custom":{"name":"grep"}}`, "grep", `{"type":"custom","custom":{"name":"grep"},"name":"grep"}`},
+		{"{ \"type\" : \"x<&>\" }\n", "", `{"type":"x<&>","name":"x<&>"}`},
+		{`{"type":"x","name":5}`, "", ""},
+		{`{"type":"x","name":null}`, "grep", ""},
+	} {
+		m, _ := members([]byte(c.raw))
+		tool, ok := genericTool(json.RawMessage(c.raw), m, c.inner)
+		got := ""
+		if ok {
+			got = encoded(t, tool)
+		}
+		if got != c.want {
+			t.Errorf("%s: %s, want %s", c.raw, got, c.want)
+		}
+	}
+}
+
+// A part, block or item the mapping does not know is carried as a generic part —
+// unless its type is one of the conventions' own part types, which it is not: read
+// as one, it would lack that part's members, so it is left out.
+func TestGenericPartNamedLikeTheConventions(t *testing.T) {
+	for _, typ := range conventionPartTypes {
+		raw := json.RawMessage(`{"type":"` + typ + `","text":"x"}`)
+		if got := appendGeneric(nil, raw, typ); len(got) != 0 {
+			t.Errorf("%s: %v, want it left out", typ, got)
+		}
+	}
+	for _, typ := range []string{"x_custom", "compaction", "redacted_thinking", "input_audio"} {
+		raw := json.RawMessage(`{"type":"` + typ + `"}`)
+		if got := appendGeneric(nil, raw, typ); len(got) != 1 || encoded(t, got[0]) != string(raw) {
+			t.Errorf("%s: %v, want it carried as sent", typ, got)
+		}
+	}
+}
+
+// No output is made up for a request that failed — its span has an error.type: an
+// output message with no parts, a generation cut before its content arrived, is left
+// out, and its finish reason, error, kept; one with parts stays: what the client
+// received.
+func TestNoOutputMadeUpForAFailedRequest(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		api      provider.Endpoint
+		response string
+		want     map[string]any
+	}{
+		{"chat, cut after the role", provider.ChatCompletions,
+			events(`{"id":"c","model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}`),
+			map[string]any{"gen_ai.response.id": "c", "gen_ai.response.model": "m",
+				"gen_ai.response.finish_reasons": []string{"error"}}},
+		{"chat, two choices, one cut before its content", provider.ChatCompletions, events(
+			`{"id":"c","choices":[{"index":0,"delta":{"role":"assistant","content":""}},{"index":1,"delta":{"role":"assistant","content":"B"}}]}`),
+			map[string]any{"gen_ai.response.id": "c", "gen_ai.response.finish_reasons": []string{"error", "error"},
+				"gen_ai.output.messages": `[{"role":"assistant","parts":[{"type":"text","content":"B"}]}]`}},
+		{"messages, cut after message_start", provider.Messages,
+			typedEvents(`{"type":"message_start","message":{"id":"msg","model":"m","content":[]}}`),
+			map[string]any{"gen_ai.response.id": "msg", "gen_ai.response.model": "m",
+				"gen_ai.response.finish_reasons": []string{"error"}}},
+		{"responses, failed", provider.Responses, typedEvents(
+			`{"type":"response.created","response":{"id":"r","model":"m","status":"in_progress","output":[]}}`,
+			`{"type":"response.failed","response":{"id":"r","model":"m","status":"failed","output":[]}}`),
+			map[string]any{"gen_ai.response.id": "r", "gen_ai.response.model": "m",
+				"gen_ai.response.finish_reasons": []string{"error"}}},
+		{"responses, cut with text", provider.Responses, typedEvents(
+			`{"type":"response.created","response":{"id":"r","model":"m","status":"in_progress","output":[]}}`,
+			`{"type":"response.output_item.added","item":{"id":"i","type":"message","role":"assistant","content":[]}}`,
+			`{"type":"response.output_text.delta","item_id":"i","delta":"Part"}`),
+			map[string]any{"gen_ai.response.id": "r", "gen_ai.response.model": "m",
+				"gen_ai.response.finish_reasons": []string{"error"},
+				"gen_ai.output.messages":         `[{"role":"assistant","parts":[{"type":"text","content":"Part"}]}]`}},
+	} {
+		got := plainAttributes(t, content(c.api, exchange{response: []byte(c.response), stream: true, status: 200,
+			failed: true}))
+		expectAttributes(t, c.name, got, c.want)
 	}
 }

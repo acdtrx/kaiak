@@ -335,7 +335,8 @@ func TestMessagesRecordedAnswers(t *testing.T) {
 }
 
 // A stream cut short keeps what arrived: the blocks finished and the ones in
-// progress — a tool call's half-written input as a string — with no finish reason.
+// progress — a tool call's half-written input as a string — with the finish reason
+// error: its stop reason never came.
 // An event the stream ends inside was never whole and is not read. A non-stream
 // answer cut short is no valid JSON, and gives nothing.
 func TestMessagesCutShort(t *testing.T) {
@@ -360,6 +361,7 @@ func TestMessagesCutShort(t *testing.T) {
 	expectAttributes(t, "cut stream", messagesContent(t, request, stream, true, 200), map[string]any{
 		"gen_ai.request.max_tokens": int64(100), "gen_ai.input.messages": input, "gen_ai.tool.definitions": tools,
 		"gen_ai.response.id": "msg_c", "gen_ai.response.model": "claude-sonnet",
+		"gen_ai.response.finish_reasons": []string{"error"},
 		"gen_ai.output.messages": `[{"role":"assistant","parts":[
 			{"type":"reasoning","content":"Use the tool."},{"type":"text","content":"Checking."},
 			{"type":"tool_call","id":"toolu_9","name":"get_weather","arguments":"{\"city\": \"Os"}]}]`})
@@ -372,16 +374,19 @@ func TestMessagesCutShort(t *testing.T) {
 	expectAttributes(t, "recorded, cut", messagesContent(t, recordedToolRequest, cut, true, 200),
 		with(recordedToolWant, map[string]any{
 			"gen_ai.response.id": "chatcmpl-UI4BwYAnyeVXzNGjMhy8tklvNb15l3sO", "gen_ai.response.model": "unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL",
+			"gen_ai.response.finish_reasons": []string{"error"},
 			"gen_ai.output.messages": `[{"role":"assistant","parts":[
 				{"type":"reasoning","content":"The user wants to know the weather in Paris. I have a weather tool available that takes a city as a parameter. Let me call it with \"Paris\".\n"},
 				{"type":"tool_call","id":"nZbas9eDKT810gaJxe8S6Hww3rzy5X0R","name":"get_weather","arguments":"{\"city\":\""}]}]`}))
 
-	// Cut right after message_start: the message, with nothing in it yet.
+	// Cut right after message_start: the message, with nothing in it yet — left out
+	// of a request that failed (TestNoOutputMadeUpForAFailedRequest).
 	opened := typedEvents(`{"type":"message_start","message":{"id":"msg_d","type":"message","role":"assistant","model":"claude-sonnet","content":[]}}`)
 	expectAttributes(t, "opened only", messagesContent(t, request, opened, true, 200), map[string]any{
 		"gen_ai.request.max_tokens": int64(100), "gen_ai.input.messages": input, "gen_ai.tool.definitions": tools,
 		"gen_ai.response.id": "msg_d", "gen_ai.response.model": "claude-sonnet",
-		"gen_ai.output.messages": `[{"role":"assistant","parts":[]}]`})
+		"gen_ai.response.finish_reasons": []string{"error"},
+		"gen_ai.output.messages":         `[{"role":"assistant","parts":[]}]`})
 
 	// An error event ends it: what arrived stays.
 	failed := typedEvents(
@@ -392,7 +397,8 @@ func TestMessagesCutShort(t *testing.T) {
 	expectAttributes(t, "error event", messagesContent(t, request, failed, true, 200), map[string]any{
 		"gen_ai.request.max_tokens": int64(100), "gen_ai.input.messages": input, "gen_ai.tool.definitions": tools,
 		"gen_ai.response.id": "msg_e", "gen_ai.response.model": "claude-sonnet",
-		"gen_ai.output.messages": `[{"role":"assistant","parts":[{"type":"text","content":"Partly"}]}]`})
+		"gen_ai.response.finish_reasons": []string{"error"},
+		"gen_ai.output.messages":         `[{"role":"assistant","parts":[{"type":"text","content":"Partly"}]}]`})
 
 	whole := `{"id":"msg_c","type":"message","role":"assistant","model":"claude-sonnet","content":[{"type":"text","text":"Check`
 	expectAttributes(t, "cut body", messagesContent(t, request, whole, false, 200), map[string]any{
@@ -487,7 +493,8 @@ func TestMessagesMalformed(t *testing.T) {
 				{"type":"document","source":{"type":"base64","media_type":5,"data":"QQ=="}},
 				{"type":"tool_use","id":"t1"},{"type":"tool_use","name":5},
 				{"type":"tool_use","id":5,"name":"f","input":"not json"},{"type":"tool_use","name":"g","input":null},
-				{"type":"tool_result"},{"type":"tool_result","tool_use_id":5,"content":{"a":1}}]}]}`,
+				{"type":"tool_result"},{"type":"tool_result","tool_use_id":5,"content":{"a":1}},
+				{"type":"reasoning","text":"named as the conventions' part"},{"type":"tool_call","name":"f"}]}]}`,
 			want: map[string]any{"gen_ai.input.messages": `[
 				{"role":"user","parts":[]},
 				{"role":"user","parts":[]},
@@ -499,10 +506,12 @@ func TestMessagesMalformed(t *testing.T) {
 					{"type":"tool_call_response","response":{"a":1}}]}]`}},
 		{name: "tools of every wrong shape", request: `{"tools":[1,null,"f",{"name":"no schema, no type"},
 			{"input_schema":{"type":"object"}},{"name":5,"input_schema":{}},{"type":5,"name":"x"},
-			{"name":"f","description":5,"input_schema":null,"type":"custom"},{"name":"g","input_schema":{"type":"object"}}]}`,
+			{"name":"f","description":5,"input_schema":null,"type":"custom"},{"name":"g","input_schema":{"type":"object"}},
+			{"type":"x_tool"},{"type":"x_tool","name":5}]}`,
 			want: map[string]any{"gen_ai.tool.definitions": `[
 				{"name":"f","description":5,"input_schema":null,"type":"custom"},
-				{"type":"function","name":"g","parameters":{"type":"object"}}]`}},
+				{"type":"function","name":"g","parameters":{"type":"object"}},
+				{"type":"x_tool","name":"x_tool"}]`}},
 		{name: "parameters of the wrong types", request: `{"max_tokens":"10","temperature":"0.5","top_p":true,"top_k":1.5,
 			"stop_sequences":[1,"x"]}`, want: map[string]any{}},
 		{name: "parameters at their edges", request: `{"max_tokens":0,"top_k":-1,"temperature":0,"top_p":null,
@@ -520,7 +529,8 @@ func TestMessagesMalformed(t *testing.T) {
 		{name: "content an object", response: `{"content":{"type":"text","text":"hi"}}`, want: map[string]any{}},
 		{name: "an answer of every wrong shape", response: `{"id":5,"model":["m"],"stop_reason":5,
 			"content":[1,null,{"type":"text","text":5},{"text":"no type"},{"type":"text","text":"ok"}]}`,
-			want: map[string]any{"gen_ai.output.messages": `[{"role":"assistant","parts":[{"type":"text","content":"ok"}]}]`}},
+			want: map[string]any{"gen_ai.response.finish_reasons": []string{"error"},
+				"gen_ai.output.messages": `[{"role":"assistant","parts":[{"type":"text","content":"ok"}]}]`}},
 		{name: "an empty answer", response: `{"id":"m","content":[],"stop_reason":"end_turn"}`,
 			want: map[string]any{"gen_ai.response.id": "m", "gen_ai.response.finish_reasons": []string{"end_turn"},
 				"gen_ai.output.messages": `[{"role":"assistant","parts":[]}]`}},
@@ -535,7 +545,8 @@ func TestMessagesMalformed(t *testing.T) {
 			`{"type":"message_start","message":{"id":"m"}}`, `{"type":"message_stop"}`,
 			`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"after the end"}}`,
 			`{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`),
-			want: map[string]any{"gen_ai.response.id": "m", "gen_ai.output.messages": `[{"role":"assistant","parts":[]}]`}},
+			want: map[string]any{"gen_ai.response.id": "m", "gen_ai.response.finish_reasons": []string{"error"},
+				"gen_ai.output.messages": `[{"role":"assistant","parts":[]}]`}},
 		{name: "a stream of every wrong shape", stream: true, response: typedEvents(
 			`{"type":"message_start","message":5}`,
 			`{"type":"message_start","message":{"id":"second","model":"m"}}`,
@@ -556,10 +567,12 @@ func TestMessagesMalformed(t *testing.T) {
 			`{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t","name":5,"input":{}}}`,
 			`{"type":"content_block_start","index":2,"content_block":{"type":"thinking","thinking":"deep"}}`,
 			`{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{}"}}`,
+			`{"type":"content_block_start","index":3,"content_block":{"type":"blob","data":"named as the conventions' part"}}`,
 			`{"type":"message_delta","delta":"x"}`,
 			`{"type":"message_delta","delta":{"stop_reason":5}}`),
-			want: map[string]any{"gen_ai.output.messages": `[{"role":"assistant","parts":[
-				{"type":"text","content":"kept"},{"type":"reasoning","content":"deep"}]}]`}},
+			want: map[string]any{"gen_ai.response.finish_reasons": []string{"error"},
+				"gen_ai.output.messages": `[{"role":"assistant","parts":[
+					{"type":"text","content":"kept"},{"type":"reasoning","content":"deep"}]}]`}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			expectAttributes(t, c.name, messagesContent(t, c.request, c.response, c.stream, 200), c.want)

@@ -470,10 +470,10 @@ Group entries under headings as themes emerge.
 - **An end-user ID for captures** — `user.id` on a capture, from a request header as
   `Kaiak-Session-Id` is, so a trace tool can show captures per end user (Langfuse
   reads `user.id`). Revisit trigger: someone wants per-user views in the tool.
-- **Truncating large captures** — a capture whose span exceeds the 16 MiB export
-  limit is dropped whole (`too_large`); the conventions allow truncating message
-  contents while keeping the JSON structure. Revisit trigger: `too_large` drops show
-  up in `otel_sdk_processor_span_processed_total`.
+- **Truncating large captures** — a capture whose request body or span exceeds the
+  16 MiB export limit is dropped whole (`too_large`); the conventions allow
+  truncating message contents while keeping the JSON structure. Revisit trigger:
+  `too_large` drops show up in `otel_sdk_processor_span_processed_total`.
 - **gzip on OTLP export** — every export (logs, metrics, traces) is sent
   uncompressed; collectors and Langfuse accept gzip, and captures with inline media
   are large. Revisit trigger: export bandwidth matters — a collector across a paid or

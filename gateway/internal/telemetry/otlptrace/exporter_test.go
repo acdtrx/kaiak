@@ -230,7 +230,7 @@ func TestExportRequestShape(t *testing.T) {
 		Attributes: []Attribute{String("gen_ai.operation.name", "chat"), Int("gen_ai.usage.input_tokens", 12),
 			Float64("kaiak.usage.cost_usd", 0.5), Bool("kaiak.usage.estimated", true),
 			Strings("gen_ai.response.finish_reasons", []string{"stop"})},
-		Status: Status{Code: StatusError, Message: "upstream_error"}})
+		Status: Status{Code: StatusError}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,8 +283,8 @@ func TestExportRequestShape(t *testing.T) {
 		"kaiak.usage.estimated": true, "gen_ai.response.finish_reasons": []any{"stop"}}; !reflect.DeepEqual(s.Attrs(t), want) {
 		t.Errorf("attributes %v, want %v", s.Attrs(t), want)
 	}
-	if s.Status == nil || *s.Status != (fakeotlp.Status{Code: 2, Message: "upstream_error"}) {
-		t.Errorf("status %+v, want code 2 with the error type", s.Status)
+	if s.Status == nil || *s.Status != (fakeotlp.Status{Code: 2}) {
+		t.Errorf("status %+v, want code 2 with no message", s.Status)
 	}
 	if spans[1].Status != nil {
 		t.Errorf("status %+v on a span with no error, want none", spans[1].Status)

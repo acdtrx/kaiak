@@ -2,6 +2,7 @@ package capture
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"slices"
 	"strings"
@@ -35,8 +36,9 @@ func newMessage(role, name string, parts []part) message {
 }
 
 // part is one of a message's parts — textPart (text and reasoning), toolCallPart,
-// toolCallResponsePart, blobPart, uriPart, filePart — or original, a part the mapping
-// does not know. The new…Part functions make each.
+// toolCallResponsePart, blobPart, uriPart, filePart — or a generic part: original, a
+// part the mapping does not know (appendGeneric), or chatCustomCall, a custom tool's
+// call rebuilt from a stream. The new…Part functions make each.
 type part interface{ isPart() }
 
 // textPart is a text or reasoning part.
@@ -87,9 +89,9 @@ type filePart struct {
 }
 
 // original is a JSON object carried as it was sent — a part, block or item the
-// mapping does not know (the conventions' generic part), or a tool that is not a
-// function — which names its own type. As passthrough preserves what it does not
-// understand, so does capture.
+// mapping does not know (the conventions' generic part: appendGeneric), or a tool
+// that is not a function (genericTool) — which names its own type. As passthrough
+// preserves what it does not understand, so does capture.
 type original json.RawMessage
 
 func (o original) MarshalJSON() ([]byte, error) { return o, nil }
@@ -123,6 +125,23 @@ func newURIPart(modality, mimeType, uri string) part {
 
 func newFilePart(modality, mimeType, fileID string) part {
 	return filePart{Type: "file", Modality: modality, MIMEType: mimeType, FileID: fileID}
+}
+
+// conventionPartTypes are the conventions' part types that have members of their
+// own beside type. A part, block or item the mapping does not know that bears one of
+// these types is not one of those parts: a reader would take it for one, without its
+// members.
+var conventionPartTypes = []string{"text", "reasoning", "tool_call", "tool_call_response", "blob", "uri", "file",
+	"server_tool_call", "server_tool_call_response"}
+
+// appendGeneric appends raw — a JSON object of type typ, a part, block or item the
+// mapping does not know — as a generic part, as it was sent; unless typ is one of the
+// conventions' own part types, which it is not, when it is left out.
+func appendGeneric(parts []part, raw json.RawMessage, typ string) []part {
+	if slices.Contains(conventionPartTypes, typ) {
+		return parts
+	}
+	return append(parts, original(raw))
 }
 
 // appendText appends text as a text part, and appendReasoning as a reasoning part —
@@ -161,6 +180,39 @@ func (original) isToolDefinition()     {}
 
 func newFunctionTool(name, description string, parameters json.RawMessage) toolDefinition {
 	return functionTool{Type: "function", Name: name, Description: description, Parameters: parameters}
+}
+
+// genericTool is raw — a tool the mapping does not know, of members m — as a tool
+// definition: its own JSON, with a top-level name added when it has none — inner, the
+// name its API gives it inside (Chat's custom.name), else its type: the conventions
+// require every tool definition to name one, and a tool without it is not shown.
+// false for a tool whose name is not a string.
+func genericTool(raw json.RawMessage, m map[string]json.RawMessage, inner string) (toolDefinition, bool) {
+	given, present := m["name"]
+	if present {
+		if _, ok := stringOf(given); !ok {
+			return nil, false
+		}
+		return original(raw), true
+	}
+	name := inner
+	if name == "" {
+		name, _ = stringOf(m["type"])
+	}
+	// raw is an object with at least its type: the name goes before its closing brace.
+	raw = bytes.TrimRight(raw, " \t\r\n")
+	named := slices.Concat(raw[:len(raw)-1], []byte(`,"name":`), jsonString(name), []byte("}"))
+	return original(named), true
+}
+
+// jsonString is s as a JSON string, without HTML escaping, as the content attributes
+// are written (appendJSON).
+func jsonString(s string) []byte {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(s) // a string always encodes
+	return bytes.TrimSuffix(b.Bytes(), []byte{'\n'})
 }
 
 // readFunctionTool is a function definition from fn, the members of a function tool
@@ -277,17 +329,22 @@ type requestContent struct {
 
 // answerContent is what an answer gives its capture: its ID and model, "" when it
 // names none, its output messages — one per generation — and their finish reasons,
-// one per message, "" for one that gave none.
+// one per generation, "" for one that gave none.
 type answerContent struct {
 	id, model     string
 	messages      []message
 	finishReasons []string
 }
 
+// unfinished is the finish reason of a generation that gave none — a stream cut
+// short or ended without it, a choice that never finished — and of a failed one: the
+// conventions' value for a generation that ended abnormally.
+const unfinished = "error"
+
 // contentAttributes are a capture's content attributes, from what its request and
 // its answer give (docs/specs/GATEWAY.md, Request capture → Attributes): each only
-// when there is something to carry. The finish reasons are written when any
-// generation gave one.
+// when there is something to carry. The finish reasons are one per generation the
+// answer gave, unfinished for one that gave none.
 func contentAttributes(rq requestContent, an answerContent) []otlptrace.Attribute {
 	attrs := []otlptrace.Attribute(rq.parameters)
 	if an.id != "" {
@@ -296,8 +353,12 @@ func contentAttributes(rq requestContent, an answerContent) []otlptrace.Attribut
 	if an.model != "" {
 		attrs = append(attrs, otlptrace.String("gen_ai.response.model", an.model))
 	}
-	if slices.ContainsFunc(an.finishReasons, func(r string) bool { return r != "" }) {
-		attrs = append(attrs, otlptrace.Strings("gen_ai.response.finish_reasons", an.finishReasons))
+	if len(an.finishReasons) > 0 {
+		reasons := make([]string, len(an.finishReasons))
+		for i, r := range an.finishReasons {
+			reasons[i] = cmp.Or(r, unfinished)
+		}
+		attrs = append(attrs, otlptrace.Strings("gen_ai.response.finish_reasons", reasons))
 	}
 	if len(rq.systemInstructions) > 0 {
 		attrs = appendJSON(attrs, "gen_ai.system_instructions", rq.systemInstructions)

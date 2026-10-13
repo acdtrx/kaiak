@@ -108,9 +108,9 @@ func chatReasoning(m map[string]json.RawMessage) string {
 // appendChatContentPart appends one part of a message's content: text and refusal
 // as text; image_url as a blob (a base64 data: URL) or uri, modality image;
 // input_audio as a blob, modality audio, MIME type audio/<format>; file as a file
-// (file_id) or blob (file_data, a base64 data: URL); any other type as sent. A part
-// that is not an object naming its type, or a known part without its API's shape, is
-// left out.
+// (file_id) or blob (file_data, a base64 data: URL); any other type as sent
+// (appendGeneric). A part that is not an object naming its type, or a known part
+// without its API's shape, is left out.
 func appendChatContentPart(parts []part, raw json.RawMessage) []part {
 	m, ok := members(raw)
 	if !ok {
@@ -152,14 +152,14 @@ func appendChatContentPart(parts []part, raw json.RawMessage) []part {
 			return append(parts, newBlobPart(modality(mime, modalityDocument), mime, content))
 		}
 	default:
-		return append(parts, original(raw))
+		return appendGeneric(parts, raw, typ)
 	}
 	return parts
 }
 
 // appendChatToolCall appends one of a message's tool calls: a function's as a tool
 // call — its id, function.name and function.arguments — and a call of any other type
-// as sent. A call that is neither is left out.
+// (OpenAI's custom) as sent (appendGeneric). A call that is neither is left out.
 func appendChatToolCall(parts []part, raw json.RawMessage) []part {
 	m, ok := members(raw)
 	if !ok {
@@ -174,14 +174,16 @@ func appendChatToolCall(parts []part, raw json.RawMessage) []part {
 		return append(parts, newToolCallPart(id, name, toolArguments(fn["arguments"])))
 	}
 	if typ, _ := stringOf(m["type"]); typ != "" {
-		return append(parts, original(raw))
+		return appendGeneric(parts, raw, typ)
 	}
 	return parts
 }
 
 // chatTool is one of the tools a request offers: a function tool as a function
-// definition — its name, description and parameters — and any other as sent. false
-// for a tool that is not an object naming its type, or a function without a name.
+// definition — its name, description and parameters — and any other as sent, named
+// as genericTool names it from the name under the member its type names
+// (custom.name). false for a tool that is not an object naming its type, or a
+// function without a name.
 func chatTool(raw json.RawMessage) (toolDefinition, bool) {
 	m, ok := members(raw)
 	if !ok {
@@ -193,8 +195,11 @@ func chatTool(raw json.RawMessage) (toolDefinition, bool) {
 	case "function":
 		fn, _ := members(m["function"])
 		return readFunctionTool(fn, "parameters")
+	default:
+		inner, _ := members(m[typ])
+		name, _ := stringOf(inner["name"])
+		return genericTool(raw, m, name)
 	}
-	return original(raw), true
 }
 
 // chatOutputRole is an output message's role: the one the choice names, assistant
@@ -293,17 +298,40 @@ type chatChoice struct {
 }
 
 // chatToolCall is one tool call of a streamed choice, as its fragments have built it
-// so far. Only a function's call can be rebuilt from its fragments: a call no
-// fragment gave a function is left out.
+// so far: a function's or a custom tool's (OpenAI's), whichever member its first
+// fragment that has one carries; its ID and name from the fragments that first carry
+// them; its arguments — a custom call's input — concatenated. A call no fragment gave
+// either member is left out.
 type chatToolCall struct {
-	id, name               string
-	function, hasArguments bool
-	arguments              strings.Builder
+	id, name string
+	// kind is "function" or "custom"; "" while no fragment has carried either.
+	kind string
+	// hasArguments: a fragment carried arguments (a custom call's input).
+	hasArguments bool
+	arguments    strings.Builder
 }
+
+// chatToolCallMembers are the members a streamed tool call's fragment carries its
+// kind in, each with the member of its arguments.
+var chatToolCallMembers = []struct{ kind, arguments string }{{"function", "arguments"}, {"custom", "input"}}
+
+// chatCustomCall is a custom tool's call, as an unstreamed answer carries it and the
+// mapping carries it on — a generic part — rebuilt from a stream's fragments.
+type chatCustomCall struct {
+	ID     string `json:"id,omitempty"`
+	Type   string `json:"type"`
+	Custom struct {
+		Name  string `json:"name"`
+		Input string `json:"input"`
+	} `json:"custom"`
+}
+
+func (chatCustomCall) isPart() {}
 
 // add adds one chunk's choice c: its finish reason, and its delta — the role and the
 // ID and name of each tool call from the fragments that first carry them; the
-// reasoning, content, refusal and each call's arguments concatenated.
+// reasoning, content, refusal and each call's arguments concatenated. Of a call's
+// fragments only the member of its kind is read.
 func (c *chatChoice) add(choice map[string]json.RawMessage) {
 	if reason, _ := stringOf(choice["finish_reason"]); reason != "" {
 		c.finishReason = reason
@@ -338,17 +366,23 @@ func (c *chatChoice) add(choice map[string]json.RawMessage) {
 		if id, _ := stringOf(f["id"]); call.id == "" {
 			call.id = id
 		}
-		fn, ok := members(f["function"])
-		if !ok {
-			continue
-		}
-		call.function = true
-		if name, _ := stringOf(fn["name"]); call.name == "" {
-			call.name = name
-		}
-		if arguments, ok := stringOf(fn["arguments"]); ok {
-			call.arguments.WriteString(arguments)
-			call.hasArguments = true
+		for _, k := range chatToolCallMembers {
+			if call.kind != "" && call.kind != k.kind {
+				continue
+			}
+			body, ok := members(f[k.kind])
+			if !ok {
+				continue
+			}
+			call.kind = k.kind
+			if name, _ := stringOf(body["name"]); call.name == "" {
+				call.name = name
+			}
+			if arguments, ok := stringOf(body[k.arguments]); ok {
+				call.arguments.WriteString(arguments)
+				call.hasArguments = true
+			}
+			break
 		}
 	}
 }
@@ -360,15 +394,27 @@ func (c *chatChoice) message() message {
 	parts = appendText(parts, c.content.String())
 	parts = appendText(parts, c.refusal.String())
 	for _, index := range slices.Sorted(maps.Keys(c.toolCalls)) {
-		call := c.toolCalls[index]
-		if !call.function {
-			continue
-		}
+		parts = c.toolCalls[index].appendTo(parts)
+	}
+	return newMessage(chatOutputRole(c.role), "", parts)
+}
+
+// appendTo appends the call as the same call unstreamed gives it: a function's as a
+// tool call — its arguments parsed when whole, the string when cut short — and a
+// custom tool's as the call object an unstreamed answer carries, its input as it
+// arrived.
+func (call *chatToolCall) appendTo(parts []part) []part {
+	switch call.kind {
+	case "function":
 		var arguments any
 		if call.hasArguments {
 			arguments = stringArguments(call.arguments.String())
 		}
-		parts = append(parts, newToolCallPart(call.id, call.name, arguments))
+		return append(parts, newToolCallPart(call.id, call.name, arguments))
+	case "custom":
+		custom := chatCustomCall{ID: call.id, Type: "custom"}
+		custom.Custom.Name, custom.Custom.Input = call.name, call.arguments.String()
+		return append(parts, custom)
 	}
-	return newMessage(chatOutputRole(c.role), "", parts)
+	return parts
 }

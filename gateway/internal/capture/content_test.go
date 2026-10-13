@@ -62,15 +62,17 @@ type contentCase struct {
 
 // expectCorpus checks that each case's request and answer give its attributes — the
 // answer whole and streamed alike: every streamed answer assembles to its unstreamed
-// twin.
+// twin — and that what they give follows the conventions (expectWellFormed).
 func expectCorpus(t *testing.T, api provider.Endpoint, corpus []contentCase) {
 	t.Helper()
 	for _, c := range corpus {
 		t.Run(c.name, func(t *testing.T) {
 			whole := apiContent(t, api, c.request, c.answer, false, 200)
 			expectAttributes(t, "whole", whole, c.want)
+			expectWellFormed(t, whole)
 			streamed := apiContent(t, api, c.request, c.stream, true, 200)
 			expectAttributes(t, "streamed", streamed, c.want)
+			expectWellFormed(t, streamed)
 			if !reflect.DeepEqual(whole, streamed) {
 				t.Errorf("the stream assembles to\n%v\nits unstreamed twin gives\n%v", streamed, whole)
 			}
@@ -85,11 +87,17 @@ func with(want, more map[string]any) map[string]any {
 	return out
 }
 
-// expectWellFormed checks what any input gives, however odd: every content attribute
-// a non-empty JSON list — the conventions' — and one finish reason per output message
-// when there are any.
+// expectWellFormed checks that what any input gives, however odd, follows the
+// conventions' JSON schemas at the pinned commit (docs/specs/GATEWAY.md, Request
+// capture → Conventions followed): every content attribute a non-empty JSON list;
+// every message a string role and a list of parts; every part — of a message or of
+// the system instructions — a string type and the members its type requires
+// (partMembers), a generic part its type alone; every tool definition a string type
+// and name; and one finish reason per output message, of an exchange that did not
+// fail.
 func expectWellFormed(t *testing.T, attrs map[string]any) {
 	t.Helper()
+	outputs := 0
 	for _, k := range jsonAttributes {
 		v, ok := attrs[k].(string)
 		if !ok {
@@ -99,12 +107,89 @@ func expectWellFormed(t *testing.T, attrs map[string]any) {
 		if err := json.Unmarshal([]byte(v), &l); err != nil || len(l) == 0 {
 			t.Fatalf("%s is not a JSON list (%v): %s", k, err, v)
 		}
-		if k == "gen_ai.output.messages" {
-			if reasons, ok := attrs["gen_ai.response.finish_reasons"].([]string); ok && len(reasons) != len(l) {
-				t.Fatalf("%d finish reasons for %d output messages", len(reasons), len(l))
+		check := map[string]func(json.RawMessage) string{"gen_ai.system_instructions": partProblem,
+			"gen_ai.input.messages": messageProblem, "gen_ai.output.messages": messageProblem,
+			"gen_ai.tool.definitions": toolProblem}[k]
+		for _, e := range l {
+			if problem := check(e); problem != "" {
+				t.Fatalf("%s: %s: %s", k, problem, e)
 			}
 		}
+		if k == "gen_ai.output.messages" {
+			outputs = len(l)
+		}
 	}
+	if reasons, _ := attrs["gen_ai.response.finish_reasons"].([]string); len(reasons) != outputs {
+		t.Fatalf("%d finish reasons for %d output messages", len(reasons), outputs)
+	}
+}
+
+// partMembers are the members each of the conventions' typed parts requires beside
+// its type: a string each, but a tool result's response and a server tool's details,
+// any value.
+var partMembers = map[string][]string{"text": {"content"}, "reasoning": {"content"}, "tool_call": {"name"},
+	"tool_call_response": {"response"}, "blob": {"modality", "content"}, "uri": {"modality", "uri"},
+	"file": {"modality", "file_id"}, "server_tool_call": {"name", "server_tool_call"},
+	"server_tool_call_response": {"server_tool_call_response"}}
+
+// anyValue are the members of partMembers whose value may be of any type.
+var anyValue = []string{"response", "server_tool_call", "server_tool_call_response"}
+
+// partProblem is what keeps raw from being one of the conventions' parts, "" when
+// nothing does.
+func partProblem(raw json.RawMessage) string {
+	var p map[string]json.RawMessage
+	if json.Unmarshal(raw, &p) != nil || p == nil {
+		return "a part that is not an object"
+	}
+	var typ string
+	if json.Unmarshal(p["type"], &typ) != nil {
+		return "a part without a string type"
+	}
+	for _, member := range partMembers[typ] {
+		v, present := p[member]
+		var s string
+		switch {
+		case !present:
+			return "a " + typ + " part without " + member
+		case !slices.Contains(anyValue, member) && json.Unmarshal(v, &s) != nil:
+			return "a " + typ + " part whose " + member + " is not a string"
+		}
+	}
+	return ""
+}
+
+// messageProblem is what keeps raw from being one of the conventions' messages, ""
+// when nothing does.
+func messageProblem(raw json.RawMessage) string {
+	var m struct {
+		Role  *string           `json:"role"`
+		Parts []json.RawMessage `json:"parts"`
+	}
+	if json.Unmarshal(raw, &m) != nil || m.Role == nil || m.Parts == nil {
+		return "a message without a string role and a list of parts"
+	}
+	for _, p := range m.Parts {
+		if problem := partProblem(p); problem != "" {
+			return problem
+		}
+	}
+	return ""
+}
+
+// toolProblem is what keeps raw from being one of the conventions' tool definitions,
+// "" when nothing does.
+func toolProblem(raw json.RawMessage) string {
+	var tool struct {
+		Type, Name *string
+	}
+	var members map[string]json.RawMessage
+	if json.Unmarshal(raw, &members) != nil || members == nil ||
+		json.Unmarshal(members["type"], &tool.Type) != nil || json.Unmarshal(members["name"], &tool.Name) != nil ||
+		tool.Type == nil || tool.Name == nil {
+		return "a tool definition without a string type and name"
+	}
+	return ""
 }
 
 // plainAttributes is attrs by key, each value as Go holds it: a string, an int64, a

@@ -30,8 +30,7 @@ type span struct {
 }
 
 type status struct {
-	Code    StatusCode `json:"code"`
-	Message string     `json:"message,omitempty"`
+	Code StatusCode `json:"code"`
 }
 
 // Encode is s as an OTLP/HTTP JSON Span: the bytes Enqueue takes, whose length the
@@ -49,7 +48,7 @@ func Encode(s Span) ([]byte, error) {
 		Attributes:        s.Attributes,
 	}
 	if s.Status.Code != StatusUnset {
-		out.Status = &status{Code: s.Status.Code, Message: s.Status.Message}
+		out.Status = &status{Code: s.Status.Code}
 	}
 	return marshal(out)
 }
