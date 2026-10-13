@@ -46,10 +46,22 @@
   text exposition, OTLP/HTTP JSON export). Rejected: zero third-party
   dependencies as a hard rule (the 2026-09-24 ruling) — the self-contained
   requirement is about what the binary needs to run, not about who wrote its
-  code. Allowed by this rule, not decided here: the OpenTelemetry trace SDK
-  core (`go.opentelemetry.io/otel`, `sdk/trace`, the TraceContext propagator)
-  links four small third-party modules (`xxhash`, `logr`, `stdr`, `uuid`) and no
-  gRPC or protobuf — the traces work's to take or leave, with its own ruling.
+  code.
+  - **The OpenTelemetry trace SDK not taken** (settled 2026-10-13, with the user):
+    its core (`go.opentelemetry.io/otel`, `sdk/trace`, the TraceContext propagator)
+    is allowed by this rule — four small third-party modules (`xxhash`, `logr`,
+    `stdr`, `uuid`), no gRPC or protobuf — but the gateway's only spans are request
+    captures (`docs/specs/GATEWAY.md`, Request capture): one span per captured
+    request, built at its end from what the gateway holds, with no propagation, no
+    sampling (a group's `capture` decides) and no span tree — nothing the SDK
+    brings. Measured on v1.47.0: about 1.85 MB on a stripped static binary and 11
+    modules linked; its processors report export errors through a global logger
+    (Go `log` lines on stderr) and drops only through experimental metrics, read the
+    sampler and the span limits from the environment and ignore malformed values —
+    against the rules our exporters keep (no remote text, malformed settings failing
+    the start). The span is a small struct with random IDs, encoded and sent by our
+    own exporter, as logs and metrics are. Distributed tracing, if it comes, is the
+    ruling's to revisit (`docs/BACKLOG.md`, OpenTelemetry traces).
 - **HTTP**: `net/http` server and client. Two listeners: the API port (client traffic)
   and the admin port (`/metrics`, `/healthz`, `/readyz`) — the admin port is never
   exposed through an ingress.
@@ -65,11 +77,14 @@
   attribute names follow OpenTelemetry's semantic conventions where they fit
   (`docs/specs/GATEWAY.md`, Observability: Logs).
 - **OTLP export: hand-written OTLP/HTTP with JSON encoding** (logs settled
-  2026-10-05, metrics 2026-10-08). Logs: an `slog` handler beside the stderr one
-  queues each record; a background sender posts batches as OTLP JSON
+  2026-10-05, metrics 2026-10-08, traces 2026-10-13). Logs: an `slog` handler beside
+  the stderr one queues each record; a background sender posts batches as OTLP JSON
   (`resourceLogs` → `scopeLogs` → `logRecords`). Metrics: a periodic reader
   collects the registry and posts `resourceMetrics` → `scopeMetrics` → `metrics`.
-  Both with `net/http` and `encoding/json`, over one shared connection layer.
+  Traces: the request captures' spans, each encoded by its caller and queued as
+  bytes under the capture budget; a background sender posts them in batches as
+  `resourceSpans` → `scopeSpans` → `spans`. All with `net/http` and
+  `encoding/json`, over one shared connection layer.
   OTLP/HTTP JSON is a documented encoding that every collector's OTLP HTTP receiver
   accepts. Rejected: protobuf encoding (`http/protobuf`, the specification's
   default) — it needs the protobuf runtime or a hand-written protobuf encoder;
@@ -96,7 +111,10 @@
   shares: the `OTEL_*` settings per signal, the resource, one export request and
   its delivery rules), `otlplog` (the log exporter), `metric` (instruments, the
   collect step, the Prometheus text writer with the OpenTelemetry → Prometheus
-  name translation), `otlpmetric` (the periodic metric exporter). It imports only
+  name translation), `otlpmetric` (the periodic metric exporter), `otlptrace` (the
+  span exporter: a span model, its OTLP JSON encoding, and a queue of encoded spans
+  bounded by its caller's budget, each with a release callback; settled
+  2026-10-13). It imports only
   the standard library and `kaiak/internal/netfail` (itself standard library only),
   which `scripts/check-gateway.sh` checks, and its tests use no kaiak fixtures: it
   is built to be extracted into a module of its own when a second project needs it,

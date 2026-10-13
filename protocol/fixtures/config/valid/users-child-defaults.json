@@ -1,5 +1,5 @@
 {
-  "protocol_version": 7,
+  "protocol_version": 8,
   "global": {},
   "backends": { "local": { "type": "openai-compatible", "base_url": "http://localhost:8000/v1" } },
   "models": {
@@ -23,6 +23,7 @@
   },
   "groups": {
     "users": {
+      "capture": true,
       "child_defaults": {
         "allowed_models": ["small"],
         "limits": [
@@ -33,10 +34,11 @@
     },
     "power-user@example.com": {
       "parent": "users",
+      "capture": false,
       "allowed_models": ["small", "large"],
       "limits": [{ "type": "requests_per_minute", "value": 100 }]
     },
-    "locked-out": { "parent": "users", "allowed_models": [] }
+    "locked-out": { "parent": "users", "capture": true, "allowed_models": [] }
   },
   "keys": {
     "k-power": {

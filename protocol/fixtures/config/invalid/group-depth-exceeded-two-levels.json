@@ -1,5 +1,5 @@
 {
-  "protocol_version": 7,
+  "protocol_version": 8,
   "global": {},
   "backends": { "vllm": { "type": "openai-compatible", "base_url": "http://vllm:8000/v1" } },
   "models": {
@@ -22,20 +22,20 @@
     }
   },
   "groups": {
-    "team1": {},
-    "app": { "parent": "team1", "allowed_models": ["chat"] },
-    "users": { "child_defaults": { "allowed_models": ["chat"] } },
-    "alice": { "parent": "users" },
-    "l1": {},
-    "l2": { "parent": "l1" },
-    "l3": { "parent": "l2" },
-    "l4": { "parent": "l3" },
-    "l5": { "parent": "l4" },
-    "l6": { "parent": "l5" },
-    "l7": { "parent": "l6" },
-    "l8": { "parent": "l7" },
-    "l9": { "parent": "l8" },
-    "l10": { "parent": "l9" }
+    "team1": { "capture": false },
+    "app": { "parent": "team1", "capture": true, "allowed_models": ["chat"] },
+    "users": { "capture": false, "child_defaults": { "allowed_models": ["chat"] } },
+    "alice": { "parent": "users", "capture": true },
+    "l1": { "capture": false },
+    "l2": { "parent": "l1", "capture": true },
+    "l3": { "parent": "l2", "capture": false },
+    "l4": { "parent": "l3", "capture": true },
+    "l5": { "parent": "l4", "capture": false },
+    "l6": { "parent": "l5", "capture": true },
+    "l7": { "parent": "l6", "capture": false },
+    "l8": { "parent": "l7", "capture": true },
+    "l9": { "parent": "l8", "capture": false },
+    "l10": { "parent": "l9", "capture": true }
   },
   "keys": {
     "k-app": {

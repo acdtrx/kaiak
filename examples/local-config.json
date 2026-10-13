@@ -1,5 +1,5 @@
 {
-  "protocol_version": 7,
+  "protocol_version": 8,
   "global": {
     "limits": [{ "type": "requests_per_minute", "value": 600 }]
   },
@@ -25,16 +25,19 @@
   },
   "groups": {
     "demo-team": {
+      "capture": false,
       "labels": { "kind": "team" },
       "limits": [{ "type": "tokens_per_hour", "value": 1000000 }]
     },
     "demo-app": {
       "parent": "demo-team",
+      "capture": true,
       "labels": { "kind": "workload" },
       "allowed_models": ["demo"],
       "limits": [{ "type": "requests_per_minute", "value": 120 }]
     },
     "users": {
+      "capture": false,
       "labels": { "kind": "people" },
       "child_defaults": {
         "allowed_models": ["demo"],
@@ -44,7 +47,7 @@
         ]
       }
     },
-    "me": { "parent": "users" }
+    "me": { "parent": "users", "capture": false }
   },
   "keys": {}
 }

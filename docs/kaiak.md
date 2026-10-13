@@ -74,7 +74,9 @@ The name reads the same both ways (the gateway carries traffic in both direction
    A request finishes under the config it started with.
 9. **Nothing sensitive leaves the request.** Client keys are stored as hashes and
    appear everywhere else only as key IDs. Provider secrets come from the environment.
-   Prompts and responses are not logged.
+   Prompts and responses are never logged; they leave the gateway only as request
+   captures — for the groups whose `capture` the app turns on, to the trace
+   destination the operator switches on (settled 2026-10-13, with the user).
 
 ## Domain model (v1)
 
@@ -145,13 +147,15 @@ The name reads the same both ways (the gateway carries traffic in both direction
   output on client disconnect.
 - Control-plane protocol; file mode (local and development use); seed config.
 - Ops and usage metrics; readiness, liveness, draining.
+- Request capture (added 2026-10-13): the chat requests of the groups the app marks,
+  with their answers, exported as OpenTelemetry GenAI spans.
 - `kaiak-control` and the sample control plane with its read-only page.
 
 ## Out of v1 (see `docs/BACKLOG.md`)
 
 Bedrock; translation between client APIs (Messages or Responses to a backend that
 does not speak them); video; streaming transcription and audio translations;
-response caching, guardrails, prompt templating, prompt logging; output limit derived
+response caching, guardrails, prompt templating; output limit derived
 from remaining budget; cloud workload identity (AWS IRSA / Azure managed identity);
 reasoning-effort discovery; interim usage reports for long streams; always-on active
 health checks; demand-weighted per-minute limit shares.

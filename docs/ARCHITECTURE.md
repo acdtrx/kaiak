@@ -32,6 +32,7 @@ flowchart LR
     file[(Config file)] -.->|file mode| gw
     prom[Prometheus] -->|scrape admin port| gw
     gw -.->|logs and metrics, OTLP/HTTP JSON,<br/>when configured| otel[OpenTelemetry<br/>collector]
+    gw -.->|request captures as spans,<br/>OTLP/HTTP JSON, when switched on| traces[Trace destination<br/>a collector, or a tool<br/>such as Langfuse]
 ```
 
 - Client → gateway → backend is the only request path. A request reaches only a
@@ -69,6 +70,15 @@ flowchart LR
   names on the scrape, OpenTelemetry names in the push), collected on an interval
   in the background, a final export at exit after usage and before the logs
   (`docs/specs/GATEWAY.md`, Observability → Metric list, OTLP metric export).
+- Request captures (settled 2026-10-13): for the chat requests of the groups the
+  config marks (`capture`), the capture stage copies the request and the bytes the
+  client receives, and the request's finisher builds one OpenTelemetry span with
+  the GenAI content attributes once the response is over; it is queued under the
+  capture budget and sent to the trace destination in the background — only when
+  trace export is switched on explicitly, never on the request path, dropped rather
+  than ever waited for, flushed at exit after usage and before the metrics and logs
+  (`docs/specs/GATEWAY.md`, Request capture, Observability → OTLP trace export).
+  The only path by which prompt and response content leaves the gateway.
 
 ## Deployment shape
 
@@ -103,10 +113,11 @@ enforce the boundaries.
 - `server` — the API and admin listeners (health, readiness, `/metrics`), the drain
   (admission, in-flight count, the shutdown sequence `cmd/kaiak` triggers on
   SIGTERM/SIGINT) and the request pipeline: a fixed ordered list of stages over one
-  per-request struct (admission → auth → key concurrency → inbound → model access →
-  endpoint list → upload measured → model parameters → limits → attempts), plus the
-  model endpoints' answers; each stage names the requests it applies to (every
-  request, the body endpoints or the model endpoints). Each endpoint is one row of
+  per-request struct (admission → auth → key concurrency → inbound → capture → model
+  access → endpoint list → upload measured → model parameters → limits → attempts),
+  plus the model endpoints' answers; each stage names the requests it applies to
+  (every request, the body endpoints, the model endpoints, or the chat endpoints for
+  capture). Each endpoint is one row of
   `server`'s endpoint table; a body endpoint's identity is the `provider.Endpoint` it
   serves, whose path, client API format and name are `provider`'s — the name one of
   `config`'s endpoint names, which a model's `endpoints` list holds. The format
@@ -121,7 +132,9 @@ enforce the boundaries.
   included — on another deployment when there is one; limits reserve once per client
   request and settle the sum of its attempts' records. Work that must happen however
   a request ends (the last attempt's slot release and circuit report, usage
-  settlement, ops metrics, the log line) runs in request finishers.
+  settlement, the capture's span, ops metrics, the log line) runs in request
+  finishers. Every byte written to the client passes one writer, which hands a
+  captured request's bytes to its capture as they are written.
 - `auth` — key hash lookup (key → key ID, group and its path) and the one
   model-access check.
 - `routing` — model name → deployment: least in flight among the eligible
@@ -195,6 +208,14 @@ enforce the boundaries.
   usage metrics accounting hands each settled record; the per-config series
   created at 0. The registry is built in `cmd/kaiak` and passed in; `/metrics` on
   the admin port and the OTLP metric exporter both read it.
+- `capture` — request capture: whether a request is captured (its key's own
+  group's flag), the session header's rule, the capture budget (take, give back,
+  drop when it cannot), a capture's state for one request (the copy of the body,
+  the answer's bytes as written), and at the request's end the span — the content
+  of each client API in the conventions' message format, a stream assembled from
+  the events the client received — encoded, size-checked and handed to
+  `telemetry/otlptrace` with a release that gives its bytes back. `server` runs its
+  stage and finisher and tells it the request's outcome.
 - `clip` — bounds a client-controlled string (path, method, model name) before it is
   logged or echoed in an error message; `server` and `auth` use it.
 - `logattr` — log attribute values in the units the log vocabulary fixes (a duration
@@ -220,18 +241,23 @@ enforce the boundaries.
     model, and the Prometheus text writer with the name translation;
   - `telemetry/otlpmetric` — the periodic metric exporter: collects the registry on
     an interval, applies the temporality and posts through `otlp`.
+  - `telemetry/otlptrace` — the span exporter: a span model and its OTLP JSON
+    encoding, and a queue of encoded spans bounded by the caller's budget (it drops
+    nothing for a full queue), each with a release callback called once its export
+    ends; one sender posts them through `otlp` in batches under the export limit.
   - `telemetry/fakeotlp` — an OpenTelemetry collector for tests: takes OTLP/HTTP
-    JSON log and metric exports, answers each as the test scripts, and keeps every
-    export decoded with its own types — not the exporters' — refusing members it
+    JSON log, metric and trace exports, answers each as the test scripts, and keeps
+    every export decoded with its own types — not the exporters' — refusing members it
     does not know, so reading them checks the encoders. Tests only (the tree's
     own, `cmd/kaiak`'s and the e2e suite's); in the tree so that the tree's tests
     use no kaiak fixture.
 
   `cmd/kaiak` wraps the process logger with the log exporter when log export is on
   (giving it a stderr-only logger for its own problem reports: no feedback loop),
-  starts the metric exporter when metric export is on, registers the exporters' own
-  counts on the registry, and at exit runs the final metric export, then the log
-  export's final flush as the process's last act.
+  starts the metric exporter when metric export is on and the trace exporter when
+  trace export is on (handing it to `capture`), registers the exporters' own counts
+  on the registry, and at exit runs the trace export's final flush, then the final
+  metric export, then the log export's final flush as the process's last act.
 - `sse` — the server-sent events reader (WHATWG format): splits a stream into blocks
   with their raw bytes, data, event name and ID, bounded in size; a failure of the
   stream under it comes back by its class (`netfail`). The provider relays backend

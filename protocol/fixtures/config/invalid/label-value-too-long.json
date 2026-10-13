@@ -1,5 +1,5 @@
 {
-  "protocol_version": 7,
+  "protocol_version": 8,
   "global": {},
   "backends": { "vllm": { "type": "openai-compatible", "base_url": "http://vllm:8000/v1" } },
   "models": {
@@ -23,13 +23,14 @@
   },
   "groups": {
     "team1": {
+      "capture": false,
       "labels": {
         "note": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
       }
     },
-    "app": { "parent": "team1", "allowed_models": ["chat"] },
-    "users": { "child_defaults": { "allowed_models": ["chat"] } },
-    "alice": { "parent": "users" }
+    "app": { "parent": "team1", "capture": true, "allowed_models": ["chat"] },
+    "users": { "capture": false, "child_defaults": { "allowed_models": ["chat"] } },
+    "alice": { "parent": "users", "capture": true }
   },
   "keys": {
     "k-app": {

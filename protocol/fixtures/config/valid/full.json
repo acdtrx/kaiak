@@ -1,5 +1,5 @@
 {
-  "protocol_version": 7,
+  "protocol_version": 8,
   "global": {
     "limits": [
       { "type": "requests_per_minute", "value": 3000 },
@@ -148,6 +148,7 @@
   },
   "groups": {
     "research": {
+      "capture": false,
       "labels": { "kind": "team", "owner": "research-leads@example.com" },
       "limits": [
         { "type": "tokens_per_minute", "value": 400000 },
@@ -155,9 +156,10 @@
         { "type": "images_per_minute", "value": 20 }
       ]
     },
-    "support": { "labels": { "kind": "team" } },
+    "support": { "capture": true, "labels": { "kind": "team" } },
     "eval-pipeline": {
       "parent": "research",
+      "capture": false,
       "allowed_models": ["*"],
       "limits": [
         { "type": "requests_per_minute", "value": 600 },
@@ -167,6 +169,7 @@
     },
     "support-bot": {
       "parent": "support",
+      "capture": true,
       "allowed_models": ["gpt-4.1-mini", "bge-m3"],
       "limits": [
         { "type": "requests_per_minute", "value": 120 },
@@ -175,6 +178,7 @@
       ]
     },
     "users": {
+      "capture": false,
       "labels": { "kind": "people" },
       "child_defaults": {
         "allowed_models": ["qwen3-32b", "gpt-4.1-mini", "bge-m3", "qwen3-tts"],
@@ -188,14 +192,15 @@
     },
     "alice": {
       "parent": "users",
+      "capture": true,
       "allowed_models": ["*"],
       "limits": [
         { "type": "usd_per_month", "value": 200 },
         { "type": "audio_seconds_out_per_hour", "value": 3600 }
       ]
     },
-    "bob": { "parent": "users", "limits": [{ "type": "tokens_per_hour", "value": 2000000 }] },
-    "carol": { "parent": "users" }
+    "bob": { "parent": "users", "capture": false, "limits": [{ "type": "tokens_per_hour", "value": 2000000 }] },
+    "carol": { "parent": "users", "capture": true }
   },
   "keys": {
     "k-eval-ci": {

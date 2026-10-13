@@ -1,7 +1,7 @@
 {
   "reason": "the full valid fixture's groups",
   "config": {
-    "protocol_version": 7,
+    "protocol_version": 8,
     "global": {
       "limits": [
         { "type": "requests_per_minute", "value": 3000 },
@@ -159,6 +159,7 @@
     },
     "groups": {
       "research": {
+        "capture": true,
         "labels": { "kind": "team", "owner": "research-leads@example.com" },
         "limits": [
           { "type": "tokens_per_minute", "value": 400000 },
@@ -166,9 +167,10 @@
           { "type": "images_per_minute", "value": 20 }
         ]
       },
-      "support": { "labels": { "kind": "team" } },
+      "support": { "capture": false, "labels": { "kind": "team" } },
       "eval-pipeline": {
         "parent": "research",
+        "capture": true,
         "allowed_models": ["*"],
         "limits": [
           { "type": "requests_per_minute", "value": 600 },
@@ -178,6 +180,7 @@
       },
       "support-bot": {
         "parent": "support",
+        "capture": false,
         "allowed_models": ["gpt-4.1-mini", "bge-m3"],
         "limits": [
           { "type": "requests_per_minute", "value": 120 },
@@ -186,6 +189,7 @@
         ]
       },
       "users": {
+        "capture": true,
         "labels": { "kind": "people" },
         "child_defaults": {
           "allowed_models": ["qwen3-32b", "gpt-4.1-mini", "bge-m3", "qwen3-tts"],
@@ -199,14 +203,15 @@
       },
       "alice": {
         "parent": "users",
+        "capture": false,
         "allowed_models": ["*"],
         "limits": [
           { "type": "usd_per_month", "value": 200 },
           { "type": "audio_seconds_out_per_hour", "value": 3600 }
         ]
       },
-      "bob": { "parent": "users", "limits": [{ "type": "tokens_per_hour", "value": 2000000 }] },
-      "carol": { "parent": "users" }
+      "bob": { "parent": "users", "capture": true, "limits": [{ "type": "tokens_per_hour", "value": 2000000 }] },
+      "carol": { "parent": "users", "capture": false }
     },
     "keys": {
       "k-eval-ci": {
@@ -243,6 +248,7 @@
     "groups": {
       "research": {
         "path": ["research"],
+        "capture": true,
         "allowed_models": "all",
         "limits": [
           { "type": "tokens_per_minute", "value": 400000 },
@@ -250,9 +256,10 @@
           { "type": "images_per_minute", "value": 20 }
         ]
       },
-      "support": { "path": ["support"], "allowed_models": "all", "limits": [] },
+      "support": { "path": ["support"], "capture": false, "allowed_models": "all", "limits": [] },
       "eval-pipeline": {
         "path": ["research", "eval-pipeline"],
+        "capture": true,
         "allowed_models": "all",
         "limits": [
           { "type": "requests_per_minute", "value": 600 },
@@ -262,6 +269,7 @@
       },
       "support-bot": {
         "path": ["support", "support-bot"],
+        "capture": false,
         "allowed_models": ["bge-m3", "gpt-4.1-mini"],
         "limits": [
           { "type": "requests_per_minute", "value": 120 },
@@ -269,9 +277,10 @@
           { "type": "usd_per_month", "value": 250.5 }
         ]
       },
-      "users": { "path": ["users"], "allowed_models": "all", "limits": [] },
+      "users": { "path": ["users"], "capture": true, "allowed_models": "all", "limits": [] },
       "alice": {
         "path": ["users", "alice"],
+        "capture": false,
         "allowed_models": "all",
         "limits": [
           { "type": "requests_per_minute", "value": 30 },
@@ -282,6 +291,7 @@
       },
       "bob": {
         "path": ["users", "bob"],
+        "capture": true,
         "allowed_models": ["bge-m3", "gpt-4.1-mini", "qwen3-32b", "qwen3-tts"],
         "limits": [
           { "type": "requests_per_minute", "value": 30 },
@@ -292,6 +302,7 @@
       },
       "carol": {
         "path": ["users", "carol"],
+        "capture": false,
         "allowed_models": ["bge-m3", "gpt-4.1-mini", "qwen3-32b", "qwen3-tts"],
         "limits": [
           { "type": "requests_per_minute", "value": 30 },

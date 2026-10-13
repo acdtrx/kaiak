@@ -1,5 +1,5 @@
 {
-  "protocol_version": 7,
+  "protocol_version": 8,
   "global": {},
   "backends": { "vllm": { "type": "openai-compatible", "base_url": "http://vllm:8000/v1" } },
   "models": {
@@ -21,7 +21,7 @@
       ]
     }
   },
-  "groups": { "team1": {}, "app": { "parent": "team1", "allowed_models": ["*"] }, "alice": {} },
+  "groups": { "team1": { "capture": false }, "app": { "parent": "team1", "capture": true, "allowed_models": ["*"] }, "alice": { "capture": false } },
   "keys": {
     "k-app": {
       "hash": "sha256:22fa736e91c8338c4df0abb065d36b2b6680c56a6a870dbd310cb10b5c8cdc09",

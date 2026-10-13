@@ -99,6 +99,10 @@
     "kind": "schema",
     "reason": "all four capabilities are declared"
   },
+  "child-defaults-capture.json": {
+    "kind": "schema",
+    "reason": "capture is each group's own: child_defaults holds allowed_models and limits only, so no group's capture comes from its parent"
+  },
   "child-defaults-unknown-field.json": {
     "kind": "schema",
     "reason": "child_defaults holds allowed_models and limits only"
@@ -243,6 +247,18 @@
   "global-missing.json": {
     "kind": "schema",
     "reason": "global is required"
+  },
+  "group-capture-missing.json": {
+    "kind": "schema",
+    "reason": "every group states capture (alice does not): whether a group's requests are captured is the app's choice for each group, never a default"
+  },
+  "group-capture-number.json": {
+    "kind": "schema",
+    "reason": "capture is a boolean: 1 is not one"
+  },
+  "group-capture-string.json": {
+    "kind": "schema",
+    "reason": "capture is a boolean: the string \"true\" is not one"
   },
   "group-cycle-self.json": {
     "kind": "semantic",
@@ -628,9 +644,9 @@
     "kind": "schema",
     "reason": "price units are tokens_in, tokens_cached, tokens_cache_write, tokens_out: images and audio seconds are counted, not priced"
   },
-  "protocol-version-6.json": {
+  "protocol-version-7.json": {
     "kind": "schema",
-    "reason": "protocol_version must be 7, the protocol version: a document of another version is refused, never migrated"
+    "reason": "protocol_version must be 8, the protocol version: a document of another version is refused, never migrated"
   },
   "protocol-version-missing.json": {
     "kind": "schema",

@@ -30,7 +30,10 @@ operator- and app-facing docs.
   - **sending the session ID:** a header per request; the pi extension example
     (`before_provider_headers`); SDKs' per-request headers;
   - **upgrade notes, the next release** (protocol 8): every group needs `capture`;
-    gateways and control plane upgrade together; apps decide each group's value.
+    gateways and control plane upgrade together; apps decide each group's value;
+    `gen_ai.provider.name` now on every type — the self-hosted types' usage metrics
+    gain a `gen_ai_provider_name` label (`vllm`, `llama-server`, …) and the request
+    line the attribute, so dashboards and alerts that matched its absence change.
 - `docs/testing/LIVE-BACKENDS.md` — the capture checks.
 - `README.md` — the protocol version and a line on capture if the README lists
   features.

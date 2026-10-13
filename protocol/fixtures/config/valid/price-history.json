@@ -1,5 +1,5 @@
 {
-  "protocol_version": 7,
+  "protocol_version": 8,
   "global": {},
   "backends": {
     "openai": {
@@ -55,6 +55,6 @@
       "prices": []
     }
   },
-  "groups": { "u": {} },
+  "groups": { "u": { "capture": true } },
   "keys": {}
 }

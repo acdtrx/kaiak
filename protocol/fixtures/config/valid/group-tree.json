@@ -1,5 +1,5 @@
 {
-  "protocol_version": 7,
+  "protocol_version": 8,
   "global": {
     "limits": [
       { "type": "requests_per_minute", "value": 3000 },
@@ -66,6 +66,7 @@
   },
   "groups": {
     "research": {
+      "capture": true,
       "labels": { "kind": "team", "cost_center": "R&D 4711" },
       "allowed_models": ["qwen3-32b", "gpt-4.1-mini", "bge-m3"],
       "limits": [{ "type": "usd_per_month", "value": 1500 }],
@@ -73,6 +74,7 @@
     },
     "rag": {
       "parent": "research",
+      "capture": false,
       "labels": { "kind": "project" },
       "limits": [{ "type": "usd_per_month", "value": 800 }],
       "child_defaults": {
@@ -82,6 +84,7 @@
     },
     "rag-prod": {
       "parent": "rag",
+      "capture": true,
       "labels": { "kind": "env", "env": "prod" },
       "allowed_models": ["*"],
       "limits": [{ "type": "requests_per_minute", "value": 600 }],
@@ -89,19 +92,21 @@
     },
     "rag-prod-indexer": {
       "parent": "rag-prod",
+      "capture": false,
       "labels": { "kind": "workload" },
       "allowed_models": ["bge-m3"],
       "limits": [{ "type": "requests_per_minute", "value": 120 }]
     },
-    "rag-prod-chat": { "parent": "rag-prod", "labels": { "kind": "workload" } },
-    "rag-dev": { "parent": "rag", "labels": { "kind": "env", "env": "dev" } },
+    "rag-prod-chat": { "parent": "rag-prod", "capture": true, "labels": { "kind": "workload" } },
+    "rag-dev": { "parent": "rag", "capture": false, "labels": { "kind": "env", "env": "dev" } },
     "rag-dev-sandbox": {
       "parent": "rag-dev",
+      "capture": true,
       "labels": { "kind": "workload" },
       "limits": [{ "type": "usd_per_month", "value": 10 }],
       "child_defaults": { "limits": [{ "type": "requests_per_minute", "value": 1 }] }
     },
-    "playground": {}
+    "playground": { "capture": false }
   },
   "keys": {
     "k-rag-indexer": {

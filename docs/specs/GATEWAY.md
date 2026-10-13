@@ -1,6 +1,7 @@
 # Gateway
 
-> The data plane: client API, request pipeline, routing, limits, accounting, lifecycle.
+> The data plane: client API, request pipeline, routing, limits, accounting, request
+> capture, lifecycle.
 > Principles in `docs/kaiak.md`; the control-plane side in `CONTROL-PROTOCOL.md`.
 > Decisions below are settled 2026-09-24 unless dated otherwise. Config field names and
 > shapes are the config document's (`CONTROL-PROTOCOL.md`, Config); this file records
@@ -470,6 +471,11 @@
   returned to the client, and stamped on the log line and the usage record. A client
   ID is kept when it is 1–128 characters of `[A-Za-z0-9._:-]`; any other value is
   replaced by a generated one (32 hex characters, random) rather than refused.
+- **`Kaiak-Session-Id`** (settled 2026-10-13, with the user): an optional request
+  header naming the conversation a request belongs to, recorded in the request's
+  capture as `gen_ai.conversation.id` when its key's group is captured, and read only
+  then. Never forwarded, never echoed, never logged, and never refused: a malformed
+  value is ignored (Request capture → Sessions).
 - **`/v1/models`** lists only the models the calling key may use, sorted by name:
   `{"object": "list", "data": [<entry>, …]}`. **`/v1/models/{id}`** answers one entry.
   An entry keeps the OpenAI fields and adds kaiak's; OpenAI clients ignore unknown
@@ -598,8 +604,9 @@
 
 ## Request pipeline
 
-Every request passes the same ordered stages — the seam where caching, guardrails and
-prompt logging later plug in:
+Every request passes the same ordered stages — the seam where cross-cutting behavior
+plugs in, each a stage of its own: request capture is one (settled 2026-10-13, Request
+capture); caching and guardrails would be others.
 
 0. **Admission** — once a drain refuses new requests (Lifecycle), they end here with
    `503 server_shutting_down`, and with no config in force with `503
@@ -618,10 +625,15 @@ prompt logging later plug in:
    fields name, keep the raw bytes for passthrough, refuse what the gateway does not
    serve (stateful Responses fields, stored objects, hosted tools, audio it cannot
    measure, references the backend would fetch or read, streams it does not relay).
-   Then the model-access check (Client API) — the second half of auth, which
-   needs the model — and whether the model's `endpoints` list names the endpoint
-   (Model metadata → Endpoints per model, settled 2026-10-11, with the user; else
-   `400 endpoint_not_served`, settled 2026-10-06 here, before limits — the
+   Then **capture** (settled 2026-10-13, with the user; Request capture): on chat
+   completions, Messages and Responses, for a key whose own group has `capture`
+   on, the session header is read, the body copied under the capture budget and a
+   finisher registered that builds the capture once the response is over — every
+   refusal from here on is captured, none before; it never refuses, delays or
+   alters the request. Then the model-access check (Client API) — the second half of
+   auth, which needs the model — and whether the model's `endpoints` list names the
+   endpoint (Model metadata → Endpoints per model, settled 2026-10-11, with the user;
+   else `400 endpoint_not_served`, settled 2026-10-06 here, before limits — the
    pre-merge review's L2: a request the model does not serve spends no request slot
    and gets the answer that says what is wrong); for a transcription on a
    `llama-server` model, whether its upload could be measured (else `400
@@ -2839,6 +2851,432 @@ own, and a client sending repeats is broken either way.
   generation before the metrics see the record, so it is not one sink among others,
   and the metrics are the only other consumer.
 
+## Request capture
+
+The gateway can record what a client sent to a model and what it got back, and export
+it as an OpenTelemetry span carrying the GenAI content attributes, to a collector or a
+tool that reads them (Langfuse, say). Every rule in this section is settled
+2026-10-13, with the user.
+
+- **Purpose**: the people who build on kaiak see what their apps did with the
+  models, without an observability SDK in each app; the captures are also material
+  for trying a new model against an existing one on a task. Each group decides
+  whether its requests are captured — its `capture` flag, set by the app that manages
+  the config (`CONTROL-PROTOCOL.md`, Config → The group tree: capture). The gateway
+  speaks the OpenTelemetry GenAI conventions and nothing else: Langfuse is an example
+  consumer, not the target — a tool that does not read the conventions is served by a
+  translation outside the gateway, and no vendor attribute (`langfuse.*`) is written.
+  **One destination per gateway** (Observability → OTLP trace export): who may see
+  which group's or key's captures in the tool is the app's to arrange there.
+- **Content leaves the gateway only as a capture**: prompt and response content —
+  messages, instructions, tools and their calls — goes out only in captures — only
+  for groups whose `capture` is on, only to the trace destination the operator
+  switched on (Configuration sources → OTLP export: the explicit switch) — and never
+  into logs, metrics or usage records (`docs/kaiak.md`, principle 9). So does the
+  session ID (Sessions, below).
+- **Capture never gets in the way of serving** (the user's rule: captures, logs and
+  metrics must not get in the way of the main functionality): it never refuses,
+  delays or alters a request. The backend gets the same request, byte for byte,
+  whether the request is captured or not (passthrough is untouched). On the request's
+  path capture only copies — the body when the stage runs, each piece written to the
+  client as it is written — and the parsing, assembling and encoding run in the
+  stage's finisher, after the response's last byte. Its own failures — the memory
+  budget, the export limit, a malformed session ID — drop or reduce the capture,
+  never the request.
+- **Which requests**: those on `/v1/chat/completions`, `/v1/messages` and
+  `/v1/responses` whose key's group has `capture: true`, once the inbound stage has
+  read, parsed and accepted the body (Request pipeline, stage 2) — the capture stage
+  runs next, before the model-access check.
+  - **The key's own group decides**: only the flag of the group the key names counts,
+    never its ancestors' — a parent's flag reaches no child, either way (the app
+    applies any such rule when it writes each group). The config in force when the
+    request was authenticated decides, as for everything else (`docs/kaiak.md`,
+    principle 8).
+  - **Every outcome from the stage on is captured**: refusals after it (model access,
+    the endpoint list, limits, the queue, no healthy deployment, `budget_unavailable`),
+    upstream failures, a client that left, the drain's cut — each with `error.type`,
+    and output only when the client received some (Content, Streams, below).
+  - **Not captured**: requests refused before or by the inbound stage — auth, a body
+    over its cap or the body budget, a body that is not JSON, a repeated member, a
+    hosted tool, a stateful Responses field, a stored object — which stay in the logs
+    and the metrics; and every other endpoint, the token-counting ones included
+    (`docs/BACKLOG.md`, Capture on the other endpoints).
+- **What is captured**: the request as the client sent it — its body as received,
+  before the gateway's edits (model name, output-limit default, usage flags, service
+  tier, `store: false`) — and the answer as the client received it — the bytes
+  written to the client: the public model name, the gateway's own error bodies and
+  replaced error messages, never the usage chunk the gateway withholds from a client
+  that did not ask for it — each in the client's API.
+- **The span**: one per captured request, a trace of its own.
+  - Name `chat {gen_ai.request.model}` (the convention's `{gen_ai.operation.name}
+    {gen_ai.request.model}`), kind `CLIENT`.
+  - A random trace ID (16 bytes) and span ID (8 bytes); no parent, no links, no
+    events. No `traceparent` is read or sent: a capture is not part of a client's or
+    a backend's trace (`docs/BACKLOG.md`, OpenTelemetry traces).
+  - From the request's arrival to the end of its response — what
+    `kaiak.request.duration` covers.
+  - Status `ERROR` (code 2) with the span's `error.type` as its message when it has
+    one; otherwise unset, as the conventions' error rules have it for an operation
+    that did not fail.
+  - Attempts are not spans of their own: `kaiak.attempts` counts them, and the
+    backend attributes are the last attempt's, as on the request line.
+  - Built at the request's end from what the gateway holds: no trace SDK
+    (`docs/TECH-STACK.md`, Dependencies), no sampling — the group's flag decides —
+    and no span tree. How a span is written on the wire, and its resource and scope:
+    Observability → OTLP trace export.
+- **Attributes** (the conventions' names at the pinned commit, Conventions below;
+  kaiak's as on the request line and the metrics). Values follow the request line's
+  units (seconds, dollars); the metrics' key-ID and group switches do not apply.
+
+  | Attribute | Type | Present | Meaning |
+  |---|---|---|---|
+  | `gen_ai.operation.name` | string | always | `chat` |
+  | `gen_ai.provider.name` | string | once routed | The answering backend's type's provider name, as on the request line (Observability → Logs: the request line) |
+  | `gen_ai.request.model` | string | always | The model the client asked for — the public name, or a refused name — clipped |
+  | `gen_ai.request.max_tokens` | int | the client set its API's output limit | Parameters, below. Never the default the gateway injects |
+  | `gen_ai.request.temperature`, `gen_ai.request.top_p`, `gen_ai.request.frequency_penalty`, `gen_ai.request.presence_penalty` | double | the client set it | Parameters, below |
+  | `gen_ai.request.top_k`, `gen_ai.request.seed` | int | the client set it | Parameters, below |
+  | `gen_ai.request.stop_sequences` | string[] | the client set stop sequences | Parameters, below |
+  | `gen_ai.request.choice.count` | int | a Chat Completions `n` other than 1 | The choices asked for |
+  | `gen_ai.request.stream` | boolean | the request streams | `true` — the convention sets it only on a streaming request |
+  | `gen_ai.response.id` | string | the answer names one | The answer's `id` |
+  | `gen_ai.response.model` | string | the answer names one | The answer's `model` as the client received it: the public name, which the gateway writes there (Providers → Response model name) |
+  | `gen_ai.response.finish_reasons` | string[] | the answer gives any | One per output message, in their order, in the API's own words (Content, below) |
+  | `gen_ai.usage.input_tokens`, `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_write.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.reasoning.output_tokens` | int | once settled (routed requests) | As on the request line: all input with its two cache parts, all output with its reasoning part, summed over the request's records |
+  | `gen_ai.conversation.id` | string | a valid `Kaiak-Session-Id` | The session (Sessions, below) |
+  | `server.address`, `server.port` | string, int | once routed | The answering backend: its `base_url`'s host, and its port — the URL's, else 443 for `https`, 80 for `http` |
+  | `error.type` | string | the request ended in an error, or its response stopped early | The request line's `error.type`, else its `kaiak.relay_end` — the value `kaiak.request.errors` carries |
+  | `gen_ai.system_instructions` | string (JSON) | the request has instructions apart from its messages | Content, below |
+  | `gen_ai.input.messages` | string (JSON) | the request has messages | Content, below |
+  | `gen_ai.tool.definitions` | string (JSON) | the request lists tools | Content, below |
+  | `gen_ai.output.messages` | string (JSON) | the client received an answer: a success, or the part of a stream that arrived | Content, below |
+  | `kaiak.request.id` | string | always | The request ID — the usage record and the request line carry it too, so a capture joins them |
+  | `kaiak.key.id` | string | always | The key ID |
+  | `kaiak.key.group` | string | always | The key's group: its config ID |
+  | `kaiak.key.root_group` | string | always | Its top-level group's ID — the key's group itself when that is top-level |
+  | `kaiak.backend.id`, `kaiak.backend.type`, `kaiak.deployment.model` | string | once routed | The last attempt's backend, its type and the model name on it, as on the request line |
+  | `kaiak.attempts` | int | once routed | Attempts made, the first included |
+  | `kaiak.time_to_first_token` | double | a stream that carried generated content | As on the request line, in seconds |
+  | `kaiak.relay_end` | string | a response that stopped early | As on the request line |
+  | `kaiak.usage.cost_usd` | double | once settled | The cost in dollars |
+  | `kaiak.usage.estimated`, `kaiak.usage.partial` | boolean | once settled | The last record's flags, as on the request line |
+  | `kaiak.session_id.ignored` | string | a `Kaiak-Session-Id` was sent and ignored | `empty`, `too_long`, `invalid_characters` (Sessions, below) |
+
+- **Parameters**: the request's sampling and output parameters, read as the client
+  sent them — each only when its value has the attribute's type (a number; a whole
+  number for an integer; a string or a list of strings for stop sequences), anything
+  else left out for the backend to judge. A `null` counts as absent.
+
+  | Attribute | Chat Completions | Messages | Responses |
+  |---|---|---|---|
+  | `gen_ai.request.max_tokens` | `max_completion_tokens`, else `max_tokens` | `max_tokens` | `max_output_tokens` |
+  | `gen_ai.request.temperature`, `gen_ai.request.top_p` | `temperature`, `top_p` | `temperature`, `top_p` | `temperature`, `top_p` |
+  | `gen_ai.request.top_k` | `top_k` (vLLM's and llama-server's) | `top_k` | — |
+  | `gen_ai.request.frequency_penalty`, `gen_ai.request.presence_penalty` | `frequency_penalty`, `presence_penalty` | — | — |
+  | `gen_ai.request.stop_sequences` | `stop` (a string is a list of one) | `stop_sequences` | — |
+  | `gen_ai.request.seed` | `seed` | — | — |
+  | `gen_ai.request.choice.count` | `n`, when not 1 | — | — |
+  | `gen_ai.request.stream` | `stream: true` | `stream: true` | `stream: true` |
+
+- **Content: one message format** for the three APIs — the conventions' message
+  structure (`model/gen-ai/gen-ai-input-messages.json`, `…-output-messages.json`,
+  `…-system-instructions.json`, `…-tool-definitions.json` at the pinned commit),
+  which tools display alike whatever API the client spoke. Each content attribute is
+  that structure as a JSON string (Named deviations, below). A message is `{role,
+  parts, name?}` — the role and the name as the request has them; a part is one of:
+  - text → `{"type": "text", "content"}`; reasoning → `{"type": "reasoning",
+    "content"}`;
+  - a tool call → `{"type": "tool_call", "id", "name", "arguments"}` — `arguments`
+    parsed when they are valid JSON, else kept as the string (a stream cut in the
+    middle of a call);
+  - a tool result → `{"type": "tool_call_response", "id", "response"}` — the result
+    as sent, a string or its JSON;
+  - inline media (a `data:` URL, a base64 source) → `{"type": "blob", "modality",
+    "mime_type", "content"}`, the base64 as sent; media by URL → `{"type": "uri",
+    "modality", "mime_type"?, "uri"}`; media by file ID → `{"type": "file",
+    "modality", "mime_type"?, "file_id"}`. The modality is the MIME type's —
+    `image/*` image, `audio/*` audio, `video/*` video, any other document — or, with
+    no MIME type, the kind the API names (an `image_url`'s is image);
+  - **anything else** — a part, block or item the mapping does not know — is a
+    generic part: the original JSON object, unchanged, which names its own `type`. As
+    passthrough preserves what it does not understand, so does capture.
+
+  Input messages keep the order they were sent in; each output message is one
+  generation (a Chat Completions choice; the one answer of Messages and Responses),
+  with its finish reason in `gen_ai.response.finish_reasons`, never on the message.
+  A member the structure has no place for is not carried (a Chat message's other
+  members, a thinking block's signature, a reasoning item's encrypted content);
+  content that does not have its API's shape where the mapping reads it (a message
+  that is not an object) is left out, and the rest captured. An error answer — the
+  backend's relayed `4xx`, the gateway's own error body — gives no output messages:
+  `error.type` says what happened.
+- **Chat Completions**:
+  - `messages` → `gen_ai.input.messages`, every message with its `role` — `system`
+    and `developer` included: they are chat history — and its `name`. A string
+    `content` is one text part; a list is its parts: `text` → text; `image_url` →
+    blob (a `data:` URL) or uri, modality image; `input_audio` → blob, modality
+    audio, MIME type `audio/<format>`; `file` → file (`file_id`) or blob
+    (`file_data`, a `data:` URL); any other → generic. An assistant message's
+    `reasoning_content` or `reasoning` → a reasoning part first, then its `content`
+    and its `refusal` as text, then its `tool_calls` as tool calls (`id`,
+    `function.name`, `function.arguments`). A `tool` message → a tool result
+    (`tool_call_id`, `content`).
+  - `tools` → `gen_ai.tool.definitions`: a `function` tool → `{"type": "function",
+    "name", "description", "parameters"}`; any other → its own JSON.
+  - The answer: each choice → one output message, in `index` order, role
+    `assistant`, its parts as an assistant message's above; each `finish_reason`
+    (`stop`, `length`, `tool_calls`, …) → `gen_ai.response.finish_reasons`.
+- **Messages**:
+  - `system` → `gen_ai.system_instructions`: a string is one text part, a list its
+    text blocks as text parts (any other block generic).
+  - `messages` → `gen_ai.input.messages` with their roles. A string `content` is one
+    text part; blocks: `text` → text; `image` → blob (a `base64` source: its
+    `media_type`, its `data`) or uri (a `url` source), modality image; `document` →
+    blob or uri the same way, modality document (any other source generic);
+    `tool_use` → a tool call (`id`, `name`, `input`); `tool_result` → a tool result
+    (`tool_use_id`, `content`); `thinking` → reasoning (its signature left out); any
+    other (`redacted_thinking`, server tool blocks, …) → generic.
+  - `tools` → `gen_ai.tool.definitions`: a tool with an `input_schema` → a function
+    definition (`name`, `description`, `input_schema` as `parameters`); any other
+    (Anthropic's client-run tools, `bash_20250124`, …) → its own JSON.
+  - The answer: one output message, role `assistant`, its `content` blocks as above;
+    `stop_reason` (`end_turn`, `max_tokens`, `tool_use`, …) → its finish reason.
+- **Responses**:
+  - `instructions` (a string) → `gen_ai.system_instructions`, one text part.
+  - `input` → `gen_ai.input.messages`. A string is one `user` message with a text
+    part. A list is its items, each one message:
+    - a message item (`type` `message`, or a `role` and no `type`) → its role and
+      parts: `input_text`, `output_text`, `refusal` → text; `input_image` → blob (a
+      `data:` URL in `image_url`), uri (another URL) or file (`file_id`), modality
+      image; `input_file` → blob (`file_data`, a `data:` URL), uri (`file_url`) or
+      file (`file_id`); any other → generic; a string `content` is one text part;
+    - `function_call` → an `assistant` message holding a tool call (`call_id`,
+      `name`, `arguments`), and `function_call_output` → a `tool` message holding a
+      tool result (`call_id`, `output`) — so a tool round trip reads as on Chat
+      Completions;
+    - `reasoning` → an `assistant` message of reasoning parts: each `summary` text,
+      then each `reasoning_text` of its `content` (vLLM's reasoning);
+    - any other item → a message of one generic part, role `tool` for the output of
+      a tool the client ran (`custom_tool_call_output`, `local_shell_call_output`,
+      `shell_call_output`, `apply_patch_call_output`), else `assistant`.
+  - `tools` → `gen_ai.tool.definitions`: a `function` tool → `{"type": "function",
+    "name", "description", "parameters"}`; any other → its own JSON.
+  - The answer: one output message, role `assistant`, from the response's `output`
+    items in order — a `message` item's `output_text` and `refusal` as text, a
+    `function_call` as a tool call, a `reasoning` item's texts as reasoning, any other
+    item generic; its finish reason the `incomplete_details.reason` of an incomplete
+    response that has one (`max_output_tokens`, `content_filter`), else its `status`
+    (`completed`, `incomplete`, `failed`).
+- **Streams**: a streamed answer is assembled from the events the client received
+  into the output messages the same answer unstreamed gives — the tests hold every
+  streamed case to its unstreamed twin.
+  - Chat Completions: the chunks gathered by choice `index` — the role; the content,
+    reasoning and refusal deltas, concatenated; tool calls by their own `index`, the
+    `id` and name from the fragments that carry them, the argument fragments
+    concatenated; the `finish_reason` — and the chunks' `id` and `model`. `[DONE]`
+    ends it; a chunk without choices (usage) carries no content.
+  - Messages: `message_start` (the `id`, the `model`); content blocks by `index` —
+    `content_block_start` opens one, `text_delta`, `thinking_delta` and
+    `input_json_delta` fragments extend it (`signature_delta` is left out),
+    `content_block_stop` closes it; `message_delta`'s `stop_reason`.
+  - Responses: the response object of the terminal event — `response.completed`,
+    `response.incomplete` or `response.failed` — is the answer, read as an
+    unstreamed one; before it, the items `response.output_item.done` finished, then
+    the text of the one in progress (`response.output_text.delta`).
+  - **A stream cut short** — the client gone, a backend failure, the drain's cut —
+    keeps what arrived: the finished parts and the one in progress, a tool call's
+    half-written arguments as a string. A non-stream answer cut short is no valid
+    JSON and gives no output messages.
+- **Examples** (each attribute's JSON string shown as JSON; base64 shortened):
+  - Chat Completions, streamed, an image inline and a tool offered:
+
+    ```json
+    {"model": "qwen3-32b", "stream": true, "temperature": 0.2,
+     "messages": [
+       {"role": "system", "content": "Answer briefly."},
+       {"role": "user", "content": [
+         {"type": "text", "text": "What is in this image?"},
+         {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0K…"}}]}],
+     "tools": [{"type": "function", "function": {"name": "lookup",
+       "description": "Look a word up", "parameters": {"type": "object"}}}]}
+    ```
+
+    answered with the reasoning `A cat on a mat.`, then `A cat.`, finish reason
+    `stop`:
+
+    ```
+    name: chat qwen3-32b
+    gen_ai.request.temperature: 0.2
+    gen_ai.request.stream: true
+    gen_ai.input.messages:
+      [{"role": "system", "parts": [{"type": "text", "content": "Answer briefly."}]},
+       {"role": "user", "parts": [
+         {"type": "text", "content": "What is in this image?"},
+         {"type": "blob", "modality": "image", "mime_type": "image/png",
+          "content": "iVBORw0K…"}]}]
+    gen_ai.tool.definitions:
+      [{"type": "function", "name": "lookup", "description": "Look a word up",
+        "parameters": {"type": "object"}}]
+    gen_ai.output.messages:
+      [{"role": "assistant", "parts": [
+         {"type": "reasoning", "content": "A cat on a mat."},
+         {"type": "text", "content": "A cat."}]}]
+    gen_ai.response.finish_reasons: ["stop"]
+    ```
+
+  - Messages, a tool round trip:
+
+    ```json
+    {"model": "claude-sonnet", "max_tokens": 1024, "system": "Be terse.",
+     "tools": [{"name": "get_weather", "description": "Weather for a city",
+       "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}}}],
+     "messages": [
+       {"role": "user", "content": "Weather in Oslo?"},
+       {"role": "assistant", "content": [
+         {"type": "tool_use", "id": "toolu_1", "name": "get_weather", "input": {"city": "Oslo"}}]},
+       {"role": "user", "content": [
+         {"type": "tool_result", "tool_use_id": "toolu_1", "content": "4 °C, rain"}]}]}
+    ```
+
+    answered `4 °C and rain.`, stop reason `end_turn`:
+
+    ```
+    name: chat claude-sonnet
+    gen_ai.request.max_tokens: 1024
+    gen_ai.system_instructions: [{"type": "text", "content": "Be terse."}]
+    gen_ai.input.messages:
+      [{"role": "user", "parts": [{"type": "text", "content": "Weather in Oslo?"}]},
+       {"role": "assistant", "parts": [
+         {"type": "tool_call", "id": "toolu_1", "name": "get_weather",
+          "arguments": {"city": "Oslo"}}]},
+       {"role": "user", "parts": [
+         {"type": "tool_call_response", "id": "toolu_1", "response": "4 °C, rain"}]}]
+    gen_ai.tool.definitions:
+      [{"type": "function", "name": "get_weather", "description": "Weather for a city",
+        "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}]
+    gen_ai.output.messages:
+      [{"role": "assistant", "parts": [{"type": "text", "content": "4 °C and rain."}]}]
+    gen_ai.response.finish_reasons: ["end_turn"]
+    ```
+
+  - Responses, an image by URL and a function call's round trip:
+
+    ```json
+    {"model": "gpt-4.1", "instructions": "Answer in French.", "max_output_tokens": 500,
+     "input": [
+       {"role": "user", "content": [
+         {"type": "input_text", "text": "Describe it."},
+         {"type": "input_image", "image_url": "https://example.com/cat.png"}]},
+       {"type": "function_call", "call_id": "call_1", "name": "zoom", "arguments": "{\"level\": 2}"},
+       {"type": "function_call_output", "call_id": "call_1", "output": "zoomed"}]}
+    ```
+
+    answered with a reasoning item (summary `Looked closer.`) and a message `Un
+    chat.`, status `completed`:
+
+    ```
+    name: chat gpt-4.1
+    gen_ai.request.max_tokens: 500
+    gen_ai.system_instructions: [{"type": "text", "content": "Answer in French."}]
+    gen_ai.input.messages:
+      [{"role": "user", "parts": [
+         {"type": "text", "content": "Describe it."},
+         {"type": "uri", "modality": "image", "uri": "https://example.com/cat.png"}]},
+       {"role": "assistant", "parts": [
+         {"type": "tool_call", "id": "call_1", "name": "zoom", "arguments": {"level": 2}}]},
+       {"role": "tool", "parts": [
+         {"type": "tool_call_response", "id": "call_1", "response": "zoomed"}]}]
+    gen_ai.output.messages:
+      [{"role": "assistant", "parts": [
+         {"type": "reasoning", "content": "Looked closer."},
+         {"type": "text", "content": "Un chat."}]}]
+    gen_ai.response.finish_reasons: ["completed"]
+    ```
+
+- **Sessions** (`Kaiak-Session-Id`): a client names the conversation a request
+  belongs to with the optional `Kaiak-Session-Id` request header (Client API); a
+  captured request records it as `gen_ai.conversation.id`, which tools group by
+  (Langfuse shows it as the session). No standard header for it exists across
+  gateways, so the name is kaiak's.
+  - **Optional, and a malformed one is ignored**: a valid value is 1 to 256
+    characters of visible ASCII (`!` to `~`), read from the first `Kaiak-Session-Id`
+    header, as Request IDs read `x-request-id`. Any other value is treated as no
+    session: the capture has no `gen_ai.conversation.id`, and the span and the
+    request line carry `kaiak.session_id.ignored` with the reason — `empty` (no
+    characters), `too_long` (over 256), `invalid_characters` (a space, a control or
+    a non-ASCII character), judged in that order — so the user can see in the tool
+    why a capture has no session. Never refused. Rejected: answering `400` — most
+    tools send no session, and a header for observability must not break a request
+    (Capture never gets in the way of serving, above).
+  - Read only when the request is captured. Never forwarded to a backend (no client
+    header is: Providers), never echoed, never logged — it is client text; the line
+    carries only the reason it was ignored.
+  - Body fields are not read for it (`prompt_cache_key`, Messages'
+    `metadata.user_id`): their meaning is the backend's. With no header there is no
+    session — the conventions rule out "a new UUID, a trace identifier, or a hash of
+    request content" in its place.
+- **Memory** (`KAIAK_CAPTURE_MEMORY_BYTES`, default 128 MiB; Configuration sources):
+  one gateway-wide capture budget bounds every byte a capture holds — the copy of the
+  request body, taken when the stage runs; the answer's bytes, taken as each piece is
+  written to the client; the encoded span, from its encoding until its export ends.
+  A take that does not fit drops the capture at once (`memory`) and gives back
+  everything it held; the request goes on untouched. Exported, failed or dropped, a
+  span's bytes are given back. The budget is also the export queue's only bound: the
+  exporter drops nothing for a full queue, and while a collector is down captures
+  fill the budget and new ones are dropped until exports drain it. Outside the
+  budget, parsing and encoding make short-lived garbage. Size `GOMEMLIMIT` above the
+  body, upload, usage and capture budgets together (`docs/DEPLOYMENT.md`).
+- **The export limit**: an export request is at most 16 MiB, its envelope included —
+  under the OpenTelemetry Collector's OTLP/HTTP receiver default (20 MiB, checked
+  again after decompression); Langfuse takes up to 512 MiB by default but warns
+  above 16 MiB. A span that cannot fit in an export request alone is dropped
+  (`too_large`) and its bytes given back. Content is never truncated to fit
+  (`docs/BACKLOG.md`, Truncating large captures).
+- **On the request line and in the counts**: `kaiak.capture` on the request line —
+  `queued` (handed to the exporter), or why not: `memory`, `too_large`,
+  `export_off` — and `kaiak.session_id.ignored` (Observability → Logs: the request
+  line); `otel.sdk.processor.span.processed` and `otel.sdk.exporter.span.exported`
+  (Observability → Exporters' own counts).
+- **Groups capture, trace export off**: a config whose groups capture is applied
+  like any other — a config cannot fail a gateway's start, and the export switch is
+  the operator's. When trace export is off on this gateway, each applied config that
+  has a capturing group is followed by one warning line naming how many groups
+  capture (`kaiak.config.capture_groups`), and nothing else happens: no copy is made,
+  no span built, and the request line says `export_off`.
+- **Conventions followed**: the GenAI inference span and content attributes of
+  `open-telemetry/semantic-conventions-genai`, `main` at commit `5293eff`
+  (2026-10-12; `docs/gen-ai/client-inference.md`, `docs/gen-ai/gen-ai-spans.md`) — a
+  development-stage convention with no release yet. At that commit the cache write
+  count is `gen_ai.usage.cache_write.input_tokens`, `gen_ai.request.top_k` is an
+  integer, system instructions are text parts, and finish reasons go on the span
+  (`gen_ai.response.finish_reasons`) — an output message's `finish_reason` is
+  deprecated there and not written. A later change in the convention is one change
+  to this section and its tests.
+- **Named deviations**:
+  - **Content as JSON strings**: the four content attributes are JSON strings, not
+    structured values. The convention allows it — on spans the content "MAY be
+    recorded as a JSON string if structured format is not supported and SHOULD be
+    recorded in structured form otherwise" — and prefers the structure; Langfuse
+    reads a structured (`kvlistValue`) attribute as its raw OTLP wrapper, so the
+    messages would arrive garbled in the example consumer. Rejected: structured
+    values.
+  - **Trace export needs an explicit switch** (Configuration sources → OTLP export):
+    the general OTLP endpoint alone, which turns logs and metrics on, does not turn
+    traces on, where the specification's default exporter is `otlp`.
+  - **`gen_ai.provider.name`**: custom values for the types with no well-known value
+    (Observability → Logs: the request line); absent on a request refused before
+    routing, though the convention requires it — no provider took part.
+  - **`gen_ai.response.model`** is the public model name, as the client's answer
+    names it; the backend's own name is `kaiak.deployment.model`.
+  - **Not written**: `gen_ai.response.time_to_first_chunk` —
+    `kaiak.time_to_first_token` instead, as on the request line (the convention's
+    counts any first chunk, a role-only one included); `gen_ai.output.type` — the
+    gateway reads no output format on the chat endpoints; the request parameters
+    the convention adds beyond the table above (`gen_ai.request.reasoning.level`,
+    …); and the per-modality usage counts (`gen_ai.usage.text.*`, `image.*`,
+    `audio.*`) — no backend reports tokens by modality, and Langfuse adds every usage
+    key it does not know to its total.
+
 ## Configuration sources
 
 - **The minimal gateway** (settled 2026-09-25; the follow-up audit's E1/E2): in
@@ -2880,6 +3318,10 @@ own, and a client sending repeats is broken either way.
 - `KAIAK_UPLOAD_MEMORY_BYTES` (default `268435456`, 256 MiB; whole bytes above 0) —
   the upload budget, apart from the body budget (Request pipeline → Uploads; settled
   2026-10-11, with the user).
+- `KAIAK_CAPTURE_MEMORY_BYTES` (default `134217728`, 128 MiB; whole bytes above 0) —
+  the capture budget: every byte request captures hold, from the copy of a request to
+  the export of its span (Request capture → Memory; settled 2026-10-13, with the
+  user). Read whether or not trace export is on; it bounds nothing when it is off.
 - `KAIAK_INSTANCE_ID` — defaults to the hostname (the pod name on Kubernetes). In
   control-plane mode it must have the instance ID shape (`CONTROL-PROTOCOL.md`,
   Messages) — a startup error otherwise, naming the value: a control plane refuses
@@ -2905,38 +3347,51 @@ own, and a client sending repeats is broken either way.
   listener requires `Authorization: Bearer <token>` (Observability: admin port).
 - `KAIAK_LOG_FORMAT` — `json` (default: one JSON object per line, for production) or
   `text` (development). Any other value is a startup error.
-- **OTLP export** (logs settled 2026-10-05, metrics 2026-10-08; Observability → OTLP
-  log export, OTLP metric export) — the standard OpenTelemetry exporter variables, a
-  subset of the OpenTelemetry SDK specification's, so a collector sidecar or node
-  agent needs no kaiak-specific setup. Each signal has its own settings; for each,
-  the signal's variable (`…_LOGS_…`, `…_METRICS_…`) wins over the general one:
-  - `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` — the
-    URL the signal is posted to, used as is; else `OTEL_EXPORTER_OTLP_ENDPOINT` with
-    `/v1/logs` or `/v1/metrics` appended to its path (`http://collector:4318` →
-    `http://collector:4318/v1/logs`, `…/v1/metrics`). `http://` or `https://`,
-    absolute; anything else is a startup error.
-  - **On or off, per signal**: a signal's export is on when its own or the general
-    endpoint variable is set, or when its exporter variable is `otlp` — then, with
-    no endpoint, to the specification's default `http://localhost:4318/v1/logs` or
-    `…/v1/metrics` (a sidecar). So one `OTEL_EXPORTER_OTLP_ENDPOINT` turns on both
-    signals. `OTEL_LOGS_EXPORTER=none` or `OTEL_METRICS_EXPORTER=none` turns that
-    signal off whatever else is set, `OTEL_SDK_DISABLED=true` both, so an operator
-    who injects an endpoint for other telemetry can opt a gateway, or one of its
-    signals, out. `OTEL_LOGS_EXPORTER` and `OTEL_METRICS_EXPORTER` take `otlp` or
-    `none`; `OTEL_SDK_DISABLED` `true` or `false` (any case). Nothing set: off,
-    and nothing is attempted.
-  - `OTEL_EXPORTER_OTLP_LOGS_HEADERS`, `OTEL_EXPORTER_OTLP_METRICS_HEADERS` /
-    `OTEL_EXPORTER_OTLP_HEADERS` — headers sent with every export of the signal,
-    `key=value,key=value`, values percent-decoded (the specification's format).
-    Never logged or echoed: an error about them names the variable, never a value.
-    No backend can name an `OTEL_` variable as its `api_key_env` (Providers:
-    credentials; settled 2026-10-05).
-  - `OTEL_EXPORTER_OTLP_LOGS_TIMEOUT`, `OTEL_EXPORTER_OTLP_METRICS_TIMEOUT` /
-    `OTEL_EXPORTER_OTLP_TIMEOUT` (default `10000`) — whole milliseconds above 0: how
-    long one request may take, its retries included (for metrics, within the
-    export timeout below).
-  - `OTEL_EXPORTER_OTLP_LOGS_PROTOCOL`, `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL` /
-    `OTEL_EXPORTER_OTLP_PROTOCOL` — only `http/json`. The specification's default
+- **OTLP export** (logs settled 2026-10-05, metrics 2026-10-08, traces 2026-10-13;
+  Observability → OTLP log export, OTLP metric export, OTLP trace export) — the
+  standard OpenTelemetry exporter variables, a subset of the OpenTelemetry SDK
+  specification's, so a collector sidecar or node agent needs no kaiak-specific
+  setup. Each signal has its own settings; for each, the signal's variable
+  (`…_LOGS_…`, `…_METRICS_…`, `…_TRACES_…`) wins over the general one:
+  - `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`,
+    `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` — the URL the signal is posted to, used as
+    is; else `OTEL_EXPORTER_OTLP_ENDPOINT` with `/v1/logs`, `/v1/metrics` or
+    `/v1/traces` appended to its path (`http://collector:4318` →
+    `http://collector:4318/v1/logs`, `…/v1/metrics`, `…/v1/traces`). `http://` or
+    `https://`, absolute; anything else is a startup error.
+  - **On or off, per signal**: log and metric export is on when the signal's own or
+    the general endpoint variable is set, or when its exporter variable is `otlp` —
+    then, with no endpoint, to the specification's default
+    `http://localhost:4318/v1/logs` or `…/v1/metrics` (a sidecar). So one
+    `OTEL_EXPORTER_OTLP_ENDPOINT` turns on both. `OTEL_LOGS_EXPORTER=none`,
+    `OTEL_METRICS_EXPORTER=none` or `OTEL_TRACES_EXPORTER=none` turns that signal
+    off whatever else is set, `OTEL_SDK_DISABLED=true` all three, so an operator who
+    injects an endpoint for other telemetry can opt a gateway, or one of its
+    signals, out. `OTEL_LOGS_EXPORTER`, `OTEL_METRICS_EXPORTER` and
+    `OTEL_TRACES_EXPORTER` take `otlp` or `none`; `OTEL_SDK_DISABLED` `true` or
+    `false` (any case). Nothing set: off, and nothing is attempted.
+  - **Trace export needs an explicit switch** (settled 2026-10-13, with the user):
+    it is on only with `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` set, or with
+    `OTEL_TRACES_EXPORTER=otlp` — then to the general endpoint with `/v1/traces`
+    appended, else `http://localhost:4318/v1/traces`. The general
+    `OTEL_EXPORTER_OTLP_ENDPOINT` alone, which turns logs and metrics on, leaves
+    traces off: traces carry request captures — prompts and answers (Request
+    capture) — and an operator who sends logs to a collector does not send prompts
+    there without saying so. A named deviation from the specification, whose
+    default trace exporter is `otlp`.
+  - `OTEL_EXPORTER_OTLP_LOGS_HEADERS`, `OTEL_EXPORTER_OTLP_METRICS_HEADERS`,
+    `OTEL_EXPORTER_OTLP_TRACES_HEADERS` / `OTEL_EXPORTER_OTLP_HEADERS` — headers
+    sent with every export of the signal, `key=value,key=value`, values
+    percent-decoded (the specification's format). Never logged or echoed: an error
+    about them names the variable, never a value. No backend can name an `OTEL_`
+    variable as its `api_key_env` (Providers: credentials; settled 2026-10-05).
+  - `OTEL_EXPORTER_OTLP_LOGS_TIMEOUT`, `OTEL_EXPORTER_OTLP_METRICS_TIMEOUT`,
+    `OTEL_EXPORTER_OTLP_TRACES_TIMEOUT` / `OTEL_EXPORTER_OTLP_TIMEOUT` (default
+    `10000`) — whole milliseconds above 0: how long one request may take, its
+    retries included (for metrics, within the export timeout below).
+  - `OTEL_EXPORTER_OTLP_LOGS_PROTOCOL`, `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL`,
+    `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` / `OTEL_EXPORTER_OTLP_PROTOCOL` — only
+    `http/json`. The specification's default
     is `http/protobuf`; here unset means `http/json`, the one encoding the gateway
     writes. `grpc` or `http/protobuf` set explicitly is a startup error saying that
     only `http/json` is supported — a gateway that sent JSON to a collector
@@ -2950,7 +3405,7 @@ own, and a client sending repeats is broken either way.
     — `cumulative` (default), `delta` or `lowmemory`, any case (Observability → OTLP
     metric export: temporality).
   - `OTEL_SERVICE_NAME` (default `kaiak`) and `OTEL_RESOURCE_ATTRIBUTES`
-    (`key=value,…`, values percent-decoded) — the resource both signals share
+    (`key=value,…`, values percent-decoded) — the resource every signal shares
     (Observability → OTLP log export).
   - A malformed value of any of these is a startup error naming the variable, as
     with every `KAIAK_*` variable — export settings are read before anything else
@@ -2958,10 +3413,13 @@ own, and a client sending repeats is broken either way.
     unset, as the specification has it. Not read: compression (the export is
     uncompressed), certificate and client-key variables (TLS uses the system's
     roots: `SSL_CERT_FILE`, `SSL_CERT_DIR`), `*_INSECURE` (gRPC only), the batch
-    processor's `OTEL_BLRP_*`, the attribute limits, `OTEL_METRICS_EXEMPLAR_FILTER`
-    (no exemplars are recorded) and
-    `OTEL_EXPORTER_OTLP_METRICS_DEFAULT_HISTOGRAM_AGGREGATION` (explicit buckets
-    only: a histogram's buckets are part of its definition, Metric list).
+    processors' `OTEL_BLRP_*` and `OTEL_BSP_*`, the attribute and span limits
+    (`OTEL_ATTRIBUTE_*`, `OTEL_SPAN_*`), `OTEL_TRACES_SAMPLER` and its argument (no
+    sampling: a group's `capture` decides, Request capture), `OTEL_PROPAGATORS` (no
+    context is read or sent), `OTEL_METRICS_EXEMPLAR_FILTER` (no exemplars are
+    recorded) and `OTEL_EXPORTER_OTLP_METRICS_DEFAULT_HISTOGRAM_AGGREGATION`
+    (explicit buckets only: a histogram's buckets are part of its definition,
+    Metric list).
 - `KAIAK_DRAIN_GRACE_MS` (default `5000`) and `KAIAK_DRAIN_TIMEOUT_MS` (default
   `60000`) — the drain's grace period and timeout (Lifecycle), whole milliseconds, 0
   or more; anything else is a startup error.
@@ -3387,9 +3845,11 @@ own, and a client sending repeats is broken either way.
         code answers with its own status.
       - `url.scheme` is always `http`: the API listener speaks plain HTTP; TLS, where
         there is any, ends before it.
-      - `gen_ai.provider.name`, required by the GenAI convention, is left out for
-        the self-hosted backend types, as on the request line (Logs: the request
-        line): they have no well-known value.
+      - `gen_ai.provider.name` takes a custom value — the type's own name — for
+        the backend types no well-known value names (`vllm`, `vllm-omni`,
+        `llama-server`, `openai-compatible`), as the convention allows and as on the
+        request line (Logs: the request line; settled 2026-10-13, amending the
+        2026-10-06 rule that left it out for them).
       - Time to first token and decode rate keep `kaiak.` names: the convention's
         `gen_ai.client.inference.time_to_first_chunk` counts any first chunk, a
         role-only one included, and `time_per_output_chunk` measures each chunk,
@@ -3400,6 +3860,11 @@ own, and a client sending repeats is broken either way.
         the backend's name as `kaiak.deployment.model`.
       - `otel.sdk.processor.log.processed` adds `error.type` `shutdown` beside the
         convention's `queue_full` (Exporters' own counts).
+      - `otel.sdk.processor.span.processed` names a component type of kaiak's,
+        `capture_span_processor`, and its own `error.type` values — `memory`,
+        `too_large`, `shutdown` — in place of the convention's `queue_full`, which
+        never happens: the capture budget bounds the queue (Exporters' own counts;
+        settled 2026-10-13).
   - **The request duration's attributes** (settled 2026-10-08):
     `http.request.method` — the method when the HTTP convention knows it, else
     `_OTHER`, as on the request line (never the method as sent); `url.scheme` —
@@ -3448,8 +3913,9 @@ own, and a client sending repeats is broken either way.
     operations — the request line's, from the endpoint, settled 2026-10-09: speech,
     images and, settled 2026-10-11, speech-to-text share their operation),
     `gen_ai.provider.name` (from the record's deployment's backend type in the
-    live config, as on the request line; absent for the self-hosted types and for a
-    backend the config has since dropped), `kaiak.usage.status` — `complete`, or
+    live config, as on the request line — every type has one, settled 2026-10-13;
+    absent only for a backend the config has since dropped), `kaiak.usage.status` —
+    `complete`, or
     `partial` when the record is flagged partial. The token counters add
     `gen_ai.token.modality`, the GenAI convention's required attribute, always
     `unknown`: no backend reports tokens by modality. The two group labels give one
@@ -3509,7 +3975,8 @@ own, and a client sending repeats is broken either way.
     mode), `kaiak.limits.sync.duration`, `kaiak.connections.refused`, the
     usage-delivery counters per result and drop reason,
     `kaiak.usage.clamped_records`; with OTLP export on, each exporter's accepted
-    series (no `error.type`) and the log queue's three (handed over, `queue_full`,
+    series (no `error.type`), the log queue's three (handed over, `queue_full`,
+    `shutdown`) and the span processor's four (handed over, `memory`, `too_large`,
     `shutdown`). Per applied config: per model
     `kaiak.queue.rejections` × error code, `kaiak.queue.wait_duration`,
     `kaiak.request.attempts`; per deployment `kaiak.upstream.attempts` × outcome and
@@ -3582,12 +4049,12 @@ own, and a client sending repeats is broken either way.
     providers = those each such key × model pair actually used — at most 5 operations
     (`chat`, `text_completion`, `embeddings`, `rerank`, `generate_content`; settled
     2026-10-08, `generate_content` 2026-10-09; `gen_ai.output.type` follows the
-    endpoint, as the operation does, and adds no series of its own) and the provider
-    kinds among the model's deployments, but usually one each: an embedding model is
-    used for `embeddings` (on vLLM it can serve `rerank` too), a reranker for
-    `rerank`, a chat model for `chat` (`text_completion` only through the completions
-    endpoint), and a model's deployments usually share one backend type or are all
-    self-hosted (no provider at all). Label sets = the distinct group/key combinations
+    endpoint, as the operation does, and adds no series of its own), but usually one
+    each: an embedding model is used for `embeddings` (on vLLM it can serve `rerank`
+    too), a reranker for `rerank`, a chat model for `chat` (`text_completion` only
+    through the completions endpoint); and one provider, its backend type's — every
+    type has one (settled 2026-10-13), and a model's deployments share one type.
+    Label sets = the distinct group/key combinations
     seen: the keys used with `key_id_label` on (a key belongs to one group, and a
     group to one top-level group, so the group labels add nothing); with it off, the
     groups that own keys; with `group_label` off as well, the top-level groups (every
@@ -3603,8 +4070,8 @@ own, and a client sending repeats is broken either way.
     for one operation through one provider: both labels on, 500 × 3 × 2 × 7 = 21,000
     series; `key_id_label` off, 500 groups — the same 21,000 here, since every key has
     its own group; `group_label` off too, 6 top-level groups (5 teams + `users`), 6 ×
-    3 × 2 × 7 = 252. A model reached through both `chat` and `text_completion`, or
-    served by two providers, doubles its share. Multiply by the gateway replicas for
+    3 × 2 × 7 = 252. A model reached through both `chat` and `text_completion`
+    doubles its share. Multiply by the gateway replicas for
     the metrics store's total, and switch `key_id_label` off first, then
     `group_label`, when the total outgrows what the store is sized for. Series stay
     until restart once written (below). Ops series: request duration routes × models ×
@@ -3674,9 +4141,14 @@ own, and a client sending repeats is broken either way.
   metrics (`otel.sdk.*`, development stage) — read at collect from the exporter's
   counters, so they reach `/metrics` and the metric export alike.
   - `otel.component.type` names the component: `batching_log_processor` (the log
-    export's queue), `otlp_http_json_log_exporter`, `otlp_http_json_metric_exporter`
-    — the convention's well-known values; `otel.component.name` is
-    `<type>/0`, the convention's form for the process's one instance of each.
+    export's queue), `otlp_http_json_log_exporter`, `otlp_http_json_metric_exporter`,
+    `otlp_http_json_span_exporter` — the convention's well-known values — and
+    `capture_span_processor` (settled 2026-10-13), kaiak's own: the capture stage,
+    which builds each span at its request's end under the capture budget, and the
+    trace export's queue — neither of the convention's span processors (batching,
+    simple) describes it, and a custom value is allowed where none applies;
+    `otel.component.name` is `<type>/0`, the convention's form for the process's one
+    instance of each.
   - `error.type` on a failed export, a small fixed set in the gateway's own words
     (Logs: no remote text): the collector's HTTP status as a string (`503`,
     `400`, `302`) when the status ended the export — one not retried, or the last
@@ -3696,6 +4168,10 @@ own, and a client sending repeats is broken either way.
     (kaiak's: still queued when the final flush ended — the convention names only
     the full queue, and a drop at exit is a different fix: a longer termination
     grace, not a bigger queue).
+  - The span processor's `error.type` (settled 2026-10-13): `memory` and
+    `too_large` — the capture dropped before the queue (Request capture → Memory,
+    The export limit), as the request line's `kaiak.capture` says — and `shutdown`,
+    as for logs. No `queue_full`: the capture budget is the queue's bound.
   - An export's own outcome is counted after it ends, so it shows in the next
     export and the next scrape; the final export's outcome is in its stderr line
     only.
@@ -3705,8 +4181,10 @@ own, and a client sending repeats is broken either way.
   line's attributes; with OTLP log export on, the same records also go to a
   collector (OTLP log export, below). Every attribute a line can carry is in the
   field tables below, under the name it is written with. Never the key, a header
-  value, a provider secret, prompt or response content, or text a remote party sent
-  (No remote text, below). Strings the client
+  value (`Kaiak-Session-Id`'s included), a provider secret, prompt or response
+  content — which leaves the gateway only in request captures, through trace export
+  (Request capture; settled 2026-10-13) — or text a remote party sent (No remote
+  text, below). Strings the client
   controls — the method, the path, the model (a refused name is any string) — are
   clipped to their first 256 bytes, then `…`, cut on a character boundary (settled
   2026-09-25, L3): a 1 MiB path must not make a 1 MiB log line. One helper
@@ -3762,7 +4240,9 @@ own, and a client sending repeats is broken either way.
     are unchanged on its `main` on 2026-10-05); GenAI attributes and metrics from
     `open-telemetry/semantic-conventions-genai`, `main` at commit `4f85037`
     (2026-10-06, which named the client metrics `gen_ai.client.inference.*`) — a
-    development-stage convention with no release yet; the Prometheus names by the
+    development-stage convention with no release yet — and, for request captures
+    and the provider name's custom values, the same repository at `5293eff`
+    (2026-10-12; Request capture → Conventions followed); the Prometheus names by the
     OpenTelemetry specification's Prometheus compatibility rules (stable) as
     Prometheus applies them (Metric list: naming). A later rename in a convention is
     one change to these tables and their tests.
@@ -3829,7 +4309,7 @@ own, and a client sending repeats is broken either way.
     | `kaiak.limit.requested` | `requested` | a token limit's refusal | The request's reservation: above `kaiak.limit.configured`, a request too large for the limit, not a full window |
     | `kaiak.backend.id` | `backend` | once routed | The last attempt's backend (config ID) |
     | `kaiak.backend.type` | — (added) | once routed | Its type: `openai`, `azure-openai`, `vllm`, `vllm-omni`, `llama-server`, `anthropic`, `azure-anthropic`, `openai-compatible` |
-    | `gen_ai.provider.name` | — (added) | once routed to an `openai`, `azure-openai`, `anthropic` or `azure-anthropic` backend | `openai`, `azure.ai.openai`, `anthropic`, `anthropic` — the convention's well-known values. Claude in Foundry is Anthropic's service and API on Azure, and no Azure value names it (`azure.ai.inference` is Azure's Model Inference API), so it is `anthropic` too (settled 2026-10-06). The self-hosted types have no well-known value and leave it out: `kaiak.backend.type` names every type |
+    | `gen_ai.provider.name` | — (added) | once routed | The backend type's provider: `openai`, `azure.ai.openai`, `anthropic` for `openai`, `azure-openai`, `anthropic` and `azure-anthropic` — the convention's well-known values; Claude in Foundry is Anthropic's service and API on Azure, and no Azure value names it (`azure.ai.inference` is Azure's Model Inference API), so it is `anthropic` too (settled 2026-10-06). **Every other type its own name, a custom value** — `vllm`, `vllm-omni`, `llama-server`, `openai-compatible` (settled 2026-10-13, with the user, amending the 2026-10-06 rule that left the attribute out for them): none of the well-known values applies, and the convention's rule is "If one of them applies, then the respective value MUST be used; otherwise, a custom value MAY be used" (`semantic-conventions-genai`, `main` at `5293eff`, 2026-10-12), so the request line, the usage metrics and request captures share one vocabulary in which every request has a provider. A custom value names the provider's kind, never the instance — `kaiak.backend.id` names that. Rejected: `kaiak` — the gateway relays, it does not provide |
     | `kaiak.deployment.model` | `deployment_model` | once routed | The last attempt's model name on its backend (the metrics' attribute too). Not `gen_ai.response.model`: that is the name the backend's answer reports, which the gateway does not read |
     | `kaiak.attempts` | `attempts` | once routed | Attempts made, the first included |
     | `kaiak.tried` | `tried` | more than one attempt | Every attempt in order as `backend/deployment_model:outcome`, the outcome the backend's status or the gateway's error code (`down/m:upstream_unavailable,local/m:200`) |
@@ -3851,6 +4331,8 @@ own, and a client sending repeats is broken either way.
     | `kaiak.usage.audio.input.duration` | — (added 2026-10-09) | once settled, when not 0 | Seconds of audio processed (the records' `audio_seconds_in`), as the metric of the same name |
     | `kaiak.usage.estimated` | `estimated` | once settled | The last record's flag (Accounting: Estimation) |
     | `kaiak.usage.partial` | `partial` | once settled | The last record's flag (Accounting: Partial) |
+    | `kaiak.capture` | — (added 2026-10-13) | the key's group captures and the request passed the capture stage (Request capture) | `queued` — the capture was handed to the trace exporter — or why it was not: `memory` (the capture budget could not hold it), `too_large` (its span exceeds the export limit), `export_off` (this gateway's trace export is off) |
+    | `kaiak.session_id.ignored` | — (added 2026-10-13) | a captured request's `Kaiak-Session-Id` was ignored | `empty`, `too_long`, `invalid_characters` (Request capture → Sessions). Never the value: it is client text |
 
     Limit values are counts in the limit's unit, USD limits in dollars. Across
     attempts (settled 2026-09-24) the backend, deployment and upstream fields are
@@ -3877,9 +4359,11 @@ own, and a client sending repeats is broken either way.
     | `kaiak.control.url` | `control_url` | `kaiak starting` in control-plane mode, and every line of the control-plane client: the control plane's URL, credentials redacted |
     | `kaiak.log_export.endpoint` | — (added) | `kaiak starting` with OTLP log export on: the endpoint's `host:port`; absent when export is off. Never a header |
     | `kaiak.metric_export.endpoint` | — (added 2026-10-08) | `kaiak starting` with OTLP metric export on: the endpoint's `host:port`, as `kaiak.log_export.endpoint`; absent when export is off |
+    | `kaiak.trace_export.endpoint` | — (added 2026-10-13) | `kaiak starting` with OTLP trace export on: the endpoint's `host:port`, as `kaiak.log_export.endpoint`; absent when export is off |
     | `kaiak.signal` | `signal` | `second stop signal: skipping the remaining drain` |
     | `kaiak.config.max_request_body_size`, `kaiak.body_budget.size` | `max_request_body_bytes`, `body_memory_bytes` | The warning that the config's body cap (`max_request_body_bytes`) exceeds the body budget (`KAIAK_BODY_MEMORY_BYTES`) — both in bytes |
     | `kaiak.config.max_upload_size`, `kaiak.upload_budget.size` | — (added 2026-10-11) | The warning that the config's upload cap (`max_upload_bytes`) exceeds the upload budget (`KAIAK_UPLOAD_MEMORY_BYTES`) — both in bytes (Request pipeline → Uploads) |
+    | `kaiak.config.capture_groups` | — (added 2026-10-13) | `groups capture requests but trace export is off: nothing is captured` (warn), after an applied config with a group whose `capture` is on while this gateway's trace export is off: how many such groups (Request capture → Groups capture, trace export off) |
     | `kaiak.control.totals_wait` | `wait_ms` | `waiting for the first totals`: the wait's bound, in seconds |
     | `kaiak.control.totals_waited` | `waited_ms` | `first totals received`, `first totals not received within the boot wait…`: the time waited, in seconds |
     | `kaiak.config.hash` | — (added 2026-10-07) | A control-plane config's `config_hash`: control-plane loads, skipped `config` events |
@@ -3916,6 +4400,7 @@ own, and a client sending repeats is broken either way.
     | `kaiak.listener.shutdown_timeout` | `timeout` (a duration string) | `shutdown timed out; closing open connections`: the timeout, in seconds |
     | `kaiak.log_export.failed`, `kaiak.log_export.dropped` | — (added) | `log export failing` (stderr only; OTLP log export, below): records failed and dropped since the previous such line; with `http.response.status_code` (the collector's last answer, when it answered) and `exception.message` (the last error, in the gateway's own words — never the collector's text) |
     | `kaiak.metric_export.failed` | — (added 2026-10-08) | `metric export failing` (OTLP metric export, below): data points failed since the previous such line; with `http.response.status_code` and `exception.message`, as `log export failing` |
+    | `kaiak.trace_export.failed`, `kaiak.trace_export.dropped` | — (added 2026-10-13) | `trace export failing` (OTLP trace export, below): spans failed since the previous such line, and spans still queued when the final flush ended (at exit only); with `http.response.status_code` and `exception.message`, as `log export failing` |
 
     The HTTP server's own messages (`http: …`, at warn level) carry no attributes.
 - **OTLP log export** (settled 2026-10-05): with an OTLP endpoint configured
@@ -4016,8 +4501,9 @@ own, and a client sending repeats is broken either way.
       are never silent.
   - **At exit** (settled 2026-10-05): the sender keeps exporting through the drain,
     each line as it is written. Usage comes first — usage is the record, logs are
-    not: the final flush runs after the usage flush, the final status and the
-    final metric export (Lifecycle → Draining, step 5), as the process's last act,
+    not: the final flush runs after the usage flush, the final status, the final
+    trace flush and the final metric export (Lifecycle → Draining, step 5), as the
+    process's last act,
     after `kaiak stopped`. It sends what is queued until the queue is empty, bounded by the
     drain's deadline (grace + drain timeout from the drain's start) or 1 s from the
     flush's start, whichever is later — so the last lines still go when the usage
@@ -4112,7 +4598,8 @@ own, and a client sending repeats is broken either way.
     when that is on: a failing metric export cannot feed itself through it. As for
     logs, the report at exit is never held back.
   - **At exit**: the exporter keeps its interval through the drain. After the usage
-    flush and the final status, once the listeners have stopped, one final export
+    flush and the final status, once the listeners have stopped and the trace
+    export's final flush has run (OTLP trace export: at exit), one final export
     collects and sends what the process ends with — the last requests' counts —
     before `kaiak stopped` and the log export's final flush (Lifecycle → Draining,
     step 5): usage is the record and goes first; the metrics go before the logs so
@@ -4123,6 +4610,70 @@ own, and a client sending repeats is broken either way.
     1 s. A start that fails once the exporter runs (a rejected config at startup, a
     boot that ends with no config) ends with the same final export, bounded by 1 s,
     before `kaiak stopped with an error`.
+
+- **OTLP trace export** (settled 2026-10-13, with the user): with trace export
+  switched on (Configuration sources → OTLP export: the explicit switch), request
+  captures go to an OpenTelemetry collector — or a tool that takes OTLP, such as
+  Langfuse — as spans over OTLP/HTTP with JSON encoding. A capture is the only span
+  the gateway makes: requests of groups that do not capture make none, and no trace
+  context is read or sent (`docs/BACKLOG.md`, OpenTelemetry traces). Configured per
+  gateway from the standard `OTEL_*` variables, never from the pushed config, as the
+  other exports are.
+  - **Content**: one span per captured request — its name, kind, times, status and
+    attributes: Request capture → The span, Attributes.
+  - **Resource and scope**: the log export's (OTLP log export: resource) — one
+    resource for every signal, so a collector joins a gateway's captures with its
+    logs and metrics; one scope, named `kaiak`, no `schemaUrl`.
+  - **Span mapping**: `traceId` and `spanId` as lowercase hex (32 and 16 digits, as
+    OTLP JSON writes them — not base64), no `parentSpanId`; `name`; `kind` `3`
+    (`CLIENT`); `startTimeUnixNano` and `endTimeUnixNano` as decimal strings;
+    attributes with the log export's types (OTLP log export: record mapping) —
+    strings `stringValue`, integers `intValue` (a decimal string), floats
+    `doubleValue`, booleans `boolValue`, string lists an `arrayValue` of
+    `stringValue`s; `status` `{"code": 2, "message": <error.type>}` for a span with
+    an `error.type`, else none. No events, no links.
+  - **Delivery** — never on the request path: a capture's finisher encodes its span
+    and queues the bytes; a background sender does the rest.
+    - **The queue's bound is the capture budget** (Request capture → Memory), not a
+      count: every queued span holds its bytes in the budget until its export ends,
+      so the queue never drops for being full. Spans go out in export requests of at
+      most 16 MiB with their envelope (Request capture → The export limit), or every
+      **1 s** when fewer are queued, with **one export in flight**. Fixed, not
+      configurable: the batch span processor's `OTEL_BSP_*` variables are not read.
+    - Each export request is one `POST` to the traces endpoint (`Content-Type:
+      application/json`, `User-Agent: kaiak/<version>`, the configured headers).
+    - The log export's delivery rules (OTLP log export: delivery): delivered is a
+      `2xx` whose body is empty or an `ExportTraceServiceResponse`, a partial success
+      counting its `rejectedSpans` failed and the rest exported; a `2xx` that cannot
+      be read as one fails the request, unretried; no redirects; the same retryable
+      statuses, backoff and `Retry-After`, within `OTEL_EXPORTER_OTLP_TRACES_TIMEOUT`
+      (default 10 s); never any text the collector sent. A failed span is not sent
+      again.
+    - Every span's bytes go back to the capture budget once its export ends —
+      delivered, failed or dropped at exit.
+    - **Counted** (Metric list: exporters' own counts) in
+      `otel.sdk.exporter.span.exported` — accepted by the collector, or failed by
+      `error.type` — and `otel.sdk.processor.span.processed` — handed to the
+      exporter, or never sent: `memory`, `too_large` (dropped by the capture, before
+      the queue), `shutdown` (still queued when the final flush ended).
+    - **Export problems go to stderr only**, as for logs: one `trace export failing`
+      line (warn) at the first failure, then at most one a minute while failures
+      continue, with the spans failed since the previous one, the collector's last
+      status when it answered and the last error in the gateway's own words (Logs:
+      operational events, no remote text) — an ordinary line, so the log export
+      carries it when that is on. The report at exit is never held back.
+  - **At exit**: the sender keeps exporting through the drain, each capture as its
+    request ends; a request counts as in flight until its finishers ran, so every
+    request the drain lets finish has its capture queued by then. After the usage
+    flush and the final status, once the listeners have stopped, one final flush
+    sends what is queued — before the final metric export, `kaiak stopped` and the
+    log export's final flush (Lifecycle → Draining, step 5): usage is the record and
+    goes first; the traces go before the metrics and the logs so that their counts
+    and their final `trace export failing` line still reach those exports. It is
+    bounded as the log flush is: by the drain's deadline (grace + drain timeout from
+    the drain's start) or 1 s from its start, whichever is later; a second stop
+    signal cuts it to its 1 s. What is still queued then is dropped, counted
+    (`shutdown`) and reported on the final `trace export failing` line.
 
 ## Lifecycle
 
@@ -4220,12 +4771,13 @@ own, and a client sending repeats is broken either way.
      (bounded to 2 s). What is not delivered is lost with the process (logged at
      error level, as other lost usage is: `usage not flushed: lost at exit`, with the
      batches and records; settled 2026-10-01, the 2026-09-30 review's O7). Then the
-     control-plane client stops, the admin listener stops, with OTLP metric export
-     on its final export runs (Observability → OTLP metric export: at exit; settled
-     2026-10-08), `kaiak stopped` is logged and, with OTLP log export on, the log
-     export's final flush runs (Observability → OTLP log export: at exit; settled
-     2026-10-05: after usage — usage is the record, logs are not); the process
-     exits 0. The admin listener serves throughout the drain:
+     control-plane client stops, the admin listener stops, with OTLP trace export on
+     its final flush runs (Observability → OTLP trace export: at exit; settled
+     2026-10-13), with OTLP metric export on its final export runs (Observability →
+     OTLP metric export: at exit; settled 2026-10-08), `kaiak stopped` is logged
+     and, with OTLP log export on, the log export's final flush runs (Observability
+     → OTLP log export: at exit; settled 2026-10-05: after usage — usage is the
+     record, logs are not); the process exits 0. The admin listener serves throughout the drain:
      `/healthz` stays 200, `/metrics` answers.
   - A **second** SIGTERM/SIGINT during the drain skips whatever waiting remains:
     in-flight requests are cut off at once, then step 5 runs (the usage flush seals
@@ -4233,15 +4785,16 @@ own, and a client sending repeats is broken either way.
     the final status is skipped) and the
     process exits 0 — like a timed-out drain, the shutdown completed; the cut requests are in the
     log and in their partial records. A second signal arriving later, during the
-    final metric export or the final log flush, cuts each to its 1 s
-    (Observability → OTLP metric export and OTLP log export: at exit; settled
-    2026-10-05, for metrics 2026-10-08).
+    final trace flush, the final metric export or the final log flush, cuts each to
+    its 1 s (Observability → OTLP trace export, OTLP metric export and OTLP log
+    export: at exit; settled 2026-10-05, for metrics 2026-10-08, for traces
+    2026-10-13).
   - A listener that fails at runtime starts the same drain, and the process exits 1
     with the error.
   - Kubernetes: `terminationGracePeriodSeconds` must exceed grace + drain timeout +
     about 10 s — after the drain, the final status report (≤ 2 s), the admin
     listener's shutdown (≤ 5 s with a scrape open), and with OTLP export on the
-    final metric export and the final log flush — 1 s each
+    final trace flush, the final metric export and the final log flush — 1 s each
     when the drain used its whole time. Default 5 + 60 + 10 s → at least 75 s; the
     Kubernetes default of 30 s would SIGKILL long streams mid-drain.
   - No draining metric: `/readyz` already says it, and a scrape during a

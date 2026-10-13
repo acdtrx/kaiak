@@ -259,8 +259,6 @@ Group entries under headings as themes emerge.
   data at a volume worth serving from cache.
 - **Guardrails** (input/output checks). Revisit trigger: a concrete policy requirement.
 - **Prompt templating.** Revisit trigger: a concrete use case.
-- **Prompt/response logging to an external system** — off by default, opt-in per key or
-  group. Revisit trigger: a destination system is chosen.
 
 ## Routing
 
@@ -452,17 +450,34 @@ Group entries under headings as themes emerge.
   management app (or another host) needs failures and refusals in its own database
   rather than from Prometheus. (ruled 2026-10-01: metrics first. The user leans
   toward the observability path instead (OpenTelemetry traces, below; logs and metrics are exported; 2026-10-02).
-- **OpenTelemetry traces** — requests as traces in an OpenTelemetry backend, beside
-  the logs and metrics already exported over OTLP (`GATEWAY.md` → Observability).
-  Confined test first: forward the W3C `traceparent` header to backends (vLLM can
-  continue the trace) and log `trace_id` on the request line, linking client traces
-  to gateway lines. Span export (per request, per attempt, queue wait): the
-  dependency rule allows the OTel Go trace SDK core (`otel`, `sdk/trace` — four small
-  third-party modules, no gRPC), with a span exporter of our own on
-  `internal/telemetry/otlp`; the SDK's OTLP exporters were rejected (`TECH-STACK.md`,
-  2026-10-08). Revisit trigger: a question about a request that the log line cannot
+- **OpenTelemetry traces** — distributed tracing: a request's part in the client's
+  trace and the backend's. The gateway exports spans already, but only request
+  captures, each a trace of its own (`GATEWAY.md` → Request capture, Observability →
+  OTLP trace export; settled 2026-10-13): no `traceparent` is read or sent, and
+  attempts and the queue wait are not spans. Confined test first: forward the W3C
+  `traceparent` header to backends (vLLM can continue the trace) and log `trace_id`
+  on the request line, linking client traces to gateway lines; then spans per
+  request, attempt and queue wait on the span exporter that exists
+  (`internal/telemetry/otlptrace`). The trace SDK core was weighed and not taken for
+  captures (`TECH-STACK.md`, 2026-10-13) — propagation and span trees would reopen
+  that ruling. Revisit trigger: a question about a request that the log line cannot
   answer, or a client team that traces its own calls and needs the gateway's part
   linked in.
+- **Capture on the other endpoints** — request capture covers chat completions,
+  Messages and Responses (`GATEWAY.md` → Request capture); completions, embeddings,
+  rerank, speech, images and the uploads are not captured. Revisit trigger: a user
+  asks to see their embeddings, rerank, image or audio requests in the trace tool.
+- **An end-user ID for captures** — `user.id` on a capture, from a request header as
+  `Kaiak-Session-Id` is, so a trace tool can show captures per end user (Langfuse
+  reads `user.id`). Revisit trigger: someone wants per-user views in the tool.
+- **Truncating large captures** — a capture whose span exceeds the 16 MiB export
+  limit is dropped whole (`too_large`); the conventions allow truncating message
+  contents while keeping the JSON structure. Revisit trigger: `too_large` drops show
+  up in `otel_sdk_processor_span_processed_total`.
+- **gzip on OTLP export** — every export (logs, metrics, traces) is sent
+  uncompressed; collectors and Langfuse accept gzip, and captures with inline media
+  are large. Revisit trigger: export bandwidth matters — a collector across a paid or
+  slow link, or captures that saturate one.
 
 - **Runtime and HTTP server metrics** — the conventions' Go runtime (`go.memory.used`,
   `go.goroutine.count`, `go.gc.*`, …) and process metrics (`process.cpu.time`,

@@ -1,5 +1,5 @@
 {
-  "protocol_version": 7,
+  "protocol_version": 8,
   "global": {
     "max_upload_bytes": 20971520,
     "limits": [
@@ -166,26 +166,31 @@
   },
   "groups": {
     "search": {
+      "capture": false,
       "labels": { "kind": "team", "cost_center": "CC-2210" },
       "limits": [{ "type": "usd_per_month", "value": 500 }]
     },
     "search-rag": {
       "parent": "search",
+      "capture": false,
       "labels": { "kind": "project" },
       "allowed_models": ["qwen3-32b", "gpt-4.1-mini", "bge-m3", "qwen3-reranker-8b"],
       "limits": [{ "type": "tokens_per_minute", "value": 200000 }]
     },
     "search-rag-prod": {
       "parent": "search-rag",
+      "capture": false,
       "labels": { "kind": "env", "env": "prod" },
       "limits": [{ "type": "requests_per_minute", "value": 300 }]
     },
     "rag-service": {
       "parent": "search-rag-prod",
+      "capture": false,
       "labels": { "kind": "workload" }
     },
     "search-rag-dev": {
       "parent": "search-rag",
+      "capture": true,
       "labels": { "kind": "env", "env": "dev" },
       "allowed_models": ["qwen3-32b", "bge-m3", "qwen3-reranker-8b"],
       "limits": [
@@ -195,23 +200,28 @@
     },
     "rag-service-dev": {
       "parent": "search-rag-dev",
+      "capture": true,
       "labels": { "kind": "workload" }
     },
     "research": {
+      "capture": false,
       "labels": { "kind": "team", "cost_center": "CC-3105" },
       "limits": [{ "type": "tokens_per_minute", "value": 400000 }]
     },
     "research-eval": {
       "parent": "research",
+      "capture": true,
       "labels": { "kind": "project" },
       "limits": [{ "type": "usd_per_month", "value": 300 }]
     },
     "eval-batch": {
       "parent": "research-eval",
+      "capture": true,
       "labels": { "kind": "workload" },
       "limits": [{ "type": "requests_per_minute", "value": 120 }]
     },
     "users": {
+      "capture": false,
       "labels": { "kind": "people" },
       "child_defaults": {
         "allowed_models": [
@@ -236,10 +246,11 @@
     },
     "alice": {
       "parent": "users",
+      "capture": false,
       "allowed_models": ["*"],
       "limits": [{ "type": "usd_per_month", "value": 100 }]
     },
-    "bob": { "parent": "users" }
+    "bob": { "parent": "users", "capture": false }
   },
   "keys": {
     "k-rag-service": {

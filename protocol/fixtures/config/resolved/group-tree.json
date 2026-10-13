@@ -1,7 +1,7 @@
 {
   "reason": "a four-level tree (team, project, env, workload) with labels, a key on a group that has children and a leaf's child_defaults that reach no one",
   "config": {
-    "protocol_version": 7,
+    "protocol_version": 8,
     "global": {
       "limits": [
         { "type": "requests_per_minute", "value": 3000 },
@@ -74,6 +74,7 @@
     },
     "groups": {
       "research": {
+        "capture": false,
         "labels": { "kind": "team", "cost_center": "R&D 4711" },
         "allowed_models": ["qwen3-32b", "gpt-4.1-mini", "bge-m3"],
         "limits": [{ "type": "usd_per_month", "value": 1500 }],
@@ -81,6 +82,7 @@
       },
       "rag": {
         "parent": "research",
+        "capture": true,
         "labels": { "kind": "project" },
         "limits": [{ "type": "usd_per_month", "value": 800 }],
         "child_defaults": {
@@ -90,6 +92,7 @@
       },
       "rag-prod": {
         "parent": "rag",
+        "capture": false,
         "labels": { "kind": "env", "env": "prod" },
         "allowed_models": ["*"],
         "limits": [{ "type": "requests_per_minute", "value": 600 }],
@@ -97,19 +100,21 @@
       },
       "rag-prod-indexer": {
         "parent": "rag-prod",
+        "capture": true,
         "labels": { "kind": "workload" },
         "allowed_models": ["bge-m3"],
         "limits": [{ "type": "requests_per_minute", "value": 120 }]
       },
-      "rag-prod-chat": { "parent": "rag-prod", "labels": { "kind": "workload" } },
-      "rag-dev": { "parent": "rag", "labels": { "kind": "env", "env": "dev" } },
+      "rag-prod-chat": { "parent": "rag-prod", "capture": false, "labels": { "kind": "workload" } },
+      "rag-dev": { "parent": "rag", "capture": true, "labels": { "kind": "env", "env": "dev" } },
       "rag-dev-sandbox": {
         "parent": "rag-dev",
+        "capture": false,
         "labels": { "kind": "workload" },
         "limits": [{ "type": "usd_per_month", "value": 10 }],
         "child_defaults": { "limits": [{ "type": "requests_per_minute", "value": 1 }] }
       },
-      "playground": {}
+      "playground": { "capture": true }
     },
     "keys": {
       "k-rag-indexer": {
@@ -138,11 +143,13 @@
     "groups": {
       "research": {
         "path": ["research"],
+        "capture": false,
         "allowed_models": ["bge-m3", "gpt-4.1-mini", "qwen3-32b"],
         "limits": [{ "type": "usd_per_month", "value": 1500 }]
       },
       "rag": {
         "path": ["research", "rag"],
+        "capture": true,
         "allowed_models": ["bge-m3", "gpt-4.1-mini", "qwen3-32b"],
         "limits": [
           { "type": "tokens_per_hour", "value": 5000000 },
@@ -151,11 +158,13 @@
       },
       "rag-prod": {
         "path": ["research", "rag", "rag-prod"],
+        "capture": false,
         "allowed_models": ["bge-m3", "gpt-4.1-mini", "qwen3-32b"],
         "limits": [{ "type": "requests_per_minute", "value": 600 }]
       },
       "rag-prod-indexer": {
         "path": ["research", "rag", "rag-prod", "rag-prod-indexer"],
+        "capture": true,
         "allowed_models": ["bge-m3"],
         "limits": [
           { "type": "tokens_per_minute", "value": 100000 },
@@ -164,20 +173,23 @@
       },
       "rag-prod-chat": {
         "path": ["research", "rag", "rag-prod", "rag-prod-chat"],
+        "capture": false,
         "allowed_models": ["bge-m3", "gpt-4.1-mini", "qwen3-32b"],
         "limits": [{ "type": "tokens_per_minute", "value": 100000 }]
       },
       "rag-dev": {
         "path": ["research", "rag", "rag-dev"],
+        "capture": true,
         "allowed_models": ["bge-m3", "qwen3-32b"],
         "limits": [{ "type": "requests_per_minute", "value": 300 }]
       },
       "rag-dev-sandbox": {
         "path": ["research", "rag", "rag-dev", "rag-dev-sandbox"],
+        "capture": false,
         "allowed_models": ["bge-m3", "qwen3-32b"],
         "limits": [{ "type": "usd_per_month", "value": 10 }]
       },
-      "playground": { "path": ["playground"], "allowed_models": "all", "limits": [] }
+      "playground": { "path": ["playground"], "capture": true, "allowed_models": "all", "limits": [] }
     }
   }
 }

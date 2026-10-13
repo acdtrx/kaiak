@@ -272,8 +272,8 @@ Replace this section with a compatibility policy when the project graduates.
 
 - **One pipeline, no side doors.** Every client request passes the full request
   pipeline (auth → limits → routing → provider → accounting). No endpoint or fast path
-  skips a stage; new cross-cutting behavior (caching, guardrails, prompt logging) is a
-  new stage, never a special case inside a provider.
+  skips a stage; new cross-cutting behavior (caching, guardrails, request capture) is
+  a new stage, never a special case inside a provider.
 - **Only named code talks to backends.** In the gateway, only provider packages open
   a connection to a model server or cloud API. In `control/`, only `kaiak-control`'s
   `backend-verify` does, and only when the app calls it (`docs/specs/BACKEND-VERIFY.md`).
@@ -285,6 +285,9 @@ Replace this section with a compatibility policy when the project graduates.
 - **No blocking control-plane I/O on the request path.** Usage and status reports are
   queued and sent in the background.
 - **Nothing sensitive in logs, metrics or usage records**: no client keys (key IDs
-  only), no provider secrets, no prompt or response content.
+  only), no provider secrets, no prompt or response content. Content leaves the
+  gateway only as a request capture — for the groups whose `capture` is on, to the
+  trace destination the operator switched on (`docs/specs/GATEWAY.md`, Request
+  capture; settled 2026-10-13).
 - **Protocol changes land on both sides at once**: `docs/specs/CONTROL-PROTOCOL.md`,
   `protocol/` schemas and fixtures, the gateway and `kaiak-control` — one change.

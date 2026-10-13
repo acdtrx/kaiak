@@ -1,7 +1,7 @@
 {
   "config_hash": "ACA6F7ECFC05AB5A41524C797E9880427FC68B67F7ECF5A4BBB27E96F555EBF3",
   "config": {
-    "protocol_version": 7,
+    "protocol_version": 8,
     "global": {},
     "backends": {
       "local": {
@@ -32,7 +32,7 @@
       }
     },
     "groups": {
-      "me": {}
+      "me": { "capture": false }
     },
     "keys": {
       "k-me": {

@@ -28,6 +28,16 @@ the config captures but this gateway exports no traces.
   and traces are off, a warning naming how many (decision 26).
 - Tests: `cmd/kaiak/traceexport_test.go` (as `logexport_test.go`), the warning, the
   setting.
+- `docs/specs/GATEWAY.md`, Observability → Metric list: the two rows below, after
+  `otel.sdk.exporter.metric_data_point.exported` — they land with the families that
+  answer them (`TestFullScrapeIsTheSpecsMetricList` reads the table). Step 1 wrote
+  them and moved them here; the rest of the counts' contract (Exporters' own counts,
+  Naming → named deviations, Series at 0, Request capture) is in the spec already:
+
+  ```
+  | `otel.sdk.processor.span.processed` | counter, read at collect | `{span}` | `otel.component.type`, `otel.component.name`, `error.type` | `otel_sdk_processor_span_processed_total` | With OTLP trace export on: request captures the capture stage and the export's queue are done with — handed to the exporter (no `error.type`), or dropped: `memory` (the capture budget could not hold it), `too_large` (its span exceeds the export limit), `shutdown` (still queued when the final flush ended) (Request capture; Exporters' own counts) | — (added 2026-10-13) |
+  | `otel.sdk.exporter.span.exported` | counter, read at collect | `{span}` | `otel.component.type`, `otel.component.name`, `error.type` | `otel_sdk_exporter_span_exported_total` | With OTLP trace export on: spans the exporter sent — accepted by the collector (no `error.type`), or failed, by how (Exporters' own counts) | — (added 2026-10-13) |
+  ```
 
 ## Decisions made during planning
 

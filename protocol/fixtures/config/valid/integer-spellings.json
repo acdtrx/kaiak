@@ -1,5 +1,5 @@
 {
-  "protocol_version": 7,
+  "protocol_version": 8,
   "global": { "max_request_body_bytes": 1e6, "queue": { "size": 1E2, "timeout_ms": 30000.0 } },
   "backends": { "local": { "type": "openai-compatible", "base_url": "http://localhost:8080/v1" } },
   "models": {
@@ -14,8 +14,8 @@
     }
   },
   "groups": {
-    "users": { "child_defaults": { "limits": [{ "type": "tokens_per_minute", "value": 1e3 }] } },
-    "me": { "parent": "users" }
+    "users": { "capture": false, "child_defaults": { "limits": [{ "type": "tokens_per_minute", "value": 1e3 }] } },
+    "me": { "parent": "users", "capture": true }
   },
   "keys": {
     "k-me": {

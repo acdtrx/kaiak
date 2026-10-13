@@ -1,7 +1,7 @@
 {
   "reason": "child_defaults limits merge under each direct child's own: a child's limit replaces the default of the same type in place, the rest are appended; grandchildren get nothing from it",
   "config": {
-    "protocol_version": 7,
+    "protocol_version": 8,
     "global": {},
     "backends": { "local": { "type": "openai-compatible", "base_url": "http://localhost:8000/v1" } },
     "models": {
@@ -32,6 +32,7 @@
     },
     "groups": {
       "parent": {
+        "capture": true,
         "limits": [{ "type": "usd_per_month", "value": 100 }],
         "child_defaults": {
           "limits": [
@@ -40,9 +41,10 @@
           ]
         }
       },
-      "defaults-only": { "parent": "parent" },
+      "defaults-only": { "parent": "parent", "capture": false },
       "override-reordered": {
         "parent": "parent",
+        "capture": true,
         "limits": [
           { "type": "tokens_per_hour", "value": 2000 },
           { "type": "requests_per_minute", "value": 7 }
@@ -50,12 +52,13 @@
       },
       "override-and-add": {
         "parent": "parent",
+        "capture": false,
         "limits": [
           { "type": "tokens_per_minute", "value": 500 },
           { "type": "requests_per_minute", "value": 20 }
         ]
       },
-      "grandchild": { "parent": "defaults-only" }
+      "grandchild": { "parent": "defaults-only", "capture": true }
     },
     "keys": {}
   },
@@ -63,11 +66,13 @@
     "groups": {
       "parent": {
         "path": ["parent"],
+        "capture": true,
         "allowed_models": "all",
         "limits": [{ "type": "usd_per_month", "value": 100 }]
       },
       "defaults-only": {
         "path": ["parent", "defaults-only"],
+        "capture": false,
         "allowed_models": "all",
         "limits": [
           { "type": "requests_per_minute", "value": 10 },
@@ -76,6 +81,7 @@
       },
       "override-reordered": {
         "path": ["parent", "override-reordered"],
+        "capture": true,
         "allowed_models": "all",
         "limits": [
           { "type": "requests_per_minute", "value": 7 },
@@ -84,6 +90,7 @@
       },
       "override-and-add": {
         "path": ["parent", "override-and-add"],
+        "capture": false,
         "allowed_models": "all",
         "limits": [
           { "type": "requests_per_minute", "value": 20 },
@@ -93,6 +100,7 @@
       },
       "grandchild": {
         "path": ["parent", "defaults-only", "grandchild"],
+        "capture": true,
         "allowed_models": "all",
         "limits": []
       }

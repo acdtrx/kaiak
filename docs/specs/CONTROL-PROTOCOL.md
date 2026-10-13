@@ -32,9 +32,9 @@
   whatever its port or scheme — and logs the 3xx as an error;
   `KAIAK_CONTROL_URL` must be the address that answers.
 - **Protocol version** travels as a `Kaiak-Protocol` header on every request and
-  response (the SSE stream's response included); the current version is `7`
-  (settled 2026-10-11, with the user: mandatory `endpoints` and one backend type per
-  model, Config).
+  response (the SSE stream's response included); the current version is `8`
+  (settled 2026-10-13, with the user: a required `capture` on every group, Config →
+  The group tree).
 - **One version** (settled 2026-10-11, with the user): the protocol version covers
   the whole contract — the config document, the usage record, the messages and the
   endpoints. The config states it too, in `protocol_version` (Config → Top-level
@@ -43,7 +43,7 @@
     unreadable or invalid: a new usage unit (every record carries every unit, so an
     older control plane would refuse the records — the batch dropped, billing data
     lost), a new totals window type (an older gateway cannot read it), a field made
-    required (a model's `endpoints`).
+    required (a model's `endpoints`, a group's `capture`).
   - **An addition bumps nothing**: an optional field (`global.max_rerank_documents`,
     `global.max_upload_bytes`), a backend type, an endpoint name. Every existing
     document stays valid, and a half that does not know the addition refuses a
@@ -80,11 +80,11 @@ the `{ error, detail }` body, `error` being the stable code:
 | Check | Code | Status |
 | --- | --- | --- |
 | `Authorization: Bearer <token>` carries the token (missing, not a bearer token, or wrong) | `unauthorized` | 401 |
-| `Kaiak-Protocol` is the current version, `7` (other or missing) | `protocol-version-mismatch` | 400 |
+| `Kaiak-Protocol` is the current version, `8` (other or missing) | `protocol-version-mismatch` | 400 |
 | `Kaiak-Instance` is an instance ID (Messages; missing or malformed) | `instance-invalid` | 400 |
 
 - **Repeated headers** (settled 2026-09-25): Node's HTTP layer joins a repeated
-  `Kaiak-Protocol` or `Kaiak-Instance` into one value (`7, 7`), which fails its check
+  `Kaiak-Protocol` or `Kaiak-Instance` into one value (`8, 8`), which fails its check
   as any other wrong value does, and keeps only the first of repeated `Authorization`
   headers — so the checks see one value per header and have no "repeated" case of
   their own.
@@ -456,8 +456,9 @@ the `{ error, detail }` body, `error` being the stable code:
 - One JSON document: backends (with an optional concurrency cap), models
   (deployments, the endpoints they serve, metadata, output-limit default and
   ceiling, prices, queue and retry overrides — no request defaults: `GATEWAY.md`,
-  Model metadata → No model defaults, settled 2026-10-06), the group tree (groups with their allowed models, limits, defaults for
-  their children and labels), keys (hashes, each in one group), global settings
+  Model metadata → No model defaults, settled 2026-10-06), the group tree (groups
+  with whether their requests are captured, their allowed models, limits, defaults
+  for their children and labels), keys (hashes, each in one group), global settings
   (global limits; the caps on JSON bodies, on uploads — `max_upload_bytes`, settled
   2026-10-11: `GATEWAY.md`, Request pipeline → Uploads — and on batches; and the
   queue, retry and circuit-breaker settings — their defaults and bounds:
@@ -468,7 +469,7 @@ the `{ error, detail }` body, `error` being the stable code:
   fixtures).
 - **Top-level shape**: `protocol_version`, `global`, `backends`, `models`, `keys`
   (required), `groups` (optional, omitted = none). **`protocol_version`** (settled
-  2026-10-11, with the user) is the integer `7`, the protocol version this document
+  2026-10-11, with the user) is the integer `8`, the protocol version this document
   is written for — the `Kaiak-Protocol` value, which it must equal (Shape → One
   version): a document of another version, or with none, is refused as invalid, never
   migrated. A config file and a seed config have no connection to carry the header,
@@ -547,15 +548,27 @@ the `{ error, detail }` body, `error` being the stable code:
   reads. Rejected: a list of the secret-bearing names.
 - **The group tree** (settled 2026-09-27). Who may use which models and under which
   limits is one generic tree of groups:
-  - **Shape**: `groups` maps group ID → `{ parent?, labels?, allowed_models?, limits?,
-    child_defaults?: { allowed_models?, limits? } }`. A group without `parent` is
-    top-level; `global` is the implicit root above every top-level group (its limits
-    are `global.limits`). A plain single-parent tree, **at most 8 levels** (a
-    top-level group is level 1). The order of levels is free per branch — team →
-    project → env → workload in one, team → env → project → workload in another —
-    and neither half gives levels any meaning. For example, a team and its workloads
-    are a two-level branch; people with personal keys are the children of a `users`
-    group whose `child_defaults` give each of them the same models and limits.
+  - **Shape**: `groups` maps group ID → `{ parent?, capture, labels?, allowed_models?,
+    limits?, child_defaults?: { allowed_models?, limits? } }`. A group without
+    `parent` is top-level; `global` is the implicit root above every top-level group
+    (its limits are `global.limits`). A plain single-parent tree, **at most 8 levels**
+    (a top-level group is level 1). The order of levels is free per branch — team →
+    project → env → workload in one, team → env → project → workload in another — and
+    neither half gives levels any meaning. For example, a team and its workloads are a
+    two-level branch; people with personal keys are the children of a `users` group
+    whose `child_defaults` give each of them the same models and limits.
+  - **Capture** (settled 2026-10-13, with the user): `capture`, a boolean required on
+    every group — whether the gateway captures the content of the chat requests made
+    with keys naming the group, and the answers they get, exported as OpenTelemetry
+    spans to the trace destination its operator configured (`GATEWAY.md`, Request
+    capture). **Each group states its own**: the flag is not inherited and has no
+    place in `child_defaults`, and only the group a key names counts — its
+    ancestors' flags are never read, so a parent's value reaches no child, either
+    way. Why required: it is a privacy choice, which the app states for every group;
+    any rule for passing it down the tree ("a team off means its sub-groups off")
+    is the app's to apply when it writes each group, and neither half holds a
+    default. Consent, and who may see which captures in the trace tool, are the
+    app's too.
   - **Keys**: a key names one `group` — any group, leaf or not — and carries no
     limits or allowed models of its own. Its **path** is its group and every
     ancestor, top-level first.
@@ -626,17 +639,21 @@ the `{ error, detail }` body, `error` being the stable code:
     256 characters (Unicode code points) with no control characters (U+0000–U+001F,
     U+007F–U+009F); at most 16 per group. They are for the control plane (a UI, reports:
     what kind of node a group is, its cost center); the gateway checks their shape
-    and otherwise ignores them — no label reaches a refusal, a log line or a metric.
+    and otherwise ignores them — no label reaches a refusal, a log line, a metric or
+    a request capture.
     A group has no `kind` field: a label says what kind of node it is, since levels
     mean nothing to either half.
   - **Resolution fixtures**: `protocol/fixtures/config/resolved/` pins what both
     halves derive from a valid config. Each file is `{ reason, config, expected:
-    { groups: { <group ID>: { path, allowed_models, limits } } } }`, listing every
-    group of `config`: `path` top-level first; `allowed_models` the models the
-    group's keys may use across the whole path, sorted by code point, or `"all"`
-    when no level on the path restricts; `limits` the group's effective limits
-    (merge order above, each limit as written in config). Both halves check that
-    their resolution produces exactly this.
+    { groups: { <group ID>: { path, capture, allowed_models, limits } } } }`,
+    listing every group of `config`: `path` top-level first; `capture` the group's
+    own flag, as written in config — never a parent's (settled 2026-10-13; the
+    group-tree fixture has a capturing parent above a child that does not capture,
+    and the reverse); `allowed_models` the models the group's keys may use across
+    the whole path, sorted by code point, or `"all"` when no level on the path
+    restricts; `limits` the group's effective limits (merge order above, each limit
+    as written in config). Both halves check that their resolution produces exactly
+    this.
 - **Prices**: `prices` lists `{ effective_from, tiers }` entries in strictly
   increasing date order; the entry in force is the latest one effective on or before
   the request's UTC date. No prices = unpriced, cost 0.

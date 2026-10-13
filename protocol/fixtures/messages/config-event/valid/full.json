@@ -1,7 +1,7 @@
 {
-  "config_hash": "0224353673f59520ba3ca0161511e9dfb1fa6a0f7e5814cd2e72bcc94229413d",
+  "config_hash": "a0a57556b184e7982eb1980e2e4bfd7fafeccb80b91f5a2f4656dad95f084c65",
   "config": {
-    "protocol_version": 7,
+    "protocol_version": 8,
     "global": {
       "limits": [
         {
@@ -197,6 +197,7 @@
     },
     "groups": {
       "research": {
+        "capture": false,
         "limits": [
           {
             "type": "tokens_per_minute",
@@ -208,9 +209,10 @@
           }
         ]
       },
-      "support": {},
+      "support": { "capture": true },
       "eval-pipeline": {
         "parent": "research",
+        "capture": false,
         "allowed_models": [
           "*"
         ],
@@ -231,6 +233,7 @@
       },
       "support-bot": {
         "parent": "support",
+        "capture": true,
         "allowed_models": [
           "gpt-4.1-mini",
           "bge-m3"
@@ -251,6 +254,7 @@
         ]
       },
       "users": {
+        "capture": false,
         "child_defaults": {
           "allowed_models": [
             "qwen3-32b",
@@ -275,6 +279,7 @@
       },
       "alice": {
         "parent": "users",
+        "capture": true,
         "allowed_models": [
           "*"
         ],
@@ -287,6 +292,7 @@
       },
       "bob": {
         "parent": "users",
+        "capture": false,
         "limits": [
           {
             "type": "tokens_per_hour",
@@ -295,7 +301,8 @@
         ]
       },
       "carol": {
-        "parent": "users"
+        "parent": "users",
+        "capture": true
       }
     },
     "keys": {

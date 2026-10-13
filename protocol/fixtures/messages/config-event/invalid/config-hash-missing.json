@@ -1,6 +1,6 @@
 {
   "config": {
-    "protocol_version": 7,
+    "protocol_version": 8,
     "global": {},
     "backends": {
       "local": {
@@ -31,7 +31,7 @@
       }
     },
     "groups": {
-      "me": {}
+      "me": { "capture": true }
     },
     "keys": {
       "k-me": {
