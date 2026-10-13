@@ -1,11 +1,13 @@
 // Package otlp is the OTLP/HTTP connection every signal's exporter shares
 // (docs/specs/GATEWAY.md, Configuration sources: OTLP export; Observability → OTLP
-// log export and OTLP metric export): the OTEL_* settings per signal, the resource,
-// the JSON encoding's common messages, and one export — a body posted to the
-// collector with the delivery rules (no redirects, what counts as delivered,
-// retries with backoff and Retry-After within the timeout) and its outcome in the
-// gateway's own words. It knows nothing of batching: each signal's exporter builds
-// its bodies its own way and hands them over one at a time.
+// log export, OTLP metric export and OTLP trace export): the OTEL_* settings per
+// signal, the resource, the JSON encoding's common messages, and one export — a
+// body posted to the collector with the delivery rules (no redirects, what counts
+// as delivered, retries with backoff and Retry-After within the timeout) and its
+// outcome in the gateway's own words. It holds no queue: each signal's exporter
+// keeps its own and builds its bodies its own way, handing them over one at a time.
+// The exporters that queue (logs, traces) share its background sender (Sender) and
+// its export problems' tally and report (Problems).
 package otlp
 
 import (
@@ -91,7 +93,8 @@ type Outcome struct {
 	ErrorType string
 	// Rejected and RejectErr are a delivered body's partial success: the items the
 	// collector refused, as the signal's response counts them (rejectedLogRecords,
-	// rejectedDataPoints), and their description; 0 and nil when it refused none.
+	// rejectedDataPoints, rejectedSpans), and their description; 0 and nil when it
+	// refused none.
 	Rejected  uint64
 	RejectErr error
 
@@ -202,10 +205,10 @@ func (c *Client) post(ctx context.Context, body []byte) Outcome {
 
 // readExportResponse reads a 2xx body as the signal's export response: empty, or a
 // JSON object whose partialSuccess, when present, is an object with the signal's
-// rejected member (rejectedLogRecords, rejectedDataPoints) an integer (or its
-// decimal string) and errorMessage a string; members OTLP does not define, the
-// other signals' rejected members among them, are ignored. It returns the items
-// rejected, and false for a body that is not one.
+// rejected member (rejectedLogRecords, rejectedDataPoints, rejectedSpans) an
+// integer (or its decimal string) and errorMessage a string; members OTLP does not
+// define, the other signals' rejected members among them, are ignored. It returns
+// the items rejected, and false for a body that is not one.
 func readExportResponse(sig signalInfo, data []byte) (uint64, bool) {
 	data = bytes.TrimSpace(data)
 	if len(data) == 0 {
@@ -219,6 +222,7 @@ func readExportResponse(sig signalInfo, data []byte) (uint64, bool) {
 			// Every signal's member is decoded raw; only sig's is then read.
 			RejectedLogRecords json.RawMessage `json:"rejectedLogRecords"`
 			RejectedDataPoints json.RawMessage `json:"rejectedDataPoints"`
+			RejectedSpans      json.RawMessage `json:"rejectedSpans"`
 			// ErrorMessage is decoded only to check its type: the collector's text
 			// is never logged.
 			ErrorMessage *string `json:"errorMessage"`
@@ -236,6 +240,8 @@ func readExportResponse(sig signalInfo, data []byte) (uint64, bool) {
 		raw = resp.PartialSuccess.RejectedLogRecords
 	case "rejectedDataPoints":
 		raw = resp.PartialSuccess.RejectedDataPoints
+	case "rejectedSpans":
+		raw = resp.PartialSuccess.RejectedSpans
 	}
 	if raw == nil || string(raw) == "null" {
 		return 0, true

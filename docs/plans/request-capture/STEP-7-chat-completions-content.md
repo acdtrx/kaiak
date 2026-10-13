@@ -38,6 +38,10 @@ conventions' message format (OVERVIEW decisions 14, 15, 19, 20).
 
 - **Tool-call arguments** are parsed when they are valid JSON, else kept as the string
   — a cut stream's half-written arguments stay a string.
+- **The content attributes' JSON strings are built without HTML escaping**
+  (`json.Encoder` with `SetEscapeHTML(false)`, as `otlptrace.Encode` does): with
+  `json.Marshal` every `<`, `>` and `&` in a prompt becomes `\u003c`, escaped again
+  inside the span — larger, and not what the client sent (found in step 4).
 - **`refusal`** is model text: a `text` part.
 - **Unknown members of a message** (beyond role, content, name, tool calls, tool call
   ID) are not carried: the conventions' message has no place for them. Unknown

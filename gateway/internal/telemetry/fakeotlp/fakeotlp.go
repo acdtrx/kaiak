@@ -1,8 +1,9 @@
 // Package fakeotlp is an OpenTelemetry collector for tests: it takes OTLP/HTTP JSON
-// log and metric exports, answers each as the test scripts, and keeps every export
-// it received, decoded. It decodes with its own types, not the gateway's encoder
-// types, and refuses a member it does not know, so a test reading what it received
-// checks the encoder. Test tooling only: nothing in the gateway binary imports it.
+// log, metric and trace exports, answers each as the test scripts, and keeps every
+// export it received, decoded. It decodes with its own types, not the gateway's
+// encoder types, and refuses a member it does not know, so a test reading what it
+// received checks the encoder. Test tooling only: nothing in the gateway binary
+// imports it.
 package fakeotlp
 
 import (
@@ -13,19 +14,21 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
 )
 
-// Export is an ExportLogsServiceRequest or an ExportMetricsServiceRequest as
-// OTLP/HTTP JSON writes it: one of its members is set.
+// Export is an ExportLogsServiceRequest, an ExportMetricsServiceRequest or an
+// ExportTraceServiceRequest as OTLP/HTTP JSON writes it: one of its members is set.
 type Export struct {
 	ResourceLogs    []ResourceLogs    `json:"resourceLogs"`
 	ResourceMetrics []ResourceMetrics `json:"resourceMetrics"`
+	ResourceSpans   []ResourceSpans   `json:"resourceSpans"`
 }
 
-// Resource is the resource an export's logs or metrics come from.
+// Resource is the resource an export's logs, metrics or spans come from.
 type Resource struct {
 	Attributes []KeyValue `json:"attributes"`
 }
@@ -118,6 +121,88 @@ type HistogramDataPoint struct {
 	ExplicitBounds    []float64  `json:"explicitBounds"`
 }
 
+// ResourceSpans is one resource's spans, by instrumentation scope.
+type ResourceSpans struct {
+	Resource   Resource     `json:"resource"`
+	ScopeSpans []ScopeSpans `json:"scopeSpans"`
+}
+
+// ScopeSpans is one instrumentation scope's spans.
+type ScopeSpans struct {
+	Scope Scope  `json:"scope"`
+	Spans []Span `json:"spans"`
+}
+
+// Span is one span as the gateway writes it: a root span — no parentSpanId, events
+// or links, which the collector refuses as members it does not know. Kind and the
+// status code are OTLP's integers; the times are decimal strings of nanoseconds.
+type Span struct {
+	TraceID           string     `json:"traceId"`
+	SpanID            string     `json:"spanId"`
+	Name              string     `json:"name"`
+	Kind              int        `json:"kind"`
+	StartTimeUnixNano string     `json:"startTimeUnixNano"`
+	EndTimeUnixNano   string     `json:"endTimeUnixNano"`
+	Attributes        []KeyValue `json:"attributes"`
+	Status            *Status    `json:"status"`
+}
+
+// Status is a span's status.
+type Status struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+// Attrs are the span's attributes by key, each as a plain value: a string, an
+// int64 (an intValue's decimal string, read), a float64, a bool, or a []any of
+// these. A key twice, a value with no kind or more than one, or an intValue that is
+// not a decimal integer fails the test.
+func (s Span) Attrs(t *testing.T) map[string]any {
+	t.Helper()
+	out := make(map[string]any, len(s.Attributes))
+	for _, kv := range s.Attributes {
+		if _, dup := out[kv.Key]; dup {
+			t.Errorf("span %q: attribute %s twice", s.Name, kv.Key)
+		}
+		out[kv.Key] = kv.Value.plain(t)
+	}
+	return out
+}
+
+// plain is v as a plain value (Span.Attrs).
+func (v Value) plain(t *testing.T) any {
+	t.Helper()
+	var out []any
+	if v.StringValue != nil {
+		out = append(out, *v.StringValue)
+	}
+	if v.IntValue != nil {
+		n, err := strconv.ParseInt(*v.IntValue, 10, 64)
+		if err != nil {
+			t.Errorf("intValue %q: not a decimal integer", *v.IntValue)
+		}
+		out = append(out, n)
+	}
+	if v.DoubleValue != nil {
+		out = append(out, *v.DoubleValue)
+	}
+	if v.BoolValue != nil {
+		out = append(out, *v.BoolValue)
+	}
+	if v.ArrayValue != nil {
+		values := []any{}
+		for _, e := range v.ArrayValue.Values {
+			values = append(values, e.plain(t))
+		}
+		out = append(out, values)
+	}
+	if len(out) != 1 {
+		t.Errorf("a value with %d kinds set, want exactly one", len(out))
+		return nil
+	}
+	return out[0]
+}
+
 // KeyValue is one attribute.
 type KeyValue struct {
 	Key   string `json:"key"`
@@ -137,6 +222,8 @@ type Value struct {
 
 // Received is one export as the collector received it.
 type Received struct {
+	// Path is the request's path, such as /v1/traces.
+	Path   string
 	Header http.Header
 	Export Export
 	// Status is the status the collector answered: 0 while the answer is pending, or
@@ -161,6 +248,17 @@ func (r Received) Metrics() []Metric {
 	for _, rm := range r.Export.ResourceMetrics {
 		for _, sm := range rm.ScopeMetrics {
 			out = append(out, sm.Metrics...)
+		}
+	}
+	return out
+}
+
+// Spans are the export's spans, in order, across its resources and scopes.
+func (r Received) Spans() []Span {
+	var out []Span
+	for _, rs := range r.Export.ResourceSpans {
+		for _, ss := range rs.ScopeSpans {
+			out = append(out, ss.Spans...)
 		}
 	}
 	return out
@@ -235,7 +333,7 @@ func New(t *testing.T, respond Respond) *Collector {
 		}
 		c.mu.Lock()
 		n := len(c.received)
-		c.received = append(c.received, Received{Header: r.Header.Clone(), Export: export})
+		c.received = append(c.received, Received{Path: r.URL.Path, Header: r.Header.Clone(), Export: export})
 		c.mu.Unlock()
 		select {
 		case c.arrived <- struct{}{}:
@@ -284,11 +382,14 @@ func (c *Collector) None(t *testing.T) {
 	defer c.mu.Unlock()
 	if c.read < len(c.received) {
 		r := c.received[c.read]
-		var names []string
+		var metrics, spans []string
 		for _, m := range r.Metrics() {
-			names = append(names, m.Name)
+			metrics = append(metrics, m.Name)
 		}
-		t.Fatalf("unexpected export with records %q, metrics %q", r.Messages(), names)
+		for _, s := range r.Spans() {
+			spans = append(spans, s.Name)
+		}
+		t.Fatalf("unexpected export to %s with records %q, metrics %q, spans %q", r.Path, r.Messages(), metrics, spans)
 	}
 }
 
@@ -311,6 +412,15 @@ func (c *Collector) Bodies() []string {
 	var out []string
 	for _, r := range c.Received() {
 		out = append(out, r.Messages()...)
+	}
+	return out
+}
+
+// Spans are every span received so far, in arrival order.
+func (c *Collector) Spans() []Span {
+	var out []Span
+	for _, r := range c.Received() {
+		out = append(out, r.Spans()...)
 	}
 	return out
 }

@@ -402,8 +402,8 @@ func TestAfterShutdown(t *testing.T) {
 		t.Fatal("the next handler missed a record logged after Shutdown")
 	}
 	wantCounts(t, h.e, Counts{Shutdown: 1})
-	if err := h.e.ForceFlush(context.Background()); !errors.Is(err, errShutdown) {
-		t.Fatalf("ForceFlush after Shutdown = %v, want errShutdown", err)
+	if err := h.e.ForceFlush(context.Background()); !errors.Is(err, otlp.ErrShutdown) {
+		t.Fatalf("ForceFlush after Shutdown = %v, want otlp.ErrShutdown", err)
 	}
 	col.None(t)
 }

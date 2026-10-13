@@ -389,5 +389,123 @@ func TestUnknownSignalPanics(t *testing.T) {
 			t.Fatal("ReadSettings with an unknown signal did not panic")
 		}
 	}()
-	_, _ = ReadSettings(Signal("traces"), envOf(nil))
+	_, _ = ReadSettings(Signal("profiles"), envOf(nil))
+}
+
+// Trace export needs an explicit switch: its own endpoint, or
+// OTEL_TRACES_EXPORTER=otlp. The general endpoint alone, which turns logs and
+// metrics on, leaves traces off — and is not read for them.
+func TestTraceExportNeedsAnExplicitSwitch(t *testing.T) {
+	const general = "OTEL_EXPORTER_OTLP_ENDPOINT"
+	const traces = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
+	for _, tc := range []struct {
+		name string
+		vars map[string]string
+		// endpoint is the URL posted to; "" means trace export is off.
+		endpoint string
+	}{
+		{"nothing set", nil, ""},
+		{"general endpoint alone: off", map[string]string{general: "http://c:4318"}, ""},
+		{"general endpoint, empty exporter and traces endpoint: off", map[string]string{general: "http://c:4318", "OTEL_TRACES_EXPORTER": "", traces: ""}, ""},
+		{"general endpoint malformed, no switch: off, not read", map[string]string{general: "collector:4318"}, ""},
+		{"traces endpoint, as is", map[string]string{traces: "http://t:4318/custom"}, "http://t:4318/custom"},
+		{"traces endpoint wins over general", map[string]string{general: "http://c:4318", traces: "https://t.example.com/v1/traces"}, "https://t.example.com/v1/traces"},
+		{"otlp exporter: the general endpoint with v1/traces", map[string]string{"OTEL_TRACES_EXPORTER": "otlp", general: "http://c:4318"}, "http://c:4318/v1/traces"},
+		{"otlp exporter: a general endpoint's base path kept", map[string]string{"OTEL_TRACES_EXPORTER": "otlp", general: "http://c:4318/mycollector/"}, "http://c:4318/mycollector/v1/traces"},
+		{"otlp exporter alone: the default", map[string]string{"OTEL_TRACES_EXPORTER": "otlp"}, "http://localhost:4318/v1/traces"},
+		{"otlp exporter in any case", map[string]string{"OTEL_TRACES_EXPORTER": "OTLP"}, "http://localhost:4318/v1/traces"},
+		{"otlp exporter with the traces endpoint", map[string]string{"OTEL_TRACES_EXPORTER": "otlp", general: "http://c:4318", traces: "http://t:4318/x"}, "http://t:4318/x"},
+		{"none turns it off", map[string]string{"OTEL_TRACES_EXPORTER": "none", general: "http://c:4318", traces: "http://t:4318/v1/traces"}, ""},
+		{"SDK disabled turns it off", map[string]string{"OTEL_SDK_DISABLED": "true", traces: "http://t:4318/v1/traces"}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, err := ReadSettings(Traces, envOf(tc.vars))
+			if err != nil {
+				t.Fatalf("ReadSettings: %v", err)
+			}
+			switch {
+			case tc.endpoint == "" && s != nil:
+				t.Fatalf("trace export on to %s, want off", s.endpoint)
+			case tc.endpoint != "" && s == nil:
+				t.Fatalf("trace export off, want on to %s", tc.endpoint)
+			case s != nil && s.endpoint.String() != tc.endpoint:
+				t.Fatalf("endpoint %s, want %s", s.endpoint, tc.endpoint)
+			}
+		})
+	}
+
+	t.Run("the general endpoint turns logs and metrics on all the same", func(t *testing.T) {
+		vars := map[string]string{general: "http://c:4318"}
+		for _, sig := range []Signal{Logs, Metrics} {
+			if s, err := ReadSettings(sig, envOf(vars)); err != nil || s == nil {
+				t.Fatalf("%s: ReadSettings = %v, %v; want on", sig, s, err)
+			}
+		}
+	})
+}
+
+// The traces signal reads its own variables, the general ones shared; it is not
+// exported on an interval.
+func TestTraceSettings(t *testing.T) {
+	const general = "OTEL_EXPORTER_OTLP_ENDPOINT"
+	t.Run("the signal's variables win", func(t *testing.T) {
+		s, err := ReadSettings(Traces, envOf(map[string]string{general: "http://c:4318", "OTEL_TRACES_EXPORTER": "otlp",
+			"OTEL_EXPORTER_OTLP_TIMEOUT": "3000", "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT": "2500",
+			"OTEL_EXPORTER_OTLP_HEADERS": "x-general=1", "OTEL_EXPORTER_OTLP_TRACES_HEADERS": "x-traces=2",
+			"OTEL_EXPORTER_OTLP_LOGS_TIMEOUT": "1", "OTEL_EXPORTER_OTLP_LOGS_HEADERS": "x-logs=3",
+			"OTEL_METRIC_EXPORT_INTERVAL": "1000",
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := []header{{"X-Traces", "2"}}; s.timeout != 2500*time.Millisecond || fmt.Sprint(s.headers) != fmt.Sprint(want) {
+			t.Fatalf("timeout %s, headers %v; want 2.5s, %v", s.timeout, s.headers, want)
+		}
+		if s.Interval() != 0 || s.ExportTimeout() != 2500*time.Millisecond {
+			t.Fatalf("interval %s, export timeout %s; want 0, the request timeout", s.Interval(), s.ExportTimeout())
+		}
+	})
+	t.Run("general variables", func(t *testing.T) {
+		s, err := ReadSettings(Traces, envOf(map[string]string{"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://t:4318/v1/traces",
+			"OTEL_EXPORTER_OTLP_TIMEOUT": "3000", "OTEL_EXPORTER_OTLP_HEADERS": "api-key=k", "OTEL_EXPORTER_OTLP_PROTOCOL": "http/json"}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := []header{{"Api-Key", "k"}}; s.timeout != 3*time.Second || fmt.Sprint(s.headers) != fmt.Sprint(want) {
+			t.Fatalf("timeout %s, headers %v; want 3s, %v", s.timeout, s.headers, want)
+		}
+	})
+
+	const secret = "s3cr3t-token"
+	for _, tc := range []struct{ name, variable, value, want string }{
+		{"traces exporter unknown", "OTEL_TRACES_EXPORTER", "jaeger", `OTEL_TRACES_EXPORTER="jaeger": want otlp or none`},
+		{"traces exporter list", "OTEL_TRACES_EXPORTER", "otlp,console", `OTEL_TRACES_EXPORTER="otlp,console"`},
+		{"traces endpoint not http", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "ftp://t", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: want an absolute"},
+		{"traces endpoint relative", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "t:4318/v1/traces", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: want an absolute"},
+		{"traces protocol grpc", "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "grpc", `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL="grpc": only http/json`},
+		{"traces protocol http/protobuf", "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "http/protobuf", `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL="http/protobuf": only http/json`},
+		{"traces timeout zero", "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT", "0", `OTEL_EXPORTER_OTLP_TRACES_TIMEOUT="0": want a whole number of milliseconds above 0`},
+		{"traces timeout with a unit", "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT", "10s", `OTEL_EXPORTER_OTLP_TRACES_TIMEOUT="10s"`},
+		{"traces headers malformed", "OTEL_EXPORTER_OTLP_TRACES_HEADERS", "bad key=" + secret, "OTEL_EXPORTER_OTLP_TRACES_HEADERS: entry 1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vars := map[string]string{general: "http://c:4318", "OTEL_TRACES_EXPORTER": "otlp", tc.variable: tc.value}
+			_, err := ReadSettings(Traces, envOf(vars))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("traces: error %v, want it to hold %q", err, tc.want)
+			}
+			if strings.Contains(err.Error(), secret) {
+				t.Fatalf("error %q echoes a secret value", err)
+			}
+			if _, err := ReadSettings(Logs, envOf(vars)); err != nil {
+				t.Fatalf("logs: error %v, want none: the variable is the traces signal's", err)
+			}
+		})
+	}
+	t.Run("general endpoint malformed, with the switch", func(t *testing.T) {
+		vars := map[string]string{general: "collector:4318", "OTEL_TRACES_EXPORTER": "otlp"}
+		if _, err := ReadSettings(Traces, envOf(vars)); err == nil || !strings.Contains(err.Error(), "OTEL_EXPORTER_OTLP_ENDPOINT: want an absolute") {
+			t.Fatalf("error %v, want the general endpoint named", err)
+		}
+	})
 }

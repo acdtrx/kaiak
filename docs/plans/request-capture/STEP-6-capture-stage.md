@@ -17,8 +17,11 @@ but the content — and hand it to the exporter. Steps 7–8 fill in the content
     session ID, whether it was dropped and why;
   - the span builder: from a summary the server hands over (IDs, key, groups, model,
     endpoint, stream, attempts, backend, status, error type, usage, cost, timings,
-    the session) to an `otlptrace.Span`, encoded, size-checked against
-    `otlptrace.MaxSpanBytes`, enqueued with a `release` that gives the budget back;
+    the session) to an `otlptrace.Span`, encoded, size-checked against the
+    exporter's `MaxSpanBytes()` (a method: the envelope carries the operator's
+    resource), enqueued with a `release` that gives the budget back — `release` can
+    run inside `Enqueue` (a span queued once the exporter has shut down), so the
+    budget's lock is never held across `Enqueue`;
   - one content hook per API, empty here (steps 7–8).
 - `gateway/internal/server/pipeline.go` — the stage `capture`, after `inbound` and
   before `model_access` (decision 17), scoped to the three endpoints:

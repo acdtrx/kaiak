@@ -4656,12 +4656,13 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
       `error.type` — and `otel.sdk.processor.span.processed` — handed to the
       exporter, or never sent: `memory`, `too_large` (dropped by the capture, before
       the queue), `shutdown` (still queued when the final flush ended).
-    - **Export problems go to stderr only**, as for logs: one `trace export failing`
-      line (warn) at the first failure, then at most one a minute while failures
-      continue, with the spans failed since the previous one, the collector's last
-      status when it answered and the last error in the gateway's own words (Logs:
-      operational events, no remote text) — an ordinary line, so the log export
-      carries it when that is on. The report at exit is never held back.
+    - **Export problems**, as for metrics: one `trace export failing` line (warn) at
+      the first failure, then at most one a minute while failures continue, with the
+      spans failed since the previous one, the collector's last status when it
+      answered and the last error in the gateway's own words (Logs: operational
+      events, no remote text). It is an ordinary line — stderr, and the log export
+      when that is on: a failing trace export cannot feed itself through it. The
+      report at exit is never held back.
   - **At exit**: the sender keeps exporting through the drain, each capture as its
     request ends; a request counts as in flight until its finishers ran, so every
     request the drain lets finish has its capture queued by then. After the usage

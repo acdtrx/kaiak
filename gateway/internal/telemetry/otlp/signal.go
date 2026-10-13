@@ -10,6 +10,7 @@ type Signal string
 const (
 	Logs    Signal = "logs"
 	Metrics Signal = "metrics"
+	Traces  Signal = "traces"
 )
 
 // signalInfo is what tells one signal's export apart from another's.
@@ -20,6 +21,11 @@ type signalInfo struct {
 	// response is the export response's message name, rejected its partial-success
 	// count's member, and items what that member counts — the words of an outcome.
 	response, rejected, items string
+	// explicitSwitch is set for a signal the general endpoint alone does not turn
+	// on: only its own endpoint or OTEL_<SIGNAL>_EXPORTER=otlp does
+	// (docs/specs/GATEWAY.md, Configuration sources → OTLP export: trace export
+	// needs an explicit switch).
+	explicitSwitch bool
 }
 
 // signalVariables are the signal's own OTEL_* variables.
@@ -66,6 +72,22 @@ var signals = map[Signal]signalInfo{
 		response: "ExportMetricsServiceResponse",
 		rejected: "rejectedDataPoints",
 		items:    "data points",
+	},
+	// Traces carry request captures — prompts and answers: an operator who sends
+	// logs and metrics to a collector does not send them there without saying so.
+	Traces: {
+		variables: signalVariables{
+			exporter: "OTEL_TRACES_EXPORTER",
+			endpoint: "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+			headers:  "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+			timeout:  "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT",
+			protocol: "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+		},
+		path:           "v1/traces",
+		response:       "ExportTraceServiceResponse",
+		rejected:       "rejectedSpans",
+		items:          "spans",
+		explicitSwitch: true,
 	},
 }
 

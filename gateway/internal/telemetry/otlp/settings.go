@@ -79,12 +79,14 @@ const (
 
 // ReadSettings reads sig's export settings from the environment through lookupEnv.
 // It returns nil when the signal's export is off: no endpoint and no
-// OTEL_<SIGNAL>_EXPORTER=otlp, or OTEL_<SIGNAL>_EXPORTER=none, or
-// OTEL_SDK_DISABLED=true. For each setting the signal's variable wins over the
-// general one. A signal exported on an interval also reads its interval, its export
-// timeout and its temporality preference. An empty variable counts as unset, as the
-// OpenTelemetry specification has it. A malformed value is an error naming the variable; an error
-// about headers never holds their values. The resource (OTEL_SERVICE_NAME,
+// OTEL_<SIGNAL>_EXPORTER=otlp — for a signal that needs an explicit switch
+// (traces), no endpoint of its own and no OTEL_<SIGNAL>_EXPORTER=otlp — or
+// OTEL_<SIGNAL>_EXPORTER=none, or OTEL_SDK_DISABLED=true. For each setting the
+// signal's variable wins over the general one. A signal exported on an interval
+// also reads its interval, its export timeout and its temporality preference. An
+// empty variable counts as unset, as the OpenTelemetry specification has it. A
+// malformed value is an error naming the variable; an error about headers never
+// holds their values. The resource (OTEL_SERVICE_NAME,
 // OTEL_RESOURCE_ATTRIBUTES) is read the same way for every signal, and only when
 // the signal's export is on.
 func ReadSettings(sig Signal, lookupEnv func(string) (string, bool)) (*Settings, error) {
@@ -111,16 +113,9 @@ func ReadSettings(sig Signal, lookupEnv func(string) (string, bool)) (*Settings,
 		return nil, nil
 	}
 
-	endpoint, err := readEndpoint(sig, get)
-	if err != nil {
+	endpoint, err := readEndpoint(sig, get, strings.EqualFold(exporter, "otlp"))
+	if err != nil || endpoint == nil {
 		return nil, err
-	}
-	if endpoint == nil {
-		if !strings.EqualFold(exporter, "otlp") {
-			return nil, nil
-		}
-		endpoint, _ = url.Parse(defaultHost)
-		endpoint = endpoint.JoinPath(sig.info().path)
 	}
 	s := &Settings{signal: sig, endpoint: endpoint, timeout: defaultTimeout}
 
@@ -271,23 +266,32 @@ func first(get func(string) string, names ...string) (name, value string) {
 	return name, ""
 }
 
-// readEndpoint reads the signal's endpoint: the signal's variable as is, else the
-// general one with the signal's path (v1/logs, v1/metrics) joined to its path; nil
-// when neither is set.
-func readEndpoint(sig Signal, get func(string) string) (*url.URL, error) {
-	own := sig.info().variables.endpoint
-	if v := get(own); v != "" {
-		return parseEndpoint(own, v)
+// readEndpoint reads where the signal goes: the signal's endpoint variable as is,
+// else the general one with the signal's path (v1/logs, v1/metrics, v1/traces)
+// joined to its path, else with otlpExporter (OTEL_<SIGNAL>_EXPORTER=otlp) the
+// specification's default; nil when the signal is off. A signal that needs an
+// explicit switch takes the general endpoint, or the default, only with
+// otlpExporter: without it the general variable is not read.
+func readEndpoint(sig Signal, get func(string) string, otlpExporter bool) (*url.URL, error) {
+	info := sig.info()
+	if v := get(info.variables.endpoint); v != "" {
+		return parseEndpoint(info.variables.endpoint, v)
 	}
-	v := get("OTEL_EXPORTER_OTLP_ENDPOINT")
-	if v == "" {
+	if info.explicitSwitch && !otlpExporter {
 		return nil, nil
 	}
-	u, err := parseEndpoint("OTEL_EXPORTER_OTLP_ENDPOINT", v)
-	if err != nil {
-		return nil, err
+	if v := get("OTEL_EXPORTER_OTLP_ENDPOINT"); v != "" {
+		u, err := parseEndpoint("OTEL_EXPORTER_OTLP_ENDPOINT", v)
+		if err != nil {
+			return nil, err
+		}
+		return u.JoinPath(info.path), nil
 	}
-	return u.JoinPath(sig.info().path), nil
+	if !otlpExporter {
+		return nil, nil
+	}
+	u, _ := url.Parse(defaultHost)
+	return u.JoinPath(info.path), nil
 }
 
 // parseEndpoint parses an absolute http:// or https:// URL. The error leaves the

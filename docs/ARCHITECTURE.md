@@ -232,7 +232,10 @@ enforce the boundaries.
   - `telemetry/otlp` — the OTLP/HTTP connection every signal shares: the `OTEL_*`
     settings per signal, the resource, the HTTP client (no redirects) and one
     export request with its delivery rules (what counts as delivered, retries and
-    `Retry-After`, the outcome in the gateway's own words);
+    `Retry-After`, the outcome in the gateway's own words); and what the exporters
+    that queue (logs, traces) share: the background sender — one export in flight,
+    full batches at once, the rest every second — and the export problems' tally
+    and `… export failing` line;
   - `telemetry/otlplog` — the log exporter: its `slog` handler hands every record to
     the stderr handler and queues a copy; one sender goroutine posts the queue
     through `otlp` in batches, dropping the newest when full;

@@ -336,6 +336,10 @@ func TestPartialSuccessMemberIsTheSignals(t *testing.T) {
 		{Metrics, `{"partialSuccess":{"rejectedDataPoints":"3"}}`, 3, "collector rejected 3 data points"},
 		{Metrics, `{"partialSuccess":{"rejectedDataPoints":4}}`, 4, "collector rejected 4 data points"},
 		{Metrics, `{"partialSuccess":{"rejectedLogRecords":"3"}}`, 0, ""},
+		{Traces, `{"partialSuccess":{"rejectedSpans":"5","errorMessage":"span too large"}}`, 5, "collector rejected 5 spans"},
+		{Traces, `{"partialSuccess":{"rejectedSpans":1}}`, 1, "collector rejected 1 spans"},
+		{Traces, `{"partialSuccess":{"rejectedLogRecords":"3","rejectedDataPoints":"4"}}`, 0, ""},
+		{Logs, `{"partialSuccess":{"rejectedSpans":"2"}}`, 0, ""},
 	} {
 		t.Run(string(tc.sig)+" "+tc.body, func(t *testing.T) {
 			col := fakeotlp.New(t, func(w http.ResponseWriter, _ *http.Request, _ int) { io.WriteString(w, tc.body) })
@@ -354,6 +358,15 @@ func TestPartialSuccessMemberIsTheSignals(t *testing.T) {
 		})
 		o := newSignalHarness(t, Metrics, col, nil).export()
 		if want := "collector answered 200 OK with a body that is not an ExportMetricsServiceResponse"; o.Err == nil || o.Err.Error() != want {
+			t.Fatalf("outcome %+v, want the error %q", o, want)
+		}
+	})
+	t.Run("traces: not an ExportTraceServiceResponse", func(t *testing.T) {
+		col := fakeotlp.New(t, func(w http.ResponseWriter, _ *http.Request, _ int) {
+			io.WriteString(w, `{"partialSuccess":{"rejectedSpans":true}}`)
+		})
+		o := newSignalHarness(t, Traces, col, nil).export()
+		if want := "collector answered 200 OK with a body that is not an ExportTraceServiceResponse"; o.Err == nil || o.Err.Error() != want {
 			t.Fatalf("outcome %+v, want the error %q", o, want)
 		}
 	})
