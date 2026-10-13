@@ -28,10 +28,7 @@ func (m *anthropic) url(path string) string { return m.backend.BaseURL + "/" + p
 // version. The schema requires api_key_env; a credential the registry withholds
 // (Registry.credential) sends no key header.
 func (m *anthropic) header() http.Header {
-	h := make(http.Header)
-	if m.credential != "" {
-		h.Set("X-Api-Key", m.credential)
-	}
+	h := xAPIKey(m.credential)
 	h.Set("Anthropic-Version", anthropicVersion)
 	return h
 }

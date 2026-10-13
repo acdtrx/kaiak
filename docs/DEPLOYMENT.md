@@ -1196,7 +1196,7 @@ under rules of their own (`GATEWAY.md` → Request pipeline: Uploads; settled
   `base_url` `https://api.anthropic.com/v1`, the key sent as `x-api-key` — and
   `azure-anthropic` for Claude in Microsoft Foundry — `base_url` the resource
   endpoint (`https://<resource>.services.ai.azure.com`; the gateway appends
-  `/anthropic/v1/…`), the key sent as `api-key`, a deployment's `model` the Foundry
+  `/anthropic/v1/…`), the key sent as `x-api-key`, a deployment's `model` the Foundry
   deployment name. Both require `api_key_env` and send `anthropic-version:
   2023-06-01`. Foundry's Claude serves Claude models only; OpenAI models on Azure are
   `azure-openai`.

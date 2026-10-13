@@ -9,8 +9,8 @@ import (
 
 // azureAnthropic is the module for azure-anthropic backends: Claude in Microsoft
 // Foundry, Anthropic's Messages API on an Azure resource, addressed by resource
-// endpoint, authenticated by api-key, with Foundry deployment names where Anthropic
-// has model names. It has no models list and no Priority Tier.
+// endpoint, authenticated by x-api-key, with Foundry deployment names where
+// Anthropic has model names. It has no models list and no Priority Tier.
 type azureAnthropic struct {
 	backend    *config.Backend
 	client     *http.Client
@@ -25,9 +25,11 @@ func newAzureAnthropic(b *config.Backend, client *http.Client, credential string
 // (docs/specs/GATEWAY.md, Base URLs).
 func (m *azureAnthropic) url(path string) string { return m.backend.BaseURL + "/anthropic/v1/" + path }
 
-// header carries the credential as Azure's api-key header, and the API version.
+// header carries the credential as Anthropic's x-api-key header, and the API
+// version. Not Azure's api-key header: Foundry answers it 401 even with a valid key,
+// though its documentation names it (docs/specs/GATEWAY.md, Providers → credentials).
 func (m *azureAnthropic) header() http.Header {
-	h := apiKey(m.credential)
+	h := xAPIKey(m.credential)
 	h.Set("Anthropic-Version", anthropicVersion)
 	return h
 }

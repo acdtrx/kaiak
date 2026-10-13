@@ -284,7 +284,7 @@ go -C scripts/live run . -kind azure-anthropic \
   a note).
 - `model` is the **deployment name** (Foundry portal → Build → Models → your Claude
   deployment); by default it is the model ID, e.g. `claude-haiku-4-5`.
-- The key (the deployment's Details tab) goes in the `api-key` header; another
+- The key (the deployment's Details tab) goes in the `x-api-key` header; another
   variable name: `-api-key-env NAME`. Entra ID tokens are not supported.
 
 ### Thinking models
@@ -312,7 +312,7 @@ Runs every check against the fake backend (`gateway/internal/fakebackend/cmd/fak
 standing in for each kind: vLLM and llama-server layout without a key, OpenAI
 layout with `Authorization: Bearer`, Azure OpenAI layout (`/openai/v1/`) with
 `api-key`, Anthropic layout with `x-api-key`, Foundry layout (`/anthropic/v1/`) with
-`api-key` — the fake answers `401` to a missing or wrong credential and `404` to a
+`x-api-key` — the fake answers `401` to a missing or wrong credential and `404` to a
 wrong path, so a config the kit generates wrongly fails here first. The fakes report
 3 of every 7 prompt tokens read from the cache, so the cache check passes there.
 
@@ -888,8 +888,8 @@ when access arrives, in this order:
    `404` or asks for an `api-version`, the resource may predate the v1 API or need it
    enabled — the classic deployment-in-URL API is deliberately not supported
    (`docs/specs/GATEWAY.md`, Providers).
-2. **`api-key` header auth** with the resource key (Keys and Endpoint in the portal).
-   Microsoft Entra ID tokens are not supported (see `docs/BACKLOG.md`, Cloud workload
+2. **`api-key` header auth** with the resource key (Keys and Endpoint in the portal)
+   — confirmed on a live resource (2026-10-13). Microsoft Entra ID tokens are not supported (see `docs/BACKLOG.md`, Cloud workload
    identity).
 3. **The deployment name is the model**: the request's `model` field carries the
    deployment name, as the OpenAI v1 surface expects. Check that `chat` passes with
@@ -954,8 +954,10 @@ check these first when a tester runs them:
    `https://<resource>.services.ai.azure.com/anthropic/v1/messages` and
    `/messages/count_tokens`, with no models list. `messages` and `messages-count`
    passing proves them.
-2. **Auth**: `x-api-key` (Anthropic) and `api-key` (Foundry) with
-   `anthropic-version: 2023-06-01`, which the gateway sends itself.
+2. **Auth**: `x-api-key` on both, with `anthropic-version: 2023-06-01`, which the
+   gateway sends itself. Checked on Foundry (2026-10-13): it answered `401` to a
+   valid key in `api-key` and `200` in `x-api-key`, though Anthropic's Foundry page
+   names both.
 3. **`service_tier: "standard_only"`** on every Anthropic request is accepted
    (`messages` passing); Foundry gets none (it has no Priority Tier).
 4. **Usage**: `input_tokens` excludes cache reads and writes, reported as

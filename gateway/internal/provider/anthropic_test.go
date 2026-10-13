@@ -108,7 +108,7 @@ func TestAnthropicTypesOnTheWire(t *testing.T) {
 		forcesTier       bool
 	}{
 		{config.BackendAnthropic, "/v1/", "X-Api-Key", true},
-		{config.BackendAzureAnthropic, "/anthropic/v1/", "Api-Key", false},
+		{config.BackendAzureAnthropic, "/anthropic/v1/", "X-Api-Key", false},
 	}
 	r := moduleRegistry()
 	for _, c := range cases {
@@ -134,7 +134,7 @@ func TestAnthropicTypesOnTheWire(t *testing.T) {
 					if got.method != http.MethodPost || got.path != c.prefix+e.path {
 						t.Errorf("%s %s, want POST %s", got.method, got.path, c.prefix+e.path)
 					}
-					if got.header.Get(c.credentialHeader) != testCredential || got.header.Get("Authorization") != "" {
+					if got.header.Get(c.credentialHeader) != testCredential || got.header.Get("Authorization") != "" || got.header.Get("Api-Key") != "" {
 						t.Errorf("%s: credential headers %v", e.path, got.header)
 					}
 					if v := got.header.Get("Anthropic-Version"); v != "2023-06-01" {

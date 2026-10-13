@@ -300,6 +300,16 @@ func apiKey(credential string) http.Header {
 	return h
 }
 
+// xAPIKey is a module's credential header as Anthropic's x-api-key header; none for
+// no credential.
+func xAPIKey(credential string) http.Header {
+	h := make(http.Header)
+	if credential != "" {
+		h.Set("X-Api-Key", credential)
+	}
+	return h
+}
+
 // wireHeaders sets the headers every upstream request carries beside the module's
 // credential, contentType the body's (wireBody). Nothing from the client's headers is
 // forwarded except the request ID, so the client's Authorization (its kaiak key),

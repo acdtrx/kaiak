@@ -931,9 +931,12 @@ own, and a client sending repeats is broken either way.
   vLLM-Omni's other media routes (video jobs, voices, its WebSocket endpoints), nor
   `/v1/audio/translations` (`docs/BACKLOG.md`, Audio translations).
 - Credentials are referenced by environment-variable name in config, never inline:
-  azure-openai and azure-anthropic send `api-key: <value>`, anthropic `x-api-key:
+  azure-openai sends `api-key: <value>`, anthropic and azure-anthropic `x-api-key:
   <value>`, every other type `Authorization: Bearer <value>` (nothing when the backend
-  has no `api_key_env`). `openai`, `azure-openai`, `anthropic` and `azure-anthropic`
+  has no `api_key_env`). azure-anthropic sends `x-api-key`, not Azure's `api-key`
+  (settled 2026-10-13, found live): Foundry answered `401` to a valid key in `api-key`
+  and `200` to the same key in `x-api-key`, though Anthropic's Foundry page names
+  both. `openai`, `azure-openai`, `anthropic` and `azure-anthropic`
   require `api_key_env` (schema, both halves): none answers without a key. The two
   Anthropic types also send `anthropic-version: 2023-06-01`, the API's one version
   (settled 2026-10-06). An `api_key_env` starting with `KAIAK_` is refused by the schema, both halves

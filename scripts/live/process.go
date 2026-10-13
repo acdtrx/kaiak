@@ -284,7 +284,7 @@ func runSelfTest(ctx context.Context, o options) error {
 		k.requestTimeout = 10 * time.Second
 		secret, _ := newKey()
 		auth := map[string]string{kindVLLM: "none", kindLlamaServer: "none", kindOpenAI: "bearer", kindAzure: "api-key",
-			kindAnthropic: "x-api-key", kindAzureAnthropic: "api-key"}[kind]
+			kindAnthropic: "x-api-key", kindAzureAnthropic: "x-api-key"}[kind]
 		fake, root, err := startFake(ctx, fakeBin, "127.0.0.1:0", auth, secret,
 			[]string{selfTestChatModel, selfTestEmbedModel}, fakeFlags(kind, false)...)
 		if err != nil {

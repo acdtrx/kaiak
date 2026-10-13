@@ -41,7 +41,7 @@ var backendTypes = map[string]backendType{
 		keyEnv: "E2E_AZURE_API_KEY", key: "e2e-azure", resourceRoot: true, apiPrefix: "/openai/v1"},
 	"anthropic": {header: "X-Api-Key", credential: "sk-ant-e2e",
 		keyEnv: "E2E_ANTHROPIC_API_KEY", key: "sk-ant-e2e", apiPrefix: "/v1"},
-	"azure-anthropic": {header: "Api-Key", credential: "e2e-foundry",
+	"azure-anthropic": {header: "X-Api-Key", credential: "e2e-foundry",
 		keyEnv: "E2E_AZURE_ANTHROPIC_API_KEY", key: "e2e-foundry", resourceRoot: true, apiPrefix: "/anthropic/v1"},
 }
 
