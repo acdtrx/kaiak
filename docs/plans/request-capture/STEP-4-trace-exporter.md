@@ -1,6 +1,6 @@
 # Step 4 — the trace exporter
 
-**Status:** done — awaiting the main session's review
+**Status:** done
 
 ## Intent
 

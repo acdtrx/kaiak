@@ -16,6 +16,7 @@ import (
 	"kaiak/internal/telemetry/metric"
 	"kaiak/internal/telemetry/otlplog"
 	"kaiak/internal/telemetry/otlpmetric"
+	"kaiak/internal/telemetry/otlptrace"
 )
 
 // A full scrape of every family the gateway registers, each driven until every
@@ -167,8 +168,9 @@ func scrapedFamilies(t *testing.T, scrape string) map[string]family {
 	return families
 }
 
-// fullScrape registers every family as main does — control-plane mode, OTLP log and
-// metric export on — and feeds each event that gives a family its every attribute.
+// fullScrape registers every family as main does — control-plane mode, OTLP log,
+// metric and trace export on — and feeds each event that gives a family its every
+// attribute.
 func fullScrape(t *testing.T) string {
 	t.Helper()
 	capped := &config.Backend{ID: "capped", Type: config.BackendOpenAI, MaxInFlight: 2}
@@ -186,6 +188,9 @@ func fullScrape(t *testing.T) string {
 	RegisterMetricExport(reg, func() otlpmetric.Counts {
 		return otlpmetric.Counts{Exported: 40, Failed: map[string]uint64{"timeout": 4}}
 	})
+	RegisterTraceExport(reg, func() otlptrace.Counts {
+		return otlptrace.Counts{Handed: 3, Exported: 2, Failed: map[string]uint64{"503": 1}}
+	}, func() CaptureDrops { return CaptureDrops{Memory: 1} })
 	circuits := NewCircuits(reg)
 	router := routing.New(routing.Options{Observer: circuits})
 	ops := NewOps(reg, router, circuits, holder)

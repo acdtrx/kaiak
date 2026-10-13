@@ -1,6 +1,6 @@
 # Step 1 — the contract
 
-**Status:** done — awaiting the main session's review
+**Status:** done
 
 ## Intent
 

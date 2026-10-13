@@ -26,6 +26,7 @@ import (
 	"kaiak/internal/telemetry/otlp"
 	"kaiak/internal/telemetry/otlplog"
 	"kaiak/internal/telemetry/otlpmetric"
+	"kaiak/internal/telemetry/otlptrace"
 )
 
 func main() {
@@ -68,39 +69,35 @@ func newLogger(format string, w io.Writer) (*slog.Logger, error) {
 // error when there is none — then follows the control plane, sends usage and reports
 // status in the background until the drain is over. A value on stop, or a listener
 // failing, starts the drain (server.Drain.Run); a further value on stop hurries it,
-// the final metric export and log flush included. Cancelling ctx stops without
-// waiting: the drain runs hurried. Once the API has drained, run flushes usage to the
-// control plane (control-plane mode), stops the admin listener and returns. With OTLP
-// metric export configured, the metrics are pushed from the config load on, and the
-// final export runs before run's last line, `kaiak stopped`, or `kaiak stopped with
-// an error` with the error it returns. With OTLP log export configured, every line
-// from `kaiak starting` on also goes to the collector, and the export's final flush
-// is run's last act.
+// the exports' final work included. Cancelling ctx stops without waiting: the drain
+// runs hurried. Once the API has drained, run flushes usage to the control plane
+// (control-plane mode), stops the admin listener and returns. With OTLP metric export
+// configured, the metrics are pushed from the config load on; with OTLP log export
+// configured, every line from `kaiak starting` on also goes to the collector. The
+// exports configured end as exports.finish orders them: the trace export's final
+// flush, the final metric export, run's last line — `kaiak stopped`, or `kaiak
+// stopped with an error` with the error it returns — then the log export's final
+// flush, run's last act.
 func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (string, bool),
 	reload, stop <-chan os.Signal) (err error) {
 	startedAt := time.Now()
-	// The exporters, and the end of their work at exit: the drain's deadline once a
+	// The exports, and the end of their work at exit: the drain's deadline once a
 	// drain started (exitBound). hurryCtx never ends before the drain starts; from then
 	// on it ends with a second stop signal or with ctx, and its watch runs through the
-	// final metric export and the final log flush, which it cuts to their floor:
-	// endHurry ends the watch after the flush. reason is what `kaiak stopped` names.
-	var logExport *otlplog.Exporter
-	var metricExport *otlpmetric.Exporter
+	// exports' final work, which it cuts to their floor: endHurry ends the watch after
+	// the log flush. reason is what `kaiak stopped` names.
+	var exp exports
 	var exitBy time.Time
 	var reason string
 	hurryCtx, endHurry := context.Background(), func() os.Signal { return nil }
 	defer func() {
-		if metricExport != nil {
-			finishExport(hurryCtx, metricExport, exitBy)
-		}
-		if err != nil {
-			logger.Error("kaiak stopped with an error", "exception.message", err)
-		} else {
-			logger.Info("kaiak stopped", "kaiak.reason", reason)
-		}
-		if logExport != nil {
-			finishExport(hurryCtx, logExport, exitBy)
-		}
+		exp.finish(hurryCtx, exitBy, func() {
+			if err != nil {
+				logger.Error("kaiak stopped with an error", "exception.message", err)
+			} else {
+				logger.Info("kaiak stopped", "kaiak.reason", reason)
+			}
+		})
 		endHurry()
 	}()
 	s, err := readSettings(lookupEnv)
@@ -110,15 +107,15 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 	source := s.configSource()
 	reported := reportedVersion()
 	service := otlp.Service{Version: reported, InstanceID: s.instanceID}
+	exp, logger = startExports(s, service, logger)
 	if s.logExport != nil {
-		// Export problems go to the stderr logger alone: one exported would feed the
-		// problem it reports.
-		logExport = otlplog.New(s.logExport, service, logger)
-		logger = slog.New(logExport.Handler(logger.Handler()))
 		source = append(source, "kaiak.log_export.endpoint", s.logExport.EndpointHost())
 	}
 	if s.metricExport != nil {
 		source = append(source, "kaiak.metric_export.endpoint", s.metricExport.EndpointHost())
+	}
+	if s.traceExport != nil {
+		source = append(source, "kaiak.trace_export.endpoint", s.traceExport.EndpointHost())
 	}
 	logger.Info("kaiak starting", append([]any{"process.pid", os.Getpid(), "service.instance.id", s.instanceID},
 		source...)...)
@@ -133,7 +130,7 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 		background.Wait()
 	}()
 
-	g := newGraph(s, reported, lookupEnv, logger, logExport)
+	g := newGraph(s, reported, lookupEnv, logger, exp)
 	var cp *controlPlane
 	if s.control != nil {
 		opts := *s.control
@@ -147,8 +144,8 @@ func run(ctx context.Context, logger *slog.Logger, lookupEnv func(string) (strin
 		// registered next, an interval before the first collect: the first collect
 		// sees them all. Export problems are ordinary lines: the log export, when on,
 		// carries them.
-		metricExport = otlpmetric.New(s.metricExport, service, g.registry, logger)
-		metrics.RegisterMetricExport(g.registry, metricExport.Counts)
+		exp.metrics = otlpmetric.New(s.metricExport, service, g.registry, logger)
+		metrics.RegisterMetricExport(g.registry, exp.metrics.Counts)
 	}
 	// The mode's setup: the first config, the limiter, where usage records go
 	// (control-plane mode: the client's batch sender, which tags each with its batch's
@@ -267,13 +264,18 @@ type graph struct {
 }
 
 // newGraph builds the shared graph; reported is the build version the metrics report
-// (reportedVersion), and logExport, when not nil, has its counts in the metrics.
+// (reportedVersion), and exp's log and trace exports, those that are on, have their
+// counts in the metrics.
 func newGraph(s settings, reported string, lookupEnv func(string) (string, bool), logger *slog.Logger,
-	logExport *otlplog.Exporter) *graph {
+	exp exports) *graph {
 	g := &graph{holder: &config.Holder{}, providers: provider.NewRegistry(lookupEnv), registry: metric.NewRegistry()}
 	metrics.RegisterBuildInfo(g.registry, reported)
-	if logExport != nil {
-		metrics.RegisterLogExport(g.registry, logExport.Counts)
+	if exp.logs != nil {
+		metrics.RegisterLogExport(g.registry, exp.logs.Counts)
+	}
+	if exp.traces != nil {
+		// No capture is made, so none is dropped before the export's queue.
+		metrics.RegisterTraceExport(g.registry, exp.traces.Counts, func() metrics.CaptureDrops { return metrics.CaptureDrops{} })
 	}
 	circuits := metrics.NewCircuits(g.registry)
 	g.router = routing.New(routing.Options{Probe: g.providers.Probe, Observer: circuits, Logger: logger})
@@ -295,6 +297,21 @@ func newGraph(s settings, reported string, lookupEnv func(string) (string, bool)
 			if uploadCap := applied.MaxUploadBytes; uploadCap > s.uploadMemory {
 				logger.Warn("max_upload_bytes exceeds the upload budget: uploads above the budget are refused as too large",
 					"kaiak.config.max_upload_size", uploadCap, "kaiak.upload_budget.size", s.uploadMemory)
+			}
+			// With trace export off nothing is captured; a config whose groups capture
+			// is applied all the same — the export is the operator's switch
+			// (docs/specs/GATEWAY.md, Request capture → Groups capture, trace export off).
+			if s.traceExport == nil {
+				capturing := 0
+				for _, group := range applied.Groups {
+					if group.Capture {
+						capturing++
+					}
+				}
+				if capturing > 0 {
+					logger.Warn("groups capture requests but trace export is off: nothing is captured",
+						"kaiak.config.capture_groups", capturing)
+				}
 			}
 		}
 		g.ops.ConfigLoaded(load)
@@ -328,9 +345,53 @@ func stopOnSignal(ctx context.Context, stop <-chan os.Signal, onSignal func(os.S
 	}
 }
 
-// exitExportFloor is the least time the final metric export and the final log flush
-// each get: the last metrics and lines still go when the usage flush took the whole
-// drain, after a second stop signal, or when the start failed.
+// exports are the OTLP exports run starts, each nil when its signal's export is off.
+type exports struct {
+	logs    *otlplog.Exporter
+	traces  *otlptrace.Exporter
+	metrics *otlpmetric.Exporter
+}
+
+// startExports starts the log and trace exports the settings switch on, and returns
+// them with the process logger: with log export on, every line also goes to the
+// collector. The log export's problems go to stderr alone (logger as given): one
+// exported would feed the problem it reports. The trace export's are ordinary lines,
+// which the log export, when on, carries. The metric export starts later, once its
+// registry holds every family.
+func startExports(s settings, service otlp.Service, logger *slog.Logger) (exports, *slog.Logger) {
+	var exp exports
+	if s.logExport != nil {
+		exp.logs = otlplog.New(s.logExport, service, logger)
+		logger = slog.New(exp.logs.Handler(logger.Handler()))
+	}
+	if s.traceExport != nil {
+		exp.traces = otlptrace.New(s.traceExport, service, logger)
+	}
+	return exp, logger
+}
+
+// finish is the exports' last work at exit (docs/specs/GATEWAY.md, Lifecycle →
+// Draining, step 5), each within exitBound of by: the trace export's final flush;
+// the final metric export, whose collect then counts every span; lastLine, the
+// process's last line; then the log export's final flush, which carries every line
+// before it — the trace and metric exports' failure reports included.
+func (exp exports) finish(hurry context.Context, by time.Time, lastLine func()) {
+	if exp.traces != nil {
+		finishExport(hurry, exp.traces, by)
+	}
+	if exp.metrics != nil {
+		finishExport(hurry, exp.metrics, by)
+	}
+	lastLine()
+	if exp.logs != nil {
+		finishExport(hurry, exp.logs, by)
+	}
+}
+
+// exitExportFloor is the least time each export's final work gets — the trace flush,
+// the metric export, the log flush: the last spans, metrics and lines still go when
+// the usage flush took the whole drain, after a second stop signal, or when the start
+// failed.
 const exitExportFloor = time.Second
 
 // exporter is an OTLP exporter as run finishes it at exit.
@@ -340,9 +401,9 @@ type exporter interface {
 }
 
 // finishExport is an exporter's last work (docs/specs/GATEWAY.md, Observability →
-// OTLP metric export and OTLP log export: at exit): the final export, or the final
-// flush of what is queued, within exitBound, then Shutdown, which counts and reports
-// what did not go.
+// OTLP trace export, OTLP metric export and OTLP log export: at exit): the final
+// export, or the final flush of what is queued, within exitBound, then Shutdown,
+// which counts and reports what did not go.
 func finishExport(hurry context.Context, e exporter, by time.Time) {
 	ctx, cancel := exitBound(hurry, by)
 	_ = e.ForceFlush(ctx) // what did not go is Shutdown's to count and report

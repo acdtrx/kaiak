@@ -16,6 +16,7 @@ import (
 	"kaiak/internal/telemetry/metric"
 	"kaiak/internal/telemetry/otlplog"
 	"kaiak/internal/telemetry/otlpmetric"
+	"kaiak/internal/telemetry/otlptrace"
 )
 
 func text(r *metric.Registry) string {
@@ -386,6 +387,41 @@ func TestMetricExportMetrics(t *testing.T) {
 	want = `otel_sdk_exporter_metric_data_point_exported_total{` + exporter + `} 420
 otel_sdk_exporter_metric_data_point_exported_total{` + exporter + `,error_type="rejected"} 2
 otel_sdk_exporter_metric_data_point_exported_total{` + exporter + `,error_type="timeout"} 60
+`
+	if got := samples(text(reg)); got != want {
+		t.Errorf("counted:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestTraceExportMetrics(t *testing.T) {
+	reg := metric.NewRegistry()
+	var counts otlptrace.Counts
+	var drops CaptureDrops
+	RegisterTraceExport(reg, func() otlptrace.Counts { return counts }, func() CaptureDrops { return drops })
+	const (
+		processor = `otel_component_type="capture_span_processor",otel_component_name="capture_span_processor/0"`
+		exporter  = `otel_component_type="otlp_http_json_span_exporter",otel_component_name="otlp_http_json_span_exporter/0"`
+	)
+	// At startup: the accepted series and the processor's four, at 0; no failure series.
+	want := `otel_sdk_exporter_span_exported_total{` + exporter + `} 0
+otel_sdk_processor_span_processed_total{` + processor + `} 0
+otel_sdk_processor_span_processed_total{` + processor + `,error_type="memory"} 0
+otel_sdk_processor_span_processed_total{` + processor + `,error_type="shutdown"} 0
+otel_sdk_processor_span_processed_total{` + processor + `,error_type="too_large"} 0
+`
+	if got := samples(text(reg)); got != want {
+		t.Errorf("at startup:\n%s\nwant:\n%s", got, want)
+	}
+	// The drops before the queue come from the capture, the rest from the exporter.
+	counts = otlptrace.Counts{Handed: 30, Shutdown: 2, Exported: 24, Failed: map[string]uint64{"503": 4, "rejected": 2}}
+	drops = CaptureDrops{Memory: 7, TooLarge: 1}
+	want = `otel_sdk_exporter_span_exported_total{` + exporter + `} 24
+otel_sdk_exporter_span_exported_total{` + exporter + `,error_type="503"} 4
+otel_sdk_exporter_span_exported_total{` + exporter + `,error_type="rejected"} 2
+otel_sdk_processor_span_processed_total{` + processor + `} 30
+otel_sdk_processor_span_processed_total{` + processor + `,error_type="memory"} 7
+otel_sdk_processor_span_processed_total{` + processor + `,error_type="shutdown"} 2
+otel_sdk_processor_span_processed_total{` + processor + `,error_type="too_large"} 1
 `
 	if got := samples(text(reg)); got != want {
 		t.Errorf("counted:\n%s\nwant:\n%s", got, want)

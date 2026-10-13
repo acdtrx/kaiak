@@ -1,6 +1,6 @@
 # Step 2 — `kaiak-control` at protocol 8
 
-**Status:** done — awaiting the main session's review
+**Status:** done
 
 ## Intent
 

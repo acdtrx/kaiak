@@ -45,14 +45,20 @@ type settings struct {
 	// usageMemory bounds the encoded usage records held in memory waiting for
 	// delivery (control-plane mode).
 	usageMemory int64
+	// captureMemory is the capture budget: the bytes request captures hold at once,
+	// from the copy of a request to the export of its span. Read whether or not trace
+	// export is on.
+	captureMemory int64
 	// maxConnections caps the API listener's open connections; 0 is no cap.
 	maxConnections int64
 	// metricsToken is the bearer token /metrics requires; "" leaves it open.
 	metricsToken string
 	// logExport is where log records also go over OTLP, metricExport where metrics
-	// are pushed; each nil when that signal's export is off.
+	// are pushed, traceExport where request captures go; each nil when that signal's
+	// export is off.
 	logExport    *otlp.Settings
 	metricExport *otlp.Settings
+	traceExport  *otlp.Settings
 }
 
 // Default listen addresses: the API port and the admin port.
@@ -71,11 +77,15 @@ const (
 	defaultDrainReserve = 10 * time.Second
 )
 
+// defaultCaptureMemory is the capture budget unless KAIAK_CAPTURE_MEMORY_BYTES sets
+// it: 128 MiB.
+const defaultCaptureMemory = 128 << 20
+
 func readSettings(lookupEnv func(string) (string, bool)) (settings, error) {
 	s := settings{listenAddr: defaultListenAddr, adminAddr: defaultAdminAddr,
 		drain: server.DrainTimes{Grace: defaultDrainGrace, Timeout: defaultDrainTimeout}, client: server.DefaultClientTimeouts,
 		bodyMemory: server.DefaultBodyMemory, uploadMemory: server.DefaultUploadMemory, uploadRead: server.DefaultUploadReadTimeout,
-		usageMemory: control.DefaultUsageMemoryBytes}
+		usageMemory: control.DefaultUsageMemoryBytes, captureMemory: defaultCaptureMemory}
 	var err error
 	s.configFile, _ = lookupEnv("KAIAK_CONFIG_FILE")
 	seedFile, _ := lookupEnv("KAIAK_SEED_CONFIG_FILE")
@@ -129,6 +139,7 @@ func readSettings(lookupEnv func(string) (string, bool)) (settings, error) {
 		{"KAIAK_BODY_MEMORY_BYTES", &s.bodyMemory, 1},
 		{"KAIAK_UPLOAD_MEMORY_BYTES", &s.uploadMemory, 1},
 		{"KAIAK_USAGE_MEMORY_BYTES", &s.usageMemory, 1},
+		{"KAIAK_CAPTURE_MEMORY_BYTES", &s.captureMemory, 1},
 		{"KAIAK_MAX_CONNECTIONS", &s.maxConnections, 0},
 	} {
 		if *n.v, err = wholeNumber(lookupEnv, n.name, *n.v, n.least); err != nil {
@@ -140,6 +151,9 @@ func readSettings(lookupEnv func(string) (string, bool)) (settings, error) {
 		return s, err
 	}
 	if s.metricExport, err = otlp.ReadSettings(otlp.Metrics, lookupEnv); err != nil {
+		return s, err
+	}
+	if s.traceExport, err = otlp.ReadSettings(otlp.Traces, lookupEnv); err != nil {
 		return s, err
 	}
 	s.instanceID, _ = lookupEnv("KAIAK_INSTANCE_ID")

@@ -1,6 +1,6 @@
 # Step 3 — the gateway at protocol 8
 
-**Status:** done — awaiting the main session's review
+**Status:** done
 
 ## Intent
 
