@@ -32,10 +32,19 @@ func stopReason(cut bool) string {
 	return "end_turn"
 }
 
-func writeMessage(w http.ResponseWriter, model, text string, cut bool, usage Usage, omitUsage bool) {
+// thinkingSignature is the signature of every thinking block the backend writes.
+const thinkingSignature = "fake-signature"
+
+// writeMessage answers a Messages request: a thinking block holding reasoning when
+// there is any, then the text block.
+func writeMessage(w http.ResponseWriter, model, reasoning, text string, cut bool, usage Usage, omitUsage bool) {
+	content := []any{map[string]any{"type": "text", "text": text}}
+	if reasoning != "" {
+		content = append([]any{map[string]any{"type": "thinking", "thinking": reasoning, "signature": thinkingSignature}},
+			content...)
+	}
 	answer := map[string]any{
-		"id": "msg_fake_1", "type": "message", "role": "assistant", "model": model,
-		"content":     []any{map[string]any{"type": "text", "text": text}},
+		"id": "msg_fake_1", "type": "message", "role": "assistant", "model": model, "content": content,
 		"stop_reason": stopReason(cut), "stop_sequence": nil,
 	}
 	if !omitUsage {
@@ -54,9 +63,10 @@ func messagesErrorEvent(errorType string) []byte {
 	return []byte(`{"type":"error","error":{"type":"` + errorType + `","message":"Overloaded"}}`)
 }
 
-// writeMessagesStream streams a Messages answer: message_start, one text block with a
-// delta per chunk, message_delta with the stop reason and output usage, message_stop.
-// The reply's stream fault applies with messagesErrorEvent as the error event.
+// writeMessagesStream streams a Messages answer: message_start; with reasoning, a
+// thinking block — a delta per piece, then its signature; one text block with a delta
+// per chunk; message_delta with the stop reason and output usage, message_stop. The
+// reply's stream fault applies with messagesErrorEvent as the error event.
 func (b *Backend) writeMessagesStream(w http.ResponseWriter, r *http.Request, req *Request, reply Reply,
 	model string, chunks []string, cut bool, usage Usage) {
 	s, ok := b.startStream(w, r, req, reply, messagesErrorEvent)
@@ -75,16 +85,37 @@ func (b *Backend) writeMessagesStream(w http.ResponseWriter, r *http.Request, re
 	if !reply.OmitUsage {
 		message["usage"] = messagesUsage(usage, false)
 	}
-	if !event("message_start", map[string]any{"type": "message_start", "message": message}) ||
-		!event("content_block_start", map[string]any{"type": "content_block_start", "index": 0,
-			"content_block": map[string]any{"type": "text", "text": ""}}) {
+	if !event("message_start", map[string]any{"type": "message_start", "message": message}) {
+		return
+	}
+	index := 0
+	if len(reply.Reasoning) > 0 {
+		if !event("content_block_start", map[string]any{"type": "content_block_start", "index": index,
+			"content_block": map[string]any{"type": "thinking", "thinking": ""}}) {
+			return
+		}
+		for _, piece := range reply.Reasoning {
+			if !event("content_block_delta", map[string]any{"type": "content_block_delta", "index": index,
+				"delta": map[string]any{"type": "thinking_delta", "thinking": piece}}) {
+				return
+			}
+		}
+		if !event("content_block_delta", map[string]any{"type": "content_block_delta", "index": index,
+			"delta": map[string]any{"type": "signature_delta", "signature": thinkingSignature}}) ||
+			!event("content_block_stop", map[string]any{"type": "content_block_stop", "index": index}) {
+			return
+		}
+		index++
+	}
+	if !event("content_block_start", map[string]any{"type": "content_block_start", "index": index,
+		"content_block": map[string]any{"type": "text", "text": ""}}) {
 		return
 	}
 	for i, text := range chunks {
 		if !s.interrupt(i) {
 			return
 		}
-		if !event("content_block_delta", map[string]any{"type": "content_block_delta", "index": 0,
+		if !event("content_block_delta", map[string]any{"type": "content_block_delta", "index": index,
 			"delta": map[string]any{"type": "text_delta", "text": text}}) {
 			return
 		}
@@ -94,7 +125,7 @@ func (b *Backend) writeMessagesStream(w http.ResponseWriter, r *http.Request, re
 	if !reply.OmitUsage {
 		delta["usage"] = map[string]any{"output_tokens": usage.CompletionTokens}
 	}
-	if !event("content_block_stop", map[string]any{"type": "content_block_stop", "index": 0}) ||
+	if !event("content_block_stop", map[string]any{"type": "content_block_stop", "index": index}) ||
 		!event("message_delta", delta) {
 		return
 	}

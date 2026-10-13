@@ -49,10 +49,11 @@ type Reply struct {
 	// Chunks are the pieces of generated text, one per stream event; the non-stream
 	// answer joins them. Default: DefaultChunks.
 	Chunks []string
-	// Reasoning are the pieces of a chat completion's reasoning, in vLLM's reasoning
-	// member: one stream event each, before the text's — a StreamFault's At counts
-	// the text events alone — and joined in the non-stream answer's message. Chat
-	// completions only.
+	// Reasoning are the pieces of the answer's reasoning, as vLLM gives it: a chat
+	// completion's reasoning member, a Messages thinking block, a Responses reasoning
+	// item's reasoning_text — each before the text. One stream event each — a
+	// StreamFault's At counts the text events alone — joined in the non-stream
+	// answer. Chat completions, Messages and Responses only.
 	Reasoning []string
 	// Usage overrides the reported token counts. Default: 7 prompt tokens, one
 	// completion token per chunk.
@@ -556,11 +557,13 @@ func (b *Backend) serve(w http.ResponseWriter, r *http.Request) {
 	case endpoint == responsesPath && params.stream:
 		b.writeResponsesStream(w, r, req, reply, top, params.model, chunks, finish == "length", usage)
 	case endpoint == responsesPath:
-		writeResponse(w, top, params.model, strings.Join(chunks, ""), finish == "length", usage, reply.OmitUsage)
+		writeResponse(w, top, params.model, strings.Join(reply.Reasoning, ""), strings.Join(chunks, ""), finish == "length",
+			usage, reply.OmitUsage)
 	case endpoint == messagesPath && params.stream:
 		b.writeMessagesStream(w, r, req, reply, params.model, chunks, finish == "length", usage)
 	case endpoint == messagesPath:
-		writeMessage(w, params.model, strings.Join(chunks, ""), finish == "length", usage, reply.OmitUsage)
+		writeMessage(w, params.model, strings.Join(reply.Reasoning, ""), strings.Join(chunks, ""), finish == "length", usage,
+			reply.OmitUsage)
 	case endpoint == embeddingPath:
 		b.writeEmbeddings(w, params.model, usage, reply.OmitUsage)
 	case endpoint == rerankPath:

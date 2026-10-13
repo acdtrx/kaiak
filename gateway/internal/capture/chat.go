@@ -192,16 +192,7 @@ func chatTool(raw json.RawMessage) (toolDefinition, bool) {
 		return nil, false
 	case "function":
 		fn, _ := members(m["function"])
-		name, ok := stringOf(fn["name"])
-		if !ok {
-			return nil, false
-		}
-		description, _ := stringOf(fn["description"])
-		var parameters json.RawMessage
-		if !isAbsent(fn["parameters"]) {
-			parameters = fn["parameters"]
-		}
-		return newFunctionTool(name, description, parameters), true
+		return readFunctionTool(fn, "parameters")
 	}
 	return original(raw), true
 }

@@ -61,19 +61,3 @@ type mapping struct {
 	answer  func(body []byte) answerContent
 	stream  func(stream []byte) answerContent
 }
-
-// messagesMapping reads a Messages exchange (docs/specs/GATEWAY.md, Request capture →
-// Messages).
-var messagesMapping = mapping{
-	request: func([]byte) requestContent { return requestContent{} },
-	answer:  func([]byte) answerContent { return answerContent{} },
-	stream:  func([]byte) answerContent { return answerContent{} },
-}
-
-// responsesMapping reads a Responses exchange (docs/specs/GATEWAY.md, Request capture
-// → Responses).
-var responsesMapping = mapping{
-	request: func([]byte) requestContent { return requestContent{} },
-	answer:  func([]byte) answerContent { return answerContent{} },
-	stream:  func([]byte) answerContent { return answerContent{} },
-}

@@ -163,6 +163,23 @@ func newFunctionTool(name, description string, parameters json.RawMessage) toolD
 	return functionTool{Type: "function", Name: name, Description: description, Parameters: parameters}
 }
 
+// readFunctionTool is a function definition from fn, the members of a function tool
+// as its API writes them: its name, its description and its JSON schema — the member
+// schema names (parameters; Messages' input_schema), none when absent. false for a
+// function without a name.
+func readFunctionTool(fn map[string]json.RawMessage, schema string) (toolDefinition, bool) {
+	name, ok := stringOf(fn["name"])
+	if !ok {
+		return nil, false
+	}
+	description, _ := stringOf(fn["description"])
+	var parameters json.RawMessage
+	if !isAbsent(fn[schema]) {
+		parameters = fn[schema]
+	}
+	return newFunctionTool(name, description, parameters), true
+}
+
 // Media kinds — the conventions' modalities — as an API names them, and as a MIME type
 // gives them.
 const (

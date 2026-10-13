@@ -3061,8 +3061,11 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
     `media_type`, its `data`) or uri (a `url` source), modality image; `document` →
     blob or uri the same way, modality document (any other source generic);
     `tool_use` → a tool call (`id`, `name`, `input`); `tool_result` → a tool result
-    (`tool_use_id`, `content`); `thinking` → reasoning (its signature left out); any
-    other (`redacted_thinking`, server tool blocks, …) → generic.
+    (`tool_use_id`, `content` as sent — a string, or its list of blocks as their JSON,
+    as a Chat Completions tool message's list is; its `is_error` is not carried: the
+    conventions' tool result has no place for it — settled 2026-10-13, at Messages'
+    build); `thinking` → reasoning (its signature left out); any other
+    (`redacted_thinking`, server tool blocks, …) → generic.
   - `tools` → `gen_ai.tool.definitions`: a tool with an `input_schema` → a function
     definition (`name`, `description`, `input_schema` as `parameters`); any other
     (Anthropic's client-run tools, `bash_20250124`, …) → its own JSON.
@@ -3082,7 +3085,8 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
       tool result (`call_id`, `output`) — so a tool round trip reads as on Chat
       Completions;
     - `reasoning` → an `assistant` message of reasoning parts: each `summary` text,
-      then each `reasoning_text` of its `content` (vLLM's reasoning);
+      then each `reasoning_text` of its `content` (vLLM's and llama-server's
+      reasoning) — an entry of another type generic;
     - any other item → a message of one generic part, role `tool` for the output of
       a tool the client ran (`custom_tool_call_output`, `local_shell_call_output`,
       `shell_call_output`, `apply_patch_call_output`), else `assistant`.
@@ -3104,14 +3108,36 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
     ends it; a chunk without choices (usage) carries no content. Only a function's
     call is rebuilt from its fragments: a call of another type is left out of a
     stream, where the same answer unstreamed carries it generic.
-  - Messages: `message_start` (the `id`, the `model`); content blocks by `index` —
-    `content_block_start` opens one, `text_delta`, `thinking_delta` and
-    `input_json_delta` fragments extend it (`signature_delta` is left out),
-    `content_block_stop` closes it; `message_delta`'s `stop_reason`.
+  - Messages: `message_start` opens the message (the `id`, the `model`; an event
+    before it is not read); content blocks by `index` — they may interleave
+    (llama-server opens one before closing the previous) — `content_block_start`
+    opens one, `text_delta`, `thinking_delta` and `input_json_delta` fragments
+    extend it (`signature_delta` is left out), `content_block_stop` closes it;
+    `message_delta`'s `stop_reason`; `message_stop` ends it. Settled 2026-10-13, at
+    Messages' build: a tool call's input is its fragments joined, or, with none (a
+    call without arguments may send one empty fragment), the `input` its start
+    gave; a block opens once and takes no delta after its stop; a block of another
+    type is carried as `content_block_start` gave it, its deltas not read — the same
+    as unstreamed for one that has none (`redacted_thinking`) — and a
+    `citations_delta` is not read, as a text block's citations are not carried.
   - Responses: the response object of the terminal event — `response.completed`,
     `response.incomplete` or `response.failed` — is the answer, read as an
-    unstreamed one; before it, the items `response.output_item.done` finished, then
-    the text of the one in progress (`response.output_text.delta`).
+    unstreamed one. A stream without one — cut short, or ended by an `error` event
+    or by nothing — gives what arrived, with no finish reason (settled 2026-10-13, at
+    Responses' build): the `id` and `model` of `response.created` or
+    `response.in_progress` (llama-server's name no model), and the output items in
+    the order `response.output_item.added` added them, each as
+    `response.output_item.done` finished it, else as its deltas have built it — a
+    message's text and refusal (`response.output_text.delta`,
+    `response.refusal.delta`), a reasoning item's summary, then its reasoning text
+    (`response.reasoning_summary_text.delta`, `response.reasoning_text.delta`), a
+    function call's `call_id` and name as added and its argument fragments
+    (`response.function_call_arguments.delta`), any other item as added (generic).
+    Deltas name their item by `item_id`: llama-server's carry no `output_index`, and
+    its items interleave (a function call is added before the reasoning item is
+    done). Where the items and the terminal event differ, the terminal event is the
+    answer: vLLM's names a function call by another `call_id` than its item events
+    did.
   - **A stream cut short** — the client gone, a backend failure, the drain's cut —
     keeps what arrived: the finished parts and the one in progress, a tool call's
     half-written arguments as a string. A non-stream answer cut short is no valid

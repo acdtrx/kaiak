@@ -1,7 +1,6 @@
 package capture
 
 import (
-	"encoding/json"
 	"maps"
 	"reflect"
 	"slices"
@@ -17,21 +16,10 @@ import (
 // chatContent is the content attributes of a Chat Completions exchange.
 func chatContent(t *testing.T, request, response string, stream bool, status int) map[string]any {
 	t.Helper()
-	return plainAttributes(t, content(provider.ChatCompletions,
-		exchange{request: []byte(request), response: []byte(response), stream: stream, status: status}))
+	return apiContent(t, provider.ChatCompletions, request, response, stream, status)
 }
 
-// chatCase is a request and its answer, whole and streamed — the same answer — and
-// the content attributes both give.
-type chatCase struct {
-	name    string
-	request string
-	// answer is the answer as a JSON body; stream the same answer as an event stream.
-	answer, stream string
-	want           map[string]any
-}
-
-var chatCorpus = []chatCase{
+var chatCorpus = []contentCase{
 	{
 		name: "plain text, OpenAI",
 		request: `{"model":"gpt-4.1","messages":[
@@ -338,19 +326,7 @@ var chatCorpus = []chatCase{
 
 // Each case's request and answer give the corpus' attributes — the answer whole and
 // streamed alike: every streamed answer assembles to its unstreamed twin.
-func TestChatCompletionsContent(t *testing.T) {
-	for _, c := range chatCorpus {
-		t.Run(c.name, func(t *testing.T) {
-			whole := chatContent(t, c.request, c.answer, false, 200)
-			expectAttributes(t, "whole", whole, c.want)
-			streamed := chatContent(t, c.request, c.stream, true, 200)
-			expectAttributes(t, "streamed", streamed, c.want)
-			if !reflect.DeepEqual(whole, streamed) {
-				t.Errorf("the stream assembles to\n%v\nits unstreamed twin gives\n%v", streamed, whole)
-			}
-		})
-	}
-}
+func TestChatCompletionsContent(t *testing.T) { expectCorpus(t, provider.ChatCompletions, chatCorpus) }
 
 // A stream cut short keeps what arrived: the text finished, and a tool call's
 // half-written arguments as a string; with no finish reason, none is written. A
@@ -591,22 +567,7 @@ func FuzzChatCompletionsContent(f *testing.F) {
 		if len(request)+len(response) > 64<<10 {
 			t.Skip()
 		}
-		attrs := plainAttributes(t, content(provider.ChatCompletions,
-			exchange{request: request, response: response, stream: stream, status: 200}))
-		for _, k := range jsonAttributes {
-			v, ok := attrs[k].(string)
-			if !ok {
-				continue
-			}
-			var l []json.RawMessage
-			if err := json.Unmarshal([]byte(v), &l); err != nil || len(l) == 0 {
-				t.Fatalf("%s is not a JSON list (%v): %s", k, err, v)
-			}
-			if k == "gen_ai.output.messages" {
-				if reasons, ok := attrs["gen_ai.response.finish_reasons"].([]string); ok && len(reasons) != len(l) {
-					t.Fatalf("%d finish reasons for %d output messages", len(reasons), len(l))
-				}
-			}
-		}
+		expectWellFormed(t, plainAttributes(t, content(provider.ChatCompletions,
+			exchange{request: request, response: response, stream: stream, status: 200})))
 	})
 }

@@ -3,6 +3,7 @@ package fakebackend
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 )
 
 // OpenAI Responses answers, shaped as OpenAI's API and the self-hosted servers answer
@@ -48,10 +49,22 @@ func messageItem(text string) map[string]any {
 		"content": []any{map[string]any{"type": "output_text", "text": text, "annotations": []any{}}}}
 }
 
-// finishResponse completes a response object: its output, its status (incomplete with
-// its reason when the output limit cut it short) and its usage.
-func finishResponse(response map[string]any, text string, cut bool, usage Usage, omitUsage bool) {
-	response["output"] = []any{messageItem(text)}
+// reasoningItem is the answer's reasoning, as vLLM gives it: a reasoning item with no
+// summary and the reasoning as its reasoning_text content.
+func reasoningItem(reasoning string) map[string]any {
+	return map[string]any{"id": "rs_fake_1", "type": "reasoning", "summary": []any{}, "status": "completed",
+		"content": []any{map[string]any{"type": "reasoning_text", "text": reasoning}}}
+}
+
+// finishResponse completes a response object: its output — the reasoning item when
+// there is reasoning, then the message — its status (incomplete with its reason when
+// the output limit cut it short) and its usage.
+func finishResponse(response map[string]any, reasoning, text string, cut bool, usage Usage, omitUsage bool) {
+	output := []any{messageItem(text)}
+	if reasoning != "" {
+		output = append([]any{reasoningItem(reasoning)}, output...)
+	}
+	response["output"] = output
 	response["status"] = "completed"
 	if cut {
 		response["status"] = "incomplete"
@@ -62,10 +75,10 @@ func finishResponse(response map[string]any, text string, cut bool, usage Usage,
 	}
 }
 
-func writeResponse(w http.ResponseWriter, top map[string]json.RawMessage, model, text string, cut bool, usage Usage,
-	omitUsage bool) {
+func writeResponse(w http.ResponseWriter, top map[string]json.RawMessage, model, reasoning, text string, cut bool,
+	usage Usage, omitUsage bool) {
 	response := responseObject(model, "in_progress", top)
-	finishResponse(response, text, cut, usage, omitUsage)
+	finishResponse(response, reasoning, text, cut, usage, omitUsage)
 	writeJSON(w, http.StatusOK, response)
 }
 
@@ -79,10 +92,11 @@ func responsesError(code string) []byte {
 }
 
 // writeResponsesStream streams a Responses answer: response.created and
-// response.in_progress, one message item with one output_text part and a delta per
-// chunk, then response.completed — response.incomplete when the output limit cut it
-// short — carrying the whole response and its usage. The reply's stream fault
-// applies with responsesError as the error event.
+// response.in_progress; with reasoning, a reasoning item with a reasoning_text delta
+// per piece; one message item with one output_text part and a delta per chunk, then
+// response.completed — response.incomplete when the output limit cut it short —
+// carrying the whole response and its usage. The reply's stream fault applies with
+// responsesError as the error event.
 func (b *Backend) writeResponsesStream(w http.ResponseWriter, r *http.Request, req *Request, reply Reply,
 	top map[string]json.RawMessage, model string, chunks []string, cut bool, usage Usage) {
 	s, ok := b.startStream(w, r, req, reply, responsesError)
@@ -97,12 +111,34 @@ func (b *Backend) writeResponsesStream(w http.ResponseWriter, r *http.Request, r
 		return
 	}
 	response := responseObject(model, "in_progress", top)
+	if !event(map[string]any{"type": "response.created", "response": response}) ||
+		!event(map[string]any{"type": "response.in_progress", "response": response}) {
+		return
+	}
+	index := 0
+	reasoning := strings.Join(reply.Reasoning, "")
+	if reasoning != "" {
+		added := map[string]any{"id": "rs_fake_1", "type": "reasoning", "summary": []any{}, "content": nil,
+			"status": "in_progress"}
+		if !event(map[string]any{"type": "response.output_item.added", "output_index": index, "item": added}) {
+			return
+		}
+		for _, piece := range reply.Reasoning {
+			if !event(map[string]any{"type": "response.reasoning_text.delta", "item_id": "rs_fake_1", "output_index": index,
+				"content_index": 0, "delta": piece}) {
+				return
+			}
+		}
+		if !event(map[string]any{"type": "response.output_item.done", "output_index": index,
+			"item": reasoningItem(reasoning)}) {
+			return
+		}
+		index++
+	}
 	item := map[string]any{"id": "msg_fake_1", "type": "message", "role": "assistant", "status": "in_progress", "content": []any{}}
 	part := map[string]any{"type": "output_text", "text": "", "annotations": []any{}}
-	if !event(map[string]any{"type": "response.created", "response": response}) ||
-		!event(map[string]any{"type": "response.in_progress", "response": response}) ||
-		!event(map[string]any{"type": "response.output_item.added", "output_index": 0, "item": item}) ||
-		!event(map[string]any{"type": "response.content_part.added", "item_id": "msg_fake_1", "output_index": 0,
+	if !event(map[string]any{"type": "response.output_item.added", "output_index": index, "item": item}) ||
+		!event(map[string]any{"type": "response.content_part.added", "item_id": "msg_fake_1", "output_index": index,
 			"content_index": 0, "part": part}) {
 		return
 	}
@@ -111,18 +147,18 @@ func (b *Backend) writeResponsesStream(w http.ResponseWriter, r *http.Request, r
 		if !s.interrupt(i) {
 			return
 		}
-		if !event(map[string]any{"type": "response.output_text.delta", "item_id": "msg_fake_1", "output_index": 0,
+		if !event(map[string]any{"type": "response.output_text.delta", "item_id": "msg_fake_1", "output_index": index,
 			"content_index": 0, "delta": chunk}) {
 			return
 		}
 		text += chunk
 	}
-	if !event(map[string]any{"type": "response.output_text.done", "item_id": "msg_fake_1", "output_index": 0,
+	if !event(map[string]any{"type": "response.output_text.done", "item_id": "msg_fake_1", "output_index": index,
 		"content_index": 0, "text": text}) ||
-		!event(map[string]any{"type": "response.output_item.done", "output_index": 0, "item": messageItem(text)}) {
+		!event(map[string]any{"type": "response.output_item.done", "output_index": index, "item": messageItem(text)}) {
 		return
 	}
-	finishResponse(response, text, cut, usage, reply.OmitUsage)
+	finishResponse(response, reasoning, text, cut, usage, reply.OmitUsage)
 	final := "response.completed"
 	if cut {
 		final = "response.incomplete"
