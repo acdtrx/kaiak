@@ -185,7 +185,9 @@ discussed and changed first):
     counts (decision 28) only. *Amended 2026-10-14 at step 11:* a request body over
     the export limit drops the capture at the copy — nothing copied, held or built —
     so the line says `too_large` for it; a span built over the limit is still in the
-    counts alone.
+    counts alone. *Amended 2026-10-14 at step 11, with the user:* the builder drops a
+    request of more than 250,000 array elements and object members (`too_large`)
+    before reading it — also in the counts alone.
 28. **Counts:** `otel.sdk.processor.span.processed` and `otel.sdk.exporter.span.exported`
     as the log exporter's twins (component types `capture_span_processor`,
     `otlp_http_json_span_exporter`); drops before the exporter (`memory`,

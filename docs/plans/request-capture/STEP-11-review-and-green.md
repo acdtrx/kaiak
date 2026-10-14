@@ -1,7 +1,7 @@
 # Step 11 — review and green
 
-**Status:** in progress — the two agent reviews triaged and fixed (below); the Codex
-review still to come.
+**Status:** done 2026-10-14 — three reviews triaged and fixed (below), the suite green
+three times in a row on the final code (Runs), the `/tmp` copies deleted.
 
 ## Intent
 
@@ -15,8 +15,10 @@ the suite green three times in a row.
   every path, the tee, the finisher, the exit), one on spec conformance and tests
   (the conventions at the pinned commit, the OTLP JSON rules, the message mapping
   per API).
-- **An independent Codex review** of a plain copy (`/tmp/kaiak`, no git, no plan or
-  review folders), with the diff since `v0.15.1` as `CHANGES.diff`. The user runs it.
+- **An independent review** of a plain copy (`/tmp/kaiak`, no git, no plan or review
+  folders), with the diff since `v0.15.1` as `CHANGES.diff`: planned for Codex, run by
+  a fresh agent that sees only the copy and the brief, as the user's Codex
+  subscription had lapsed (2026-10-14).
 - **Triage:** every finding checked against the code and reproduced; fixed with a test
   when it affects legitimate use or is high-impact; design-level findings put to the
   user; the rest recorded here.
@@ -30,6 +32,7 @@ the suite green three times in a row.
 ## Findings
 
 Reviewer A: correctness, privacy and memory. Reviewer B: spec conformance and tests.
+Reviewer C: the independent review of the plain copy.
 The verdicts are the main session's, 2026-10-14. Every fix has a test that fails
 without it (checked by reverting the fix), and the spec states it, dated 2026-10-14.
 
@@ -47,6 +50,11 @@ without it (checked by reverting the fix), and the spec states it, dated 2026-10
 | B | The session reason says "over 256" where the code measures bytes | Fix (spec only) | Fixed: "over 256 bytes" |
 | B | OpenAI audio answers (`message.audio`) are not read | The spec allows leaving them out; kaiak serves no chat audio models | Not fixed |
 | This step | Found by the conformance check: a part, block or item the mapping does not know whose `type` is one of the conventions' part types (`text`, `blob`, `tool_call`, …) is carried as a generic part a reader would take for that part, without its members | Fix | Fixed: left out (`appendGeneric`). Tests: `TestGenericPartNamedLikeTheConventions`, each API's malformed cases |
+| C (medium) | A body of many tiny JSON values (`"stop":["",…]`, `"messages":[0,…]`, `"content":[{},…]`) makes one build hold 30–40× the body — 151 MiB for 4 MiB, up to ~590 MiB at 15 MiB — past the ~10× the spec promises and the sizing reserves; any key of a capturing group can send it, naming a model it may not use (refused, still captured) | Fix: the user chose a cap on the request's values over leaner reading or docs alone | Fixed (`e2b4791`): the builder counts the body's array elements and object members first — one pass, nothing allocated, an upper bound — and drops a request over 250,000 as `too_large` (counts alone) before reading it. Measured after: the old shapes dropped in under 1 ms; worst at the cap 42 MiB (26.6 MiB over 10× the body); the scan costs ~0.3 ms per MiB. Tests: `TestCountValues`, `TestRequestValueCap`, `TestBuildMemoryAtTheValueCap` (fails without the cap: 155 MiB against its 100 MiB bound). Spec: Memory, The request's values, the counts; `DEPLOYMENT.md` Resources and Request capture; decision 27 amended |
+| C (low) | A final flush whose bound has already ended starts an export about half the time (select picks at random), its spans counted `timeout` rather than `shutdown` | Fix | Fixed (`aa51179`): `otlp.Sender.ForceFlush` returns the context's error at once when it has ended — for logs and traces, which share the sender. Test: `TestSenderForceFlushPastItsContextStartsNoSend` (100 trials; failed 3 of 3 runs without the fix) |
+| C (low) | A Responses stream cut short runs the parts of an in-progress item together ("First step.Second step." as one reasoning part) | Fix | Fixed (`aa51179`): an in-progress item keeps its parts apart by the deltas' `content_index` / `summary_index`; deltas with none (llama-server's) build one part of their kind. Test: `TestResponsesCutShortKeepsEachPart`. Spec: Streams → Responses |
+| C | Checked and found sound: the budget given back once on every path; no races, the finisher and exit order; capture never refuses or alters a request; privacy; the OTLP JSON (an export request decoded with the official `protojson` decoder); the explicit switch; ~20M fuzz executions of the content mapping; protocol 8 on both halves | — | — |
+| Live run (step 12) | Langfuse 4.58 takes the reasoning tokens out of the output, as it takes the cache tokens out of the input | Doc | `DEPLOYMENT.md` → Langfuse says so (`aa51179`) |
 
 
 ## Runs
@@ -55,4 +63,12 @@ without it (checked by reverting the fix), and the spec states it, dated 2026-10
   `FuzzChatCompletionsContent`, `FuzzMessagesContent`, `FuzzResponsesContent` 25 s
   each, no failure; `scripts/check-gateway.sh` green (`gateway checks passed`);
   `scripts/check-all.sh` green once (`all checks passed`: control 679 tests, 0
-  failed; cross-half e2e `ok`). The 3× green runs come after the Codex review.
+  failed; cross-half e2e `ok`). The 3× green runs come after the independent review.
+- 2026-10-14, the final code (`e2b4791`), `scripts/check-all.sh` three times in a row,
+  each `all checks passed` (13:08–13:20 local): every Go package `ok` (race, uncached),
+  `kaiak/e2e` 139.5 / 140.6 / 141.7 s; the live-test kit's self-test `49 passed, 0
+  failed, 3 skipped` and `self-test passed for vllm, llama-server, openai,
+  azure-openai, anthropic, azure-anthropic, vllm with two backends`; control `pass
+  678, fail 0, skipped 1`; the cross-half e2e `ok` (82.9 / 83.6 / 82.9 s).
+- `/tmp/kaiak` and `/tmp/kaiak-audit-prompt.md` deleted; no process had its working
+  directory there (`lsof -d cwd`), and Codex never started (its login had expired).
