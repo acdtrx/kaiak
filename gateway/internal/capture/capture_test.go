@@ -4,11 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"math"
 	"reflect"
+	"runtime"
+	"runtime/debug"
+	"runtime/metrics"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -282,6 +288,168 @@ func TestBuildDrops(t *testing.T) {
 				cs.InUse(), cs.Drops())
 		}
 	})
+}
+
+// countValues counts every ',', '[' and '{' outside strings — an upper bound on the
+// array elements and object members — and stops once the count passes its limit.
+func TestCountValues(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		body  string
+		limit int
+		want  int
+	}{
+		{"empty body", ``, 10, 0},
+		{"a scalar", `0`, 10, 0},
+		{"an empty string", `""`, 10, 0},
+		{"an empty object", `{}`, 10, 1},
+		{"an empty array", `[]`, 10, 1},
+		{"whitespace", " \t\r\n[ 1 ,\n 2 ] ", 10, 2},
+		{"members", `{"a":1,"b":2,"c":3}`, 10, 3},
+		{"nested containers", `[[1,2],{"a":[3]}]`, 10, 6},
+		{"empty containers count one each", `[{},{},[]]`, 10, 6},
+		{"commas, brackets and braces in strings", `{"a":",[{,]},","b":"[[["}`, 10, 2},
+		{"an escaped quote", `["a\",b"]`, 10, 1},
+		{"an escaped backslash before the closing quote", `["\\",{}]`, 10, 3},
+		{"escapes in a row", `["\\\",[{",0]`, 10, 2},
+		{"a member name with an escaped quote", `{"a\"{":[0]}`, 10, 2},
+		{"a string cut short", `["a,b`, 10, 1},
+		{"a backslash at the end", `["\`, 10, 1},
+		{"at the limit", `[0,0,0,0]`, 4, 4},
+		{"stops past the limit", `[0,0,0,0,0,0,0,0,0,0]`, 4, 5},
+	} {
+		if got := countValues([]byte(tc.body), tc.limit); got != tc.want {
+			t.Errorf("%s: %d values, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+// A request of more array elements and object members than maxRequestValues is
+// dropped by the builder before anything of it is read: counted as too_large, every
+// byte it held given back once, nothing built or queued — and its request line,
+// written before the build, says queued. A request at the cap is built and queued.
+func TestRequestValueCap(t *testing.T) {
+	// The body counts zeros+2 values: its '{', the comma between its members, the
+	// list's '[' and the comma before each 0 but the first.
+	stopOf := func(zeros int) []byte {
+		return []byte(`{"model":"qwen","stop":[` + strings.TrimSuffix(strings.Repeat("0,", zeros), ",") + `]}`)
+	}
+	t.Run("over the cap", func(t *testing.T) {
+		body := stopOf(maxRequestValues - 1)
+		if got := countValues(body, maxRequestValues); got != maxRequestValues+1 {
+			t.Fatalf("the body counts %d values, want one over the cap", got)
+		}
+		exp := newFakeExporter()
+		cs := newCaptures(t, 4<<20, exp)
+		cs.readContent = func(provider.Endpoint, exchange) []otlptrace.Attribute {
+			t.Error("a request over the value cap was read")
+			return nil
+		}
+		c := cs.Start(provider.ChatCompletions, body, nil)
+		c.Append([]byte("data: one\n\n"))
+		if got := c.Hand(summary("r-1")); got != OutcomeQueued {
+			t.Errorf("Hand: %q, want queued: the build decides", got)
+		}
+		finish(t, cs)
+		if len(exp.queued) != 0 || cs.InUse() != 0 || cs.Drops() != (Drops{TooLarge: 1}) {
+			t.Errorf("%d spans queued, %d bytes held, drops %+v; want none, 0 and one too_large", len(exp.queued),
+				cs.InUse(), cs.Drops())
+		}
+	})
+	t.Run("at the cap", func(t *testing.T) {
+		body := stopOf(maxRequestValues - 2)
+		if got := countValues(body, maxRequestValues); got != maxRequestValues {
+			t.Fatalf("the body counts %d values, want the cap", got)
+		}
+		exp := newFakeExporter()
+		cs := newCaptures(t, 4<<20, exp)
+		cs.Start(provider.ChatCompletions, body, nil).Hand(summary("r-1"))
+		finish(t, cs)
+		if spans := exp.exportAll(); len(spans) != 1 || cs.InUse() != 0 || cs.Drops() != (Drops{}) {
+			t.Errorf("%d spans queued, %d bytes held once exported, drops %+v; want 1, 0 and none", len(spans),
+				cs.InUse(), cs.Drops())
+		}
+	})
+}
+
+// heapObjects is the bytes of heap objects now: live ones, and dead ones not yet
+// swept.
+func heapObjects() uint64 {
+	s := []metrics.Sample{{Name: "/memory/classes/heap/objects:bytes"}}
+	metrics.Read(s)
+	return s[0].Value.Uint64()
+}
+
+// buildPeak runs cs.build(j) and returns the most heap above its start seen while it
+// ran: sampled every 50µs, with the collector running whenever the heap grows by 5%,
+// so that what is seen is close to what is live.
+func buildPeak(cs *Captures, j job) uint64 {
+	defer debug.SetGCPercent(debug.SetGCPercent(5))
+	runtime.GC()
+	base := heapObjects()
+	var top atomic.Uint64
+	done, sampled := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(sampled)
+		tick := time.NewTicker(50 * time.Microsecond)
+		defer tick.Stop()
+		for {
+			top.Store(max(top.Load(), heapObjects()))
+			select {
+			case <-done:
+				return
+			case <-tick.C:
+			}
+		}
+	}()
+	cs.build(j)
+	close(done)
+	<-sampled
+	return max(top.Load(), base) - base
+}
+
+// A build holds at most about ten times its capture live, and about 30 MB more for
+// its request's values (docs/specs/GATEWAY.md, Request capture → Memory, The
+// request's values). The worst shape measured at the value cap — Responses items of
+// one short member — stays within it, and a body of tiny values past the cap, which
+// held about 40 times its size while built, is not read at all. The bound allows
+// twice the values' share, to stay clear of the sampling's noise.
+func TestBuildMemoryAtTheValueCap(t *testing.T) {
+	if testing.Short() {
+		t.Skip("measures the heap while spans are built")
+	}
+	const valuesShare = 60 << 20
+	// repeated fills template's %s with n copies of unit, comma-separated.
+	repeated := func(template, unit string, n int) []byte {
+		return fmt.Appendf(nil, template, strings.TrimSuffix(strings.Repeat(unit+",", n), ","))
+	}
+	for _, tc := range []struct {
+		name string
+		api  provider.Endpoint
+		body []byte
+	}{
+		// Two values per item — its '{' and the comma before it, but the first's —
+		// and three for the body's '{', its member comma and the list's '['.
+		{"Responses items at the cap", provider.Responses,
+			repeated(`{"model":"m","input":[%s]}`, `{"type":"x"}`, (maxRequestValues-2)/2)},
+		{"stop sequences at the cap", provider.ChatCompletions,
+			repeated(`{"model":"m","messages":[],"stop":[%s]}`, `""`, maxRequestValues-4)},
+		{"stop sequences past the cap, 4 MiB", provider.ChatCompletions,
+			repeated(`{"model":"m","messages":[],"stop":[%s]}`, `""`, (4<<20)/3)},
+	} {
+		exp := &fakeExporter{maxSpan: 16 << 20}
+		cs := newCaptures(t, 1<<30, exp)
+		j := job{api: tc.api, request: tc.body, summary: summary("r-1")}
+		peak := buildPeak(cs, j)
+		exp.exportAll()
+		bound := 10*uint64(len(tc.body)) + valuesShare
+		t.Logf("%s: %d values, body %.1f MiB, peak %.1f MiB, bound %.1f MiB", tc.name,
+			countValues(tc.body, math.MaxInt), float64(len(tc.body))/(1<<20), float64(peak)/(1<<20), float64(bound)/(1<<20))
+		if peak > bound {
+			t.Errorf("%s: a %.1f MiB body held %.1f MiB live while built, above %.1f MiB", tc.name,
+				float64(len(tc.body))/(1<<20), float64(peak)/(1<<20), float64(bound)/(1<<20))
+		}
+	}
 }
 
 // The budget is never locked while a span is queued: an exporter that releases

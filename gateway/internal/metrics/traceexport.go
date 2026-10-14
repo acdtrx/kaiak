@@ -20,11 +20,13 @@ const (
 const errorTypeOther = "_OTHER"
 
 // CaptureDrops are the request captures dropped before the trace export's queue, by
-// why: Memory — the capture budget could not hold one; TooLarge — its span exceeds
-// the export limit; Shutdown — handed to the builder and not built when the exit's
-// bound ended; Failed — its build failed, a gateway fault (docs/specs/GATEWAY.md,
-// Request capture → Capture never gets in the way of serving, Memory, The export
-// limit; Observability → OTLP trace export: at exit).
+// why: Memory — the capture budget could not hold one; TooLarge — its request's body
+// or its span exceeds the export limit, or its request holds more array elements and
+// object members than a build reads; Shutdown — handed to the builder and not built
+// when the exit's bound ended; Failed — its build failed, a gateway fault
+// (docs/specs/GATEWAY.md, Request capture → Capture never gets in the way of
+// serving, Memory, The export limit, The request's values; Observability → OTLP
+// trace export: at exit).
 type CaptureDrops struct {
 	Memory, TooLarge, Shutdown, Failed uint64
 }
@@ -42,7 +44,7 @@ type CaptureDrops struct {
 func RegisterTraceExport(reg *metric.Registry, counts func() otlptrace.Counts, drops func() CaptureDrops) {
 	component := []string{"otel.component.type", "otel.component.name", "error.type"}
 	processed := reg.ObservableCounter(metric.Definition{Name: "otel.sdk.processor.span.processed", Unit: "{span}",
-		Description: "Request captures the capture stage, its builder and the OTLP trace export's queue are done with: handed to the exporter, or dropped (error.type memory: the capture budget could not hold it; too_large: its span exceeds the export limit; shutdown: not built, or still queued, when the final work at exit ended; _OTHER: its build failed, a gateway fault reported by a capture build failed line).",
+		Description: "Request captures the capture stage, its builder and the OTLP trace export's queue are done with: handed to the exporter, or dropped (error.type memory: the capture budget could not hold it; too_large: its request's body or its span exceeds the export limit, or its request holds more than 250,000 array elements and object members; shutdown: not built, or still queued, when the final work at exit ended; _OTHER: its build failed, a gateway fault reported by a capture build failed line).",
 		Attributes:  component})
 	exported := reg.ObservableCounter(metric.Definition{Name: "otel.sdk.exporter.span.exported", Unit: "{span}",
 		Description: "Spans the OTLP trace exporter sent: accepted by the collector, or failed (error.type says how).",

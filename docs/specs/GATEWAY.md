@@ -2889,15 +2889,15 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
   the end of every captured response by its build). One builder takes the captures
   one at a time, oldest first; its backlog has no bound of its own — each capture in
   it holds its bytes in the capture budget (Memory, below). Its own failures — the
-  memory budget, the export limit, a malformed session ID — drop or reduce the
-  capture, never the request. **A fault in building a capture** — a panic while its
-  content is parsed or its span made, an encoding that fails — drops that capture
-  and never reaches serving (settled 2026-10-13): its bytes go back to the budget,
-  it is counted (`_OTHER`, Exporters' own counts) and reported by one `capture build
-  failed` line (error) with the request's ID and the builder's stack — never the
-  fault's value or text, which a parser can fill with what the client sent — and
-  the builder goes on with the next capture. A gateway fault to fix, not an
-  operator's to tune.
+  memory budget, the export limit, the request's value cap, a malformed session ID —
+  drop or reduce the capture, never the request. **A fault in building a capture**
+  — a panic while its content is parsed or its span made, an encoding that fails —
+  drops that capture and never reaches serving (settled 2026-10-13): its bytes go
+  back to the budget, it is counted (`_OTHER`, Exporters' own counts) and reported
+  by one `capture build failed` line (error) with the request's ID and the
+  builder's stack — never the fault's value or text, which a parser can fill with
+  what the client sent — and the builder goes on with the next capture. A gateway
+  fault to fix, not an operator's to tune.
 - **Which requests**: those on `/v1/chat/completions`, `/v1/messages` and
   `/v1/responses` whose key's group has `capture: true`, once the inbound stage has
   read, parsed and accepted the body (Request pipeline, stage 2) — the capture stage
@@ -3326,9 +3326,10 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
   exporter drops nothing for a full queue, and while a collector is down captures
   fill the budget and new ones are dropped until exports drain it. Outside the
   budget, parsing and encoding make short-lived garbage — about ten times the
-  capture being built, one build at a time. Size `GOMEMLIMIT` above the body,
-  upload, usage and capture budgets together, with room for that garbage
-  (`docs/DEPLOYMENT.md`).
+  capture being built, and at most about 30 MB more for its request's values (The
+  request's values, below; settled 2026-10-14), one build at a time. Size
+  `GOMEMLIMIT` above the body, upload, usage and capture budgets together, with
+  room for that garbage (`docs/DEPLOYMENT.md`).
 - **The export limit**: an export request is at most 16 MiB, its envelope included —
   under the OpenTelemetry Collector's OTLP/HTTP receiver default (20 MiB, checked
   again after decompression); Langfuse takes up to 512 MiB by default but warns
@@ -3341,6 +3342,26 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
   building it at about ten times its size live, only to drop it, put the pod's
   memory at risk. Content is never truncated to fit (`docs/BACKLOG.md`, Truncating
   large captures).
+- **The request's values** (settled 2026-10-14, with the user): reading a request's
+  JSON costs tens of bytes of Go values for each array element and object member,
+  however small it is in the body — 4 MiB of `""`, `0` or `{}` held 30 to 40 times
+  its size live while its span was built, 15 MiB up to 590 MiB — and any key of a
+  capturing group can send such a body: a request refused after the capture stage
+  is still captured (Which requests). So the builder first counts the request
+  body's array elements and object members, and **a request of more than 250,000
+  is dropped** (`too_large`) before anything of it is read: its bytes go back to
+  the budget, nothing is mapped or encoded. The count is one pass over the body's
+  bytes that allocates nothing and stops past the cap. It is an upper bound — every
+  `,`, `[` and `{` outside strings — so a body may be dropped with fewer: half as
+  many, for a list of empty objects. An ordinary request is far below it. At the
+  cap a build holds at most about 30 MB more than ten times its capture (Memory,
+  above; measured: 42 MiB for 125,000 one-member Responses items, a 1.6 MiB body).
+  - **Only the request is counted**: an answer comes from a backend, and its
+    per-event garbage is short-lived.
+  - **The builder counts, not the copy**: on the request's path capture only copies
+    (Capture never gets in the way of serving), so the request line says `queued`
+    and the drop is in the counts alone, as for a span over the export limit (On
+    the request line and in the counts, below).
 - **On the request line and in the counts**: `kaiak.capture` on the request line —
   `queued` (handed to the builder), or why not: `memory` (the copy of the request or
   of the answer did not fit while the request ran), `too_large` (the request's body
@@ -3349,9 +3370,10 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
   `otel.sdk.processor.span.processed` and `otel.sdk.exporter.span.exported`
   (Observability → Exporters' own counts). The line is written before the span is
   built (settled 2026-10-13; Capture never gets in the way of serving, above), so
-  what the build drops — `too_large` for a span built over the export limit,
-  `memory` for an encoded span the budget cannot hold, `_OTHER` for a build that
-  failed — and a capture not built at exit (`shutdown`) are in the counts alone.
+  what the build drops — `too_large` for a request over the value cap or a span
+  built over the export limit, `memory` for an encoded span the budget cannot hold,
+  `_OTHER` for a build that failed — and a capture not built at exit (`shutdown`)
+  are in the counts alone.
 - **Groups capture, trace export off**: a config whose groups capture is applied
   like any other — a config cannot fail a gateway's start, and the export switch is
   the operator's. When trace export is off on this gateway, each applied config that
@@ -3895,7 +3917,7 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
   | `otel.sdk.processor.log.processed` | counter, read at collect | `{log_record}` | `otel.component.type`, `otel.component.name`, `error.type` | `otel_sdk_processor_log_processed_total` | With OTLP log export on: log records the export's queue is done with — handed to the exporter (no `error.type`), or dropped: `queue_full` (refused by the full queue), `shutdown` (still queued when the final flush ended) (Exporters' own counts, below) | `kaiak_log_export_records_total{outcome="dropped"}` |
   | `otel.sdk.exporter.log.exported` | counter, read at collect | `{log_record}` | `otel.component.type`, `otel.component.name`, `error.type` | `otel_sdk_exporter_log_exported_total` | With OTLP log export on: log records the exporter sent — accepted by the collector (no `error.type`), or failed, by how (Exporters' own counts) | `kaiak_log_export_records_total{outcome="exported"}`, `{outcome="failed"}` |
   | `otel.sdk.exporter.metric_data_point.exported` | counter, read at collect | `{data_point}` | `otel.component.type`, `otel.component.name`, `error.type` | `otel_sdk_exporter_metric_data_point_exported_total` | With OTLP metric export on: data points the exporter sent — accepted (no `error.type`), or failed, by how (Exporters' own counts) | — (added) |
-  | `otel.sdk.processor.span.processed` | counter, read at collect | `{span}` | `otel.component.type`, `otel.component.name`, `error.type` | `otel_sdk_processor_span_processed_total` | With OTLP trace export on: request captures the capture stage, its builder and the export's queue are done with — handed to the exporter (no `error.type`), or dropped: `memory` (the capture budget could not hold it), `too_large` (its request's body or its span exceeds the export limit), `shutdown` (not built when the builder's work at exit ended, or still queued when the final flush ended), `_OTHER` (its build failed: a gateway fault, reported by `capture build failed`) (Request capture; Exporters' own counts) | — (added 2026-10-13) |
+  | `otel.sdk.processor.span.processed` | counter, read at collect | `{span}` | `otel.component.type`, `otel.component.name`, `error.type` | `otel_sdk_processor_span_processed_total` | With OTLP trace export on: request captures the capture stage, its builder and the export's queue are done with — handed to the exporter (no `error.type`), or dropped: `memory` (the capture budget could not hold it), `too_large` (its request's body or its span exceeds the export limit, or its request holds more than 250,000 array elements and object members), `shutdown` (not built when the builder's work at exit ended, or still queued when the final flush ended), `_OTHER` (its build failed: a gateway fault, reported by `capture build failed`) (Request capture; Exporters' own counts) | — (added 2026-10-13) |
   | `otel.sdk.exporter.span.exported` | counter, read at collect | `{span}` | `otel.component.type`, `otel.component.name`, `error.type` | `otel_sdk_exporter_span_exported_total` | With OTLP trace export on: spans the exporter sent — accepted by the collector (no `error.type`), or failed, by how (Exporters' own counts) | — (added 2026-10-13) |
 
   - **Naming** (settled 2026-10-08):
@@ -4288,11 +4310,11 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
     grace, not a bigger queue).
   - The span processor's `error.type` (settled 2026-10-13): `memory` and
     `too_large`, the capture dropped before the queue (Request capture → Memory,
-    The export limit) — the request line's `kaiak.capture`, written before the
-    build, says `memory` or `too_large` for a drop while the request ran (a copy
-    that did not fit, a body over the export limit) and nothing of the build's
-    drops; `shutdown`, as for logs: a capture the builder had not built
-    when its work at exit ended, or a span still queued when the final flush
+    The export limit, The request's values) — the request line's `kaiak.capture`,
+    written before the build, says `memory` or `too_large` for a drop while the
+    request ran (a copy that did not fit, a body over the export limit) and nothing
+    of the build's drops; `shutdown`, as for logs: a capture the builder had not
+    built when its work at exit ended, or a span still queued when the final flush
     ended; and `_OTHER`, the convention's fallback, for a capture whose build
     failed: a fault in the gateway, each reported by a `capture build failed` line
     (Request capture → Capture never gets in the way of serving). No `queue_full`:
@@ -4456,7 +4478,7 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
     | `kaiak.usage.audio.input.duration` | — (added 2026-10-09) | once settled, when not 0 | Seconds of audio processed (the records' `audio_seconds_in`), as the metric of the same name |
     | `kaiak.usage.estimated` | `estimated` | once settled | The last record's flag (Accounting: Estimation) |
     | `kaiak.usage.partial` | `partial` | once settled | The last record's flag (Accounting: Partial) |
-    | `kaiak.capture` | — (added 2026-10-13) | the key's group captures and the request passed the capture stage (Request capture) | `queued` — the capture was handed to the background builder, which builds its span after the response has ended — or why it was not: `memory` (the capture budget could not hold the copy of the request or of the answer), `too_large` (the request's body is over the export limit: nothing was copied; settled 2026-10-14), `export_off` (this gateway's trace export is off). The line is written before the build, so what the build drops — `too_large` for a span built over the limit, `memory` for an encoded span, `_OTHER` for a build that failed — is in the counts alone (settled 2026-10-13; Request capture → On the request line and in the counts) |
+    | `kaiak.capture` | — (added 2026-10-13) | the key's group captures and the request passed the capture stage (Request capture) | `queued` — the capture was handed to the background builder, which builds its span after the response has ended — or why it was not: `memory` (the capture budget could not hold the copy of the request or of the answer), `too_large` (the request's body is over the export limit: nothing was copied; settled 2026-10-14), `export_off` (this gateway's trace export is off). The line is written before the build, so what the build drops — `too_large` for a request over the value cap or a span built over the limit, `memory` for an encoded span, `_OTHER` for a build that failed — is in the counts alone (settled 2026-10-13; Request capture → On the request line and in the counts) |
     | `kaiak.session_id.ignored` | — (added 2026-10-13) | a captured request's `Kaiak-Session-Id` was ignored | `empty`, `too_long`, `invalid_characters` (Request capture → Sessions). Never the value: it is client text |
 
     Limit values are counts in the limit's unit, USD limits in dollars. Across

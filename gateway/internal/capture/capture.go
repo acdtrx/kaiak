@@ -15,7 +15,9 @@
 //
 // The builder makes each capture's span, encodes it, swaps its budget charge from
 // the copies to the encoded span and queues it with the trace exporter, whose
-// release gives those bytes back once the export ends. A fault in one build — a
+// release gives those bytes back once the export ends. A request holding more array
+// elements and object members than a build may read is dropped before any of it is
+// read: each costs tens of bytes while the span is built. A fault in one build — a
 // panic in reading the content, an encoding that fails — drops that capture alone:
 // the builder goes on with the next, and serving never sees it. At exit Finish
 // builds what was handed before the trace export's final flush.
@@ -269,14 +271,54 @@ func (cs *Captures) next() (job, bool) {
 	}
 }
 
-// build makes j's span and queues it with the exporter, or drops it: too large for
-// the exporter to send; too large — once its charge moves from the copies to the
-// encoded span — for what the budget has left; or failed, a fault in building it
-// (failBuild): a panic anywhere in the build — the content's reading above all,
-// which parses what clients sent — is recovered here, so that one capture's fault
-// never stops the builder, let alone the gateway. Whatever the capture holds in the
-// budget goes back on every drop.
+// maxRequestValues is the most array elements and object members a captured
+// request's body may hold for its span to be built. Reading the request costs tens
+// of bytes of Go values per element or member, however small it is in the body, so
+// without a bound a body of many tiny values would hold many times its size while
+// it is built (docs/specs/GATEWAY.md, Request capture → The request's values). A
+// body over it is dropped as too_large, nothing read.
+const maxRequestValues = 250_000
+
+// countValues is an upper bound on body's array elements and object members: every
+// ',', '[' and '{' outside strings — each element or member but its container's
+// first follows a comma, and the first follows its container's opening. One pass
+// counts them, allocating nothing, and stops as soon as the count passes limit,
+// returning limit+1.
+func countValues(body []byte, limit int) int {
+	n := 0
+	for i := 0; i < len(body); i++ {
+		switch body[i] {
+		case '"':
+			// To the string's closing quote, an escaped character skipped with its
+			// backslash.
+			for i++; i < len(body) && body[i] != '"'; i++ {
+				if body[i] == '\\' {
+					i++
+				}
+			}
+		case ',', '[', '{':
+			if n++; n > limit {
+				return n
+			}
+		}
+	}
+	return n
+}
+
+// build makes j's span and queues it with the exporter, or drops it: a request of
+// more values than a build may read (maxRequestValues), before any of it is read;
+// too large for the exporter to send; too large — once its charge moves from the
+// copies to the encoded span — for what the budget has left; or failed, a fault in
+// building it (failBuild): a panic anywhere in the build — the content's reading
+// above all, which parses what clients sent — is recovered here, so that one
+// capture's fault never stops the builder, let alone the gateway. Whatever the
+// capture holds in the budget goes back on every drop.
 func (cs *Captures) build(j job) {
+	if countValues(j.request, maxRequestValues) > maxRequestValues {
+		cs.budget.give(j.held)
+		cs.droppedTooLarge.Add(1)
+		return
+	}
 	// charged is what the capture holds in the budget now: its copies, then its
 	// encoded span, then nothing — from Enqueue on, the exporter's release gives the
 	// span back, and a fault there must not give it twice.
@@ -358,7 +400,8 @@ func (cs *Captures) Finish(ctx context.Context) {
 type Drops struct {
 	// Memory: the budget could not hold one — its copies while its request ran, or
 	// its encoded span. TooLarge: its request's body, or its encoded span, exceeds
-	// what the exporter can send. Shutdown: handed and not built when Finish's bound
+	// what the exporter can send, or its request holds more values than a build may
+	// read (maxRequestValues). Shutdown: handed and not built when Finish's bound
 	// ended. Failed: its build failed, a fault in the gateway.
 	Memory, TooLarge, Shutdown, Failed uint64
 }

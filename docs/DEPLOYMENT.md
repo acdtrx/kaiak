@@ -250,12 +250,16 @@ Nothing else is lost: config and totals come back from the control plane.
 - **With trace export on, add the capture budget and the builder's garbage**
   (Request capture, below): the capture budget (`KAIAK_CAPTURE_MEMORY_BYTES`, default
   128 MiB) bounds every byte captures hold, and beside it the background builder
-  makes short-lived garbage of about **10× the capture it is building**, one build
-  at a time. A capture's request part is at most the 16 MiB export limit — a larger
-  body is not captured at all — and its answer is the bytes the client received: a
-  streamed answer's raw events, several times the text they carry, count in full.
-  About 40 MB for a request at the 4 MiB body cap with an inline image, up to about
-  160 MB for a capture at the export limit. So **limit = 2 × body
+  makes short-lived garbage of about **10× the capture it is building**, and at
+  most about 30 MB more for its request's array elements and object members (a
+  request of more than 250,000 is not built), one build at a time. A capture's
+  request part is at most the 16 MiB export limit — a larger body is not captured
+  at all — and its answer is the bytes the client received: a streamed answer's
+  raw events, several times the text they carry, count in full. About 40 MB for a
+  request at the 4 MiB body cap with an inline image, up to about 70 MB for one of
+  many small values there, up to about 160 MB for a capture at the export limit —
+  values included: measured, no 15 MiB body, at the value cap or not, held more
+  than about 8× its size. So **limit = 2 × body
   budget + upload budget + capture budget + 672 MiB** (2080 MiB at the defaults,
   `GOMEMLIMIT=1870MiB` as a literal). Without trace export neither is held,
   whatever the groups say.
@@ -1545,7 +1549,10 @@ the span, its attributes, the message format of each API, the drops:
   captures hold — the copy of the request, the answer as it is written, the encoded
   span until its export ends. A capture that would pass it is dropped (`memory`). A
   request body over the 16 MiB export limit is not copied at all (`too_large`): its
-  span could not be sent.
+  span could not be sent. A request of more than 250,000 array elements and object
+  members is dropped by the builder before it is read (`too_large`, in the counts
+  alone): each costs tens of bytes while a span is built, so a body of tiny values
+  would hold 30 to 40 times its size.
   While the destination is down or slow, queued spans fill the budget and new
   captures are dropped until exports drain it. Size the pod for it and for the
   builder's short-lived garbage (Resources).
@@ -1557,7 +1564,8 @@ the span, its attributes, the message format of each API, the drops:
   `kaiak.session_id.ignored` when a malformed session ID was dropped. Every drop, and
   what the builder and the exporter drop later, is counted:
   `otel_sdk_processor_span_processed_total` (no `error_type`: handed to the
-  exporter; `memory`, `too_large` — a body or a span over the 16 MiB export limit —,
+  exporter; `memory`, `too_large` — a body or a span over the 16 MiB export limit,
+  or a request of more than 250,000 array elements and object members —,
   `shutdown`, `_OTHER`: a failed build, logged `capture build failed` at error
   level, a gateway bug to report) and `otel_sdk_exporter_span_exported_total`
   (accepted, or failed by status or class, with `trace export failing` in the log).
