@@ -2081,7 +2081,7 @@ Boot).
     which Foundry refuses (`401`) even with a valid key: every request to a Claude
     deployment in Foundry answered `502 upstream_auth_failed`. Upgrading the
     gateways is the whole fix — the config and its `api_key_env` stay as they are.
-- **Next release** (protocol 8):
+- **0.16.0** (protocol 8):
   - **Protocol 8 — gateways and the control plane upgrade together.** The two
     versions refuse each other (the first bullet above), and a protocol-7 config
     document is refused: move every config — the control plane's, a file, a seed —
