@@ -345,8 +345,7 @@ func responsesStream(stream []byte) answerContent {
 		default:
 			id, _ := stringOf(event["item_id"])
 			if it := byID[id]; it != nil && it.done == nil {
-				delta, _ := stringOf(event["delta"])
-				it.add(typ, delta)
+				it.add(typ, event)
 			}
 		}
 	}
@@ -364,8 +363,8 @@ func responsesStream(stream []byte) answerContent {
 
 // responsesItem is one output item of a stream without its terminal event: as
 // response.output_item.done finished it, or, still in progress, as its deltas have
-// built it — a message's text and refusal, a reasoning item's summary and reasoning
-// text, a function call's arguments — and any other item as
+// built it — a message's text and refusal parts, a reasoning item's summary and
+// reasoning text parts, a function call's arguments — and any other item as
 // response.output_item.added began it.
 type responsesItem struct {
 	// added is the item as it began; typ its type.
@@ -378,8 +377,22 @@ type responsesItem struct {
 	hasArguments bool
 	// done is the item as response.output_item.done finished it; nil while in
 	// progress.
-	done                                         json.RawMessage
-	text, refusal, summary, reasoning, arguments strings.Builder
+	done json.RawMessage
+	// parts are a message's or a reasoning item's parts in progress, in the order
+	// they began, and texts what their deltas built.
+	parts     []responsesPart
+	texts     map[responsesPart]*strings.Builder
+	arguments strings.Builder
+}
+
+// responsesPart names one part of an item in progress: the event type of its deltas
+// and the index they give it — content_index, or a reasoning summary's
+// summary_index. Deltas without one (llama-server's carry none) build one part of
+// their type, hasIndex false.
+type responsesPart struct {
+	kind     string
+	index    int64
+	hasIndex bool
 }
 
 // begin starts the item as response.output_item.added — or, for an item never
@@ -398,26 +411,46 @@ func (it *responsesItem) begin(raw json.RawMessage, item map[string]json.RawMess
 	}
 }
 
-// add adds an in-progress item's delta of event type typ to what its type builds;
-// a delta of any other event, or for an item of another type, is not read.
-func (it *responsesItem) add(typ, delta string) {
+// add adds an in-progress item's delta event of type typ to what its type builds:
+// the part the delta's index names, or a function call's arguments. A delta of any
+// other event, or for an item of another type, is not read.
+func (it *responsesItem) add(typ string, event map[string]json.RawMessage) {
+	delta, _ := stringOf(event["delta"])
 	switch {
-	case typ == "response.output_text.delta" && it.typ == "message":
-		it.text.WriteString(delta)
-	case typ == "response.refusal.delta" && it.typ == "message":
-		it.refusal.WriteString(delta)
+	case typ == "response.output_text.delta" && it.typ == "message",
+		typ == "response.refusal.delta" && it.typ == "message",
+		typ == "response.reasoning_text.delta" && it.typ == "reasoning":
+		it.text(typ, event["content_index"]).WriteString(delta)
 	case typ == "response.reasoning_summary_text.delta" && it.typ == "reasoning":
-		it.summary.WriteString(delta)
-	case typ == "response.reasoning_text.delta" && it.typ == "reasoning":
-		it.reasoning.WriteString(delta)
+		it.text(typ, event["summary_index"]).WriteString(delta)
 	case typ == "response.function_call_arguments.delta" && it.typ == "function_call":
 		it.arguments.WriteString(delta)
 		it.hasArguments = true
 	}
 }
 
+// text is the text of the item's part that deltas of type kind name by index: the
+// part already begun, or a new one after the others. A delta whose index is not an
+// integer names the part without one.
+func (it *responsesItem) text(kind string, index json.RawMessage) *strings.Builder {
+	key := responsesPart{kind: kind}
+	key.index, key.hasIndex = integerOf(index)
+	if b := it.texts[key]; b != nil {
+		return b
+	}
+	if it.texts == nil {
+		it.texts = map[responsesPart]*strings.Builder{}
+	}
+	b := &strings.Builder{}
+	it.texts[key] = b
+	it.parts = append(it.parts, key)
+	return b
+}
+
 // appendTo appends the item's parts: a finished item's as the same item unstreamed
 // gives them; an item in progress's in the order its finished item's would be — a
+// message's text and refusal parts in the order they began, a reasoning item's
+// summary parts, then its reasoning text parts, each in the order they began; a
 // tool call's half-written arguments as the string.
 func (it *responsesItem) appendTo(parts []part) []part {
 	if it.done != nil {
@@ -425,11 +458,19 @@ func (it *responsesItem) appendTo(parts []part) []part {
 	}
 	switch it.typ {
 	case "message":
-		parts = appendText(parts, it.text.String())
-		return appendText(parts, it.refusal.String())
+		for _, key := range it.parts {
+			parts = appendText(parts, it.texts[key].String())
+		}
+		return parts
 	case "reasoning":
-		parts = appendReasoning(parts, it.summary.String())
-		return appendReasoning(parts, it.reasoning.String())
+		for _, kind := range []string{"response.reasoning_summary_text.delta", "response.reasoning_text.delta"} {
+			for _, key := range it.parts {
+				if key.kind == kind {
+					parts = appendReasoning(parts, it.texts[key].String())
+				}
+			}
+		}
+		return parts
 	case "function_call":
 		if !it.hasName {
 			return parts

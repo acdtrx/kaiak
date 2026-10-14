@@ -83,8 +83,15 @@ func (s *Sender) run(ctx context.Context, tick <-chan time.Time, send func(conte
 
 // ForceFlush sends what is queued until the queue is empty — items queued meanwhile
 // included — and returns nil then, or ctx's error when ctx ends first, or
-// ErrShutdown once Stop has run. The sender carries on either way.
+// ErrShutdown once Stop has run. The sender carries on either way. A ctx already
+// ended starts no send: its error comes back at once.
 func (s *Sender) ForceFlush(ctx context.Context) error {
+	// With ctx ended and the sender idle, both of the select's first cases are ready
+	// and it picks either: a flush handed over then would start an export past ctx's
+	// end.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	reply := make(chan error, 1)
 	select {
 	case s.flushes <- reply:

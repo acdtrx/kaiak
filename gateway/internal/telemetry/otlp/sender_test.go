@@ -110,6 +110,29 @@ func TestSenderForceFlushEndsWithItsContext(t *testing.T) {
 	close(s.hold)
 }
 
+// A flush whose context has already ended — the final flush at exit when the bound
+// was used up before it — starts no send: an export begun past the bound would be
+// cut by Stop and its items counted failed, not dropped at shutdown. Each trial
+// offers such a flush to an idle sender, then a flush within its bound, which the
+// sender takes only once any send before it has ended: that one send is the only one.
+func TestSenderForceFlushPastItsContextStartsNoSend(t *testing.T) {
+	s := &sends{calls: make(chan bool, 10)}
+	sender := StartSender(make(chan time.Time), s.send)
+	defer sender.Stop()
+	ended, cancel := context.WithCancel(context.Background())
+	cancel()
+	for range 100 {
+		if err := sender.ForceFlush(ended); !errors.Is(err, context.Canceled) {
+			t.Fatalf("ForceFlush past its context = %v, want context.Canceled", err)
+		}
+		if err := sender.ForceFlush(context.Background()); err != nil {
+			t.Fatalf("ForceFlush = %v, want nil", err)
+		}
+		s.next(t)
+		s.none(t)
+	}
+}
+
 // Stop cuts the send in flight; after it, ForceFlush answers ErrShutdown at once.
 func TestSenderStopCutsTheSendInFlight(t *testing.T) {
 	s := &sends{calls: make(chan bool, 10), hold: make(chan struct{})}

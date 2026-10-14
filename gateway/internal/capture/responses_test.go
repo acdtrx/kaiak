@@ -474,6 +474,53 @@ func TestResponsesCutShort(t *testing.T) {
 	expectAttributes(t, "cut body", responsesContent(t, request, whole, false, 200), base)
 }
 
+// An item in progress when the stream is cut keeps each of its parts, as the same
+// item unstreamed lists them: a delta naming another index — content_index, or a
+// reasoning summary's summary_index — than the parts before it begins a part of its
+// own, as OpenAI sends a summary or a message of several parts. Deltas without an
+// index (llama-server's) build one part of their type.
+func TestResponsesCutShortKeepsEachPart(t *testing.T) {
+	const request = `{"model":"gpt-5","stream":true,"input":"Plan it."}`
+	base := map[string]any{"gen_ai.input.messages": `[{"role":"user","parts":[{"type":"text","content":"Plan it."}]}]`,
+		"gen_ai.response.finish_reasons": []string{"error"}}
+	for _, c := range []struct {
+		name, stream string
+		want         map[string]any
+	}{
+		{name: "parts by their index, OpenAI", stream: typedEvents(
+			`{"type":"response.created","response":{"id":"resp_a","object":"response","status":"in_progress","model":"gpt-5","output":[]}}`,
+			`{"type":"response.output_item.added","output_index":0,"item":{"id":"rs_a","type":"reasoning","summary":[]}}`,
+			`{"type":"response.reasoning_summary_part.added","item_id":"rs_a","output_index":0,"summary_index":0,"part":{"type":"summary_text","text":""}}`,
+			`{"type":"response.reasoning_summary_text.delta","item_id":"rs_a","output_index":0,"summary_index":0,"delta":"First step."}`,
+			`{"type":"response.reasoning_summary_text.done","item_id":"rs_a","output_index":0,"summary_index":0,"text":"First step."}`,
+			`{"type":"response.reasoning_summary_part.done","item_id":"rs_a","output_index":0,"summary_index":0,"part":{"type":"summary_text","text":"First step."}}`,
+			`{"type":"response.reasoning_summary_part.added","item_id":"rs_a","output_index":0,"summary_index":1,"part":{"type":"summary_text","text":""}}`,
+			`{"type":"response.reasoning_summary_text.delta","item_id":"rs_a","output_index":0,"summary_index":1,"delta":"Second step."}`,
+			`{"type":"response.output_item.added","output_index":1,"item":{"id":"msg_a","type":"message","status":"in_progress","role":"assistant","content":[]}}`,
+			`{"type":"response.output_text.delta","item_id":"msg_a","output_index":1,"content_index":0,"delta":"Part one."}`,
+			`{"type":"response.output_text.done","item_id":"msg_a","output_index":1,"content_index":0,"text":"Part one."}`,
+			`{"type":"response.output_text.delta","item_id":"msg_a","output_index":1,"content_index":1,"delta":"Part two"}`),
+			want: map[string]any{"gen_ai.response.id": "resp_a", "gen_ai.response.model": "gpt-5",
+				"gen_ai.output.messages": `[{"role":"assistant","parts":[
+					{"type":"reasoning","content":"First step."},{"type":"reasoning","content":"Second step."},
+					{"type":"text","content":"Part one."},{"type":"text","content":"Part two"}]}]`}},
+		{name: "deltas without an index, llama-server", stream: typedEvents(
+			`{"type":"response.created","response":{"id":"resp_l","object":"response","status":"in_progress"}}`,
+			`{"type":"response.output_item.added","item":{"id":"rs_l","summary":[],"type":"reasoning","content":[],"encrypted_content":"","status":"in_progress"}}`,
+			`{"type":"response.reasoning_text.delta","delta":"Three","item_id":"rs_l"}`,
+			`{"type":"response.reasoning_text.delta","delta":" words.","item_id":"rs_l"}`,
+			`{"type":"response.output_item.added","item":{"content":[],"id":"msg_l","role":"assistant","status":"in_progress","type":"message"}}`,
+			`{"type":"response.content_part.added","item_id":"msg_l","part":{"type":"output_text","text":""}}`,
+			`{"type":"response.output_text.delta","item_id":"msg_l","delta":"Hello"}`,
+			`{"type":"response.output_text.delta","item_id":"msg_l","delta":" to"}`),
+			want: map[string]any{"gen_ai.response.id": "resp_l",
+				"gen_ai.output.messages": `[{"role":"assistant","parts":[
+					{"type":"reasoning","content":"Three words."},{"type":"text","content":"Hello to"}]}]`}},
+	} {
+		expectAttributes(t, c.name, responsesContent(t, request, c.stream, true, 200), with(base, c.want))
+	}
+}
+
 // An error answer — the backend's relayed 4xx, the gateway's own error body, as a
 // JSON body even for a stream — gives no output: the request's content alone.
 func TestResponsesErrorAnswer(t *testing.T) {

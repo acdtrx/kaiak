@@ -1600,8 +1600,9 @@ What Langfuse shows of a capture:
   model, as the public name the client used;
 - the request parameters the client set (`gen_ai.request.*`) as model parameters;
 - the usage: input, output, cache read and write, reasoning — Langfuse takes the
-  cache tokens out of the input, which the conventions count inclusive. Any cost
-  it shows comes from its own model prices; kaiak's is in the metadata;
+  cache tokens out of the input and the reasoning tokens out of the output, which
+  the conventions count inclusive. Any cost it shows comes from its own model
+  prices; kaiak's is in the metadata;
 - the session: requests sent with the same `Kaiak-Session-Id` (below) share it;
 - every `kaiak.*` attribute as metadata — the request ID (which the usage record
   and the request line carry too), key, group, backend, attempts, cost;

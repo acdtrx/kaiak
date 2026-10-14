@@ -3161,11 +3161,15 @@ tool that reads them (Langfuse, say). Every rule in this section is settled
     `response.in_progress` (llama-server's name no model), and the output items in
     the order `response.output_item.added` added them, each as
     `response.output_item.done` finished it, else as its deltas have built it — a
-    message's text and refusal (`response.output_text.delta`,
-    `response.refusal.delta`), a reasoning item's summary, then its reasoning text
-    (`response.reasoning_summary_text.delta`, `response.reasoning_text.delta`), a
-    function call's `call_id` and name as added and its argument fragments
-    (`response.function_call_arguments.delta`), any other item as added (generic).
+    message's text and refusal parts (`response.output_text.delta`,
+    `response.refusal.delta`) in the order they began, a reasoning item's summary
+    parts, then its reasoning text parts (`response.reasoning_summary_text.delta`,
+    `response.reasoning_text.delta`), a function call's `call_id` and name as added
+    and its argument fragments (`response.function_call_arguments.delta`), any
+    other item as added (generic). A delta's `content_index` — a summary's
+    `summary_index` — names its part, so each part stays its own, as unstreamed
+    (settled 2026-10-14); deltas that name none (llama-server's) build one part of
+    their kind.
     Deltas name their item by `item_id`: llama-server's carry no `output_index`, and
     its items interleave (a function call is added before the reasoning item is
     done). Where the items and the terminal event differ, the terminal event is the
